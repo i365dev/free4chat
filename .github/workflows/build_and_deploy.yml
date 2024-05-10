@@ -10,7 +10,7 @@ on:
 env: 
   SNAME1: rtc1
   VIRTUAL_HOST1: rtc1.free4.chat
-  EXTERNAL_IP1: 54.168.240.65
+  EXTERNAL_IP1: 54.238.1.42
   PRIVATE_IP1: 172.26.8.68
   SNAME2: rtc2
   VIRTUAL_HOST2: rtc2.free4.chat
