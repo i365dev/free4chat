@@ -47,6 +47,18 @@ When change server or upgrade server, that means ip will changed. We need to do 
 - [ ] Open the firewall IPV4/IPV6 protocols in server web console.
 - [ ] If server reboot, remember to config the iptables (80/443 -> 4000) in server.
 
+### Manually deploy the docker instance on the server when GitHub Action fails
+
+```bash
+docker ps # check if there is any instance
+docker stop `old-instances-id` # stop the instance if needs
+docker rm `old-instances-id` # remove the old instance if needs
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' `old-instances-id` > container_env.txt # dump the env file and you can modify it if needs
+docker run -d --name rtc1_free4chat_1 --env-file container_env.txt -p 4000:4000 madawei2699/free4chat:prod # run the instance
+sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 4000 # tunnel the server port to 80
+sudo iptables -t nat -A PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 4000 # tunnel the server port to 443
+```
+
 ### ~~Fly.io~~
 
 __NOTE__: There are some stumbling blocks that make it difficult to deploy to Fly.io:
