@@ -75,4 +75,3 @@ EXPOSE 4000
 HEALTHCHECK CMD curl --fail http://localhost:4000/api/healthcheck || exit 1  
 
 CMD ["bin/free4chat", "start"]
-
