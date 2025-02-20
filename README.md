@@ -13,6 +13,7 @@
   - [x] Text chat in room, can sent text or emoji
     - [ ] Persist text messages to browser localStorage
   - [ ] Can send arbitrary data by WebRTC datachannel 🚩
+    - https://github.com/elixir-webrtc/ex_webrtc 
   - [ ] Room permission setting, like public/private type setting
     - private room can't been seen on room discovery, and it needs password to enter. The password is [End-to-End Encryption](https://blog.excalidraw.com/end-to-end-encryption/), server only need check the answer which given by the client like the `PoW` in blockchain.
     - [ ] Public rooms discovery, like hot room list or filter rooms by type/tag
