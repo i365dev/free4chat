@@ -14,6 +14,8 @@ config :free4chat, Free4chatWeb.Endpoint,
   pubsub_server: Free4chat.PubSub,
   live_view: [signing_salt: "PwVJ7akS"]
 
+config :membrane_opentelemetry, enabled: true
+
 # Configures Elixir's Logger
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",

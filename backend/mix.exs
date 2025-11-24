@@ -33,17 +33,22 @@ defmodule Free4chat.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      {:phoenix, "~> 1.6.13"},
-      {:phoenix_live_dashboard, "~> 0.6"},
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_dashboard, "~> 0.7"},
+      {:phoenix_view, "~> 2.0"},
       {:telemetry_metrics, "~> 0.6"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 0.18"},
       {:jason, "~> 1.2"},
-      {:plug_cowboy, "~> 2.5"},
-      {:membrane_rtc_engine, github: "membraneframework/membrane_rtc_engine", override: true},
+      {:plug_cowboy, "~> 2.6"},
+      {:membrane_core, "~> 1.2"},
+      {:membrane_rtc_engine, "~> 0.24.0"},
+      {:membrane_webrtc_plugin, "~> 0.26.0"},
+      {:membrane_opentelemetry, "~> 0.1.0"},
       {:uuid, "~> 1.1"},
-      {:cowlib, "~> 2.11.0", override: true},
-      {:libcluster, "~> 3.3.1"}
+      {:cowlib, "~> 2.12.0", override: true},
+      {:libcluster, "~> 3.3"},
+      {:ex_dtls, "~> 0.18.0"}
     ]
   end
 

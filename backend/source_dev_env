@@ -1,0 +1,6 @@
+export LDFLAGS=-L/opt/homebrew/opt/openssl@3/lib;
+export CFLAGS=-I/opt/homebrew/opt/openssl@3/include/;
+export CPPFLAGS=-I/opt/homebrew/opt/openssl@3/include/;
+export DASHBOARD_AUTH_USERNAME=-admin;
+export DASHBOARD_AUTH_PASSWORD=-admin;
+

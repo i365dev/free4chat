@@ -19,15 +19,15 @@ defmodule Free4chat.Application do
     children = [
       # Start the Telemetry supervisor
       Free4chatWeb.Telemetry,
-      {Membrane.TelemetryMetrics.Reporter,
-         [metrics: Membrane.RTC.Engine.Metrics.metrics(), name: Free4chatReporter]},
+      # {Membrane.TelemetryMetrics.Reporter,
+      #    [metrics: Membrane.RTC.Engine.Metrics.metrics(), name: Free4chatReporter]},
       # Start the PubSub system
       {Phoenix.PubSub, name: Free4chat.PubSub},
       {Registry, keys: :unique, name: Free4chat.Room.Registry},
       # Start the Endpoint (http/https)
       Free4chatWeb.Endpoint,
       # Start turn server before the cluster
-      Free4chat.TurnServer,
+      # Free4chat.TurnServer,
       # setup for clustering
       {Cluster.Supervisor, [topologies, [name: Free4chat.ClusterSupervisor]]}
       # Start a worker by calling: Free4chat.Worker.start_link(arg)
@@ -70,13 +70,33 @@ defmodule Free4chat.Application do
   defp delete_cert_file(), do: File.rm(@cert_file_path)
 
   defp config_common_dtls_key_cert() do
-    {:ok, pid} = ExDTLS.start_link(client_mode: false, dtls_srtp: true)
-    {:ok, pkey} = ExDTLS.get_pkey(pid)
-    {:ok, cert} = ExDTLS.get_cert(pid)
-    :ok = ExDTLS.stop(pid)
+    # By default, generates new RSA key/cert pair
+    {pkey, cert} = ExDTLS.generate_key_cert()
     Application.put_env(:free4chat, :dtls_pkey, pkey)
     Application.put_env(:free4chat, :dtls_cert, cert)
   end
+
+  # defp config_common_dtls_key_cert() do
+  #   {:ok, pid} = ExDTLS.start_link(client_mode: false, dtls_srtp: true)
+  #   {:ok, pkey} = ExDTLS.get_pkey(pid)
+  #   {:ok, cert} = ExDTLS.get_cert(pid)
+  #   :ok = ExDTLS.stop(pid)
+  #   Application.put_env(:free4chat, :dtls_pkey, pkey)
+  #   Application.put_env(:free4chat, :dtls_cert, cert)
+  # end
+
+  # defp config_common_dtls_key_cert() do
+  #   opts = [client_mode: false, dtls_srtp: true]
+
+  #   # Modern ExDTLS does not use processes, instead creates a context struct
+  #   {:ok, ctx} = ExDTLS.Context.init(opts)
+  #   {:ok, pkey} = ExDTLS.Context.get_pkey(ctx)
+  #   {:ok, cert} = ExDTLS.Context.get_cert(ctx)
+  #   # No need to stop context for stateless API
+
+  #   Application.put_env(:free4chat, :dtls_pkey, pkey)
+  #   Application.put_env(:free4chat, :dtls_cert, cert)
+  # end
 
   # Tell Phoenix to update the endpoint configuration
   # whenever the application is updated.

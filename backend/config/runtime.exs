@@ -102,6 +102,18 @@ config :free4chat, Free4chatWeb.Endpoint, [
   {protocol, args}
 ]
 
+config :opentelemetry, :resource,
+  service: [
+    name: "membrane",
+    namespace: "membrane"
+  ],
+  tracer: :otel_tracer_default,
+  processors: [
+    otel_batch_processor: %{
+      exporter: {:otel_exporter_stdout, []}
+    }
+  ]
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
