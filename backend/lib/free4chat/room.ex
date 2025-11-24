@@ -4,11 +4,9 @@ defmodule Free4chat.Room do
   use GenServer
 
   require Membrane.Logger
-  # You may still need OpenTelemetry, adjust imports as needed (check latest Membrane docs).
 
   alias Membrane.RTC.Engine
   alias Membrane.RTC.Engine.Endpoint.WebRTC
-  alias Membrane.RTC.Engine.Endpoint.WebRTC.SimulcastConfig
   alias Membrane.WebRTC.Extension.{Mid, Rid, TWCC}
 
   @mix_env Mix.env()
@@ -25,17 +23,8 @@ defmodule Free4chat.Room do
     simulcast? = args.simulcast?
     Membrane.Logger.info("Spawning room process: #{inspect(self())}")
 
-    # OpenTelemetry setup -- update as needed for your tracing.
-    # trace_ctx = Membrane.OpenTelemetry.new_ctx()
-    # Membrane.OpenTelemetry.attach(trace_ctx)
-    # span_id = room_span_id(room_id)
-    # room_span = Membrane.OpenTelemetry.start_span(span_id)
-    # Membrane.OpenTelemetry.set_attributes(span_id, tracing_metadata())
-
     rtc_engine_options = [
-      id: room_id,
-      # trace_ctx: trace_ctx,
-      # parent_span: room_span
+      id: room_id
     ]
 
     turn_mock_ip = Application.fetch_env!(:free4chat, :integrated_turn_ip)
@@ -71,17 +60,20 @@ defmodule Free4chat.Room do
        rtc_engine: pid,
        peer_channels: %{},
        network_options: network_options,
-       # trace_ctx: trace_ctx,
-       simulcast?: simulcast?
+       simulcast?: simulcast?,
+       # --- custom stats fields ---
+       peers_joined: 0,
+       text_events: 0
      }}
   end
 
+  # When a peer joins
   @impl true
   def handle_info({:add_peer_channel, peer_channel_pid, peer_id}, state) do
     state = put_in(state, [:peer_channels, peer_id], peer_channel_pid)
     send(peer_channel_pid, {:simulcast_config, state.simulcast?})
     Process.monitor(peer_channel_pid)
-    {:noreply, state}
+    {:noreply, %{state | peers_joined: state.peers_joined + 1}}
   end
 
   @impl true
@@ -122,7 +114,6 @@ defmodule Free4chat.Room do
     webrtc_extensions =
       if state.simulcast?, do: [Mid, Rid, TWCC], else: [TWCC]
 
-    # Modern endpoint creation
     endpoint_opts = [
       rtc_engine: rtc_engine,
       ice_name: peer.id,
@@ -131,19 +122,16 @@ defmodule Free4chat.Room do
       integrated_turn_domain: state.network_options[:integrated_turn_domain],
       handshake_opts: handshake_opts,
       log_metadata: [peer_id: peer.id],
-      # trace_context: state.trace_ctx,
       webrtc_extensions: webrtc_extensions,
       simulcast: state.simulcast?,
       peer_metadata: peer.metadata
     ]
-    endpoint = Membrane.RTC.Engine.Endpoint.WebRTC.new(endpoint_opts)
+    endpoint = WebRTC.new(endpoint_opts)
 
     Engine.accept_peer(rtc_engine, peer.id)
     :ok = Engine.add_endpoint(rtc_engine, endpoint, peer_id: peer.id, node: peer_node)
     {:noreply, state}
   end
-
-
 
   @impl true
   def handle_info({:peer_left, peer}, state) do
@@ -156,12 +144,10 @@ defmodule Free4chat.Room do
     Membrane.Logger.error("Endpoint #{inspect(endpoint_id)} has crashed!")
     peer_channel = state.peer_channels[endpoint_id]
     error_message = "WebRTC endpoint has crashed, please refresh the page to reconnect"
-    # Just send descriptive text as data or your domain's error event object
     send(peer_channel, {:media_event, error_message})
     {:noreply, state}
   end
 
-  # media_event from client
   @impl true
   def handle_info({:media_event, _from, _event} = msg, state) do
     Engine.receive_media_event(state.rtc_engine, msg)
@@ -175,28 +161,37 @@ defmodule Free4chat.Room do
         send(pid, {:text_event, %{peerId: from, text: event}})
       end
     end
-    {:noreply, state}
+    {:noreply, %{state | text_events: state.text_events + 1}}
   end
 
   @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     if pid == state.rtc_engine do
-      # End tracing if using OpenTelemetry
-      # room_span_id(state.room_id) |> Membrane.OpenTelemetry.end_span()
       {:stop, :normal, state}
     else
       {peer_id, _peer_channel_id} =
         state.peer_channels
         |> Enum.find(fn {_peer_id, peer_channel_pid} -> peer_channel_pid == pid end)
 
-      Engine.remove_peer(state.rtc_engine, peer_id)
       {_elem, state} = pop_in(state, [:peer_channels, peer_id])
       if state.peer_channels == %{}, do: Engine.terminate(state.rtc_engine)
       {:noreply, state}
     end
   end
 
-  # Tracing helpers, adjust if using OpenTelemetry
+  # GenServer call for stats (for controller)
+  @impl true
+  def handle_call(:stats, _from, state) do
+    stats = %{
+      room_id: state.room_id,
+      peer_count: map_size(state.peer_channels),
+      peers_joined: state.peers_joined,
+      text_events: state.text_events
+    }
+    {:reply, stats, state}
+  end
+
+  # Optionally, tracing helpers...
   defp tracing_metadata(), do: []
   defp room_span_id(id), do: "room:#{id}"
 end
