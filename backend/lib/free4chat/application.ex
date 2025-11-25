@@ -76,28 +76,6 @@ defmodule Free4chat.Application do
     Application.put_env(:free4chat, :dtls_cert, cert)
   end
 
-  # defp config_common_dtls_key_cert() do
-  #   {:ok, pid} = ExDTLS.start_link(client_mode: false, dtls_srtp: true)
-  #   {:ok, pkey} = ExDTLS.get_pkey(pid)
-  #   {:ok, cert} = ExDTLS.get_cert(pid)
-  #   :ok = ExDTLS.stop(pid)
-  #   Application.put_env(:free4chat, :dtls_pkey, pkey)
-  #   Application.put_env(:free4chat, :dtls_cert, cert)
-  # end
-
-  # defp config_common_dtls_key_cert() do
-  #   opts = [client_mode: false, dtls_srtp: true]
-
-  #   # Modern ExDTLS does not use processes, instead creates a context struct
-  #   {:ok, ctx} = ExDTLS.Context.init(opts)
-  #   {:ok, pkey} = ExDTLS.Context.get_pkey(ctx)
-  #   {:ok, cert} = ExDTLS.Context.get_cert(ctx)
-  #   # No need to stop context for stateless API
-
-  #   Application.put_env(:free4chat, :dtls_pkey, pkey)
-  #   Application.put_env(:free4chat, :dtls_cert, cert)
-  # end
-
   # Tell Phoenix to update the endpoint configuration
   # whenever the application is updated.
   @impl true
