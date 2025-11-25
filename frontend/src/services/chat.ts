@@ -145,25 +145,22 @@ export class ChatService {
       })
     } catch (error) {
       console.error("Error while getting local audio stream", error)
-      gtagEvent("Room", this.room, nickName, "NoAudioStream") // send gtag event
-      umamiEvent("Room", {
-        type: "Client",
-        message: "NoAudioStream",
-        user: nickName,
-        room: this.room,
-      }) // send umami event
+      // Optional: surface a user-facing error and abort join
+      this.subject.error("Could not access microphone")
+      return
     }
+
     const localPeer: Peer = {
       id: LOCAL_PEER_ID,
       metadata: { displayName: nickName, active: true },
       trackIdToMetadata: null,
     }
     this.addPeer(localPeer)
-    this.attachStream(LOCAL_PEER_ID, this.localAudioStream)
+    this.attachStream(LOCAL_PEER_ID, this.localAudioStream!)
     await this.phoenixChannelPushResult(this.webrtcChannel.join())
-
     this.webrtc.join({ displayName: nickName })
   }
+
 
   private updateParticipants = (users: UserInfo[]) => {
     const me = this.getSelf()
@@ -277,14 +274,13 @@ export class ChatService {
   }
 
   private askForPermissions = async (): Promise<void> => {
-    let tmpVideoStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-    })
-
-    // stop tracks
-    // in other case, next call to getUserMedia may fail
-    // or won't respect media constraints
-    tmpVideoStream.getTracks().forEach((track) => track.stop())
+    try {
+      let tmpVideoStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      tmpVideoStream.getTracks().forEach((track) => track.stop())
+    } catch (e) {
+      console.error("Error while asking for permissions", e)
+      throw e
+    }
   }
 
   private phoenixChannelPushResult = async (push: Push): Promise<any> => {
