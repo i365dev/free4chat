@@ -103,3 +103,13 @@ If you are interested in `webRTC`, `peer-to-peer(P2P)`, `real-time collaboration
   - [An open network for secure, decentralized communication - Matrix](https://matrix.org/)
   - [Introduction to Realtime Web Applications](https://realtime-apps-iap.github.io/)
   - [Gather | Building better teams, bit by bit](https://www.gather.town/)
+
+ ---
+
+## About the Author
+
+This project is maintained by the creator of **MyInvestPilot** —
+a systematic investment assistance platform focused on
+rule-based, long-term investing and transparent strategy research.
+
+🔗 https://www.myinvestpilot.com
