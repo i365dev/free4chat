@@ -1,70 +1,158 @@
-import React, { useState } from "react"
+import React, { useState, useRef } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { Message } from "@common/types"
 import { strToBgColor } from "@common/utils"
 
-import Store from "../store/store"
-
-interface Messages {
+interface TextChatCardProps {
   room: string
   messages: Message[]
+  onSendText: (text: string) => void
+  onSendFile: (file: File) => void
 }
 
-export default function TextChatCard(m: Messages) {
+function FileMessageBubble({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
+  const isImage = msg.type === "image"
+  const containerClass = isSelf
+    ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
+    : "ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
+
+  return (
+    <div
+      className={containerClass}
+      style={{ backgroundColor: strToBgColor(msg.name) }}
+    >
+      {isImage ? (
+        <a href={msg.fileLink} target="_blank" rel="noopener noreferrer">
+          <img
+            src={msg.fileLink}
+            alt={msg.fileName || "image"}
+            className="max-h-40 max-w-xs rounded"
+          />
+        </a>
+      ) : (
+        <a
+          href={msg.fileLink}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 underline"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+            className="h-4 w-4 shrink-0"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13"
+            />
+          </svg>
+          <span className="truncate max-w-[160px]">{msg.fileName}</span>
+          {msg.fileSize && (
+            <span className="text-xs opacity-70">
+              ({(msg.fileSize / 1024).toFixed(1)}KB)
+            </span>
+          )}
+        </a>
+      )}
+    </div>
+  )
+}
+
+export default function TextChatCard({ room, messages, onSendText, onSendFile }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
-  const sendMessage = (event) => {
-    if (event.key === "Enter" && message !== "") {
-      Store.sendTextMessage(m.room, message)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (event.key === "Enter" && message.trim() !== "") {
+      onSendText(message.trim())
       setMessage("")
     }
   }
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file) {
+      onSendFile(file)
+      event.target.value = ""
+    }
+  }
+
   return (
     <div className="mt-4 block rounded-xl border border-gray-700 bg-gray-800 p-4 shadow-xl">
-      {m.messages.length > 0 && (
+      {messages.length > 0 && (
         <div className="flex max-h-96 w-full flex-col justify-between overflow-scroll text-sm">
           <div className="mt-5 flex flex-col-reverse">
-            {m.messages.map((p, i) =>
-              p.peerId === LOCAL_PEER_ID ? (
-                <div className="mb-4 flex justify-end" key={i}>
+            {messages.map((p, i) => {
+              const isSelf = p.peerId === LOCAL_PEER_ID
+              const wrapperClass = isSelf
+                ? "mb-4 flex justify-end"
+                : "mb-4 flex justify-start"
+
+              return (
+                <div className={wrapperClass} key={i}>
                   <div className="text-white">
-                    <div
-                      className="mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
-                      style={{
-                        backgroundColor: strToBgColor(p.name),
-                      }}
-                    >
-                      {p.text}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="mb-4 flex justify-start" key={i}>
-                  <div className="text-white">
-                    <div
-                      className="ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
-                      style={{
-                        backgroundColor: strToBgColor(p.name),
-                      }}
-                    >
-                      {p.text}
-                    </div>
+                    {p.type === "text" ? (
+                      <div
+                        className={
+                          isSelf
+                            ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
+                            : "ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
+                        }
+                        style={{ backgroundColor: strToBgColor(p.name) }}
+                      >
+                        {p.text}
+                      </div>
+                    ) : (
+                      <FileMessageBubble msg={p} isSelf={isSelf} />
+                    )}
                   </div>
                 </div>
               )
-            )}
+            })}
           </div>
         </div>
       )}
 
-      <div className="mt-2">
+      <div className="mt-2 flex items-center gap-2">
         <input
-          className="w-full rounded-xl bg-gray-900"
+          className="flex-1 rounded-xl bg-gray-900"
           type="text"
           value={message}
-          onKeyDown={sendMessage}
+          onKeyDown={handleKeyDown}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="type your message here..."
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          className="rounded-lg bg-gray-700 p-2 hover:bg-gray-600 transition"
+          title="Send file"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+            className="h-5 w-5 text-white"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13"
+            />
+          </svg>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleFileChange}
         />
       </div>
     </div>

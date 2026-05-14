@@ -4,38 +4,37 @@ import Avatar from "boring-avatars"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { strToBgColor } from "@common/utils"
-
 import { UserInfo } from "../common/types"
 import AudioVisualizer from "../components/AudioVisualizer"
-import Store from "../store/store"
 
-export default function UserCard(user: UserInfo) {
-  const audioRef = useRef(null)
-  const muteSelf = () => {
-    Store.muteSelf(user.room)
-  }
+interface UserCardProps extends UserInfo {
+  onMuteSelf?: () => void
+}
+
+export default function UserCard(user: UserCardProps) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+
   useEffect(() => {
-    if (user.audioStream !== null) {
+    if (user.audioStream && audioRef.current) {
       audioRef.current.srcObject = user.audioStream
     }
   }, [user.audioStream])
+
   return (
     <div className={user.className}>
       <div
         className="m-2 rounded-xl border border-gray-700 p-4 pb-2 pt-2"
-        style={{
-          backgroundColor: strToBgColor(user.name),
-        }}
+        style={{ backgroundColor: strToBgColor(user.name) }}
       >
         <div className="items-center">
           <div className="flex flex-row">
             <Avatar size={40} variant="beam" name={user.name} />
             <button
               className="ml-auto"
-              onClick={muteSelf}
+              onClick={user.onMuteSelf}
               disabled={user.peerId !== LOCAL_PEER_ID}
             >
-              {!user.muteState && (
+              {!user.muteState ? (
                 <svg
                   className="bi bi-mic"
                   fill="currentColor"
@@ -47,8 +46,7 @@ export default function UserCard(user: UserInfo) {
                   <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z" />
                   <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0v5zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3z" />
                 </svg>
-              )}
-              {user.muteState && (
+              ) : (
                 <svg
                   className="bi bi-mic-mute"
                   fill="currentColor"
@@ -69,17 +67,18 @@ export default function UserCard(user: UserInfo) {
               {user.peerId === LOCAL_PEER_ID ? user.name + " (ME)" : user.name}
             </h5>
           </div>
-          {user.peerId !== LOCAL_PEER_ID && (
-            <audio ref={(audio) => (audioRef.current = audio)} autoPlay></audio>
-          )}
-          {user.peerId === LOCAL_PEER_ID && (
-            <audio ref={(audio) => (audioRef.current = audio)}></audio>
-          )}
+
+          <audio
+            ref={audioRef}
+            autoPlay={user.peerId !== LOCAL_PEER_ID}
+            muted={user.peerId === LOCAL_PEER_ID}
+          />
+
           <AudioVisualizer
             audio={user.audioStream}
             name={user.name}
             muteState={user.muteState}
-          ></AudioVisualizer>
+          />
         </div>
       </div>
     </div>

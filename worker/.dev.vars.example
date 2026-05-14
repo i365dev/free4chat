@@ -1,0 +1,5 @@
+CF_API_TOKEN=your_cloudflare_api_token
+CF_ACCOUNT_ID=your_account_id
+RTK_APP_ID=your_realtimekit_app_id
+RTK_PRESET_NAME=group_call_host
+ALLOWED_ORIGIN=http://localhost:3000

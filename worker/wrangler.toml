@@ -1,0 +1,8 @@
+name = "free4chat-worker"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+
+[[kv_namespaces]]
+binding = "ROOMS_KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_YOUR_KV_NAMESPACE_PREVIEW_ID"

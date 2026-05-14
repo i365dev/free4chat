@@ -7,10 +7,16 @@ export interface UserInfo {
   muteState?: boolean | false
 }
 
+export type MessageType = "text" | "image" | "file"
+
 export interface Message {
   peerId: string
   name: string
-  text: string
+  type: MessageType
+  text?: string
+  fileLink?: string
+  fileName?: string
+  fileSize?: number
 }
 
 export interface Color {
