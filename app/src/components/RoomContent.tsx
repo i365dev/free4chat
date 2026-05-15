@@ -9,9 +9,11 @@ import { useChatRoom } from "../hooks/useChatRoom"
 export default function RoomContent({
   roomName,
   nickName,
+  roomType,
 }: {
   roomName: string
   nickName: string
+  roomType: "audio" | "screenshare"
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
@@ -26,13 +28,16 @@ export default function RoomContent({
     error,
     expiryWarning,
     connectionStatus,
-  } = useChatRoom(roomName, nickName)
+  } = useChatRoom(roomName, nickName, roomType)
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
-      navigator.clipboard.writeText(
-        window.location.origin + "/room?id=" + encodeURIComponent(roomName)
-      )
+      const url =
+        window.location.origin +
+        "/room?id=" +
+        encodeURIComponent(roomName) +
+        (roomType === "screenshare" ? "&type=screenshare" : "")
+      navigator.clipboard.writeText(url)
       setRoomLinkCopied(true)
       setTimeout(() => setRoomLinkCopied(false), 2000)
     }

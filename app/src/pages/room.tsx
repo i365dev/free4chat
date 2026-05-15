@@ -18,8 +18,10 @@ const RoomContent = dynamic(() => import("../components/RoomContent"), {
 export default function Room() {
   const router = useRouter()
   const roomId = router.query.id as string
+  const roomTypeParam = router.query.type as string | undefined
   const [roomName, setRoomName] = useState<string>("")
   const [nickName, setNickName] = useState<string>("")
+  const [roomType, setRoomType] = useState<"audio" | "screenshare">("audio")
   const [showNickNamePop, setShowNickNamePop] = useState<boolean>(false)
   const [ready, setReady] = useState<boolean>(false)
 
@@ -37,6 +39,7 @@ export default function Room() {
       return
     }
     setRoomName(roomId)
+    setRoomType(roomTypeParam === "screenshare" ? "screenshare" : "audio")
     if (typeof window !== "undefined") {
       const rooms: { roomName: string; nickName: string }[] = JSON.parse(
         localStorage.getItem("rooms") || "[]"
@@ -59,9 +62,10 @@ export default function Room() {
         message: "Success",
         user: nickName,
         room: roomName,
+        roomType,
       })
     }
-  }, [ready, roomName, nickName])
+  }, [ready, roomName, nickName, roomType])
 
   return (
     <div>
@@ -133,7 +137,7 @@ export default function Room() {
       )}
 
       {ready && roomName && nickName && (
-        <RoomContent roomName={roomName} nickName={nickName} />
+        <RoomContent roomName={roomName} nickName={nickName} roomType={roomType} />
       )}
     </div>
   )

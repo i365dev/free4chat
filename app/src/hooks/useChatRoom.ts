@@ -7,7 +7,7 @@ import { UserInfo, Message } from "@common/types"
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 
-export function useChatRoom(roomName: string, nickName: string) {
+export function useChatRoom(roomName: string, nickName: string, roomType: "audio" | "screenshare") {
   const [meeting, initMeeting] = useRealtimeKitClient()
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
@@ -27,7 +27,7 @@ export function useChatRoom(roomName: string, nickName: string) {
     fetch(`/api/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ room: roomName, name: nickName }),
+      body: JSON.stringify({ room: roomName, name: nickName, type: roomType }),
       signal: controller.signal,
     })
       .then(async (r) => {

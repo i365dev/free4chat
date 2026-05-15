@@ -7,11 +7,16 @@ interface Env {
   CF_ACCOUNT_ID: string
   RTK_APP_ID: string
   RTK_PRESET_NAME: string
+  RTK_SCREENSHARE_PRESET_NAME: string
+  RTK_AUDIO_PRESET_NAME: string
 }
+
+type RoomType = "audio" | "screenshare"
 
 interface RoomRecord {
   meetingId: string
   createdAt: number
+  roomType: RoomType
 }
 
 const ALLOWED_ORIGINS = [
@@ -50,8 +55,9 @@ async function checkRateLimit(ip: string, env: Env): Promise<boolean> {
 
 async function getOrCreateMeeting(
   roomName: string,
+  roomType: RoomType,
   env: Env
-): Promise<{ meetingId: string; expired: boolean }> {
+): Promise<{ meetingId: string; expired: boolean; roomType: RoomType }> {
   const key = `room:${roomName}`
   const raw = await env.ROOMS_KV.get(key)
 
@@ -65,9 +71,10 @@ async function getOrCreateMeeting(
         headers: authHeaders(env),
         body: JSON.stringify({ status: "INACTIVE" }),
       }).catch(() => {})
-      return { meetingId: "", expired: true }
+      return { meetingId: "", expired: true, roomType: record.roomType }
     }
-    return { meetingId: record.meetingId, expired: false }
+    // Always use the room type set at creation — ignore caller's type for existing rooms
+    return { meetingId: record.meetingId, expired: false, roomType: record.roomType }
   }
 
   const res = await fetch(`${rtkBase(env)}/meetings`, {
@@ -78,19 +85,23 @@ async function getOrCreateMeeting(
   const data = (await res.json()) as any
   const meetingId = data.data.id
 
-  const record: RoomRecord = { meetingId, createdAt: Date.now() }
+  const record: RoomRecord = { meetingId, createdAt: Date.now(), roomType }
   await env.ROOMS_KV.put(key, JSON.stringify(record), {
     expirationTtl: 30 * 24 * 3600,
   })
-  return { meetingId, expired: false }
+  return { meetingId, expired: false, roomType }
 }
 
 async function addParticipant(
   meetingId: string,
   name: string,
+  roomType: RoomType,
   env: Env
 ): Promise<string> {
-  const presetName = env.RTK_PRESET_NAME || "group_call_host"
+  const presetName =
+    roomType === "screenshare"
+      ? env.RTK_SCREENSHARE_PRESET_NAME || env.RTK_PRESET_NAME || "group_call_host"
+      : env.RTK_AUDIO_PRESET_NAME || "audio_only_room"
   const res = await fetch(
     `${rtkBase(env)}/meetings/${meetingId}/participants`,
     {
@@ -138,7 +149,13 @@ export default async function handler(
       }
     }
 
-    const { room, name } = req.body as { room: string; name: string }
+    const { room, name, type } = req.body as {
+      room: string
+      name: string
+      type?: string
+    }
+    const roomType: RoomType =
+      type === "screenshare" ? "screenshare" : "audio"
 
     // Input validation
     if (!room || !name) {
@@ -154,12 +171,12 @@ export default async function handler(
       return res.status(400).json({ error: "room and name must not be blank" })
     }
 
-    const { meetingId, expired } = await getOrCreateMeeting(room.trim(), cfEnv)
+    const { meetingId, expired, roomType: resolvedRoomType } = await getOrCreateMeeting(room.trim(), roomType, cfEnv)
     if (expired) {
       return res.status(410).json({ error: "room expired" })
     }
 
-    const authToken = await addParticipant(meetingId, name.trim(), cfEnv)
+    const authToken = await addParticipant(meetingId, name.trim(), resolvedRoomType, cfEnv)
     return res.status(200).json({ authToken })
   } catch (err) {
     console.error(err)

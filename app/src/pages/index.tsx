@@ -2,7 +2,7 @@ import { useState, useEffect } from "react"
 
 import { useRouter } from "next/router"
 
-import { randomName, saveRoomToLocalStorage } from "../common/utils"
+import { randomName, saveRoomToLocalStorage, umamiEvent } from "../common/utils"
 import Header from "../components/Header"
 
 export default function Home() {
@@ -10,6 +10,7 @@ export default function Home() {
   const [roomName, setRoomName] = useState<string>("")
   const [nickName, setNickName] = useState<string>("")
   const [copied, setCopied] = useState<boolean>(false)
+  const [screenShare, setScreenShare] = useState<boolean>(false)
 
   useEffect(() => {
     setRoomName(randomName())
@@ -20,15 +21,24 @@ export default function Home() {
       if (typeof window !== "undefined") {
         saveRoomToLocalStorage(roomName, nickName)
       }
-      router.push("/room?id=" + encodeURIComponent(roomName))
+      const roomType = screenShare ? "screenshare" : "audio"
+      umamiEvent("RoomJoin", { type: roomType, room: roomName })
+      const url =
+        "/room?id=" +
+        encodeURIComponent(roomName) +
+        (screenShare ? "&type=screenshare" : "")
+      router.push(url)
     }
   }
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined" && roomName) {
-      navigator.clipboard.writeText(
-        window.location.origin + "/room?id=" + encodeURIComponent(roomName)
-      )
+      const url =
+        window.location.origin +
+        "/room?id=" +
+        encodeURIComponent(roomName) +
+        (screenShare ? "&type=screenshare" : "")
+      navigator.clipboard.writeText(url)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }
@@ -143,6 +153,18 @@ export default function Home() {
                     />
                   </svg>
                 </button>
+              </div>
+
+              <div className="mt-3 flex items-center gap-2">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-gray-400 select-none">
+                  <input
+                    type="checkbox"
+                    checked={screenShare}
+                    onChange={(e) => setScreenShare(e.target.checked)}
+                    className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
+                  />
+                  Enable screen sharing
+                </label>
               </div>
 
               {roomName && (
