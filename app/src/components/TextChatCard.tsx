@@ -83,19 +83,22 @@ export default function TextChatCard({ room, messages, onSendText, onSendFile }:
   }
 
   return (
+    <>
+    <style>{`
+      .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+      .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+      .scrollbar-thin::-webkit-scrollbar-thumb { background: #374151; border-radius: 9999px; }
+      .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+    `}</style>
     <div className="mt-4 block rounded-xl border border-gray-700 bg-gray-800 p-4 shadow-xl">
       {messages.length > 0 && (
-        <div className="flex max-h-96 w-full flex-col justify-between overflow-scroll text-sm">
+        <div className="flex max-h-96 w-full flex-col justify-between overflow-y-auto text-sm scrollbar-thin">
           <div className="mt-5 flex flex-col-reverse">
             {messages.map((p, i) => {
               const isSelf = p.peerId === LOCAL_PEER_ID
-              const wrapperClass = isSelf
-                ? "mb-4 flex justify-end"
-                : "mb-4 flex justify-start"
-
               return (
-                <div className={wrapperClass} key={i}>
-                  <div className="text-white">
+                <div className="mb-4 flex w-full" key={i}>
+                  <div className={isSelf ? "ml-auto" : "mr-auto"} style={{ maxWidth: "70%" }}>
                     {p.type === "text" ? (
                       <div
                         className={
@@ -156,5 +159,6 @@ export default function TextChatCard({ room, messages, onSendText, onSendFile }:
         />
       </div>
     </div>
+    </>
   )
 }

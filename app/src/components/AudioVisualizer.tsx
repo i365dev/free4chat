@@ -12,7 +12,7 @@ export default function AudioVisualizer(props: Audio) {
   const analyserCanvas = useRef(null)
   useEffect(() => {
     const color = nameToColor(props.name)
-    if (props.audio === undefined) return
+    if (!props.audio || props.audio.getAudioTracks().length === 0) return
     const audioCtx = new AudioContext()
     const analyser = audioCtx.createAnalyser()
     const audioSrc = audioCtx.createMediaStreamSource(props.audio)

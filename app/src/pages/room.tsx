@@ -1,90 +1,12 @@
-import React, { useState, useEffect, useCallback } from "react"
+import React, { useState, useEffect } from "react"
 
 import Head from "next/head"
 import { useRouter } from "next/router"
-import { Audio } from "react-loader-spinner"
-import { RealtimeKitProvider } from "@cloudflare/realtimekit-react"
+import dynamic from "next/dynamic"
 
-import { UserInfo, Message } from "../common/types"
 import { randomName, saveRoomToLocalStorage, gtagEvent, umamiEvent } from "../common/utils"
-import TextChatCard from "../components/TextChatCard"
-import UserCard from "../components/UserCard"
-import { useChatRoom } from "../hooks/useChatRoom"
 
-function RoomContent({ roomName, nickName }: { roomName: string; nickName: string }) {
-  const { participants, messages, sendTextMessage, sendFileMessage, muteSelf, error } =
-    useChatRoom(roomName, nickName)
-
-  return (
-    <div>
-      {participants.length <= 0 && (
-        <main className="center h-screen w-auto bg-gray-900 text-center text-white">
-          <Audio
-            height="200"
-            width="200"
-            color="#4fa94d"
-            ariaLabel="audio-loading"
-            wrapperStyle={{}}
-            wrapperClass="loader pt-40"
-            visible={true}
-          />
-        </main>
-      )}
-      {participants.length > 0 && (
-        <main className="bg-gray-900 text-white">
-          <div className="ml-10 mb-5 pt-5">
-            <h1 className="text-lg font-medium">#{roomName}</h1>
-          </div>
-
-          {error !== "" && (
-            <div
-              className="flex items-center gap-4 rounded bg-gray-900 px-4 text-white"
-              role="alert"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5 text-amber-500"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                />
-              </svg>
-              <strong className="text-sm font-normal"> {error} </strong>
-            </div>
-          )}
-          <div className="mx-auto min-h-screen px-8">
-            <div className="flex flex-row flex-wrap justify-center sm:justify-start">
-              {participants.map((p) => (
-                <UserCard
-                  key={p.peerId}
-                  peerId={p.peerId}
-                  name={p.name}
-                  room={p.room}
-                  muteState={p.muteState}
-                  audioStream={p.audioStream}
-                  onMuteSelf={muteSelf}
-                  className="sm:1/2 md:basis-1/8"
-                />
-              ))}
-            </div>
-            <TextChatCard
-              room={roomName}
-              messages={messages}
-              onSendText={sendTextMessage}
-              onSendFile={sendFileMessage}
-            />
-          </div>
-        </main>
-      )}
-    </div>
-  )
-}
+const RoomContent = dynamic(() => import("../components/RoomContent"), { ssr: false })
 
 export default function Room() {
   const router = useRouter()
@@ -194,9 +116,7 @@ export default function Room() {
       )}
 
       {ready && roomName && nickName && (
-        <RealtimeKitProvider value={null}>
-          <RoomContent roomName={roomName} nickName={nickName} />
-        </RealtimeKitProvider>
+        <RoomContent roomName={roomName} nickName={nickName} />
       )}
     </div>
   )

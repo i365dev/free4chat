@@ -24,8 +24,9 @@ async function getOrCreateMeeting(roomName: string, env: Env): Promise<string> {
     headers: authHeaders(env),
     body: JSON.stringify({ title: roomName }),
   })
-  const data = (await res.json()) as { data: { id: string } }
-  const meetingId = data.data.id
+  const data = await res.json()
+  console.log("[getOrCreateMeeting] response:", JSON.stringify(data))
+  const meetingId = (data as any).data.id
 
   await env.ROOMS_KV.put(`room:${roomName}`, meetingId, {
     expirationTtl: 30 * 24 * 3600,
@@ -38,10 +39,11 @@ async function addParticipant(meetingId: string, name: string, env: Env): Promis
   const res = await fetch(`${rtkBase(env)}/meetings/${meetingId}/participants`, {
     method: "POST",
     headers: authHeaders(env),
-    body: JSON.stringify({ name, preset_name: presetName }),
+    body: JSON.stringify({ name, preset_name: presetName, custom_participant_id: crypto.randomUUID() }),
   })
-  const data = (await res.json()) as { data: { token: string } }
-  return data.data.token
+  const data = await res.json()
+  console.log("[addParticipant] response:", JSON.stringify(data))
+  return (data as any).data.token
 }
 
 function corsHeaders(env: Env) {

@@ -23,6 +23,23 @@ The product never changed. The ops burden did.
 - 📎 File & image transfer (inline preview)
 - 🔒 No accounts, no persistent data
 
+## Privacy & Local-First Design
+
+free4chat is built around two principles: **no data outlives the conversation**, and **you don't need to trust any server**.
+
+**What we don't store:**
+- No accounts, no sign-up, no identity
+- Messages exist only in participants' browser memory — close the tab and they're gone
+- Files and images are transferred via WebRTC data channels, never written to any database
+- Voice is relayed through Cloudflare's media nodes but never recorded
+
+**What does persist (and why it's fine):**
+- A `room name → meeting ID` mapping is kept in Cloudflare KV with a 30-day TTL, so rejoining the same room name works within a session. It contains no messages, no users, no content.
+- Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
+
+**Why "local-first":**
+The application runs entirely in your browser. The Worker's only job is to issue a short-lived auth token so you can join a WebRTC session — after that, all communication is peer-to-peer or via Cloudflare's media plane with no application-layer logging. There is no backend that could be subpoenaed for chat history, because there is no chat history.
+
 ## Tech Stack
 
 | Layer | Technology |

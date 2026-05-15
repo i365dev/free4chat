@@ -63,7 +63,7 @@ export function useChatRoom(roomName: string, nickName: string) {
 
     const syncMessages = () => {
       const mapped: Message[] = meeting.chat.messages.map((m) => {
-        const isSelf = m.userId === meeting.self.id
+        const isSelf = m.userId === (meeting.self as any).userId
         const base = {
           peerId: isSelf ? LOCAL_PEER_ID : m.userId,
           name: m.displayName,

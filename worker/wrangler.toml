@@ -4,5 +4,8 @@ compatibility_date = "2024-09-23"
 
 [[kv_namespaces]]
 binding = "ROOMS_KV"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_YOUR_KV_NAMESPACE_PREVIEW_ID"
+id = "290b9fb14c1a4505a7aea6cb61ddd1dd"
+preview_id = ""
+
+[observability]
+enabled = true
