@@ -11,9 +11,12 @@ export default function Home() {
   const [nickName, setNickName] = useState<string>("")
   const [copied, setCopied] = useState<boolean>(false)
   const [screenShare, setScreenShare] = useState<boolean>(false)
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
+  const [isDesktop, setIsDesktop] = useState<boolean>(false)
 
   useEffect(() => {
     setRoomName(randomName())
+    setIsDesktop(!/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent))
   }, [])
 
   const go = () => {
@@ -152,17 +155,46 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="mt-3 flex items-center gap-2">
-                <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-gray-400">
-                  <input
-                    type="checkbox"
-                    checked={screenShare}
-                    onChange={(e) => setScreenShare(e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
-                  />
-                  Enable screen sharing
-                </label>
-              </div>
+              {isDesktop && (
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvanced((v) => !v)}
+                    className="flex items-center gap-1 text-xs text-gray-600 hover:text-gray-500"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className={`h-3 w-3 transition-transform ${
+                        showAdvanced ? "rotate-90" : ""
+                      }`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M9 5l7 7-7 7"
+                      />
+                    </svg>
+                    Advanced
+                  </button>
+                  {showAdvanced && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
+                        <input
+                          type="checkbox"
+                          checked={screenShare}
+                          onChange={(e) => setScreenShare(e.target.checked)}
+                          className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
+                        />
+                        Enable screen sharing
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {roomName && (
                 <div className="mt-3 flex items-center gap-2">
