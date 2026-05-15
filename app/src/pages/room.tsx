@@ -1,12 +1,19 @@
 import React, { useState, useEffect } from "react"
 
+import dynamic from "next/dynamic"
 import Head from "next/head"
 import { useRouter } from "next/router"
-import dynamic from "next/dynamic"
 
-import { randomName, saveRoomToLocalStorage, gtagEvent, umamiEvent } from "../common/utils"
+import {
+  randomName,
+  saveRoomToLocalStorage,
+  gtagEvent,
+  umamiEvent,
+} from "../common/utils"
 
-const RoomContent = dynamic(() => import("../components/RoomContent"), { ssr: false })
+const RoomContent = dynamic(() => import("../components/RoomContent"), {
+  ssr: false,
+})
 
 export default function Room() {
   const router = useRouter()
@@ -46,7 +53,12 @@ export default function Room() {
   useEffect(() => {
     if (ready && roomName && nickName) {
       gtagEvent("Room", roomName, nickName, "JoinSuccess")
-      umamiEvent("Room", { type: "Join", message: "Success", user: nickName, room: roomName })
+      umamiEvent("Room", {
+        type: "Join",
+        message: "Success",
+        user: nickName,
+        room: roomName,
+      })
     }
   }, [ready, roomName, nickName])
 

@@ -1,5 +1,5 @@
-import type { NextApiRequest, NextApiResponse } from "next"
 import { getCloudflareContext } from "@opennextjs/cloudflare"
+import type { NextApiRequest, NextApiResponse } from "next"
 
 interface Env {
   ROOMS_KV: KVNamespace
@@ -42,11 +42,16 @@ async function checkRateLimit(ip: string, env: Env): Promise<boolean> {
   const raw = await env.ROOMS_KV.get(key)
   const count = raw ? parseInt(raw, 10) : 0
   if (count >= RATE_LIMIT_MAX) return false
-  await env.ROOMS_KV.put(key, String(count + 1), { expirationTtl: RATE_LIMIT_WINDOW_S })
+  await env.ROOMS_KV.put(key, String(count + 1), {
+    expirationTtl: RATE_LIMIT_WINDOW_S,
+  })
   return true
 }
 
-async function getOrCreateMeeting(roomName: string, env: Env): Promise<{ meetingId: string; expired: boolean }> {
+async function getOrCreateMeeting(
+  roomName: string,
+  env: Env
+): Promise<{ meetingId: string; expired: boolean }> {
   const key = `room:${roomName}`
   const raw = await env.ROOMS_KV.get(key)
 
@@ -80,22 +85,32 @@ async function getOrCreateMeeting(roomName: string, env: Env): Promise<{ meeting
   return { meetingId, expired: false }
 }
 
-async function addParticipant(meetingId: string, name: string, env: Env): Promise<string> {
+async function addParticipant(
+  meetingId: string,
+  name: string,
+  env: Env
+): Promise<string> {
   const presetName = env.RTK_PRESET_NAME || "group_call_host"
-  const res = await fetch(`${rtkBase(env)}/meetings/${meetingId}/participants`, {
-    method: "POST",
-    headers: authHeaders(env),
-    body: JSON.stringify({
-      name,
-      preset_name: presetName,
-      custom_participant_id: crypto.randomUUID(),
-    }),
-  })
+  const res = await fetch(
+    `${rtkBase(env)}/meetings/${meetingId}/participants`,
+    {
+      method: "POST",
+      headers: authHeaders(env),
+      body: JSON.stringify({
+        name,
+        preset_name: presetName,
+        custom_participant_id: crypto.randomUUID(),
+      }),
+    }
+  )
   const data = (await res.json()) as any
   return data.data.token
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" })
   }
@@ -113,7 +128,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // KV-based rate limiting per IP (fallback for free plan without WAF)
     if (!isDev) {
-      const ip = (req.headers["cf-connecting-ip"] as string) ?? (cf as any)?.ip ?? "unknown"
+      const ip =
+        (req.headers["cf-connecting-ip"] as string) ??
+        (cf as any)?.ip ??
+        "unknown"
       const allowed = await checkRateLimit(ip, cfEnv)
       if (!allowed) {
         return res.status(429).json({ error: "Too many requests" })

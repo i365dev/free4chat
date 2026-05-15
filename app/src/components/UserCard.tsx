@@ -4,6 +4,7 @@ import Avatar from "boring-avatars"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { strToBgColor } from "@common/utils"
+
 import { UserInfo } from "../common/types"
 import AudioVisualizer from "../components/AudioVisualizer"
 
@@ -16,7 +17,9 @@ export default function UserCard(user: UserCardProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [canScreenShare] = useState(
-    () => typeof navigator !== "undefined" && typeof navigator.mediaDevices?.getDisplayMedia === "function"
+    () =>
+      typeof navigator !== "undefined" &&
+      typeof navigator.mediaDevices?.getDisplayMedia === "function"
   )
 
   const enterFullscreen = () => {
@@ -25,7 +28,7 @@ export default function UserCard(user: UserCardProps) {
     if (v.requestFullscreen) {
       v.requestFullscreen()
     } else if ((v as any).webkitEnterFullscreen) {
-      (v as any).webkitEnterFullscreen()
+      ;(v as any).webkitEnterFullscreen()
     }
   }
 
@@ -51,10 +54,7 @@ export default function UserCard(user: UserCardProps) {
           <div className="flex flex-row">
             <Avatar size={40} variant="beam" name={user.name} />
             {canScreenShare && user.peerId === LOCAL_PEER_ID && (
-              <button
-                className="ml-auto"
-                onClick={user.onToggleScreenShare}
-              >
+              <button className="ml-auto" onClick={user.onToggleScreenShare}>
                 {user.screenShareEnabled ? (
                   <svg
                     fill="currentColor"
@@ -145,8 +145,20 @@ export default function UserCard(user: UserCardProps) {
                 onClick={() => enterFullscreen()}
                 title="Fullscreen"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5" />
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"
+                  />
                 </svg>
               </button>
             </div>

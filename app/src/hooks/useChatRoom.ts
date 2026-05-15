@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react"
+
 import { useRealtimeKitClient } from "@cloudflare/realtimekit-react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
@@ -33,7 +34,9 @@ export function useChatRoom(roomName: string, nickName: string) {
       })
       .catch((err: Error) => {
         if (err.message === "room_expired") {
-          setError("This room has expired (2-hour limit). Please open a new room.")
+          setError(
+            "This room has expired (2-hour limit). Please open a new room."
+          )
         } else if (err.message === "rate_limited") {
           setError("Too many requests. Please wait a moment and try again.")
         } else {
@@ -55,7 +58,9 @@ export function useChatRoom(roomName: string, nickName: string) {
         peerId: LOCAL_PEER_ID,
         room: roomName,
         muteState: !self.audioEnabled,
-        audioStream: self.audioTrack ? new MediaStream([self.audioTrack]) : null,
+        audioStream: self.audioTrack
+          ? new MediaStream([self.audioTrack])
+          : null,
         screenShareEnabled: self.screenShareEnabled ?? false,
         screenShareStream:
           self.screenShareEnabled && self.screenShareTracks?.video
@@ -167,5 +172,13 @@ export function useChatRoom(roomName: string, nickName: string) {
     }
   }, [meeting])
 
-  return { participants, messages, sendTextMessage, sendFileMessage, muteSelf, toggleScreenShare, error }
+  return {
+    participants,
+    messages,
+    sendTextMessage,
+    sendFileMessage,
+    muteSelf,
+    toggleScreenShare,
+    error,
+  }
 }

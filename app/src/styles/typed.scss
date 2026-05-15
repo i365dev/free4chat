@@ -1,434 +1,710 @@
-$__typed-pauses-chars: (fwd: "\200b", bwd: "\200c", both: "\feff");
-@function __typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $string-nth, $char-nth, $modifier) {
-	$string: nth($strings, $string-nth);
-	$length: str-length($string);
-	$fwd-string: __typed-remove-bwd-pause-chars($string);
-	$fwd-length: str-length($fwd-string);
-	$bwd-string: __typed-remove-fwd-pause-chars($string);
-	$bwd-length: str-length($bwd-string);
-	$combined-length: $fwd-length + $bwd-length;
-	$strings-past: $string-nth - 1;
-	$time: 0;
-	@while $strings-past > 0 {
-		$past-string: nth($strings, $strings-past);
-		$past-length: str-length($past-string);
-		$past-fwd-length: str-length(__typed-remove-bwd-pause-chars($past-string));
-		$past-bwd-length: str-length(__typed-remove-fwd-pause-chars($past-string));
-		$time: $time
-			+ $dur-char-fwd * $past-fwd-length
-			+ $dur-char-bwd * $past-bwd-length
-			+ $dur-full-gap + $dur-done-gap;
-		$strings-past: $strings-past - 1;
-	}
-	@if $char-nth <= $fwd-length {
-		$time: $time
-			+ $dur-char-fwd * ($char-nth - 1);
-	} @else {
-		$time: $time
-			+ $dur-char-fwd * $fwd-length
-			+ $dur-full-gap
-			+ $dur-char-bwd * ($char-nth - $fwd-length);
-	}
-	@return ($time / $dur-total * 100 + $modifier) + "%";
+$__typed-pauses-chars: (
+  fwd: "\200b",
+  bwd: "\200c",
+  both: "\feff",
+);
+@function __typed-percent-calc(
+  $dur-char-fwd,
+  $dur-full-gap,
+  $dur-char-bwd,
+  $dur-done-gap,
+  $dur-total,
+  $strings,
+  $string-nth,
+  $char-nth,
+  $modifier
+) {
+  $string: nth($strings, $string-nth);
+  $length: str-length($string);
+  $fwd-string: __typed-remove-bwd-pause-chars($string);
+  $fwd-length: str-length($fwd-string);
+  $bwd-string: __typed-remove-fwd-pause-chars($string);
+  $bwd-length: str-length($bwd-string);
+  $combined-length: $fwd-length + $bwd-length;
+  $strings-past: $string-nth - 1;
+  $time: 0;
+  @while $strings-past > 0 {
+    $past-string: nth($strings, $strings-past);
+    $past-length: str-length($past-string);
+    $past-fwd-length: str-length(__typed-remove-bwd-pause-chars($past-string));
+    $past-bwd-length: str-length(__typed-remove-fwd-pause-chars($past-string));
+    $time: $time +
+      $dur-char-fwd *
+      $past-fwd-length +
+      $dur-char-bwd *
+      $past-bwd-length +
+      $dur-full-gap +
+      $dur-done-gap;
+    $strings-past: $strings-past - 1;
+  }
+  @if $char-nth <= $fwd-length {
+    $time: $time + $dur-char-fwd * ($char-nth - 1);
+  } @else {
+    $time: $time +
+      $dur-char-fwd *
+      $fwd-length +
+      $dur-full-gap +
+      $dur-char-bwd *
+      ($char-nth - $fwd-length);
+  }
+  @return ($time / $dur-total * 100 + $modifier) + "%";
 }
 @function __typed-get-all-keys($lists...) {
-	$all-keys: ();
-	@each $list in $lists {
-		@each $map in $list {
-			@each $prop in map-keys($map) {
-				$all-keys: append($all-keys, $prop, comma);
-			}
-		}
-	}
-	@return $all-keys;
+  $all-keys: ();
+  @each $list in $lists {
+    @each $map in $list {
+      @each $prop in map-keys($map) {
+        $all-keys: append($all-keys, $prop, comma);
+      }
+    }
+  }
+  @return $all-keys;
 }
 @mixin __typed-write-to-content($string, $alt-text, $prefix: "") {
-	// @supports (content: "x" / "y") {
-	// 	content: $string / "#{$alt-text}";
-	// }
-	// @supports not (content: "x" / "y") {
-	// 	content: $string;
-	// 	alt: "#{$alt-text}";
-	// }
-	content: "​#{__typed-sanitize-pause-chars($prefix)}#{__typed-sanitize-pause-chars($string)}";
-	content: "​#{__typed-sanitize-pause-chars($prefix)}#{__typed-sanitize-pause-chars($string)}" / "#{__typed-sanitize-pause-chars($alt-text)}";
-	alt: "#{__typed-sanitize-pause-chars($alt-text)}";
+  // @supports (content: "x" / "y") {
+  // 	content: $string / "#{$alt-text}";
+  // }
+  // @supports not (content: "x" / "y") {
+  // 	content: $string;
+  // 	alt: "#{$alt-text}";
+  // }
+  content: "​#{__typed-sanitize-pause-chars($prefix)}#{__typed-sanitize-pause-chars($string)}";
+  content: "​#{__typed-sanitize-pause-chars($prefix)}#{__typed-sanitize-pause-chars($string)}" /
+    "#{__typed-sanitize-pause-chars($alt-text)}";
+  alt: "#{__typed-sanitize-pause-chars($alt-text)}";
 }
 @mixin __typed-spread-styles($styles: (), $nth: null, $addtl-styles...) {
-	@if type-of($styles) == list {
-		@if (length($styles) > 0 and $nth != null) or length($addtl-styles) > 0 {
-			$all-props: __typed-get-all-keys($styles, $addtl-styles);
-			@if length($styles) > 0 and $nth != null { $styles: nth($styles, $nth); }
-			@if length($addtl-styles) > 0 {
-				@each $style-group in $addtl-styles {
-					// @error "#{$style-group}";
-					$styles: map-merge($styles, $style-group);
-				}
-			}
-			@each $prop in $all-props {
-				$value: if(map-get($styles, $prop) == null, unset, map-get($styles, $prop));
-				#{$prop}: if(type-of($value) == list, append($value, null, auto), $value);
-			}
-		}
-	} @else if type-of($styles) == map {
-		@if length(map-keys($styles)) > 0 {
-			@each $prop, $value in $styles {
-				#{$prop}: if(type-of($value) == list, append($value, null, auto), $value);
-			}
-		}
-	} @else {
-		@error "__typed-spread-styles requires the $styles argument to be either a map or a list of maps.";
-	}
+  @if type-of($styles) == list {
+    @if (length($styles) > 0 and $nth != null) or length($addtl-styles) > 0 {
+      $all-props: __typed-get-all-keys($styles, $addtl-styles);
+      @if length($styles) > 0 and $nth != null {
+        $styles: nth($styles, $nth);
+      }
+      @if length($addtl-styles) > 0 {
+        @each $style-group in $addtl-styles {
+          // @error "#{$style-group}";
+          $styles: map-merge($styles, $style-group);
+        }
+      }
+      @each $prop in $all-props {
+        $value: if(
+          map-get($styles, $prop) == null,
+          unset,
+          map-get($styles, $prop)
+        );
+        #{$prop}: if(
+          type-of($value) == list,
+          append($value, null, auto),
+          $value
+        );
+      }
+    }
+  } @else if type-of($styles) == map {
+    @if length(map-keys($styles)) > 0 {
+      @each $prop, $value in $styles {
+        #{$prop}: if(
+          type-of($value) == list,
+          append($value, null, auto),
+          $value
+        );
+      }
+    }
+  } @else {
+    @error "__typed-spread-styles requires the $styles argument to be either a map or a list of maps.";
+  }
 }
-@mixin __typed-final-build-animation($dur-char-fwd, $string, $animation-name, $alt-text, $prefix, $end-styles: (), $styles: ()) {
-	@keyframes #{$animation-name}-final {
-		@for $i from 1 through str-length($string) {
-			$modifier: .001;
-			@if $i == 1 { $modifier: 0; }
-			#{($i - 1) / str-length($string) * 100 + $modifier}%, #{$i / str-length($string) * 100}% {
-				@include __typed-write-to-content(str-slice($string, 1, $i), $alt-text, $prefix);
-				@if $i == str-length($string) {
-					@include __typed-spread-styles(map-merge($styles, $end-styles));
-				} @else {
-					@include __typed-spread-styles($styles);
-				}
-			}
-		}
-	}
+@mixin __typed-final-build-animation(
+  $dur-char-fwd,
+  $string,
+  $animation-name,
+  $alt-text,
+  $prefix,
+  $end-styles: (),
+  $styles: ()
+) {
+  @keyframes #{$animation-name}-final {
+    @for $i from 1 through str-length($string) {
+      $modifier: 0.001;
+      @if $i == 1 {
+        $modifier: 0;
+      }
+      #{($i - 1) / str-length($string) * 100 + $modifier}%,
+      #{$i / str-length($string) * 100}% {
+        @include __typed-write-to-content(
+          str-slice($string, 1, $i),
+          $alt-text,
+          $prefix
+        );
+        @if $i == str-length($string) {
+          @include __typed-spread-styles(map-merge($styles, $end-styles));
+        } @else {
+          @include __typed-spread-styles($styles);
+        }
+      }
+    }
+  }
 }
 @function __typed-instances-of($data, $search) {
-	$instances: 0;
-	@if type-of($data) == list or type-of($data) == map { @each $item in $data { @if $item == $search { $instances: $instances + 1; } } }
-	@else if type-of($data) == string {
-		@if type-of($search) != string { @error "When searching a string using instances-of, your search argument must also be a string."; }
-		@if str-length($search) < 1 { @error "When searching a string using instances-of, your search string must be at least one character in length."; }
-		@for $i from 1 through str-length($data) - str-length($search) + 1 { @if str-slice($data, $i, $i + str-length($search) - 1) == $search { $instances: $instances + 1; } }
-	} @else { @error "instances-of requires one parameter of type map, list, or string, and a second argument of the value searching for within that data."; }
-	@return $instances;
+  $instances: 0;
+  @if type-of($data) == list or type-of($data) == map {
+    @each $item in $data {
+      @if $item == $search {
+        $instances: $instances + 1;
+      }
+    }
+  } @else if type-of($data) == string {
+    @if type-of($search) != string {
+      @error "When searching a string using instances-of, your search argument must also be a string.";
+    }
+    @if str-length($search) < 1 {
+      @error "When searching a string using instances-of, your search string must be at least one character in length.";
+    }
+    @for $i from 1 through str-length($data) - str-length($search) + 1 {
+      @if str-slice($data, $i, $i + str-length($search) - 1) == $search {
+        $instances: $instances + 1;
+      }
+    }
+  } @else {
+    @error "instances-of requires one parameter of type map, list, or string, and a second argument of the value searching for within that data.";
+  }
+  @return $instances;
 }
 @function __typed-instances-of-not($data, $search) {
-	@if type-of($data) == list or type-of($data) == map { @return length($data) - __typed-instances-of($data, $search); }
-	@else if type-of($data) == string { @return str-length($data) - __typed-instances-of($data, $search); }
-	@else { @error "instances-of requires one parameter of type map, list, or string, and a second argument of the value searching for within that data."; }
+  @if type-of($data) == list or type-of($data) == map {
+    @return length($data) - __typed-instances-of($data, $search);
+  } @else if type-of($data) == string {
+    @return str-length($data) - __typed-instances-of($data, $search);
+  } @else {
+    @error "instances-of requires one parameter of type map, list, or string, and a second argument of the value searching for within that data.";
+  }
 }
 // ...
 //
 // CREDIT BEGIN :: aliased str-replace/to-length/to-number functions are courtesy of Kitty Giraudel (kittygiraudel.com)
-			@function __typed-str-replace($string, $search, $replace: "") {
-				$index: str-index($string, $search);
-				@if $index { @return str-slice($string, 1, $index - 1) + $replace + __typed-str-replace(str-slice($string, $index + str-length($search)), $search, $replace); }
-				@return $string;
-			}
-			@function __typed-to-length($value, $unit) {
-				$units: ("px": 1px, "cm": 1cm, "mm": 1mm, "%": 1%, "ch": 1ch, "pc": 1pc, "in": 1in, "em": 1em, "rem": 1rem, "pt": 1pt, "ex": 1ex, "vw": 1vw, "vh": 1vh, "vmin": 1vmin, "vmax": 1vmax);
-				@if not index(map-keys($units), $unit) { $_: log("Invalid unit `#{$unit}`."); }
-				@return $value * map-get($units, $unit);
-			}
-			@function __typed-to-number($value) {
-				@if type-of($value) == "number" { @return $value; }
-				@else if type-of($value) != "string" { $_: log("Value for `__typed-to-number` should be a number or a string."); }
-				$result: 0; $digits: 0; $minus: str-slice($value, 1, 1) == "-"; $numbers: ("0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9);
-				@for $i from if($minus, 2, 1) through str-length($value) {
-					$character: str-slice($value, $i, $i);
-					@if not (index(map-keys($numbers), $character) or $character == ".") { @return __typed-to-length(if($minus, -$result, $result), str-slice($value, $i)) }
-					@if $character == "." { $digits: 1; }
-					@else if $digits == 0 { $result: $result * 10 + map-get($numbers, $character); }
-					@else { $digits: $digits * 10; $result: $result + map-get($numbers, $character) / $digits; }
-				}
-				@return if($minus, -$result, $result);
-			}
+@function __typed-str-replace($string, $search, $replace: "") {
+  $index: str-index($string, $search);
+  @if $index {
+    @return str-slice($string, 1, $index - 1) + $replace +
+      __typed-str-replace(
+        str-slice($string, $index + str-length($search)),
+        $search,
+        $replace
+      );
+  }
+  @return $string;
+}
+@function __typed-to-length($value, $unit) {
+  $units: (
+    "px": 1px,
+    "cm": 1cm,
+    "mm": 1mm,
+    "%": 1%,
+    "ch": 1ch,
+    "pc": 1pc,
+    "in": 1in,
+    "em": 1em,
+    "rem": 1rem,
+    "pt": 1pt,
+    "ex": 1ex,
+    "vw": 1vw,
+    "vh": 1vh,
+    "vmin": 1vmin,
+    "vmax": 1vmax,
+  );
+  @if not index(map-keys($units), $unit) {
+    $_: log("Invalid unit `#{$unit}`.");
+  }
+  @return $value * map-get($units, $unit);
+}
+@function __typed-to-number($value) {
+  @if type-of($value) == "number" {
+    @return $value;
+  } @else if type-of($value) != "string" {
+    $_: log("Value for `__typed-to-number` should be a number or a string.");
+  }
+  $result: 0;
+  $digits: 0;
+  $minus: str-slice($value, 1, 1) == "-";
+  $numbers: (
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+  );
+  @for $i from if($minus, 2, 1) through str-length($value) {
+    $character: str-slice($value, $i, $i);
+    @if not(index(map-keys($numbers), $character) or $character == ".") {
+      @return __typed-to-length(
+        if($minus, -$result, $result),
+        str-slice($value, $i)
+      );
+    }
+    @if $character == "." {
+      $digits: 1;
+    } @else if $digits == 0 {
+      $result: $result * 10 + map-get($numbers, $character);
+    } @else {
+      $digits: $digits * 10;
+      $result: $result + map-get($numbers, $character) / $digits;
+    }
+  }
+  @return if($minus, -$result, $result);
+}
 // CREDIT END
 //
 // ...
 @function __typed-str-replace-multi($string, $searches, $replace: "") {
-	@each $search in $searches { $string: __typed-str-replace($string, $search, $replace); }
-	@return $string;
+  @each $search in $searches {
+    $string: __typed-str-replace($string, $search, $replace);
+  }
+  @return $string;
 }
-@function __typed-remove-pause-chars($str) { @return __typed-str-replace-multi($str, map-values($__typed-pauses-chars)); }
-@function __typed-remove-fwd-pause-chars($str) { @return __typed-str-replace($str, map-get($__typed-pauses-chars, fwd)); }
-@function __typed-remove-bwd-pause-chars($str) { @return __typed-str-replace($str, map-get($__typed-pauses-chars, bwd)); }
-@function __typed-remove-both-pause-chars($str) { @return __typed-str-replace($str, map-get($__typed-pauses-chars, both)); }
-@function __typed-sanitize-pause-chars($str) { @return __typed-remove-pause-chars(__typed-inject-pauses($str)); }
+@function __typed-remove-pause-chars($str) {
+  @return __typed-str-replace-multi($str, map-values($__typed-pauses-chars));
+}
+@function __typed-remove-fwd-pause-chars($str) {
+  @return __typed-str-replace($str, map-get($__typed-pauses-chars, fwd));
+}
+@function __typed-remove-bwd-pause-chars($str) {
+  @return __typed-str-replace($str, map-get($__typed-pauses-chars, bwd));
+}
+@function __typed-remove-both-pause-chars($str) {
+  @return __typed-str-replace($str, map-get($__typed-pauses-chars, both));
+}
+@function __typed-sanitize-pause-chars($str) {
+  @return __typed-remove-pause-chars(__typed-inject-pauses($str));
+}
 @function __typed-inject-pauses($str, $default-mode: "fwd") {
-	@while str-index($str, "<[") != null and str-index($str, "]>") != null and str-index($str, "]>") > str-index($str, "<[") {
-		$start: str-index($str, "<["); $end: str-index($str, "]>");
-		$is-fwd: str-slice($str, $start + 2, $start + 2) == "_";
-		$is-bwd: str-slice($str, $end - 1, $end - 1) == "_";
-		$is-both: $is-fwd and $is-bwd;
-		$space-char:
-			if($is-both,
-				map-get($__typed-pauses-chars, both),
-				if($is-bwd,
-					map-get($__typed-pauses-chars, bwd),
-					if($is-fwd,
-						map-get($__typed-pauses-chars, fwd),
-						map-get($__typed-pauses-chars, $default-mode)
-					)
-				)
-			);
-		$value: __typed-to-number(str-slice($str, $start + if($is-fwd, 3, 2), $end - if($is-bwd, 2, 1)));
-		$spaces: ""; @for $i from 0 to $value { $spaces: $spaces + $space-char; }
-		$str: str-slice($str, 1, $start - 1) + $spaces + str-slice($str, $end + 2, -1);
-	}
-	@return $str;
+  @while str-index($str, "<[") !=
+    null and
+    str-index($str, "]>") !=
+    null and
+    str-index($str, "]>") >
+    str-index($str, "<[")
+  {
+    $start: str-index($str, "<[");
+    $end: str-index($str, "]>");
+    $is-fwd: str-slice($str, $start + 2, $start + 2) == "_";
+    $is-bwd: str-slice($str, $end - 1, $end - 1) == "_";
+    $is-both: $is-fwd and $is-bwd;
+    $space-char: if(
+      $is-both,
+      map-get($__typed-pauses-chars, both),
+      if(
+        $is-bwd,
+        map-get($__typed-pauses-chars, bwd),
+        if(
+          $is-fwd,
+          map-get($__typed-pauses-chars, fwd),
+          map-get($__typed-pauses-chars, $default-mode)
+        )
+      )
+    );
+    $value: __typed-to-number(
+      str-slice($str, $start + if($is-fwd, 3, 2), $end - if($is-bwd, 2, 1))
+    );
+    $spaces: "";
+    @for $i from 0 to $value {
+      $spaces: $spaces + $space-char;
+    }
+    $str: str-slice($str, 1, $start - 1) +
+      $spaces +
+      str-slice($str, $end + 2, -1);
+  }
+  @return $str;
 }
 $__typed-id: 0;
 @mixin typed($parameters...) {
-	$strings: ();
-	$strings-styles: ();
-	$final-string-styles: ();
-	$speeds: (
-		type: .1,
-		pause-typed: 2,
-		delete: .08,
-		pause-deleted: 1
-	);
-	$options: (
-		name: "",
-		iterations: infinite,
-		caret: true,
-		caret-speed: .75,
-		caret-width: 1ch,
-		caret-color: currentColor,
-		caret-space: .1ch,
-		styles: (),
-		end-styles: (),
-		delay: 1,
-		type-pausing: true,
-		type-pausing-default: "fwd",
-		prefix: "",
-		end-on: "",
-		alt-text: ""
-	);
-	$strings-complete: false;
-	$speeds-complete: false;
-	$options-complete: false;
-	$parameter-nth: 1;
-	@each $parameter in $parameters {
-		@if not $strings-complete {
-			@if $parameter-nth == 1 and type-of($parameter) == map {
-				$strings: join($strings, map-keys($parameter));
-				$strings-styles: join($strings-styles, map-values($parameter));
-				$strings-complete: true;
-			} @else if type-of($parameter) == string {
-				$strings: append($strings, $parameter);
-			} @else {
-				@error "Strings are required in the formats of either separate sequential string arguments, or a single map with each string represented as the key of its own map of associated styles.";
-			}
-			@if length($parameters) > $parameter-nth and type-of(nth($parameters, $parameter-nth + 1)) != string {
-				$strings-complete: true;
-			}
-		} @else if not $speeds-complete {
-			@if type-of($parameter) == map {
-				@each $key, $value in $parameter {
-					@if map-get($speeds, $key) == null {
-						@error "#{$key} is not a valid speed property. Accepted speed property keys are #{append(map-keys($speeds), null, comma)}.";
-					}
-					@if type-of($value) != number {
-						@error "The value #{$value} is not a number.";
-					}
-					$speeds: map-merge($speeds, ($key: $value));
-				}
-			} @else if type-of($parameter) == list {
-				@if length($parameter) > 4 {
-					@error "The speed list argument only accepts 4 numbers when used a list.";
-				}
-				@for $i from 1 through length($parameter) {
-					@if nth($parameter, $i) != null and type-of(nth($parameter, $i)) != number {
-						@error "The value #{$value} is not a number.";
-					}
-					@if nth($parameter, $i) != null {
-						$speeds: map-merge($speeds, (nth(map-keys($speeds), $i): nth($parameter, $i)));
-					}
-				}
-			} @else if type-of($parameter) == number {
-				@if $parameter <= 0 {
-					@error "When passing a numeric value into the $speeds argument, it works as a multiplier and thereby requires a positive non-zero number (integer or float). To slow down the default speed, use a decimal number between 0 and 1. To speed up the default speed, use a number greater than 1. A value of 0.5 will reduce the speed by 50%, where a value of 2 will double the speed.";
-				}
-				@each $key, $value in $speeds {
-					$speeds: map-merge($speeds, ($key: $value * (1 / $parameter)));
-				}
-			} @else if $parameter != null {
-				@error "The speed argument requires either a map, list, or null value."
-			}
-			$speeds-complete: true;
-		} @else if not $options-complete {
-			@if $parameter != null {
-				@if type-of($parameter) != map {
-					@error "#{$key} is not a valid options configuration map.";
-				}
-				@each $key, $value in $parameter {
-					@if map-get($options, $key) == null {
-						@error "#{$key} is not a valid options property. Accepted options property keys are #{append(map-keys($options), null, comma)}.";
-					}
-					@if $key == iterations {
-						@if $value != infinite and (type-of($value) == number and ($value < 0 or $value != round($value))) {
-							@error "The iterations value #{$value} requires a positive integer or infinite.";
-						}
-					} @else if $key == end-on {
-						@if type-of($value) == map {
-							@if length($value) != 1 {
-								@error "When using the end-on property as a map, the map must house a single value, also a map, with the map value containing the SCSS styles to apply to the end-on string.";
-							}
-							@each $end-on, $end-on-styles in $value {
-								@if type-of($end-on) == string {
-									@if $end-on == "" {
-										@error "The end-on property requires a non-empty string.";
-									}
-								} @else if type-of($end-on) == number {
-									@if $end-on < 0 or $end-on > length($strings) or $end-on != round($end-on) {
-										@error "If using a numeric end-on property value, it must be a positive integer between 1 and the number of the strings being used.";
-									}
-									$end-on: nth($strings, $end-on);
-								}
-								$final-string-styles: $end-on-styles;
-								$value: $end-on;
-							}
-						} @else if type-of($value) == string {
-							@if $value == "" {
-								@error "The end-on property requires a non-empty string.";
-							}
-						} @else if type-of($value) == number {
-							@if $value < 0 or $value > length($strings) or $value != round($value) {
-								@error "If using a numeric end-on property value, it must be a positive integer between 1 and the number of the strings being used.";
-							}
-							$value: nth($strings, $value);
-						}
-					} @else if $key == caret-color {
-						@if $value != currentColor and type-of($value) != color {
-							@error "The caret-color property requires a value of type color, or currentColor.";
-						}
-					} @else if ($key == styles or $key == end-styles) and not type-of($value) != map {
-						@if type-of($value) != map {
-							@error "The #{$key} property requires a value of type map.";
-						}
-					} @else if $key == type-pausing-default {
-						@if type-of($value) != string or ($value != "fwd" and $value != "bwd" and $value != "both") {
-							@error "The #{$key} property requires a value of either \"fwd\", \"bwd\", or \"both\".";
-						}
-					} @else if type-of($value) != type-of(map-get($options, $key)) {
-						@error "The #{$key} value #{$value} of type #{type-of($value)} does not match the required type #{type-of(map-get($options, $key))}.";
-					}
-					$options: map-merge($options, ($key: $value));
-				}
-				@if map-get($options, end-on) != "" and map-get($options, iterations) == infinite {
-					@warn "The end-on string will only be rendered when iterating a finite number of times. The current animation has an iterations value of infinite so the end-on value will be ignored and never rendered.";
-				}
-			}
-			$options-complete: true;
-		} @else {
-			@error "No additional arguments are permitted after the options object.";
-		}
-		$parameter-nth: $parameter-nth + 1;
-	}
-	$dur-char-fwd: map-get($speeds, type);
-	$dur-full-gap: map-get($speeds, pause-typed);
-	$dur-char-bwd: map-get($speeds, delete);
-	$dur-done-gap: map-get($speeds, pause-deleted);
-	$animation-delay: map-get($options, delay);
-	$final-string: if(map-get($options, end-on) != "", map-get($options, end-on), nth($strings, 1));
-	$alt-text: if(map-get($options, alt-text) != "", map-get($options, alt-text), $final-string);
-	$caret-width: map-get($options, caret-width);
-	$caret-color: map-get($options, caret-color);
-	$caret-space: map-get($options, caret-space);
-	$caret-speed: map-get($options, caret-speed);
-	$global-styles: map-get($options, styles);
-	$end-styles: map-get($options, end-styles);
-	$type-pausing: map-get($options, type-pausing);
-	$type-pausing-default: map-get($options, type-pausing-default);
-	$prefix: map-get($options, prefix);
-	@if $type-pausing {
-		@for $nth from 1 through length($strings) {
-			$strings: set-nth($strings, $nth, __typed-inject-pauses(nth($strings, $nth), $type-pausing-default));
-		}
-	}
-	@if $caret-speed < 0s {
-		@error "Delay requires a positive number value (integer or float) without units. #{$caret-speed} is less than 0.";
-	}
-	@if $animation-delay < 0s {
-		@error "Delay requires a positive number value (integer or float) without units. #{$animation-delay} is less than 0.";
-	}
-	$iterations: map-get($options, iterations);
-	// initializing some values ✊🏼
-	$animation-name: "";
-	@if map-get($options, name) != "" {
-		$animation-name: #{map-get($options, name)};
-	} @else {
-		$animation-name: typed-#{$__typed-id};
-		$__typed-id: $__typed-id + 1 !global;
-	}
-	$dur-total: 0;
-	@each $string in $strings {
-		$fwd-length: str-length(__typed-remove-bwd-pause-chars($string));
-		$bwd-length: str-length(__typed-remove-fwd-pause-chars($string));
-		$dur-total: $dur-total
-			+ $dur-char-fwd * $fwd-length
-			+ $dur-full-gap
-			+ $dur-char-bwd * $bwd-length
-			+ $dur-done-gap
-	}
-	&::before {
-		@include __typed-write-to-content("", $alt-text, $prefix);
-		white-space: break-spaces;
-		will-change: content;
-		@if $iterations == infinite {
-			animation: #{$animation-name} #{$dur-total}s linear #{$animation-delay}s #{$iterations} forwards;
-		} @else {
-			animation:
-				#{$animation-name} #{$dur-total}s linear #{$animation-delay}s #{$iterations} forwards,
-				#{$animation-name}-final #{str-length($final-string) * $dur-char-fwd}s linear #{$dur-total * $iterations + $animation-delay}s 1 forwards;
-			@include __typed-final-build-animation($dur-char-fwd, $final-string, $animation-name, $alt-text, $prefix, $end-styles, map-merge($global-styles, $final-string-styles));
-		}
-	}
-	@if map-get($options, caret) {
-		&::after {
-			content: "​";
-			position: relative;
-			display: inline-block;
-			padding-right: $caret-space;
-			border-right: #{$caret-width} solid #{$caret-color};
-			white-space: nowrap;
-			animation: #{$animation-name}-caret #{$caret-speed}s linear #{$animation-delay}s infinite forwards;
-		}
-	}
-	// now THIS is where the magic happens... ✨
-	@keyframes #{$animation-name} {
-		@for $i from 1 through length($strings) {
-			$string: nth($strings, $i);
-			$fwd-string: __typed-remove-bwd-pause-chars($string);
-			$fwd-length: str-length($fwd-string);
-			$bwd-string: __typed-remove-fwd-pause-chars($string);
-			$bwd-length: str-length($bwd-string);
-			$combined-length: $fwd-length + $bwd-length;
-			@for $j from 1 through $combined-length {
-				@if $j < $combined-length {
-					#{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j, 0)}, #{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j+1, -.001)} {
-						@if $j <= $fwd-length {
-							@include __typed-write-to-content(quote(#{str-slice($fwd-string, 1, $j)}), $alt-text, $prefix);
-						} @else {
-							@include __typed-write-to-content(quote(#{str-slice($bwd-string, 1, $bwd-length - ($j - $fwd-length))}), $alt-text, $prefix);
-						}
-						@include __typed-spread-styles($strings-styles, $i, $global-styles);
-					}
-				} @else {
-					@if $i < length($strings) {
-						#{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j, 0)}, #{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i+1, 1, -.001)} {
-							@include __typed-write-to-content("", $alt-text, $prefix);
-							@include __typed-spread-styles($strings-styles, $i, $global-styles);
-						}
-					} @else {
-						#{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j, 0)}, 100% {
-							@include __typed-write-to-content("", $alt-text, $prefix);
-							@include __typed-spread-styles($strings-styles, $i, $global-styles);
-						}
-					}
-				}
-			}
-		}
-	}
-	@if map-get($options, caret) {
-		@keyframes #{$animation-name}-caret {
-			75% { border-color: transparent; }
-		}
-	}
+  $strings: ();
+  $strings-styles: ();
+  $final-string-styles: ();
+  $speeds: (
+    type: 0.1,
+    pause-typed: 2,
+    delete: 0.08,
+    pause-deleted: 1,
+  );
+  $options: (
+    name: "",
+    iterations: infinite,
+    caret: true,
+    caret-speed: 0.75,
+    caret-width: 1ch,
+    caret-color: currentColor,
+    caret-space: 0.1ch,
+    styles: (),
+    end-styles: (),
+    delay: 1,
+    type-pausing: true,
+    type-pausing-default: "fwd",
+    prefix: "",
+    end-on: "",
+    alt-text: "",
+  );
+  $strings-complete: false;
+  $speeds-complete: false;
+  $options-complete: false;
+  $parameter-nth: 1;
+  @each $parameter in $parameters {
+    @if not $strings-complete {
+      @if $parameter-nth == 1 and type-of($parameter) == map {
+        $strings: join($strings, map-keys($parameter));
+        $strings-styles: join($strings-styles, map-values($parameter));
+        $strings-complete: true;
+      } @else if type-of($parameter) == string {
+        $strings: append($strings, $parameter);
+      } @else {
+        @error "Strings are required in the formats of either separate sequential string arguments, or a single map with each string represented as the key of its own map of associated styles.";
+      }
+      @if length($parameters) >
+        $parameter-nth and
+        type-of(nth($parameters, $parameter-nth + 1)) !=
+        string
+      {
+        $strings-complete: true;
+      }
+    } @else if not $speeds-complete {
+      @if type-of($parameter) == map {
+        @each $key, $value in $parameter {
+          @if map-get($speeds, $key) == null {
+            @error "#{$key} is not a valid speed property. Accepted speed property keys are #{append(map-keys($speeds), null, comma)}.";
+          }
+          @if type-of($value) != number {
+            @error "The value #{$value} is not a number.";
+          }
+          $speeds: map-merge(
+            $speeds,
+            (
+              $key: $value,
+            )
+          );
+        }
+      } @else if type-of($parameter) == list {
+        @if length($parameter) > 4 {
+          @error "The speed list argument only accepts 4 numbers when used a list.";
+        }
+        @for $i from 1 through length($parameter) {
+          @if nth($parameter, $i) !=
+            null and
+            type-of(nth($parameter, $i)) !=
+            number
+          {
+            @error "The value #{$value} is not a number.";
+          }
+          @if nth($parameter, $i) != null {
+            $speeds: map-merge(
+              $speeds,
+              (
+                nth(map-keys($speeds), $i): nth($parameter, $i),
+              )
+            );
+          }
+        }
+      } @else if type-of($parameter) == number {
+        @if $parameter <= 0 {
+          @error "When passing a numeric value into the $speeds argument, it works as a multiplier and thereby requires a positive non-zero number (integer or float). To slow down the default speed, use a decimal number between 0 and 1. To speed up the default speed, use a number greater than 1. A value of 0.5 will reduce the speed by 50%, where a value of 2 will double the speed.";
+        }
+        @each $key, $value in $speeds {
+          $speeds: map-merge(
+            $speeds,
+            (
+              $key:
+                $value *
+                (
+                  1 / $parameter,
+                ),
+            )
+          );
+        }
+      } @else if $parameter != null {
+        @error "The speed argument requires either a map, list, or null value.";
+      }
+      $speeds-complete: true;
+    } @else if not $options-complete {
+      @if $parameter != null {
+        @if type-of($parameter) != map {
+          @error "#{$key} is not a valid options configuration map.";
+        }
+        @each $key, $value in $parameter {
+          @if map-get($options, $key) == null {
+            @error "#{$key} is not a valid options property. Accepted options property keys are #{append(map-keys($options), null, comma)}.";
+          }
+          @if $key == iterations {
+            @if $value !=
+              infinite and
+              (
+                type-of($value) ==
+                  number and
+                  ($value < 0 or $value != round($value))
+              )
+            {
+              @error "The iterations value #{$value} requires a positive integer or infinite.";
+            }
+          } @else if $key == end-on {
+            @if type-of($value) == map {
+              @if length($value) != 1 {
+                @error "When using the end-on property as a map, the map must house a single value, also a map, with the map value containing the SCSS styles to apply to the end-on string.";
+              }
+              @each $end-on, $end-on-styles in $value {
+                @if type-of($end-on) == string {
+                  @if $end-on == "" {
+                    @error "The end-on property requires a non-empty string.";
+                  }
+                } @else if type-of($end-on) == number {
+                  @if $end-on <
+                    0 or
+                    $end-on >
+                    length($strings) or
+                    $end-on !=
+                    round($end-on)
+                  {
+                    @error "If using a numeric end-on property value, it must be a positive integer between 1 and the number of the strings being used.";
+                  }
+                  $end-on: nth($strings, $end-on);
+                }
+                $final-string-styles: $end-on-styles;
+                $value: $end-on;
+              }
+            } @else if type-of($value) == string {
+              @if $value == "" {
+                @error "The end-on property requires a non-empty string.";
+              }
+            } @else if type-of($value) == number {
+              @if $value <
+                0 or
+                $value >
+                length($strings) or
+                $value !=
+                round($value)
+              {
+                @error "If using a numeric end-on property value, it must be a positive integer between 1 and the number of the strings being used.";
+              }
+              $value: nth($strings, $value);
+            }
+          } @else if $key == caret-color {
+            @if $value != currentColor and type-of($value) != color {
+              @error "The caret-color property requires a value of type color, or currentColor.";
+            }
+          } @else if
+            ($key == styles or $key == end-styles) and not
+            type-of($value) !=
+            map
+          {
+            @if type-of($value) != map {
+              @error "The #{$key} property requires a value of type map.";
+            }
+          } @else if $key == type-pausing-default {
+            @if type-of($value) !=
+              string or
+              ($value != "fwd" and $value != "bwd" and $value != "both")
+            {
+              @error "The #{$key} property requires a value of either \"fwd\", \"bwd\", or \"both\".";
+            }
+          } @else if type-of($value) != type-of(map-get($options, $key)) {
+            @error "The #{$key} value #{$value} of type #{type-of($value)} does not match the required type #{type-of(map-get($options, $key))}.";
+          }
+          $options: map-merge(
+            $options,
+            (
+              $key: $value,
+            )
+          );
+        }
+        @if map-get($options, end-on) !=
+          "" and
+          map-get($options, iterations) ==
+          infinite
+        {
+          @warn "The end-on string will only be rendered when iterating a finite number of times. The current animation has an iterations value of infinite so the end-on value will be ignored and never rendered.";
+        }
+      }
+      $options-complete: true;
+    } @else {
+      @error "No additional arguments are permitted after the options object.";
+    }
+    $parameter-nth: $parameter-nth + 1;
+  }
+  $dur-char-fwd: map-get($speeds, type);
+  $dur-full-gap: map-get($speeds, pause-typed);
+  $dur-char-bwd: map-get($speeds, delete);
+  $dur-done-gap: map-get($speeds, pause-deleted);
+  $animation-delay: map-get($options, delay);
+  $final-string: if(
+    map-get($options, end-on) != "",
+    map-get($options, end-on),
+    nth($strings, 1)
+  );
+  $alt-text: if(
+    map-get($options, alt-text) != "",
+    map-get($options, alt-text),
+    $final-string
+  );
+  $caret-width: map-get($options, caret-width);
+  $caret-color: map-get($options, caret-color);
+  $caret-space: map-get($options, caret-space);
+  $caret-speed: map-get($options, caret-speed);
+  $global-styles: map-get($options, styles);
+  $end-styles: map-get($options, end-styles);
+  $type-pausing: map-get($options, type-pausing);
+  $type-pausing-default: map-get($options, type-pausing-default);
+  $prefix: map-get($options, prefix);
+  @if $type-pausing {
+    @for $nth from 1 through length($strings) {
+      $strings: set-nth(
+        $strings,
+        $nth,
+        __typed-inject-pauses(nth($strings, $nth), $type-pausing-default)
+      );
+    }
+  }
+  @if $caret-speed < 0s {
+    @error "Delay requires a positive number value (integer or float) without units. #{$caret-speed} is less than 0.";
+  }
+  @if $animation-delay < 0s {
+    @error "Delay requires a positive number value (integer or float) without units. #{$animation-delay} is less than 0.";
+  }
+  $iterations: map-get($options, iterations);
+  // initializing some values ✊🏼
+  $animation-name: "";
+  @if map-get($options, name) != "" {
+    $animation-name: #{map-get($options, name)};
+  } @else {
+    $animation-name: typed-#{$__typed-id};
+    $__typed-id: $__typed-id + 1 !global;
+  }
+  $dur-total: 0;
+  @each $string in $strings {
+    $fwd-length: str-length(__typed-remove-bwd-pause-chars($string));
+    $bwd-length: str-length(__typed-remove-fwd-pause-chars($string));
+    $dur-total: $dur-total +
+      $dur-char-fwd *
+      $fwd-length +
+      $dur-full-gap +
+      $dur-char-bwd *
+      $bwd-length +
+      $dur-done-gap;
+  }
+  &::before {
+    @include __typed-write-to-content("", $alt-text, $prefix);
+    white-space: break-spaces;
+    will-change: content;
+    @if $iterations == infinite {
+      animation: #{$animation-name}
+        #{$dur-total}s
+        linear
+        #{$animation-delay}s
+        #{$iterations}
+        forwards;
+    } @else {
+      animation: #{$animation-name}
+          #{$dur-total}s
+          linear
+          #{$animation-delay}s
+          #{$iterations}
+          forwards,
+        #{$animation-name}-final
+          #{str-length($final-string) *
+          $dur-char-fwd}s
+          linear
+          #{$dur-total *
+          $iterations +
+          $animation-delay}s
+          1
+          forwards;
+      @include __typed-final-build-animation(
+        $dur-char-fwd,
+        $final-string,
+        $animation-name,
+        $alt-text,
+        $prefix,
+        $end-styles,
+        map-merge($global-styles, $final-string-styles)
+      );
+    }
+  }
+  @if map-get($options, caret) {
+    &::after {
+      content: "​";
+      position: relative;
+      display: inline-block;
+      padding-right: $caret-space;
+      border-right: #{$caret-width} solid #{$caret-color};
+      white-space: nowrap;
+      animation: #{$animation-name}-caret
+        #{$caret-speed}s
+        linear
+        #{$animation-delay}s
+        infinite
+        forwards;
+    }
+  }
+  // now THIS is where the magic happens... ✨
+  @keyframes #{$animation-name} {
+    @for $i from 1 through length($strings) {
+      $string: nth($strings, $i);
+      $fwd-string: __typed-remove-bwd-pause-chars($string);
+      $fwd-length: str-length($fwd-string);
+      $bwd-string: __typed-remove-fwd-pause-chars($string);
+      $bwd-length: str-length($bwd-string);
+      $combined-length: $fwd-length + $bwd-length;
+      @for $j from 1 through $combined-length {
+        @if $j < $combined-length {
+          #{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j, 0)},
+          #{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j+1, -0.001)} {
+            @if $j <= $fwd-length {
+              @include __typed-write-to-content(
+                quote(#{str-slice($fwd-string, 1, $j)}),
+                $alt-text,
+                $prefix
+              );
+            } @else {
+              @include __typed-write-to-content(
+                quote(
+                  #{str-slice($bwd-string, 1, $bwd-length - ($j - $fwd-length))}
+                ),
+                $alt-text,
+                $prefix
+              );
+            }
+            @include __typed-spread-styles($strings-styles, $i, $global-styles);
+          }
+        } @else {
+          @if $i < length($strings) {
+            #{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j, 0)},
+            #{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i+1, 1, -0.001)} {
+              @include __typed-write-to-content("", $alt-text, $prefix);
+              @include __typed-spread-styles(
+                $strings-styles,
+                $i,
+                $global-styles
+              );
+            }
+          } @else {
+            #{__typed-percent-calc($dur-char-fwd, $dur-full-gap, $dur-char-bwd, $dur-done-gap, $dur-total, $strings, $i, $j, 0)},
+            100% {
+              @include __typed-write-to-content("", $alt-text, $prefix);
+              @include __typed-spread-styles(
+                $strings-styles,
+                $i,
+                $global-styles
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+  @if map-get($options, caret) {
+    @keyframes #{$animation-name}-caret {
+      75% {
+        border-color: transparent;
+      }
+    }
+  }
 }

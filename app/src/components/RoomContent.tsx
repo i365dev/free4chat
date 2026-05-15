@@ -4,9 +4,22 @@ import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import { useChatRoom } from "../hooks/useChatRoom"
 
-export default function RoomContent({ roomName, nickName }: { roomName: string; nickName: string }) {
-  const { participants, messages, sendTextMessage, sendFileMessage, muteSelf, toggleScreenShare, error } =
-    useChatRoom(roomName, nickName)
+export default function RoomContent({
+  roomName,
+  nickName,
+}: {
+  roomName: string
+  nickName: string
+}) {
+  const {
+    participants,
+    messages,
+    sendTextMessage,
+    sendFileMessage,
+    muteSelf,
+    toggleScreenShare,
+    error,
+  } = useChatRoom(roomName, nickName)
 
   if (participants.length === 0) {
     return (
@@ -18,14 +31,28 @@ export default function RoomContent({ roomName, nickName }: { roomName: string; 
 
   return (
     <main className="bg-gray-900 text-white" style={{ minHeight: "100vh" }}>
-      <div className="ml-10 mb-5 pt-5">
+      <div className="mb-5 ml-10 pt-5">
         <h1 className="text-lg font-medium">#{roomName}</h1>
       </div>
 
       {error !== "" && (
-        <div className="flex items-center gap-4 rounded bg-gray-900 px-4 text-white" role="alert">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+        <div
+          className="flex items-center gap-4 rounded bg-gray-900 px-4 text-white"
+          role="alert"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-5 w-5 text-amber-500"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+            />
           </svg>
           <strong className="text-sm font-normal"> {error} </strong>
         </div>
