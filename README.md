@@ -2,7 +2,19 @@
 
 [free4.chat](https://free4.chat/) is a real-time audio + text chat service. No sign-up, no server to run — just open a room and talk.
 
-> ⚠️ Personal project, use at your own risk.
+> ⚠️ Personal project / experimental. Use at your own risk.
+
+## Why Cloudflare (branch history)
+
+This project has gone through three stacks, always with the same product goal — a dead-simple, no-login voice + text room:
+
+| Branch | Stack | Why it changed |
+|---|---|---|
+| [`golang`](../../tree/golang) | Go + Pion WebRTC + coturn | Self-hosted infra is too much overhead for a small personal project |
+| [`elixir`](../../tree/elixir) | Elixir + Membrane Framework | Membrane eventually added file transfer support, but maintaining your own server cluster is still heavy for something this small |
+| **`cloudflare`** (this branch) | Cloudflare RealtimeKit + Workers + Pages | Fully serverless — no servers to manage, file transfer built-in, free tier covers personal use |
+
+The product never changed. The ops burden did.
 
 ## Features
 
