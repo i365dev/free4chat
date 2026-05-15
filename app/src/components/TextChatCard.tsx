@@ -27,7 +27,7 @@ function FileMessageBubble({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
           <img
             src={msg.fileLink}
             alt={msg.fileName || "image"}
-            className="max-h-40 max-w-xs rounded"
+            className="max-h-40 w-full max-w-xs rounded object-contain"
           />
         </a>
       ) : (
