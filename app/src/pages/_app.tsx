@@ -5,7 +5,7 @@ import Script from "next/script"
 
 import "../styles/tailwind.scss"
 
-function MyApp({ Component, pageProps }: AppProps): JSX.Element {
+function MyApp({ Component, pageProps }: AppProps): React.JSX.Element {
   useEffect(() => {
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker

@@ -1,11 +1,7 @@
 {
   "compilerOptions": {
     "target": "es5",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "esnext"
-    ],
+    "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": false,
@@ -19,17 +15,11 @@
     "jsx": "preserve",
     "baseUrl": ".",
     "paths": {
-      "@*": [
-        "./src/*"
-      ]
+      "@*": ["./src/*"]
     },
     "incremental": true
   },
-  "exclude": [
-    "node_modules",
-    ".next",
-    "out"
-  ],
+  "exclude": ["node_modules", ".next", "out"],
   "include": [
     "next-env.d.ts",
     "cloudflare-env.d.ts",
