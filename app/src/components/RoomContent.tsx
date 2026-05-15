@@ -1,5 +1,4 @@
 import React from "react"
-import { Audio } from "react-loader-spinner"
 
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
@@ -11,8 +10,8 @@ export default function RoomContent({ roomName, nickName }: { roomName: string; 
 
   if (participants.length === 0) {
     return (
-      <main style={{ minHeight: "100vh", background: "#111", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <Audio height="200" width="200" color="#4fa94d" ariaLabel="audio-loading" visible={true} />
+      <main className="flex min-h-screen items-center justify-center bg-gray-950">
+        <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
       </main>
     )
   }
