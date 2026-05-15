@@ -54,6 +54,12 @@ async function getOrCreateMeeting(roomName: string, env: Env): Promise<{ meeting
     const record: RoomRecord = JSON.parse(raw)
     if (Date.now() - record.createdAt > ROOM_MAX_AGE_MS) {
       await env.ROOMS_KV.delete(key)
+      // Close the RTK meeting so old tokens can no longer join
+      await fetch(`${rtkBase(env)}/meetings/${record.meetingId}`, {
+        method: "PATCH",
+        headers: authHeaders(env),
+        body: JSON.stringify({ status: "INACTIVE" }),
+      }).catch(() => {})
       return { meetingId: "", expired: true }
     }
     return { meetingId: record.meetingId, expired: false }
