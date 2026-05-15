@@ -19,8 +19,10 @@ export function useChatRoom(roomName: string, nickName: string) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ room: roomName, name: nickName }),
     })
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      .then(async (r) => {
+        if (r.status === 410) throw new Error("room_expired")
+        if (r.status === 429) throw new Error("rate_limited")
+        if (!r.ok) throw new Error("server_error")
         return r.json()
       })
       .then((data: { authToken: string }) => {
@@ -29,7 +31,15 @@ export function useChatRoom(roomName: string, nickName: string) {
           defaults: { audio: true, video: false },
         })
       })
-      .catch(() => setError("Failed to connect to server, please refresh"))
+      .catch((err: Error) => {
+        if (err.message === "room_expired") {
+          setError("This room has expired (2-hour limit). Please open a new room.")
+        } else if (err.message === "rate_limited") {
+          setError("Too many requests. Please wait a moment and try again.")
+        } else {
+          setError("Failed to connect to server, please refresh")
+        }
+      })
   }, [roomName, nickName])
 
   useEffect(() => {
