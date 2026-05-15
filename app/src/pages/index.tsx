@@ -20,14 +20,14 @@ export default function Home() {
       if (typeof window !== "undefined") {
         saveRoomToLocalStorage(roomName, nickName)
       }
-      router.push("/room?id=" + roomName)
+      router.push("/room?id=" + encodeURIComponent(roomName))
     }
   }
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined" && roomName) {
       navigator.clipboard.writeText(
-        window.location.origin + "/room?id=" + roomName
+        window.location.origin + "/room?id=" + encodeURIComponent(roomName)
       )
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
@@ -56,7 +56,7 @@ export default function Home() {
                   </label>
 
                   <input
-                    type="input"
+                    type="text"
                     id="room"
                     placeholder="Room Name"
                     value={roomName}
@@ -90,7 +90,7 @@ export default function Home() {
                   </label>
 
                   <input
-                    type="input"
+                    type="text"
                     id="nickname"
                     value={nickName}
                     placeholder="Nick Name"

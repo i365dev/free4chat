@@ -31,20 +31,11 @@ export default function RoomContent({
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
       navigator.clipboard.writeText(
-        window.location.origin + "/room?id=" + roomName
+        window.location.origin + "/room?id=" + encodeURIComponent(roomName)
       )
       setRoomLinkCopied(true)
       setTimeout(() => setRoomLinkCopied(false), 2000)
     }
-  }
-
-  if (connectionStatus === "reconnecting") {
-    return (
-      <main className="flex min-h-screen flex-col items-center justify-center bg-gray-950 text-white">
-        <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
-        <p className="text-sm text-gray-400">Reconnecting...</p>
-      </main>
-    )
   }
 
   if (connectionStatus === "failed") {
@@ -76,6 +67,12 @@ export default function RoomContent({
 
   return (
     <main className="bg-gray-900 text-white" style={{ minHeight: "100vh" }}>
+      {connectionStatus === "reconnecting" && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60">
+          <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
+          <p className="text-sm text-gray-400">Reconnecting...</p>
+        </div>
+      )}
       <div className="flex items-center border-b border-gray-800 px-6 pb-4 pt-5">
         <h1 className="text-lg font-medium">#{roomName}</h1>
         <div className="ml-auto flex items-center gap-2">

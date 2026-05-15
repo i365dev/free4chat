@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react"
+import React, { useState, useRef, useEffect } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { Message } from "@common/types"
@@ -71,6 +71,11 @@ export default function TextChatCard({
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages])
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "Enter" && message.trim() !== "") {
@@ -99,6 +104,7 @@ export default function TextChatCard({
         {messages.length > 0 && (
           <div className="scrollbar-thin flex max-h-96 w-full flex-col justify-between overflow-y-auto text-sm">
             <div className="mt-5 flex flex-col-reverse">
+              <div ref={messagesEndRef} />
               {messages.map((p, i) => {
                 const isSelf = p.peerId === LOCAL_PEER_ID
                 return (

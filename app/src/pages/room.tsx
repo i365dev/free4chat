@@ -24,6 +24,7 @@ export default function Room() {
   const [ready, setReady] = useState<boolean>(false)
 
   const dismissNickNamePop = () => {
+    if (!nickName.trim()) return
     setShowNickNamePop(false)
     saveRoomToLocalStorage(roomName, nickName)
     setReady(true)
@@ -82,6 +83,9 @@ export default function Room() {
                 value={nickName}
                 placeholder="Nick Name"
                 onChange={(e) => setNickName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") dismissNickNamePop()
+                }}
                 className="w-full rounded-md border-gray-200 bg-white p-3 text-gray-700 shadow-sm transition focus:border-white focus:outline-none focus:ring focus:ring-yellow-400"
               />
               <span className="absolute inset-y-0 right-0 grid w-10 place-content-center">
@@ -105,7 +109,8 @@ export default function Room() {
             <button
               type="button"
               onClick={dismissNickNamePop}
-              className="group mt-4 flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 sm:mt-0 sm:w-auto"
+              disabled={!nickName.trim()}
+              className="group mt-4 flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 disabled:opacity-50 sm:mt-0 sm:w-auto"
             >
               <span className="text-sm font-medium"> Go </span>
               <svg

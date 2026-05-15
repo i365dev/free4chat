@@ -15,17 +15,20 @@ export function useChatRoom(roomName: string, nickName: string) {
   const [expiryWarning, setExpiryWarning] = useState<string>("")
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting")
-  const joinedRef = useRef(false)
+  const joinedMeetingRef = useRef<typeof meeting | null>(null)
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!roomName || !nickName) return
 
+    const controller = new AbortController()
+
     fetch(`/api/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ room: roomName, name: nickName }),
+      signal: controller.signal,
     })
       .then(async (r) => {
         if (r.status === 410) throw new Error("room_expired")
@@ -40,6 +43,8 @@ export function useChatRoom(roomName: string, nickName: string) {
         })
       })
       .catch((err: Error) => {
+        if (err.name === "AbortError") return
+        setConnectionStatus("failed")
         if (err.message === "room_expired") {
           setError(
             "This room has expired (2-hour limit). Please open a new room."
@@ -50,11 +55,13 @@ export function useChatRoom(roomName: string, nickName: string) {
           setError("Failed to connect to server, please refresh")
         }
       })
+
+    return () => controller.abort()
   }, [roomName, nickName])
 
   useEffect(() => {
-    if (!meeting || joinedRef.current) return
-    joinedRef.current = true
+    if (!meeting || joinedMeetingRef.current === meeting) return
+    joinedMeetingRef.current = meeting
 
     const buildParticipants = () => {
       const list: UserInfo[] = []
@@ -123,7 +130,31 @@ export function useChatRoom(roomName: string, nickName: string) {
       setMessages([...mapped])
     }
 
-    meeting.join()
+    const onRoomLeft = ({ state }: { state: string }) => {
+      if (state === "disconnected") {
+        setConnectionStatus("reconnecting")
+      } else if (state === "failed") {
+        setConnectionStatus("failed")
+      }
+    }
+
+    const onRoomJoined = ({ reconnected }: { reconnected: boolean }) => {
+      if (reconnected) {
+        setConnectionStatus("connected")
+        buildParticipants()
+      }
+    }
+
+    const onSocketUpdate = ({ state }: { state: string }) => {
+      if (state === "reconnecting") {
+        setConnectionStatus("reconnecting")
+      }
+    }
+
+    meeting.join().catch((err: Error) => {
+      setConnectionStatus("failed")
+      setError("Failed to join room: " + err.message)
+    })
 
     expiryTimerRef.current = setTimeout(() => {
       setExpiryWarning(
@@ -137,46 +168,31 @@ export function useChatRoom(roomName: string, nickName: string) {
       )
     }, 7200 * 1000)
 
-    meeting.self.on("roomLeft", ({ state }: { state: string }) => {
-      if (state === "disconnected") {
-        setConnectionStatus("reconnecting")
-      } else if (state === "failed") {
-        setConnectionStatus("failed")
-      }
-    })
-
-    meeting.self.on(
-      "roomJoined",
-      ({ reconnected }: { reconnected: boolean }) => {
-        if (reconnected) {
-          setConnectionStatus("connected")
-          buildParticipants()
-        }
-      }
-    )
-    ;(meeting.meta as any).on(
-      "socketConnectionUpdate",
-      ({ state }: { state: string }) => {
-        if (state === "reconnecting") {
-          setConnectionStatus("reconnecting")
-        }
-      }
-    )
-
+    meeting.self.on("roomLeft", onRoomLeft)
+    meeting.self.on("roomJoined", onRoomJoined)
+    ;(meeting.meta as any).on("socketConnectionUpdate", onSocketUpdate)
     meeting.self.on("audioUpdate", buildParticipants)
     meeting.participants.joined.on("participantJoined", buildParticipants)
     meeting.participants.joined.on("participantLeft", buildParticipants)
     meeting.participants.joined.on("audioUpdate", buildParticipants)
     meeting.self.on("screenShareUpdate", buildParticipants)
     meeting.participants.joined.on("screenShareUpdate", buildParticipants)
-
     meeting.chat.on("chatUpdate", syncMessages)
 
     buildParticipants()
 
     return () => {
+      meeting.self.off("roomLeft", onRoomLeft)
+      meeting.self.off("roomJoined", onRoomJoined)
+      ;(meeting.meta as any).off("socketConnectionUpdate", onSocketUpdate)
+      meeting.self.off("audioUpdate", buildParticipants)
+      meeting.participants.joined.off("participantJoined", buildParticipants)
+      meeting.participants.joined.off("participantLeft", buildParticipants)
+      meeting.participants.joined.off("audioUpdate", buildParticipants)
+      meeting.self.off("screenShareUpdate", buildParticipants)
+      meeting.participants.joined.off("screenShareUpdate", buildParticipants)
+      meeting.chat.off("chatUpdate", syncMessages)
       meeting.leaveRoom()
-      joinedRef.current = false
       if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current)
       if (expiryFinalRef.current) clearTimeout(expiryFinalRef.current)
     }
