@@ -5,14 +5,21 @@ import { useRealtimeKitClient } from "@cloudflare/realtimekit-react"
 import { LOCAL_PEER_ID } from "@common/consts"
 import { UserInfo, Message } from "@common/types"
 
+type ConnectionStatus = "connecting" | "connected" | "disconnected"
+
 export function useChatRoom(roomName: string, nickName: string) {
   const [meeting, initMeeting] = useRealtimeKitClient()
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState<string>("")
+  const [expiryWarning, setExpiryWarning] = useState<string>("")
+  const [connectionStatus, setConnectionStatus] =
+    useState<ConnectionStatus>("connecting")
   const joinedRef = useRef(false)
+  const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
+  const fetchAndInit = useCallback(() => {
     if (!roomName || !nickName) return
 
     fetch(`/api/token`, {
@@ -43,7 +50,17 @@ export function useChatRoom(roomName: string, nickName: string) {
           setError("Failed to connect to server, please refresh")
         }
       })
+  }, [roomName, nickName, initMeeting])
+
+  useEffect(() => {
+    fetchAndInit()
   }, [roomName, nickName])
+
+  const reconnect = useCallback(() => {
+    joinedRef.current = false
+    setConnectionStatus("connecting")
+    fetchAndInit()
+  }, [fetchAndInit])
 
   useEffect(() => {
     if (!meeting || joinedRef.current) return
@@ -84,6 +101,7 @@ export function useChatRoom(roomName: string, nickName: string) {
       })
 
       setParticipants([...list])
+      setConnectionStatus("connected")
     }
 
     const syncMessages = () => {
@@ -117,6 +135,28 @@ export function useChatRoom(roomName: string, nickName: string) {
 
     meeting.join()
 
+    expiryTimerRef.current = setTimeout(() => {
+      setExpiryWarning(
+        "This room will expire in 10 minutes. Copy the link and re-open to continue."
+      )
+    }, 6600 * 1000)
+
+    expiryFinalRef.current = setTimeout(() => {
+      setExpiryWarning(
+        "Room session expired. Please re-open the link to rejoin."
+      )
+    }, 7200 * 1000)
+
+    try {
+      if (typeof (meeting.self as any).on === "function") {
+        ;(meeting.self as any).on("socketDisconnect", () => {
+          setConnectionStatus("disconnected")
+        })
+      }
+    } catch (_e) {
+      void _e
+    }
+
     meeting.self.on("audioUpdate", buildParticipants)
     meeting.participants.joined.on("participantJoined", buildParticipants)
     meeting.participants.joined.on("participantLeft", buildParticipants)
@@ -131,6 +171,8 @@ export function useChatRoom(roomName: string, nickName: string) {
     return () => {
       meeting.leaveRoom()
       joinedRef.current = false
+      if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current)
+      if (expiryFinalRef.current) clearTimeout(expiryFinalRef.current)
     }
   }, [meeting, roomName])
 
@@ -180,5 +222,8 @@ export function useChatRoom(roomName: string, nickName: string) {
     muteSelf,
     toggleScreenShare,
     error,
+    expiryWarning,
+    connectionStatus,
+    reconnect,
   }
 }
