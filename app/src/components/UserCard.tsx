@@ -16,6 +16,16 @@ export default function UserCard(user: UserCardProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
 
+  const enterFullscreen = () => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.requestFullscreen) {
+      v.requestFullscreen()
+    } else if ((v as any).webkitEnterFullscreen) {
+      (v as any).webkitEnterFullscreen()
+    }
+  }
+
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.srcObject = user.audioStream ?? null
@@ -126,11 +136,11 @@ export default function UserCard(user: UserCardProps) {
                 playsInline
                 muted
                 className="w-full cursor-pointer rounded-lg"
-                onClick={() => videoRef.current?.requestFullscreen()}
+                onClick={() => enterFullscreen()}
               />
               <button
                 className="absolute bottom-2 right-2 rounded bg-black/60 p-1 text-white hover:bg-black/80"
-                onClick={() => videoRef.current?.requestFullscreen()}
+                onClick={() => enterFullscreen()}
                 title="Fullscreen"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
