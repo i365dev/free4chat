@@ -18,8 +18,5 @@
       "binding": "ROOMS_KV",
       "id": "290b9fb14c1a4505a7aea6cb61ddd1dd"
     }
-  ],
-  "routes": [
-    { "pattern": "free4.chat/*", "zone_name": "free4.chat" }
   ]
 }
