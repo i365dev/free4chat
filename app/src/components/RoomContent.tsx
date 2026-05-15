@@ -39,7 +39,7 @@ export default function RoomContent({
         window.location.origin +
         "/room?id=" +
         encodeURIComponent(roomName) +
-        (roomType === "screenshare" ? "&type=screenshare" : "")
+        (resolvedRoomType === "screenshare" ? "&type=screenshare" : "")
       navigator.clipboard.writeText(url)
       setRoomLinkCopied(true)
       setTimeout(() => setRoomLinkCopied(false), 2000)

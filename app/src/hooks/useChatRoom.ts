@@ -23,6 +23,7 @@ export function useChatRoom(
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting")
   const joinedMeetingRef = useRef<typeof meeting | null>(null)
+  const hasJoinedRef = useRef(false)
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -44,8 +45,20 @@ export function useChatRoom(
         return r.json()
       })
       .then(
-        (data: { authToken: string; roomType?: "audio" | "screenshare" }) => {
+        (data: {
+          authToken: string
+          roomType?: "audio" | "screenshare"
+          typeConflict?: boolean
+        }) => {
+          setError("")
           if (data.roomType) setResolvedRoomType(data.roomType)
+          if (data.typeConflict) {
+            setError(
+              data.roomType === "audio"
+                ? "This room was created as audio-only. Screen sharing is not available."
+                : "This room was created with screen sharing enabled."
+            )
+          }
           initMeeting({
             authToken: data.authToken,
             defaults: { audio: true, video: false },
@@ -150,6 +163,7 @@ export function useChatRoom(
 
     const onRoomJoined = ({ reconnected }: { reconnected: boolean }) => {
       if (reconnected) {
+        setError("")
         setConnectionStatus("connected")
         buildParticipants()
       }
@@ -165,6 +179,7 @@ export function useChatRoom(
       setConnectionStatus("failed")
       setError("Failed to join room: " + err.message)
     })
+    hasJoinedRef.current = true
 
     expiryTimerRef.current = setTimeout(() => {
       setExpiryWarning(
@@ -202,7 +217,8 @@ export function useChatRoom(
       meeting.self.off("screenShareUpdate", buildParticipants)
       meeting.participants.joined.off("screenShareUpdate", buildParticipants)
       meeting.chat.off("chatUpdate", syncMessages)
-      meeting.leaveRoom()
+      if (hasJoinedRef.current) meeting.leaveRoom()
+      hasJoinedRef.current = false
       if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current)
       if (expiryFinalRef.current) clearTimeout(expiryFinalRef.current)
     }

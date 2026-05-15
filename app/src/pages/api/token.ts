@@ -57,7 +57,12 @@ async function getOrCreateMeeting(
   roomName: string,
   roomType: RoomType,
   env: Env
-): Promise<{ meetingId: string; expired: boolean; roomType: RoomType }> {
+): Promise<{
+  meetingId: string
+  expired: boolean
+  roomType: RoomType
+  typeConflict: boolean
+}> {
   const key = `room:${roomName}`
   const raw = await env.ROOMS_KV.get(key)
 
@@ -65,19 +70,23 @@ async function getOrCreateMeeting(
     const record: RoomRecord = JSON.parse(raw)
     if (Date.now() - record.createdAt > ROOM_MAX_AGE_MS) {
       await env.ROOMS_KV.delete(key)
-      // Close the RTK meeting so old tokens can no longer join
       await fetch(`${rtkBase(env)}/meetings/${record.meetingId}`, {
         method: "PATCH",
         headers: authHeaders(env),
         body: JSON.stringify({ status: "INACTIVE" }),
       }).catch(() => {})
-      return { meetingId: "", expired: true, roomType: record.roomType }
+      return {
+        meetingId: "",
+        expired: true,
+        roomType: record.roomType,
+        typeConflict: false,
+      }
     }
-    // Always use the room type set at creation — ignore caller's type for existing rooms
     return {
       meetingId: record.meetingId,
       expired: false,
       roomType: record.roomType,
+      typeConflict: record.roomType !== roomType,
     }
   }
 
@@ -95,7 +104,7 @@ async function getOrCreateMeeting(
   await env.ROOMS_KV.put(key, JSON.stringify(record), {
     expirationTtl: 30 * 24 * 3600,
   })
-  return { meetingId, expired: false, roomType }
+  return { meetingId, expired: false, roomType, typeConflict: false }
 }
 
 async function addParticipant(
@@ -167,12 +176,13 @@ export default async function handler(
     }
     const roomType: RoomType = type === "screenshare" ? "screenshare" : "audio"
 
-    // Input validation
-    if (!room || !name) {
+    if (
+      !room ||
+      !name ||
+      typeof room !== "string" ||
+      typeof name !== "string"
+    ) {
       return res.status(400).json({ error: "room and name required" })
-    }
-    if (typeof room !== "string" || typeof name !== "string") {
-      return res.status(400).json({ error: "invalid input" })
     }
     if (room.length > MAX_ROOM_LENGTH || name.length > MAX_NAME_LENGTH) {
       return res.status(400).json({ error: "input too long" })
@@ -185,6 +195,7 @@ export default async function handler(
       meetingId,
       expired,
       roomType: resolvedRoomType,
+      typeConflict,
     } = await getOrCreateMeeting(room.trim(), roomType, cfEnv)
     if (expired) {
       return res.status(410).json({ error: "room expired" })
@@ -196,7 +207,9 @@ export default async function handler(
       resolvedRoomType,
       cfEnv
     )
-    return res.status(200).json({ authToken, roomType: resolvedRoomType })
+    return res
+      .status(200)
+      .json({ authToken, roomType: resolvedRoomType, typeConflict })
   } catch (err) {
     console.error(err)
     return res.status(500).json({ error: "internal error" })

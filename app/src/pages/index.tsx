@@ -34,10 +34,7 @@ export default function Home() {
   const copyRoomLink = () => {
     if (typeof window !== "undefined" && roomName) {
       const url =
-        window.location.origin +
-        "/room?id=" +
-        encodeURIComponent(roomName) +
-        (screenShare ? "&type=screenshare" : "")
+        window.location.origin + "/room?id=" + encodeURIComponent(roomName)
       navigator.clipboard.writeText(url)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
