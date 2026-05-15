@@ -21,6 +21,7 @@ The product never changed. The ops burden did.
 - 🎙️ Voice chat in rooms
 - 💬 Text chat with emoji
 - 📎 File & image transfer (inline preview)
+- 🖥️ Screen sharing
 - 🔒 No accounts, no persistent data
 
 ## Privacy & Local-First Design
@@ -47,7 +48,7 @@ The application runs entirely in your browser. The Worker's only job is to issue
 | Frontend | Next.js 14, Tailwind CSS, Cloudflare RealtimeKit React SDK |
 | API | Next.js API route (`/api/token`) deployed as Cloudflare Worker via opennextjs |
 | Storage | Cloudflare KV (room name → meeting ID mapping, 30-day TTL) |
-| Media | Cloudflare RealtimeKit (WebRTC, audio/data channels) |
+| Media | Cloudflare RealtimeKit (WebRTC, audio/video/data channels, screen sharing) |
 
 ## Local Development
 
