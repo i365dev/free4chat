@@ -156,7 +156,7 @@ export default function Home() {
               </div>
 
               <div className="mt-3 flex items-center gap-2">
-                <label className="flex cursor-pointer items-center gap-2 text-sm text-gray-400 select-none">
+                <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-gray-400">
                   <input
                     type="checkbox"
                     checked={screenShare}

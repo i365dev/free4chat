@@ -137,7 +137,11 @@ export default function Room() {
       )}
 
       {ready && roomName && nickName && (
-        <RoomContent roomName={roomName} nickName={nickName} roomType={roomType} />
+        <RoomContent
+          roomName={roomName}
+          nickName={nickName}
+          roomType={roomType}
+        />
       )}
     </div>
   )

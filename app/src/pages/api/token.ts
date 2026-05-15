@@ -74,7 +74,11 @@ async function getOrCreateMeeting(
       return { meetingId: "", expired: true, roomType: record.roomType }
     }
     // Always use the room type set at creation — ignore caller's type for existing rooms
-    return { meetingId: record.meetingId, expired: false, roomType: record.roomType }
+    return {
+      meetingId: record.meetingId,
+      expired: false,
+      roomType: record.roomType,
+    }
   }
 
   const res = await fetch(`${rtkBase(env)}/meetings`, {
@@ -100,7 +104,9 @@ async function addParticipant(
 ): Promise<string> {
   const presetName =
     roomType === "screenshare"
-      ? env.RTK_SCREENSHARE_PRESET_NAME || env.RTK_PRESET_NAME || "group_call_host"
+      ? env.RTK_SCREENSHARE_PRESET_NAME ||
+        env.RTK_PRESET_NAME ||
+        "group_call_host"
       : env.RTK_AUDIO_PRESET_NAME || "audio_only_room"
   const res = await fetch(
     `${rtkBase(env)}/meetings/${meetingId}/participants`,
@@ -154,8 +160,7 @@ export default async function handler(
       name: string
       type?: string
     }
-    const roomType: RoomType =
-      type === "screenshare" ? "screenshare" : "audio"
+    const roomType: RoomType = type === "screenshare" ? "screenshare" : "audio"
 
     // Input validation
     if (!room || !name) {
@@ -171,12 +176,21 @@ export default async function handler(
       return res.status(400).json({ error: "room and name must not be blank" })
     }
 
-    const { meetingId, expired, roomType: resolvedRoomType } = await getOrCreateMeeting(room.trim(), roomType, cfEnv)
+    const {
+      meetingId,
+      expired,
+      roomType: resolvedRoomType,
+    } = await getOrCreateMeeting(room.trim(), roomType, cfEnv)
     if (expired) {
       return res.status(410).json({ error: "room expired" })
     }
 
-    const authToken = await addParticipant(meetingId, name.trim(), resolvedRoomType, cfEnv)
+    const authToken = await addParticipant(
+      meetingId,
+      name.trim(),
+      resolvedRoomType,
+      cfEnv
+    )
     return res.status(200).json({ authToken })
   } catch (err) {
     console.error(err)

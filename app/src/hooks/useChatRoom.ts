@@ -7,7 +7,11 @@ import { UserInfo, Message } from "@common/types"
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 
-export function useChatRoom(roomName: string, nickName: string, roomType: "audio" | "screenshare") {
+export function useChatRoom(
+  roomName: string,
+  nickName: string,
+  roomType: "audio" | "screenshare"
+) {
   const [meeting, initMeeting] = useRealtimeKitClient()
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
