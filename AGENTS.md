@@ -6,7 +6,7 @@ Real-time voice + text + file chat. No sign-up. Cloudflare-native stack.
 
 - **Live URL**: https://free4.chat
 - **Branch**: `cloudflare` (default)
-- **Stack**: Next.js 14 → Cloudflare Worker via `@opennextjs/cloudflare`
+- **Stack**: Next.js 15 → Cloudflare Worker via `@opennextjs/cloudflare`
 
 ## Directory Layout
 
@@ -125,9 +125,15 @@ export interface Message {
 ## Token API (api/token.ts)
 
 - **Method**: POST `/api/token`
-- **Body**: `{ room: string, name: string }`
-- **Response**: `{ authToken: string }`
+- **Body**: `{ room: string, name: string, type?: "audio" | "screenshare" }`
+- **Response**: `{ authToken: string, roomType: "audio" | "screenshare", typeConflict?: boolean }`
 - **Error codes**: 400 (bad input), 403 (forbidden origin), 410 (room expired), 429 (rate limited), 500
+
+Room type logic:
+- First caller sets the room type; subsequent callers inherit it from KV
+- `typeConflict: true` when caller requested a different type than what was stored — frontend shows a warning
+- `RTK_SCREENSHARE_PRESET_NAME` → `group_call_host` preset (supports screen share, $0.002/person·min)
+- `RTK_AUDIO_PRESET_NAME` → `audio_only_room` preset (audio only, $0.0005/person·min)
 
 Security in place:
 - Origin whitelist (free4.chat only, dev env exempt)
@@ -148,7 +154,7 @@ Security in place:
 
 ```bash
 cd app
-cp .dev.vars.example .dev.vars   # fill CF_API_TOKEN, CF_ACCOUNT_ID, RTK_APP_ID, RTK_PRESET_NAME
+cp .dev.vars.example .dev.vars   # fill CF_API_TOKEN, CF_ACCOUNT_ID, RTK_APP_ID, RTK_SCREENSHARE_PRESET_NAME, RTK_AUDIO_PRESET_NAME
 yarn dev                          # localhost:3000
 ```
 
@@ -167,3 +173,5 @@ Manual: `yarn cf-build && yarn cf-deploy` (needs `CLOUDFLARE_API_TOKEN` + `CLOUD
 - `LOCAL_PEER_ID = "local-peer-id"` is the sentinel for the local participant
 - `buildParticipants()` is the single source of truth for participant state — always rebuild the full list, never patch individual entries
 - `joinedRef` prevents double-joining on React StrictMode double-effect
+- `resolvedRoomType` (state in `useChatRoom.ts`) reflects the actual room type returned by the token API — use this (not the URL param) for UI gating (e.g. hiding screenshare button in audio rooms)
+- Screenshare button in `UserCard.tsx` is controlled by `screenshareAllowed` prop; only `true` when `resolvedRoomType === "screenshare"`
