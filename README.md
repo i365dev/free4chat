@@ -1,115 +1,111 @@
 # free4chat
 
-[free4.chat](https://free4.chat/) is a __real-time__ audio chat service. It is designed by the [local first](https://www.inkandswitch.com/local-first/) and `privacy first` principle, and is very easy to use.
- 
-> :warning: **This project is just using for technical test purpose, use at all your risk!**
->
-> :warning: **There is freedom of speech, but I cannot guarantee freedom after speech.** (- Idi Amin)
+[free4.chat](https://free4.chat/) is a real-time audio + text chat service. No sign-up, no server to run — just open a room and talk.
+
+> ⚠️ Personal project, use at your own risk.
 
 ## Features
 
-- **Real-time Communicating**
-  - [x] Voice chat in room
-  - [x] Text chat in room, can sent text or emoji
-    - [ ] Persist text messages to browser localStorage
-  - [ ] Can send arbitrary data by WebRTC datachannel 🚩
-    - https://github.com/elixir-webrtc/ex_webrtc 
-  - [ ] Room permission setting, like public/private type setting
-    - private room can't been seen on room discovery, and it needs password to enter. The password is [End-to-End Encryption](https://blog.excalidraw.com/end-to-end-encryption/), server only need check the answer which given by the client like the `PoW` in blockchain.
-    - [ ] Public rooms discovery, like hot room list or filter rooms by type/tag
-- **Real-time Collaborating**  
-  - [ ] User real-time collaboration, like whiteboard, you draw I guess, etc.
-    - [ ] Use [CRDT](https://crdt.tech/) to impelement real-time collaboration
-      - https://github.com/derekkraan/delta_crdt_ex
-      - https://github.com/electric-sql/vaxine
-      - https://github.com/liveblocks/liveblocks
-      - https://github.com/yjs/yjs
-    - [ ] Whiteboard
-      - https://github.com/tldraw/tldraw
-- **Real-time Contesting**
-  - [ ] AI Robot user, like game robot who can play or facilitate game
-    - robot use [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API) to play with user in room
-      - Azure [Text to speech](https://azure.microsoft.com/en-us/products/cognitive-services/text-to-speech/#overview) service.
-    - robot can play some voice games like language learning, technical interview, etc.
-      - [Gartic Phone - The Telephone Game](https://garticphone.com/lobby)
-      - [ESL Game - Not only practicing English speaking](https://esl.bmpi.dev/)
-      - [Gartic.io - Draw, Guess, WIN](https://gartic.io/)
-      - [Get to know someone in 17 seconds](https://github.com/caydennn/seventeen-web-app)
-    - AI + Voice
-      - Deep learning models are changing the world
-        - [@midjourney](https://twitter.com/midjourney) can generate fatastic image from text
-        - [@GitHubCopilot](https://twitter.com/GitHubCopilot) can generate context-awared code from short code segment
-        - [@OpenAI](https://twitter.com/OpenAI) GPT-3 model can generate text paragraph from short sentence segment
-      - Voice conversation from text?
+- 🎙️ Voice chat in rooms
+- 💬 Text chat with emoji
+- 📎 File & image transfer (inline preview)
+- 🔒 No accounts, no persistent data
 
-## Architecture
+## Tech Stack
 
-- **Common**
-  - [x] Use [WebSocket](https://developer.mozilla.org/en-US/docs/Web/API/WebSocket) to replace http protocol of JSON-RPC
-  - Compatibility
-    - [ ] Make Safari(WebKit) compatibility better
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 14, Tailwind CSS, Cloudflare RealtimeKit React SDK |
+| Backend | Cloudflare Worker (token server, serverless) |
+| Infra | Cloudflare Pages (frontend) + Cloudflare Workers (backend) |
+| Media | Cloudflare RealtimeKit (WebRTC, audio/data channels) |
 
-- **Tech Stack**
-  - [x] Use Elixir/Phoenix to rewrite the backend code
-  - [x] Use Recat/Next.js to rewrite the frontend code
+## Local Development
 
-- **Infra**
-  - [x] ~~Use docker to deploy to PaaS platform like [Railway](https://railway.app/) or [Fly](https://fly.io/)~~ 
-  - [x] Use GitHub Actions + AWS Lightsail to deploy backend server
-  - [x] Backend service cluster, auto scaling, load balancing, etc.
-    - Backend service use Elixir libcluster to build cluster
-    - Frontend app use the client load balance strategy
-    - [x] [TURN cluster scale](https://github.com/membraneframework/membrane_ice_plugin/issues/20)
-      - Fix by start turn before the libcluster, still wait the upstream library to fix it normally
-    - [ ] Room process rebalance, that means if the node where room in is offline, then the room process can rebalance to another node, the rebalance can use [Consistent hashing](https://en.wikipedia.org/wiki/Consistent_hashing) to implement
-      - For now, we just ignore this issue, because it can be resolved by reconnect another node and create the room again
-      - Some Elixir simple approaches
-        - [Swarm](https://github.com/bitwalker/swarm)
-        - [Horde](https://github.com/derekkraan/horde)
-      - A complex approach is use [Riak Core](https://github.com/basho/riak_core) which implement the `Consistent hashing` and can rebalance the process by [VNode](https://www.erlang-factory.com/upload/presentations/294/MasterlessDistributedComputingwithRiakCore-RKlophaus.pdf)
-        - [NkDIST](https://github.com/NetComposer/nkdist), a Erlang distributed registration and load balancing lib which is base on `Riak Core`
-      - [Tinode chat](https://github.com/tinode/chat) solve this issue by implementing the [Raft Consensus Algorithm](https://raft.github.io/)
-        <details>
-        <summary>More</summary>
+### Prerequisites
 
-          - https://github.com/tinode/chat/issues/28
-          - https://github.com/tinode/chat/issues/279
-          - https://github.com/tinode/chat/blob/master/server/topic_proxy.go
-          - https://github.com/tinode/chat/blob/master/server/cluster.go
-          - https://github.com/tinode/chat/blob/master/server/cluster_leader.go
-          - https://github.com/tinode/chat/blob/master/server/ringhash/ringhash.go
-        </details>
-  - [ ] Security enhancement, like coturn TLS setup, end-to-end encryption, etc.
-    - [ ] TURN enable TLS
-  - [ ] Privacy enhancement.
-  - [ ] IPV6 support.
-  
-## Documentation
+- Node.js 20+
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
+- A Cloudflare account with RealtimeKit enabled
 
-https://dev-notes.free4.chat/
+### 1. Start the Worker (token server)
 
-## Contribution
+```bash
+cd worker
+npm install
+cp .dev.vars.example .dev.vars   # fill in your credentials
+npm run dev                       # starts on http://localhost:8787
+```
 
-If you are interested in `webRTC`, `peer-to-peer(P2P)`, `real-time collaboration(CRDT)`, `distributed system` or `robot design`, you can join this project and contact with me by [twitter](https://twitter.com/madawei2699).
+Required values in `worker/.dev.vars`:
 
-## Thanks
+| Variable | Description |
+|---|---|
+| `CF_API_TOKEN` | Cloudflare API token with Workers + RealtimeKit access |
+| `CF_ACCOUNT_ID` | Your Cloudflare account ID |
+| `RTK_APP_ID` | RealtimeKit app ID |
+| `RTK_PRESET_NAME` | Preset name configured in RealtimeKit dashboard |
+| `ALLOWED_ORIGIN` | Allowed CORS origin (e.g. `http://localhost:3000`) |
 
-- free4.chat Elixir version is build on the top of [Membrane Framework](https://github.com/membraneframework), thanks for their heart of open source.
-- [free4.chat Golang version](https://github.com/madawei2699/free4chat/tree/golang) is build on the top of [Kraken](https://github.com/bmpi-dev/kraken), [Mornin](https://github.com/lyricat/mornin.fm), [coturn](https://github.com/coturn/coturn) and [Pion](https://github.com/pion), thanks for their heart of open source.
-- These websites also inspired me:
-  - [Random voice and text chat rooms that you’ll love. | Speakrandom](https://www.speakrandom.com/)
-  - [Practice Speaking English Online Free - Language Practice Community](https://www.free4talk.com/)
-  - [Agora Real-Time Voice and Video Engagement](https://www.agora.io/en/)
-  - [An open network for secure, decentralized communication - Matrix](https://matrix.org/)
-  - [Introduction to Realtime Web Applications](https://realtime-apps-iap.github.io/)
-  - [Gather | Building better teams, bit by bit](https://www.gather.town/)
+Also set the KV namespace ID in `worker/wrangler.toml` (`id = "your-kv-namespace-id"`).
 
- ---
+### 2. Start the Frontend
 
-## About the Author
+```bash
+cd app
+yarn install
+cp .env.local.example .env.local  # NEXT_PUBLIC_WORKER_URL=http://localhost:8787
+yarn dev                           # starts on http://localhost:3000
+```
 
-This project is maintained by the creator of **MyInvestPilot** —
-a systematic investment assistance platform focused on
-rule-based, long-term investing and transparent strategy research.
+## Deployment
 
-🔗 https://www.myinvestpilot.com
+### Cloudflare Worker
+
+Set these GitHub repository secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+
+Push to `cloudflare` branch with changes in `worker/` → auto-deploys via GitHub Actions.
+
+### Cloudflare Pages
+
+Set these GitHub repository secrets:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+- `NEXT_PUBLIC_WORKER_URL` — your deployed worker URL (e.g. `https://free4chat-worker.<account>.workers.dev`)
+
+Push to `cloudflare` branch with changes in `app/` → auto-deploys via GitHub Actions.
+
+Set Worker runtime secrets via the Cloudflare dashboard or:
+
+```bash
+cd worker
+npx wrangler secret put CF_API_TOKEN
+npx wrangler secret put CF_ACCOUNT_ID
+npx wrangler secret put RTK_APP_ID
+npx wrangler secret put RTK_PRESET_NAME
+npx wrangler secret put ALLOWED_ORIGIN
+```
+
+## Directory Structure
+
+```
+free4chat/
+├── app/              # Next.js frontend
+│   └── src/
+│       ├── hooks/useChatRoom.ts     # core RealtimeKit hook
+│       ├── components/              # UI components
+│       └── pages/                   # Next.js pages
+├── worker/           # Cloudflare Worker (token server)
+│   └── src/index.ts                 # POST /api/token endpoint
+└── .github/
+    └── workflows/
+        ├── deploy-worker.yml        # CI: deploy Worker
+        └── deploy-pages.yml         # CI: deploy Pages
+```
+
+## License
+
+MIT

@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+
+# app
+app/.next/
+app/out/
+app/.env.local
+
+# worker
+worker/.dev.vars
+worker/dist/
