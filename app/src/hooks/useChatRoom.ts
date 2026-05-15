@@ -56,6 +56,11 @@ export function useChatRoom(roomName: string, nickName: string) {
         room: roomName,
         muteState: !self.audioEnabled,
         audioStream: self.audioTrack ? new MediaStream([self.audioTrack]) : null,
+        screenShareEnabled: self.screenShareEnabled ?? false,
+        screenShareStream:
+          self.screenShareEnabled && self.screenShareTracks?.video
+            ? new MediaStream([self.screenShareTracks.video])
+            : null,
       })
 
       meeting.participants.joined.toArray().forEach((p) => {
@@ -65,6 +70,11 @@ export function useChatRoom(roomName: string, nickName: string) {
           room: roomName,
           muteState: !p.audioEnabled,
           audioStream: p.audioTrack ? new MediaStream([p.audioTrack]) : null,
+          screenShareEnabled: p.screenShareEnabled ?? false,
+          screenShareStream:
+            p.screenShareEnabled && p.screenShareTracks?.video
+              ? new MediaStream([p.screenShareTracks.video])
+              : null,
         })
       })
 
@@ -106,6 +116,8 @@ export function useChatRoom(roomName: string, nickName: string) {
     meeting.participants.joined.on("participantJoined", buildParticipants)
     meeting.participants.joined.on("participantLeft", buildParticipants)
     meeting.participants.joined.on("audioUpdate", buildParticipants)
+    meeting.self.on("screenShareUpdate", buildParticipants)
+    meeting.participants.joined.on("screenShareUpdate", buildParticipants)
 
     meeting.chat.on("chatUpdate", syncMessages)
 
@@ -146,5 +158,14 @@ export function useChatRoom(roomName: string, nickName: string) {
     }
   }, [meeting])
 
-  return { participants, messages, sendTextMessage, sendFileMessage, muteSelf, error }
+  const toggleScreenShare = useCallback(() => {
+    if (!meeting) return
+    if (meeting.self.screenShareEnabled) {
+      meeting.self.disableScreenShare()
+    } else {
+      meeting.self.enableScreenShare()
+    }
+  }, [meeting])
+
+  return { participants, messages, sendTextMessage, sendFileMessage, muteSelf, toggleScreenShare, error }
 }

@@ -6,7 +6,7 @@ import UserCard from "./UserCard"
 import { useChatRoom } from "../hooks/useChatRoom"
 
 export default function RoomContent({ roomName, nickName }: { roomName: string; nickName: string }) {
-  const { participants, messages, sendTextMessage, sendFileMessage, muteSelf, error } =
+  const { participants, messages, sendTextMessage, sendFileMessage, muteSelf, toggleScreenShare, error } =
     useChatRoom(roomName, nickName)
 
   if (participants.length === 0) {
@@ -42,7 +42,10 @@ export default function RoomContent({ roomName, nickName }: { roomName: string; 
               room={p.room}
               muteState={p.muteState}
               audioStream={p.audioStream}
+              screenShareStream={p.screenShareStream}
+              screenShareEnabled={p.screenShareEnabled}
               onMuteSelf={muteSelf}
+              onToggleScreenShare={toggleScreenShare}
               className="sm:1/2 md:basis-1/8"
             />
           ))}

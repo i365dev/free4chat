@@ -3,6 +3,8 @@ export interface UserInfo {
   room: string
   className?: string
   audioStream?: MediaStream | null
+  screenShareStream?: MediaStream | null
+  screenShareEnabled?: boolean
   peerId: string
   muteState?: boolean | false
 }
