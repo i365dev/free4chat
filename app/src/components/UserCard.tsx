@@ -119,13 +119,25 @@ export default function UserCard(user: UserCardProps) {
           />
 
           {user.screenShareStream && (
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="mt-2 w-full rounded-lg"
-            />
+            <div className="relative mt-2">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full cursor-pointer rounded-lg"
+                onClick={() => videoRef.current?.requestFullscreen()}
+              />
+              <button
+                className="absolute bottom-2 right-2 rounded bg-black/60 p-1 text-white hover:bg-black/80"
+                onClick={() => videoRef.current?.requestFullscreen()}
+                title="Fullscreen"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                  <path d="M1.5 1h4a.5.5 0 0 1 0 1h-4v4a.5.5 0 0 1-1 0v-4A.5.5 0 0 1 1.5 1zm10 0a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0v-4h-4a.5.5 0 0 1 0-1h4zM1 10.5a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 0 1h-4v4a.5.5 0 0 1-1 0v-4zm14 0v4a.5.5 0 0 1-1 0v-4h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 1 .5.5z"/>
+                </svg>
+              </button>
+            </div>
           )}
         </div>
       </div>
