@@ -12,7 +12,7 @@ This project has gone through three stacks, always with the same product goal �
 |---|---|---|
 | [`golang`](../../tree/golang) | Go + Pion WebRTC + coturn | Self-hosted infra is too much overhead for a small personal project |
 | [`elixir`](../../tree/elixir) | Elixir + Membrane Framework | Membrane eventually added file transfer support, but maintaining your own server cluster is still heavy for something this small |
-| **`cloudflare`** (this branch) | Cloudflare RealtimeKit + Workers + Pages | Fully serverless — no servers to manage, file transfer built-in, free tier covers personal use |
+| **`cloudflare`** (this branch) | Cloudflare RealtimeKit + Workers | Fully serverless — no servers to manage, file transfer built-in, free tier covers personal use |
 
 The product never changed. The ops burden did.
 
@@ -45,28 +45,27 @@ The application runs entirely in your browser. The Worker's only job is to issue
 | Layer | Technology |
 |---|---|
 | Frontend | Next.js 14, Tailwind CSS, Cloudflare RealtimeKit React SDK |
-| Backend | Cloudflare Worker (token server, serverless) |
-| Infra | Cloudflare Pages (frontend) + Cloudflare Workers (backend) |
+| API | Next.js API route (`/api/token`) deployed as Cloudflare Worker via opennextjs |
+| Storage | Cloudflare KV (room name → meeting ID mapping, 30-day TTL) |
 | Media | Cloudflare RealtimeKit (WebRTC, audio/data channels) |
 
 ## Local Development
 
 ### Prerequisites
 
-- Node.js 20+
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
+- Node.js 22+
 - A Cloudflare account with RealtimeKit enabled
 
-### 1. Start the Worker (token server)
+### Setup
 
 ```bash
-cd worker
-npm install
+cd app
+yarn install
 cp .dev.vars.example .dev.vars   # fill in your credentials
-npm run dev                       # starts on http://localhost:8787
+yarn dev                          # starts on http://localhost:3000
 ```
 
-Required values in `worker/.dev.vars`:
+Required values in `app/.dev.vars`:
 
 | Variable | Description |
 |---|---|
@@ -74,65 +73,57 @@ Required values in `worker/.dev.vars`:
 | `CF_ACCOUNT_ID` | Your Cloudflare account ID |
 | `RTK_APP_ID` | RealtimeKit app ID |
 | `RTK_PRESET_NAME` | Preset name configured in RealtimeKit dashboard |
-| `ALLOWED_ORIGIN` | Allowed CORS origin (e.g. `http://localhost:3000`) |
-
-Also set the KV namespace ID in `worker/wrangler.toml` (`id = "your-kv-namespace-id"`).
-
-### 2. Start the Frontend
-
-```bash
-cd app
-yarn install
-cp .env.local.example .env.local  # NEXT_PUBLIC_WORKER_URL=http://localhost:8787
-yarn dev                           # starts on http://localhost:3000
-```
 
 ## Deployment
 
-### Cloudflare Worker
+Everything deploys as a single Cloudflare Worker (Next.js + API route bundled together via `@opennextjs/cloudflare`).
 
-Set these GitHub repository secrets:
+### GitHub Actions (automatic)
 
-- `CLOUDFLARE_API_TOKEN`
+Set these repository secrets in GitHub:
 
-Push to `cloudflare` branch with changes in `worker/` → auto-deploys via GitHub Actions.
-
-### Cloudflare Pages
-
-Set these GitHub repository secrets:
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-- `NEXT_PUBLIC_WORKER_URL` — your deployed worker URL (e.g. `https://free4chat-worker.<account>.workers.dev`)
+| Secret | Description |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token |
+| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare account ID |
 
 Push to `cloudflare` branch with changes in `app/` → auto-deploys via GitHub Actions.
 
-Set Worker runtime secrets via the Cloudflare dashboard or:
+### Worker Runtime Secrets
+
+Set these once via Wrangler (not in git):
 
 ```bash
-cd worker
+cd app
 npx wrangler secret put CF_API_TOKEN
 npx wrangler secret put CF_ACCOUNT_ID
 npx wrangler secret put RTK_APP_ID
 npx wrangler secret put RTK_PRESET_NAME
-npx wrangler secret put ALLOWED_ORIGIN
+```
+
+### Manual Deploy
+
+```bash
+cd app
+yarn cf-build
+yarn cf-deploy
 ```
 
 ## Directory Structure
 
 ```
 free4chat/
-├── app/              # Next.js frontend
-│   └── src/
-│       ├── hooks/useChatRoom.ts     # core RealtimeKit hook
-│       ├── components/              # UI components
-│       └── pages/                   # Next.js pages
-├── worker/           # Cloudflare Worker (token server)
-│   └── src/index.ts                 # POST /api/token endpoint
+├── app/                          # Next.js app (frontend + API, deploys as one Worker)
+│   ├── src/
+│   │   ├── hooks/useChatRoom.ts  # core RealtimeKit hook
+│   │   ├── components/           # UI components
+│   │   └── pages/
+│   │       └── api/token.ts      # token API route (runs in Worker)
+│   ├── wrangler.jsonc            # Cloudflare Worker config
+│   └── open-next.config.ts       # opennextjs/cloudflare config
 └── .github/
     └── workflows/
-        ├── deploy-worker.yml        # CI: deploy Worker
-        └── deploy-pages.yml         # CI: deploy Pages
+        └── deploy-web.yml        # CI: build + deploy Worker
 ```
 
 ## License
