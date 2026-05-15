@@ -86,8 +86,10 @@ async function getOrCreateMeeting(
     headers: authHeaders(env),
     body: JSON.stringify({ title: roomName }),
   })
+  if (!res.ok) throw new Error(`RTK meetings API error: ${res.status}`)
   const data = (await res.json()) as any
-  const meetingId = data.data.id
+  const meetingId = data?.data?.id
+  if (!meetingId) throw new Error("RTK meetings API returned no meeting ID")
 
   const record: RoomRecord = { meetingId, createdAt: Date.now(), roomType }
   await env.ROOMS_KV.put(key, JSON.stringify(record), {
@@ -121,7 +123,10 @@ async function addParticipant(
     }
   )
   const data = (await res.json()) as any
-  return data.data.token
+  if (!res.ok) throw new Error(`RTK participants API error: ${res.status}`)
+  const token = data?.data?.token
+  if (!token) throw new Error("RTK participants API returned no token")
+  return token
 }
 
 export default async function handler(
@@ -191,7 +196,7 @@ export default async function handler(
       resolvedRoomType,
       cfEnv
     )
-    return res.status(200).json({ authToken })
+    return res.status(200).json({ authToken, roomType: resolvedRoomType })
   } catch (err) {
     console.error(err)
     return res.status(500).json({ error: "internal error" })

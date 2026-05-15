@@ -17,6 +17,9 @@ export function useChatRoom(
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState<string>("")
   const [expiryWarning, setExpiryWarning] = useState<string>("")
+  const [resolvedRoomType, setResolvedRoomType] = useState<
+    "audio" | "screenshare"
+  >(roomType)
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting")
   const joinedMeetingRef = useRef<typeof meeting | null>(null)
@@ -40,12 +43,15 @@ export function useChatRoom(
         if (!r.ok) throw new Error("server_error")
         return r.json()
       })
-      .then((data: { authToken: string }) => {
-        initMeeting({
-          authToken: data.authToken,
-          defaults: { audio: true, video: false },
-        })
-      })
+      .then(
+        (data: { authToken: string; roomType?: "audio" | "screenshare" }) => {
+          if (data.roomType) setResolvedRoomType(data.roomType)
+          initMeeting({
+            authToken: data.authToken,
+            defaults: { audio: true, video: false },
+          })
+        }
+      )
       .catch((err: Error) => {
         if (err.name === "AbortError") return
         setConnectionStatus("failed")
@@ -61,7 +67,7 @@ export function useChatRoom(
       })
 
     return () => controller.abort()
-  }, [roomName, nickName])
+  }, [roomName, nickName, roomType])
 
   useEffect(() => {
     if (!meeting || joinedMeetingRef.current === meeting) return
@@ -250,5 +256,6 @@ export function useChatRoom(
     error,
     expiryWarning,
     connectionStatus,
+    resolvedRoomType,
   }
 }

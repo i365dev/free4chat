@@ -28,7 +28,10 @@ export default function RoomContent({
     error,
     expiryWarning,
     connectionStatus,
+    resolvedRoomType,
   } = useChatRoom(roomName, nickName, roomType)
+
+  const screenshareAllowed = resolvedRoomType === "screenshare"
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
@@ -173,6 +176,7 @@ export default function RoomContent({
               screenShareEnabled={p.screenShareEnabled}
               onMuteSelf={muteSelf}
               onToggleScreenShare={toggleScreenShare}
+              screenshareAllowed={screenshareAllowed}
               className="sm:1/2 md:basis-1/8"
             />
           ))}

@@ -41,18 +41,22 @@ export default function Room() {
     setRoomName(roomId)
     setRoomType(roomTypeParam === "screenshare" ? "screenshare" : "audio")
     if (typeof window !== "undefined") {
-      const rooms: { roomName: string; nickName: string }[] = JSON.parse(
-        localStorage.getItem("rooms") || "[]"
-      )
-      const room = rooms.find((r) => r.roomName === roomId)
-      if (room) {
-        setNickName(room.nickName)
-        setReady(true)
-      } else {
+      try {
+        const rooms: { roomName: string; nickName: string }[] = JSON.parse(
+          localStorage.getItem("rooms") || "[]"
+        )
+        const room = rooms.find((r) => r.roomName === roomId)
+        if (room) {
+          setNickName(room.nickName)
+          setReady(true)
+        } else {
+          setShowNickNamePop(true)
+        }
+      } catch {
         setShowNickNamePop(true)
       }
     }
-  }, [router.isReady, roomId])
+  }, [router.isReady, roomId, roomTypeParam])
 
   useEffect(() => {
     if (ready && roomName && nickName) {
