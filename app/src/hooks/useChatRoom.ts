@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useRealtimeKitClient } from "@cloudflare/realtimekit-react"
 
-import { LOCAL_PEER_ID, GET_WORKER_URL } from "@common/consts"
+import { LOCAL_PEER_ID } from "@common/consts"
 import { UserInfo, Message } from "@common/types"
 
 export function useChatRoom(roomName: string, nickName: string) {
@@ -14,7 +14,7 @@ export function useChatRoom(roomName: string, nickName: string) {
   useEffect(() => {
     if (!roomName || !nickName) return
 
-    fetch(`${GET_WORKER_URL()}/api/token`, {
+    fetch(`/api/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ room: roomName, name: nickName }),

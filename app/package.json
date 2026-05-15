@@ -7,7 +7,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "pages:build": "npx @cloudflare/next-on-pages",
+    "cf-build": "opennextjs-cloudflare build",
+    "cf-deploy": "wrangler deploy",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "type-check": "tsc --pretty --noEmit",
     "format": "prettier --write .",
     "lint": "eslint src --fix",
@@ -28,6 +30,7 @@
   "devDependencies": {
     "@cloudflare/next-on-pages": "^1.13.3",
     "@cloudflare/workers-types": "^4.20240821.1",
+    "@opennextjs/cloudflare": "^1.19.1",
     "@tailwindcss/aspect-ratio": "^0.4.0",
     "@tailwindcss/forms": "^0.5.0",
     "@tailwindcss/typography": "^0.5.2",
@@ -50,7 +53,7 @@
     "tailwindcss": "^3.4.4",
     "typescript": "^5.5.2",
     "vercel": "latest",
-    "wrangler": "^3.68.0"
+    "wrangler": "^4.0.0"
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

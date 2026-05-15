@@ -5,7 +5,6 @@ node_modules/
 app/.next/
 app/out/
 app/.env.local
-
-# worker
-worker/.dev.vars
-worker/dist/
+app/.open-next/
+app/.dev.vars
+worker/.wrangler
