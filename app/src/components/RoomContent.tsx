@@ -26,7 +26,6 @@ export default function RoomContent({
     error,
     expiryWarning,
     connectionStatus,
-    reconnect,
   } = useChatRoom(roomName, nickName)
 
   const copyRoomLink = () => {
@@ -39,15 +38,29 @@ export default function RoomContent({
     }
   }
 
-  if (connectionStatus === "disconnected") {
+  if (connectionStatus === "reconnecting") {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-gray-950 text-white">
-        <p className="mb-4 text-xl font-semibold text-gray-200">Disconnected</p>
+        <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
+        <p className="text-sm text-gray-400">Reconnecting...</p>
+      </main>
+    )
+  }
+
+  if (connectionStatus === "failed") {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center bg-gray-950 text-white">
+        <p className="mb-2 text-xl font-semibold text-gray-200">
+          Connection lost
+        </p>
+        <p className="mb-6 text-sm text-gray-500">
+          Could not reconnect after multiple attempts.
+        </p>
         <button
-          onClick={reconnect}
+          onClick={() => window.location.reload()}
           className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
         >
-          Reconnect
+          Reload page
         </button>
       </main>
     )

@@ -5,7 +5,7 @@ import { useRealtimeKitClient } from "@cloudflare/realtimekit-react"
 import { LOCAL_PEER_ID } from "@common/consts"
 import { UserInfo, Message } from "@common/types"
 
-type ConnectionStatus = "connecting" | "connected" | "disconnected"
+type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 
 export function useChatRoom(roomName: string, nickName: string) {
   const [meeting, initMeeting] = useRealtimeKitClient()
@@ -19,7 +19,7 @@ export function useChatRoom(roomName: string, nickName: string) {
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const fetchAndInit = useCallback(() => {
+  useEffect(() => {
     if (!roomName || !nickName) return
 
     fetch(`/api/token`, {
@@ -50,17 +50,7 @@ export function useChatRoom(roomName: string, nickName: string) {
           setError("Failed to connect to server, please refresh")
         }
       })
-  }, [roomName, nickName, initMeeting])
-
-  useEffect(() => {
-    fetchAndInit()
   }, [roomName, nickName])
-
-  const reconnect = useCallback(() => {
-    joinedRef.current = false
-    setConnectionStatus("connecting")
-    fetchAndInit()
-  }, [fetchAndInit])
 
   useEffect(() => {
     if (!meeting || joinedRef.current) return
@@ -147,15 +137,31 @@ export function useChatRoom(roomName: string, nickName: string) {
       )
     }, 7200 * 1000)
 
-    try {
-      if (typeof (meeting.self as any).on === "function") {
-        ;(meeting.self as any).on("socketDisconnect", () => {
-          setConnectionStatus("disconnected")
-        })
+    meeting.self.on("roomLeft", ({ state }: { state: string }) => {
+      if (state === "disconnected") {
+        setConnectionStatus("reconnecting")
+      } else if (state === "failed") {
+        setConnectionStatus("failed")
       }
-    } catch (_e) {
-      void _e
-    }
+    })
+
+    meeting.self.on(
+      "roomJoined",
+      ({ reconnected }: { reconnected: boolean }) => {
+        if (reconnected) {
+          setConnectionStatus("connected")
+          buildParticipants()
+        }
+      }
+    )
+    ;(meeting.meta as any).on(
+      "socketConnectionUpdate",
+      ({ state }: { state: string }) => {
+        if (state === "reconnecting") {
+          setConnectionStatus("reconnecting")
+        }
+      }
+    )
 
     meeting.self.on("audioUpdate", buildParticipants)
     meeting.participants.joined.on("participantJoined", buildParticipants)
@@ -224,6 +230,5 @@ export function useChatRoom(roomName: string, nickName: string) {
     error,
     expiryWarning,
     connectionStatus,
-    reconnect,
   }
 }
