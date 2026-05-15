@@ -53,9 +53,25 @@ async function addParticipant(meetingId: string, name: string, env: Env): Promis
   return data.data.token
 }
 
+const ALLOWED_ORIGINS = [
+  "https://free4.chat",
+  "https://www.free4.chat",
+  "https://free4chat.i365.workers.dev",
+]
+
+const MAX_ROOM_LENGTH = 64
+const MAX_NAME_LENGTH = 32
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" })
+  }
+
+  // Origin check — blocks cross-origin browser requests
+  const origin = req.headers["origin"] as string | undefined
+  const isDev = process.env.NODE_ENV === "development"
+  if (!isDev && (!origin || !ALLOWED_ORIGINS.includes(origin))) {
+    return res.status(403).json({ error: "Forbidden" })
   }
 
   try {
@@ -63,12 +79,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const cfEnv = env as unknown as Env
 
     const { room, name } = req.body as { room: string; name: string }
+
+    // Input validation
     if (!room || !name) {
       return res.status(400).json({ error: "room and name required" })
     }
+    if (typeof room !== "string" || typeof name !== "string") {
+      return res.status(400).json({ error: "invalid input" })
+    }
+    if (room.length > MAX_ROOM_LENGTH || name.length > MAX_NAME_LENGTH) {
+      return res.status(400).json({ error: "input too long" })
+    }
+    // Only allow printable non-whitespace-only strings
+    if (!room.trim() || !name.trim()) {
+      return res.status(400).json({ error: "room and name must not be blank" })
+    }
 
-    const meetingId = await getOrCreateMeeting(room, cfEnv)
-    const authToken = await addParticipant(meetingId, name, cfEnv)
+    const meetingId = await getOrCreateMeeting(room.trim(), cfEnv)
+    const authToken = await addParticipant(meetingId, name.trim(), cfEnv)
 
     return res.status(200).json({ authToken })
   } catch (err) {
