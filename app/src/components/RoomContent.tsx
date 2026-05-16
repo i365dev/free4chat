@@ -180,12 +180,31 @@ export default function RoomContent({
     sendTextMessage(text)
   }
 
+  const MAX_FILE_SIZE = 10 * 1024 * 1024
+
   const wrappedSendFile = async (file: File) => {
+    const id = `${Date.now()}-${file.name}`
+    if (file.size > MAX_FILE_SIZE) {
+      setPendingFiles((prev) => [
+        ...prev,
+        {
+          id,
+          fileName: file.name,
+          isImage: file.type.startsWith("image/"),
+          error: true,
+          errorMessage: `File too large (max 10 MB)`,
+        },
+      ])
+      setTimeout(
+        () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
+        3000
+      )
+      return
+    }
     umamiEvent("ChatActivity", {
       type: file.type.startsWith("image/") ? "image" : "file",
       roomHash: hashRoom(roomName),
     })
-    const id = `${Date.now()}-${file.name}`
     setPendingFiles((prev) => [
       ...prev,
       { id, fileName: file.name, isImage: file.type.startsWith("image/") },
@@ -194,7 +213,11 @@ export default function RoomContent({
       await sendFileMessage(file)
     } catch {
       setPendingFiles((prev) =>
-        prev.map((f) => (f.id === id ? { ...f, error: true } : f))
+        prev.map((f) =>
+          f.id === id
+            ? { ...f, error: true, errorMessage: "Failed to send" }
+            : f
+        )
       )
       setTimeout(
         () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
@@ -436,6 +459,7 @@ export default function RoomContent({
         <div className="flex flex-1 flex-col overflow-hidden">
           <TextChatCard
             room={roomName}
+            nickName={nickName}
             messages={messages}
             pendingFiles={pendingFiles}
             onSendText={wrappedSendText}

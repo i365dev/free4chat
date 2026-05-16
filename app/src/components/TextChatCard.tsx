@@ -11,10 +11,12 @@ interface PendingFile {
   fileName: string
   isImage: boolean
   error?: boolean
+  errorMessage?: string
 }
 
 interface TextChatCardProps {
   room: string
+  nickName: string
   messages: Message[]
   pendingFiles?: PendingFile[]
   onSendText: (text: string) => void
@@ -455,6 +457,7 @@ function GamesMenu({
 
 export default function TextChatCard({
   room,
+  nickName,
   messages,
   pendingFiles = [],
   onSendText,
@@ -616,7 +619,7 @@ export default function TextChatCard({
               className="mb-4 flex w-full flex-row-reverse items-end"
             >
               <div className="ml-2 flex-shrink-0">
-                <div className="h-7 w-7 rounded-full bg-gray-600" />
+                <Avatar size={28} variant="beam" name={nickName} />
               </div>
               <div style={{ maxWidth: "72%" }}>
                 <div
@@ -626,7 +629,7 @@ export default function TextChatCard({
                 >
                   {f.error ? (
                     <span className="text-xs text-white/80">
-                      Failed to send
+                      {f.errorMessage ?? "Failed to send"}
                     </span>
                   ) : (
                     <>
