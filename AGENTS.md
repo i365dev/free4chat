@@ -145,6 +145,33 @@ Security in place:
 
 **Never hardcode secrets.** All credentials read from Worker secrets via `getCloudflareContext().env`.
 
+## Analytics (Umami + Google Analytics)
+
+Both `umami` (privacy-first) and `gtag` (Google Analytics) are loaded in `_document.tsx`. All custom event tracking uses `umamiEvent(name, data)` from `common/utils.ts`. The `hashRoom()` helper (FNV-1a) is used to anonymize room names before sending — **never send raw room names**.
+
+### Current Events
+
+| Event | Trigger | Key Properties |
+|---|---|---|
+| `RoomJoin` | User clicks Join on landing page | `type` (audio\|screenshare), `roomHash` |
+| `Room` | User actually enters the room (after token fetch) | `type`, `roomHash` |
+| `RoomSize` | Participant count crosses a bucket boundary | `bucket` (1/2-3/4-9/10+), `roomType`, `roomHash` |
+| `ChatActivity` | First text message sent; every file/image sent | `type` (text\|image\|file), `roomHash` |
+| `ChatAction` | whiteboard / poll / game / vote actions sent | `type`, optional `gameId`, `room` (raw — **fix this to use roomHash**) |
+| `ScreenShare` | User toggles their own screen share | `action` (start\|stop), `roomHash` |
+
+### Implementation Notes
+
+- `RoomSize` fires only on bucket change (deduplicated via `lastBucketRef`) — not on every participant join/leave
+- `ChatActivity` for text fires only once per session (deduplicated via `hasSentTextRef`) to measure "did anyone chat?" not volume
+- All wrapped send/action functions live in `RoomContent.tsx`; raw functions from `useChatRoom.ts` should not be called directly from UI components
+
+### Known Issues / Future Improvements
+
+- `ChatAction` currently passes raw `room` name instead of `roomHash` — should be fixed for consistency
+- **Candidate events to add**: mute toggle (how often users mute themselves), room leave duration (time-in-room), copy-link button clicks, reconnect events
+- If AI bot is added (Issue #52), track bot join/leave and message counts separately
+
 ## Styling Conventions
 
 - Tailwind CSS only — no inline styles except for dynamic values (e.g. split ratio `width: ${splitRatio}%`)

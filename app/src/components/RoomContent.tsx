@@ -185,6 +185,19 @@ export default function RoomContent({
     sendFileMessage(file)
   }
 
+  const selfScreenShareRef = useRef(false)
+  const wrappedToggleScreenShare = () => {
+    const isCurrentlySharing = participants.find(
+      (p) => p.peerId === LOCAL_PEER_ID
+    )?.screenShareEnabled
+    selfScreenShareRef.current = !isCurrentlySharing
+    umamiEvent("ScreenShare", {
+      action: isCurrentlySharing ? "stop" : "start",
+      roomHash: hashRoom(roomName),
+    })
+    toggleScreenShare()
+  }
+
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
       const url =
@@ -361,7 +374,7 @@ export default function RoomContent({
                       screenShareStream={p.screenShareStream}
                       screenShareEnabled={p.screenShareEnabled}
                       onMuteSelf={muteSelf}
-                      onToggleScreenShare={toggleScreenShare}
+                      onToggleScreenShare={wrappedToggleScreenShare}
                       screenshareAllowed={screenshareAllowed}
                       className="w-20"
                       compact
@@ -383,7 +396,7 @@ export default function RoomContent({
                   screenShareStream={p.screenShareStream}
                   screenShareEnabled={p.screenShareEnabled}
                   onMuteSelf={muteSelf}
-                  onToggleScreenShare={toggleScreenShare}
+                  onToggleScreenShare={wrappedToggleScreenShare}
                   screenshareAllowed={screenshareAllowed}
                   className="w-40 flex-none"
                 />
