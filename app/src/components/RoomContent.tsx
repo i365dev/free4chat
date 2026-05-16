@@ -93,6 +93,7 @@ export default function RoomContent({
     { id: number; emoji: string; x: number }[]
   >([])
   const processedReactionIds = useRef<Set<string>>(new Set())
+  const joinedAtTs = useRef(Date.now().toString())
 
   const spawnReaction = useCallback((emoji: string) => {
     const id = Date.now() + Math.random()
@@ -196,7 +197,9 @@ export default function RoomContent({
   useEffect(() => {
     messages.forEach((m) => {
       if (m.type !== "action" || m.actionType !== "reaction") return
-      const msgId = `${m.peerId}-${m.actionPayload?.emoji}-${m.actionPayload?.ts}`
+      const ts = m.actionPayload?.ts ?? "0"
+      if (ts < joinedAtTs.current) return
+      const msgId = `${m.peerId}-${m.actionPayload?.emoji}-${ts}`
       if (processedReactionIds.current.has(msgId)) return
       processedReactionIds.current.add(msgId)
       spawnReaction(m.actionPayload?.emoji ?? "👍")
@@ -215,7 +218,6 @@ export default function RoomContent({
   const MAX_FILE_SIZE = 20 * 1024 * 1024
 
   const sendReaction = (emoji: string) => {
-    spawnReaction(emoji)
     sendActionMessage("reaction", { emoji, ts: Date.now().toString() })
   }
 
