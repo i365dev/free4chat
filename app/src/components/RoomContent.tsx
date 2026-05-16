@@ -132,7 +132,7 @@ export default function RoomContent({
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
-  const activeScreenShare = participants.find(
+  const activeScreenShares = participants.filter(
     (p) =>
       p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID && p.screenShareStream
   )
@@ -318,12 +318,13 @@ export default function RoomContent({
         </div>
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          {activeScreenShare && (
+          {activeScreenShares.map((p) => (
             <ScreenShareViewer
-              stream={activeScreenShare.screenShareStream!}
-              name={activeScreenShare.name}
+              key={p.peerId}
+              stream={p.screenShareStream!}
+              name={p.name}
             />
-          )}
+          ))}
           <TextChatCard
             room={roomName}
             messages={messages}
