@@ -86,11 +86,13 @@ useRealtimeKitClient()
         └── useChatRoom.ts
               ├── buildParticipants() → UserInfo[]
               │     self + joined participants → mapped to UserInfo shape
-              └── returns { participants, messages, muteSelf, toggleScreenShare, error }
+              └── returns { participants, messages, muteSelf, toggleScreenShare, error, resolvedRoomType, ... }
                     └── RoomContent.tsx
-                          └── UserCard.tsx (per participant)
-                                ├── <audio> element
-                                └── AudioVisualizer
+                          ├── ScreenShareViewer (active share only, one at a time)
+                          ├── UserCard.tsx (per participant, compact strip when screensharing)
+                          │     ├── <audio> element
+                          │     └── AudioVisualizer
+                          └── TextChatCard.tsx (chat panel)
 ```
 
 ## Type Contracts
@@ -145,10 +147,10 @@ Security in place:
 
 ## Styling Conventions
 
-- Tailwind CSS only — no inline styles except for dynamic values
+- Tailwind CSS only — no inline styles except for dynamic values (e.g. split ratio `width: ${splitRatio}%`)
 - Dark theme: `bg-gray-900` base, `border-gray-700` borders, `text-white`
-- Participant cards: `rounded-xl border border-gray-700 p-4`, bg color from `strToBgColor(name)`
-- `className` prop on UserCard is passed from RoomContent for grid sizing
+- Participant cards: `rounded-xl border border-gray-700 px-3 py-3`, bg color from `strToBgColor(name)`
+- `className` prop on UserCard is always `w-40 flex-none` (full card) or `w-20` (compact strip); inner div uses `w-full overflow-hidden`
 
 ## Development
 
@@ -175,3 +177,7 @@ Manual: `yarn cf-build && yarn cf-deploy` (needs `CLOUDFLARE_API_TOKEN` + `CLOUD
 - `joinedRef` prevents double-joining on React StrictMode double-effect
 - `resolvedRoomType` (state in `useChatRoom.ts`) reflects the actual room type returned by the token API — use this (not the URL param) for UI gating (e.g. hiding screenshare button in audio rooms)
 - Screenshare button in `UserCard.tsx` is controlled by `screenshareAllowed` prop; only `true` when `resolvedRoomType === "screenshare"`
+- `activeSharePeerId` in `RoomContent.tsx` tracks which participant's screen is displayed — only one `ScreenShareViewer` renders at a time; clicking a compact card with `screenShareEnabled` switches it
+- Split pane ratio (`splitRatio`) is stored in state; auto-sets to 75 when screen sharing, 50 otherwise; drag handle (1px div between panels) is desktop-only (`hidden md:block`)
+- IME input fix: `isComposingRef` in `TextChatCard.tsx` prevents Enter from submitting during CJK composition; always check `!isComposingRef.current` before sending
+- `*.tsbuildinfo` is gitignored — do not commit it
