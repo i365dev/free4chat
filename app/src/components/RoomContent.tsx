@@ -328,11 +328,7 @@ export default function RoomContent({
               </div>
             </>
           ) : (
-            <div
-              className={`scrollbar-thin grid h-full content-start gap-2 overflow-y-auto p-3 ${
-                participants.length === 1 ? "grid-cols-1" : "grid-cols-2"
-              }`}
-            >
+            <div className="scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
               {participants.map((p) => (
                 <UserCard
                   key={p.peerId}
@@ -346,7 +342,7 @@ export default function RoomContent({
                   onMuteSelf={muteSelf}
                   onToggleScreenShare={toggleScreenShare}
                   screenshareAllowed={screenshareAllowed}
-                  className="w-full"
+                  className="w-40"
                 />
               ))}
             </div>
