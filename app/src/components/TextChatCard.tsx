@@ -19,8 +19,13 @@ function getOrCreateWhiteboardUrl(room: string): string {
   const storageKey = `wb-key-${room}`
   let key = localStorage.getItem(storageKey)
   if (!key) {
-    key =
-      Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+    const bytes = new Uint8Array(16)
+    crypto.getRandomValues(bytes)
+    key = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=/g, "")
+      .slice(0, 22)
     localStorage.setItem(storageKey, key)
   }
   const roomId = room
