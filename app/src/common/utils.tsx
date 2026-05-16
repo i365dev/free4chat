@@ -105,3 +105,21 @@ export const umamiEvent = (eventName, eventData) => {
   // @ts-ignore
   window.umami.track(eventName, eventData)
 }
+
+export const hashRoom = (roomName: string): string => {
+  let h = 0x811c9dc5
+  for (let i = 0; i < roomName.length; i++) {
+    h ^= roomName.charCodeAt(i)
+    h = (h * 0x01000193) >>> 0
+  }
+  return h.toString(16).padStart(8, "0")
+}
+
+export const participantsBucket = (
+  count: number
+): "1" | "2-3" | "4-9" | "10+" => {
+  if (count >= 10) return "10+"
+  if (count >= 4) return "4-9"
+  if (count >= 2) return "2-3"
+  return "1"
+}

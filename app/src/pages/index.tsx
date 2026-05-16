@@ -2,7 +2,12 @@ import { useState, useEffect } from "react"
 
 import { useRouter } from "next/router"
 
-import { randomName, saveRoomToLocalStorage, umamiEvent } from "../common/utils"
+import {
+  randomName,
+  saveRoomToLocalStorage,
+  umamiEvent,
+  hashRoom,
+} from "../common/utils"
 import Header from "../components/Header"
 
 export default function Home() {
@@ -25,7 +30,7 @@ export default function Home() {
         saveRoomToLocalStorage(roomName, nickName)
       }
       const roomType = screenShare ? "screenshare" : "audio"
-      umamiEvent("RoomJoin", { type: roomType, room: roomName })
+      umamiEvent("RoomJoin", { type: roomType, roomHash: hashRoom(roomName) })
       const url =
         "/room?id=" +
         encodeURIComponent(roomName) +

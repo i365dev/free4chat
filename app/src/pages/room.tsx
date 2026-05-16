@@ -9,6 +9,7 @@ import {
   saveRoomToLocalStorage,
   gtagEvent,
   umamiEvent,
+  hashRoom,
 } from "../common/utils"
 
 const RoomContent = dynamic(() => import("../components/RoomContent"), {
@@ -60,12 +61,10 @@ export default function Room() {
 
   useEffect(() => {
     if (ready && roomName && nickName) {
-      gtagEvent("Room", roomName, nickName, "JoinSuccess")
+      gtagEvent("Room", "Join", roomType, 1)
       umamiEvent("Room", {
         type: "Join",
-        message: "Success",
-        user: nickName,
-        room: roomName,
+        roomHash: hashRoom(roomName),
         roomType,
       })
     }

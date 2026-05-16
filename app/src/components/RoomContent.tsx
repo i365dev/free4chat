@@ -1,10 +1,11 @@
-import React, { useState } from "react"
+import React, { useState, useEffect, useRef } from "react"
 
 import { useRouter } from "next/router"
 
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import { useChatRoom } from "../hooks/useChatRoom"
+import { umamiEvent, hashRoom, participantsBucket } from "../common/utils"
 
 export default function RoomContent({
   roomName,
@@ -33,6 +34,36 @@ export default function RoomContent({
   } = useChatRoom(roomName, nickName, roomType)
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
+
+  const lastBucketRef = useRef<string>("")
+  useEffect(() => {
+    const bucket = participantsBucket(participants.length)
+    if (bucket !== lastBucketRef.current) {
+      lastBucketRef.current = bucket
+      umamiEvent("RoomSize", {
+        roomHash: hashRoom(roomName),
+        bucket,
+        roomType: resolvedRoomType,
+      })
+    }
+  }, [participants.length, roomName, resolvedRoomType])
+
+  const hasSentTextRef = useRef(false)
+  const wrappedSendText = (text: string) => {
+    if (!hasSentTextRef.current) {
+      hasSentTextRef.current = true
+      umamiEvent("ChatActivity", { type: "text", roomHash: hashRoom(roomName) })
+    }
+    sendTextMessage(text)
+  }
+
+  const wrappedSendFile = (file: File) => {
+    umamiEvent("ChatActivity", {
+      type: file.type.startsWith("image/") ? "image" : "file",
+      roomHash: hashRoom(roomName),
+    })
+    sendFileMessage(file)
+  }
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
@@ -185,8 +216,8 @@ export default function RoomContent({
         <TextChatCard
           room={roomName}
           messages={messages}
-          onSendText={sendTextMessage}
-          onSendFile={sendFileMessage}
+          onSendText={wrappedSendText}
+          onSendFile={wrappedSendFile}
           onSendAction={sendActionMessage}
         />
       </div>

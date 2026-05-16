@@ -404,7 +404,7 @@ function GamesMenu({
     : "absolute top-10 left-0"
   return (
     <div
-      className={`${posClass} z-10 w-52 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
+      className={`${posClass} z-10 max-h-72 w-52 overflow-y-auto rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
     >
       <button
         type="button"
