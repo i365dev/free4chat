@@ -182,6 +182,7 @@ export function useChatRoom(
         setConnectionStatus("connected")
         buildParticipants()
       }
+      syncMessages()
     }
 
     const onSocketUpdate = ({ state }: { state: string }) => {
