@@ -6,9 +6,17 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent } from "@common/utils"
 
+interface PendingFile {
+  id: string
+  fileName: string
+  isImage: boolean
+  error?: boolean
+}
+
 interface TextChatCardProps {
   room: string
   messages: Message[]
+  pendingFiles?: PendingFile[]
   onSendText: (text: string) => void
   onSendFile: (file: File) => void
   onSendAction: (
@@ -448,6 +456,7 @@ function GamesMenu({
 export default function TextChatCard({
   room,
   messages,
+  pendingFiles = [],
   onSendText,
   onSendFile,
   onSendAction,
@@ -463,7 +472,7 @@ export default function TextChatCard({
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages])
+  }, [messages, pendingFiles])
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -601,6 +610,56 @@ export default function TextChatCard({
               </div>
             )
           })}
+          {pendingFiles.map((f) => (
+            <div
+              key={f.id}
+              className="mb-4 flex w-full flex-row-reverse items-end"
+            >
+              <div className="ml-2 flex-shrink-0">
+                <div className="h-7 w-7 rounded-full bg-gray-600" />
+              </div>
+              <div style={{ maxWidth: "72%" }}>
+                <div
+                  className={`flex items-center gap-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3 ${
+                    f.error ? "bg-red-700/60" : "bg-blue-600/60"
+                  }`}
+                >
+                  {f.error ? (
+                    <span className="text-xs text-white/80">
+                      Failed to send
+                    </span>
+                  ) : (
+                    <>
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        className="h-4 w-4 animate-spin text-white/70"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                        />
+                      </svg>
+                      <span className="max-w-[140px] truncate text-xs text-white/70">
+                        {f.fileName}
+                      </span>
+                      <span className="text-xs text-white/40">Sending…</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
           <div ref={messagesEndRef} />
         </div>
 

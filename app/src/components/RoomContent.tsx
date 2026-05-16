@@ -78,6 +78,9 @@ export default function RoomContent({
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
+  const [pendingFiles, setPendingFiles] = useState<
+    { id: string; fileName: string; isImage: boolean; error?: boolean }[]
+  >([])
 
   const {
     participants,
@@ -177,12 +180,29 @@ export default function RoomContent({
     sendTextMessage(text)
   }
 
-  const wrappedSendFile = (file: File) => {
+  const wrappedSendFile = async (file: File) => {
     umamiEvent("ChatActivity", {
       type: file.type.startsWith("image/") ? "image" : "file",
       roomHash: hashRoom(roomName),
     })
-    sendFileMessage(file)
+    const id = `${Date.now()}-${file.name}`
+    setPendingFiles((prev) => [
+      ...prev,
+      { id, fileName: file.name, isImage: file.type.startsWith("image/") },
+    ])
+    try {
+      await sendFileMessage(file)
+    } catch {
+      setPendingFiles((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, error: true } : f))
+      )
+      setTimeout(
+        () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
+        3000
+      )
+      return
+    }
+    setPendingFiles((prev) => prev.filter((f) => f.id !== id))
   }
 
   const selfScreenShareRef = useRef(false)
@@ -417,6 +437,7 @@ export default function RoomContent({
           <TextChatCard
             room={roomName}
             messages={messages}
+            pendingFiles={pendingFiles}
             onSendText={wrappedSendText}
             onSendFile={wrappedSendFile}
             onSendAction={sendActionMessage}

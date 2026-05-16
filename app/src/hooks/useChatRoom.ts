@@ -249,12 +249,12 @@ export function useChatRoom(
   )
 
   const sendFileMessage = useCallback(
-    (file: File) => {
-      if (!meeting) return
+    (file: File): Promise<void> => {
+      if (!meeting) return Promise.resolve()
       if (file.type.startsWith("image/")) {
-        meeting.chat.sendImageMessage(file)
+        return meeting.chat.sendImageMessage(file)
       } else {
-        meeting.chat.sendFileMessage(file)
+        return meeting.chat.sendFileMessage(file)
       }
     },
     [meeting]
