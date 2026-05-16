@@ -260,7 +260,14 @@ function ActionCard({
     )
   }
 
-  if (msg.actionType === "vote") return null
+  if (msg.actionType === "vote") {
+    const containerClass = isSelf ? "mr-2 text-right" : "ml-2 text-left"
+    return (
+      <div className={`${containerClass} text-xs italic text-white/30`}>
+        voted
+      </div>
+    )
+  }
 
   if (msg.actionType === "game") {
     return <GameCard msg={msg} isSelf={isSelf} />
@@ -397,16 +404,19 @@ function GamesMenu({
   onSelect,
   onBack,
   menuUp,
+  menuRef,
 }: {
   onSelect: (gameId: string) => void
   onBack: () => void
   menuUp: boolean
+  menuRef?: React.RefObject<HTMLDivElement>
 }) {
   const posClass = menuUp
     ? "absolute bottom-full left-0 mb-1"
     : "absolute top-full left-0 mt-1"
   return (
     <div
+      ref={menuRef}
       className={`${posClass} z-10 max-h-72 w-52 overflow-y-auto rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
     >
       <button
@@ -448,6 +458,7 @@ export default function TextChatCard({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const gamesBtnRef = useRef<HTMLDivElement>(null)
+  const gamesMenuRef = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
 
   useEffect(() => {
@@ -456,10 +467,9 @@ export default function TextChatCard({
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        gamesBtnRef.current &&
-        !gamesBtnRef.current.contains(e.target as Node)
-      ) {
+      const inBtn = gamesBtnRef.current?.contains(e.target as Node)
+      const inMenu = gamesMenuRef.current?.contains(e.target as Node)
+      if (!inBtn && !inMenu) {
         setSubmenu(null)
       }
     }
@@ -674,6 +684,7 @@ export default function TextChatCard({
               onSelect={handleGameSelect}
               onBack={() => setSubmenu(null)}
               menuUp={true}
+              menuRef={gamesMenuRef}
             />
           )}
         </div>
