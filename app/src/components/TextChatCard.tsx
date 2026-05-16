@@ -15,6 +15,30 @@ interface TextChatCardProps {
   ) => void
 }
 
+function TextWithLinks({ text }: { text: string }) {
+  const urlRegex = /(https?:\/\/[^\s]+)/g
+  const parts = text.split(urlRegex)
+  return (
+    <span className="break-all">
+      {parts.map((part, i) =>
+        urlRegex.test(part) ? (
+          <a
+            key={i}
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline opacity-90 hover:opacity-100"
+          >
+            {part}
+          </a>
+        ) : (
+          part
+        )
+      )}
+    </span>
+  )
+}
+
 function getOrCreateWhiteboardUrl(room: string): string {
   const storageKey = `wb-key-${room}`
   let key = localStorage.getItem(storageKey)
@@ -207,7 +231,7 @@ export default function TextChatCard({
                           }
                           style={{ backgroundColor: strToBgColor(p.name) }}
                         >
-                          {p.text}
+                          <TextWithLinks text={p.text ?? ""} />
                         </div>
                       ) : p.type === "action" ? (
                         <ActionCard msg={p} isSelf={isSelf} />
