@@ -2,10 +2,107 @@ import React, { useState, useEffect, useRef } from "react"
 
 import { useRouter } from "next/router"
 
+import { LOCAL_PEER_ID } from "@common/consts"
+
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import { umamiEvent, hashRoom, participantsBucket } from "../common/utils"
 import { useChatRoom } from "../hooks/useChatRoom"
+
+function ScreenShareViewer({
+  stream,
+  name,
+}: {
+  stream: MediaStream
+  name: string
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream
+  }, [stream])
+
+  const enterFullscreen = () => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.requestFullscreen) v.requestFullscreen()
+    else if ((v as any).webkitEnterFullscreen)
+      (v as any).webkitEnterFullscreen()
+  }
+
+  return (
+    <div
+      className={`relative flex-none border-b border-gray-800 bg-black ${
+        expanded ? "h-96" : "h-48"
+      }`}
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="h-full w-full cursor-pointer object-contain"
+        onClick={() => setExpanded((v) => !v)}
+      />
+      <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-xs text-white">
+        {name}
+      </div>
+      <div className="absolute bottom-2 right-2 flex gap-1">
+        <button
+          className="rounded bg-black/60 p-1 text-white hover:bg-black/80"
+          onClick={() => setExpanded((v) => !v)}
+          title={expanded ? "Shrink" : "Expand"}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            {expanded ? (
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9 9V4m0 0H4m5 0L3 10m12-1V4m0 0h5m-5 0l6 6M9 15v5m0 0H4m5 0l-6-6m12 6v-5m0 5h5m-5 0l6-6"
+              />
+            ) : (
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"
+              />
+            )}
+          </svg>
+        </button>
+        <button
+          className="rounded bg-black/60 p-1 text-white hover:bg-black/80"
+          onClick={enterFullscreen}
+          title="Fullscreen"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export default function RoomContent({
   roomName,
@@ -34,6 +131,11 @@ export default function RoomContent({
   } = useChatRoom(roomName, nickName, roomType)
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
+
+  const activeScreenShare = participants.find(
+    (p) =>
+      p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID && p.screenShareStream
+  )
 
   const lastBucketRef = useRef<string>("")
   useEffect(() => {
@@ -216,6 +318,12 @@ export default function RoomContent({
         </div>
 
         <div className="flex flex-1 flex-col overflow-hidden">
+          {activeScreenShare && (
+            <ScreenShareViewer
+              stream={activeScreenShare.screenShareStream!}
+              name={activeScreenShare.name}
+            />
+          )}
           <TextChatCard
             room={roomName}
             messages={messages}
