@@ -80,6 +80,7 @@ export function useChatRoom(
       })
 
     return () => controller.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomName, nickName, roomType])
 
   useEffect(() => {

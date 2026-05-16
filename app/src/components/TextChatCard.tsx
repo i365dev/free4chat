@@ -280,6 +280,7 @@ function FileMessageBubble({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
     >
       {isImage ? (
         <a href={msg.fileLink} target="_blank" rel="noopener noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={msg.fileLink}
             alt={msg.fileName || "image"}
@@ -527,9 +528,8 @@ export default function TextChatCard({
     `}</style>
       <div className="mt-4 block rounded-xl border border-gray-700 bg-gray-800 p-4 shadow-xl">
         {messages.length > 0 && (
-          <div className="scrollbar-thin flex max-h-96 w-full flex-col justify-between overflow-y-auto text-sm">
-            <div className="mt-5 flex flex-col-reverse">
-              <div ref={messagesEndRef} />
+          <div className="scrollbar-thin flex max-h-96 w-full flex-col overflow-y-auto text-sm">
+            <div className="mt-5 flex flex-col">
               {messages.map((p, i) => {
                 const isSelf = p.peerId === LOCAL_PEER_ID
                 return (
@@ -564,6 +564,7 @@ export default function TextChatCard({
                   </div>
                 )
               })}
+              <div ref={messagesEndRef} />
             </div>
           </div>
         )}

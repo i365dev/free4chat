@@ -4,8 +4,8 @@ import { useRouter } from "next/router"
 
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
-import { useChatRoom } from "../hooks/useChatRoom"
 import { umamiEvent, hashRoom, participantsBucket } from "../common/utils"
+import { useChatRoom } from "../hooks/useChatRoom"
 
 export default function RoomContent({
   roomName,

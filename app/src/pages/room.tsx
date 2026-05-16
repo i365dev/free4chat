@@ -57,6 +57,7 @@ export default function Room() {
         setShowNickNamePop(true)
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady, roomId, roomTypeParam])
 
   useEffect(() => {
