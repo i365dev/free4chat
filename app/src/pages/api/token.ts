@@ -82,6 +82,20 @@ async function getOrCreateMeeting(
         typeConflict: false,
       }
     }
+    const upgradeToScreenshare =
+      record.roomType === "audio" && roomType === "screenshare"
+    if (upgradeToScreenshare) {
+      const upgraded: RoomRecord = { ...record, roomType: "screenshare" }
+      await env.ROOMS_KV.put(key, JSON.stringify(upgraded), {
+        expirationTtl: 30 * 24 * 3600,
+      })
+      return {
+        meetingId: record.meetingId,
+        expired: false,
+        roomType: "screenshare" as RoomType,
+        typeConflict: false,
+      }
+    }
     return {
       meetingId: record.meetingId,
       expired: false,
