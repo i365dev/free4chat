@@ -23,6 +23,7 @@ export default function RoomContent({
     messages,
     sendTextMessage,
     sendFileMessage,
+    sendActionMessage,
     muteSelf,
     toggleScreenShare,
     error,
@@ -186,6 +187,7 @@ export default function RoomContent({
           messages={messages}
           onSendText={sendTextMessage}
           onSendFile={sendFileMessage}
+          onSendAction={sendActionMessage}
         />
       </div>
     </main>

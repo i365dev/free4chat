@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import { useRealtimeKitClient } from "@cloudflare/realtimekit-react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
-import { UserInfo, Message } from "@common/types"
+import { UserInfo, Message, ActionType } from "@common/types"
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 
@@ -132,7 +132,21 @@ export function useChatRoom(
           name: m.displayName,
         }
         if (m.type === "text") {
-          return { ...base, type: "text" as const, text: (m as any).message }
+          const text = (m as any).message as string
+          if (text.startsWith("__action:")) {
+            try {
+              const payload = JSON.parse(text.slice(9))
+              return {
+                ...base,
+                type: "action" as const,
+                actionType: payload.actionType as ActionType,
+                actionPayload: payload.actionPayload,
+              }
+            } catch {
+              return { ...base, type: "text" as const, text }
+            }
+          }
+          return { ...base, type: "text" as const, text }
         }
         if (m.type === "image") {
           return {
@@ -244,6 +258,16 @@ export function useChatRoom(
     [meeting]
   )
 
+  const sendActionMessage = useCallback(
+    (actionType: ActionType, actionPayload: Record<string, string>) => {
+      if (!meeting) return
+      meeting.chat.sendTextMessage(
+        "__action:" + JSON.stringify({ actionType, actionPayload })
+      )
+    },
+    [meeting]
+  )
+
   const muteSelf = useCallback(() => {
     if (!meeting) return
     if (meeting.self.audioEnabled) {
@@ -267,6 +291,7 @@ export function useChatRoom(
     messages,
     sendTextMessage,
     sendFileMessage,
+    sendActionMessage,
     muteSelf,
     toggleScreenShare,
     error,

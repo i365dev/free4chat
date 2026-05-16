@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
-import { Message } from "@common/types"
+import { ActionType, Message } from "@common/types"
 import { strToBgColor } from "@common/utils"
 
 interface TextChatCardProps {
@@ -9,6 +9,67 @@ interface TextChatCardProps {
   messages: Message[]
   onSendText: (text: string) => void
   onSendFile: (file: File) => void
+  onSendAction: (
+    actionType: ActionType,
+    actionPayload: Record<string, string>
+  ) => void
+}
+
+function getOrCreateWhiteboardUrl(room: string): string {
+  const storageKey = `wb-key-${room}`
+  let key = localStorage.getItem(storageKey)
+  if (!key) {
+    key =
+      Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+    localStorage.setItem(storageKey, key)
+  }
+  const roomId = room
+    .split("")
+    .reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) & 0xffffff, 0)
+    .toString(16)
+    .padStart(6, "0")
+  return `https://excalidraw.com/#room=${roomId},${key}`
+}
+
+function ActionCard({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
+  const containerClass = isSelf
+    ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
+    : "ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
+
+  if (msg.actionType === "whiteboard") {
+    const url = msg.actionPayload?.url ?? ""
+    return (
+      <div
+        className={containerClass}
+        style={{ backgroundColor: strToBgColor(msg.name) }}
+      >
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 text-white underline-offset-2 hover:underline"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-4 w-4 shrink-0"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"
+            />
+          </svg>
+          <span className="text-sm font-medium">📋 Open Whiteboard</span>
+        </a>
+      </div>
+    )
+  }
+
+  return null
 }
 
 function FileMessageBubble({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
@@ -68,14 +129,27 @@ export default function TextChatCard({
   messages,
   onSendText,
   onSendFile,
+  onSendAction,
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
+  const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages])
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+    if (menuOpen) document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [menuOpen])
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "Enter" && message.trim() !== "") {
@@ -90,6 +164,12 @@ export default function TextChatCard({
       onSendFile(file)
       event.target.value = ""
     }
+  }
+
+  const handleWhiteboard = () => {
+    setMenuOpen(false)
+    const url = getOrCreateWhiteboardUrl(room)
+    onSendAction("whiteboard", { url })
   }
 
   return (
@@ -124,6 +204,8 @@ export default function TextChatCard({
                         >
                           {p.text}
                         </div>
+                      ) : p.type === "action" ? (
+                        <ActionCard msg={p} isSelf={isSelf} />
                       ) : (
                         <FileMessageBubble msg={p} isSelf={isSelf} />
                       )}
@@ -135,7 +217,43 @@ export default function TextChatCard({
           </div>
         )}
 
-        <div className="mt-2 flex items-center gap-2">
+        <div className="relative mt-2 flex items-center gap-2">
+          <div ref={menuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              className="rounded-lg bg-gray-700 p-2 transition hover:bg-gray-600"
+              title="More actions"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={1.5}
+                stroke="currentColor"
+                className="h-5 w-5 text-white"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
+                />
+              </svg>
+            </button>
+            {menuOpen && (
+              <div className="absolute bottom-10 left-0 z-10 w-44 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={handleWhiteboard}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700"
+                >
+                  <span>📋</span>
+                  <span>Whiteboard</span>
+                </button>
+              </div>
+            )}
+          </div>
+
           <input
             className="flex-1 rounded-xl bg-gray-900"
             type="text"

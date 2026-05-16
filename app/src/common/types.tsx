@@ -9,7 +9,9 @@ export interface UserInfo {
   muteState?: boolean | false
 }
 
-export type MessageType = "text" | "image" | "file"
+export type MessageType = "text" | "image" | "file" | "action"
+
+export type ActionType = "whiteboard"
 
 export interface Message {
   peerId: string
@@ -19,6 +21,8 @@ export interface Message {
   fileLink?: string
   fileName?: string
   fileSize?: number
+  actionType?: ActionType
+  actionPayload?: Record<string, string>
 }
 
 export interface Color {
