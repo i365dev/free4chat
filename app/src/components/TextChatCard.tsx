@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
-import { strToBgColor } from "@common/utils"
+import { strToBgColor, umamiEvent } from "@common/utils"
 
 interface TextChatCardProps {
   room: string
@@ -478,6 +478,7 @@ export default function TextChatCard({
   const handleWhiteboard = () => {
     closeMenu()
     const url = getOrCreateWhiteboardUrl(room)
+    umamiEvent("ChatAction", { type: "whiteboard", room })
     onSendAction("whiteboard", { url })
   }
 
@@ -488,6 +489,7 @@ export default function TextChatCard({
 
   const handlePollSend = (question: string, options: string[]) => {
     setShowPollCreator(false)
+    umamiEvent("ChatAction", { type: "poll", room })
     onSendAction("poll", {
       pollId: Date.now().toString(),
       question,
@@ -497,10 +499,12 @@ export default function TextChatCard({
 
   const handleGameSelect = (gameId: string) => {
     closeMenu()
+    umamiEvent("ChatAction", { type: "game", gameId, room })
     onSendAction("game", { gameId })
   }
 
   const handleVote = (pollId: string, option: string) => {
+    umamiEvent("ChatAction", { type: "vote", room })
     onSendAction("vote", { pollId, option })
   }
 
