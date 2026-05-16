@@ -393,12 +393,19 @@ function PollCreator({
 function GamesMenu({
   onSelect,
   onBack,
+  menuUp,
 }: {
   onSelect: (gameId: string) => void
   onBack: () => void
+  menuUp: boolean
 }) {
+  const posClass = menuUp
+    ? "absolute bottom-10 left-0"
+    : "absolute top-10 left-0"
   return (
-    <div className="absolute bottom-10 left-0 z-10 w-52 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl">
+    <div
+      className={`${posClass} z-10 w-52 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
+    >
       <button
         type="button"
         onClick={onBack}
@@ -435,10 +442,12 @@ export default function TextChatCard({
   const [message, setMessage] = useState<string>("")
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const [submenu, setSubmenu] = useState<"games" | null>(null)
+  const [menuUp, setMenuUp] = useState<boolean>(true)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuBtnRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -569,8 +578,14 @@ export default function TextChatCard({
         <div className="relative mt-2 flex items-center gap-2">
           <div ref={menuRef} className="relative">
             <button
+              ref={menuBtnRef}
               type="button"
               onClick={() => {
+                const btn = menuBtnRef.current
+                if (btn) {
+                  const rect = btn.getBoundingClientRect()
+                  setMenuUp(rect.top > 240)
+                }
                 setMenuOpen((v) => !v)
                 setSubmenu(null)
               }}
@@ -594,7 +609,11 @@ export default function TextChatCard({
             </button>
 
             {menuOpen && !submenu && (
-              <div className="absolute bottom-10 left-0 z-10 w-44 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl">
+              <div
+                className={`absolute ${
+                  menuUp ? "bottom-10" : "top-10"
+                } left-0 z-10 w-44 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
+              >
                 <button
                   type="button"
                   onClick={handleWhiteboard}
@@ -629,6 +648,7 @@ export default function TextChatCard({
               <GamesMenu
                 onSelect={handleGameSelect}
                 onBack={() => setSubmenu(null)}
+                menuUp={menuUp}
               />
             )}
           </div>
