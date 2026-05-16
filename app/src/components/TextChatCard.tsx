@@ -15,6 +15,37 @@ interface TextChatCardProps {
   ) => void
 }
 
+const GAMES = [
+  {
+    id: "skribbl",
+    emoji: "✏️",
+    name: "skribbl.io",
+    desc: "You draw, others guess",
+    url: "https://skribbl.io",
+  },
+  {
+    id: "gartic",
+    emoji: "🖼️",
+    name: "Gartic Phone",
+    desc: "Drawing telephone chaos",
+    url: "https://garticphone.com",
+  },
+  {
+    id: "jklm",
+    emoji: "💣",
+    name: "BombParty",
+    desc: "Type words before bomb explodes",
+    url: "https://jklm.fun",
+  },
+  {
+    id: "codenames",
+    emoji: "🕵️",
+    name: "Codenames",
+    desc: "Team word deduction game",
+    url: "https://codenames.game",
+  },
+]
+
 function TextWithLinks({ text }: { text: string }) {
   const urlRegex = /(https?:\/\/[^\s]+)/g
   const parts = text.split(urlRegex)
@@ -60,13 +91,136 @@ function getOrCreateWhiteboardUrl(room: string): string {
   return `https://excalidraw.com/#room=${roomId},${key}`
 }
 
-function ActionCard({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
+function PollCard({
+  msg,
+  isSelf,
+  allMessages,
+  myPeerId,
+  onVote,
+}: {
+  msg: Message
+  isSelf: boolean
+  allMessages: Message[]
+  myPeerId: string
+  onVote: (pollId: string, option: string) => void
+}) {
+  const pollId = msg.actionPayload?.pollId ?? ""
+  const question = msg.actionPayload?.question ?? ""
+  const options = (msg.actionPayload?.options ?? "").split("||")
+
+  const votes = allMessages.filter(
+    (m) =>
+      m.type === "action" &&
+      m.actionType === "vote" &&
+      m.actionPayload?.pollId === pollId
+  )
+  const myVote = votes.find((v) => v.peerId === myPeerId)?.actionPayload?.option
+
   const containerClass = isSelf
     ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
     : "ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
 
+  return (
+    <div
+      className={containerClass + " min-w-[180px]"}
+      style={{ backgroundColor: strToBgColor(msg.name) }}
+    >
+      <p className="mb-2 text-sm font-semibold text-white">📊 {question}</p>
+      <div className="flex flex-col gap-1">
+        {options.map((opt) => {
+          const count = votes.filter(
+            (v) => v.actionPayload?.option === opt
+          ).length
+          const total = votes.length
+          const pct = total > 0 ? Math.round((count / total) * 100) : 0
+          const voted = myVote === opt
+          return (
+            <button
+              key={opt}
+              onClick={() => !myVote && onVote(pollId, opt)}
+              disabled={!!myVote}
+              className={`relative flex items-center justify-between overflow-hidden rounded-lg px-3 py-1.5 text-left text-xs transition
+                ${voted ? "ring-2 ring-white/60" : ""}
+                ${
+                  myVote
+                    ? "cursor-default opacity-90"
+                    : "cursor-pointer hover:brightness-110"
+                }`}
+              style={{ backgroundColor: "rgba(0,0,0,0.25)" }}
+            >
+              {myVote && (
+                <span
+                  className="absolute inset-y-0 left-0 rounded-lg bg-white/20 transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              )}
+              <span className="relative text-white">{opt}</span>
+              {myVote && (
+                <span className="relative text-white/70">
+                  {count} {count === 1 ? "vote" : "votes"}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+      {myVote && (
+        <p className="mt-1.5 text-right text-xs text-white/50">
+          {votes.length} total
+        </p>
+      )}
+    </div>
+  )
+}
+
+function GameCard({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
+  const containerClass = isSelf
+    ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
+    : "ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
+
+  const gameId = msg.actionPayload?.gameId ?? ""
+  const game = GAMES.find((g) => g.id === gameId)
+  if (!game) return null
+
+  return (
+    <div
+      className={containerClass}
+      style={{ backgroundColor: strToBgColor(msg.name) }}
+    >
+      <a
+        href={game.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 text-white underline-offset-2 hover:underline"
+      >
+        <span className="text-lg">{game.emoji}</span>
+        <div>
+          <p className="text-sm font-semibold">{game.name}</p>
+          <p className="text-xs text-white/60">{game.desc}</p>
+        </div>
+      </a>
+    </div>
+  )
+}
+
+function ActionCard({
+  msg,
+  isSelf,
+  allMessages,
+  myPeerId,
+  onVote,
+}: {
+  msg: Message
+  isSelf: boolean
+  allMessages: Message[]
+  myPeerId: string
+  onVote: (pollId: string, option: string) => void
+}) {
   if (msg.actionType === "whiteboard") {
     const url = msg.actionPayload?.url ?? ""
+    const containerClass = isSelf
+      ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
+      : "ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
     return (
       <div
         className={containerClass}
@@ -78,24 +232,29 @@ function ActionCard({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
           rel="noopener noreferrer"
           className="flex items-center gap-2 text-white underline-offset-2 hover:underline"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="h-4 w-4 shrink-0"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={1.5}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"
-            />
-          </svg>
-          <span className="text-sm font-medium">📋 Open Whiteboard</span>
+          <span className="text-lg">📋</span>
+          <span className="text-sm font-medium">Open Whiteboard</span>
         </a>
       </div>
     )
+  }
+
+  if (msg.actionType === "poll") {
+    return (
+      <PollCard
+        msg={msg}
+        isSelf={isSelf}
+        allMessages={allMessages}
+        myPeerId={myPeerId}
+        onVote={onVote}
+      />
+    )
+  }
+
+  if (msg.actionType === "vote") return null
+
+  if (msg.actionType === "game") {
+    return <GameCard msg={msg} isSelf={isSelf} />
   }
 
   return null
@@ -153,6 +312,112 @@ function FileMessageBubble({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
   )
 }
 
+function PollCreator({
+  onSend,
+  onCancel,
+}: {
+  onSend: (question: string, options: string[]) => void
+  onCancel: () => void
+}) {
+  const [question, setQuestion] = useState("")
+  const [options, setOptions] = useState(["", ""])
+
+  const canSubmit =
+    question.trim() && options.filter((o) => o.trim()).length >= 2
+
+  return (
+    <div className="mb-2 rounded-xl border border-gray-600 bg-gray-900 p-3">
+      <p className="mb-2 text-xs font-semibold text-gray-300">📊 Create Poll</p>
+      <input
+        autoFocus
+        className="mb-2 w-full rounded-lg bg-gray-800 px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+        placeholder="Question..."
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+      />
+      {options.map((opt, i) => (
+        <input
+          key={i}
+          className="mb-1.5 w-full rounded-lg bg-gray-800 px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
+          placeholder={`Option ${i + 1}`}
+          value={opt}
+          onChange={(e) => {
+            const next = [...options]
+            next[i] = e.target.value
+            setOptions(next)
+          }}
+        />
+      ))}
+      {options.length < 4 && (
+        <button
+          type="button"
+          onClick={() => setOptions([...options, ""])}
+          className="mb-2 text-xs text-gray-500 hover:text-gray-300"
+        >
+          + Add option
+        </button>
+      )}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={!canSubmit}
+          onClick={() =>
+            onSend(
+              question.trim(),
+              options.filter((o) => o.trim())
+            )
+          }
+          className="flex-1 rounded-lg bg-rose-600 py-1.5 text-xs font-medium text-white hover:bg-rose-500 disabled:opacity-40"
+        >
+          Send
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-lg bg-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-600"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function GamesMenu({
+  onSelect,
+  onBack,
+}: {
+  onSelect: (gameId: string) => void
+  onBack: () => void
+}) {
+  return (
+    <div className="absolute bottom-10 left-0 z-10 w-52 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl">
+      <button
+        type="button"
+        onClick={onBack}
+        className="flex w-full items-center gap-1 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-700"
+      >
+        ← Back
+      </button>
+      <div className="mx-2 my-1 border-t border-gray-700" />
+      {GAMES.map((g) => (
+        <button
+          key={g.id}
+          type="button"
+          onClick={() => onSelect(g.id)}
+          className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gray-700"
+        >
+          <span>{g.emoji}</span>
+          <div>
+            <p className="text-sm text-gray-200">{g.name}</p>
+            <p className="text-xs text-gray-500">{g.desc}</p>
+          </div>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function TextChatCard({
   room,
   messages,
@@ -162,6 +427,8 @@ export default function TextChatCard({
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
   const [menuOpen, setMenuOpen] = useState<boolean>(false)
+  const [submenu, setSubmenu] = useState<"games" | null>(null)
+  const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -174,11 +441,17 @@ export default function TextChatCard({
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false)
+        setSubmenu(null)
       }
     }
     if (menuOpen) document.addEventListener("mousedown", handleClickOutside)
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [menuOpen])
+
+  const closeMenu = () => {
+    setMenuOpen(false)
+    setSubmenu(null)
+  }
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "Enter" && message.trim() !== "") {
@@ -196,9 +469,32 @@ export default function TextChatCard({
   }
 
   const handleWhiteboard = () => {
-    setMenuOpen(false)
+    closeMenu()
     const url = getOrCreateWhiteboardUrl(room)
     onSendAction("whiteboard", { url })
+  }
+
+  const handlePoll = () => {
+    closeMenu()
+    setShowPollCreator(true)
+  }
+
+  const handlePollSend = (question: string, options: string[]) => {
+    setShowPollCreator(false)
+    onSendAction("poll", {
+      pollId: Date.now().toString(),
+      question,
+      options: options.join("||"),
+    })
+  }
+
+  const handleGameSelect = (gameId: string) => {
+    closeMenu()
+    onSendAction("game", { gameId })
+  }
+
+  const handleVote = (pollId: string, option: string) => {
+    onSendAction("vote", { pollId, option })
   }
 
   return (
@@ -220,7 +516,7 @@ export default function TextChatCard({
                   <div className="mb-4 flex w-full" key={i}>
                     <div
                       className={isSelf ? "ml-auto" : "mr-auto"}
-                      style={{ maxWidth: "70%" }}
+                      style={{ maxWidth: "75%" }}
                     >
                       {p.type === "text" ? (
                         <div
@@ -234,7 +530,13 @@ export default function TextChatCard({
                           <TextWithLinks text={p.text ?? ""} />
                         </div>
                       ) : p.type === "action" ? (
-                        <ActionCard msg={p} isSelf={isSelf} />
+                        <ActionCard
+                          msg={p}
+                          isSelf={isSelf}
+                          allMessages={messages}
+                          myPeerId={LOCAL_PEER_ID}
+                          onVote={handleVote}
+                        />
                       ) : (
                         <FileMessageBubble msg={p} isSelf={isSelf} />
                       )}
@@ -246,11 +548,21 @@ export default function TextChatCard({
           </div>
         )}
 
+        {showPollCreator && (
+          <PollCreator
+            onSend={handlePollSend}
+            onCancel={() => setShowPollCreator(false)}
+          />
+        )}
+
         <div className="relative mt-2 flex items-center gap-2">
           <div ref={menuRef} className="relative">
             <button
               type="button"
-              onClick={() => setMenuOpen((v) => !v)}
+              onClick={() => {
+                setMenuOpen((v) => !v)
+                setSubmenu(null)
+              }}
               className="rounded-lg bg-gray-700 p-2 transition hover:bg-gray-600"
               title="More actions"
             >
@@ -269,7 +581,8 @@ export default function TextChatCard({
                 />
               </svg>
             </button>
-            {menuOpen && (
+
+            {menuOpen && !submenu && (
               <div className="absolute bottom-10 left-0 z-10 w-44 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl">
                 <button
                   type="button"
@@ -279,7 +592,33 @@ export default function TextChatCard({
                   <span>📋</span>
                   <span>Whiteboard</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={handlePoll}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700"
+                >
+                  <span>📊</span>
+                  <span>Poll</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubmenu("games")}
+                  className="flex w-full items-center justify-between px-3 py-2 text-sm text-gray-200 hover:bg-gray-700"
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🎮</span>
+                    <span>Games</span>
+                  </span>
+                  <span className="text-gray-500">›</span>
+                </button>
               </div>
+            )}
+
+            {menuOpen && submenu === "games" && (
+              <GamesMenu
+                onSelect={handleGameSelect}
+                onBack={() => setSubmenu(null)}
+              />
             )}
           </div>
 

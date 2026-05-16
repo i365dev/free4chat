@@ -11,7 +11,7 @@ export interface UserInfo {
 
 export type MessageType = "text" | "image" | "file" | "action"
 
-export type ActionType = "whiteboard"
+export type ActionType = "whiteboard" | "poll" | "vote" | "game"
 
 export interface Message {
   peerId: string
