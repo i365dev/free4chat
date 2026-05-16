@@ -44,6 +44,13 @@ const GAMES = [
     desc: "Team word deduction game",
     url: "https://codenames.game",
   },
+  {
+    id: "bga",
+    emoji: "🎲",
+    name: "Board Game Arena",
+    desc: "800+ board games (account required)",
+    url: "https://boardgamearena.com",
+  },
 ]
 
 function TextWithLinks({ text }: { text: string }) {
