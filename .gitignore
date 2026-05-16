@@ -1,5 +1,6 @@
 node_modules/
 .DS_Store
+*.tgz
 
 # app
 app/.next/
@@ -7,4 +8,5 @@ app/out/
 app/.env.local
 app/.open-next/
 app/.dev.vars
-worker/.wrangler
+app/.wrangler/
+app/*.tsbuildinfo

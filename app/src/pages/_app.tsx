@@ -3,7 +3,7 @@ import React, { useEffect } from "react"
 import { AppProps } from "next/app"
 import Script from "next/script"
 
-import "../styles/tailwind.scss"
+import "../styles/tailwind.css"
 
 function MyApp({ Component, pageProps }: AppProps): React.JSX.Element {
   useEffect(() => {
