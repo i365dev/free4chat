@@ -470,20 +470,38 @@ export default function RoomContent({
             ) : (
               <div className="scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
                 {participants.map((p) => (
-                  <UserCard
+                  <div
                     key={p.peerId}
-                    peerId={p.peerId}
-                    name={p.name}
-                    room={p.room}
-                    muteState={p.muteState}
-                    audioStream={p.audioStream}
-                    screenShareStream={p.screenShareStream}
-                    screenShareEnabled={p.screenShareEnabled}
-                    onMuteSelf={muteSelf}
-                    onToggleScreenShare={wrappedToggleScreenShare}
-                    screenshareAllowed={screenshareAllowed}
-                    className="w-40 flex-none"
-                  />
+                    className="flex flex-col items-center gap-1"
+                  >
+                    <UserCard
+                      peerId={p.peerId}
+                      name={p.name}
+                      room={p.room}
+                      muteState={p.muteState}
+                      audioStream={p.audioStream}
+                      screenShareStream={p.screenShareStream}
+                      screenShareEnabled={p.screenShareEnabled}
+                      onMuteSelf={muteSelf}
+                      onToggleScreenShare={wrappedToggleScreenShare}
+                      screenshareAllowed={screenshareAllowed}
+                      className="w-40 flex-none"
+                    />
+                    {p.peerId === LOCAL_PEER_ID && (
+                      <div className="hidden items-center gap-1 md:flex">
+                        {REACTION_EMOJIS.map((emoji) => (
+                          <button
+                            key={emoji}
+                            type="button"
+                            onClick={() => sendReaction(emoji)}
+                            className="rounded-full px-1.5 py-0.5 text-base transition-transform hover:scale-125 active:scale-95"
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
@@ -491,25 +509,12 @@ export default function RoomContent({
             {floatingReactions.map((r) => (
               <div
                 key={r.id}
-                className="pointer-events-none absolute bottom-12 animate-float-up text-2xl"
+                className="pointer-events-none absolute bottom-4 animate-float-up text-2xl"
                 style={{ left: `${r.x}%` }}
               >
                 {r.emoji}
               </div>
             ))}
-
-            <div className="flex flex-none items-center justify-center gap-3 border-t border-gray-800 py-2">
-              {REACTION_EMOJIS.map((emoji) => (
-                <button
-                  key={emoji}
-                  type="button"
-                  onClick={() => sendReaction(emoji)}
-                  className="rounded-full bg-gray-800 px-3 py-1.5 text-lg transition-transform hover:scale-125 active:scale-95"
-                >
-                  {emoji}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 

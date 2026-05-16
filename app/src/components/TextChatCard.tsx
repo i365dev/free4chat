@@ -235,6 +235,8 @@ function ActionCard({
   myPeerId: string
   onVote: (pollId: string, option: string) => void
 }) {
+  if (msg.actionType === "reaction") return null
+
   if (msg.actionType === "whiteboard") {
     const url = msg.actionPayload?.url ?? ""
     const containerClass = isSelf
