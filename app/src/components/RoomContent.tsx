@@ -297,34 +297,63 @@ export default function RoomContent({
       )}
 
       <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
-        <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-b border-gray-800 p-2 md:w-52 md:flex-col md:overflow-y-auto md:overflow-x-hidden md:border-b-0 md:border-r md:p-3">
-          {participants.map((p) => (
-            <UserCard
-              key={p.peerId}
-              peerId={p.peerId}
-              name={p.name}
-              room={p.room}
-              muteState={p.muteState}
-              audioStream={p.audioStream}
-              screenShareStream={p.screenShareStream}
-              screenShareEnabled={p.screenShareEnabled}
-              onMuteSelf={muteSelf}
-              onToggleScreenShare={toggleScreenShare}
-              screenshareAllowed={screenshareAllowed}
-              className="w-20 flex-shrink-0 md:w-full md:flex-shrink"
-              compact
-            />
-          ))}
+        <div className="flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:border-b-0 md:border-r">
+          {activeScreenShares.length > 0 ? (
+            <>
+              {activeScreenShares.map((p) => (
+                <ScreenShareViewer
+                  key={p.peerId}
+                  stream={p.screenShareStream!}
+                  name={p.name}
+                />
+              ))}
+              <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                {participants.map((p) => (
+                  <UserCard
+                    key={p.peerId}
+                    peerId={p.peerId}
+                    name={p.name}
+                    room={p.room}
+                    muteState={p.muteState}
+                    audioStream={p.audioStream}
+                    screenShareStream={p.screenShareStream}
+                    screenShareEnabled={p.screenShareEnabled}
+                    onMuteSelf={muteSelf}
+                    onToggleScreenShare={toggleScreenShare}
+                    screenshareAllowed={screenshareAllowed}
+                    className="w-20 flex-shrink-0"
+                    compact
+                  />
+                ))}
+              </div>
+            </>
+          ) : (
+            <div
+              className={`scrollbar-thin grid h-full content-start gap-2 overflow-y-auto p-3 ${
+                participants.length === 1 ? "grid-cols-1" : "grid-cols-2"
+              }`}
+            >
+              {participants.map((p) => (
+                <UserCard
+                  key={p.peerId}
+                  peerId={p.peerId}
+                  name={p.name}
+                  room={p.room}
+                  muteState={p.muteState}
+                  audioStream={p.audioStream}
+                  screenShareStream={p.screenShareStream}
+                  screenShareEnabled={p.screenShareEnabled}
+                  onMuteSelf={muteSelf}
+                  onToggleScreenShare={toggleScreenShare}
+                  screenshareAllowed={screenshareAllowed}
+                  className="w-full"
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-1 flex-col overflow-hidden">
-          {activeScreenShares.map((p) => (
-            <ScreenShareViewer
-              key={p.peerId}
-              stream={p.screenShareStream!}
-              name={p.name}
-            />
-          ))}
           <TextChatCard
             room={roomName}
             messages={messages}
