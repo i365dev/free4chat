@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from "react"
 
+import Avatar from "boring-avatars"
+
 import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent } from "@common/utils"
@@ -533,17 +535,29 @@ export default function TextChatCard({
               {messages.map((p, i) => {
                 const isSelf = p.peerId === LOCAL_PEER_ID
                 return (
-                  <div className="mb-4 flex w-full" key={i}>
+                  <div
+                    className={`mb-4 flex w-full items-end ${
+                      isSelf ? "flex-row-reverse" : "flex-row"
+                    }`}
+                    key={i}
+                  >
                     <div
-                      className={isSelf ? "ml-auto" : "mr-auto"}
-                      style={{ maxWidth: "75%" }}
+                      className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}
                     >
+                      <Avatar size={28} variant="beam" name={p.name} />
+                    </div>
+                    <div style={{ maxWidth: "72%" }}>
+                      {!isSelf && (
+                        <p className="mb-1 ml-1 text-xs text-gray-400">
+                          {p.name}
+                        </p>
+                      )}
                       {p.type === "text" ? (
                         <div
                           className={
                             isSelf
-                              ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl bg-blue-600 px-4 py-3 text-white"
-                              : "ml-2 rounded-br-3xl rounded-tl-xl rounded-tr-3xl px-4 py-3"
+                              ? "rounded-bl-3xl rounded-tl-3xl rounded-tr-xl bg-blue-600 px-4 py-3 text-white"
+                              : "rounded-br-3xl rounded-tl-xl rounded-tr-3xl px-4 py-3"
                           }
                           style={
                             isSelf
