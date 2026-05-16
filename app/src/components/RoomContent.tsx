@@ -180,7 +180,7 @@ export default function RoomContent({
     sendTextMessage(text)
   }
 
-  const MAX_FILE_SIZE = 50 * 1024 * 1024
+  const MAX_FILE_SIZE = 20 * 1024 * 1024
 
   const wrappedSendFile = async (file: File) => {
     const id = `${Date.now()}-${file.name}`
@@ -192,7 +192,7 @@ export default function RoomContent({
           fileName: file.name,
           isImage: file.type.startsWith("image/"),
           error: true,
-          errorMessage: `File too large (max 50 MB)`,
+          errorMessage: `File too large (max 20 MB)`,
         },
       ])
       setTimeout(
