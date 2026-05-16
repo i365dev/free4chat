@@ -443,14 +443,11 @@ export default function TextChatCard({
   onSendAction,
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
-  const [menuOpen, setMenuOpen] = useState<boolean>(false)
   const [submenu, setSubmenu] = useState<"games" | null>(null)
-  const [menuUp, setMenuUp] = useState<boolean>(true)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const menuBtnRef = useRef<HTMLButtonElement>(null)
+  const gamesBtnRef = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
 
   useEffect(() => {
@@ -459,17 +456,18 @@ export default function TextChatCard({
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false)
+      if (
+        gamesBtnRef.current &&
+        !gamesBtnRef.current.contains(e.target as Node)
+      ) {
         setSubmenu(null)
       }
     }
-    if (menuOpen) document.addEventListener("mousedown", handleClickOutside)
+    if (submenu) document.addEventListener("mousedown", handleClickOutside)
     return () => document.removeEventListener("mousedown", handleClickOutside)
-  }, [menuOpen])
+  }, [submenu])
 
   const closeMenu = () => {
-    setMenuOpen(false)
     setSubmenu(null)
   }
 
@@ -603,84 +601,81 @@ export default function TextChatCard({
           />
         )}
 
-        <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
-          <div ref={menuRef} className="relative">
+        <div
+          className="flex items-center gap-1.5 overflow-x-auto border-t border-gray-700 px-3 pb-1 pt-2"
+          style={{ scrollbarWidth: "none" }}
+        >
+          <button
+            type="button"
+            onClick={handleWhiteboard}
+            className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
+          >
+            <span>🎨</span>
+            <span>Draw</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePoll}
+            className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
+          >
+            <span>📊</span>
+            <span>Poll</span>
+          </button>
+
+          <div ref={gamesBtnRef} className="relative">
             <button
-              ref={menuBtnRef}
               type="button"
-              onClick={() => {
-                const btn = menuBtnRef.current
-                if (btn) {
-                  const rect = btn.getBoundingClientRect()
-                  setMenuUp(rect.top > 240)
-                }
-                setMenuOpen((v) => !v)
-                setSubmenu(null)
-              }}
-              className="rounded-lg bg-gray-700 p-2 transition hover:bg-gray-600"
-              title="More actions"
+              onClick={() =>
+                setSubmenu((v) => (v === "games" ? null : "games"))
+              }
+              className={`flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                submenu === "games"
+                  ? "border-gray-400 bg-gray-700 text-white"
+                  : "border-gray-600 bg-gray-800 text-gray-300 hover:border-gray-500 hover:bg-gray-700 hover:text-white"
+              }`}
             >
+              <span>🎮</span>
+              <span>Games</span>
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
-                strokeWidth={1.5}
+                strokeWidth={2.5}
                 stroke="currentColor"
-                className="h-5 w-5 text-white"
+                className="h-2.5 w-2.5 opacity-50"
               >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
+                  d="M19.5 8.25l-7.5 7.5-7.5-7.5"
                 />
               </svg>
             </button>
-
-            {menuOpen && !submenu && (
-              <div
-                className={`absolute ${
-                  menuUp ? "bottom-10" : "top-10"
-                } left-0 z-10 w-44 rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
-              >
-                <button
-                  type="button"
-                  onClick={handleWhiteboard}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700"
-                >
-                  <span>📋</span>
-                  <span>Whiteboard</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handlePoll}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700"
-                >
-                  <span>📊</span>
-                  <span>Poll</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSubmenu("games")}
-                  className="flex w-full items-center justify-between px-3 py-2 text-sm text-gray-200 hover:bg-gray-700"
-                >
-                  <span className="flex items-center gap-2">
-                    <span>🎮</span>
-                    <span>Games</span>
-                  </span>
-                  <span className="text-gray-500">›</span>
-                </button>
-              </div>
-            )}
-
-            {menuOpen && submenu === "games" && (
+            {submenu === "games" && (
               <GamesMenu
                 onSelect={handleGameSelect}
                 onBack={() => setSubmenu(null)}
-                menuUp={menuUp}
+                menuUp={true}
               />
             )}
           </div>
 
+          <button
+            type="button"
+            disabled
+            title="AI companion — coming soon"
+            className="flex cursor-not-allowed items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 opacity-40"
+          >
+            <span>🤖</span>
+            <span>Luna</span>
+            <span className="rounded-full bg-gray-700 px-1 py-0 text-[9px] leading-tight text-gray-500">
+              soon
+            </span>
+          </button>
+        </div>
+
+        <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
           <input
             className="flex-1 rounded-xl bg-gray-900"
             type="text"
