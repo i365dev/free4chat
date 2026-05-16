@@ -403,8 +403,8 @@ function GamesMenu({
   menuUp: boolean
 }) {
   const posClass = menuUp
-    ? "absolute bottom-10 left-0"
-    : "absolute top-10 left-0"
+    ? "absolute bottom-full left-0 mb-1"
+    : "absolute top-full left-0 mt-1"
   return (
     <div
       className={`${posClass} z-10 max-h-72 w-52 overflow-y-auto rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
@@ -653,13 +653,6 @@ export default function TextChatCard({
                   />
                 </svg>
               </button>
-              {submenu === "games" && (
-                <GamesMenu
-                  onSelect={handleGameSelect}
-                  onBack={() => setSubmenu(null)}
-                  menuUp={true}
-                />
-              )}
             </div>
 
             <button
@@ -675,6 +668,14 @@ export default function TextChatCard({
               </span>
             </button>
           </div>
+
+          {submenu === "games" && (
+            <GamesMenu
+              onSelect={handleGameSelect}
+              onBack={() => setSubmenu(null)}
+              menuUp={true}
+            />
+          )}
         </div>
 
         <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
