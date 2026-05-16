@@ -385,7 +385,7 @@ export default function RoomContent({
                   onMuteSelf={muteSelf}
                   onToggleScreenShare={toggleScreenShare}
                   screenshareAllowed={screenshareAllowed}
-                  className="w-40"
+                  className="w-40 flex-none"
                 />
               ))}
             </div>

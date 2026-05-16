@@ -142,7 +142,7 @@ export default function UserCard(user: UserCardProps) {
   return (
     <div className={user.className}>
       <div
-        className="flex flex-col items-center rounded-xl border border-gray-700 px-3 py-3"
+        className="flex w-full flex-col items-center overflow-hidden rounded-xl border border-gray-700 px-3 py-3"
         style={{ backgroundColor: strToBgColor(user.name) }}
       >
         <div className="relative">
