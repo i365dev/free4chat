@@ -17,7 +17,6 @@ function ScreenShareViewer({
   name: string
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const [expanded, setExpanded] = useState(false)
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream
@@ -32,74 +31,38 @@ function ScreenShareViewer({
   }
 
   return (
-    <div
-      className={`relative flex-none border-b border-gray-800 bg-black ${
-        expanded ? "h-96" : "h-48"
-      }`}
-    >
+    <div className="relative min-h-0 flex-1 bg-black">
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className="h-full w-full cursor-pointer object-contain"
-        onClick={() => setExpanded((v) => !v)}
+        className="h-full w-full object-contain"
       />
       <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-xs text-white">
         {name}
       </div>
-      <div className="absolute bottom-2 right-2 flex gap-1">
-        <button
-          className="rounded bg-black/60 p-1 text-white hover:bg-black/80"
-          onClick={() => setExpanded((v) => !v)}
-          title={expanded ? "Shrink" : "Expand"}
+      <button
+        className="absolute bottom-2 right-2 rounded bg-black/60 p-1 text-white hover:bg-black/80"
+        onClick={enterFullscreen}
+        title="Fullscreen"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="14"
+          height="14"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth="2"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            {expanded ? (
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M9 9V4m0 0H4m5 0L3 10m12-1V4m0 0h5m-5 0l6 6M9 15v5m0 0H4m5 0l-6-6m12 6v-5m0 5h5m-5 0l6-6"
-              />
-            ) : (
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"
-              />
-            )}
-          </svg>
-        </button>
-        <button
-          className="rounded bg-black/60 p-1 text-white hover:bg-black/80"
-          onClick={enterFullscreen}
-          title="Fullscreen"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"
-            />
-          </svg>
-        </button>
-      </div>
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"
+          />
+        </svg>
+      </button>
     </div>
   )
 }
@@ -136,6 +99,61 @@ export default function RoomContent({
     (p) =>
       p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID && p.screenShareStream
   )
+
+  const [activeSharePeerId, setActiveSharePeerId] = useState<string | null>(
+    null
+  )
+  useEffect(() => {
+    if (activeScreenShares.length === 0) {
+      setActiveSharePeerId(null)
+      return
+    }
+    if (
+      !activeSharePeerId ||
+      !activeScreenShares.find((p) => p.peerId === activeSharePeerId)
+    ) {
+      setActiveSharePeerId(activeScreenShares[0].peerId)
+    }
+  }, [activeScreenShares, activeSharePeerId])
+  const activeShare =
+    activeScreenShares.find((p) => p.peerId === activeSharePeerId) ??
+    activeScreenShares[0] ??
+    null
+
+  const containerRef = useRef<HTMLDivElement>(null)
+  const isDragging = useRef(false)
+  const [splitRatio, setSplitRatio] = useState(50)
+  const [isMd, setIsMd] = useState(false)
+
+  useEffect(() => {
+    const check = () => setIsMd(window.innerWidth >= 768)
+    check()
+    window.addEventListener("resize", check)
+    return () => window.removeEventListener("resize", check)
+  }, [])
+
+  useEffect(() => {
+    setSplitRatio(activeScreenShares.length > 0 ? 75 : 50)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScreenShares.length > 0])
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current || !containerRef.current) return
+      const rect = containerRef.current.getBoundingClientRect()
+      const ratio = ((e.clientX - rect.left) / rect.width) * 100
+      setSplitRatio(Math.max(20, Math.min(80, ratio)))
+    }
+    const onMouseUp = () => {
+      isDragging.current = false
+    }
+    window.addEventListener("mousemove", onMouseMove)
+    window.addEventListener("mouseup", onMouseUp)
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove)
+      window.removeEventListener("mouseup", onMouseUp)
+    }
+  }, [])
 
   const lastBucketRef = useRef<string>("")
   useEffect(() => {
@@ -236,7 +254,7 @@ export default function RoomContent({
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
               />
             </svg>
             {roomLinkCopied ? "Copied!" : "Copy link"}
@@ -296,34 +314,59 @@ export default function RoomContent({
         </div>
       )}
 
-      <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
-        <div className="flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:border-b-0 md:border-r">
+      <div
+        ref={containerRef}
+        className="flex flex-1 flex-col overflow-hidden md:flex-row"
+      >
+        <div
+          className="flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
+          style={isMd ? { width: `${splitRatio}%` } : undefined}
+        >
           {activeScreenShares.length > 0 ? (
             <>
-              {activeScreenShares.map((p) => (
+              {activeShare && (
                 <ScreenShareViewer
-                  key={p.peerId}
-                  stream={p.screenShareStream!}
-                  name={p.name}
+                  key={activeShare.peerId}
+                  stream={activeShare.screenShareStream!}
+                  name={activeShare.name}
                 />
-              ))}
+              )}
               <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
                 {participants.map((p) => (
-                  <UserCard
+                  <div
                     key={p.peerId}
-                    peerId={p.peerId}
-                    name={p.name}
-                    room={p.room}
-                    muteState={p.muteState}
-                    audioStream={p.audioStream}
-                    screenShareStream={p.screenShareStream}
-                    screenShareEnabled={p.screenShareEnabled}
-                    onMuteSelf={muteSelf}
-                    onToggleScreenShare={toggleScreenShare}
-                    screenshareAllowed={screenshareAllowed}
-                    className="w-20 flex-shrink-0"
-                    compact
-                  />
+                    className={`flex-shrink-0 rounded-xl transition-all ${
+                      p.screenShareEnabled &&
+                      p.peerId !== LOCAL_PEER_ID &&
+                      p.peerId === activeSharePeerId
+                        ? "ring-2 ring-blue-400"
+                        : ""
+                    } ${
+                      p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
+                        ? "cursor-pointer"
+                        : ""
+                    }`}
+                    onClick={() => {
+                      if (p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID) {
+                        setActiveSharePeerId(p.peerId)
+                      }
+                    }}
+                  >
+                    <UserCard
+                      peerId={p.peerId}
+                      name={p.name}
+                      room={p.room}
+                      muteState={p.muteState}
+                      audioStream={p.audioStream}
+                      screenShareStream={p.screenShareStream}
+                      screenShareEnabled={p.screenShareEnabled}
+                      onMuteSelf={muteSelf}
+                      onToggleScreenShare={toggleScreenShare}
+                      screenshareAllowed={screenshareAllowed}
+                      className="w-20"
+                      compact
+                    />
+                  </div>
                 ))}
               </div>
             </>
@@ -348,6 +391,14 @@ export default function RoomContent({
             </div>
           )}
         </div>
+
+        <div
+          className="hidden w-1 cursor-col-resize bg-gray-800 transition-colors hover:bg-blue-500/50 active:bg-blue-500 md:block"
+          onMouseDown={(e) => {
+            isDragging.current = true
+            e.preventDefault()
+          }}
+        />
 
         <div className="flex flex-1 flex-col overflow-hidden">
           <TextChatCard

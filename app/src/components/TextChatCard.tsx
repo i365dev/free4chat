@@ -451,6 +451,7 @@ export default function TextChatCard({
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const menuBtnRef = useRef<HTMLButtonElement>(null)
+  const isComposingRef = useRef(false)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -472,8 +473,19 @@ export default function TextChatCard({
     setSubmenu(null)
   }
 
+  const handleSend = () => {
+    if (message.trim() !== "") {
+      onSendText(message.trim())
+      setMessage("")
+    }
+  }
+
   const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === "Enter" && message.trim() !== "") {
+    if (
+      event.key === "Enter" &&
+      !isComposingRef.current &&
+      message.trim() !== ""
+    ) {
       onSendText(message.trim())
       setMessage("")
     }
@@ -675,8 +687,36 @@ export default function TextChatCard({
             value={message}
             onKeyDown={handleKeyDown}
             onChange={(e) => setMessage(e.target.value)}
+            onCompositionStart={() => {
+              isComposingRef.current = true
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false
+            }}
             placeholder="type your message here..."
           />
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={message.trim() === ""}
+            className="rounded-lg bg-blue-600 p-2 transition hover:bg-blue-500 disabled:opacity-30"
+            title="Send"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={1.5}
+              stroke="currentColor"
+              className="h-5 w-5 text-white"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"
+              />
+            </svg>
+          </button>
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
