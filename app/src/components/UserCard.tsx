@@ -139,7 +139,7 @@ export default function UserCard(user: UserCardProps) {
             muteState={user.muteState}
           />
 
-          {user.screenShareStream && (
+          {user.screenShareStream && user.peerId !== LOCAL_PEER_ID && (
             <div className="relative mt-2">
               <video
                 ref={videoRef}

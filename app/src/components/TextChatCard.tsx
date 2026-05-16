@@ -542,10 +542,14 @@ export default function TextChatCard({
                         <div
                           className={
                             isSelf
-                              ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3"
+                              ? "mr-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl bg-blue-600 px-4 py-3 text-white"
                               : "ml-2 rounded-br-3xl rounded-tl-xl rounded-tr-3xl px-4 py-3"
                           }
-                          style={{ backgroundColor: strToBgColor(p.name) }}
+                          style={
+                            isSelf
+                              ? undefined
+                              : { backgroundColor: strToBgColor(p.name) }
+                          }
                         >
                           <TextWithLinks text={p.text ?? ""} />
                         </div>
