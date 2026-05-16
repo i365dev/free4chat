@@ -528,64 +528,61 @@ export default function TextChatCard({
       .scrollbar-thin::-webkit-scrollbar-thumb { background: #374151; border-radius: 9999px; }
       .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #4b5563; }
     `}</style>
-      <div className="mt-4 block rounded-xl border border-gray-700 bg-gray-800 p-4 shadow-xl">
-        {messages.length > 0 && (
-          <div className="scrollbar-thin flex max-h-96 w-full flex-col overflow-y-auto text-sm">
-            <div className="mt-5 flex flex-col">
-              {messages.map((p, i) => {
-                const isSelf = p.peerId === LOCAL_PEER_ID
-                return (
-                  <div
-                    className={`mb-4 flex w-full items-end ${
-                      isSelf ? "flex-row-reverse" : "flex-row"
-                    }`}
-                    key={i}
-                  >
+      <div className="flex h-full flex-col overflow-hidden">
+        <div className="scrollbar-thin flex-1 overflow-y-auto p-4 text-sm">
+          {messages.length === 0 && (
+            <p className="mt-4 text-center text-xs text-gray-500">
+              No messages yet
+            </p>
+          )}
+          {messages.map((p, i) => {
+            const isSelf = p.peerId === LOCAL_PEER_ID
+            return (
+              <div
+                className={`mb-4 flex w-full items-end ${
+                  isSelf ? "flex-row-reverse" : "flex-row"
+                }`}
+                key={i}
+              >
+                <div className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}>
+                  <Avatar size={28} variant="beam" name={p.name} />
+                </div>
+                <div style={{ maxWidth: "72%" }}>
+                  {!isSelf && (
+                    <p className="mb-1 ml-1 text-xs text-gray-400">{p.name}</p>
+                  )}
+                  {p.type === "text" ? (
                     <div
-                      className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}
+                      className={
+                        isSelf
+                          ? "rounded-bl-3xl rounded-tl-3xl rounded-tr-xl bg-blue-600 px-4 py-3 text-white"
+                          : "rounded-br-3xl rounded-tl-xl rounded-tr-3xl px-4 py-3"
+                      }
+                      style={
+                        isSelf
+                          ? undefined
+                          : { backgroundColor: strToBgColor(p.name) }
+                      }
                     >
-                      <Avatar size={28} variant="beam" name={p.name} />
+                      <TextWithLinks text={p.text ?? ""} />
                     </div>
-                    <div style={{ maxWidth: "72%" }}>
-                      {!isSelf && (
-                        <p className="mb-1 ml-1 text-xs text-gray-400">
-                          {p.name}
-                        </p>
-                      )}
-                      {p.type === "text" ? (
-                        <div
-                          className={
-                            isSelf
-                              ? "rounded-bl-3xl rounded-tl-3xl rounded-tr-xl bg-blue-600 px-4 py-3 text-white"
-                              : "rounded-br-3xl rounded-tl-xl rounded-tr-3xl px-4 py-3"
-                          }
-                          style={
-                            isSelf
-                              ? undefined
-                              : { backgroundColor: strToBgColor(p.name) }
-                          }
-                        >
-                          <TextWithLinks text={p.text ?? ""} />
-                        </div>
-                      ) : p.type === "action" ? (
-                        <ActionCard
-                          msg={p}
-                          isSelf={isSelf}
-                          allMessages={messages}
-                          myPeerId={LOCAL_PEER_ID}
-                          onVote={handleVote}
-                        />
-                      ) : (
-                        <FileMessageBubble msg={p} isSelf={isSelf} />
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-              <div ref={messagesEndRef} />
-            </div>
-          </div>
-        )}
+                  ) : p.type === "action" ? (
+                    <ActionCard
+                      msg={p}
+                      isSelf={isSelf}
+                      allMessages={messages}
+                      myPeerId={LOCAL_PEER_ID}
+                      onVote={handleVote}
+                    />
+                  ) : (
+                    <FileMessageBubble msg={p} isSelf={isSelf} />
+                  )}
+                </div>
+              </div>
+            )
+          })}
+          <div ref={messagesEndRef} />
+        </div>
 
         {showPollCreator && (
           <PollCreator
@@ -594,7 +591,7 @@ export default function TextChatCard({
           />
         )}
 
-        <div className="relative mt-2 flex items-center gap-2">
+        <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
           <div ref={menuRef} className="relative">
             <button
               ref={menuBtnRef}

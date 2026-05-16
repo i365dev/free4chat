@@ -106,14 +106,15 @@ export default function RoomContent({
   }
 
   return (
-    <main className="bg-gray-900 text-white" style={{ minHeight: "100vh" }}>
+    <main className="flex h-screen flex-col overflow-hidden bg-gray-900 text-white">
       {connectionStatus === "reconnecting" && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60">
           <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
           <p className="text-sm text-gray-400">Reconnecting...</p>
         </div>
       )}
-      <div className="flex items-center border-b border-gray-800 px-6 pb-4 pt-5">
+
+      <div className="flex flex-none items-center border-b border-gray-800 px-4 py-3">
         <h1 className="text-lg font-medium">#{roomName}</h1>
         <div className="ml-auto flex items-center gap-2">
           <button
@@ -141,7 +142,7 @@ export default function RoomContent({
           <button
             type="button"
             onClick={() => router.push("/")}
-            className="mr-4 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
+            className="rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
           >
             Leave
           </button>
@@ -150,7 +151,7 @@ export default function RoomContent({
 
       {error !== "" && (
         <div
-          className="flex items-center gap-4 rounded bg-gray-900 px-4 py-2 text-white"
+          className="flex flex-none items-center gap-4 bg-gray-900 px-4 py-2 text-white"
           role="alert"
         >
           <svg
@@ -170,10 +171,9 @@ export default function RoomContent({
           <strong className="text-sm font-normal"> {error} </strong>
         </div>
       )}
-
       {expiryWarning !== "" && (
         <div
-          className="mx-4 mt-2 flex items-center gap-4 rounded border border-amber-700/50 bg-amber-900/40 px-4 py-2 text-amber-200"
+          className="mx-4 mt-1 flex flex-none items-center gap-4 rounded border border-amber-700/50 bg-amber-900/40 px-4 py-2 text-amber-200"
           role="alert"
         >
           <svg
@@ -194,8 +194,8 @@ export default function RoomContent({
         </div>
       )}
 
-      <div className="mx-auto min-h-screen px-8">
-        <div className="flex flex-row flex-wrap justify-center sm:justify-start">
+      <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+        <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-b border-gray-800 p-2 md:w-52 md:flex-col md:overflow-y-auto md:overflow-x-hidden md:border-b-0 md:border-r md:p-3">
           {participants.map((p) => (
             <UserCard
               key={p.peerId}
@@ -209,17 +209,20 @@ export default function RoomContent({
               onMuteSelf={muteSelf}
               onToggleScreenShare={toggleScreenShare}
               screenshareAllowed={screenshareAllowed}
-              className="sm:1/2 md:basis-1/8"
+              className="w-24 flex-shrink-0 md:w-full md:flex-shrink"
             />
           ))}
         </div>
-        <TextChatCard
-          room={roomName}
-          messages={messages}
-          onSendText={wrappedSendText}
-          onSendFile={wrappedSendFile}
-          onSendAction={sendActionMessage}
-        />
+
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <TextChatCard
+            room={roomName}
+            messages={messages}
+            onSendText={wrappedSendText}
+            onSendFile={wrappedSendFile}
+            onSendAction={sendActionMessage}
+          />
+        </div>
       </div>
     </main>
   )
