@@ -23,6 +23,7 @@ export default function Room() {
   const [roomName, setRoomName] = useState<string>("")
   const [nickName, setNickName] = useState<string>("")
   const [roomType, setRoomType] = useState<"audio" | "screenshare">("audio")
+  const [enableBot, setEnableBot] = useState<boolean>(false)
   const [showNickNamePop, setShowNickNamePop] = useState<boolean>(false)
   const [ready, setReady] = useState<boolean>(false)
 
@@ -41,6 +42,9 @@ export default function Room() {
     }
     setRoomName(roomId)
     setRoomType(roomTypeParam === "screenshare" ? "screenshare" : "audio")
+    if (typeof window !== "undefined") {
+      setEnableBot(sessionStorage.getItem("enable_bot") === "1")
+    }
     if (typeof window !== "undefined") {
       try {
         const rooms: { roomName: string; nickName: string }[] = JSON.parse(
@@ -145,6 +149,7 @@ export default function Room() {
           roomName={roomName}
           nickName={nickName}
           roomType={roomType}
+          enableBot={enableBot}
         />
       )}
     </div>

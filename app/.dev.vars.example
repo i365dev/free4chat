@@ -4,3 +4,7 @@ RTK_APP_ID=your_realtimekit_app_id
 RTK_PRESET_NAME=group_call_host
 RTK_SCREENSHARE_PRESET_NAME=group_call_host
 RTK_AUDIO_PRESET_NAME=audio_only_room
+# Turnstile (use test keys below for local dev — always pass)
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+# AI Gateway ID (optional — leave empty to call Workers AI directly)
+CF_AI_GATEWAY_ID=

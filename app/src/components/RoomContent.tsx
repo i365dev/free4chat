@@ -73,10 +73,12 @@ export default function RoomContent({
   roomName,
   nickName,
   roomType,
+  enableBot: enableBotProp,
 }: {
   roomName: string
   nickName: string
   roomType: "audio" | "screenshare"
+  enableBot?: boolean
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
@@ -117,7 +119,8 @@ export default function RoomContent({
     expiryWarning,
     connectionStatus,
     resolvedRoomType,
-  } = useChatRoom(roomName, nickName, roomType)
+    botEnabled,
+  } = useChatRoom(roomName, nickName, roomType, enableBotProp)
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -206,13 +209,41 @@ export default function RoomContent({
     })
   }, [messages, spawnReaction])
 
+  const [botThinking, setBotThinking] = useState(false)
+
   const hasSentTextRef = useRef(false)
-  const wrappedSendText = (text: string) => {
+  const wrappedSendText = async (text: string) => {
     if (!hasSentTextRef.current) {
       hasSentTextRef.current = true
       umamiEvent("ChatActivity", { type: "text", roomHash: hashRoom(roomName) })
     }
     sendTextMessage(text)
+
+    if (botEnabled && /^@luna\b/i.test(text.trim())) {
+      setBotThinking(true)
+      try {
+        const res = await fetch("/api/bot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            room: roomName,
+            userMessage: text.replace(/^@luna\s*/i, "").trim() || text,
+            userName: nickName,
+            turnstileToken:
+              typeof sessionStorage !== "undefined"
+                ? sessionStorage.getItem("ts_token") ?? undefined
+                : undefined,
+          }),
+        })
+        const data = (await res.json()) as { reply?: string; error?: string }
+        if (data.reply) {
+          sendTextMessage("__bot:" + JSON.stringify({ text: data.reply }))
+        }
+      } catch {
+      } finally {
+        setBotThinking(false)
+      }
+    }
   }
 
   const MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -545,6 +576,8 @@ export default function RoomContent({
             nickName={nickName}
             messages={messages}
             pendingFiles={pendingFiles}
+            botEnabled={botEnabled}
+            botThinking={botThinking}
             onSendText={wrappedSendText}
             onSendFile={wrappedSendFile}
             onSendAction={sendActionMessage}
