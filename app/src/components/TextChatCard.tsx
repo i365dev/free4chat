@@ -568,6 +568,7 @@ export default function TextChatCard({
             </p>
           )}
           {messages.map((p, i) => {
+            if (p.type === "action" && p.actionType === "reaction") return null
             const isSelf = p.peerId === LOCAL_PEER_ID
             return (
               <div

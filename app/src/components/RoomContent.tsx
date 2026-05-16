@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react"
+import React, { useState, useEffect, useRef, useCallback } from "react"
 
 import { useRouter } from "next/router"
 
@@ -8,6 +8,8 @@ import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import { umamiEvent, hashRoom, participantsBucket } from "../common/utils"
 import { useChatRoom } from "../hooks/useChatRoom"
+
+const REACTION_EMOJIS = ["👍", "😂", "🔥", "❓"]
 
 function ScreenShareViewer({
   stream,
@@ -87,6 +89,20 @@ export default function RoomContent({
       errorMessage?: string
     }[]
   >([])
+  const [floatingReactions, setFloatingReactions] = useState<
+    { id: number; emoji: string; x: number }[]
+  >([])
+  const processedReactionIds = useRef<Set<string>>(new Set())
+
+  const spawnReaction = useCallback((emoji: string) => {
+    const id = Date.now() + Math.random()
+    const x = 10 + Math.random() * 80
+    setFloatingReactions((prev) => [...prev, { id, emoji, x }])
+    setTimeout(
+      () => setFloatingReactions((prev) => prev.filter((r) => r.id !== id)),
+      2500
+    )
+  }, [])
 
   const {
     participants,
@@ -177,6 +193,16 @@ export default function RoomContent({
     }
   }, [participants.length, roomName, resolvedRoomType])
 
+  useEffect(() => {
+    messages.forEach((m) => {
+      if (m.type !== "action" || m.actionType !== "reaction") return
+      const msgId = `${m.peerId}-${m.actionPayload?.emoji}-${m.actionPayload?.ts}`
+      if (processedReactionIds.current.has(msgId)) return
+      processedReactionIds.current.add(msgId)
+      spawnReaction(m.actionPayload?.emoji ?? "👍")
+    })
+  }, [messages, spawnReaction])
+
   const hasSentTextRef = useRef(false)
   const wrappedSendText = (text: string) => {
     if (!hasSentTextRef.current) {
@@ -187,6 +213,11 @@ export default function RoomContent({
   }
 
   const MAX_FILE_SIZE = 20 * 1024 * 1024
+
+  const sendReaction = (emoji: string) => {
+    spawnReaction(emoji)
+    sendActionMessage("reaction", { emoji, ts: Date.now().toString() })
+  }
 
   const wrappedSendFile = async (file: File) => {
     const id = `${Date.now()}-${file.name}`
@@ -384,74 +415,102 @@ export default function RoomContent({
           className="flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
           style={isMd ? { width: `${splitRatio}%` } : undefined}
         >
-          {activeScreenShares.length > 0 ? (
-            <>
-              {activeShare && (
-                <ScreenShareViewer
-                  key={activeShare.peerId}
-                  stream={activeShare.screenShareStream!}
-                  name={activeShare.name}
-                />
-              )}
-              <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+          <div className="relative flex flex-1 flex-col overflow-hidden">
+            {activeScreenShares.length > 0 ? (
+              <>
+                {activeShare && (
+                  <ScreenShareViewer
+                    key={activeShare.peerId}
+                    stream={activeShare.screenShareStream!}
+                    name={activeShare.name}
+                  />
+                )}
+                <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                  {participants.map((p) => (
+                    <div
+                      key={p.peerId}
+                      className={`flex-shrink-0 rounded-xl transition-all ${
+                        p.screenShareEnabled &&
+                        p.peerId !== LOCAL_PEER_ID &&
+                        p.peerId === activeSharePeerId
+                          ? "ring-2 ring-blue-400"
+                          : ""
+                      } ${
+                        p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
+                          ? "cursor-pointer"
+                          : ""
+                      }`}
+                      onClick={() => {
+                        if (
+                          p.screenShareEnabled &&
+                          p.peerId !== LOCAL_PEER_ID
+                        ) {
+                          setActiveSharePeerId(p.peerId)
+                        }
+                      }}
+                    >
+                      <UserCard
+                        peerId={p.peerId}
+                        name={p.name}
+                        room={p.room}
+                        muteState={p.muteState}
+                        audioStream={p.audioStream}
+                        screenShareStream={p.screenShareStream}
+                        screenShareEnabled={p.screenShareEnabled}
+                        onMuteSelf={muteSelf}
+                        onToggleScreenShare={wrappedToggleScreenShare}
+                        screenshareAllowed={screenshareAllowed}
+                        className="w-20"
+                        compact
+                      />
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
                 {participants.map((p) => (
-                  <div
+                  <UserCard
                     key={p.peerId}
-                    className={`flex-shrink-0 rounded-xl transition-all ${
-                      p.screenShareEnabled &&
-                      p.peerId !== LOCAL_PEER_ID &&
-                      p.peerId === activeSharePeerId
-                        ? "ring-2 ring-blue-400"
-                        : ""
-                    } ${
-                      p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
-                        ? "cursor-pointer"
-                        : ""
-                    }`}
-                    onClick={() => {
-                      if (p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID) {
-                        setActiveSharePeerId(p.peerId)
-                      }
-                    }}
-                  >
-                    <UserCard
-                      peerId={p.peerId}
-                      name={p.name}
-                      room={p.room}
-                      muteState={p.muteState}
-                      audioStream={p.audioStream}
-                      screenShareStream={p.screenShareStream}
-                      screenShareEnabled={p.screenShareEnabled}
-                      onMuteSelf={muteSelf}
-                      onToggleScreenShare={wrappedToggleScreenShare}
-                      screenshareAllowed={screenshareAllowed}
-                      className="w-20"
-                      compact
-                    />
-                  </div>
+                    peerId={p.peerId}
+                    name={p.name}
+                    room={p.room}
+                    muteState={p.muteState}
+                    audioStream={p.audioStream}
+                    screenShareStream={p.screenShareStream}
+                    screenShareEnabled={p.screenShareEnabled}
+                    onMuteSelf={muteSelf}
+                    onToggleScreenShare={wrappedToggleScreenShare}
+                    screenshareAllowed={screenshareAllowed}
+                    className="w-40 flex-none"
+                  />
                 ))}
               </div>
-            </>
-          ) : (
-            <div className="scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
-              {participants.map((p) => (
-                <UserCard
-                  key={p.peerId}
-                  peerId={p.peerId}
-                  name={p.name}
-                  room={p.room}
-                  muteState={p.muteState}
-                  audioStream={p.audioStream}
-                  screenShareStream={p.screenShareStream}
-                  screenShareEnabled={p.screenShareEnabled}
-                  onMuteSelf={muteSelf}
-                  onToggleScreenShare={wrappedToggleScreenShare}
-                  screenshareAllowed={screenshareAllowed}
-                  className="w-40 flex-none"
-                />
+            )}
+
+            {floatingReactions.map((r) => (
+              <div
+                key={r.id}
+                className="pointer-events-none absolute bottom-12 animate-float-up text-2xl"
+                style={{ left: `${r.x}%` }}
+              >
+                {r.emoji}
+              </div>
+            ))}
+
+            <div className="flex flex-none items-center justify-center gap-3 border-t border-gray-800 py-2">
+              {REACTION_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => sendReaction(emoji)}
+                  className="rounded-full bg-gray-800 px-3 py-1.5 text-lg transition-transform hover:scale-125 active:scale-95"
+                >
+                  {emoji}
+                </button>
               ))}
             </div>
-          )}
+          </div>
         </div>
 
         <div
