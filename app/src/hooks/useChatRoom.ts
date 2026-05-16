@@ -10,7 +10,9 @@ type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 export function useChatRoom(
   roomName: string,
   nickName: string,
-  roomType: "audio" | "screenshare"
+  roomType: "audio" | "screenshare",
+  onParticipantJoined?: (name: string) => void,
+  onParticipantLeft?: (name: string) => void
 ) {
   const [meeting, initMeeting] = useRealtimeKitClient()
   const [participants, setParticipants] = useState<UserInfo[]>([])
@@ -26,6 +28,10 @@ export function useChatRoom(
   const hasJoinedRef = useRef(false)
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onJoinedRef = useRef(onParticipantJoined)
+  const onLeftRef = useRef(onParticipantLeft)
+  onJoinedRef.current = onParticipantJoined
+  onLeftRef.current = onParticipantLeft
 
   useEffect(() => {
     if (!roomName || !nickName) return
@@ -216,6 +222,19 @@ export function useChatRoom(
     meeting.participants.joined.on("participantJoined", buildParticipants)
     meeting.participants.joined.on("participantLeft", buildParticipants)
     meeting.participants.joined.on("audioUpdate", buildParticipants)
+
+    const onJoined = (p: { name: string }) => {
+      buildParticipants()
+      onJoinedRef.current?.(p.name)
+    }
+    const onLeft = (p: { name: string }) => {
+      buildParticipants()
+      onLeftRef.current?.(p.name)
+    }
+    meeting.participants.joined.off("participantJoined", buildParticipants)
+    meeting.participants.joined.off("participantLeft", buildParticipants)
+    meeting.participants.joined.on("participantJoined", onJoined)
+    meeting.participants.joined.on("participantLeft", onLeft)
     meeting.self.on("screenShareUpdate", buildParticipants)
     meeting.participants.joined.on("screenShareUpdate", buildParticipants)
     meeting.chat.on("chatUpdate", syncMessages)
@@ -227,8 +246,8 @@ export function useChatRoom(
       meeting.self.off("roomJoined", onRoomJoined)
       ;(meeting.meta as any).off("socketConnectionUpdate", onSocketUpdate)
       meeting.self.off("audioUpdate", buildParticipants)
-      meeting.participants.joined.off("participantJoined", buildParticipants)
-      meeting.participants.joined.off("participantLeft", buildParticipants)
+      meeting.participants.joined.off("participantJoined", onJoined)
+      meeting.participants.joined.off("participantLeft", onLeft)
       meeting.participants.joined.off("audioUpdate", buildParticipants)
       meeting.self.off("screenShareUpdate", buildParticipants)
       meeting.participants.joined.off("screenShareUpdate", buildParticipants)

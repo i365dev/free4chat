@@ -79,8 +79,21 @@ export default function RoomContent({
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<
-    { id: string; fileName: string; isImage: boolean; error?: boolean }[]
+    {
+      id: string
+      fileName: string
+      isImage: boolean
+      error?: boolean
+      errorMessage?: string
+    }[]
   >([])
+  const [toasts, setToasts] = useState<{ id: number; text: string }[]>([])
+
+  const addToast = (text: string) => {
+    const id = Date.now()
+    setToasts((prev) => [...prev, { id, text }])
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 3000)
+  }
 
   const {
     participants,
@@ -94,7 +107,13 @@ export default function RoomContent({
     expiryWarning,
     connectionStatus,
     resolvedRoomType,
-  } = useChatRoom(roomName, nickName, roomType)
+  } = useChatRoom(
+    roomName,
+    nickName,
+    roomType,
+    (name) => addToast(`${name} joined`),
+    (name) => addToast(`${name} left`)
+  )
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -468,6 +487,19 @@ export default function RoomContent({
           />
         </div>
       </div>
+
+      {toasts.length > 0 && (
+        <div className="pointer-events-none fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 flex-col items-center gap-2">
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className="rounded-full bg-gray-800/90 px-4 py-1.5 text-xs text-gray-300 shadow-lg backdrop-blur-sm"
+            >
+              {t.text}
+            </div>
+          ))}
+        </div>
+      )}
     </main>
   )
 }
