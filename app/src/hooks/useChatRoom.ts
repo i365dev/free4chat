@@ -165,7 +165,7 @@ export function useChatRoom(
           fileSize: (m as any).size,
         }
       })
-      setMessages([...mapped].reverse())
+      setMessages([...mapped])
     }
 
     const onRoomLeft = ({ state }: { state: string }) => {
