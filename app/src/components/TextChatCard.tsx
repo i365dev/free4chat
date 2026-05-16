@@ -601,78 +601,80 @@ export default function TextChatCard({
           />
         )}
 
-        <div
-          className="flex items-center gap-1.5 overflow-x-auto border-t border-gray-700 px-3 pb-1 pt-2"
-          style={{ scrollbarWidth: "none" }}
-        >
-          <button
-            type="button"
-            onClick={handleWhiteboard}
-            className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
+        <div className="relative border-t border-gray-700 px-3 pb-1 pt-2">
+          <div
+            className="flex items-center gap-1.5 overflow-x-auto"
+            style={{ scrollbarWidth: "none" }}
           >
-            <span>🎨</span>
-            <span>Draw</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handlePoll}
-            className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
-          >
-            <span>📊</span>
-            <span>Poll</span>
-          </button>
-
-          <div ref={gamesBtnRef} className="relative">
             <button
               type="button"
-              onClick={() =>
-                setSubmenu((v) => (v === "games" ? null : "games"))
-              }
-              className={`flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs transition-colors ${
-                submenu === "games"
-                  ? "border-gray-400 bg-gray-700 text-white"
-                  : "border-gray-600 bg-gray-800 text-gray-300 hover:border-gray-500 hover:bg-gray-700 hover:text-white"
-              }`}
+              onClick={handleWhiteboard}
+              className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
             >
-              <span>🎮</span>
-              <span>Games</span>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={2.5}
-                stroke="currentColor"
-                className="h-2.5 w-2.5 opacity-50"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M19.5 8.25l-7.5 7.5-7.5-7.5"
-                />
-              </svg>
+              <span>🎨</span>
+              <span>Draw</span>
             </button>
-            {submenu === "games" && (
-              <GamesMenu
-                onSelect={handleGameSelect}
-                onBack={() => setSubmenu(null)}
-                menuUp={true}
-              />
-            )}
-          </div>
 
-          <button
-            type="button"
-            disabled
-            title="AI companion — coming soon"
-            className="flex cursor-not-allowed items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 opacity-40"
-          >
-            <span>🤖</span>
-            <span>Luna</span>
-            <span className="rounded-full bg-gray-700 px-1 py-0 text-[9px] leading-tight text-gray-500">
-              soon
-            </span>
-          </button>
+            <button
+              type="button"
+              onClick={handlePoll}
+              className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
+            >
+              <span>📊</span>
+              <span>Poll</span>
+            </button>
+
+            <div ref={gamesBtnRef} className="relative">
+              <button
+                type="button"
+                onClick={() =>
+                  setSubmenu((v) => (v === "games" ? null : "games"))
+                }
+                className={`flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                  submenu === "games"
+                    ? "border-gray-400 bg-gray-700 text-white"
+                    : "border-gray-600 bg-gray-800 text-gray-300 hover:border-gray-500 hover:bg-gray-700 hover:text-white"
+                }`}
+              >
+                <span>🎮</span>
+                <span>Games</span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2.5}
+                  stroke="currentColor"
+                  className="h-2.5 w-2.5 opacity-50"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M19.5 8.25l-7.5 7.5-7.5-7.5"
+                  />
+                </svg>
+              </button>
+              {submenu === "games" && (
+                <GamesMenu
+                  onSelect={handleGameSelect}
+                  onBack={() => setSubmenu(null)}
+                  menuUp={true}
+                />
+              )}
+            </div>
+
+            <button
+              type="button"
+              disabled
+              title="AI companion — coming soon"
+              className="flex cursor-not-allowed items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 opacity-40"
+            >
+              <span>🤖</span>
+              <span>Luna</span>
+              <span className="rounded-full bg-gray-700 px-1 py-0 text-[9px] leading-tight text-gray-500">
+                soon
+              </span>
+            </button>
+          </div>
         </div>
 
         <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
