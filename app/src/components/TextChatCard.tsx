@@ -4,7 +4,7 @@ import Avatar from "boring-avatars"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
-import { strToBgColor, umamiEvent } from "@common/utils"
+import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
 
 interface PendingFile {
   id: string
@@ -522,7 +522,7 @@ export default function TextChatCard({
   const handleWhiteboard = () => {
     closeMenu()
     const url = getOrCreateWhiteboardUrl(room)
-    umamiEvent("ChatAction", { type: "whiteboard", room })
+    umamiEvent("ChatAction", { type: "whiteboard", roomHash: hashRoom(room) })
     onSendAction("whiteboard", { url })
   }
 
@@ -533,7 +533,7 @@ export default function TextChatCard({
 
   const handlePollSend = (question: string, options: string[]) => {
     setShowPollCreator(false)
-    umamiEvent("ChatAction", { type: "poll", room })
+    umamiEvent("ChatAction", { type: "poll", roomHash: hashRoom(room) })
     onSendAction("poll", {
       pollId: Date.now().toString(),
       question,
@@ -543,12 +543,12 @@ export default function TextChatCard({
 
   const handleGameSelect = (gameId: string) => {
     closeMenu()
-    umamiEvent("ChatAction", { type: "game", gameId, room })
+    umamiEvent("ChatAction", { type: "game", gameId, roomHash: hashRoom(room) })
     onSendAction("game", { gameId })
   }
 
   const handleVote = (pollId: string, option: string) => {
-    umamiEvent("ChatAction", { type: "vote", room })
+    umamiEvent("ChatAction", { type: "vote", roomHash: hashRoom(room) })
     onSendAction("vote", { pollId, option })
   }
 
