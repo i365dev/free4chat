@@ -162,8 +162,7 @@ export default function Home() {
                 </button>
               </div>
 
-              {isDesktop && (
-                <div className="mt-3">
+              <div className="mt-3">
                   <button
                     type="button"
                     onClick={() => setShowAdvanced((v) => !v)}
@@ -189,14 +188,20 @@ export default function Home() {
                   </button>
                   {showAdvanced && (
                     <div className="mt-2 flex flex-col gap-2">
-                      <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
+                      <label
+                        className={`flex select-none items-center gap-2 text-xs ${isDesktop ? "cursor-pointer text-gray-500" : "cursor-not-allowed text-gray-600"}`}
+                      >
                         <input
                           type="checkbox"
                           checked={screenShare}
+                          disabled={!isDesktop}
                           onChange={(e) => setScreenShare(e.target.checked)}
-                          className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
+                          className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900 disabled:opacity-40"
                         />
                         Enable screen sharing
+                        {!isDesktop && (
+                          <span className="text-gray-700">(desktop only)</span>
+                        )}
                       </label>
                       <div className="flex flex-col gap-0.5">
                         <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
@@ -219,7 +224,6 @@ export default function Home() {
                     </div>
                   )}
                 </div>
-              )}
 
               {roomName && (
                 <div className="mt-3 flex items-center gap-2">
