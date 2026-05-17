@@ -160,11 +160,13 @@ export function useChatRoom(
           if (text.startsWith("__bot:")) {
             try {
               const payload = JSON.parse(text.slice(6))
+              const botText =
+                typeof payload.text === "string" ? payload.text : ""
               return {
                 peerId: "luna-ai",
                 name: "Luna · AI",
                 type: "bot" as const,
-                text: payload.text as string,
+                text: botText,
               }
             } catch {
               return { ...base, type: "text" as const, text }

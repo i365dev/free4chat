@@ -103,7 +103,9 @@ async function getOrCreateMeeting(
         meetingId: record.meetingId,
         expired: false,
         roomType: upgraded.roomType,
-        typeConflict: false,
+        typeConflict: upgradeToScreenshare
+          ? false
+          : record.roomType !== roomType,
         botEnabled: upgraded.botEnabled ?? false,
       }
     }

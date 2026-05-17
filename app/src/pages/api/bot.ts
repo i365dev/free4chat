@@ -1,10 +1,16 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
 import type { NextApiRequest, NextApiResponse } from "next"
 
+interface RoomRecord {
+  meetingId: string
+  createdAt: number
+  roomType: "audio" | "screenshare"
+  botEnabled?: boolean
+}
+
 interface Env {
   ROOMS_KV: KVNamespace
   BOT_SESSION: DurableObjectNamespace
-  TURNSTILE_SECRET_KEY?: string
 }
 
 const ALLOWED_ORIGINS = [
@@ -15,27 +21,7 @@ const ALLOWED_ORIGINS = [
 
 const RATE_LIMIT_WINDOW_S = 3600
 const RATE_LIMIT_MAX = 30
-
-async function verifyTurnstile(
-  token: string,
-  secretKey: string,
-  ip: string
-): Promise<boolean> {
-  const res = await fetch(
-    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        secret: secretKey,
-        response: token,
-        remoteip: ip,
-      }),
-    }
-  )
-  const data = (await res.json()) as { success: boolean }
-  return data.success === true
-}
+const MAX_MESSAGE_LENGTH = 1000
 
 async function checkRateLimit(ip: string, env: Env): Promise<boolean> {
   const key = `bot-rl:${ip}`
@@ -78,36 +64,49 @@ export default async function handler(
       }
     }
 
-    const { room, userMessage, userName, turnstileToken } = req.body as {
+    const { room, userMessage, userName } = req.body as {
       room: string
       userMessage: string
       userName: string
-      turnstileToken?: string
     }
 
-    if (!room || !userMessage || !userName) {
+    if (
+      !room ||
+      !userMessage ||
+      !userName ||
+      typeof room !== "string" ||
+      typeof userMessage !== "string" ||
+      typeof userName !== "string"
+    ) {
       return res
         .status(400)
         .json({ error: "room, userMessage, userName required" })
     }
 
-    if (!isDev && cfEnv.TURNSTILE_SECRET_KEY && turnstileToken) {
-      const valid = await verifyTurnstile(
-        turnstileToken,
-        cfEnv.TURNSTILE_SECRET_KEY,
-        ip
-      )
-      if (!valid) {
-        return res.status(403).json({ error: "Turnstile verification failed" })
-      }
+    if (userMessage.length > MAX_MESSAGE_LENGTH || userName.length > 32) {
+      return res.status(400).json({ error: "input too long" })
     }
 
-    const id = cfEnv.BOT_SESSION.idFromName(room)
+    const roomRaw = await cfEnv.ROOMS_KV.get(`room:${room.trim()}`)
+    if (!roomRaw) {
+      return res.status(404).json({ error: "room not found" })
+    }
+    const roomRecord: RoomRecord = JSON.parse(roomRaw)
+    if (!roomRecord.botEnabled) {
+      return res
+        .status(403)
+        .json({ error: "AI assistant not enabled for this room" })
+    }
+
+    const id = cfEnv.BOT_SESSION.idFromName(room.trim())
     const stub = cfEnv.BOT_SESSION.get(id)
     const doRes = await stub.fetch("https://bot/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userMessage, userName }),
+      body: JSON.stringify({
+        userMessage: userMessage.trim(),
+        userName: userName.trim(),
+      }),
     })
 
     const data = (await doRes.json()) as { reply?: string; error?: string }

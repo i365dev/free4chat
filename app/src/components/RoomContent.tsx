@@ -210,6 +210,7 @@ export default function RoomContent({
   }, [messages, spawnReaction])
 
   const [botThinking, setBotThinking] = useState(false)
+  const [botError, setBotError] = useState("")
 
   const hasSentTextRef = useRef(false)
   const wrappedSendText = async (text: string) => {
@@ -221,6 +222,7 @@ export default function RoomContent({
 
     if (botEnabled && /^@luna\b/i.test(text.trim())) {
       setBotThinking(true)
+      setBotError("")
       try {
         const res = await fetch("/api/bot", {
           method: "POST",
@@ -229,17 +231,18 @@ export default function RoomContent({
             room: roomName,
             userMessage: text.replace(/^@luna\s*/i, "").trim() || text,
             userName: nickName,
-            turnstileToken:
-              typeof sessionStorage !== "undefined"
-                ? sessionStorage.getItem("ts_token") ?? undefined
-                : undefined,
           }),
         })
         const data = (await res.json()) as { reply?: string; error?: string }
         if (data.reply) {
           sendTextMessage("__bot:" + JSON.stringify({ text: data.reply }))
+        } else if (data.error) {
+          setBotError(data.error)
+          setTimeout(() => setBotError(""), 4000)
         }
       } catch {
+        setBotError("Luna is unavailable right now.")
+        setTimeout(() => setBotError(""), 4000)
       } finally {
         setBotThinking(false)
       }
@@ -578,6 +581,7 @@ export default function RoomContent({
             pendingFiles={pendingFiles}
             botEnabled={botEnabled}
             botThinking={botThinking}
+            botError={botError}
             onSendText={wrappedSendText}
             onSendFile={wrappedSendFile}
             onSendAction={sendActionMessage}

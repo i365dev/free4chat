@@ -21,6 +21,7 @@ interface TextChatCardProps {
   pendingFiles?: PendingFile[]
   botEnabled?: boolean
   botThinking?: boolean
+  botError?: string
   onSendText: (text: string) => void
   onSendFile: (file: File) => void
   onSendAction: (
@@ -466,6 +467,7 @@ export default function TextChatCard({
   pendingFiles = [],
   botEnabled = false,
   botThinking = false,
+  botError = "",
   onSendText,
   onSendFile,
   onSendAction,
@@ -702,6 +704,16 @@ export default function TextChatCard({
                     ·
                   </span>
                 </span>
+              </div>
+            </div>
+          )}
+          {botError && (
+            <div className="mb-4 flex w-full flex-row items-end">
+              <div className="mr-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-violet-700/40 text-sm">
+                🤖
+              </div>
+              <div className="rounded-br-3xl rounded-tl-xl rounded-tr-3xl bg-red-900/40 px-4 py-2 text-xs text-red-300 ring-1 ring-red-700/40">
+                {botError}
               </div>
             </div>
           )}
