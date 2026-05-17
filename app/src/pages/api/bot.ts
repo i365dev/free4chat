@@ -8,6 +8,8 @@ interface RoomRecord {
   botEnabled?: boolean
 }
 
+const ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000
+
 interface Env {
   ROOMS_KV: KVNamespace
   BOT_SESSION: DurableObjectNamespace
@@ -92,13 +94,18 @@ export default async function handler(
       return res.status(404).json({ error: "room not found" })
     }
     const roomRecord: RoomRecord = JSON.parse(roomRaw)
+    if (Date.now() - roomRecord.createdAt > ROOM_MAX_AGE_MS) {
+      return res.status(410).json({ error: "room expired" })
+    }
     if (!roomRecord.botEnabled) {
       return res
         .status(403)
         .json({ error: "AI assistant not enabled for this room" })
     }
 
-    const id = cfEnv.BOT_SESSION.idFromName(room.trim())
+    const id = cfEnv.BOT_SESSION.idFromName(
+      `room:${roomRecord.meetingId}:${roomRecord.createdAt}`
+    )
     const stub = cfEnv.BOT_SESSION.get(id)
     const doRes = await stub.fetch("https://bot/", {
       method: "POST",
@@ -116,7 +123,8 @@ export default async function handler(
           .status(429)
           .json({ error: "Luna has reached her hourly reply limit." })
       }
-      return res.status(500).json({ error: "ai_error" })
+      console.error("[api/bot] DO error:", data.error)
+      return res.status(500).json({ error: "Luna is unavailable right now. Please try again later." })
     }
 
     return res.status(200).json({ reply: data.reply })
