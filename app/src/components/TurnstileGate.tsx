@@ -9,6 +9,20 @@ interface Props {
   children: React.ReactNode
 }
 
+function renderWidget(
+  container: HTMLDivElement,
+  onToken: (token: string) => void
+) {
+  const ts = (window as any).turnstile
+  if (ts && container) {
+    ts.render(container, {
+      sitekey: TURNSTILE_SITEKEY,
+      theme: "dark",
+      callback: onToken,
+    })
+  }
+}
+
 export default function TurnstileGate({ children }: Props) {
   const [passed, setPassed] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -29,28 +43,28 @@ export default function TurnstileGate({ children }: Props) {
       return
     }
 
+    const onToken = (token: string) => {
+      sessionStorage.setItem("ts_token", token)
+      setPassed(true)
+    }
+
+    if ((window as any).turnstile) {
+      if (containerRef.current) renderWidget(containerRef.current, onToken)
+      return
+    }
+
     const script = document.createElement("script")
     script.src =
       "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
     script.async = true
     script.onload = () => {
-      const ts = (window as any).turnstile
-      if (ts && containerRef.current) {
-        ts.render(containerRef.current, {
-          sitekey: TURNSTILE_SITEKEY,
-          theme: "dark",
-          callback: (token: string) => {
-            sessionStorage.setItem("ts_token", token)
-            setPassed(true)
-          },
-        })
-      }
+      if (containerRef.current) renderWidget(containerRef.current, onToken)
     }
     document.head.appendChild(script)
     return () => {
       if (document.head.contains(script)) document.head.removeChild(script)
     }
-  }, [])
+  }, [passed])
 
   if (passed) return <>{children}</>
 
