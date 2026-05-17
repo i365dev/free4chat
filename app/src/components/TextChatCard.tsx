@@ -476,6 +476,7 @@ export default function TextChatCard({
   const [submenu, setSubmenu] = useState<"games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const gamesBtnRef = useRef<HTMLDivElement>(null)
   const gamesMenuRef = useRef<HTMLDivElement>(null)
@@ -782,13 +783,23 @@ export default function TextChatCard({
             </div>
 
             {botEnabled ? (
-              <div className="flex items-center gap-1 whitespace-nowrap rounded-full border border-violet-600 bg-violet-900/40 px-2.5 py-1 text-xs text-violet-300">
+              <button
+                type="button"
+                onClick={() => {
+                  setMessage((prev) =>
+                    prev.includes("@luna") ? prev : prev + "@luna "
+                  )
+                  inputRef.current?.focus()
+                }}
+                title="Mention Luna"
+                className="flex items-center gap-1 whitespace-nowrap rounded-full border border-violet-600 bg-violet-900/40 px-2.5 py-1 text-xs text-violet-300 transition-colors hover:border-violet-400 hover:bg-violet-800/50"
+              >
                 <span>🤖</span>
                 <span>Luna</span>
                 <span className="rounded-full bg-violet-700/60 px-1 py-0 text-[9px] leading-tight text-violet-300">
                   @luna
                 </span>
-              </div>
+              </button>
             ) : (
               <button
                 type="button"
@@ -817,6 +828,7 @@ export default function TextChatCard({
 
         <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
           <input
+            ref={inputRef}
             className="flex-1 rounded-xl bg-gray-900"
             type="text"
             value={message}
