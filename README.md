@@ -8,11 +8,11 @@
 
 This project has gone through three stacks, always with the same product goal — a dead-simple, no-login voice + text room:
 
-| Branch | Stack | Why it changed |
-|---|---|---|
-| [`golang`](../../tree/golang) | Go + Pion WebRTC + coturn | Self-hosted infra is too much overhead for a small personal project |
-| [`elixir`](../../tree/elixir) | Elixir + Membrane Framework | Membrane eventually added file transfer support, but maintaining your own server cluster is still heavy for something this small |
-| **`cloudflare`** (this branch) | Cloudflare RealtimeKit + Workers | Fully serverless — no servers to manage, file transfer built-in, free tier covers personal use |
+| Branch                         | Stack                            | Why it changed                                                                                                                   |
+| ------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| [`golang`](../../tree/golang)  | Go + Pion WebRTC + coturn        | Self-hosted infra is too much overhead for a small personal project                                                              |
+| [`elixir`](../../tree/elixir)  | Elixir + Membrane Framework      | Membrane eventually added file transfer support, but maintaining your own server cluster is still heavy for something this small |
+| **`cloudflare`** (this branch) | Cloudflare RealtimeKit + Workers | Fully serverless — no servers to manage, file transfer built-in, free tier covers personal use                                   |
 
 The product never changed. The ops burden did.
 
@@ -31,12 +31,14 @@ The product never changed. The ops burden did.
 free4chat is built around two principles: **no data outlives the conversation**, and **you don't need to trust any server**.
 
 **What we don't store:**
+
 - No accounts, no sign-up, no identity
 - Messages exist only in participants' browser memory — close the tab and they're gone
 - Files and images are transferred via WebRTC data channels, never written to any database
 - Voice is relayed through Cloudflare's media nodes but never recorded
 
 **What does persist (and why it's fine):**
+
 - A `room name → meeting ID` mapping is kept in Cloudflare KV with a 30-day TTL, so rejoining the same room name works within a session. It contains no messages, no users, no content.
 - When Luna AI is enabled, the last 20 messages of conversation context are stored in a Durable Object for the lifetime of the room session only.
 - Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
@@ -46,13 +48,13 @@ The application runs entirely in your browser. The Worker's only job is to issue
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 15, Tailwind CSS, Cloudflare RealtimeKit React SDK |
-| API | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare` |
-| AI | `BotSession` Durable Object → Cloudflare AI Gateway → `@cf/zai-org/glm-4.7-flash` |
-| Storage | Cloudflare KV (room metadata, rate limiting) + DO KV storage (Luna chat history) |
-| Media | Cloudflare RealtimeKit (WebRTC, audio, data channels, screen sharing) |
+| Layer    | Technology                                                                           |
+| -------- | ------------------------------------------------------------------------------------ |
+| Frontend | Next.js 15, Tailwind CSS, Cloudflare RealtimeKit React SDK                           |
+| API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`        |
+| AI       | `BotSession` Durable Object → Cloudflare AI Gateway → `@cf/zai-org/glm-4.7-flash`    |
+| Storage  | Cloudflare KV (room metadata, rate limiting) + DO KV storage (Luna chat history)     |
+| Media    | Cloudflare RealtimeKit (WebRTC, audio, data channels, screen sharing)                |
 | Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting |
 
 ## Local Development
@@ -73,20 +75,20 @@ yarn dev                          # starts on http://localhost:3000
 
 Required values in `app/.dev.vars`:
 
-| Variable | Description |
-|---|---|
-| `CF_API_TOKEN` | Cloudflare API token with Workers + RealtimeKit access |
-| `CF_ACCOUNT_ID` | Your Cloudflare account ID |
-| `RTK_APP_ID` | RealtimeKit app ID |
-| `RTK_AUDIO_PRESET_NAME` | RTK preset for audio-only rooms |
-| `RTK_SCREENSHARE_PRESET_NAME` | RTK preset for screenshare rooms |
-| `CF_AI_GATEWAY_BASEURL` | AI Gateway base URL, ending in `/compat` (no trailing path) |
-| `CF_AIG_TOKEN` | AI Gateway auth token |
+| Variable                      | Description                                                 |
+| ----------------------------- | ----------------------------------------------------------- |
+| `CF_API_TOKEN`                | Cloudflare API token with Workers + RealtimeKit access      |
+| `CF_ACCOUNT_ID`               | Your Cloudflare account ID                                  |
+| `RTK_APP_ID`                  | RealtimeKit app ID                                          |
+| `RTK_AUDIO_PRESET_NAME`       | RTK preset for audio-only rooms                             |
+| `RTK_SCREENSHARE_PRESET_NAME` | RTK preset for screenshare rooms                            |
+| `CF_AI_GATEWAY_BASEURL`       | AI Gateway base URL, ending in `/compat` (no trailing path) |
+| `CF_AIG_TOKEN`                | AI Gateway auth token                                       |
 
 Optional (bot protection, safe to omit locally):
 
-| Variable | Description |
-|---|---|
+| Variable               | Description                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------- |
 | `TURNSTILE_SECRET_KEY` | Cloudflare Turnstile secret — if set, all `/api/token` calls require a valid token |
 
 ## Deployment
@@ -97,10 +99,10 @@ Everything deploys as a single Cloudflare Worker (Next.js + API routes + Durable
 
 Set these repository secrets in GitHub:
 
-| Secret | Description |
-|---|---|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token |
-| `CLOUDFLARE_ACCOUNT_ID` | Your Cloudflare account ID |
+| Secret                           | Description                                            |
+| -------------------------------- | ------------------------------------------------------ |
+| `CLOUDFLARE_API_TOKEN`           | Cloudflare API token                                   |
+| `CLOUDFLARE_ACCOUNT_ID`          | Your Cloudflare account ID                             |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Turnstile site key (baked into frontend at build time) |
 
 Push to `cloudflare` branch with changes in `app/` → lint + type-check → deploy.
@@ -177,6 +179,7 @@ Cloudflare's Actors library is a higher-level abstraction over Durable Objects t
 ### Voice Bot (Phase 2 Luna)
 
 The text bot (Luna Phase 1) is shipped. Voice bot would require:
+
 - `@cloudflare/voice` Durable Object (STT → LLM → TTS pipeline)
 - Cloudflare Calls API track bridging to inject audio into the RTK room
 - Estimated latency: ~700–900ms all-Cloudflare, ~465ms with Deepgram + Groq + ElevenLabs
@@ -185,7 +188,7 @@ See [issue #52](https://github.com/i365dev/free4chat/issues/52) for full archite
 
 ### Slash / @ Command Input
 
-Type `/` or `@` in the chat input to trigger an inline command picker. Natural entry point for AI invocation (`@luna what should we play?`) and future actions. Build together with any Phase 2 bot work. See [issue #53](https://github.com/i365dev/free4chat/issues/53).
+Type `/` or `@` in the chat input to trigger an inline command picker: `/draw`, `/poll`, `/games`, `/luna`. Selecting a command launches the action directly or inserts `@luna` for AI invocation.
 
 ## License
 
