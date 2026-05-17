@@ -514,45 +514,43 @@ function PollCreator({
 function GamesMenu({
   onSelect,
   onBack,
-  menuUp,
   menuRef,
 }: {
   onSelect: (gameId: string) => void
   onBack: () => void
-  menuUp: boolean
   menuRef?: React.RefObject<HTMLDivElement>
 }) {
-  const posClass = menuUp
-    ? "absolute bottom-full left-0 mb-1"
-    : "absolute top-full left-0 mt-1"
   return (
-    <div
-      ref={menuRef}
-      className={`${posClass} z-10 max-h-72 w-52 overflow-y-auto rounded-lg border border-gray-600 bg-gray-800 py-1 shadow-xl`}
-    >
-      <button
-        type="button"
-        onClick={onBack}
-        className="flex w-full items-center gap-1 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-700"
+    <>
+      <div className="fixed inset-0 z-20 md:hidden" onClick={onBack} />
+      <div
+        ref={menuRef}
+        className="fixed bottom-0 left-0 right-0 z-30 max-h-[60vh] overflow-y-auto rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:max-h-72 md:w-52 md:rounded-lg md:border md:border-gray-600"
       >
-        ← Back
-      </button>
-      <div className="mx-2 my-1 border-t border-gray-700" />
-      {GAMES.map((g) => (
         <button
-          key={g.id}
           type="button"
-          onClick={() => onSelect(g.id)}
-          className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gray-700"
+          onClick={onBack}
+          className="flex w-full items-center gap-1 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-700"
         >
-          <span>{g.emoji}</span>
-          <div>
-            <p className="text-sm text-gray-200">{g.name}</p>
-            <p className="text-xs text-gray-500">{g.desc}</p>
-          </div>
+          ← Back
         </button>
-      ))}
-    </div>
+        <div className="mx-2 my-1 border-t border-gray-700" />
+        {GAMES.map((g) => (
+          <button
+            key={g.id}
+            type="button"
+            onClick={() => onSelect(g.id)}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gray-700"
+          >
+            <span>{g.emoji}</span>
+            <div>
+              <p className="text-sm text-gray-200">{g.name}</p>
+              <p className="text-xs text-gray-500">{g.desc}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -1012,7 +1010,6 @@ export default function TextChatCard({
             <GamesMenu
               onSelect={handleGameSelect}
               onBack={() => setSubmenu(null)}
-              menuUp={true}
               menuRef={gamesMenuRef}
             />
           )}
@@ -1026,6 +1023,10 @@ export default function TextChatCard({
                   key={item.label}
                   type="button"
                   onMouseDown={(e) => {
+                    e.preventDefault()
+                    commitPicker(i)
+                  }}
+                  onTouchEnd={(e) => {
                     e.preventDefault()
                     commitPicker(i)
                   }}
