@@ -1,14 +1,16 @@
-name: Deploy Web
+name: CI / Deploy
 
 on:
   push:
-    branches:
-      - cloudflare
+    paths:
+      - "app/**"
+  pull_request:
     paths:
       - "app/**"
 
 jobs:
-  deploy:
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -17,7 +19,41 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: app/.nvmrc
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: app
+
+      - name: Prettier
+        run: npx prettier --check .
+        working-directory: app
+
+      - name: ESLint
+        run: yarn lint --max-warnings 0
+        working-directory: app
+
+      - name: Type check
+        run: yarn type-check
+        working-directory: app
+
+  deploy:
+    name: Build & Deploy
+    needs: lint
+    if: github.ref == 'refs/heads/cloudflare' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.nvmrc
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
 
       - name: Install dependencies
         run: yarn install --frozen-lockfile
