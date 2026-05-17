@@ -229,7 +229,11 @@ export default function RoomContent({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             room: roomName,
-            userMessage: text.trim().replace(/^@luna\s*/i, "").trim() || text.trim(),
+            userMessage:
+              text
+                .trim()
+                .replace(/^@luna\s*/i, "")
+                .trim() || text.trim(),
             userName: nickName,
           }),
         })

@@ -124,7 +124,9 @@ export default async function handler(
           .json({ error: "Luna has reached her hourly reply limit." })
       }
       console.error("[api/bot] DO error:", data.error)
-      return res.status(500).json({ error: "Luna is unavailable right now. Please try again later." })
+      return res.status(500).json({
+        error: "Luna is unavailable right now. Please try again later.",
+      })
     }
 
     return res.status(200).json({ reply: data.reply })

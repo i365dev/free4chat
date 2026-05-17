@@ -40,7 +40,8 @@ export class BotSession implements DurableObject {
   private async loadState(): Promise<void> {
     if (this.loadPromise) return this.loadPromise
     this.loadPromise = (async () => {
-      this.history = (await this.state.storage.get<AiMessage[]>("history")) ?? []
+      this.history =
+        (await this.state.storage.get<AiMessage[]>("history")) ?? []
       const hourly = (await this.state.storage.get<HourlyState>("hourly")) ?? {
         window: 0,
         count: 0,
@@ -58,7 +59,10 @@ export class BotSession implements DurableObject {
 
     let userMessage: string, userName: string
     try {
-      const body = await request.json<{ userMessage: string; userName: string }>()
+      const body = await request.json<{
+        userMessage: string
+        userName: string
+      }>()
       userMessage = body.userMessage
       userName = body.userName
     } catch {
@@ -106,7 +110,10 @@ export class BotSession implements DurableObject {
       }
       this.hourlyCount++
       await this.state.storage.put({
-        hourly: { window: this.hourlyWindow, count: this.hourlyCount } as HourlyState,
+        hourly: {
+          window: this.hourlyWindow,
+          count: this.hourlyCount,
+        } as HourlyState,
         history,
       })
       return Response.json({ reply })

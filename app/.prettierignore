@@ -1,5 +1,7 @@
 node_modules
 .next
+.open-next
 yarn.lock
 package-lock.json
 public
+*.jsonc
