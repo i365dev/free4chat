@@ -56,10 +56,14 @@ export class BotSession implements DurableObject {
       return new Response("Method Not Allowed", { status: 405 })
     }
 
-    const { userMessage, userName } = await request.json<{
-      userMessage: string
-      userName: string
-    }>()
+    let userMessage: string, userName: string
+    try {
+      const body = await request.json<{ userMessage: string; userName: string }>()
+      userMessage = body.userMessage
+      userName = body.userName
+    } catch {
+      return new Response("Bad Request", { status: 400 })
+    }
 
     if (
       !userMessage ||
@@ -101,11 +105,10 @@ export class BotSession implements DurableObject {
         while (history.length > MAX_HISTORY) history.shift()
       }
       this.hourlyCount++
-      await this.state.storage.put<HourlyState>("hourly", {
-        window: this.hourlyWindow,
-        count: this.hourlyCount,
+      await this.state.storage.put({
+        hourly: { window: this.hourlyWindow, count: this.hourlyCount } as HourlyState,
+        history,
       })
-      await this.state.storage.put<AiMessage[]>("history", history)
       return Response.json({ reply })
     } catch (err) {
       console.error("[BotSession] AI error:", err)
