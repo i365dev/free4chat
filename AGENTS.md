@@ -49,32 +49,32 @@ free4chat/
 The app uses **`useRealtimeKitClient`** (low-level hook) — NOT the higher-level React hooks. All RTK state is managed imperatively through the `meeting` object inside `useChatRoom.ts`.
 
 ```ts
-const [meeting, initMeeting] = useRealtimeKitClient()
+const [meeting, initMeeting] = useRealtimeKitClient();
 ```
 
 ### Key meeting APIs currently used
 
-| Object | API |
-|---|---|
-| `meeting.self` | `.name`, `.audioEnabled`, `.audioTrack`, `.enableAudio()`, `.disableAudio()` |
-| `meeting.self` events | `"audioUpdate"` |
-| `meeting.participants.joined` | `.toArray()`, events: `"participantJoined"`, `"participantLeft"`, `"audioUpdate"` |
-| `meeting.chat` | `.messages`, `.sendTextMessage()`, `.sendImageMessage()`, `.sendFileMessage()`, `"chatUpdate"` |
-| `meeting` | `.join()`, `.leaveRoom()` |
+| Object                        | API                                                                                            |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `meeting.self`                | `.name`, `.audioEnabled`, `.audioTrack`, `.enableAudio()`, `.disableAudio()`                   |
+| `meeting.self` events         | `"audioUpdate"`                                                                                |
+| `meeting.participants.joined` | `.toArray()`, events: `"participantJoined"`, `"participantLeft"`, `"audioUpdate"`              |
+| `meeting.chat`                | `.messages`, `.sendTextMessage()`, `.sendImageMessage()`, `.sendFileMessage()`, `"chatUpdate"` |
+| `meeting`                     | `.join()`, `.leaveRoom()`                                                                      |
 
 ### Screen share APIs (RTK native, fully supported)
 
 ```ts
-meeting.self.enableScreenShare()
-meeting.self.disableScreenShare()
-meeting.self.screenShareEnabled        // boolean
-meeting.self.screenShareTracks         // { video: MediaStreamTrack, audio?: MediaStreamTrack }
+meeting.self.enableScreenShare();
+meeting.self.disableScreenShare();
+meeting.self.screenShareEnabled; // boolean
+meeting.self.screenShareTracks; // { video: MediaStreamTrack, audio?: MediaStreamTrack }
 
-participant.screenShareEnabled
-participant.screenShareTracks
+participant.screenShareEnabled;
+participant.screenShareTracks;
 
-meeting.self.on("screenShareUpdate", buildParticipants)
-meeting.participants.joined.on("screenShareUpdate", buildParticipants)
+meeting.self.on("screenShareUpdate", buildParticipants);
+meeting.participants.joined.on("screenShareUpdate", buildParticipants);
 ```
 
 Permission check: `meeting.self.permissions.canProduceScreenshare // "ALLOWED" | "NOT_ALLOWED" | "CAN_REQUEST"`
@@ -103,31 +103,33 @@ useRealtimeKitClient()
 ## Type Contracts
 
 ### UserInfo (common/types.tsx)
+
 ```ts
 export interface UserInfo {
-  name: string
-  room: string
-  className?: string
-  audioStream?: MediaStream | null
-  screenShareStream?: MediaStream | null
-  screenShareEnabled?: boolean
-  peerId: string
-  muteState?: boolean
+  name: string;
+  room: string;
+  className?: string;
+  audioStream?: MediaStream | null;
+  screenShareStream?: MediaStream | null;
+  screenShareEnabled?: boolean;
+  peerId: string;
+  muteState?: boolean;
 }
 ```
 
 ### Message (common/types.tsx)
+
 ```ts
 export interface Message {
-  peerId: string
-  name: string
-  type: "text" | "image" | "file" | "bot" | "action"
-  text?: string
-  fileLink?: string
-  fileName?: string
-  fileSize?: number
-  actionType?: ActionType
-  actionPayload?: Record<string, string>
+  peerId: string;
+  name: string;
+  type: "text" | "image" | "file" | "bot" | "action";
+  text?: string;
+  fileLink?: string;
+  fileName?: string;
+  fileSize?: number;
+  actionType?: ActionType;
+  actionPayload?: Record<string, string>;
 }
 ```
 
@@ -139,6 +141,7 @@ export interface Message {
 - **Error codes**: 400 (bad input), 403 (forbidden origin or Turnstile failure), 410 (room expired), 429 (rate limited), 500
 
 Security layers (in order):
+
 1. **Origin whitelist** — blocks non-browser requests without `Origin: https://free4.chat`
 2. **KV rate limiting** — 20 req/60s per IP
 3. **Turnstile verification** — if `TURNSTILE_SECRET_KEY` is set, `turnstileToken` is **required**; missing or invalid token → 403
@@ -160,6 +163,7 @@ Routes to `BotSession` Durable Object keyed by room name. `RoomContent.tsx` inte
 Per-room stateful AI session. Keyed by room name via `env.BOT_SESSION.idFromName(room)`.
 
 **Storage** (DO KV, `state.storage`):
+
 - `history`: `AiMessage[]` — last 20 messages, persists across requests within the DO lifetime
 - `hourly`: `{ window: number, count: number }` — hourly rate limit state
 
@@ -194,14 +198,14 @@ Both `umami` and `gtag` are loaded in `_document.tsx`. All custom event tracking
 
 ### Current Events
 
-| Event | Trigger | Key Properties |
-|---|---|---|
-| `RoomJoin` | User clicks Join on landing page | `type`, `roomHash` |
-| `Room` | User enters the room | `type`, `roomHash` |
-| `RoomSize` | Participant count crosses a bucket boundary | `bucket` (1/2-3/4-9/10+), `roomType`, `roomHash` |
-| `ChatActivity` | First text message; every file/image sent | `type`, `roomHash` |
-| `ChatAction` | whiteboard / poll / game / vote actions | `type`, optional `gameId`, `roomHash` |
-| `ScreenShare` | User toggles screen share | `action` (start\|stop), `roomHash` |
+| Event          | Trigger                                     | Key Properties                                   |
+| -------------- | ------------------------------------------- | ------------------------------------------------ |
+| `RoomJoin`     | User clicks Join on landing page            | `type`, `roomHash`                               |
+| `Room`         | User enters the room                        | `type`, `roomHash`                               |
+| `RoomSize`     | Participant count crosses a bucket boundary | `bucket` (1/2-3/4-9/10+), `roomType`, `roomHash` |
+| `ChatActivity` | First text message; every file/image sent   | `type`, `roomHash`                               |
+| `ChatAction`   | whiteboard / poll / game / vote actions     | `type`, optional `gameId`, `roomHash`            |
+| `ScreenShare`  | User toggles screen share                   | `action` (start\|stop), `roomHash`               |
 
 ## Styling Conventions
 
@@ -248,13 +252,17 @@ Manual: `yarn cf-build && yarn cf-deploy` (needs `CLOUDFLARE_API_TOKEN` + `CLOUD
 ## Future Technical Directions
 
 ### SQLite-backed Durable Objects
+
 `BotSession` uses DO KV storage (`state.storage.get/put`). Fine for current use (small history array + two counters). If data model grows (per-user memory, room summaries, structured queries), migrate to `this.state.storage.sql`. Migration is straightforward; also unlocks Cloudflare Data Studio for debugging production data.
 
 ### Cloudflare Actors Library
+
 Higher-level abstraction over DOs — replaces manual `fetch()` dispatch with typed RPC. Worth adopting if `BotSession` grows multiple methods or is called from multiple Workers. No benefit at current scale.
 
 ### Voice Bot (Luna Phase 2)
+
 Requires `@cloudflare/voice` Durable Object (STT → LLM → TTS) + Cloudflare Calls API track bridging into RTK. Estimated latency: ~700–900ms all-Cloudflare. See issue #52.
 
 ### Slash / @ Command Picker
+
 Type `/` or `@` in chat input → inline picker for commands and bot mentions. Build together with any voice bot work. See issue #53.
