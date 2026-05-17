@@ -26,6 +26,8 @@ jobs:
       - name: Build
         run: yarn cf-build
         working-directory: app
+        env:
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
 
       - name: Deploy
         run: yarn cf-deploy

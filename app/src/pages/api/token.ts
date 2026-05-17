@@ -9,6 +9,7 @@ interface Env {
   RTK_PRESET_NAME: string
   RTK_SCREENSHARE_PRESET_NAME: string
   RTK_AUDIO_PRESET_NAME: string
+  TURNSTILE_SECRET_KEY?: string
 }
 
 type RoomType = "audio" | "screenshare"
@@ -17,6 +18,7 @@ interface RoomRecord {
   meetingId: string
   createdAt: number
   roomType: RoomType
+  botEnabled?: boolean
 }
 
 const ALLOWED_ORIGINS = [
@@ -56,12 +58,14 @@ async function checkRateLimit(ip: string, env: Env): Promise<boolean> {
 async function getOrCreateMeeting(
   roomName: string,
   roomType: RoomType,
+  enableBot: boolean,
   env: Env
 ): Promise<{
   meetingId: string
   expired: boolean
   roomType: RoomType
   typeConflict: boolean
+  botEnabled: boolean
 }> {
   const key = `room:${roomName}`
   const raw = await env.ROOMS_KV.get(key)
@@ -80,20 +84,29 @@ async function getOrCreateMeeting(
         expired: true,
         roomType: record.roomType,
         typeConflict: false,
+        botEnabled: false,
       }
     }
     const upgradeToScreenshare =
       record.roomType === "audio" && roomType === "screenshare"
-    if (upgradeToScreenshare) {
-      const upgraded: RoomRecord = { ...record, roomType: "screenshare" }
+    const shouldEnableBot = enableBot && !record.botEnabled
+    if (upgradeToScreenshare || shouldEnableBot) {
+      const upgraded: RoomRecord = {
+        ...record,
+        roomType: upgradeToScreenshare ? "screenshare" : record.roomType,
+        botEnabled: record.botEnabled || enableBot,
+      }
       await env.ROOMS_KV.put(key, JSON.stringify(upgraded), {
         expirationTtl: 30 * 24 * 3600,
       })
       return {
         meetingId: record.meetingId,
         expired: false,
-        roomType: "screenshare" as RoomType,
-        typeConflict: false,
+        roomType: upgraded.roomType,
+        typeConflict: upgradeToScreenshare
+          ? false
+          : record.roomType !== roomType,
+        botEnabled: upgraded.botEnabled ?? false,
       }
     }
     return {
@@ -101,6 +114,7 @@ async function getOrCreateMeeting(
       expired: false,
       roomType: record.roomType,
       typeConflict: record.roomType !== roomType,
+      botEnabled: record.botEnabled ?? false,
     }
   }
 
@@ -114,11 +128,22 @@ async function getOrCreateMeeting(
   const meetingId = data?.data?.id
   if (!meetingId) throw new Error("RTK meetings API returned no meeting ID")
 
-  const record: RoomRecord = { meetingId, createdAt: Date.now(), roomType }
+  const record: RoomRecord = {
+    meetingId,
+    createdAt: Date.now(),
+    roomType,
+    botEnabled: enableBot,
+  }
   await env.ROOMS_KV.put(key, JSON.stringify(record), {
     expirationTtl: 30 * 24 * 3600,
   })
-  return { meetingId, expired: false, roomType, typeConflict: false }
+  return {
+    meetingId,
+    expired: false,
+    roomType,
+    typeConflict: false,
+    botEnabled: enableBot,
+  }
 }
 
 async function addParticipant(
@@ -171,22 +196,24 @@ export default async function handler(
     const { env, cf } = getCloudflareContext()
     const cfEnv = env as unknown as Env
 
-    // KV-based rate limiting per IP (fallback for free plan without WAF)
+    const ip =
+      (req.headers["cf-connecting-ip"] as string) ??
+      (cf as any)?.ip ??
+      "unknown"
+
     if (!isDev) {
-      const ip =
-        (req.headers["cf-connecting-ip"] as string) ??
-        (cf as any)?.ip ??
-        "unknown"
       const allowed = await checkRateLimit(ip, cfEnv)
       if (!allowed) {
         return res.status(429).json({ error: "Too many requests" })
       }
     }
 
-    const { room, name, type } = req.body as {
+    const { room, name, type, enableBot, turnstileToken } = req.body as {
       room: string
       name: string
       type?: string
+      enableBot?: boolean
+      turnstileToken?: string
     }
     const roomType: RoomType = type === "screenshare" ? "screenshare" : "audio"
 
@@ -205,12 +232,37 @@ export default async function handler(
       return res.status(400).json({ error: "room and name must not be blank" })
     }
 
+    if (!isDev && cfEnv.TURNSTILE_SECRET_KEY && turnstileToken) {
+      const verifyRes = await fetch(
+        "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            secret: cfEnv.TURNSTILE_SECRET_KEY,
+            response: turnstileToken,
+            remoteip: ip,
+          }),
+        }
+      )
+      const verifyData = (await verifyRes.json()) as { success: boolean }
+      if (!verifyData.success) {
+        return res.status(403).json({ error: "Turnstile verification failed" })
+      }
+    }
+
     const {
       meetingId,
       expired,
       roomType: resolvedRoomType,
       typeConflict,
-    } = await getOrCreateMeeting(room.trim(), roomType, cfEnv)
+      botEnabled: resolvedBotEnabled,
+    } = await getOrCreateMeeting(
+      room.trim(),
+      roomType,
+      enableBot ?? false,
+      cfEnv
+    )
     if (expired) {
       return res.status(410).json({ error: "room expired" })
     }
@@ -221,9 +273,12 @@ export default async function handler(
       resolvedRoomType,
       cfEnv
     )
-    return res
-      .status(200)
-      .json({ authToken, roomType: resolvedRoomType, typeConflict })
+    return res.status(200).json({
+      authToken,
+      roomType: resolvedRoomType,
+      typeConflict,
+      botEnabled: resolvedBotEnabled,
+    })
   } catch (err) {
     console.error(err)
     return res.status(500).json({ error: "internal error" })

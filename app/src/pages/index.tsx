@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 
 import { useRouter } from "next/router"
 
@@ -10,24 +10,58 @@ import {
 } from "../common/utils"
 import Header from "../components/Header"
 
+const TURNSTILE_SITEKEY =
+  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA"
+
 export default function Home() {
   const router = useRouter()
   const [roomName, setRoomName] = useState<string>("")
   const [nickName, setNickName] = useState<string>("")
   const [copied, setCopied] = useState<boolean>(false)
   const [screenShare, setScreenShare] = useState<boolean>(false)
+  const [enableBot, setEnableBot] = useState<boolean>(false)
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
   const [isDesktop, setIsDesktop] = useState<boolean>(false)
+  const turnstileRef = useRef<HTMLDivElement>(null)
+  const turnstileToken = useRef<string>("")
 
   useEffect(() => {
     setRoomName(randomName())
     setIsDesktop(!/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent))
   }, [])
 
+  useEffect(() => {
+    const script = document.createElement("script")
+    script.src =
+      "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+    script.async = true
+    script.onload = () => {
+      const ts = (window as any).turnstile
+      if (ts && turnstileRef.current) {
+        ts.render(turnstileRef.current, {
+          sitekey: TURNSTILE_SITEKEY,
+          theme: "dark",
+          callback: (token: string) => {
+            turnstileToken.current = token
+          },
+          "expired-callback": () => {
+            turnstileToken.current = ""
+          },
+        })
+      }
+    }
+    document.head.appendChild(script)
+    return () => {
+      document.head.removeChild(script)
+    }
+  }, [])
+
   const go = () => {
     if (roomName !== "" && nickName != "") {
       if (typeof window !== "undefined") {
         saveRoomToLocalStorage(roomName, nickName)
+        sessionStorage.setItem("ts_token", turnstileToken.current)
+        sessionStorage.setItem("enable_bot", enableBot ? "1" : "0")
       }
       const roomType = screenShare ? "screenshare" : "audio"
       umamiEvent("RoomJoin", { type: roomType, roomHash: hashRoom(roomName) })
@@ -186,7 +220,7 @@ export default function Home() {
                     Advanced
                   </button>
                   {showAdvanced && (
-                    <div className="mt-2 flex items-center gap-2">
+                    <div className="mt-2 flex flex-col gap-2">
                       <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
                         <input
                           type="checkbox"
@@ -195,6 +229,15 @@ export default function Home() {
                           className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
                         />
                         Enable screen sharing
+                      </label>
+                      <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
+                        <input
+                          type="checkbox"
+                          checked={enableBot}
+                          onChange={(e) => setEnableBot(e.target.checked)}
+                          className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
+                        />
+                        Enable AI assistant (Luna)
                       </label>
                     </div>
                   )}
@@ -228,7 +271,9 @@ export default function Home() {
               )}
             </div>
 
-            <p className="mt-8 text-center text-xs text-gray-600">
+            <div ref={turnstileRef} className="mt-4 flex justify-center" />
+
+            <p className="mt-4 text-center text-xs text-gray-600">
               This website will collect some runtime technical data for
               debugging, using at your risk.
             </p>

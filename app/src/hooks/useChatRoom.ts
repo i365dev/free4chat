@@ -10,13 +10,15 @@ type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 export function useChatRoom(
   roomName: string,
   nickName: string,
-  roomType: "audio" | "screenshare"
+  roomType: "audio" | "screenshare",
+  enableBot?: boolean
 ) {
   const [meeting, initMeeting] = useRealtimeKitClient()
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState<string>("")
   const [expiryWarning, setExpiryWarning] = useState<string>("")
+  const [botEnabled, setBotEnabled] = useState<boolean>(false)
   const [resolvedRoomType, setResolvedRoomType] = useState<
     "audio" | "screenshare"
   >(roomType)
@@ -35,7 +37,13 @@ export function useChatRoom(
     fetch(`/api/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ room: roomName, name: nickName, type: roomType }),
+      body: JSON.stringify({
+        room: roomName,
+        name: nickName,
+        type: roomType,
+        enableBot: enableBot ?? false,
+        turnstileToken: sessionStorage.getItem("ts_token") ?? undefined,
+      }),
       signal: controller.signal,
     })
       .then(async (r) => {
@@ -49,9 +57,11 @@ export function useChatRoom(
           authToken: string
           roomType?: "audio" | "screenshare"
           typeConflict?: boolean
+          botEnabled?: boolean
         }) => {
           setError("")
           if (data.roomType) setResolvedRoomType(data.roomType)
+          if (data.botEnabled) setBotEnabled(true)
           if (data.typeConflict) {
             setError(
               data.roomType === "audio"
@@ -142,6 +152,21 @@ export function useChatRoom(
                 type: "action" as const,
                 actionType: payload.actionType as ActionType,
                 actionPayload: payload.actionPayload,
+              }
+            } catch {
+              return { ...base, type: "text" as const, text }
+            }
+          }
+          if (text.startsWith("__bot:")) {
+            try {
+              const payload = JSON.parse(text.slice(6))
+              const botText =
+                typeof payload.text === "string" ? payload.text : ""
+              return {
+                peerId: "luna-ai",
+                name: "Luna · AI",
+                type: "bot" as const,
+                text: botText,
               }
             } catch {
               return { ...base, type: "text" as const, text }
@@ -300,5 +325,6 @@ export function useChatRoom(
     expiryWarning,
     connectionStatus,
     resolvedRoomType,
+    botEnabled,
   }
 }
