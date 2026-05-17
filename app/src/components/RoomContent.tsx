@@ -349,7 +349,7 @@ export default function RoomContent({
           Connection lost
         </p>
         <p className="mb-6 text-sm text-gray-500">
-          Could not reconnect after multiple attempts.
+          {error || "Could not reconnect after multiple attempts."}
         </p>
         <button
           onClick={() => window.location.reload()}

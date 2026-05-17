@@ -49,6 +49,7 @@ export function useChatRoom(
       .then(async (r) => {
         if (r.status === 410) throw new Error("room_expired")
         if (r.status === 429) throw new Error("rate_limited")
+        if (r.status === 403) throw new Error("verification_failed")
         if (!r.ok) throw new Error("server_error")
         return r.json()
       })
@@ -85,6 +86,9 @@ export function useChatRoom(
           )
         } else if (err.message === "rate_limited") {
           setError("Too many requests. Please wait a moment and try again.")
+        } else if (err.message === "verification_failed") {
+          sessionStorage.removeItem("ts_token")
+          setError("Bot verification expired. Please refresh the page.")
         } else {
           setError("Failed to connect to server, please refresh")
         }
