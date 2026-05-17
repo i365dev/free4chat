@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "free4chat",
-  "main": ".open-next/worker.js",
+  "main": "./worker.ts",
   "compatibility_date": "2025-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "placement": { "mode": "smart" },
