@@ -1,13 +1,10 @@
+import OpenAI from "openai"
+
 type AiMessage = { role: "system" | "user" | "assistant"; content: string }
-type AiRunFn = (
-  model: string,
-  inputs: { messages: AiMessage[] },
-  options?: { gateway?: { id: string; skipCache?: boolean } }
-) => Promise<{ response?: string }>
 
 interface Env {
-  AI: { run: AiRunFn }
-  CF_AI_GATEWAY_ID?: string
+  CF_AIG_TOKEN: string
+  CF_AI_GATEWAY_BASEURL: string
 }
 
 interface HourlyState {
@@ -21,7 +18,7 @@ const BOT_SYSTEM_PROMPT =
 
 const MAX_HISTORY = 20
 const HOURLY_RATE_LIMIT = 30
-const BOT_MODEL = "@cf/zai-org/glm-4.7-flash"
+const BOT_MODEL = "workers-ai/@cf/zai-org/glm-4.7-flash"
 
 export class BotSession implements DurableObject {
   private history: AiMessage[] | null = null
@@ -90,17 +87,17 @@ export class BotSession implements DurableObject {
       ...history,
     ]
 
-    const gatewayOptions = this.env.CF_AI_GATEWAY_ID
-      ? { gateway: { id: this.env.CF_AI_GATEWAY_ID, skipCache: false } }
-      : undefined
+    const client = new OpenAI({
+      apiKey: this.env.CF_AIG_TOKEN,
+      baseURL: this.env.CF_AI_GATEWAY_BASEURL,
+    })
 
     try {
-      const result = await this.env.AI.run(
-        BOT_MODEL,
-        { messages },
-        gatewayOptions
-      )
-      const reply = result?.response ?? ""
+      const completion = await client.chat.completions.create({
+        model: BOT_MODEL,
+        messages,
+      })
+      const reply = completion.choices[0]?.message?.content ?? ""
       if (reply) {
         history.push({ role: "assistant", content: reply })
         while (history.length > MAX_HISTORY) history.shift()

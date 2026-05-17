@@ -31,7 +31,4 @@
       "new_classes": ["BotSession"]
     }
   ],
-  "ai": {
-    "binding": "AI"
-  }
 }
