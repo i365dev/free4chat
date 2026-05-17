@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 
 import dynamic from "next/dynamic"
 import Head from "next/head"
@@ -16,6 +16,9 @@ const RoomContent = dynamic(() => import("../components/RoomContent"), {
   ssr: false,
 })
 
+const TURNSTILE_SITEKEY =
+  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA"
+
 export default function Room() {
   const router = useRouter()
   const roomId = router.query.id as string
@@ -26,11 +29,43 @@ export default function Room() {
   const [enableBot, setEnableBot] = useState<boolean>(false)
   const [showNickNamePop, setShowNickNamePop] = useState<boolean>(false)
   const [ready, setReady] = useState<boolean>(false)
+  const turnstileRef = useRef<HTMLDivElement>(null)
+  const turnstileToken = useRef<string>("")
+  const [turnstileReady, setTurnstileReady] = useState<boolean>(false)
+
+  useEffect(() => {
+    const script = document.createElement("script")
+    script.src =
+      "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+    script.async = true
+    script.onload = () => {
+      const ts = (window as any).turnstile
+      if (ts && turnstileRef.current) {
+        ts.render(turnstileRef.current, {
+          sitekey: TURNSTILE_SITEKEY,
+          theme: "dark",
+          callback: (token: string) => {
+            turnstileToken.current = token
+            setTurnstileReady(true)
+          },
+          "expired-callback": () => {
+            turnstileToken.current = ""
+            setTurnstileReady(false)
+          },
+        })
+      }
+    }
+    document.head.appendChild(script)
+    return () => {
+      document.head.removeChild(script)
+    }
+  }, [])
 
   const dismissNickNamePop = () => {
-    if (!nickName.trim()) return
+    if (!nickName.trim() || !turnstileReady) return
     setShowNickNamePop(false)
     saveRoomToLocalStorage(roomName, nickName)
+    sessionStorage.setItem("ts_token", turnstileToken.current)
     setReady(true)
   }
 
@@ -118,11 +153,12 @@ export default function Room() {
                 </button>
               </span>
             </div>
+            <div ref={turnstileRef} className="mt-4 flex justify-center" />
             <button
               type="button"
               onClick={dismissNickNamePop}
-              disabled={!nickName.trim()}
-              className="group mt-4 flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 disabled:opacity-50 sm:mt-0 sm:w-auto"
+              disabled={!nickName.trim() || !turnstileReady}
+              className="group mt-4 flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0 sm:w-auto"
             >
               <span className="text-sm font-medium"> Go </span>
               <svg

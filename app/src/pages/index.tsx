@@ -24,6 +24,7 @@ export default function Home() {
   const [isDesktop, setIsDesktop] = useState<boolean>(false)
   const turnstileRef = useRef<HTMLDivElement>(null)
   const turnstileToken = useRef<string>("")
+  const [turnstileReady, setTurnstileReady] = useState<boolean>(false)
 
   useEffect(() => {
     setRoomName(randomName())
@@ -43,9 +44,11 @@ export default function Home() {
           theme: "dark",
           callback: (token: string) => {
             turnstileToken.current = token
+            setTurnstileReady(true)
           },
           "expired-callback": () => {
             turnstileToken.current = ""
+            setTurnstileReady(false)
           },
         })
       }
@@ -173,7 +176,8 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={go}
-                  className="group flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 sm:w-auto"
+                  disabled={!turnstileReady}
+                  className="group flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                 >
                   <span className="text-sm font-medium"> Join </span>
 

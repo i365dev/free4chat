@@ -7,7 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "cf-build": "opennextjs-cloudflare build",
+    "cf-build": "opennextjs-cloudflare build && node scripts/patch-worker.mjs",
     "cf-deploy": "wrangler deploy",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "type-check": "tsc --pretty --noEmit",

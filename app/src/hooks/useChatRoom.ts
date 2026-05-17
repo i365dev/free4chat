@@ -60,6 +60,7 @@ export function useChatRoom(
           botEnabled?: boolean
         }) => {
           setError("")
+          sessionStorage.removeItem("ts_token")
           if (data.roomType) setResolvedRoomType(data.roomType)
           if (data.botEnabled) setBotEnabled(true)
           if (data.typeConflict) {

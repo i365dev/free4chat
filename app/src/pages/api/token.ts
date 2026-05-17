@@ -232,7 +232,12 @@ export default async function handler(
       return res.status(400).json({ error: "room and name must not be blank" })
     }
 
-    if (!isDev && cfEnv.TURNSTILE_SECRET_KEY && turnstileToken) {
+    if (!isDev && cfEnv.TURNSTILE_SECRET_KEY) {
+      if (!turnstileToken) {
+        return res
+          .status(403)
+          .json({ error: "Turnstile verification required" })
+      }
       const verifyRes = await fetch(
         "https://challenges.cloudflare.com/turnstile/v0/siteverify",
         {
