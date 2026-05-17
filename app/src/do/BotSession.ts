@@ -24,23 +24,31 @@ export class BotSession implements DurableObject {
   private history: AiMessage[] | null = null
   private hourlyWindow = 0
   private hourlyCount = 0
-  private stateLoaded = false
+  private loadPromise: Promise<void> | null = null
+  private readonly client: OpenAI
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env
-  ) {}
+  ) {
+    this.client = new OpenAI({
+      apiKey: env.CF_AIG_TOKEN,
+      baseURL: env.CF_AI_GATEWAY_BASEURL,
+    })
+  }
 
   private async loadState(): Promise<void> {
-    if (this.stateLoaded) return
-    this.history = (await this.state.storage.get<AiMessage[]>("history")) ?? []
-    const hourly = (await this.state.storage.get<HourlyState>("hourly")) ?? {
-      window: 0,
-      count: 0,
-    }
-    this.hourlyWindow = hourly.window
-    this.hourlyCount = hourly.count
-    this.stateLoaded = true
+    if (this.loadPromise) return this.loadPromise
+    this.loadPromise = (async () => {
+      this.history = (await this.state.storage.get<AiMessage[]>("history")) ?? []
+      const hourly = (await this.state.storage.get<HourlyState>("hourly")) ?? {
+        window: 0,
+        count: 0,
+      }
+      this.hourlyWindow = hourly.window
+      this.hourlyCount = hourly.count
+    })()
+    return this.loadPromise
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -73,11 +81,6 @@ export class BotSession implements DurableObject {
     if (this.hourlyCount >= HOURLY_RATE_LIMIT) {
       return Response.json({ error: "rate_limited" })
     }
-    this.hourlyCount++
-    await this.state.storage.put<HourlyState>("hourly", {
-      window: this.hourlyWindow,
-      count: this.hourlyCount,
-    })
 
     history.push({ role: "user", content: `${userName}: ${userMessage}` })
     while (history.length > MAX_HISTORY) history.shift()
@@ -87,13 +90,8 @@ export class BotSession implements DurableObject {
       ...history,
     ]
 
-    const client = new OpenAI({
-      apiKey: this.env.CF_AIG_TOKEN,
-      baseURL: this.env.CF_AI_GATEWAY_BASEURL,
-    })
-
     try {
-      const completion = await client.chat.completions.create({
+      const completion = await this.client.chat.completions.create({
         model: BOT_MODEL,
         messages,
       })
@@ -102,6 +100,11 @@ export class BotSession implements DurableObject {
         history.push({ role: "assistant", content: reply })
         while (history.length > MAX_HISTORY) history.shift()
       }
+      this.hourlyCount++
+      await this.state.storage.put<HourlyState>("hourly", {
+        window: this.hourlyWindow,
+        count: this.hourlyCount,
+      })
       await this.state.storage.put<AiMessage[]>("history", history)
       return Response.json({ reply })
     } catch (err) {
