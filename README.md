@@ -56,6 +56,8 @@ This project has gone through three stacks, always with the same product goal:
 
 The product never changed. The ops burden did.
 
+The full story — WebRTC internals, why each stack was chosen, where AI voice bots are headed — is written up here: [**一个 WebRTC 聊天室的三次演进**](https://www.bmpi.dev/dev/free4chat/) (Chinese)
+
 ## Development
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for local setup, deployment, and architecture notes.
