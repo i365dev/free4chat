@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect } from "react"
 
 import { useRouter } from "next/router"
 
@@ -10,9 +10,6 @@ import {
 } from "../common/utils"
 import Header from "../components/Header"
 
-const TURNSTILE_SITEKEY =
-  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA"
-
 export default function Home() {
   const router = useRouter()
   const [roomName, setRoomName] = useState<string>("")
@@ -22,48 +19,16 @@ export default function Home() {
   const [enableBot, setEnableBot] = useState<boolean>(false)
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
   const [isDesktop, setIsDesktop] = useState<boolean>(false)
-  const turnstileRef = useRef<HTMLDivElement>(null)
-  const turnstileToken = useRef<string>("")
-  const [turnstileReady, setTurnstileReady] = useState<boolean>(false)
 
   useEffect(() => {
     setRoomName(randomName())
     setIsDesktop(!/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent))
   }, [])
 
-  useEffect(() => {
-    const script = document.createElement("script")
-    script.src =
-      "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
-    script.async = true
-    script.onload = () => {
-      const ts = (window as any).turnstile
-      if (ts && turnstileRef.current) {
-        ts.render(turnstileRef.current, {
-          sitekey: TURNSTILE_SITEKEY,
-          theme: "dark",
-          callback: (token: string) => {
-            turnstileToken.current = token
-            setTurnstileReady(true)
-          },
-          "expired-callback": () => {
-            turnstileToken.current = ""
-            setTurnstileReady(false)
-          },
-        })
-      }
-    }
-    document.head.appendChild(script)
-    return () => {
-      document.head.removeChild(script)
-    }
-  }, [])
-
   const go = () => {
     if (roomName !== "" && nickName != "") {
       if (typeof window !== "undefined") {
         saveRoomToLocalStorage(roomName, nickName)
-        sessionStorage.setItem("ts_token", turnstileToken.current)
         sessionStorage.setItem("enable_bot", enableBot ? "1" : "0")
       }
       const roomType = screenShare ? "screenshare" : "audio"
@@ -176,8 +141,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={go}
-                  disabled={!turnstileReady}
-                  className="group flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                  className="group flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 sm:w-auto"
                 >
                   <span className="text-sm font-medium"> Join </span>
 
@@ -274,8 +238,6 @@ export default function Home() {
                 </div>
               )}
             </div>
-
-            <div ref={turnstileRef} className="mt-4 flex justify-center" />
 
             <p className="mt-4 text-center text-xs text-gray-600">
               This website will collect some runtime technical data for
