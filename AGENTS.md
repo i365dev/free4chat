@@ -246,6 +246,7 @@ Manual: `yarn cf-build && yarn cf-deploy` (needs `CLOUDFLARE_API_TOKEN` + `CLOUD
 - `activeSharePeerId` tracks which participant's screen is displayed — only one `ScreenShareViewer` renders at a time
 - Split pane ratio (`splitRatio`): auto-sets to 75 when screen sharing, 50 otherwise; drag handle is desktop-only (`hidden md:block`)
 - IME input fix: `isComposingRef` in `TextChatCard.tsx` prevents Enter from submitting during CJK composition
+- Slash/@ picker: typing `/` or `@` in chat input shows an inline command picker above the input. Uses `onMouseDown` (not `onClick`) to avoid input blur. Arrow keys + Enter to navigate, Escape to dismiss.
 - `*.tsbuildinfo` is gitignored — do not commit it
 - `scripts/patch-worker.mjs` must run after every `opennextjs-cloudflare build` — it is part of `cf-build`, not standalone
 
@@ -261,8 +262,4 @@ Higher-level abstraction over DOs — replaces manual `fetch()` dispatch with ty
 
 ### Voice Bot (Luna Phase 2)
 
-Requires `@cloudflare/voice` Durable Object (STT → LLM → TTS) + Cloudflare Calls API track bridging into RTK. Estimated latency: ~700–900ms all-Cloudflare. See issue #52.
-
-### Slash / @ Command Picker
-
-Type `/` or `@` in chat input → inline picker for commands and bot mentions. Build together with any voice bot work. See issue #53.
+Requires `@cloudflare/voice` Durable Object (STT → LLM → TTS) + Cloudflare Calls API track bridging into RTK. Estimated latency: ~700–900ms all-Cloudflare. See issue #55.

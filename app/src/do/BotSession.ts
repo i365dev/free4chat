@@ -14,7 +14,15 @@ interface HourlyState {
 
 const BOT_SYSTEM_PROMPT =
   "You are Luna, a concise and friendly AI assistant in a voice+text chat room. " +
-  "Keep replies short (1-3 sentences). If the user speaks Chinese, reply in Chinese."
+  "Keep replies short (1-3 sentences). If the user speaks Chinese, reply in Chinese. " +
+  "Never use markdown tables or code blocks — plain text only."
+
+function stripThinkTags(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/g, "")
+    .replace(/<\/?think>/g, "")
+    .trim()
+}
 
 const MAX_HISTORY = 20
 const HOURLY_RATE_LIMIT = 30
@@ -103,7 +111,9 @@ export class BotSession implements DurableObject {
         model: BOT_MODEL,
         messages,
       })
-      const reply = completion.choices[0]?.message?.content ?? ""
+      const reply = stripThinkTags(
+        completion.choices[0]?.message?.content ?? ""
+      )
       if (reply) {
         history.push({ role: "assistant", content: reply })
         while (history.length > MAX_HISTORY) history.shift()

@@ -92,6 +92,102 @@ function TextWithLinks({ text }: { text: string }) {
   )
 }
 
+function BotText({ text }: { text: string }) {
+  const urlRegex = /(https?:\/\/[^\s]+)/g
+  const boldRegex = /\*\*(.+?)\*\*/g
+  const codeRegex = /`([^`]+)`/g
+
+  function renderInline(segment: string, keyPrefix: string) {
+    const parts: React.ReactNode[] = []
+    let remaining = segment
+    let i = 0
+
+    while (remaining.length > 0) {
+      const boldMatch = boldRegex.exec(remaining)
+      const codeMatch = codeRegex.exec(remaining)
+      const urlMatch = urlRegex.exec(remaining)
+
+      boldRegex.lastIndex = 0
+      codeRegex.lastIndex = 0
+      urlRegex.lastIndex = 0
+
+      const matches = [
+        boldMatch && {
+          idx: boldMatch.index,
+          len: boldMatch[0].length,
+          type: "bold",
+          content: boldMatch[1],
+        },
+        codeMatch && {
+          idx: codeMatch.index,
+          len: codeMatch[0].length,
+          type: "code",
+          content: codeMatch[1],
+        },
+        urlMatch && {
+          idx: urlMatch.index,
+          len: urlMatch[0].length,
+          type: "url",
+          content: urlMatch[0],
+        },
+      ]
+        .filter(Boolean)
+        .sort((a, b) => a!.idx - b!.idx)
+
+      const first = matches[0]
+      if (!first) {
+        parts.push(remaining)
+        break
+      }
+
+      if (first.idx > 0) parts.push(remaining.slice(0, first.idx))
+
+      if (first.type === "bold") {
+        parts.push(
+          <strong key={`${keyPrefix}-b${i++}`}>{first.content}</strong>
+        )
+      } else if (first.type === "code") {
+        parts.push(
+          <code
+            key={`${keyPrefix}-c${i++}`}
+            className="rounded bg-violet-800/60 px-1 font-mono text-xs"
+          >
+            {first.content}
+          </code>
+        )
+      } else {
+        parts.push(
+          <a
+            key={`${keyPrefix}-u${i++}`}
+            href={first.content}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline opacity-90 hover:opacity-100"
+          >
+            {first.content}
+          </a>
+        )
+      }
+
+      remaining = remaining.slice(first.idx + first.len)
+    }
+
+    return parts
+  }
+
+  const lines = text.split("\n")
+  return (
+    <span className="break-words">
+      {lines.map((line, li) => (
+        <span key={li}>
+          {renderInline(line, `l${li}`)}
+          {li < lines.length - 1 && <br />}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 function getOrCreateWhiteboardUrl(room: string): string {
   const storageKey = `wb-key-${room}`
   let key = localStorage.getItem(storageKey)
@@ -475,6 +571,7 @@ export default function TextChatCard({
   const [message, setMessage] = useState<string>("")
   const [submenu, setSubmenu] = useState<"games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
+  const [pickerIndex, setPickerIndex] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -510,6 +607,28 @@ export default function TextChatCard({
   }
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (showPicker) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault()
+        setPickerIndex((i) => (i + 1) % pickerItems.length)
+        return
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault()
+        setPickerIndex((i) => (i - 1 + pickerItems.length) % pickerItems.length)
+        return
+      }
+      if (event.key === "Enter" && !isComposingRef.current) {
+        event.preventDefault()
+        commitPicker(pickerIndex)
+        return
+      }
+      if (event.key === "Escape") {
+        setMessage("")
+        setPickerIndex(0)
+        return
+      }
+    }
     if (
       event.key === "Enter" &&
       !isComposingRef.current &&
@@ -561,6 +680,79 @@ export default function TextChatCard({
     onSendAction("vote", { pollId, option })
   }
 
+  const slashCommands = [
+    {
+      icon: "🎨",
+      label: "/draw",
+      desc: "Open whiteboard",
+      action: () => {
+        setMessage("")
+        handleWhiteboard()
+      },
+    },
+    {
+      icon: "📊",
+      label: "/poll",
+      desc: "Create a poll",
+      action: () => {
+        setMessage("")
+        handlePoll()
+      },
+    },
+    {
+      icon: "🎮",
+      label: "/games",
+      desc: "Share a game link",
+      action: () => {
+        setMessage("")
+        setSubmenu("games")
+      },
+    },
+    ...(botEnabled
+      ? [
+          {
+            icon: "🤖",
+            label: "/luna",
+            desc: "Ask Luna AI",
+            action: () => {
+              setMessage("@luna ")
+              inputRef.current?.focus()
+            },
+          },
+        ]
+      : []),
+  ]
+
+  const atMentions = botEnabled
+    ? [
+        {
+          icon: "🤖",
+          label: "@luna",
+          desc: "Ask Luna AI",
+          action: () => {
+            setMessage("@luna ")
+            inputRef.current?.focus()
+          },
+        },
+      ]
+    : []
+
+  const pickerItems =
+    message === "/"
+      ? slashCommands
+      : message.startsWith("/") && !message.includes(" ")
+      ? slashCommands.filter((c) => c.label.startsWith(message.toLowerCase()))
+      : message.startsWith("@") && !message.includes(" ")
+      ? atMentions.filter((m) => m.label.startsWith(message.toLowerCase()))
+      : []
+
+  const showPicker = pickerItems.length > 0
+
+  const commitPicker = (idx: number) => {
+    pickerItems[idx]?.action()
+    setPickerIndex(0)
+  }
+
   return (
     <>
       <style>{`
@@ -606,7 +798,7 @@ export default function TextChatCard({
                   )}
                   {isBot ? (
                     <div className="rounded-br-3xl rounded-tl-xl rounded-tr-3xl bg-violet-900/60 px-4 py-3 text-violet-100 ring-1 ring-violet-700/50">
-                      <TextWithLinks text={p.text ?? ""} />
+                      <BotText text={p.text ?? ""} />
                     </div>
                   ) : p.type === "text" ? (
                     <div
@@ -827,13 +1019,39 @@ export default function TextChatCard({
         </div>
 
         <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
+          {showPicker && (
+            <div className="absolute bottom-full left-3 right-3 mb-1 overflow-hidden rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
+              {pickerItems.map((item, i) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    commitPicker(i)
+                  }}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
+                    i === pickerIndex
+                      ? "bg-gray-700 text-white"
+                      : "text-gray-300 hover:bg-gray-700"
+                  }`}
+                >
+                  <span className="text-base">{item.icon}</span>
+                  <span className="font-medium">{item.label}</span>
+                  <span className="text-xs text-gray-500">{item.desc}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <input
             ref={inputRef}
             className="flex-1 rounded-xl bg-gray-900"
             type="text"
             value={message}
             onKeyDown={handleKeyDown}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              setMessage(e.target.value)
+              setPickerIndex(0)
+            }}
             onCompositionStart={() => {
               isComposingRef.current = true
             }}
