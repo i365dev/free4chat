@@ -198,15 +198,24 @@ export default function Home() {
                         />
                         Enable screen sharing
                       </label>
-                      <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
-                        <input
-                          type="checkbox"
-                          checked={enableBot}
-                          onChange={(e) => setEnableBot(e.target.checked)}
-                          className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
-                        />
-                        Enable AI assistant (Luna)
-                      </label>
+                      <div className="flex flex-col gap-0.5">
+                        <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
+                          <input
+                            type="checkbox"
+                            checked={enableBot}
+                            onChange={(e) => setEnableBot(e.target.checked)}
+                            className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
+                          />
+                          Enable AI assistant (Luna)
+                        </label>
+                        {enableBot && (
+                          <p className="pl-5 text-xs text-gray-600">
+                            Chat messages sent to @luna are processed by an
+                            external AI model. Up to 20 messages are retained
+                            for context during the session.
+                          </p>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

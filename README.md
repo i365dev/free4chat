@@ -40,7 +40,7 @@ free4chat is built around two principles: **no data outlives the conversation**,
 **What does persist (and why it's fine):**
 
 - A `room name → meeting ID` mapping is kept in Cloudflare KV with a 30-day TTL, so rejoining the same room name works within a session. It contains no messages, no users, no content.
-- When Luna AI is enabled, the last 20 messages of conversation context are stored in a Durable Object for the lifetime of the room session only.
+- When Luna AI is enabled, messages sent to `@luna` are transmitted to an external AI model (Cloudflare AI Gateway → `@cf/zai-org/glm-4.7-flash`) for processing. The last 20 messages of conversation context are retained in a Durable Object for the lifetime of the room session only. Luna is opt-in and disabled by default.
 - Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
 
 **Why "local-first":**
