@@ -24,10 +24,12 @@ export function useChatRoom(
   >(roomType)
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting")
+  const [timeLeft, setTimeLeft] = useState<number>(2 * 60 * 60)
   const joinedMeetingRef = useRef<typeof meeting | null>(null)
   const hasJoinedRef = useRef(false)
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     if (!roomName || !nickName) return
@@ -227,6 +229,16 @@ export function useChatRoom(
     })
     hasJoinedRef.current = true
 
+    const joinedAt = Date.now()
+    countdownRef.current = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - joinedAt) / 1000)
+      const remaining = Math.max(0, 2 * 60 * 60 - elapsed)
+      setTimeLeft(remaining)
+      if (remaining === 0 && countdownRef.current) {
+        clearInterval(countdownRef.current)
+      }
+    }, 1000)
+
     expiryTimerRef.current = setTimeout(() => {
       setExpiryWarning(
         "This room will expire in 10 minutes. Copy the link and re-open to continue."
@@ -271,6 +283,7 @@ export function useChatRoom(
       hasJoinedRef.current = false
       if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current)
       if (expiryFinalRef.current) clearTimeout(expiryFinalRef.current)
+      if (countdownRef.current) clearInterval(countdownRef.current)
     }
   }, [meeting, roomName])
 
@@ -335,5 +348,6 @@ export function useChatRoom(
     connectionStatus,
     resolvedRoomType,
     botEnabled,
+    timeLeft,
   }
 }

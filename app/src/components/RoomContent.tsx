@@ -120,9 +120,24 @@ export default function RoomContent({
     connectionStatus,
     resolvedRoomType,
     botEnabled,
+    timeLeft,
   } = useChatRoom(roomName, nickName, roomType, enableBotProp)
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
+
+  useEffect(() => {
+    const h = Math.floor(timeLeft / 3600)
+    const m = Math.floor((timeLeft % 3600) / 60)
+    const s = timeLeft % 60
+    const formatted = `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(
+      2,
+      "0"
+    )}`
+    document.title = `[${formatted}] ${roomName} | free4chat`
+    return () => {
+      document.title = "free4chat"
+    }
+  }, [timeLeft, roomName])
 
   const activeScreenShares = participants.filter(
     (p) =>
