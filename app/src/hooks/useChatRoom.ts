@@ -25,6 +25,7 @@ export function useChatRoom(
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("connecting")
   const [timeLeft, setTimeLeft] = useState<number>(2 * 60 * 60)
+  const expiresAtRef = useRef<number>(0)
   const joinedMeetingRef = useRef<typeof meeting | null>(null)
   const hasJoinedRef = useRef(false)
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -61,9 +62,16 @@ export function useChatRoom(
           roomType?: "audio" | "screenshare"
           typeConflict?: boolean
           botEnabled?: boolean
+          expiresAt?: number
         }) => {
           setError("")
           sessionStorage.removeItem("ts_token")
+          if (data.expiresAt) {
+            expiresAtRef.current = data.expiresAt
+            setTimeLeft(
+              Math.max(0, Math.floor((data.expiresAt - Date.now()) / 1000))
+            )
+          }
           if (data.roomType) setResolvedRoomType(data.roomType)
           if (data.botEnabled) setBotEnabled(true)
           if (data.typeConflict) {
@@ -231,8 +239,8 @@ export function useChatRoom(
 
     const joinedAt = Date.now()
     countdownRef.current = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - joinedAt) / 1000)
-      const remaining = Math.max(0, 2 * 60 * 60 - elapsed)
+      const base = expiresAtRef.current || joinedAt + 2 * 60 * 60 * 1000
+      const remaining = Math.max(0, Math.floor((base - Date.now()) / 1000))
       setTimeLeft(remaining)
       if (remaining === 0 && countdownRef.current) {
         clearInterval(countdownRef.current)

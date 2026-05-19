@@ -66,6 +66,7 @@ async function getOrCreateMeeting(
   roomType: RoomType
   typeConflict: boolean
   botEnabled: boolean
+  createdAt: number
 }> {
   const key = `room:${roomName}`
   const raw = await env.ROOMS_KV.get(key)
@@ -85,6 +86,7 @@ async function getOrCreateMeeting(
         roomType: record.roomType,
         typeConflict: false,
         botEnabled: false,
+        createdAt: record.createdAt,
       }
     }
     const upgradeToScreenshare =
@@ -107,6 +109,7 @@ async function getOrCreateMeeting(
           ? false
           : record.roomType !== roomType,
         botEnabled: upgraded.botEnabled ?? false,
+        createdAt: record.createdAt,
       }
     }
     return {
@@ -115,6 +118,7 @@ async function getOrCreateMeeting(
       roomType: record.roomType,
       typeConflict: record.roomType !== roomType,
       botEnabled: record.botEnabled ?? false,
+      createdAt: record.createdAt,
     }
   }
 
@@ -143,6 +147,7 @@ async function getOrCreateMeeting(
     roomType,
     typeConflict: false,
     botEnabled: enableBot,
+    createdAt: record.createdAt,
   }
 }
 
@@ -262,6 +267,7 @@ export default async function handler(
       roomType: resolvedRoomType,
       typeConflict,
       botEnabled: resolvedBotEnabled,
+      createdAt,
     } = await getOrCreateMeeting(
       room.trim(),
       roomType,
@@ -283,6 +289,7 @@ export default async function handler(
       roomType: resolvedRoomType,
       typeConflict,
       botEnabled: resolvedBotEnabled,
+      expiresAt: createdAt + ROOM_MAX_AGE_MS,
     })
   } catch (err) {
     console.error(err)
