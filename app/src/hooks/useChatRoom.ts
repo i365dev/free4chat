@@ -28,6 +28,7 @@ export function useChatRoom(
   const expiresAtRef = useRef<number>(0)
   const joinedMeetingRef = useRef<typeof meeting | null>(null)
   const hasJoinedRef = useRef(false)
+  const hasLeftRef = useRef(false)
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -208,7 +209,26 @@ export function useChatRoom(
       setMessages([...mapped])
     }
 
+    const doExpireLeave = () => {
+      if (hasLeftRef.current) return
+      hasLeftRef.current = true
+      setExpiryWarning(
+        "Room session expired. Please re-open the link to rejoin."
+      )
+      meeting.leaveRoom().catch(() => {})
+      if (typeof window !== "undefined") {
+        window.location.href = "/"
+      }
+    }
+
     const onRoomLeft = ({ state }: { state: string }) => {
+      if (hasLeftRef.current) return
+      const isExpired =
+        expiresAtRef.current > 0 && Date.now() >= expiresAtRef.current
+      if (isExpired) {
+        doExpireLeave()
+        return
+      }
       if (state === "disconnected") {
         setConnectionStatus("reconnecting")
       } else if (state === "failed") {
@@ -237,31 +257,51 @@ export function useChatRoom(
     })
     hasJoinedRef.current = true
 
-    const joinedAt = Date.now()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible" && expiresAtRef.current > 0) {
+        const remaining = Math.max(
+          0,
+          Math.floor((expiresAtRef.current - Date.now()) / 1000)
+        )
+        setTimeLeft(remaining)
+        if (remaining === 0) doExpireLeave()
+      }
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
+
     countdownRef.current = setInterval(() => {
-      const base = expiresAtRef.current || joinedAt + 2 * 60 * 60 * 1000
+      const base = expiresAtRef.current
+      if (!base) return
       const remaining = Math.max(0, Math.floor((base - Date.now()) / 1000))
       setTimeLeft(remaining)
-      if (remaining === 0 && countdownRef.current) {
-        clearInterval(countdownRef.current)
+      if (remaining === 0) {
+        clearInterval(countdownRef.current!)
+        countdownRef.current = null
+        doExpireLeave()
       }
     }, 1000)
 
-    expiryTimerRef.current = setTimeout(() => {
-      setExpiryWarning(
-        "This room will expire in 10 minutes. Copy the link and re-open to continue."
-      )
-    }, 6600 * 1000)
-
-    expiryFinalRef.current = setTimeout(() => {
-      setExpiryWarning(
-        "Room session expired. Please re-open the link to rejoin."
-      )
-      meeting.leaveRoom().catch(() => {})
-      if (typeof window !== "undefined") {
-        window.location.href = "/"
+    const scheduleWarning = () => {
+      if (!expiresAtRef.current) return
+      const warnDelay = expiresAtRef.current - Date.now() - 10 * 60 * 1000
+      if (warnDelay <= 0) {
+        setExpiryWarning(
+          "This room will expire in 10 minutes. Copy the link and re-open to continue."
+        )
+        return
       }
-    }, 7200 * 1000)
+      expiryTimerRef.current = setTimeout(() => {
+        setExpiryWarning(
+          "This room will expire in 10 minutes. Copy the link and re-open to continue."
+        )
+      }, warnDelay)
+    }
+    scheduleWarning()
+
+    const finalDelay = expiresAtRef.current
+      ? Math.max(0, expiresAtRef.current - Date.now())
+      : 7200 * 1000
+    expiryFinalRef.current = setTimeout(doExpireLeave, finalDelay)
 
     meeting.self.on("roomLeft", onRoomLeft)
     meeting.self.on("roomJoined", onRoomJoined)
@@ -277,6 +317,7 @@ export function useChatRoom(
     buildParticipants()
 
     return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange)
       meeting.self.off("roomLeft", onRoomLeft)
       meeting.self.off("roomJoined", onRoomJoined)
       ;(meeting.meta as any).off("socketConnectionUpdate", onSocketUpdate)
@@ -287,7 +328,7 @@ export function useChatRoom(
       meeting.self.off("screenShareUpdate", buildParticipants)
       meeting.participants.joined.off("screenShareUpdate", buildParticipants)
       meeting.chat.off("chatUpdate", syncMessages)
-      if (hasJoinedRef.current) meeting.leaveRoom()
+      if (hasJoinedRef.current && !hasLeftRef.current) meeting.leaveRoom()
       hasJoinedRef.current = false
       if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current)
       if (expiryFinalRef.current) clearTimeout(expiryFinalRef.current)
