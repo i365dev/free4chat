@@ -125,19 +125,13 @@ export default function RoomContent({
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
-  useEffect(() => {
-    const h = Math.floor(timeLeft / 3600)
-    const m = Math.floor((timeLeft % 3600) / 60)
-    const s = timeLeft % 60
-    const formatted = `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(
-      2,
-      "0"
-    )}`
-    document.title = `[${formatted}] ${roomName} | free4chat`
-    return () => {
-      document.title = "free4chat"
-    }
-  }, [timeLeft, roomName])
+  const timerH = Math.floor(timeLeft / 3600)
+  const timerM = Math.floor((timeLeft % 3600) / 60)
+  const timerS = timeLeft % 60
+  const timerFormatted = `${timerH}:${String(timerM).padStart(2, "0")}:${String(
+    timerS
+  ).padStart(2, "0")}`
+  const timerWarning = timeLeft > 0 && timeLeft <= 600
 
   const activeScreenShares = participants.filter(
     (p) =>
@@ -396,6 +390,18 @@ export default function RoomContent({
       <div className="flex flex-none items-center border-b border-gray-800 px-4 py-3">
         <h1 className="text-lg font-medium">#{roomName}</h1>
         <div className="ml-auto flex items-center gap-2">
+          {timeLeft > 0 && (
+            <span
+              className={`rounded-md border px-2 py-1 font-mono text-xs ${
+                timerWarning
+                  ? "border-amber-700/60 bg-amber-900/40 text-amber-300"
+                  : "border-gray-700 bg-gray-800 text-gray-400"
+              }`}
+              title="Room expires in"
+            >
+              {timerFormatted}
+            </span>
+          )}
           <button
             type="button"
             onClick={copyRoomLink}
