@@ -41,9 +41,13 @@ async function deactivateMeeting(meetingId: string, env: Env): Promise<void> {
           fetch(`${rtkBase(env)}/meetings/${meetingId}/participants/${p.id}`, {
             method: "DELETE",
             headers: authHeaders(env),
-          }).catch(() => {})
+          })
+            .then((r) => r.body?.cancel())
+            .catch(() => {})
         )
       )
+    } else {
+      await res.body?.cancel()
     }
   } catch {}
 
@@ -51,7 +55,9 @@ async function deactivateMeeting(meetingId: string, env: Env): Promise<void> {
     method: "PATCH",
     headers: authHeaders(env),
     body: JSON.stringify({ status: "INACTIVE" }),
-  }).catch(() => {})
+  })
+    .then((r) => r.body?.cancel())
+    .catch(() => {})
 }
 
 async function cleanExpiredRooms(env: Env): Promise<void> {
