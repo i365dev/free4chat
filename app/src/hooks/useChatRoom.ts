@@ -330,6 +330,7 @@ export function useChatRoom(
       meeting.chat.off("chatUpdate", syncMessages)
       if (hasJoinedRef.current && !hasLeftRef.current) meeting.leaveRoom()
       hasJoinedRef.current = false
+      hasLeftRef.current = false
       if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current)
       if (expiryFinalRef.current) clearTimeout(expiryFinalRef.current)
       if (countdownRef.current) clearInterval(countdownRef.current)
