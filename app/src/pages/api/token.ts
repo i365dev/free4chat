@@ -32,6 +32,7 @@ const MAX_NAME_LENGTH = 32
 const ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000 // 2 hours
 const RATE_LIMIT_WINDOW_S = 60
 const RATE_LIMIT_MAX = 20
+const ROOM_KV_TTL_S = 4 * 3600
 
 function rtkBase(env: Env) {
   return `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/realtime/kit/${env.RTK_APP_ID}`
@@ -99,7 +100,7 @@ async function getOrCreateMeeting(
         botEnabled: record.botEnabled || enableBot,
       }
       await env.ROOMS_KV.put(key, JSON.stringify(upgraded), {
-        expirationTtl: 30 * 24 * 3600,
+        expirationTtl: ROOM_KV_TTL_S,
       })
       return {
         meetingId: record.meetingId,
@@ -139,7 +140,7 @@ async function getOrCreateMeeting(
     botEnabled: enableBot,
   }
   await env.ROOMS_KV.put(key, JSON.stringify(record), {
-    expirationTtl: 30 * 24 * 3600,
+    expirationTtl: ROOM_KV_TTL_S,
   })
   return {
     meetingId,
