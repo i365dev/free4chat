@@ -12,7 +12,8 @@
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "type-check": "tsc --pretty --noEmit",
     "format": "prettier --write .",
-    "lint": "eslint src --fix"
+    "lint": "eslint src --fix",
+    "prepare": "husky"
   },
   "dependencies": {
     "@cloudflare/realtimekit-react": "latest",
@@ -38,6 +39,8 @@
     "eslint-config-prettier": "^8.5.0",
     "eslint-plugin-prettier": "^4.0.0",
     "eslint-plugin-unused-imports": "^2.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "15",
     "postcss": "^8.4.12",
     "prettier": "^2.6.1",
     "prettier-plugin-tailwindcss": "^0.1.8",

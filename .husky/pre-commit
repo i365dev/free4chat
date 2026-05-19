@@ -1,0 +1,4 @@
+#!/bin/sh
+cd app
+npx prettier --check . || { echo "Prettier check failed. Run: cd app && npx prettier --write ."; exit 1; }
+yarn lint --max-warnings 0 || { echo "ESLint failed. Run: cd app && yarn lint"; exit 1; }

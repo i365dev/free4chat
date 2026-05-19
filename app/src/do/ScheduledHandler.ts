@@ -83,16 +83,13 @@ async function cleanExpiredRooms(env: Env): Promise<void> {
           deactivateMeeting(record.meetingId, env),
         ])
         cleaned++
-        console.log(
-          `[cleanup] expired room ${key.name} (meetingId: ${record.meetingId})`
-        )
       }
     }
 
     cursor = page.list_complete ? undefined : (page as any).cursor
   } while (cursor)
 
-  console.log(`[cleanup] done — ${cleaned} expired room(s) cleaned up`)
+  void cleaned
 }
 
 export async function handleScheduled(
