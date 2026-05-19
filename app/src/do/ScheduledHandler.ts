@@ -27,9 +27,12 @@ function authHeaders(env: Env): Record<string, string> {
 
 async function deactivateMeeting(meetingId: string, env: Env): Promise<void> {
   try {
-    const res = await fetch(`${rtkBase(env)}/meetings/${meetingId}/participants`, {
-      headers: authHeaders(env),
-    })
+    const res = await fetch(
+      `${rtkBase(env)}/meetings/${meetingId}/participants`,
+      {
+        headers: authHeaders(env),
+      }
+    )
     if (res.ok) {
       const body = (await res.json()) as { data?: Array<{ id: string }> }
       const participants = body.data ?? []
@@ -57,10 +60,11 @@ async function cleanExpiredRooms(env: Env): Promise<void> {
   let cleaned = 0
 
   do {
-    const page: KVNamespaceListResult<unknown, string> = await env.ROOMS_KV.list({
-      prefix: "room:",
-      ...(cursor ? { cursor } : {}),
-    })
+    const page: KVNamespaceListResult<unknown, string> =
+      await env.ROOMS_KV.list({
+        prefix: "room:",
+        ...(cursor ? { cursor } : {}),
+      })
 
     for (const key of page.keys) {
       const raw = await env.ROOMS_KV.get(key.name)
@@ -79,7 +83,9 @@ async function cleanExpiredRooms(env: Env): Promise<void> {
           deactivateMeeting(record.meetingId, env),
         ])
         cleaned++
-        console.log(`[cleanup] expired room ${key.name} (meetingId: ${record.meetingId})`)
+        console.log(
+          `[cleanup] expired room ${key.name} (meetingId: ${record.meetingId})`
+        )
       }
     }
 
