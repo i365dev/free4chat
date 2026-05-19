@@ -12,6 +12,7 @@
 - 🖥️ Screen sharing
 - 🤖 Luna — optional AI assistant (mention `@luna` to invoke)
 - 🔒 No accounts, no persistent data
+- ⏱️ Rooms automatically close after 2 hours
 - 🛡️ Cloudflare Turnstile bot protection
 
 ## Privacy

@@ -237,6 +237,10 @@ export function useChatRoom(
       setExpiryWarning(
         "Room session expired. Please re-open the link to rejoin."
       )
+      meeting.leaveRoom().catch(() => {})
+      if (typeof window !== "undefined") {
+        window.location.href = "/"
+      }
     }, 7200 * 1000)
 
     meeting.self.on("roomLeft", onRoomLeft)

@@ -11,6 +11,9 @@
   },
   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "free4chat" }],
   "observability": { "enabled": true },
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
   "kv_namespaces": [
     {
       "binding": "ROOMS_KV",

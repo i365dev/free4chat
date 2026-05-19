@@ -8,6 +8,8 @@ const root = resolve(__dirname, "..")
 
 const doSrc = resolve(root, "src/do/BotSession.ts")
 const doOut = resolve(root, ".open-next/do-bot-session.js")
+const schedulerSrc = resolve(root, "src/do/ScheduledHandler.ts")
+const schedulerOut = resolve(root, ".open-next/do-scheduler.js")
 const workerJs = resolve(root, ".open-next/worker.js")
 
 if (!existsSync(doSrc)) {
@@ -28,10 +30,27 @@ execSync(
   { stdio: "inherit" }
 )
 
-console.log("patch-worker: patching worker.js...")
+console.log("patch-worker: patching worker.js with BotSession...")
 appendFileSync(
   workerJs,
   `\n// --- BotSession DO (patched) ---\nexport { BotSession } from "./do-bot-session.js";\n`
+)
+
+console.log("patch-worker: bundling ScheduledHandler...")
+execSync(
+  `npx esbuild "${schedulerSrc}" --bundle --format=esm --platform=browser --outfile="${schedulerOut}"`,
+  { stdio: "inherit" }
+)
+
+console.log("patch-worker: patching worker.js with scheduled handler...")
+appendFileSync(
+  workerJs,
+  `\n// --- ScheduledHandler (patched) ---
+import { handleScheduled as __handleScheduled } from "./do-scheduler.js";
+export default {
+  fetch: _worker.fetch,
+  scheduled: __handleScheduled,
+};\n`
 )
 
 console.log("patch-worker: done")

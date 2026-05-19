@@ -64,6 +64,9 @@ export default function Home() {
             <p className="mx-auto mt-4 text-gray-400 sm:text-sm sm:leading-relaxed">
               No sign-up. No history. Close the tab and it&apos;s gone.
             </p>
+            <p className="mx-auto mt-1 text-gray-600 sm:text-xs sm:leading-relaxed">
+              Rooms automatically close after 2 hours.
+            </p>
 
             <div className="mx-auto mt-8 max-w-xl">
               <div className="flex flex-col gap-4 sm:flex-row">
