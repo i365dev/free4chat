@@ -1,12 +1,13 @@
+# ⚠️ CF_API_TOKEN is a real secret — set via `wrangler secret put CF_API_TOKEN` in CI, never commit it
 CF_API_TOKEN=your_cloudflare_api_token
-CF_ACCOUNT_ID=your_cloudflare_account_id
-RTK_APP_ID=your_realtimekit_app_id
+CF_ACCOUNT_ID=d3b62e2475890bb3a9ece5cd32fdb1e7
+RTK_APP_ID=99c0504a-098f-42b2-a21b-f242831c2eb6
 RTK_PRESET_NAME=group_call_host
 RTK_SCREENSHARE_PRESET_NAME=group_call_host
 RTK_AUDIO_PRESET_NAME=audio_only_room
 # Turnstile (use test keys below for local dev — always pass)
 NEXT_PUBLIC_TURNSTILE_SITE_KEY=your_turnstile_site_key (build-time env for turnstile)
-TURNSTILE_SECRET_KEY=your_turnstile_secret_key
+TURNSTILE_SECRET_KEY=0x4AAAAAAD50eMEv_pjkyOlH
 # AI Gateway (required — set via wrangler secret put)
-CF_AIG_TOKEN=your_ai_gateway_auth_token
-CF_AI_GATEWAY_BASEURL=https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_name}/compat
+CF_AIG_TOKEN=default
+CF_AI_GATEWAY_BASEURL=https://gateway.ai.cloudflare.com/v1/d3b62e2475890bb3a9ece5cd32fdb1e7/amm2074/compat
