@@ -6,6 +6,7 @@ import {
   randomName,
   saveRoomToLocalStorage,
   umamiEvent,
+  trackAnalyticsEvent,
   hashRoom,
 } from "../common/utils"
 import Header from "../components/Header"
@@ -32,6 +33,10 @@ export default function Home() {
         sessionStorage.setItem("enable_bot", enableBot ? "1" : "0")
       }
       const roomType = screenShare ? "screenshare" : "audio"
+      trackAnalyticsEvent("RoomJoinAttempted", {
+        roomType,
+        botEnabled: enableBot,
+      })
       umamiEvent("RoomJoin", { type: roomType, roomHash: hashRoom(roomName) })
       const url =
         "/room?id=" +
@@ -46,6 +51,7 @@ export default function Home() {
       const url =
         window.location.origin + "/room?id=" + encodeURIComponent(roomName)
       navigator.clipboard.writeText(url)
+      trackAnalyticsEvent("InviteLinkCopied", { surface: "landing" })
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }

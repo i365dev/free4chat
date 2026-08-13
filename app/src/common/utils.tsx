@@ -98,13 +98,56 @@ export const gtagEvent = (action, category, label, value) => {
   })
 }
 
-export const umamiEvent = (eventName, eventData) => {
-  if (!Object.hasOwn(window, "umami")) {
-    return
+type AnalyticsProperties = Record<string, unknown>
+
+type AnalyticsWindow = Window & {
+  umami?: {
+    track: (eventName: string, eventData?: AnalyticsProperties) => void
   }
-  // @ts-ignore
-  window.umami.track(eventName, eventData)
+  zaraz?: {
+    track: (
+      eventName: string,
+      eventData?: AnalyticsProperties
+    ) => Promise<void> | void
+  }
 }
+
+const trackWithZaraz = (
+  eventName: string,
+  eventData: AnalyticsProperties
+) => {
+  const send = () => {
+    const zaraz = (window as AnalyticsWindow).zaraz
+    if (!zaraz) return false
+    try {
+      void Promise.resolve(zaraz.track(eventName, eventData)).catch(() => {})
+    } catch {
+      // Analytics must never block the product flow.
+    }
+    return true
+  }
+
+  if (!send()) window.setTimeout(send, 500)
+}
+
+export const trackAnalyticsEvent = (
+  eventName: string,
+  eventData: AnalyticsProperties = {}
+) => {
+  if (typeof window === "undefined") return
+
+  const umami = (window as AnalyticsWindow).umami
+  try {
+    umami?.track(eventName, eventData)
+  } catch {
+    // Analytics must never block the product flow.
+  }
+  trackWithZaraz(eventName, eventData)
+}
+
+// Keep existing instrumentation and its Umami reports working while forwarding
+// product events through the Cloudflare Zaraz Mixpanel tag.
+export const umamiEvent = trackAnalyticsEvent
 
 export const hashRoom = (roomName: string): string => {
   let h = 0x811c9dc5

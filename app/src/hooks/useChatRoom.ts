@@ -4,6 +4,7 @@ import { useRealtimeKitClient } from "@cloudflare/realtimekit-react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { UserInfo, Message, ActionType } from "@common/types"
+import { trackAnalyticsEvent } from "@common/utils"
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 
@@ -29,6 +30,9 @@ export function useChatRoom(
   const joinedMeetingRef = useRef<typeof meeting | null>(null)
   const hasJoinedRef = useRef(false)
   const hasLeftRef = useRef(false)
+  const connectionTrackedRef = useRef(false)
+  const resolvedRoomTypeRef = useRef<"audio" | "screenshare">(roomType)
+  const botEnabledRef = useRef(false)
   const expiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const expiryFinalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -37,6 +41,7 @@ export function useChatRoom(
     if (!roomName || !nickName) return
 
     const controller = new AbortController()
+    connectionTrackedRef.current = false
 
     fetch(`/api/token`, {
       method: "POST",
@@ -73,6 +78,9 @@ export function useChatRoom(
               Math.max(0, Math.floor((data.expiresAt - Date.now()) / 1000))
             )
           }
+          const nextRoomType = data.roomType ?? roomType
+          resolvedRoomTypeRef.current = nextRoomType
+          botEnabledRef.current = Boolean(data.botEnabled)
           if (data.roomType) setResolvedRoomType(data.roomType)
           if (data.botEnabled) setBotEnabled(true)
           if (data.typeConflict) {
@@ -90,6 +98,14 @@ export function useChatRoom(
       )
       .catch((err: Error) => {
         if (err.name === "AbortError") return
+        const code = [
+          "room_expired",
+          "rate_limited",
+          "verification_failed",
+        ].includes(err.message)
+          ? err.message
+          : "server_error"
+        trackAnalyticsEvent("RoomJoinFailed", { stage: "token", code })
         setConnectionStatus("failed")
         if (err.message === "room_expired") {
           setError(
@@ -237,6 +253,13 @@ export function useChatRoom(
     }
 
     const onRoomJoined = ({ reconnected }: { reconnected: boolean }) => {
+      if (!reconnected && !connectionTrackedRef.current) {
+        connectionTrackedRef.current = true
+        trackAnalyticsEvent("RoomConnected", {
+          roomType: resolvedRoomTypeRef.current,
+          botEnabled: botEnabledRef.current,
+        })
+      }
       if (reconnected) {
         setError("")
         setConnectionStatus("connected")
@@ -252,6 +275,10 @@ export function useChatRoom(
     }
 
     meeting.join().catch((err: Error) => {
+      trackAnalyticsEvent("RoomJoinFailed", {
+        stage: "meeting",
+        code: "join_failed",
+      })
       setConnectionStatus("failed")
       setError("Failed to join room: " + err.message)
     })
