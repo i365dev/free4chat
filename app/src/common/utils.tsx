@@ -107,15 +107,12 @@ type AnalyticsWindow = Window & {
   zaraz?: {
     track: (
       eventName: string,
-      eventData?: AnalyticsProperties
+      eventData?: AnalyticsProperties,
     ) => Promise<void> | void
   }
 }
 
-const trackWithZaraz = (
-  eventName: string,
-  eventData: AnalyticsProperties
-) => {
+const trackWithZaraz = (eventName: string, eventData: AnalyticsProperties) => {
   const send = () => {
     const zaraz = (window as AnalyticsWindow).zaraz
     if (!zaraz) return false
@@ -132,7 +129,7 @@ const trackWithZaraz = (
 
 export const trackAnalyticsEvent = (
   eventName: string,
-  eventData: AnalyticsProperties = {}
+  eventData: AnalyticsProperties = {},
 ) => {
   if (typeof window === "undefined") return
 
