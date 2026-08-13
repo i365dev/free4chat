@@ -6,7 +6,12 @@ import { LOCAL_PEER_ID } from "@common/consts"
 
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
-import { umamiEvent, hashRoom, participantsBucket } from "../common/utils"
+import {
+  umamiEvent,
+  trackAnalyticsEvent,
+  hashRoom,
+  participantsBucket,
+} from "../common/utils"
 import { useChatRoom } from "../hooks/useChatRoom"
 
 const REACTION_EMOJIS = ["👍", "😂", "🔥", "❓"]
@@ -194,6 +199,7 @@ export default function RoomContent({
   }, [])
 
   const lastBucketRef = useRef<string>("")
+  const activatedRoomRef = useRef(false)
   useEffect(() => {
     const bucket = participantsBucket(participants.length)
     if (bucket !== lastBucketRef.current) {
@@ -205,6 +211,27 @@ export default function RoomContent({
       })
     }
   }, [participants.length, roomName, resolvedRoomType])
+
+  useEffect(() => {
+    if (
+      activatedRoomRef.current ||
+      connectionStatus !== "connected" ||
+      participants.length < 2
+    ) {
+      return
+    }
+
+    const timeout = window.setTimeout(() => {
+      activatedRoomRef.current = true
+      trackAnalyticsEvent("RoomActivated", {
+        roomType: resolvedRoomType,
+        participantBucket: participantsBucket(participants.length),
+        activationDelaySeconds: 30,
+      })
+    }, 30_000)
+
+    return () => window.clearTimeout(timeout)
+  }, [connectionStatus, participants.length, resolvedRoomType])
 
   useEffect(() => {
     messages.forEach((m) => {
@@ -346,6 +373,10 @@ export default function RoomContent({
         encodeURIComponent(roomName) +
         (resolvedRoomType === "screenshare" ? "&type=screenshare" : "")
       navigator.clipboard.writeText(url)
+      trackAnalyticsEvent("InviteLinkCopied", {
+        surface: "room",
+        roomType: resolvedRoomType,
+      })
       setRoomLinkCopied(true)
       setTimeout(() => setRoomLinkCopied(false), 2000)
     }
