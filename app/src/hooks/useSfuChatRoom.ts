@@ -52,20 +52,35 @@ interface SfuServerMessage {
   error?: string
 }
 
-const roomMessageToMessage = (message: SfuMessage): Message => ({
-  peerId: message.peerId,
-  name: message.name,
-  type: message.type === "action" ? "action" : "text",
-  text: message.text,
-  actionType: message.actionType as ActionType | undefined,
-  actionPayload: message.actionPayload,
-})
+const roomMessageToMessage = (message: SfuMessage): Message => {
+  if (message.type === "text" && message.text?.startsWith("__bot:")) {
+    try {
+      const payload = JSON.parse(message.text.slice(6)) as { text?: unknown }
+      return {
+        peerId: "luna-ai",
+        name: "Luna · AI",
+        type: "bot",
+        text: typeof payload.text === "string" ? payload.text : "",
+      }
+    } catch {
+      // Fall through and render malformed bot messages as normal text.
+    }
+  }
+  return {
+    peerId: message.peerId,
+    name: message.name,
+    type: message.type === "action" ? "action" : "text",
+    text: message.text,
+    actionType: message.actionType as ActionType | undefined,
+    actionPayload: message.actionPayload,
+  }
+}
 
 export function useSfuChatRoom(
   roomName: string,
   nickName: string,
   roomType: "audio" | "screenshare",
-  _enableBot?: boolean,
+  enableBot?: boolean,
   enabled = true
 ) {
   const [participants, setParticipants] = useState<UserInfo[]>([])
@@ -76,6 +91,7 @@ export function useSfuChatRoom(
     useState<ConnectionStatus>("connecting")
   const [timeLeft, setTimeLeft] = useState(2 * 60 * 60)
   const [resolvedRoomType] = useState<"audio" | "screenshare">(roomType)
+  const [botEnabled, setBotEnabled] = useState(false)
 
   const sessionRef = useRef<SfuSession | null>(null)
   const roomStateRef = useRef<SfuRoomState | null>(null)
@@ -91,12 +107,24 @@ export function useSfuChatRoom(
   const pendingRemoteTrackRef = useRef<{
     peerId: string
     kind: "audio" | "video"
+    sessionId: string
   } | null>(null)
   const negotiationQueueRef = useRef(Promise.resolve())
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const mediaReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  )
+  const mediaReconnectAttemptsRef = useRef(0)
+  const mediaReconnectPromiseRef = useRef<Promise<void> | null>(null)
+  const mediaReconnectRef = useRef<(() => Promise<void>) | null>(null)
   const localFileChannelRef = useRef<RTCDataChannel | null>(null)
   const remoteFileChannelsRef = useRef(new Map<string, RTCDataChannel>())
+  const remoteFileChannelIdsRef = useRef(new Map<string, number>())
+  const dataChannelsRef = useRef(new Set<RTCDataChannel>())
+  const dataChannelIdsRef = useRef(new Set<number>())
+  const localFileChannelIdRef = useRef<number | null>(null)
+  const localTrackMidsRef = useRef(new Map<string, string>())
   const incomingFilesRef = useRef(new Map<string, IncomingFileTransfer>())
   const objectUrlsRef = useRef(new Set<string>())
   const fileSendQueueRef = useRef(Promise.resolve())
@@ -166,7 +194,8 @@ export function useSfuChatRoom(
   )
 
   const apiRequest = useCallback(async (path: string, body: object) => {
-    const method = path === "renegotiate" ? "PUT" : "POST"
+    const method =
+      path === "renegotiate" || path.endsWith("/close") ? "PUT" : "POST"
     const response = await fetch(`/api/sfu/${path}`, {
       method,
       headers: { "Content-Type": "application/json" },
@@ -181,6 +210,29 @@ export function useSfuChatRoom(
     const raw = await response.text()
     return (raw ? JSON.parse(raw) : {}) as SfuApiResponse
   }, [])
+
+  const closeDataChannels = useCallback(
+    async (session: SfuSession | null = sessionRef.current) => {
+      if (!session || dataChannelIdsRef.current.size === 0) return
+      const dataChannels = [...dataChannelIdsRef.current].map((id) => ({ id }))
+      try {
+        await apiRequest("datachannels/close", {
+          room: roomName,
+          participantId: session.participantId,
+          token: session.participantToken,
+          sessionId: session.sessionId,
+          dataChannels,
+        })
+      } catch {
+        // The SFU session may already be gone during network recovery.
+      } finally {
+        dataChannelIdsRef.current.clear()
+        localFileChannelIdRef.current = null
+        remoteFileChannelIdsRef.current.clear()
+      }
+    },
+    [apiRequest, roomName]
+  )
 
   const waitForDataChannelOpen = useCallback(
     (channel: RTCDataChannel): Promise<void> => {
@@ -277,6 +329,37 @@ export function useSfuChatRoom(
     []
   )
 
+  const resetRemoteParticipant = useCallback((participantId: string) => {
+    for (const key of subscribedTracksRef.current) {
+      if (key.startsWith(`${participantId}:`))
+        subscribedTracksRef.current.delete(key)
+    }
+
+    const channel = remoteFileChannelsRef.current.get(participantId)
+    if (channel) {
+      channel.close()
+      dataChannelsRef.current.delete(channel)
+    }
+    remoteFileChannelsRef.current.delete(participantId)
+    const channelId = remoteFileChannelIdsRef.current.get(participantId)
+    if (channelId !== undefined) dataChannelIdsRef.current.delete(channelId)
+    remoteFileChannelIdsRef.current.delete(participantId)
+    incomingFilesRef.current.delete(participantId)
+
+    remoteAudioStreamsRef.current
+      .get(participantId)
+      ?.getTracks()
+      .forEach((track) => track.stop())
+    remoteScreenStreamsRef.current
+      .get(participantId)
+      ?.getTracks()
+      .forEach((track) => track.stop())
+    remoteAudioStreamsRef.current.delete(participantId)
+    remoteScreenStreamsRef.current.delete(participantId)
+    if (pendingRemoteTrackRef.current?.peerId === participantId)
+      pendingRemoteTrackRef.current = null
+  }, [])
+
   const handleFileChannelMessage = useCallback(
     (channelKey: string, peerId: string, name: string, event: MessageEvent) => {
       if (typeof event.data === "string") {
@@ -346,6 +429,7 @@ export function useSfuChatRoom(
     if (!pc || !session) throw new Error("SFU session is not ready")
 
     const serverEvents = pc.createDataChannel("server-events")
+    dataChannelsRef.current.add(serverEvents)
     serverEvents.addEventListener("message", () => undefined)
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
@@ -400,9 +484,12 @@ export function useSfuChatRoom(
       id: channelId,
       ordered: true,
     })
+    dataChannelsRef.current.add(channel)
+    dataChannelIdsRef.current.add(channelId)
     channel.binaryType = "arraybuffer"
     channel.bufferedAmountLowThreshold = FILE_BUFFER_LOW_WATER_MARK
     localFileChannelRef.current = channel
+    localFileChannelIdRef.current = channelId
     dataChannelReadyRef.current = true
   }, [apiRequest, roomName])
 
@@ -444,6 +531,8 @@ export function useSfuChatRoom(
         id: channelId,
         ordered: true,
       })
+      dataChannelsRef.current.add(channel)
+      dataChannelIdsRef.current.add(channelId)
       channel.binaryType = "arraybuffer"
       channel.addEventListener("message", (event) =>
         handleFileChannelMessage(
@@ -454,6 +543,7 @@ export function useSfuChatRoom(
         )
       )
       remoteFileChannelsRef.current.set(channelKey, channel)
+      remoteFileChannelIdsRef.current.set(channelKey, channelId)
       await waitForDataChannelOpen(channel)
       channel.send("ack")
     },
@@ -492,7 +582,42 @@ export function useSfuChatRoom(
         if (response.sessionDescription) {
           await pc.setRemoteDescription(response.sessionDescription)
         }
+        localTrackMidsRef.current.set(trackName, transceiver.mid)
       })
+    },
+    [apiRequest, enqueueNegotiation, roomName]
+  )
+
+  const closePublishedTrack = useCallback(
+    async (trackName: string) => {
+      const pc = peerConnectionRef.current
+      const session = sessionRef.current
+      const mid = localTrackMidsRef.current.get(trackName)
+      if (!pc || !session || !mid) return
+      const transceiver = pc.getTransceivers().find((item) => item.mid === mid)
+      if (transceiver) pc.removeTrack(transceiver.sender)
+      try {
+        await enqueueNegotiation(async () => {
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          const response = await apiRequest("tracks/close", {
+            room: roomName,
+            participantId: session.participantId,
+            token: session.participantToken,
+            sessionId: session.sessionId,
+            tracks: [{ mid, trackName }],
+            sessionDescription: {
+              type: offer.type,
+              sdp: offer.sdp,
+            },
+            force: true,
+          })
+          if (response.sessionDescription)
+            await pc.setRemoteDescription(response.sessionDescription)
+        })
+      } finally {
+        localTrackMidsRef.current.delete(trackName)
+      }
     },
     [apiRequest, enqueueNegotiation, roomName]
   )
@@ -502,13 +627,24 @@ export function useSfuChatRoom(
       const session = sessionRef.current
       const pc = peerConnectionRef.current
       if (!session || !pc) return
-      const key = `${participant.id}:${track.trackName}`
+      const key = `${participant.id}:${participant.sessionId}:${track.trackName}`
       if (subscribedTracksRef.current.has(key)) return
+      if (
+        participantMapRef.current.get(participant.id)?.sessionId !==
+        participant.sessionId
+      )
+        return
       subscribedTracksRef.current.add(key)
       await enqueueNegotiation(async () => {
+        if (
+          participantMapRef.current.get(participant.id)?.sessionId !==
+          participant.sessionId
+        )
+          return
         pendingRemoteTrackRef.current = {
           peerId: participant.id,
           kind: track.kind,
+          sessionId: participant.sessionId,
         }
         const response = await apiRequest("tracks", {
           room: roomName,
@@ -544,6 +680,12 @@ export function useSfuChatRoom(
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
+      setBotEnabled(state.botEnabled === true)
+      for (const participant of state.participants) {
+        const previous = participantMapRef.current.get(participant.id)
+        if (previous && previous.sessionId !== participant.sessionId)
+          resetRemoteParticipant(participant.id)
+      }
       participantMapRef.current = new Map(
         state.participants.map((participant) => [
           participant.id,
@@ -565,8 +707,49 @@ export function useSfuChatRoom(
           void subscribeFileChannel(fullParticipant)
       }
     },
-    [rebuildParticipants, subscribeFileChannel, subscribeTrack]
+    [
+      rebuildParticipants,
+      resetRemoteParticipant,
+      subscribeFileChannel,
+      subscribeTrack,
+    ]
   )
+
+  const createPeerConnection = useCallback(() => {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    })
+    peerConnectionRef.current = pc
+    pc.ontrack = (event) => {
+      const pending = pendingRemoteTrackRef.current
+      if (!pending) return
+      if (
+        participantMapRef.current.get(pending.peerId)?.sessionId !==
+        pending.sessionId
+      ) {
+        pendingRemoteTrackRef.current = null
+        return
+      }
+      const stream = event.streams[0] ?? new MediaStream([event.track])
+      if (pending.kind === "video")
+        remoteScreenStreamsRef.current.set(pending.peerId, stream)
+      else remoteAudioStreamsRef.current.set(pending.peerId, stream)
+      pendingRemoteTrackRef.current = null
+      rebuildParticipants()
+    }
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") {
+        mediaReconnectAttemptsRef.current = 0
+        setConnectionStatus("connected")
+      } else if (
+        pc.connectionState === "failed" ||
+        pc.connectionState === "disconnected"
+      ) {
+        void mediaReconnectRef.current?.()
+      }
+    }
+    return pc
+  }, [rebuildParticipants])
 
   const connectWebSocket = useCallback(() => {
     const session = sessionRef.current
@@ -594,21 +777,32 @@ export function useSfuChatRoom(
         message.type === "trackPublished" &&
         message.participant?.track
       ) {
-        const current = participantMapRef.current.get(
-          message.participant.id as string
-        )
-        if (current) {
-          current.tracks = [...current.tracks, message.participant.track]
-        } else if (
-          message.participant.id &&
-          message.participant.name &&
-          message.participant.sessionId
+        const participantId = message.participant.id
+        const incomingSessionId = message.participant.sessionId
+        if (!participantId) return
+        const current = participantMapRef.current.get(participantId)
+        if (
+          current &&
+          incomingSessionId &&
+          current.sessionId !== incomingSessionId
         ) {
-          participantMapRef.current.set(message.participant.id, {
-            id: message.participant.id,
+          resetRemoteParticipant(participantId)
+          current.sessionId = incomingSessionId
+          current.tracks = [message.participant.track]
+        } else if (current) {
+          current.tracks = [
+            ...current.tracks.filter(
+              (track) =>
+                track.trackName !== message.participant!.track!.trackName
+            ),
+            message.participant.track,
+          ]
+        } else if (message.participant.name && incomingSessionId) {
+          participantMapRef.current.set(participantId, {
+            id: participantId,
             name: message.participant.name,
             kind: message.participant.kind ?? "human",
-            sessionId: message.participant.sessionId,
+            sessionId: incomingSessionId,
             muted: false,
             connected: true,
             tracks: [message.participant.track],
@@ -617,9 +811,7 @@ export function useSfuChatRoom(
             token: "",
           })
         }
-        const participant = participantMapRef.current.get(
-          message.participant.id as string
-        )
+        const participant = participantMapRef.current.get(participantId)
         rebuildParticipants()
         if (participant)
           void subscribeTrack(participant, message.participant.track)
@@ -656,6 +848,7 @@ export function useSfuChatRoom(
     socket.onerror = () => socket.close()
     socket.onclose = () => {
       if (closingRef.current) return
+      if (socket !== websocketRef.current) return
       setConnectionStatus("reconnecting")
       const attempt = reconnectAttemptsRef.current++
       if (attempt >= 5) {
@@ -671,74 +864,166 @@ export function useSfuChatRoom(
   }, [
     applyRoomState,
     rebuildParticipants,
+    resetRemoteParticipant,
     sendSocketMessage,
     subscribeFileChannel,
     subscribeTrack,
   ])
 
-  useEffect(() => {
-    if (!enabled || !roomName || !nickName) return
-    closingRef.current = false
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
-    })
-    peerConnectionRef.current = pc
-    pc.ontrack = (event) => {
-      const pending = pendingRemoteTrackRef.current
-      if (!pending) return
-      const stream = event.streams[0] ?? new MediaStream([event.track])
-      if (pending.kind === "video")
-        remoteScreenStreamsRef.current.set(pending.peerId, stream)
-      else remoteAudioStreamsRef.current.set(pending.peerId, stream)
-      pendingRemoteTrackRef.current = null
-      rebuildParticipants()
-    }
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") setConnectionStatus("reconnecting")
-    }
+  const connectMediaSession = useCallback(
+    async (reconnecting: boolean) => {
+      const previousSession = sessionRef.current
+      if (reconnecting && !previousSession)
+        throw new Error("SFU session is not ready")
 
-    const start = async () => {
-      try {
+      if (reconnecting) {
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current)
+          reconnectTimerRef.current = null
+        }
+        const oldSocket = websocketRef.current
+        if (oldSocket) {
+          oldSocket.onclose = null
+          oldSocket.onerror = null
+          oldSocket.close()
+          websocketRef.current = null
+        }
+        await closeDataChannels(previousSession)
+        for (const channel of dataChannelsRef.current) channel.close()
+        dataChannelsRef.current.clear()
+        for (const channel of remoteFileChannelsRef.current.values())
+          channel.close()
+        remoteFileChannelsRef.current.clear()
+        remoteFileChannelIdsRef.current.clear()
+        peerConnectionRef.current?.close()
+        peerConnectionRef.current = null
+        dataChannelReadyRef.current = false
+        localTrackMidsRef.current.clear()
+        subscribedTracksRef.current.clear()
+        remoteAudioStreamsRef.current.clear()
+        remoteScreenStreamsRef.current.clear()
+        pendingRemoteTrackRef.current = null
+      }
+
+      let audioTrack = localAudioTrackRef.current
+      if (!audioTrack) {
         const media = await navigator.mediaDevices.getUserMedia({
           audio: true,
           video: false,
         })
-        const audioTrack = media.getAudioTracks()[0]
+        audioTrack = media.getAudioTracks()[0] ?? null
         if (!audioTrack) throw new Error("No microphone track available")
         localAudioTrackRef.current = audioTrack
-        pc.addTrack(audioTrack, media)
-        rebuildParticipants()
-        const response = await fetch("/api/sfu/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            room: roomName,
-            name: nickName,
-            kind: "human",
-            turnstileToken: sessionStorage.getItem("ts_token") ?? undefined,
-          }),
-        })
-        if (!response.ok) {
-          const data = (await response.json().catch(() => ({}))) as {
-            error?: string
-          }
-          if (response.status === 403) sessionStorage.removeItem("ts_token")
-          throw new Error(data.error || "Unable to create SFU session")
+      }
+
+      const pc = createPeerConnection()
+      pc.addTrack(audioTrack, new MediaStream([audioTrack]))
+      const screenTrack = localScreenTrackRef.current
+      if (screenTrack && screenTrack.readyState === "live")
+        pc.addTrack(screenTrack, new MediaStream([screenTrack]))
+      rebuildParticipants()
+
+      const body: Record<string, unknown> = {
+        room: roomName,
+        name: nickName,
+        kind: "human",
+        enableBot: enableBot === true,
+        turnstileToken: sessionStorage.getItem("ts_token") ?? undefined,
+      }
+      if (reconnecting && previousSession) {
+        body.reconnect = {
+          participantId: previousSession.participantId,
+          participantToken: previousSession.participantToken,
+          sessionId: previousSession.sessionId,
         }
-        const session = (await response.json()) as SfuSessionResponse
-        sessionRef.current = { ...session, room: roomName }
-        sessionStorage.removeItem("ts_token")
-        expiresAtRef.current = session.expiresAt
-        setTimeLeft(
-          Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000))
-        )
-        await establishDataChannelTransport()
+      }
+      const response = await fetch("/api/sfu/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string
+        }
+        if (response.status === 403) sessionStorage.removeItem("ts_token")
+        throw new Error(data.error || "Unable to create SFU session")
+      }
+      const session = (await response.json()) as SfuSessionResponse
+      sessionRef.current = { ...session, room: roomName }
+      setBotEnabled(session.botEnabled === true)
+      sessionStorage.removeItem("ts_token")
+      expiresAtRef.current = session.expiresAt
+      setTimeLeft(
+        Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000))
+      )
+      await establishDataChannelTransport()
+      await publishTrack(audioTrack, "audio", `audio-${session.participantId}`)
+      if (screenTrack && screenTrack.readyState === "live") {
         await publishTrack(
-          audioTrack,
-          "audio",
-          `audio-${session.participantId}`
+          screenTrack,
+          "video",
+          localScreenTrackNameRef.current
         )
-        connectWebSocket()
+      }
+      connectWebSocket()
+    },
+    [
+      closeDataChannels,
+      connectWebSocket,
+      createPeerConnection,
+      enableBot,
+      establishDataChannelTransport,
+      nickName,
+      publishTrack,
+      rebuildParticipants,
+      roomName,
+    ]
+  )
+
+  const reconnectMedia = useCallback(async () => {
+    if (closingRef.current || mediaReconnectPromiseRef.current) return
+    const attempt = mediaReconnectAttemptsRef.current++
+    if (attempt >= 5) {
+      setError("SFU media connection lost. Reload to start a new session.")
+      setConnectionStatus("failed")
+      return
+    }
+    const promise = (async () => {
+      setConnectionStatus("reconnecting")
+      try {
+        await connectMediaSession(true)
+        mediaReconnectAttemptsRef.current = 0
+        setError("")
+      } catch (err) {
+        if (attempt >= 4) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Unable to reconnect to SFU media"
+          )
+          setConnectionStatus("failed")
+          return
+        }
+        mediaReconnectTimerRef.current = setTimeout(() => {
+          void mediaReconnectRef.current?.()
+        }, Math.min(1000 * 2 ** attempt, 8000))
+      }
+    })()
+    mediaReconnectPromiseRef.current = promise
+    try {
+      await promise
+    } finally {
+      mediaReconnectPromiseRef.current = null
+    }
+  }, [connectMediaSession])
+
+  useEffect(() => {
+    if (!enabled || !roomName || !nickName) return
+    closingRef.current = false
+    const start = async () => {
+      try {
+        await connectMediaSession(false)
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Unable to connect to SFU"
@@ -746,11 +1031,15 @@ export function useSfuChatRoom(
         setConnectionStatus("failed")
       }
     }
+    mediaReconnectRef.current = reconnectMedia
     void start()
 
     const remoteFileChannels = remoteFileChannelsRef.current
+    const remoteFileChannelIds = remoteFileChannelIdsRef.current
     const incomingFiles = incomingFilesRef.current
     const objectUrls = objectUrlsRef.current
+    const dataChannels = dataChannelsRef.current
+    const localTrackMids = localTrackMidsRef.current
 
     const countdown = setInterval(() => {
       if (!expiresAtRef.current) return
@@ -776,28 +1065,37 @@ export function useSfuChatRoom(
       closingRef.current = true
       clearInterval(countdown)
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      if (mediaReconnectTimerRef.current)
+        clearTimeout(mediaReconnectTimerRef.current)
+      void closeDataChannels(sessionRef.current)
       sendSocketMessage({ type: "leave" })
       websocketRef.current?.close()
       localAudioTrackRef.current?.stop()
       localScreenTrackRef.current?.stop()
       localFileChannelRef.current?.close()
       localFileChannelRef.current = null
+      for (const channel of dataChannels) channel.close()
+      dataChannels.clear()
       for (const channel of remoteFileChannels.values()) channel.close()
       remoteFileChannels.clear()
+      remoteFileChannelIds.clear()
+      localFileChannelIdRef.current = null
       incomingFiles.clear()
       for (const url of objectUrls) URL.revokeObjectURL(url)
       objectUrls.clear()
       dataChannelReadyRef.current = false
+      localTrackMids.clear()
+      mediaReconnectRef.current = null
       peerConnectionRef.current?.close()
       peerConnectionRef.current = null
     }
   }, [
-    connectWebSocket,
-    establishDataChannelTransport,
+    closeDataChannels,
+    connectMediaSession,
     enabled,
+    enableBot,
     nickName,
-    publishTrack,
-    rebuildParticipants,
+    reconnectMedia,
     roomName,
     sendSocketMessage,
   ])
@@ -816,9 +1114,15 @@ export function useSfuChatRoom(
     if (!pc || !session) return
     if (localScreenTrackRef.current) {
       const trackName = localScreenTrackNameRef.current
-      localScreenTrackRef.current.stop()
+      const track = localScreenTrackRef.current
+      track.onended = null
+      try {
+        await closePublishedTrack(trackName)
+      } catch {
+        sendSocketMessage({ type: "unpublish", trackName })
+      }
+      track.stop()
       localScreenTrackRef.current = null
-      sendSocketMessage({ type: "unpublish", trackName })
       rebuildParticipants()
       return
     }
@@ -834,12 +1138,17 @@ export function useSfuChatRoom(
       pc.addTrack(track, display)
       track.onended = () => {
         if (localScreenTrackRef.current === track) {
-          localScreenTrackRef.current = null
-          sendSocketMessage({
-            type: "unpublish",
-            trackName: localScreenTrackNameRef.current,
-          })
-          rebuildParticipants()
+          void closePublishedTrack(localScreenTrackNameRef.current)
+            .catch(() => {
+              sendSocketMessage({
+                type: "unpublish",
+                trackName: localScreenTrackNameRef.current,
+              })
+            })
+            .finally(() => {
+              localScreenTrackRef.current = null
+              rebuildParticipants()
+            })
         }
       }
       rebuildParticipants()
@@ -849,7 +1158,12 @@ export function useSfuChatRoom(
         err instanceof Error ? err.message : "Screen sharing was not started"
       )
     }
-  }, [publishTrack, rebuildParticipants, sendSocketMessage])
+  }, [
+    closePublishedTrack,
+    publishTrack,
+    rebuildParticipants,
+    sendSocketMessage,
+  ])
 
   const sendTextMessage = useCallback(
     (text: string) => {
@@ -929,7 +1243,7 @@ export function useSfuChatRoom(
     expiryWarning,
     connectionStatus,
     resolvedRoomType,
-    botEnabled: false,
+    botEnabled,
     timeLeft,
   }
 }

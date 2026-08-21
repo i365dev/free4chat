@@ -171,7 +171,34 @@ export async function handleSfuRequest(
       return badRequest("invalid_room")
     if (!name || name.length > MAX_NAME_LENGTH)
       return badRequest("invalid_name")
-    if (!(await verifyTurnstile(body.turnstileToken, env))) {
+
+    const reconnect =
+      body.reconnect && typeof body.reconnect === "object"
+        ? (body.reconnect as Record<string, unknown>)
+        : null
+    const reconnectParticipantId =
+      typeof reconnect?.participantId === "string"
+        ? reconnect.participantId
+        : ""
+    const reconnectToken =
+      typeof reconnect?.participantToken === "string"
+        ? reconnect.participantToken
+        : ""
+    const reconnectSessionId =
+      typeof reconnect?.sessionId === "string" ? reconnect.sessionId : ""
+    const isReconnect = Boolean(
+      reconnectParticipantId && reconnectToken && reconnectSessionId
+    )
+    if (isReconnect) {
+      const auth = await authorize(
+        env,
+        room,
+        reconnectParticipantId,
+        reconnectToken,
+        reconnectSessionId
+      )
+      if (!auth.ok) return auth
+    } else if (!(await verifyTurnstile(body.turnstileToken, env))) {
       return json({ error: "verification_failed" }, 403)
     }
 
@@ -184,28 +211,43 @@ export async function handleSfuRequest(
     const session = (await sessionResponse.json()) as { sessionId?: string }
     if (!session.sessionId) return json({ error: "sfu_session_invalid" }, 502)
 
-    const participantId = crypto.randomUUID()
-    const participantToken = crypto.randomUUID()
-    const registerResponse = await roomControl(env, room, {
-      action: "register",
-      participant: {
-        id: participantId,
-        name,
-        kind,
-        sessionId: session.sessionId,
-        muted: false,
-        tracks: [],
-        joinedAt: Date.now(),
-        token: participantToken,
-      },
-    })
-    if (!registerResponse.ok) return registerResponse
-    const registered = (await registerResponse.json()) as { expiresAt?: number }
+    const participantId = isReconnect
+      ? reconnectParticipantId
+      : crypto.randomUUID()
+    const participantToken = isReconnect ? reconnectToken : crypto.randomUUID()
+    const roomResponse = isReconnect
+      ? await roomControl(env, room, {
+          action: "reconnect",
+          participantId,
+          token: participantToken,
+          sessionId: reconnectSessionId,
+          newSessionId: session.sessionId,
+        })
+      : await roomControl(env, room, {
+          action: "register",
+          enableBot: body.enableBot === true,
+          participant: {
+            id: participantId,
+            name,
+            kind,
+            sessionId: session.sessionId,
+            muted: false,
+            tracks: [],
+            joinedAt: Date.now(),
+            token: participantToken,
+          },
+        })
+    if (!roomResponse.ok) return roomResponse
+    const registered = (await roomResponse.json()) as {
+      expiresAt?: number
+      botEnabled?: boolean
+    }
     const result: SfuSessionResponse = {
       participantId,
       participantToken,
       sessionId: session.sessionId,
       expiresAt: registered.expiresAt ?? Date.now() + 2 * 60 * 60 * 1000,
+      botEnabled: registered.botEnabled === true,
     }
     return json(result)
   }
@@ -226,23 +268,26 @@ export async function handleSfuRequest(
     const requestedTracks = Array.isArray(body.tracks)
       ? (body.tracks as Array<Record<string, unknown>>)
       : []
-    const remoteTrack = requestedTracks.find(
-      (track) => track.location === "remote"
-    )
-    const auth = await authorize(
-      env,
-      room,
-      participantId,
-      token,
-      sessionId,
-      typeof remoteTrack?.sessionId === "string"
-        ? remoteTrack.sessionId
-        : undefined,
-      typeof remoteTrack?.trackName === "string"
-        ? remoteTrack.trackName
-        : undefined
-    )
+    const auth = await authorize(env, room, participantId, token, sessionId)
     if (!auth.ok) return auth
+    for (const remoteTrack of requestedTracks.filter(
+      (track) => track.location === "remote"
+    )) {
+      const remoteAuth = await authorize(
+        env,
+        room,
+        participantId,
+        token,
+        sessionId,
+        typeof remoteTrack.sessionId === "string"
+          ? remoteTrack.sessionId
+          : undefined,
+        typeof remoteTrack.trackName === "string"
+          ? remoteTrack.trackName
+          : undefined
+      )
+      if (!remoteAuth.ok) return remoteAuth
+    }
 
     const upstreamBody =
       route === "tracks"
@@ -282,8 +327,67 @@ export async function handleSfuRequest(
     })
   }
 
-  if (route === "datachannels/establish" || route === "datachannels/new") {
-    if (request.method !== "POST")
+  if (route === "tracks/close") {
+    if (request.method !== "PUT")
+      return json({ error: "method_not_allowed" }, 405)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
+    const tracks = Array.isArray(body.tracks)
+      ? body.tracks.filter(
+          (track): track is Record<string, unknown> =>
+            Boolean(track) && typeof track === "object"
+        )
+      : []
+    if (!room || !participantId || !token || !sessionId || !tracks.length)
+      return badRequest("missing_track")
+    if (tracks.some((track) => typeof track.mid !== "string"))
+      return badRequest("invalid_track")
+    const auth = await authorize(env, room, participantId, token, sessionId)
+    if (!auth.ok) return auth
+    const upstream = await realtimeRequest(
+      env,
+      `/sessions/${encodeURIComponent(sessionId)}/tracks/close`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          tracks: tracks.map((track) => ({ mid: track.mid })),
+          sessionDescription: body.sessionDescription,
+          force: body.force === true,
+        }),
+      }
+    )
+    const responseBody = await upstream.text()
+    if (!upstream.ok)
+      return new Response(responseBody, { status: upstream.status })
+    for (const track of tracks) {
+      if (typeof track.trackName !== "string") continue
+      await roomControl(env, room, {
+        action: "unpublish",
+        participantId,
+        token,
+        trackName: track.trackName,
+      })
+    }
+    return new Response(responseBody, {
+      status: upstream.status,
+      headers: { "Content-Type": "application/json" },
+    })
+  }
+
+  if (
+    route === "datachannels/establish" ||
+    route === "datachannels/new" ||
+    route === "datachannels/close"
+  ) {
+    if (
+      (route === "datachannels/close" && request.method !== "PUT") ||
+      (route !== "datachannels/close" && request.method !== "POST")
+    )
       return json({ error: "method_not_allowed" }, 405)
     const body = await readBody(request)
     if (!body) return badRequest("invalid_json")
@@ -307,6 +411,56 @@ export async function handleSfuRequest(
         : undefined
     )
     if (!auth.ok) return auth
+    if (route === "datachannels/close") {
+      const dataChannels = Array.isArray(body.dataChannels)
+        ? body.dataChannels.filter(
+            (channel): channel is Record<string, unknown> =>
+              Boolean(channel) && typeof channel === "object"
+          )
+        : []
+      if (
+        !dataChannels.length ||
+        dataChannels.some(
+          (channel) =>
+            typeof channel.id !== "number" ||
+            (channel.sessionId !== undefined &&
+              typeof channel.sessionId !== "string")
+        )
+      )
+        return badRequest("invalid_data_channel")
+      for (const channel of dataChannels) {
+        if (typeof channel.sessionId !== "string") continue
+        const channelAuth = await authorize(
+          env,
+          room,
+          participantId,
+          token,
+          sessionId,
+          undefined,
+          undefined,
+          channel.sessionId
+        )
+        if (!channelAuth.ok) return channelAuth
+      }
+      const upstream = await realtimeRequest(
+        env,
+        `/sessions/${encodeURIComponent(sessionId)}/datachannels/close`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            dataChannels: dataChannels.map((channel) => ({
+              id: channel.id,
+              sessionId: channel.sessionId,
+            })),
+          }),
+        }
+      )
+      const responseBody = await upstream.text()
+      return new Response(responseBody, {
+        status: upstream.status,
+        headers: { "Content-Type": "application/json" },
+      })
+    }
     const upstreamBody =
       route === "datachannels/establish"
         ? {
