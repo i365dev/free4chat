@@ -24,8 +24,8 @@ Required values in `app/.dev.vars`:
 | `RTK_APP_ID`                  | RealtimeKit app ID                                          |
 | `RTK_AUDIO_PRESET_NAME`       | RTK preset for audio-only rooms                             |
 | `RTK_SCREENSHARE_PRESET_NAME` | RTK preset for screenshare rooms                            |
-| `SFU_APP_ID`                  | Cloudflare Realtime SFU App ID (test path only)              |
-| `SFU_APP_SECRET`              | Cloudflare Realtime SFU App Secret (test path only)         |
+| `SFU_APP_ID`                  | Cloudflare Realtime SFU App ID                              |
+| `SFU_APP_SECRET`              | Cloudflare Realtime SFU App Secret                         |
 | `CF_AI_GATEWAY_BASEURL`       | AI Gateway base URL, ending in `/compat` (no trailing path) |
 | `CF_AIG_TOKEN`                | AI Gateway auth token                                       |
 

@@ -21,9 +21,9 @@ free4chat/
 │   │   │   └── utils.ts             # strToBgColor, umamiEvent, hashRoom, etc.
 │   │   ├── do/
 │   │   │   ├── BotSession.ts         # Durable Object: Luna chat history + hourly rate limit
-│   │   │   └── RoomSession.ts        # Isolated SFU control plane (transport=sfu only)
+│   │   │   └── RoomSession.ts        # SFU control plane: presence, chat and room state
 │   │   ├── hooks/
-│   │   │   ├── useChatRoom.ts        # Transport selector (RTK default, SFU opt-in)
+│   │   │   ├── useChatRoom.ts        # Transport selector (SFU default, RTK legacy opt-in)
 │   │   │   ├── useRealtimeKitChatRoom.ts
 │   │   │   └── useSfuChatRoom.ts
 │   │   ├── components/
@@ -43,14 +43,14 @@ free4chat/
 │   ├── open-next.config.ts
 │   └── package.json                  # cf-build = opennextjs-cloudflare build
 └── .github/workflows/
-    └── deploy-web.yml                # Lint + type-check → deploy (push to cloudflare branch)
+    └── deploy-web.yml                # Lint + type-check → deploy (push to cf-sfu branch)
 ```
 
-The raw Cloudflare Realtime SFU path is an explicit Phase 1 test path only. Add `transport=sfu` to a room URL to select it; existing room URLs continue to use RealtimeKit. `RoomSession` owns presence/chat/reactions/mute/resync, while SFU carries audio and screenshare media.
+The Cloudflare Realtime SFU path is the production default. Add `transport=rtk` to a room URL only for the legacy RealtimeKit path. `RoomSession` owns presence/chat/reactions/mute/resync, while SFU carries audio and screenshare media.
 
 ## RTK SDK Usage Pattern
 
-The app uses **`useRealtimeKitClient`** (low-level hook) — NOT the higher-level React hooks. The RTK implementation is isolated in `useRealtimeKitChatRoom.ts`; `useChatRoom.ts` selects it by default and only chooses `useSfuChatRoom.ts` for `transport=sfu`.
+The legacy RTK path uses **`useRealtimeKitClient`** (low-level hook) — NOT the higher-level React hooks. The RTK implementation is isolated in `useRealtimeKitChatRoom.ts`; `useChatRoom.ts` selects SFU by default and chooses RTK only for `transport=rtk`.
 
 ```ts
 const [meeting, initMeeting] = useRealtimeKitClient();
