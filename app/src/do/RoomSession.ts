@@ -368,13 +368,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "datachannel-ready") {
       participant.fileChannelReady = true
       await this.saveRoom(room)
-      await this.broadcast({
-        type: "participantUpdated",
-        participant: {
-          id: participant.id,
-          fileChannelReady: true,
-        },
-      })
+      await this.broadcastState(room)
       return
     }
 
