@@ -225,7 +225,7 @@ export default function UserCard(user: UserCardProps) {
 
         <div className="mb-1 flex min-h-[18px] items-center justify-center gap-1">
           <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
-            Human
+            {user.kind === "agent" ? "Agent" : "Human"}
           </span>
         </div>
 

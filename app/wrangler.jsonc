@@ -25,6 +25,10 @@
       {
         "name": "BOT_SESSION",
         "class_name": "BotSession"
+      },
+      {
+        "name": "SFU_ROOM",
+        "class_name": "RoomSession"
       }
     ]
   },
@@ -32,6 +36,10 @@
     {
       "tag": "v1",
       "new_classes": ["BotSession"]
+    },
+    {
+      "tag": "v2",
+      "new_classes": ["RoomSession"]
     }
   ],
 }

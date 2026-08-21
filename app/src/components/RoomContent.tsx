@@ -524,6 +524,7 @@ export default function RoomContent({
                       <UserCard
                         peerId={p.peerId}
                         name={p.name}
+                        kind={p.kind}
                         room={p.room}
                         muteState={p.muteState}
                         audioStream={p.audioStream}
@@ -549,6 +550,7 @@ export default function RoomContent({
                     <UserCard
                       peerId={p.peerId}
                       name={p.name}
+                      kind={p.kind}
                       room={p.room}
                       muteState={p.muteState}
                       audioStream={p.audioStream}

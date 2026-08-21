@@ -13,17 +13,19 @@ Real-time voice + text + file chat. No sign-up. Cloudflare-native stack.
 ```
 free4chat/
 ├── app/
-│   ├── scripts/
-│   │   └── patch-worker.mjs          # post-build: bundles BotSession.ts and appends export to .open-next/worker.js
+│   ├── worker.ts                     # Worker entry: OpenNext, scheduled handler and DO exports
 │   ├── src/
 │   │   ├── common/
 │   │   │   ├── consts.tsx            # LOCAL_PEER_ID = "local-peer-id"
 │   │   │   ├── types.tsx             # UserInfo, Message, Color interfaces
 │   │   │   └── utils.ts             # strToBgColor, umamiEvent, hashRoom, etc.
 │   │   ├── do/
-│   │   │   └── BotSession.ts         # Durable Object: Luna chat history + hourly rate limit
+│   │   │   ├── BotSession.ts         # Durable Object: Luna chat history + hourly rate limit
+│   │   │   └── RoomSession.ts        # Isolated SFU control plane (transport=sfu only)
 │   │   ├── hooks/
-│   │   │   └── useChatRoom.ts        # Core RTK hook — all meeting logic lives here
+│   │   │   ├── useChatRoom.ts        # Transport selector (RTK default, SFU opt-in)
+│   │   │   ├── useRealtimeKitChatRoom.ts
+│   │   │   └── useSfuChatRoom.ts
 │   │   ├── components/
 │   │   │   ├── TurnstileGate.tsx     # Full-page bot challenge wrapper (used in _app.tsx)
 │   │   │   ├── RoomContent.tsx       # Room layout (participant grid + chat panel + @luna relay)
@@ -37,16 +39,18 @@ free4chat/
 │   │       └── api/
 │   │           ├── token.ts          # POST /api/token — token server (runs in Worker)
 │   │           └── bot.ts            # POST /api/bot — proxies message to BotSession DO
-│   ├── wrangler.jsonc                # main: .open-next/worker.js, KV + DO bindings
+│   ├── wrangler.jsonc                # main: worker.ts, KV + DO bindings
 │   ├── open-next.config.ts
-│   └── package.json                  # cf-build = opennextjs build + patch-worker.mjs
+│   └── package.json                  # cf-build = opennextjs-cloudflare build
 └── .github/workflows/
     └── deploy-web.yml                # Lint + type-check → deploy (push to cloudflare branch)
 ```
 
+The raw Cloudflare Realtime SFU path is an explicit Phase 1 test path only. Add `transport=sfu` to a room URL to select it; existing room URLs continue to use RealtimeKit. `RoomSession` owns presence/chat/reactions/mute/resync, while SFU carries audio and screenshare media.
+
 ## RTK SDK Usage Pattern
 
-The app uses **`useRealtimeKitClient`** (low-level hook) — NOT the higher-level React hooks. All RTK state is managed imperatively through the `meeting` object inside `useChatRoom.ts`.
+The app uses **`useRealtimeKitClient`** (low-level hook) — NOT the higher-level React hooks. The RTK implementation is isolated in `useRealtimeKitChatRoom.ts`; `useChatRoom.ts` selects it by default and only chooses `useSfuChatRoom.ts` for `transport=sfu`.
 
 ```ts
 const [meeting, initMeeting] = useRealtimeKitClient();
@@ -84,7 +88,7 @@ Permission check: `meeting.self.permissions.canProduceScreenshare // "ALLOWED" |
 ```
 useRealtimeKitClient()
   └── meeting (imperative RTK object)
-        └── useChatRoom.ts
+  └── useChatRoom.ts (transport selector)
               ├── buildParticipants() → UserInfo[]
               └── returns { participants, messages, muteSelf, toggleScreenShare,
                             sendText, sendFile, sendAction, error, resolvedRoomType, ... }
@@ -107,6 +111,7 @@ useRealtimeKitClient()
 ```ts
 export interface UserInfo {
   name: string;
+  kind: "human" | "agent";
   room: string;
   className?: string;
   audioStream?: MediaStream | null;
@@ -171,14 +176,9 @@ Per-room stateful AI session. Keyed by room name via `env.BOT_SESSION.idFromName
 
 **Model**: `workers-ai/@cf/zai-org/glm-4.7-flash` via Cloudflare AI Gateway (OpenAI-compatible `/compat` endpoint).
 
-### Critical: BotSession DO Export
+### Worker and Durable Object exports
 
-`opennextjs-cloudflare build` always emits `.open-next/worker.js` and ignores any custom `main` in `wrangler.jsonc`. To export `BotSession`, `cf-build` runs `scripts/patch-worker.mjs` after the opennextjs build:
-
-1. esbuild bundles `src/do/BotSession.ts` → `.open-next/do-bot-session.js`
-2. Appends `export { BotSession } from "./do-bot-session.js"` to `.open-next/worker.js`
-
-`wrangler.jsonc` `"main"` must point to `.open-next/worker.js` (not `worker.ts` — that file no longer exists and opennextjs ignores it anyway).
+The current Worker entry is `app/worker.ts`. It imports the OpenNext handler, preserves the scheduled handler, and exports both `BotSession` and `RoomSession`. `wrangler.jsonc` points to `worker.ts`; OpenNext generates `.open-next/worker.js` as the imported application handler.
 
 ## Turnstile Gate (components/TurnstileGate.tsx)
 
@@ -248,7 +248,7 @@ Manual: `yarn cf-build && yarn cf-deploy` (needs `CLOUDFLARE_API_TOKEN` + `CLOUD
 - IME input fix: `isComposingRef` in `TextChatCard.tsx` prevents Enter from submitting during CJK composition
 - Slash/@ picker: typing `/` or `@` in chat input shows an inline command picker above the input. Uses `onMouseDown` (not `onClick`) to avoid input blur. Arrow keys + Enter to navigate, Escape to dismiss.
 - `*.tsbuildinfo` is gitignored — do not commit it
-- `scripts/patch-worker.mjs` must run after every `opennextjs-cloudflare build` — it is part of `cf-build`, not standalone
+- `cf-build` must complete before `wrangler deploy`; Wrangler bundles `worker.ts`, which imports the generated OpenNext handler and exports both Durable Objects
 
 ## Future Technical Directions
 

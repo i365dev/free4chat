@@ -4,6 +4,7 @@
 
 - Node.js 22+
 - A Cloudflare account with RealtimeKit enabled
+- For the isolated SFU PoC only: a Cloudflare Realtime SFU App ID and App Secret
 
 ## Local Setup
 
@@ -23,6 +24,8 @@ Required values in `app/.dev.vars`:
 | `RTK_APP_ID`                  | RealtimeKit app ID                                          |
 | `RTK_AUDIO_PRESET_NAME`       | RTK preset for audio-only rooms                             |
 | `RTK_SCREENSHARE_PRESET_NAME` | RTK preset for screenshare rooms                            |
+| `SFU_APP_ID`                  | Cloudflare Realtime SFU App ID (test path only)              |
+| `SFU_APP_SECRET`              | Cloudflare Realtime SFU App Secret (test path only)         |
 | `CF_AI_GATEWAY_BASEURL`       | AI Gateway base URL, ending in `/compat` (no trailing path) |
 | `CF_AIG_TOKEN`                | AI Gateway auth token                                       |
 
@@ -59,6 +62,8 @@ npx wrangler secret put CF_ACCOUNT_ID
 npx wrangler secret put RTK_APP_ID
 npx wrangler secret put RTK_AUDIO_PRESET_NAME
 npx wrangler secret put RTK_SCREENSHARE_PRESET_NAME
+npx wrangler secret put SFU_APP_ID                  # only for transport=sfu testing
+npx wrangler secret put SFU_APP_SECRET             # only for transport=sfu testing
 npx wrangler secret put CF_AIG_TOKEN
 npx wrangler secret put CF_AI_GATEWAY_BASEURL   # value: https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat
 npx wrangler secret put TURNSTILE_SECRET_KEY
@@ -68,19 +73,30 @@ npx wrangler secret put TURNSTILE_SECRET_KEY
 
 ```bash
 cd app
-yarn cf-build    # opennextjs build + patch BotSession DO into worker.js
+  yarn cf-build    # OpenNext build; worker.ts exports the DO classes
 yarn cf-deploy   # wrangler deploy
 ```
 
-`cf-build` runs `scripts/patch-worker.mjs` after the opennextjs build to bundle and inject the `BotSession` Durable Object export into `.open-next/worker.js`. This is required because `opennextjs-cloudflare` ignores custom `main` entrypoints and always emits its own `worker.js`.
+`cf-build` produces `.open-next/worker.js`; Wrangler then bundles `worker.ts`, which imports that handler and exports the `BotSession` and `RoomSession` Durable Objects.
+
+## Isolated Cloudflare Realtime SFU PoC
+
+The production room path remains RealtimeKit. To manually exercise the first-stage raw SFU path, append `&transport=sfu` to a room URL:
+
+```text
+https://free4.chat/room?id=<room-name>&transport=sfu
+```
+
+This path uses a `RoomSession` Durable Object with hibernating WebSockets for presence, mute state, text, reactions, resync and room expiry. Cloudflare Realtime SFU carries audio and screen-share media; the browser performs the SFU session/track negotiation. File and image transfer deliberately return an explicit unsupported error until the Phase 2 transfer design is implemented.
+
+The SFU path is opt-in and is not selected by the landing page. It requires `SFU_APP_ID` and `SFU_APP_SECRET`, and it does not change or replace the existing RealtimeKit secrets. Do not deploy or change production secrets as part of this PoC.
 
 ## Directory Structure
 
 ```
 free4chat/
 ├── app/
-│   ├── scripts/
-│   │   └── patch-worker.mjs          # post-build: injects BotSession DO into worker.js
+│   ├── worker.ts                     # Worker entry: OpenNext, scheduled handler and DO exports
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── TurnstileGate.tsx      # full-page bot challenge (wraps all pages)
@@ -109,7 +125,7 @@ free4chat/
 
 ### BotSession DO Export
 
-`opennextjs-cloudflare` always emits `.open-next/worker.js` and ignores any custom `main` in `wrangler.jsonc`. To export `BotSession`, `cf-build` runs `scripts/patch-worker.mjs` post-build: it bundles `src/do/BotSession.ts` and appends the export to `.open-next/worker.js`.
+The current Worker entry is `worker.ts`. It imports the OpenNext handler from `.open-next/worker.js`, preserves the scheduled handler, and exports both Durable Object classes. `wrangler.jsonc` points to `worker.ts`.
 
 ### Turnstile Flow
 

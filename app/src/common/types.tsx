@@ -1,5 +1,6 @@
 export interface UserInfo {
   name: string
+  kind: "human" | "agent"
   room: string
   className?: string
   audioStream?: MediaStream | null
