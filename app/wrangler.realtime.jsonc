@@ -16,16 +16,6 @@
   "triggers": {
     "crons": ["*/30 * * * *"]
   },
-  "routes": [
-    {
-      "pattern": "free4.chat/*",
-      "zone_name": "free4.chat"
-    },
-    {
-      "pattern": "www.free4.chat/*",
-      "zone_name": "free4.chat"
-    }
-  ],
   "vars": {
     "SFU_APP_ID": "set-during-deployment",
     "SFU_ALLOWED_ORIGIN": "set-after-first-deployment"
