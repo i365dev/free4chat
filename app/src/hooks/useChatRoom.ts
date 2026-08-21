@@ -12,7 +12,7 @@ export function useChatRoom(
   const [useSfu] = useState(
     () =>
       typeof window !== "undefined" &&
-      new URLSearchParams(window.location.search).get("transport") === "sfu"
+      new URLSearchParams(window.location.search).get("transport") !== "rtk"
   )
   const realtimeKitRoom = useRealtimeKitChatRoom(
     roomName,

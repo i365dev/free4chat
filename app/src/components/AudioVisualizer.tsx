@@ -14,6 +14,7 @@ export default function AudioVisualizer(props: Audio) {
     const color = nameToColor(props.name)
     if (!props.audio || props.audio.getAudioTracks().length === 0) return
     const audioCtx = new AudioContext()
+    void audioCtx.resume().catch(() => undefined)
     const analyser = audioCtx.createAnalyser()
     const audioSrc = audioCtx.createMediaStreamSource(props.audio)
     audioSrc.connect(analyser)
@@ -28,11 +29,12 @@ export default function AudioVisualizer(props: Audio) {
     const g = color[1]
     const b = color[2]
 
+    let animationFrame = 0
     const draw = () => {
       const WIDTH = canvas.width
       const HEIGHT = canvas.height
 
-      requestAnimationFrame(draw)
+      animationFrame = requestAnimationFrame(draw)
       analyser.getByteFrequencyData(dataArray)
 
       // clear canvas for next drawing
@@ -62,6 +64,13 @@ export default function AudioVisualizer(props: Audio) {
       }
     }
     draw()
+
+    return () => {
+      cancelAnimationFrame(animationFrame)
+      audioSrc.disconnect()
+      analyser.disconnect()
+      void audioCtx.close().catch(() => undefined)
+    }
   }, [props.audio, props.name])
 
   return (
