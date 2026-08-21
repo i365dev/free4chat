@@ -46,13 +46,14 @@ The Worker authenticates the room and coordinates presence; audio and screen sha
 
 ## Stack History
 
-This project has gone through three stacks, always with the same product goal:
+This project has gone through four stacks, always with the same product goal:
 
 | Branch                         | Stack                            | Why it changed                                                                    |
 | ------------------------------ | -------------------------------- | --------------------------------------------------------------------------------- |
 | [`golang`](../../tree/golang)  | Go + Pion WebRTC + coturn        | Self-hosted infra is too much overhead for a personal project                     |
 | [`elixir`](../../tree/elixir)  | Elixir + Membrane Framework      | Maintaining a server cluster is still heavy for something this small              |
-| **`cf-sfu`** (this branch) | Cloudflare Realtime SFU + Workers | Fully serverless — no servers to manage, private DataChannel transfers, free tier works |
+| [`cloudflare`](../../tree/cloudflare) | Cloudflare Workers + RealtimeKit | A managed-media experiment; participant-minute pricing was too expensive, and the higher-level API limited advanced features and low-level control |
+| **`cf-sfu`** (this branch) | Cloudflare Realtime SFU + Workers | Replaced RealtimeKit with the lower-level SFU — fully serverless, private DataChannel transfers, and direct control over media features |
 
 The product never changed. The ops burden did.
 

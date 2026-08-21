@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "free4chat-realtime",
   "main": "worker.ts",
+  "workers_dev": false,
   "compatibility_date": "2025-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "placement": { "mode": "smart" },
