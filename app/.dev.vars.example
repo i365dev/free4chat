@@ -4,7 +4,7 @@ RTK_APP_ID=your_realtimekit_app_id
 RTK_PRESET_NAME=group_call_host
 RTK_SCREENSHARE_PRESET_NAME=group_call_host
 RTK_AUDIO_PRESET_NAME=audio_only_room
-# Raw Cloudflare Realtime SFU test path (never used by default RTK rooms)
+# Cloudflare Realtime SFU
 SFU_APP_ID=your_realtime_sfu_app_id
 SFU_APP_SECRET=your_realtime_sfu_app_secret
 # Turnstile (use test keys below for local dev — always pass)

@@ -5,7 +5,7 @@
 Real-time voice + text + file chat. No sign-up. Cloudflare-native stack.
 
 - **Live URL**: https://free4.chat
-- **Branch**: `cloudflare` (default)
+- **Branch**: `cf-sfu` (default)
 - **Stack**: Next.js 15 → Cloudflare Worker via `@opennextjs/cloudflare`
 
 ## Directory Layout
@@ -231,9 +231,9 @@ yarn dev                          # localhost:3000
 
 ## Deployment
 
-Push to `cloudflare` branch with changes in `app/**` → GitHub Actions lints + type-checks → deploys.
+Push to `cf-sfu` branch with changes in `app/**` → GitHub Actions lints + type-checks → deploys `free4chat-realtime`.
 
-Manual: `yarn cf-build && yarn cf-deploy` (needs `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` env vars).
+Manual: `yarn cf-build && npx wrangler deploy --config wrangler.realtime.jsonc` (needs Cloudflare credentials and SFU deployment vars).
 
 ## Key Constraints
 

@@ -41,7 +41,7 @@ Everything deploys as a single Cloudflare Worker (Next.js + API routes + Durable
 
 ### GitHub Actions (automatic)
 
-Push to `cloudflare` branch with changes in `app/` → lint + type-check → deploy.
+Push to `cf-sfu` branch with changes in `app/` → lint + type-check → deploy `free4chat-realtime`.
 
 Required repository secrets:
 
@@ -49,6 +49,7 @@ Required repository secrets:
 | -------------------------------- | ------------------------------------------------------ |
 | `CLOUDFLARE_API_TOKEN`           | Cloudflare API token                                   |
 | `CLOUDFLARE_ACCOUNT_ID`          | Your Cloudflare account ID                             |
+| `SFU_APP_ID`                     | Cloudflare Realtime SFU app ID                         |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Turnstile site key (baked into frontend at build time) |
 
 ### Worker Runtime Secrets
@@ -57,15 +58,7 @@ Set these once via Wrangler (not in git):
 
 ```bash
 cd app
-npx wrangler secret put CF_API_TOKEN
-npx wrangler secret put CF_ACCOUNT_ID
-npx wrangler secret put RTK_APP_ID
-npx wrangler secret put RTK_AUDIO_PRESET_NAME
-npx wrangler secret put RTK_SCREENSHARE_PRESET_NAME
-npx wrangler secret put SFU_APP_ID                  # only for transport=sfu testing
-npx wrangler secret put SFU_APP_SECRET             # only for transport=sfu testing
-npx wrangler secret put CF_AIG_TOKEN
-npx wrangler secret put CF_AI_GATEWAY_BASEURL   # value: https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/compat
+npx wrangler secret put SFU_APP_SECRET
 npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
@@ -73,23 +66,25 @@ npx wrangler secret put TURNSTILE_SECRET_KEY
 
 ```bash
 cd app
-  yarn cf-build    # OpenNext build; worker.ts exports the DO classes
-yarn cf-deploy   # wrangler deploy
+yarn cf-build
+npx wrangler deploy --config wrangler.realtime.jsonc \
+  --var "SFU_APP_ID:$SFU_APP_ID" \
+  --var "SFU_ALLOWED_ORIGIN:https://free4.chat,https://www.free4.chat"
 ```
 
 `cf-build` produces `.open-next/worker.js`; Wrangler then bundles `worker.ts`, which imports that handler and exports the `BotSession` and `RoomSession` Durable Objects.
 
-## Isolated Cloudflare Realtime SFU PoC
+## Cloudflare Realtime SFU
 
-The production room path remains RealtimeKit. To manually exercise the first-stage raw SFU path, append `&transport=sfu` to a room URL:
+The production room path uses the raw SFU by default. Use `transport=rtk` only when testing the legacy RealtimeKit path:
 
 ```text
-https://free4.chat/room?id=<room-name>&transport=sfu
+https://free4.chat/room?id=<room-name>
 ```
 
-This path uses a `RoomSession` Durable Object with hibernating WebSockets for presence, mute state, text, reactions, resync and room expiry. Cloudflare Realtime SFU carries audio and screen-share media; the browser performs the SFU session/track negotiation. File and image transfer deliberately return an explicit unsupported error until the Phase 2 transfer design is implemented.
+The SFU path uses a `RoomSession` Durable Object with hibernating WebSockets for presence, mute state, text, reactions, resync and room expiry. Cloudflare Realtime SFU carries audio and screen-share media; the browser performs the SFU session/track negotiation. Files and images use chunked, reliable DataChannels and are not persisted.
 
-The SFU path is opt-in and is not selected by the landing page. It requires `SFU_APP_ID` and `SFU_APP_SECRET`, and it does not change or replace the existing RealtimeKit secrets. Do not deploy or change production secrets as part of this PoC.
+The SFU path requires `SFU_APP_ID` and `SFU_APP_SECRET`. Luna is intentionally disabled on the SFU path for now.
 
 ## Directory Structure
 

@@ -42,7 +42,7 @@ jobs:
   deploy:
     name: Build & Deploy
     needs: lint
-    if: github.ref == 'refs/heads/cloudflare' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/cf-sfu' && github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -66,8 +66,13 @@ jobs:
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
 
       - name: Deploy
-        run: yarn cf-deploy
+        run: |
+          npx wrangler deploy \
+            --config wrangler.realtime.jsonc \
+            --var "SFU_APP_ID:${SFU_APP_ID}" \
+            --var "SFU_ALLOWED_ORIGIN:https://free4.chat,https://www.free4.chat"
         working-directory: app
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SFU_APP_ID: ${{ secrets.SFU_APP_ID }}
