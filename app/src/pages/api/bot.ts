@@ -3,18 +3,12 @@ import type { NextApiRequest, NextApiResponse } from "next"
 
 import { isAllowedOrigin } from "@common/origin"
 
-interface RoomRecord {
-  meetingId: string
-  createdAt: number
-  roomType: "audio" | "screenshare"
-  botEnabled?: boolean
-}
-
 const ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000
 
 interface Env {
   ROOMS_KV: KVNamespace
   BOT_SESSION: DurableObjectNamespace
+  SFU_ROOM?: DurableObjectNamespace
 }
 
 const RATE_LIMIT_WINDOW_S = 3600
@@ -30,6 +24,26 @@ async function checkRateLimit(ip: string, env: Env): Promise<boolean> {
     expirationTtl: RATE_LIMIT_WINDOW_S,
   })
   return true
+}
+
+async function getSfuRoomStatus(
+  room: string,
+  env: Env
+): Promise<{ botEnabled: boolean; createdAt: number } | null> {
+  if (!env.SFU_ROOM) return null
+  const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+  const response = await stub.fetch("https://room/control", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "bot-status" }),
+  })
+  if (!response.ok) return null
+  const status = (await response.json()) as {
+    botEnabled?: boolean
+    createdAt?: number
+  }
+  if (typeof status.createdAt !== "number") return null
+  return { botEnabled: status.botEnabled === true, createdAt: status.createdAt }
 }
 
 export default async function handler(
@@ -85,22 +99,20 @@ export default async function handler(
       return res.status(400).json({ error: "input too long" })
     }
 
-    const roomRaw = await cfEnv.ROOMS_KV.get(`room:${room.trim()}`)
-    if (!roomRaw) {
-      return res.status(404).json({ error: "room not found" })
-    }
-    const roomRecord: RoomRecord = JSON.parse(roomRaw)
-    if (Date.now() - roomRecord.createdAt > ROOM_MAX_AGE_MS) {
+    const roomName = room.trim()
+    const sfuRoom = await getSfuRoomStatus(roomName, cfEnv)
+    if (!sfuRoom) return res.status(404).json({ error: "room not found" })
+    if (Date.now() - sfuRoom.createdAt > ROOM_MAX_AGE_MS) {
       return res.status(410).json({ error: "room expired" })
     }
-    if (!roomRecord.botEnabled) {
+    if (!sfuRoom.botEnabled) {
       return res
         .status(403)
         .json({ error: "AI assistant not enabled for this room" })
     }
 
     const id = cfEnv.BOT_SESSION.idFromName(
-      `room:${roomRecord.meetingId}:${roomRecord.createdAt}`
+      `sfu:${roomName}:${sfuRoom.createdAt}`
     )
     const stub = cfEnv.BOT_SESSION.get(id)
     const doRes = await stub.fetch("https://bot/", {
