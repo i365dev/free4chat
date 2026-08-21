@@ -17,6 +17,7 @@
     "crons": ["*/30 * * * *"]
   },
   "vars": {
+    // The production App ID is injected by GitHub Actions at deploy time.
     "SFU_APP_ID": "set-during-deployment",
     "SFU_ALLOWED_ORIGIN": "set-after-first-deployment"
   },
