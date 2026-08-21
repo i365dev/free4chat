@@ -1,9 +1,3 @@
-CF_API_TOKEN=your_cloudflare_api_token
-CF_ACCOUNT_ID=your_cloudflare_account_id
-RTK_APP_ID=your_realtimekit_app_id
-RTK_PRESET_NAME=group_call_host
-RTK_SCREENSHARE_PRESET_NAME=group_call_host
-RTK_AUDIO_PRESET_NAME=audio_only_room
 # Cloudflare Realtime SFU
 SFU_APP_ID=your_realtime_sfu_app_id
 SFU_APP_SECRET=your_realtime_sfu_app_secret

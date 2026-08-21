@@ -1,6 +1,8 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare"
 import type { NextApiRequest, NextApiResponse } from "next"
 
+import { isAllowedOrigin } from "@common/origin"
+
 interface RoomRecord {
   meetingId: string
   createdAt: number
@@ -14,12 +16,6 @@ interface Env {
   ROOMS_KV: KVNamespace
   BOT_SESSION: DurableObjectNamespace
 }
-
-const ALLOWED_ORIGINS = [
-  "https://free4.chat",
-  "https://www.free4.chat",
-  "https://free4chat.i365.workers.dev",
-]
 
 const RATE_LIMIT_WINDOW_S = 3600
 const RATE_LIMIT_MAX = 30
@@ -46,7 +42,7 @@ export default async function handler(
 
   const origin = req.headers["origin"] as string | undefined
   const isDev = process.env.NODE_ENV === "development"
-  if (!isDev && (!origin || !ALLOWED_ORIGINS.includes(origin))) {
+  if (!isDev && !isAllowedOrigin(origin ?? null)) {
     return res.status(403).json({ error: "Forbidden" })
   }
 

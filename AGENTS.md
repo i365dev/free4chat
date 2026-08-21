@@ -1,265 +1,98 @@
 # free4chat — Agent Development Guide
 
-## Project Overview
+## Project overview
 
-Real-time voice + text + file chat. No sign-up. Cloudflare-native stack.
+Free4Chat is a no-sign-up real-time voice, text, file, and screen-sharing chat app.
 
-- **Live URL**: https://free4.chat
-- **Branch**: `cf-sfu` (default)
-- **Stack**: Next.js 15 → Cloudflare Worker via `@opennextjs/cloudflare`
+- Live URL: https://free4.chat
+- Production branch: `cf-sfu`
+- Stack: Next.js 15 → Cloudflare Worker via `@opennextjs/cloudflare`
+- Media: browser WebRTC → Cloudflare Realtime SFU
+- Coordination: Cloudflare Durable Objects
 
-## Directory Layout
+## Directory layout
 
-```
+```text
 free4chat/
 ├── app/
-│   ├── worker.ts                     # Worker entry: OpenNext, scheduled handler and DO exports
 │   ├── src/
-│   │   ├── common/
-│   │   │   ├── consts.tsx            # LOCAL_PEER_ID = "local-peer-id"
-│   │   │   ├── types.tsx             # UserInfo, Message, Color interfaces
-│   │   │   └── utils.ts             # strToBgColor, umamiEvent, hashRoom, etc.
-│   │   ├── do/
-│   │   │   ├── BotSession.ts         # Durable Object: Luna chat history + hourly rate limit
-│   │   │   └── RoomSession.ts        # SFU control plane: presence, chat and room state
-│   │   ├── hooks/
-│   │   │   ├── useChatRoom.ts        # Transport selector (SFU default, RTK legacy opt-in)
-│   │   │   ├── useRealtimeKitChatRoom.ts
-│   │   │   └── useSfuChatRoom.ts
-│   │   ├── components/
-│   │   │   ├── TurnstileGate.tsx     # Full-page bot challenge wrapper (used in _app.tsx)
-│   │   │   ├── RoomContent.tsx       # Room layout (participant grid + chat panel + @luna relay)
-│   │   │   ├── UserCard.tsx          # Per-participant card (audio + avatar + mute + screenshare)
-│   │   │   ├── AudioVisualizer.tsx
-│   │   │   └── TextChatCard.tsx      # Chat sidebar (messages, activity strip, Luna pill)
-│   │   └── pages/
-│   │       ├── _app.tsx              # App wrapper — loads TurnstileGate around all pages
-│   │       ├── index.tsx             # Landing / room join
-│   │       ├── room.tsx              # Dynamic import of RoomContent (ssr: false)
-│   │       └── api/
-│   │           ├── token.ts          # POST /api/token — token server (runs in Worker)
-│   │           └── bot.ts            # POST /api/bot — proxies message to BotSession DO
-│   ├── wrangler.jsonc                # main: worker.ts, KV + DO bindings
-│   ├── open-next.config.ts
-│   └── package.json                  # cf-build = opennextjs-cloudflare build
-└── .github/workflows/
-    └── deploy-web.yml                # Lint + type-check → deploy (push to cf-sfu branch)
+│   │   ├── common/origin.ts          # shared origin allow-list
+│   │   ├── common/types.tsx          # UserInfo and Message contracts
+│   │   ├── do/RoomSession.ts         # room presence/chat/mute/state
+│   │   ├── do/BotSession.ts          # Luna text bot state and rate limit
+│   │   ├── hooks/useSfuChatRoom.ts   # WebRTC, SFU negotiation, DataChannels
+│   │   ├── components/RoomContent.tsx
+│   │   ├── components/UserCard.tsx
+│   │   ├── components/TextChatCard.tsx
+│   │   └── pages/api/bot.ts
+│   ├── src/sfu/server.ts             # authenticated SFU API proxy
+│   ├── worker.ts                     # Worker entry and DO exports
+│   ├── wrangler.jsonc                # production Worker config
+│   └── .dev.vars.example
+└── .github/workflows/deploy-web.yml
 ```
 
-The Cloudflare Realtime SFU path is the production default. Add `transport=rtk` to a room URL only for the legacy RealtimeKit path. `RoomSession` owns presence/chat/reactions/mute/resync, while SFU carries audio and screenshare media.
+## SFU architecture
 
-## RTK SDK Usage Pattern
+The browser connects directly to Cloudflare Realtime SFU. The Worker never exposes `SFU_APP_SECRET` to clients. `RoomSession` only coordinates presence, chat, reactions, mute state, track metadata, DataChannel readiness, room expiry, and room-level Luna state.
 
-The legacy RTK path uses **`useRealtimeKitClient`** (low-level hook) — NOT the higher-level React hooks. The RTK implementation is isolated in `useRealtimeKitChatRoom.ts`; `useChatRoom.ts` selects SFU by default and chooses RTK only for `transport=rtk`.
+All `/api/sfu/*` requests require an `Origin` of `https://free4.chat` or `https://www.free4.chat`; `http://localhost:3000` is allowed for local development. The Worker URL is not an allowed production origin.
 
-```ts
-const [meeting, initMeeting] = useRealtimeKitClient();
-```
+`buildParticipants()` in `useSfuChatRoom.ts` is the single source of truth for participant UI state. Rebuild the complete list instead of patching individual React entries.
 
-### Key meeting APIs currently used
+## SFU session flow
 
-| Object                        | API                                                                                            |
-| ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| `meeting.self`                | `.name`, `.audioEnabled`, `.audioTrack`, `.enableAudio()`, `.disableAudio()`                   |
-| `meeting.self` events         | `"audioUpdate"`                                                                                |
-| `meeting.participants.joined` | `.toArray()`, events: `"participantJoined"`, `"participantLeft"`, `"audioUpdate"`              |
-| `meeting.chat`                | `.messages`, `.sendTextMessage()`, `.sendImageMessage()`, `.sendFileMessage()`, `"chatUpdate"` |
-| `meeting`                     | `.join()`, `.leaveRoom()`                                                                      |
+1. `/api/sfu/session` validates the origin, rate limit, Turnstile token, room, and name.
+2. The Worker creates a Cloudflare Realtime session and registers the participant in `RoomSession`.
+3. The browser establishes the server-events and file DataChannels.
+4. The browser publishes microphone and optional screen-share tracks.
+5. `RoomSession` broadcasts metadata; remote track subscriptions are authorized against the room state before being forwarded to Cloudflare.
 
-### Screen share APIs (RTK native, fully supported)
+The SFU App ID is a deployment variable. `SFU_APP_SECRET` and `TURNSTILE_SECRET_KEY` are Worker secrets and must never be committed or sent to the browser.
 
-```ts
-meeting.self.enableScreenShare();
-meeting.self.disableScreenShare();
-meeting.self.screenShareEnabled; // boolean
-meeting.self.screenShareTracks; // { video: MediaStreamTrack, audio?: MediaStreamTrack }
+## DataChannel file transfer
 
-participant.screenShareEnabled;
-participant.screenShareTracks;
+- Files and images use reliable, ordered DataChannels only.
+- Maximum file size is 20 MB.
+- Chunks are 32 KB with buffered-amount backpressure.
+- Files are reconstructed as browser `Blob` object URLs and are never written to R2, KV, or DO storage.
+- Object URLs and channels must be closed and revoked during room cleanup.
 
-meeting.self.on("screenShareUpdate", buildParticipants);
-meeting.participants.joined.on("screenShareUpdate", buildParticipants);
-```
+## Luna
 
-Permission check: `meeting.self.permissions.canProduceScreenshare // "ALLOWED" | "NOT_ALLOWED" | "CAN_REQUEST"`
+Luna is a text assistant invoked with `@luna`. `RoomSession` stores only the room-level enabled flag; `/api/bot` checks that state before dispatching to `BotSession`. Luna history is separate from normal room messages and is rate limited per room.
 
-## Data Flow
+## Analytics
 
-```
-useRealtimeKitClient()
-  └── meeting (imperative RTK object)
-  └── useChatRoom.ts (transport selector)
-              ├── buildParticipants() → UserInfo[]
-              └── returns { participants, messages, muteSelf, toggleScreenShare,
-                            sendText, sendFile, sendAction, error, resolvedRoomType, ... }
-                    └── RoomContent.tsx
-                          ├── @luna intercept → POST /api/bot → BotSession DO
-                          ├── ScreenShareViewer (one at a time)
-                          ├── UserCard.tsx (per participant)
-                          │     ├── <audio> element
-                          │     └── AudioVisualizer
-                          └── TextChatCard.tsx
-                                ├── message list (text / file / image / bot / action)
-                                ├── Activity strip (Draw · Poll · Games · Luna pill)
-                                └── text input + send + file upload
-```
-
-## Type Contracts
-
-### UserInfo (common/types.tsx)
-
-```ts
-export interface UserInfo {
-  name: string;
-  kind: "human" | "agent";
-  room: string;
-  className?: string;
-  audioStream?: MediaStream | null;
-  screenShareStream?: MediaStream | null;
-  screenShareEnabled?: boolean;
-  peerId: string;
-  muteState?: boolean;
-}
-```
-
-### Message (common/types.tsx)
-
-```ts
-export interface Message {
-  peerId: string;
-  name: string;
-  type: "text" | "image" | "file" | "bot" | "action";
-  text?: string;
-  fileLink?: string;
-  fileName?: string;
-  fileSize?: number;
-  actionType?: ActionType;
-  actionPayload?: Record<string, string>;
-}
-```
-
-## Token API (api/token.ts)
-
-- **Method**: POST `/api/token`
-- **Body**: `{ room: string, name: string, type?: "audio" | "screenshare", enableBot?: boolean, turnstileToken: string }`
-- **Response**: `{ authToken: string, roomType: "audio" | "screenshare", botEnabled: boolean, typeConflict?: boolean }`
-- **Error codes**: 400 (bad input), 403 (forbidden origin or Turnstile failure), 410 (room expired), 429 (rate limited), 500
-
-Security layers (in order):
-
-1. **Origin whitelist** — blocks non-browser requests without `Origin: https://free4.chat`
-2. **KV rate limiting** — 20 req/60s per IP
-3. **Turnstile verification** — if `TURNSTILE_SECRET_KEY` is set, `turnstileToken` is **required**; missing or invalid token → 403
-4. Input length limits: room ≤ 64 chars, name ≤ 32 chars
-5. Room max age: 2 hours (returns 410 after)
-
-Room type logic: first caller sets room type; subsequent callers inherit from KV. `typeConflict: true` when caller requested a different type.
-
-## Bot API (api/bot.ts)
-
-- **Method**: POST `/api/bot`
-- **Body**: `{ room: string, userMessage: string, userName: string }`
-- **Response**: `{ reply: string }` or `{ error: "rate_limited" | "ai_error" }`
-
-Routes to `BotSession` Durable Object keyed by room name. `RoomContent.tsx` intercepts outgoing chat messages that contain `@luna`, strips the mention, and calls this endpoint. Bot reply is injected back into the local message list as `type: "bot"`.
-
-## BotSession Durable Object (do/BotSession.ts)
-
-Per-room stateful AI session. Keyed by room name via `env.BOT_SESSION.idFromName(room)`.
-
-**Storage** (DO KV, `state.storage`):
-
-- `history`: `AiMessage[]` — last 20 messages, persists across requests within the DO lifetime
-- `hourly`: `{ window: number, count: number }` — hourly rate limit state
-
-**Limits**: 30 AI calls per room per hour (`HOURLY_RATE_LIMIT`). History capped at 20 messages (`MAX_HISTORY`).
-
-**Model**: `workers-ai/@cf/zai-org/glm-4.7-flash` via Cloudflare AI Gateway (OpenAI-compatible `/compat` endpoint).
-
-### Worker and Durable Object exports
-
-The current Worker entry is `app/worker.ts`. It imports the OpenNext handler, preserves the scheduled handler, and exports both `BotSession` and `RoomSession`. `wrangler.jsonc` points to `worker.ts`; OpenNext generates `.open-next/worker.js` as the imported application handler.
-
-## Turnstile Gate (components/TurnstileGate.tsx)
-
-Wraps the entire app in `_app.tsx`. On first page load (any URL — landing page, shared room link, etc.):
-
-1. Checks `sessionStorage.ts_token`
-2. If present → renders children immediately (no re-challenge within the same browser session)
-3. If absent → shows full-screen challenge; on pass, stores token in `sessionStorage.ts_token` and renders children
-
-The stored token is sent as `turnstileToken` in the `/api/token` POST body. `api/token.ts` verifies it server-side when `TURNSTILE_SECRET_KEY` is set.
-
-**Env var**: `NEXT_PUBLIC_TURNSTILE_SITE_KEY` — baked into the frontend at build time (GitHub Actions secret). Falls back to Cloudflare's always-pass test key `1x00000000000000000000AA` locally.
-
-## Analytics (Umami + Google Analytics)
-
-Both `umami` and `gtag` are loaded in `_document.tsx`. All custom event tracking uses `umamiEvent(name, data)` from `common/utils.ts`. Room names are anonymized with `hashRoom()` (FNV-1a) before sending.
-
-### Current Events
-
-| Event          | Trigger                                     | Key Properties                                   |
-| -------------- | ------------------------------------------- | ------------------------------------------------ |
-| `RoomJoin`     | User clicks Join on landing page            | `type`, `roomHash`                               |
-| `Room`         | User enters the room                        | `type`, `roomHash`                               |
-| `RoomSize`     | Participant count crosses a bucket boundary | `bucket` (1/2-3/4-9/10+), `roomType`, `roomHash` |
-| `ChatActivity` | First text message; every file/image sent   | `type`, `roomHash`                               |
-| `ChatAction`   | whiteboard / poll / game / vote actions     | `type`, optional `gameId`, `roomHash`            |
-| `ScreenShare`  | User toggles screen share                   | `action` (start\|stop), `roomHash`               |
-
-## Styling Conventions
-
-- Tailwind CSS only — no inline styles except for dynamic values
-- Dark theme: `bg-gray-900` base, `border-gray-700` borders, `text-white`
-- Participant cards: `rounded-xl border border-gray-700 px-3 py-3`, bg from `strToBgColor(name)`
-- Bot messages: `bg-violet-900/60 text-violet-100 ring-1 ring-violet-700/50`
-- Luna pill in activity strip: `border-violet-600 bg-violet-900/40 text-violet-300`
+Use `umamiEvent()` or `trackAnalyticsEvent()` from `src/common/utils.ts`. The analytics bridge sends the same anonymized product events to Umami and Cloudflare Zaraz/Mixpanel. Room names must use `hashRoom()` and must never be sent raw.
 
 ## Development
 
 ```bash
 cd app
-cp .dev.vars.example .dev.vars   # fill CF_API_TOKEN, CF_ACCOUNT_ID, RTK_APP_ID,
-                                  # RTK_SCREENSHARE_PRESET_NAME, RTK_AUDIO_PRESET_NAME,
-                                  # CF_AIG_TOKEN, CF_AI_GATEWAY_BASEURL
-yarn dev                          # localhost:3000
+yarn install
+cp .dev.vars.example .dev.vars
+yarn dev
 ```
 
-`.dev.vars` is gitignored. `TURNSTILE_SECRET_KEY` is optional locally — omit it and Turnstile is skipped in dev.
+`.dev.vars` is gitignored. Never print or commit it. See `DEVELOPMENT.md` for deployment and secret setup.
 
-`CF_AI_GATEWAY_BASEURL` must end at `/compat` with no trailing path. The OpenAI SDK appends `/chat/completions` automatically.
+## Build and deployment
 
-## Deployment
+```bash
+cd app
+yarn cf-build
+npx wrangler deploy \
+  --var "SFU_APP_ID:$SFU_APP_ID"
+```
 
-Push to `cf-sfu` branch with changes in `app/**` → GitHub Actions lints + type-checks → deploys `free4chat-realtime`.
+Pushes to `cf-sfu` that touch `app/**` run lint, type-check, build, and deploy through GitHub Actions. CI does not manage production routes; routes already point to `free4chat-realtime`.
 
-Manual: `yarn cf-build && npx wrangler deploy --config wrangler.realtime.jsonc` (needs Cloudflare credentials and SFU deployment vars).
+## Important constraints
 
-## Key Constraints
-
-- `room.tsx` uses `dynamic(() => import("../components/RoomContent"), { ssr: false })` — required, RTK breaks under SSR
-- `initMeeting` called with `defaults: { audio: true, video: false }` — video off by default
-- `LOCAL_PEER_ID = "local-peer-id"` is the sentinel for the local participant
-- `buildParticipants()` is the single source of truth for participant state — always rebuild the full list, never patch individual entries
-- `joinedRef` prevents double-joining on React StrictMode double-effect
-- `resolvedRoomType` (state in `useChatRoom.ts`) reflects the actual room type from the token API — use this for UI gating (e.g. screenshare button visibility)
-- `activeSharePeerId` tracks which participant's screen is displayed — only one `ScreenShareViewer` renders at a time
-- Split pane ratio (`splitRatio`): auto-sets to 75 when screen sharing, 50 otherwise; drag handle is desktop-only (`hidden md:block`)
-- IME input fix: `isComposingRef` in `TextChatCard.tsx` prevents Enter from submitting during CJK composition
-- Slash/@ picker: typing `/` or `@` in chat input shows an inline command picker above the input. Uses `onMouseDown` (not `onClick`) to avoid input blur. Arrow keys + Enter to navigate, Escape to dismiss.
-- `*.tsbuildinfo` is gitignored — do not commit it
-- `cf-build` must complete before `wrangler deploy`; Wrangler bundles `worker.ts`, which imports the generated OpenNext handler and exports both Durable Objects
-
-## Future Technical Directions
-
-### SQLite-backed Durable Objects
-
-`BotSession` uses DO KV storage (`state.storage.get/put`). Fine for current use (small history array + two counters). If data model grows (per-user memory, room summaries, structured queries), migrate to `this.state.storage.sql`. Migration is straightforward; also unlocks Cloudflare Data Studio for debugging production data.
-
-### Cloudflare Actors Library
-
-Higher-level abstraction over DOs — replaces manual `fetch()` dispatch with typed RPC. Worth adopting if `BotSession` grows multiple methods or is called from multiple Workers. No benefit at current scale.
-
-### Voice Bot (Luna Phase 2)
-
-Requires `@cloudflare/voice` Durable Object (STT → LLM → TTS) + Cloudflare Calls API track bridging into RTK. Estimated latency: ~700–900ms all-Cloudflare. See issue #55.
+- Keep `room.tsx` dynamic import with `ssr: false`.
+- Keep audio enabled and camera/video disabled by default.
+- Preserve the `LOCAL_PEER_ID = "local-peer-id"` sentinel.
+- Keep the Worker URL out of the production origin allow-list.
+- Do not add R2 or server-side file persistence.
+- Do not commit `.dev.vars`, generated secrets, or `*.tsbuildinfo`.

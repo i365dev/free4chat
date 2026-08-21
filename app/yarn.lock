@@ -805,33 +805,10 @@
   resolved "https://registry.yarnpkg.com/@aws/lambda-invoke-store/-/lambda-invoke-store-0.2.4.tgz#802f6a50f6b6589063ef63ba8acdee86fcb9f395"
   integrity sha512-iY8yvjE0y651BixKNPgmv1WrQc+GZ142sb0z4gYnChDDY2YqI4P/jsSopBWrKfAt7LOJAkOXt7rC/hms+WclQQ==
 
-"@babel/runtime@^7.20.6", "@babel/runtime@^7.23.8", "@babel/runtime@^7.24.5":
-  version "7.29.2"
-  resolved "https://registry.yarnpkg.com/@babel/runtime/-/runtime-7.29.2.tgz#9a6e2d05f4b6692e1801cd4fb176ad823930ed5e"
-  integrity sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==
-
 "@cloudflare/kv-asset-handler@0.5.0":
   version "0.5.0"
   resolved "https://registry.yarnpkg.com/@cloudflare/kv-asset-handler/-/kv-asset-handler-0.5.0.tgz#d448d971aca78c04c39432a862298fb77f295527"
   integrity sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg==
-
-"@cloudflare/realtimekit-react@latest":
-  version "1.4.0"
-  resolved "https://registry.yarnpkg.com/@cloudflare/realtimekit-react/-/realtimekit-react-1.4.0.tgz#7bc7a02de42e4876ea1ac4094d998ccf20dab6d1"
-  integrity sha512-6nZNAhceh/YmxamGokDidPtRRo7FrzYYozgiu6iRyM1wbjjcZzkRt+8OtbloL8Cx5v0H7+16orJ8kmw3DRtdbQ==
-  dependencies:
-    "@cloudflare/realtimekit" "1.4.0"
-
-"@cloudflare/realtimekit@1.4.0":
-  version "1.4.0"
-  resolved "https://registry.yarnpkg.com/@cloudflare/realtimekit/-/realtimekit-1.4.0.tgz#6f2b5a7d745024937edea10acf0549dd549e100b"
-  integrity sha512-y4PXDcmP6FfhAjt0kBHk2OHXXwujwORvhveiAIgRznww80n5ojo4UXAeBiU+cBMnZBH1+UCgmbS23mb0+r3cKg==
-  dependencies:
-    "@protobuf-ts/runtime" "^2.7.0"
-    bowser "^2.11.0"
-    sdp-transform "^2.14.1"
-    uuid "^8.3.2"
-    worker-timers "7.0.60"
 
 "@cloudflare/unenv-preset@2.16.1":
   version "2.16.1"
@@ -1626,11 +1603,6 @@
   version "1.2.3"
   resolved "https://registry.yarnpkg.com/@poppinss/exception/-/exception-1.2.3.tgz#b713855e6c9fe2110fea0949455c50828145e64a"
   integrity sha512-dCED+QRChTVatE9ibtoaxc+WkdzOSjYTKi/+uacHWIsfodVfpsueo3+DKpgU5Px8qXjgmXkSvhXvSCz3fnP9lw==
-
-"@protobuf-ts/runtime@^2.7.0":
-  version "2.11.1"
-  resolved "https://registry.yarnpkg.com/@protobuf-ts/runtime/-/runtime-2.11.1.tgz#ee2bf2fac6e2d8deac0ca63471a77481548e5553"
-  integrity sha512-KuDaT1IfHkugM2pyz+FwiY80ejWrkH1pAtOBOZFuR6SXEFTsnb/jiQWQ1rCIrcKx2BtyxnxW6BWwsVSA/Ie+WQ==
 
 "@rtsao/scc@^1.1.0":
   version "1.1.0"
@@ -3554,14 +3526,6 @@ fast-levenshtein@^2.0.6:
   resolved "https://registry.yarnpkg.com/fast-levenshtein/-/fast-levenshtein-2.0.6.tgz#3d8a5c66883a16a30ca8643e851f19baa7797917"
   integrity sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==
 
-fast-unique-numbers@^8.0.13:
-  version "8.0.13"
-  resolved "https://registry.yarnpkg.com/fast-unique-numbers/-/fast-unique-numbers-8.0.13.tgz#3c87232061ff5f408a216e1f0121232f76f695d7"
-  integrity sha512-7OnTFAVPefgw2eBJ1xj2PGGR9FwYzSUso9decayHgCDX4sJkHLdcsYTytTg+tYv+wKF3U8gJuSBz2jJpQV4u/g==
-  dependencies:
-    "@babel/runtime" "^7.23.8"
-    tslib "^2.6.2"
-
 fast-xml-builder@^1.1.7:
   version "1.2.0"
   resolved "https://registry.yarnpkg.com/fast-xml-builder/-/fast-xml-builder-1.2.0.tgz#abd2363145a7625d9789ad96da375fabe3cff28c"
@@ -5261,11 +5225,6 @@ scheduler@^0.27.0:
   resolved "https://registry.yarnpkg.com/scheduler/-/scheduler-0.27.0.tgz#0c4ef82d67d1e5c1e359e8fc76d3a87f045fe5bd"
   integrity sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==
 
-sdp-transform@^2.14.1:
-  version "2.15.0"
-  resolved "https://registry.yarnpkg.com/sdp-transform/-/sdp-transform-2.15.0.tgz#79d37a2481916f36a0534e07b32ceaa87f71df42"
-  integrity sha512-KrOH82c/W+GYQ0LHqtr3caRpM3ITglq3ljGUIb8LTki7ByacJZ9z+piSGiwZDsRyhQbYBOBJgr2k6X4BZXi3Kw==
-
 semver@^6.3.1:
   version "6.3.1"
   resolved "https://registry.yarnpkg.com/semver/-/semver-6.3.1.tgz#556d2ef8689146e46dcea4bfdd095f3434dffcb4"
@@ -5786,7 +5745,7 @@ tsconfig-paths@^3.15.0:
     minimist "^1.2.6"
     strip-bom "^3.0.0"
 
-tslib@^2.4.0, tslib@^2.4.1, tslib@^2.6.2, tslib@^2.8.0:
+tslib@^2.4.0, tslib@^2.6.2, tslib@^2.8.0:
   version "2.8.1"
   resolved "https://registry.yarnpkg.com/tslib/-/tslib-2.8.1.tgz#612efe4ed235d567e8aba5f2a5fab70280ade83f"
   integrity sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==
@@ -5961,11 +5920,6 @@ util-deprecate@^1.0.2:
   resolved "https://registry.yarnpkg.com/util-deprecate/-/util-deprecate-1.0.2.tgz#450d4dc9fa70de732762fbd2d4a28981419a0ccf"
   integrity sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==
 
-uuid@^8.3.2:
-  version "8.3.2"
-  resolved "https://registry.yarnpkg.com/uuid/-/uuid-8.3.2.tgz#80d5b5ced271bb9af6c445f21a1a04c606cefbe2"
-  integrity sha512-+NYs2QeMWy+GWFOEm9xnn6HCDp0l7QBD7ml8zLUmJ+93Q5NF0NocErnwkTkXVFNiX3/fpC6afS8Dhb/gz7R7eg==
-
 vary@^1.1.2:
   version "1.1.2"
   resolved "https://registry.yarnpkg.com/vary/-/vary-1.1.2.tgz#2299f02c6ded30d4a5961b0b9f74524a18f634fc"
@@ -6060,34 +6014,6 @@ word-wrap@^1.2.5:
   version "1.2.5"
   resolved "https://registry.yarnpkg.com/word-wrap/-/word-wrap-1.2.5.tgz#d2c45c6dd4fbce621a66f136cbe328afd0410b34"
   integrity sha512-BN22B5eaMMI9UMtjrGd5g5eCYPpCPDUy0FJXbYsaT5zYxjFOckS53SQDE3pWkVoWpHXVb3BrYcEN4Twa55B5cA==
-
-worker-timers-broker@^6.0.80:
-  version "6.1.8"
-  resolved "https://registry.yarnpkg.com/worker-timers-broker/-/worker-timers-broker-6.1.8.tgz#08f64e5931b77fadc55f0c7388c077a7dd17e4c7"
-  integrity sha512-FUCJu9jlK3A8WqLTKXM9E6kAmI/dR1vAJ8dHYLMisLNB/n3GuaFIjJ7pn16ZcD1zCOf7P6H62lWIEBi+yz/zQQ==
-  dependencies:
-    "@babel/runtime" "^7.24.5"
-    fast-unique-numbers "^8.0.13"
-    tslib "^2.6.2"
-    worker-timers-worker "^7.0.71"
-
-worker-timers-worker@^7.0.46, worker-timers-worker@^7.0.71:
-  version "7.0.71"
-  resolved "https://registry.yarnpkg.com/worker-timers-worker/-/worker-timers-worker-7.0.71.tgz#f96138bafbcfaabea116603ce23956e05e76db6a"
-  integrity sha512-ks/5YKwZsto1c2vmljroppOKCivB/ma97g9y77MAAz2TBBjPPgpoOiS1qYQKIgvGTr2QYPT3XhJWIB6Rj2MVPQ==
-  dependencies:
-    "@babel/runtime" "^7.24.5"
-    tslib "^2.6.2"
-
-worker-timers@7.0.60:
-  version "7.0.60"
-  resolved "https://registry.yarnpkg.com/worker-timers/-/worker-timers-7.0.60.tgz#cf5a04e546d97516ffe0c7f5600654f6930652be"
-  integrity sha512-kom5j7+JQU0uuJAqAeFvxPpKlp21BH09YLMU/JLKA+0Zs3WTGk7WSBFYjdR3G+kjXr6qWD7zIcenv3oXaWBJzw==
-  dependencies:
-    "@babel/runtime" "^7.20.6"
-    tslib "^2.4.1"
-    worker-timers-broker "^6.0.80"
-    worker-timers-worker "^7.0.46"
 
 workerd@1.20260515.1:
   version "1.20260515.1"

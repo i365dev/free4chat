@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "free4chat",
+  "name": "free4chat-realtime",
   "main": "worker.ts",
   "compatibility_date": "2025-11-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -9,15 +9,18 @@
     "directory": ".open-next/assets",
     "binding": "ASSETS"
   },
-  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "free4chat" }],
+  "services": [
+    { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" }
+  ],
   "observability": { "enabled": true },
-  "triggers": {
-    "crons": ["*/30 * * * *"]
+  "vars": {
+    // The production App ID is injected by GitHub Actions at deploy time.
+    "SFU_APP_ID": "set-during-deployment"
   },
   "kv_namespaces": [
     {
       "binding": "ROOMS_KV",
-      "id": "290b9fb14c1a4505a7aea6cb61ddd1dd"
+      "id": "10ee56aaa9dd45eda179dfe709e1014a"
     }
   ],
   "durable_objects": {
@@ -41,5 +44,5 @@
       "tag": "v2",
       "new_classes": ["RoomSession"]
     }
-  ],
+  ]
 }

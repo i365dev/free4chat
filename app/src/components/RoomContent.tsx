@@ -7,7 +7,7 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import { umamiEvent, hashRoom, participantsBucket } from "../common/utils"
-import { useChatRoom } from "../hooks/useChatRoom"
+import { useSfuChatRoom } from "../hooks/useSfuChatRoom"
 
 const REACTION_EMOJIS = ["👍", "😂", "🔥", "❓"]
 
@@ -121,7 +121,7 @@ export default function RoomContent({
     resolvedRoomType,
     botEnabled,
     timeLeft,
-  } = useChatRoom(roomName, nickName, roomType, enableBotProp)
+  } = useSfuChatRoom(roomName, nickName, roomType, enableBotProp)
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 

@@ -1,12 +1,7 @@
 import type { SfuSessionResponse, SfuTrack, ParticipantKind } from "./types"
+import { isAllowedOrigin } from "../common/origin"
 import type { RoomSession } from "../do/RoomSession"
 
-const ALLOWED_ORIGINS = new Set([
-  "https://free4.chat",
-  "https://www.free4.chat",
-  "https://free4chat.i365.workers.dev",
-  "http://localhost:3000",
-])
 const MAX_ROOM_LENGTH = 64
 const MAX_NAME_LENGTH = 32
 const RATE_LIMIT_MAX = 20
@@ -15,11 +10,8 @@ const RATE_LIMIT_WINDOW_S = 60
 export interface SfuEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
   ROOMS_KV: KVNamespace
-  SFU_ALLOWED_ORIGIN?: string
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
-  CF_SFU_APP_ID?: string
-  CF_SFU_APP_SECRET?: string
   TURNSTILE_SECRET_KEY?: string
 }
 
@@ -32,21 +24,14 @@ function badRequest(message: string): Response {
 }
 
 function originAllowed(request: Request, env: SfuEnv): boolean {
-  const origin = request.headers.get("Origin")
-  if (!origin) return false
-  if (ALLOWED_ORIGINS.has(origin)) return true
-  return env.SFU_ALLOWED_ORIGIN?.split(",").some(
-    (allowed) => allowed.trim() === origin
-  )
-    ? true
-    : false
+  return isAllowedOrigin(request.headers.get("Origin"))
 }
 
 function getAppCredentials(
   env: SfuEnv
 ): { appId: string; appSecret: string } | null {
-  const appId = env.SFU_APP_ID || env.CF_SFU_APP_ID
-  const appSecret = env.SFU_APP_SECRET || env.CF_SFU_APP_SECRET
+  const appId = env.SFU_APP_ID
+  const appSecret = env.SFU_APP_SECRET
   return appId && appSecret ? { appId, appSecret } : null
 }
 

@@ -16,7 +16,6 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@cloudflare/realtimekit-react": "latest",
     "boring-avatars": "^1.7.0",
     "next": "15",
     "openai": "^6.38.0",

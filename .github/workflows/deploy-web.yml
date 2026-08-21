@@ -65,12 +65,15 @@ jobs:
         env:
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
 
+      - name: Validate deployment variables
+        run: test -n "$SFU_APP_ID"
+        env:
+          SFU_APP_ID: ${{ secrets.SFU_APP_ID }}
+
       - name: Deploy
         run: |
           npx wrangler deploy \
-            --config wrangler.realtime.jsonc \
-            --var "SFU_APP_ID:${SFU_APP_ID}" \
-            --var "SFU_ALLOWED_ORIGIN:https://free4.chat,https://www.free4.chat"
+            --var "SFU_APP_ID:${SFU_APP_ID}"
         working-directory: app
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

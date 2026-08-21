@@ -1,7 +1,6 @@
 // @ts-ignore generated at build time
 import { default as handler } from "./.open-next/worker.js"
 
-import { handleScheduled } from "./src/do/ScheduledHandler"
 import { handleSfuRequest } from "./src/sfu/server"
 
 export { BotSession } from "./src/do/BotSession"
@@ -14,5 +13,4 @@ export default {
     }
     return handler.fetch(request, env, ctx)
   },
-  scheduled: handleScheduled,
 }
