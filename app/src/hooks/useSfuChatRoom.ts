@@ -722,6 +722,7 @@ export function useSfuChatRoom(
           const data = (await response.json().catch(() => ({}))) as {
             error?: string
           }
+          if (response.status === 403) sessionStorage.removeItem("ts_token")
           throw new Error(data.error || "Unable to create SFU session")
         }
         const session = (await response.json()) as SfuSessionResponse
