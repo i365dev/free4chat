@@ -52,7 +52,10 @@ interface SfuServerMessage {
   error?: string
 }
 
-const roomMessageToMessage = (message: SfuMessage): Message => {
+const roomMessageToMessage = (
+  message: SfuMessage,
+  localParticipantId?: string
+): Message => {
   if (message.type === "text" && message.text?.startsWith("__bot:")) {
     try {
       const payload = JSON.parse(message.text.slice(6)) as { text?: unknown }
@@ -67,7 +70,8 @@ const roomMessageToMessage = (message: SfuMessage): Message => {
     }
   }
   return {
-    peerId: message.peerId,
+    peerId:
+      message.peerId === localParticipantId ? LOCAL_PEER_ID : message.peerId,
     name: message.name,
     type: message.type === "action" ? "action" : "text",
     text: message.text,
@@ -692,7 +696,12 @@ export function useSfuChatRoom(
           { ...participant, token: "" } as SfuParticipant,
         ])
       )
-      setMessages(state.messages.map(roomMessageToMessage))
+      const localParticipantId = sessionRef.current?.participantId
+      setMessages(
+        state.messages.map((message) =>
+          roomMessageToMessage(message, localParticipantId)
+        )
+      )
       expiresAtRef.current = state.expiresAt
       rebuildParticipants()
       const localId = sessionRef.current?.participantId
@@ -832,9 +841,10 @@ export function useSfuChatRoom(
           rebuildParticipants()
         }
       } else if (message.type === "message" && message.message) {
+        const localParticipantId = sessionRef.current?.participantId
         setMessages((previous) => [
           ...previous,
-          roomMessageToMessage(message.message!),
+          roomMessageToMessage(message.message!, localParticipantId),
         ])
       } else if (message.type === "expired") {
         setError(
