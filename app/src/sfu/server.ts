@@ -15,6 +15,7 @@ const RATE_LIMIT_WINDOW_S = 60
 export interface SfuEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
   ROOMS_KV: KVNamespace
+  SFU_ALLOWED_ORIGIN?: string
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   CF_SFU_APP_ID?: string
@@ -30,9 +31,15 @@ function badRequest(message: string): Response {
   return json({ error: message }, 400)
 }
 
-function originAllowed(request: Request): boolean {
+function originAllowed(request: Request, env: SfuEnv): boolean {
   const origin = request.headers.get("Origin")
-  return Boolean(origin && ALLOWED_ORIGINS.has(origin))
+  if (!origin) return false
+  if (ALLOWED_ORIGINS.has(origin)) return true
+  return env.SFU_ALLOWED_ORIGIN?.split(",").some(
+    (allowed) => allowed.trim() === origin
+  )
+    ? true
+    : false
 }
 
 function getAppCredentials(
@@ -138,7 +145,8 @@ export async function handleSfuRequest(
   request: Request,
   env: SfuEnv
 ): Promise<Response> {
-  if (!originAllowed(request)) return json({ error: "forbidden_origin" }, 403)
+  if (!originAllowed(request, env))
+    return json({ error: "forbidden_origin" }, 403)
   const url = new URL(request.url)
   const route = url.pathname.replace(/^\/api\/sfu\/?/, "")
 

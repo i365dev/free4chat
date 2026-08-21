@@ -1,0 +1,51 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "free4chat-realtime",
+  "main": "worker.ts",
+  "compatibility_date": "2025-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "placement": { "mode": "smart" },
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" }
+  ],
+  "observability": { "enabled": true },
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  },
+  "vars": {
+    "SFU_APP_ID": "set-during-deployment",
+    "SFU_ALLOWED_ORIGIN": "set-after-first-deployment"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "ROOMS_KV",
+      "id": "10ee56aaa9dd45eda179dfe709e1014a"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BOT_SESSION",
+        "class_name": "BotSession"
+      },
+      {
+        "name": "SFU_ROOM",
+        "class_name": "RoomSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["BotSession"]
+    },
+    {
+      "tag": "v2",
+      "new_classes": ["RoomSession"]
+    }
+  ]
+}

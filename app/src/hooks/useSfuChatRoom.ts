@@ -169,12 +169,18 @@ export function useSfuChatRoom(
       await enqueueNegotiation(async () => {
         const offer = await pc.createOffer()
         await pc.setLocalDescription(offer)
+        const transceiver = pc
+          .getTransceivers()
+          .find((item) => item.sender.track === track)
+        if (!transceiver?.mid) throw new Error("SFU track mid unavailable")
         const response = await apiRequest("tracks", {
           room: roomName,
           participantId: session.participantId,
           token: session.participantToken,
           sessionId: session.sessionId,
-          tracks: [{ location: "local", trackName, kind }],
+          tracks: [
+            { location: "local", trackName, kind, mid: transceiver.mid },
+          ],
           sessionDescription: {
             type: offer.type,
             sdp: offer.sdp,
