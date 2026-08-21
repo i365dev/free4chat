@@ -34,6 +34,7 @@ type ControlRequest =
       sessionId?: string
       trackSessionId?: string
       trackName?: string
+      dataChannelSessionId?: string
     }
   | {
       action: "publish"
@@ -62,6 +63,7 @@ type ClientMessage =
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
+  | { type: "datachannel-ready" }
   | { type: "resync" }
   | { type: "leave" }
 
@@ -176,6 +178,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         connected: false,
         lastSeenAt: now,
         tracks: request.participant.tracks ?? [],
+        fileChannelReady: false,
       }
       room.participants[participant.id] = participant
       await this.saveRoom(room)
@@ -208,6 +211,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             )
         )
         if (!trackExists) return this.json({ error: "track_not_found" }, 404)
+      }
+      if (request.dataChannelSessionId) {
+        const sessionExists = Object.values(room.participants).some(
+          (candidate) =>
+            candidate.sessionId === request.dataChannelSessionId &&
+            candidate.connected
+        )
+        if (!sessionExists)
+          return this.json({ error: "datachannel_session_not_found" }, 404)
       }
       return this.json({ ok: true })
     }
@@ -307,6 +319,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       await this.saveRoom(room)
       await this.broadcastState(room)
+      return
+    }
+    if (message.type === "datachannel-ready") {
+      participant.fileChannelReady = true
+      await this.saveRoom(room)
+      await this.broadcast({
+        type: "participantUpdated",
+        participant: {
+          id: participant.id,
+          fileChannelReady: true,
+        },
+      })
       return
     }
 

@@ -98,7 +98,8 @@ async function authorize(
   token: string,
   sessionId?: string,
   trackSessionId?: string,
-  trackName?: string
+  trackName?: string,
+  dataChannelSessionId?: string
 ): Promise<Response> {
   return roomControl(env, roomName, {
     action: "authorize",
@@ -107,6 +108,7 @@ async function authorize(
     sessionId,
     trackSessionId,
     trackName,
+    dataChannelSessionId,
   })
 }
 
@@ -289,6 +291,56 @@ export async function handleSfuRequest(
         })
       }
     }
+    return new Response(responseBody, {
+      status: upstream.status,
+      headers: { "Content-Type": "application/json" },
+    })
+  }
+
+  if (route === "datachannels/establish" || route === "datachannels/new") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
+    if (!room || !participantId || !token || !sessionId)
+      return badRequest("missing_session")
+    const auth = await authorize(
+      env,
+      room,
+      participantId,
+      token,
+      sessionId,
+      undefined,
+      undefined,
+      typeof body.publisherSessionId === "string"
+        ? body.publisherSessionId
+        : undefined
+    )
+    if (!auth.ok) return auth
+    const upstreamBody =
+      route === "datachannels/establish"
+        ? {
+            dataChannel: body.dataChannel,
+            sessionDescription: body.sessionDescription,
+          }
+        : {
+            dataChannels: body.dataChannels,
+            sessionDescription: body.sessionDescription,
+          }
+    const upstream = await realtimeRequest(
+      env,
+      `/sessions/${encodeURIComponent(sessionId)}/${route}`,
+      {
+        method: "POST",
+        body: JSON.stringify(upstreamBody),
+      }
+    )
+    const responseBody = await upstream.text()
     return new Response(responseBody, {
       status: upstream.status,
       headers: { "Content-Type": "application/json" },

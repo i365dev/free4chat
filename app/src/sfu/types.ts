@@ -14,6 +14,7 @@ export interface SfuParticipant {
   sessionId: string
   muted: boolean
   connected: boolean
+  fileChannelReady?: boolean
   tracks: SfuTrack[]
   joinedAt: number
   lastSeenAt: number

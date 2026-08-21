@@ -13,6 +13,27 @@ import type {
 
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
 
+const MAX_FILE_SIZE = 20 * 1024 * 1024
+const FILE_CHUNK_SIZE = 32 * 1024
+const FILE_BUFFER_HIGH_WATER_MARK = 256 * 1024
+const FILE_BUFFER_LOW_WATER_MARK = 64 * 1024
+
+interface IncomingFileTransfer {
+  id: string
+  name: string
+  mime: string
+  size: number
+  received: number
+  chunks: ArrayBuffer[]
+}
+
+interface SfuApiResponse {
+  dataChannels?: Array<{ id?: number }>
+  requiresImmediateRenegotiation?: boolean
+  sessionDescription?: RTCSessionDescriptionInit
+  tracks?: Array<{ trackName?: string }>
+}
+
 interface SfuSession extends SfuSessionResponse {
   room: string
 }
@@ -74,6 +95,12 @@ export function useSfuChatRoom(
   const negotiationQueueRef = useRef(Promise.resolve())
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const localFileChannelRef = useRef<RTCDataChannel | null>(null)
+  const remoteFileChannelsRef = useRef(new Map<string, RTCDataChannel>())
+  const incomingFilesRef = useRef(new Map<string, IncomingFileTransfer>())
+  const objectUrlsRef = useRef(new Set<string>())
+  const fileSendQueueRef = useRef(Promise.resolve())
+  const dataChannelReadyRef = useRef(false)
   const closingRef = useRef(false)
   const expiresAtRef = useRef(0)
 
@@ -139,8 +166,9 @@ export function useSfuChatRoom(
   )
 
   const apiRequest = useCallback(async (path: string, body: object) => {
+    const method = path === "renegotiate" ? "PUT" : "POST"
     const response = await fetch(`/api/sfu/${path}`, {
-      method: path === "renegotiate" ? "PUT" : "POST",
+      method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
@@ -151,11 +179,286 @@ export function useSfuChatRoom(
       throw new Error(data.error || `SFU request failed (${response.status})`)
     }
     const raw = await response.text()
-    return (raw ? JSON.parse(raw) : {}) as {
-      sessionDescription?: RTCSessionDescriptionInit
-      tracks?: Array<{ trackName?: string }>
-    }
+    return (raw ? JSON.parse(raw) : {}) as SfuApiResponse
   }, [])
+
+  const waitForDataChannelOpen = useCallback(
+    (channel: RTCDataChannel): Promise<void> => {
+      if (channel.readyState === "open") return Promise.resolve()
+      return new Promise((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          cleanup()
+          reject(new Error("SFU data channel timed out"))
+        }, 10000)
+        const cleanup = () => {
+          window.clearTimeout(timeout)
+          channel.removeEventListener("open", onOpen)
+          channel.removeEventListener("close", onClose)
+          channel.removeEventListener("error", onError)
+        }
+        const onOpen = () => {
+          cleanup()
+          resolve()
+        }
+        const onClose = () => {
+          cleanup()
+          reject(new Error("SFU data channel closed"))
+        }
+        const onError = () => {
+          cleanup()
+          reject(new Error("SFU data channel failed"))
+        }
+        channel.addEventListener("open", onOpen)
+        channel.addEventListener("close", onClose)
+        channel.addEventListener("error", onError)
+      })
+    },
+    []
+  )
+
+  const waitForSendCapacity = useCallback(
+    (channel: RTCDataChannel): Promise<void> => {
+      if (channel.bufferedAmount <= FILE_BUFFER_HIGH_WATER_MARK)
+        return Promise.resolve()
+      return new Promise((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          cleanup()
+          reject(new Error("SFU data channel backpressure timeout"))
+        }, 10000)
+        const cleanup = () => {
+          window.clearTimeout(timeout)
+          channel.removeEventListener("bufferedamountlow", onLow)
+          channel.removeEventListener("close", onClose)
+          channel.removeEventListener("error", onError)
+        }
+        const onLow = () => {
+          cleanup()
+          resolve()
+        }
+        const onClose = () => {
+          cleanup()
+          reject(new Error("SFU data channel closed"))
+        }
+        const onError = () => {
+          cleanup()
+          reject(new Error("SFU data channel failed"))
+        }
+        channel.bufferedAmountLowThreshold = FILE_BUFFER_LOW_WATER_MARK
+        channel.addEventListener("bufferedamountlow", onLow)
+        channel.addEventListener("close", onClose)
+        channel.addEventListener("error", onError)
+      })
+    },
+    []
+  )
+
+  const addReceivedFileMessage = useCallback(
+    (
+      peerId: string,
+      name: string,
+      file: Pick<IncomingFileTransfer, "name" | "mime" | "size">,
+      chunks: ArrayBuffer[]
+    ) => {
+      const blob = new Blob(chunks, { type: file.mime })
+      const fileLink = URL.createObjectURL(blob)
+      objectUrlsRef.current.add(fileLink)
+      setMessages((previous) => [
+        ...previous,
+        {
+          peerId,
+          name,
+          type: file.mime.startsWith("image/") ? "image" : "file",
+          fileLink,
+          fileName: file.name,
+          fileSize: file.size,
+        },
+      ])
+    },
+    []
+  )
+
+  const handleFileChannelMessage = useCallback(
+    (channelKey: string, peerId: string, name: string, event: MessageEvent) => {
+      if (typeof event.data === "string") {
+        let message: {
+          type?: string
+          id?: string
+          name?: string
+          mime?: string
+          size?: number
+        }
+        try {
+          message = JSON.parse(event.data) as typeof message
+        } catch {
+          return
+        }
+        if (
+          message.type === "file-start" &&
+          message.id &&
+          typeof message.name === "string" &&
+          typeof message.mime === "string" &&
+          typeof message.size === "number" &&
+          message.size >= 0 &&
+          message.size <= MAX_FILE_SIZE
+        ) {
+          incomingFilesRef.current.set(channelKey, {
+            id: message.id,
+            name: message.name.slice(0, 256),
+            mime: message.mime.slice(0, 128),
+            size: message.size,
+            received: 0,
+            chunks: [],
+          })
+          return
+        }
+        if (message.type === "file-end") {
+          const transfer = incomingFilesRef.current.get(channelKey)
+          if (!transfer || transfer.id !== message.id) return
+          incomingFilesRef.current.delete(channelKey)
+          if (transfer.received !== transfer.size) return
+          addReceivedFileMessage(peerId, name, transfer, transfer.chunks)
+        }
+        return
+      }
+
+      const transfer = incomingFilesRef.current.get(channelKey)
+      if (!transfer) return
+      const consumeChunk = (chunk: ArrayBuffer) => {
+        if (transfer.received + chunk.byteLength > transfer.size) {
+          incomingFilesRef.current.delete(channelKey)
+          return
+        }
+        transfer.chunks.push(chunk)
+        transfer.received += chunk.byteLength
+      }
+      if (event.data instanceof ArrayBuffer) {
+        consumeChunk(event.data)
+      } else if (event.data instanceof Blob) {
+        void event.data.arrayBuffer().then(consumeChunk)
+      }
+    },
+    [addReceivedFileMessage]
+  )
+
+  const establishDataChannelTransport = useCallback(async () => {
+    const pc = peerConnectionRef.current
+    const session = sessionRef.current
+    if (!pc || !session) throw new Error("SFU session is not ready")
+
+    const serverEvents = pc.createDataChannel("server-events")
+    serverEvents.addEventListener("message", () => undefined)
+    const offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    const response = await apiRequest("datachannels/establish", {
+      room: roomName,
+      participantId: session.participantId,
+      token: session.participantToken,
+      sessionId: session.sessionId,
+      dataChannel: {
+        location: "remote",
+        dataChannelName: "server-events",
+      },
+      sessionDescription: { type: offer.type, sdp: offer.sdp },
+    })
+    if (
+      response.requiresImmediateRenegotiation &&
+      response.sessionDescription
+    ) {
+      await pc.setRemoteDescription(response.sessionDescription)
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      await apiRequest("renegotiate", {
+        room: roomName,
+        participantId: session.participantId,
+        token: session.participantToken,
+        sessionId: session.sessionId,
+        sessionDescription: { type: answer.type, sdp: answer.sdp },
+      })
+    } else if (response.sessionDescription) {
+      await pc.setRemoteDescription(response.sessionDescription)
+    }
+
+    const fileChannelName = `files-${session.participantId}`
+    const channelResponse = await apiRequest("datachannels/new", {
+      room: roomName,
+      participantId: session.participantId,
+      token: session.participantToken,
+      sessionId: session.sessionId,
+      dataChannels: [
+        {
+          location: "local",
+          dataChannelName: fileChannelName,
+          ordered: true,
+        },
+      ],
+    })
+    const channelId = channelResponse.dataChannels?.[0]?.id
+    if (typeof channelId !== "number")
+      throw new Error("SFU file data channel was not created")
+    const channel = pc.createDataChannel(fileChannelName, {
+      negotiated: true,
+      id: channelId,
+      ordered: true,
+    })
+    channel.binaryType = "arraybuffer"
+    channel.bufferedAmountLowThreshold = FILE_BUFFER_LOW_WATER_MARK
+    localFileChannelRef.current = channel
+    dataChannelReadyRef.current = true
+  }, [apiRequest, roomName])
+
+  const subscribeFileChannel = useCallback(
+    async (participant: SfuParticipant) => {
+      const pc = peerConnectionRef.current
+      const session = sessionRef.current
+      if (
+        !pc ||
+        !session ||
+        participant.id === session.participantId ||
+        !participant.fileChannelReady ||
+        remoteFileChannelsRef.current.has(participant.id)
+      )
+        return
+      const channelKey = participant.id
+      const fileChannelName = `files-${participant.id}`
+      const response = await apiRequest("datachannels/new", {
+        room: roomName,
+        participantId: session.participantId,
+        token: session.participantToken,
+        sessionId: session.sessionId,
+        publisherSessionId: participant.sessionId,
+        dataChannels: [
+          {
+            location: "remote",
+            sessionId: participant.sessionId,
+            dataChannelName: fileChannelName,
+            ordered: true,
+            waitForAck: true,
+          },
+        ],
+      })
+      const channelId = response.dataChannels?.[0]?.id
+      if (typeof channelId !== "number")
+        throw new Error("SFU remote file data channel was not created")
+      const channel = pc.createDataChannel(`${fileChannelName}-subscriber`, {
+        negotiated: true,
+        id: channelId,
+        ordered: true,
+      })
+      channel.binaryType = "arraybuffer"
+      channel.addEventListener("message", (event) =>
+        handleFileChannelMessage(
+          channelKey,
+          participant.id,
+          participant.name,
+          event
+        )
+      )
+      remoteFileChannelsRef.current.set(channelKey, channel)
+      await waitForDataChannelOpen(channel)
+      channel.send("ack")
+    },
+    [apiRequest, handleFileChannelMessage, roomName, waitForDataChannelOpen]
+  )
 
   const publishTrack = useCallback(
     async (
@@ -258,9 +561,11 @@ export function useSfuChatRoom(
         for (const track of participant.tracks) {
           void subscribeTrack(fullParticipant, track)
         }
+        if (fullParticipant.fileChannelReady)
+          void subscribeFileChannel(fullParticipant)
       }
     },
-    [rebuildParticipants, subscribeTrack]
+    [rebuildParticipants, subscribeFileChannel, subscribeTrack]
   )
 
   const connectWebSocket = useCallback(() => {
@@ -278,6 +583,8 @@ export function useSfuChatRoom(
       setConnectionStatus("connected")
       setError("")
       sendSocketMessage({ type: "resync" })
+      if (dataChannelReadyRef.current)
+        sendSocketMessage({ type: "datachannel-ready" })
     }
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data) as SfuServerMessage
@@ -327,6 +634,11 @@ export function useSfuChatRoom(
           participant.muted = message.participant.muted
           rebuildParticipants()
         }
+        if (participant && message.participant.fileChannelReady === true) {
+          participant.fileChannelReady = true
+          void subscribeFileChannel(participant)
+          rebuildParticipants()
+        }
       } else if (message.type === "message" && message.message) {
         setMessages((previous) => [
           ...previous,
@@ -356,7 +668,13 @@ export function useSfuChatRoom(
         Math.min(1000 * 2 ** attempt, 8000)
       )
     }
-  }, [applyRoomState, rebuildParticipants, sendSocketMessage, subscribeTrack])
+  }, [
+    applyRoomState,
+    rebuildParticipants,
+    sendSocketMessage,
+    subscribeFileChannel,
+    subscribeTrack,
+  ])
 
   useEffect(() => {
     if (!enabled || !roomName || !nickName) return
@@ -413,6 +731,7 @@ export function useSfuChatRoom(
         setTimeLeft(
           Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000))
         )
+        await establishDataChannelTransport()
         await publishTrack(
           audioTrack,
           "audio",
@@ -427,6 +746,10 @@ export function useSfuChatRoom(
       }
     }
     void start()
+
+    const remoteFileChannels = remoteFileChannelsRef.current
+    const incomingFiles = incomingFilesRef.current
+    const objectUrls = objectUrlsRef.current
 
     const countdown = setInterval(() => {
       if (!expiresAtRef.current) return
@@ -456,11 +779,20 @@ export function useSfuChatRoom(
       websocketRef.current?.close()
       localAudioTrackRef.current?.stop()
       localScreenTrackRef.current?.stop()
+      localFileChannelRef.current?.close()
+      localFileChannelRef.current = null
+      for (const channel of remoteFileChannels.values()) channel.close()
+      remoteFileChannels.clear()
+      incomingFiles.clear()
+      for (const url of objectUrls) URL.revokeObjectURL(url)
+      objectUrls.clear()
+      dataChannelReadyRef.current = false
       peerConnectionRef.current?.close()
       peerConnectionRef.current = null
     }
   }, [
     connectWebSocket,
+    establishDataChannelTransport,
     enabled,
     nickName,
     publishTrack,
@@ -532,9 +864,57 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
-  const sendFileMessage = useCallback(async (_file: File) => {
-    throw new Error("File transfer is not available on the SFU test path yet.")
-  }, [])
+  const sendFileMessage = useCallback(
+    async (file: File) => {
+      const send = async () => {
+        if (file.size > MAX_FILE_SIZE)
+          throw new Error("File exceeds the 20 MB limit")
+        const channel = localFileChannelRef.current
+        if (!channel) throw new Error("SFU file data channel is unavailable")
+        await waitForDataChannelOpen(channel)
+        const id = crypto.randomUUID()
+        const mime = file.type || "application/octet-stream"
+        channel.send(
+          JSON.stringify({
+            type: "file-start",
+            id,
+            name: file.name,
+            mime,
+            size: file.size,
+          })
+        )
+        for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
+          await waitForSendCapacity(channel)
+          const chunk = await file
+            .slice(offset, offset + FILE_CHUNK_SIZE)
+            .arrayBuffer()
+          channel.send(chunk)
+        }
+        await waitForSendCapacity(channel)
+        channel.send(JSON.stringify({ type: "file-end", id }))
+        const fileLink = URL.createObjectURL(file)
+        objectUrlsRef.current.add(fileLink)
+        setMessages((previous) => [
+          ...previous,
+          {
+            peerId: LOCAL_PEER_ID,
+            name: nickName,
+            type: mime.startsWith("image/") ? "image" : "file",
+            fileLink,
+            fileName: file.name,
+            fileSize: file.size,
+          },
+        ])
+      }
+      const next = fileSendQueueRef.current.then(send, send)
+      fileSendQueueRef.current = next.then(
+        () => undefined,
+        () => undefined
+      )
+      return next
+    },
+    [nickName, waitForDataChannelOpen, waitForSendCapacity]
+  )
 
   return {
     participants,
