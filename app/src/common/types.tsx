@@ -10,7 +10,7 @@ export interface UserInfo {
   muteState?: boolean | false
 }
 
-export type MessageType = "text" | "image" | "file" | "action" | "bot"
+export type MessageType = "text" | "image" | "file" | "action"
 
 export type ActionType = "whiteboard" | "poll" | "vote" | "game" | "reaction"
 

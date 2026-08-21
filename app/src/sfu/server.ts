@@ -225,7 +225,6 @@ export async function handleSfuRequest(
         })
       : await roomControl(env, room, {
           action: "register",
-          enableBot: body.enableBot === true,
           participant: {
             id: participantId,
             name,
@@ -240,14 +239,12 @@ export async function handleSfuRequest(
     if (!roomResponse.ok) return roomResponse
     const registered = (await roomResponse.json()) as {
       expiresAt?: number
-      botEnabled?: boolean
     }
     const result: SfuSessionResponse = {
       participantId,
       participantToken,
       sessionId: session.sessionId,
       expiresAt: registered.expiresAt ?? Date.now() + 2 * 60 * 60 * 1000,
-      botEnabled: registered.botEnabled === true,
     }
     return json(result)
   }

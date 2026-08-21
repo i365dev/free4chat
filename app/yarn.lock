@@ -4776,11 +4776,6 @@ onetime@^7.0.0:
   dependencies:
     mimic-function "^5.0.0"
 
-openai@^6.38.0:
-  version "6.38.0"
-  resolved "https://registry.yarnpkg.com/openai/-/openai-6.38.0.tgz#3fc23a47d2aef84f7cb4338897edecb514b7e146"
-  integrity sha512-AoMplt2UalrpgUDMh3L09QWjNRlgJPipclQvA6sYAaeF6nHNBMgmikAZGmcYLn8on4d9sQY9Q8bOLfrBS7Lc8g==
-
 optionator@^0.9.3:
   version "0.9.4"
   resolved "https://registry.yarnpkg.com/optionator/-/optionator-0.9.4.tgz#7ea1c1a5d91d764fb282139c88fe11e182a3a734"

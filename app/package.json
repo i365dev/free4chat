@@ -18,7 +18,6 @@
   "dependencies": {
     "boring-avatars": "^1.7.0",
     "next": "15",
-    "openai": "^6.38.0",
     "react": "19",
     "react-dom": "19",
     "unique-names-generator": "^4.7.1"

@@ -19,9 +19,6 @@ interface TextChatCardProps {
   nickName: string
   messages: Message[]
   pendingFiles?: PendingFile[]
-  botEnabled?: boolean
-  botThinking?: boolean
-  botError?: string
   onSendText: (text: string) => void
   onSendFile: (file: File) => void
   onSendAction: (
@@ -88,102 +85,6 @@ function TextWithLinks({ text }: { text: string }) {
           part
         )
       )}
-    </span>
-  )
-}
-
-function BotText({ text }: { text: string }) {
-  const urlRegex = /(https?:\/\/[^\s]+)/g
-  const boldRegex = /\*\*(.+?)\*\*/g
-  const codeRegex = /`([^`]+)`/g
-
-  function renderInline(segment: string, keyPrefix: string) {
-    const parts: React.ReactNode[] = []
-    let remaining = segment
-    let i = 0
-
-    while (remaining.length > 0) {
-      const boldMatch = boldRegex.exec(remaining)
-      const codeMatch = codeRegex.exec(remaining)
-      const urlMatch = urlRegex.exec(remaining)
-
-      boldRegex.lastIndex = 0
-      codeRegex.lastIndex = 0
-      urlRegex.lastIndex = 0
-
-      const matches = [
-        boldMatch && {
-          idx: boldMatch.index,
-          len: boldMatch[0].length,
-          type: "bold",
-          content: boldMatch[1],
-        },
-        codeMatch && {
-          idx: codeMatch.index,
-          len: codeMatch[0].length,
-          type: "code",
-          content: codeMatch[1],
-        },
-        urlMatch && {
-          idx: urlMatch.index,
-          len: urlMatch[0].length,
-          type: "url",
-          content: urlMatch[0],
-        },
-      ]
-        .filter(Boolean)
-        .sort((a, b) => a!.idx - b!.idx)
-
-      const first = matches[0]
-      if (!first) {
-        parts.push(remaining)
-        break
-      }
-
-      if (first.idx > 0) parts.push(remaining.slice(0, first.idx))
-
-      if (first.type === "bold") {
-        parts.push(
-          <strong key={`${keyPrefix}-b${i++}`}>{first.content}</strong>
-        )
-      } else if (first.type === "code") {
-        parts.push(
-          <code
-            key={`${keyPrefix}-c${i++}`}
-            className="rounded bg-violet-800/60 px-1 font-mono text-xs"
-          >
-            {first.content}
-          </code>
-        )
-      } else {
-        parts.push(
-          <a
-            key={`${keyPrefix}-u${i++}`}
-            href={first.content}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline opacity-90 hover:opacity-100"
-          >
-            {first.content}
-          </a>
-        )
-      }
-
-      remaining = remaining.slice(first.idx + first.len)
-    }
-
-    return parts
-  }
-
-  const lines = text.split("\n")
-  return (
-    <span className="break-words">
-      {lines.map((line, li) => (
-        <span key={li}>
-          {renderInline(line, `l${li}`)}
-          {li < lines.length - 1 && <br />}
-        </span>
-      ))}
     </span>
   )
 }
@@ -559,9 +460,6 @@ export default function TextChatCard({
   nickName,
   messages,
   pendingFiles = [],
-  botEnabled = false,
-  botThinking = false,
-  botError = "",
   onSendText,
   onSendFile,
   onSendAction,
@@ -706,42 +604,13 @@ export default function TextChatCard({
         setSubmenu("games")
       },
     },
-    ...(botEnabled
-      ? [
-          {
-            icon: "🤖",
-            label: "/luna",
-            desc: "Ask Luna AI",
-            action: () => {
-              setMessage("@luna ")
-              inputRef.current?.focus()
-            },
-          },
-        ]
-      : []),
   ]
-
-  const atMentions = botEnabled
-    ? [
-        {
-          icon: "🤖",
-          label: "@luna",
-          desc: "Ask Luna AI",
-          action: () => {
-            setMessage("@luna ")
-            inputRef.current?.focus()
-          },
-        },
-      ]
-    : []
 
   const pickerItems =
     message === "/"
       ? slashCommands
       : message.startsWith("/") && !message.includes(" ")
       ? slashCommands.filter((c) => c.label.startsWith(message.toLowerCase()))
-      : message.startsWith("@") && !message.includes(" ")
-      ? atMentions.filter((m) => m.label.startsWith(message.toLowerCase()))
       : []
 
   const showPicker = pickerItems.length > 0
@@ -769,36 +638,21 @@ export default function TextChatCard({
           {messages.map((p, i) => {
             if (p.type === "action" && p.actionType === "reaction") return null
             const isSelf = p.peerId === LOCAL_PEER_ID
-            const isBot = p.type === "bot"
             return (
               <div
                 className={`mb-4 flex w-full items-end ${
-                  isSelf && !isBot ? "flex-row-reverse" : "flex-row"
+                  isSelf ? "flex-row-reverse" : "flex-row"
                 }`}
                 key={i}
               >
-                <div
-                  className={`flex-shrink-0 ${
-                    isSelf && !isBot ? "ml-2" : "mr-2"
-                  }`}
-                >
-                  {isBot ? (
-                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-violet-700 text-sm">
-                      🤖
-                    </div>
-                  ) : (
-                    <Avatar size={28} variant="beam" name={p.name} />
-                  )}
+                <div className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}>
+                  <Avatar size={28} variant="beam" name={p.name} />
                 </div>
                 <div style={{ maxWidth: "72%" }}>
                   {!isSelf && (
                     <p className="mb-1 ml-1 text-xs text-gray-400">{p.name}</p>
                   )}
-                  {isBot ? (
-                    <div className="rounded-br-3xl rounded-tl-xl rounded-tr-3xl bg-violet-900/60 px-4 py-3 text-violet-100 ring-1 ring-violet-700/50">
-                      <BotText text={p.text ?? ""} />
-                    </div>
-                  ) : p.type === "text" ? (
+                  {p.type === "text" ? (
                     <div
                       className={
                         isSelf
@@ -878,36 +732,6 @@ export default function TextChatCard({
               </div>
             </div>
           ))}
-          {botThinking && (
-            <div className="mb-4 flex w-full flex-row items-end">
-              <div className="mr-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-violet-700 text-sm">
-                🤖
-              </div>
-              <div className="rounded-br-3xl rounded-tl-xl rounded-tr-3xl bg-violet-900/60 px-4 py-3 ring-1 ring-violet-700/50">
-                <span className="inline-flex gap-1 text-violet-400">
-                  <span className="animate-bounce [animation-delay:0ms]">
-                    ·
-                  </span>
-                  <span className="animate-bounce [animation-delay:150ms]">
-                    ·
-                  </span>
-                  <span className="animate-bounce [animation-delay:300ms]">
-                    ·
-                  </span>
-                </span>
-              </div>
-            </div>
-          )}
-          {botError && (
-            <div className="mb-4 flex w-full flex-row items-end">
-              <div className="mr-2 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-violet-700/40 text-sm">
-                🤖
-              </div>
-              <div className="rounded-br-3xl rounded-tl-xl rounded-tr-3xl bg-red-900/40 px-4 py-2 text-xs text-red-300 ring-1 ring-red-700/40">
-                {botError}
-              </div>
-            </div>
-          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -971,39 +795,6 @@ export default function TextChatCard({
                 </svg>
               </button>
             </div>
-
-            {botEnabled ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setMessage((prev) =>
-                    prev.includes("@luna") ? prev : prev + "@luna "
-                  )
-                  inputRef.current?.focus()
-                }}
-                title="Mention Luna"
-                className="flex items-center gap-1 whitespace-nowrap rounded-full border border-violet-600 bg-violet-900/40 px-2.5 py-1 text-xs text-violet-300 transition-colors hover:border-violet-400 hover:bg-violet-800/50"
-              >
-                <span>🤖</span>
-                <span>Luna</span>
-                <span className="rounded-full bg-violet-700/60 px-1 py-0 text-[9px] leading-tight text-violet-300">
-                  @luna
-                </span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled
-                title="AI companion — enable when creating a room"
-                className="flex cursor-not-allowed items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 opacity-40"
-              >
-                <span>🤖</span>
-                <span>Luna</span>
-                <span className="rounded-full bg-gray-700 px-1 py-0 text-[9px] leading-tight text-gray-500">
-                  off
-                </span>
-              </button>
-            )}
           </div>
 
           {submenu === "games" && (

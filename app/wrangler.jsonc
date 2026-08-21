@@ -27,10 +27,6 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "BOT_SESSION",
-        "class_name": "BotSession"
-      },
-      {
         "name": "SFU_ROOM",
         "class_name": "RoomSession"
       }
@@ -44,6 +40,10 @@
     {
       "tag": "v2",
       "new_classes": ["RoomSession"]
+    },
+    {
+      "tag": "v3",
+      "deleted_classes": ["BotSession"]
     }
   ]
 }

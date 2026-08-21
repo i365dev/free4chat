@@ -6,11 +6,8 @@ declare namespace Cloudflare {
     ROOMS_KV: KVNamespace
     ASSETS: Fetcher
     TURNSTILE_SECRET_KEY: string
-    CF_AIG_TOKEN: string
-    CF_AI_GATEWAY_BASEURL: string
     SFU_APP_ID: string
     SFU_APP_SECRET: string
-    BOT_SESSION: DurableObjectNamespace
     SFU_ROOM: DurableObjectNamespace
     WORKER_SELF_REFERENCE: Fetcher /* free4chat */
   }
@@ -26,7 +23,7 @@ declare namespace NodeJS {
     extends StringifyValues<
       Pick<
         Cloudflare.Env,
-        "TURNSTILE_SECRET_KEY" | "CF_AIG_TOKEN" | "CF_AI_GATEWAY_BASEURL" | "SFU_APP_ID" | "SFU_APP_SECRET"
+        "TURNSTILE_SECRET_KEY" | "SFU_APP_ID" | "SFU_APP_SECRET"
       >
     > {}
 }
