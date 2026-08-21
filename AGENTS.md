@@ -19,12 +19,11 @@ free4chat/
 │   │   ├── common/origin.ts          # shared origin allow-list
 │   │   ├── common/types.tsx          # UserInfo and Message contracts
 │   │   ├── do/RoomSession.ts         # room presence/chat/mute/state
-│   │   ├── do/BotSession.ts          # Luna text bot state and rate limit
+│   │   ├── do/                       # RoomSession state coordination
 │   │   ├── hooks/useSfuChatRoom.ts   # WebRTC, SFU negotiation, DataChannels
 │   │   ├── components/RoomContent.tsx
 │   │   ├── components/UserCard.tsx
 │   │   ├── components/TextChatCard.tsx
-│   │   └── pages/api/bot.ts
 │   ├── src/sfu/server.ts             # authenticated SFU API proxy
 │   ├── worker.ts                     # Worker entry and DO exports
 │   ├── wrangler.jsonc                # production Worker config
@@ -34,7 +33,7 @@ free4chat/
 
 ## SFU architecture
 
-The browser connects directly to Cloudflare Realtime SFU. The Worker never exposes `SFU_APP_SECRET` to clients. `RoomSession` only coordinates presence, chat, reactions, mute state, track metadata, DataChannel readiness, room expiry, and room-level Luna state.
+The browser connects directly to Cloudflare Realtime SFU. The Worker never exposes `SFU_APP_SECRET` to clients. `RoomSession` only coordinates presence, chat, reactions, mute state, track metadata, DataChannel readiness, and room expiry.
 
 All `/api/sfu/*` requests require an `Origin` of `https://free4.chat` or `https://www.free4.chat`; `http://localhost:3000` is allowed for local development. The Worker URL is not an allowed production origin.
 
@@ -57,10 +56,6 @@ The SFU App ID is a deployment variable. `SFU_APP_SECRET` and `TURNSTILE_SECRET_
 - Chunks are 32 KB with buffered-amount backpressure.
 - Files are reconstructed as browser `Blob` object URLs and are never written to R2, KV, or DO storage.
 - Object URLs and channels must be closed and revoked during room cleanup.
-
-## Luna
-
-Luna is a text assistant invoked with `@luna`. `RoomSession` stores only the room-level enabled flag; `/api/bot` checks that state before dispatching to `BotSession`. Luna history is separate from normal room messages and is rate limited per room.
 
 ## Analytics
 

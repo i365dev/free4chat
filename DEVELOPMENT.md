@@ -21,8 +21,6 @@ Required local values are documented in `app/.dev.vars.example`:
 | --- | --- |
 | `SFU_APP_ID` | Cloudflare Realtime SFU App ID |
 | `SFU_APP_SECRET` | Cloudflare Realtime SFU App Secret |
-| `CF_AI_GATEWAY_BASEURL` | AI Gateway base URL ending in `/compat` |
-| `CF_AIG_TOKEN` | AI Gateway auth token |
 
 Turnstile is optional locally. Set `TURNSTILE_SECRET_KEY` when testing the production verification flow.
 
@@ -60,7 +58,7 @@ npx wrangler deploy \
 
 ## SFU architecture
 
-The browser connects directly to Cloudflare Realtime SFU for audio and screen sharing. `RoomSession` is a hibernating Durable Object for presence, mute state, text, reactions, resync, room expiry, and room-level Luna state. Files and images use chunked, reliable DataChannels and are never persisted by the application.
+The browser connects directly to Cloudflare Realtime SFU for audio and screen sharing. `RoomSession` is a hibernating Durable Object for presence, mute state, text, reactions, resync, and room expiry. Files and images use chunked, reliable DataChannels and are never persisted by the application.
 
 The public room URL is:
 
@@ -79,9 +77,8 @@ free4chat/
 │   ├── src/
 │   │   ├── components/               # Room UI, chat, Turnstile, participants
 │   │   ├── common/origin.ts          # Shared production/local origin policy
-│   │   ├── do/                       # RoomSession and BotSession
+│   │   ├── do/                       # RoomSession
 │   │   ├── hooks/useSfuChatRoom.ts   # SFU media and DataChannel transport
-│   │   ├── pages/api/bot.ts          # Luna text bot endpoint
 │   │   └── sfu/                      # SFU Worker routes and types
 │   └── wrangler.jsonc
 └── .github/workflows/deploy-web.yml
@@ -89,5 +86,4 @@ free4chat/
 
 ## Future directions
 
-- Move Luna voice interaction to a Cloudflare voice agent.
 - Consider SQLite-backed Durable Objects if room state grows beyond the current small record.

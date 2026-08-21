@@ -38,7 +38,6 @@ export interface SfuMessage {
 export interface SfuRoomState {
   createdAt: number
   expiresAt: number
-  botEnabled: boolean
   participants: Array<Omit<SfuParticipant, "token" | "connectionNonce">>
   messages: SfuMessage[]
 }
@@ -46,7 +45,6 @@ export interface SfuRoomState {
 export interface SfuRoomRecord {
   createdAt: number
   expiresAt: number
-  botEnabled: boolean
   participants: Record<string, SfuParticipant>
   messages: SfuMessage[]
 }
@@ -56,5 +54,4 @@ export interface SfuSessionResponse {
   participantToken: string
   sessionId: string
   expiresAt: number
-  botEnabled: boolean
 }

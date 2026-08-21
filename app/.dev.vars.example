@@ -4,6 +4,3 @@ SFU_APP_SECRET=your_realtime_sfu_app_secret
 # Turnstile (use test keys below for local dev — always pass)
 NEXT_PUBLIC_TURNSTILE_SITE_KEY=your_turnstile_site_key (build-time env for turnstile)
 TURNSTILE_SECRET_KEY=your_turnstile_secret_key
-# AI Gateway (required — set via wrangler secret put)
-CF_AIG_TOKEN=your_ai_gateway_auth_token
-CF_AI_GATEWAY_BASEURL=https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_name}/compat

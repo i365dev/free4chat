@@ -17,7 +17,6 @@ export default function Home() {
   const [nickName, setNickName] = useState<string>("")
   const [copied, setCopied] = useState<boolean>(false)
   const [screenShare, setScreenShare] = useState<boolean>(false)
-  const [enableBot, setEnableBot] = useState<boolean>(false)
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
   const [isDesktop, setIsDesktop] = useState<boolean>(false)
 
@@ -30,12 +29,10 @@ export default function Home() {
     if (roomName !== "" && nickName != "") {
       if (typeof window !== "undefined") {
         saveRoomToLocalStorage(roomName, nickName)
-        sessionStorage.setItem("enable_bot", enableBot ? "1" : "0")
       }
       const roomType = screenShare ? "screenshare" : "audio"
       trackAnalyticsEvent("RoomJoinAttempted", {
         roomType,
-        botEnabled: enableBot,
       })
       umamiEvent("RoomJoin", { type: roomType, roomHash: hashRoom(roomName) })
       const url =
@@ -216,24 +213,6 @@ export default function Home() {
                         <span className="text-gray-700">(desktop only)</span>
                       )}
                     </label>
-                    <div className="flex flex-col gap-0.5">
-                      <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-gray-500">
-                        <input
-                          type="checkbox"
-                          checked={enableBot}
-                          onChange={(e) => setEnableBot(e.target.checked)}
-                          className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900"
-                        />
-                        Enable AI assistant (Luna)
-                      </label>
-                      {enableBot && (
-                        <p className="pl-5 text-xs text-gray-600">
-                          Chat messages sent to @luna are processed by an
-                          external AI model. Up to 20 messages are retained for
-                          context during the session.
-                        </p>
-                      )}
-                    </div>
                   </div>
                 )}
               </div>

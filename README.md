@@ -10,7 +10,6 @@
 - 💬 Text chat with emoji
 - 📎 File & image transfer (inline preview)
 - 🖥️ Screen sharing
-- 🤖 Luna — optional AI assistant (mention `@luna` to invoke)
 - 🔒 No accounts, no persistent data
 - ⏱️ Rooms automatically close after 2 hours
 - 🛡️ Cloudflare Turnstile bot protection
@@ -28,7 +27,6 @@ free4chat is built around two principles: **no data outlives the conversation**,
 **What does persist (and why it's fine):**
 
 - Room presence, recent text/action messages, and track metadata are held by a per-room Durable Object while the room is active. Rooms expire after two hours and the room state is deleted.
-- When Luna AI is enabled, messages sent to `@luna` are transmitted to an external AI model (Cloudflare AI Gateway → `@cf/zai-org/glm-4.7-flash`) for processing. The last 20 messages of conversation context are retained in a Durable Object for the lifetime of the room session only. Luna is opt-in and disabled by default.
 - Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
 
 The Worker authenticates the room and coordinates presence; audio and screen sharing flow through Cloudflare's media plane, while files stay in browser-to-browser DataChannels.
@@ -37,23 +35,22 @@ The Worker authenticates the room and coordinates presence; audio and screen sha
 
 | Layer    | Technology                                                                           |
 | -------- | ------------------------------------------------------------------------------------ |
-| Frontend | Next.js 15, Tailwind CSS                                                      |
+| Frontend | Next.js 15, Tailwind CSS                                                             |
 | API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`        |
-| AI       | `BotSession` Durable Object → Cloudflare AI Gateway → `@cf/zai-org/glm-4.7-flash`   |
-| Storage  | Cloudflare KV (room metadata, rate limiting) + DO KV storage (Luna chat history)     |
-| Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)        |
+| Storage  | Cloudflare KV (room metadata, rate limiting) + per-room Durable Object state         |
+| Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)               |
 | Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting |
 
 ## Stack History
 
 This project has gone through four stacks, always with the same product goal:
 
-| Branch                         | Stack                            | Why it changed                                                                    |
-| ------------------------------ | -------------------------------- | --------------------------------------------------------------------------------- |
-| [`golang`](../../tree/golang)  | Go + Pion WebRTC + coturn        | Self-hosted infra is too much overhead for a personal project                     |
-| [`elixir`](../../tree/elixir)  | Elixir + Membrane Framework      | Maintaining a server cluster is still heavy for something this small              |
-| [`cloudflare`](../../tree/cloudflare) | Cloudflare Workers + RealtimeKit | A managed-media experiment; participant-minute pricing was too expensive, and the higher-level API limited advanced features and low-level control |
-| **`cf-sfu`** (this branch) | Cloudflare Realtime SFU + Workers | Replaced RealtimeKit with the lower-level SFU — fully serverless, private DataChannel transfers, and direct control over media features |
+| Branch                                | Stack                             | Why it changed                                                                                                                                     |
+| ------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`golang`](../../tree/golang)         | Go + Pion WebRTC + coturn         | Self-hosted infra is too much overhead for a personal project                                                                                      |
+| [`elixir`](../../tree/elixir)         | Elixir + Membrane Framework       | Maintaining a server cluster is still heavy for something this small                                                                               |
+| [`cloudflare`](../../tree/cloudflare) | Cloudflare Workers + RealtimeKit  | A managed-media experiment; participant-minute pricing was too expensive, and the higher-level API limited advanced features and low-level control |
+| **`cf-sfu`** (this branch)            | Cloudflare Realtime SFU + Workers | Replaced RealtimeKit with the lower-level SFU — fully serverless, private DataChannel transfers, and direct control over media features            |
 
 The product never changed. The ops burden did.
 

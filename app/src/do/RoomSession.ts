@@ -26,9 +26,7 @@ type ControlRequest =
   | {
       action: "register"
       participant: Omit<SfuParticipant, "connected" | "lastSeenAt">
-      enableBot: boolean
     }
-  | { action: "bot-status" }
   | {
       action: "authorize"
       participantId: string
@@ -89,7 +87,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return {
       createdAt: room.createdAt,
       expiresAt: room.expiresAt,
-      botEnabled: room.botEnabled ?? false,
       participants: Object.values(room.participants)
         .filter((participant) => participant.connected)
         .map(
@@ -179,12 +176,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room = {
           createdAt: now,
           expiresAt: now + ROOM_MAX_AGE_MS,
-          botEnabled: request.enableBot,
           participants: {},
           messages: [],
         }
-      } else if (request.enableBot && !room.botEnabled) {
-        room.botEnabled = true
       }
       const participant: SfuParticipant = {
         ...request.participant,
@@ -201,20 +195,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({
         state: this.stateFor(room),
         expiresAt: room.expiresAt,
-        botEnabled: room.botEnabled ?? false,
       })
     }
 
     const room = await this.activeRoom()
     if (!room) return this.json({ error: "room_expired" }, 410)
-
-    if (request.action === "bot-status") {
-      return this.json({
-        botEnabled: room.botEnabled ?? false,
-        createdAt: room.createdAt,
-        expiresAt: room.expiresAt,
-      })
-    }
 
     if (request.action === "authorize") {
       const participant = this.findParticipant(
@@ -264,7 +249,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({
         ok: true,
         expiresAt: room.expiresAt,
-        botEnabled: room.botEnabled ?? false,
       })
     }
 

@@ -3,7 +3,6 @@ import { default as handler } from "./.open-next/worker.js"
 
 import { handleSfuRequest } from "./src/sfu/server"
 
-export { BotSession } from "./src/do/BotSession"
 export { RoomSession } from "./src/do/RoomSession"
 
 export default {

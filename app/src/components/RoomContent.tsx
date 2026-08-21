@@ -78,12 +78,10 @@ export default function RoomContent({
   roomName,
   nickName,
   roomType,
-  enableBot: enableBotProp,
 }: {
   roomName: string
   nickName: string
   roomType: "audio" | "screenshare"
-  enableBot?: boolean
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
@@ -124,9 +122,8 @@ export default function RoomContent({
     expiryWarning,
     connectionStatus,
     resolvedRoomType,
-    botEnabled,
     timeLeft,
-  } = useSfuChatRoom(roomName, nickName, roomType, enableBotProp)
+  } = useSfuChatRoom(roomName, nickName, roomType)
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -245,48 +242,13 @@ export default function RoomContent({
     })
   }, [messages, spawnReaction])
 
-  const [botThinking, setBotThinking] = useState(false)
-  const [botError, setBotError] = useState("")
-
   const hasSentTextRef = useRef(false)
-  const wrappedSendText = async (text: string) => {
+  const wrappedSendText = (text: string) => {
     if (!hasSentTextRef.current) {
       hasSentTextRef.current = true
       umamiEvent("ChatActivity", { type: "text", roomHash: hashRoom(roomName) })
     }
     sendTextMessage(text)
-
-    if (botEnabled && /^@luna\b/i.test(text.trim())) {
-      setBotThinking(true)
-      setBotError("")
-      try {
-        const res = await fetch("/api/bot", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            room: roomName,
-            userMessage:
-              text
-                .trim()
-                .replace(/^@luna\s*/i, "")
-                .trim() || text.trim(),
-            userName: nickName,
-          }),
-        })
-        const data = (await res.json()) as { reply?: string; error?: string }
-        if (data.reply) {
-          sendTextMessage("__bot:" + JSON.stringify({ text: data.reply }))
-        } else if (data.error) {
-          setBotError(data.error)
-          setTimeout(() => setBotError(""), 4000)
-        }
-      } catch {
-        setBotError("Luna is unavailable right now.")
-        setTimeout(() => setBotError(""), 4000)
-      } finally {
-        setBotThinking(false)
-      }
-    }
   }
 
   const MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -637,9 +599,6 @@ export default function RoomContent({
             nickName={nickName}
             messages={messages}
             pendingFiles={pendingFiles}
-            botEnabled={botEnabled}
-            botThinking={botThinking}
-            botError={botError}
             onSendText={wrappedSendText}
             onSendFile={wrappedSendFile}
             onSendAction={sendActionMessage}

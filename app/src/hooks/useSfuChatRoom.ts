@@ -56,19 +56,6 @@ const roomMessageToMessage = (
   message: SfuMessage,
   localParticipantId?: string
 ): Message => {
-  if (message.type === "text" && message.text?.startsWith("__bot:")) {
-    try {
-      const payload = JSON.parse(message.text.slice(6)) as { text?: unknown }
-      return {
-        peerId: "luna-ai",
-        name: "Luna · AI",
-        type: "bot",
-        text: typeof payload.text === "string" ? payload.text : "",
-      }
-    } catch {
-      // Fall through and render malformed bot messages as normal text.
-    }
-  }
   return {
     peerId:
       message.peerId === localParticipantId ? LOCAL_PEER_ID : message.peerId,
@@ -84,7 +71,6 @@ export function useSfuChatRoom(
   roomName: string,
   nickName: string,
   roomType: "audio" | "screenshare",
-  enableBot?: boolean,
   enabled = true
 ) {
   const [participants, setParticipants] = useState<UserInfo[]>([])
@@ -95,7 +81,6 @@ export function useSfuChatRoom(
     useState<ConnectionStatus>("connecting")
   const [timeLeft, setTimeLeft] = useState(2 * 60 * 60)
   const [resolvedRoomType] = useState<"audio" | "screenshare">(roomType)
-  const [botEnabled, setBotEnabled] = useState(false)
 
   const sessionRef = useRef<SfuSession | null>(null)
   const roomStateRef = useRef<SfuRoomState | null>(null)
@@ -684,7 +669,6 @@ export function useSfuChatRoom(
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
-      setBotEnabled(state.botEnabled === true)
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
         if (previous && previous.sessionId !== participant.sessionId)
@@ -937,7 +921,6 @@ export function useSfuChatRoom(
         room: roomName,
         name: nickName,
         kind: "human",
-        enableBot: enableBot === true,
         turnstileToken: sessionStorage.getItem("ts_token") ?? undefined,
       }
       if (reconnecting && previousSession) {
@@ -961,7 +944,6 @@ export function useSfuChatRoom(
       }
       const session = (await response.json()) as SfuSessionResponse
       sessionRef.current = { ...session, room: roomName }
-      setBotEnabled(session.botEnabled === true)
       sessionStorage.removeItem("ts_token")
       expiresAtRef.current = session.expiresAt
       setTimeLeft(
@@ -982,7 +964,6 @@ export function useSfuChatRoom(
       closeDataChannels,
       connectWebSocket,
       createPeerConnection,
-      enableBot,
       establishDataChannelTransport,
       nickName,
       publishTrack,
@@ -1103,7 +1084,6 @@ export function useSfuChatRoom(
     closeDataChannels,
     connectMediaSession,
     enabled,
-    enableBot,
     nickName,
     reconnectMedia,
     roomName,
@@ -1253,7 +1233,6 @@ export function useSfuChatRoom(
     expiryWarning,
     connectionStatus,
     resolvedRoomType,
-    botEnabled,
     timeLeft,
   }
 }
