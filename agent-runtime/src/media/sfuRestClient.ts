@@ -1,0 +1,141 @@
+import type { DecodedParticipantHandle } from "./participantHandle.js"
+
+export interface RoomMediaTrackInfo {
+  trackName: string
+  kind: "audio" | "video"
+  mid?: string
+}
+
+export interface RoomMediaParticipant {
+  participantId: string
+  name: string
+  sessionId: string
+  tracks: RoomMediaTrackInfo[]
+}
+
+export interface SessionDescriptionLike {
+  type: string
+  sdp: string
+}
+
+/** The subset of SfuRestClient that SfuMediaBridge depends on — kept as an
+ * interface so tests can inject a fake instead of doing real network I/O. */
+export interface SfuRestClientLike {
+  createAgentSession(): Promise<string>
+  roomMedia(): Promise<RoomMediaParticipant[]>
+  subscribeTrack(
+    mySessionId: string,
+    remoteSessionId: string,
+    trackName: string
+  ): Promise<SessionDescriptionLike>
+  renegotiate(
+    mySessionId: string,
+    answer: SessionDescriptionLike
+  ): Promise<void>
+}
+
+/**
+ * Thin REST client for the app's /api/sfu/* endpoints — the same ones the
+ * browser client (useSfuChatRoom.ts) already uses for tracks/renegotiate,
+ * plus the two agent-only endpoints added alongside this PR
+ * (agent-session, agent-room-media). No SFU/Cloudflare credentials ever
+ * live here — only the participant token this Agent already holds from
+ * its normal room join.
+ */
+export class SfuRestClient implements SfuRestClientLike {
+  constructor(
+    private readonly siteOrigin: string,
+    private readonly handle: DecodedParticipantHandle
+  ) {}
+
+  private async request(
+    path: string,
+    method: "GET" | "POST" | "PUT",
+    body: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const response = await fetch(`${this.siteOrigin}/api/sfu/${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+    const raw = await response.text()
+    const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+    if (!response.ok) {
+      const error =
+        typeof data.error === "string"
+          ? data.error
+          : `SFU request failed (${response.status})`
+      throw new Error(error)
+    }
+    return data
+  }
+
+  private base() {
+    return {
+      room: this.handle.room,
+      participantId: this.handle.participantId,
+      token: this.handle.participantToken,
+    }
+  }
+
+  /** Creates this Agent's own Cloudflare Realtime session (subscribe-only). */
+  async createAgentSession(): Promise<string> {
+    const data = await this.request("agent-session", "POST", this.base())
+    if (typeof data.sessionId !== "string")
+      throw new Error("agent_session_invalid")
+    return data.sessionId
+  }
+
+  /**
+   * Human participants' sessionId/trackName — deliberately not exposed by
+   * the sanitized MCP room_info tool; this endpoint authenticates with the
+   * same participant token instead.
+   */
+  async roomMedia(): Promise<RoomMediaParticipant[]> {
+    const data = await this.request("agent-room-media", "POST", this.base())
+    const participants = Array.isArray(data.participants)
+      ? data.participants
+      : []
+    return participants.filter(
+      (p): p is RoomMediaParticipant =>
+        Boolean(p) &&
+        typeof p === "object" &&
+        typeof (p as RoomMediaParticipant).participantId === "string" &&
+        typeof (p as RoomMediaParticipant).sessionId === "string" &&
+        Array.isArray((p as RoomMediaParticipant).tracks)
+    )
+  }
+
+  /** Requests a "remote" subscription; returns Cloudflare's SDP offer. */
+  async subscribeTrack(
+    mySessionId: string,
+    remoteSessionId: string,
+    trackName: string
+  ): Promise<SessionDescriptionLike> {
+    const data = await this.request("tracks", "POST", {
+      ...this.base(),
+      sessionId: mySessionId,
+      tracks: [{ location: "remote", sessionId: remoteSessionId, trackName }],
+    })
+    const description = data.sessionDescription as
+      SessionDescriptionLike | undefined
+    if (!description?.sdp) throw new Error("no_session_description")
+    return description
+  }
+
+  async renegotiate(
+    mySessionId: string,
+    answer: SessionDescriptionLike
+  ): Promise<void> {
+    await this.request("renegotiate", "PUT", {
+      ...this.base(),
+      sessionId: mySessionId,
+      sessionDescription: answer,
+    })
+  }
+}
+
+/** Derives the site origin from the MCP endpoint URL (same host, no path). */
+export function siteOriginFromMcpUrl(mcpUrl: string): string {
+  return new URL(mcpUrl).origin
+}

@@ -133,6 +133,17 @@ type ControlRequest =
       participantId: string
       token: string
     }
+  | {
+      action: "agent-media-attach"
+      participantId: string
+      token: string
+      sessionId: string
+    }
+  | {
+      action: "agent-room-media"
+      participantId: string
+      token: string
+    }
 
 type ClientMessage =
   | { type: "chat"; text: string; targets?: string[] }
@@ -170,10 +181,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const [id, rawParticipant] of Object.entries(stored.participants)) {
       const participant = { ...rawParticipant } as StoredParticipant
       if (participant.kind === "agent") {
-        if (participant.media) {
-          delete participant.media
-          changed = true
-        }
+        // An agent participant may optionally carry a subscribe-only media
+        // session (see the "agent-media-attach" action) — unlike a human's,
+        // it is never populated from tracks/muted/fileChannelReady legacy
+        // fields, since an agent never publishes in the current protocol.
         if (participant.capabilities?.text !== true) {
           participant.capabilities = { text: true }
           changed = true
@@ -188,6 +199,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             delete participant[key]
             changed = true
           }
+        }
+        if (participant.media && participant.media.tracks.length > 0) {
+          participant.media = { ...participant.media, tracks: [] }
+          changed = true
         }
       } else if (!participant.media && participant.sessionId) {
         participant.media = {
@@ -716,6 +731,70 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         sequence: roomMessage.sequence,
         expiresAt: room.expiresAt,
       })
+    }
+
+    if (request.action === "agent-media-attach") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      // Subscribe-only: an agent never publishes in the current protocol,
+      // so its media state never carries tracks of its own.
+      participant.media = {
+        sessionId: request.sessionId,
+        muted: true,
+        fileChannelReady: false,
+        tracks: [],
+      }
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      return this.json({ ok: true, expiresAt: room.expiresAt })
+    }
+
+    if (request.action === "agent-room-media") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      // Deliberately narrower than participantForInfo/room-info: this is a
+      // privileged, first-party-Runtime-only surface (the caller must
+      // already hold a valid agent participant token), not something a
+      // generic third-party MCP client can reach. Only Human media is
+      // exposed — Phase 0 MediaBridge only ever ingests Human audio.
+      const participants = Object.values(room.participants)
+        .filter(
+          (
+            candidate
+          ): candidate is RoomParticipant & {
+            media: NonNullable<RoomParticipant["media"]>
+          } =>
+            candidate.kind === "human" &&
+            candidate.connected &&
+            Boolean(candidate.media)
+        )
+        .map((candidate) => ({
+          participantId: candidate.id,
+          name: candidate.name,
+          sessionId: candidate.media.sessionId,
+          tracks: candidate.media.tracks,
+        }))
+      return this.json({ participants, expiresAt: room.expiresAt })
     }
 
     if (request.action === "agent-read-attachment") {

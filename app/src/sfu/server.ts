@@ -23,8 +23,16 @@ function badRequest(message: string): Response {
   return json({ error: message }, 400)
 }
 
+// A present-but-wrong Origin is always rejected (a browser can't lie about
+// its own Origin, so this stops other websites' JS from calling these
+// routes with a victim's browser). A *missing* Origin means the caller
+// isn't a browser at all — e.g. the local Runtime process's MediaBridge,
+// which (like the /mcp route it also uses — see handleMcpRequest's
+// allowedOriginHostnames) authenticates via its own participant token
+// instead, not via Origin.
 function originAllowed(request: Request, env: SfuEnv): boolean {
-  return isAllowedOrigin(request.headers.get("Origin"))
+  const origin = request.headers.get("Origin")
+  return origin === null || isAllowedOrigin(origin)
 }
 
 function getAppCredentials(
@@ -253,6 +261,60 @@ export async function handleSfuRequest(
       expiresAt: registered.expiresAt ?? Date.now() + 365 * 24 * 60 * 60 * 1000,
     }
     return json(result)
+  }
+
+  if (route === "agent-session") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    if (!room || !participantId || !token) return badRequest("missing_session")
+    // Confirms the caller is an existing, authorized *agent* participant
+    // before spending a real Cloudflare Realtime session on it. Reuses the
+    // same DO auth path as everything else — no separate credential system.
+    const authResponse = await roomControl(env, room, {
+      action: "agent-room-media",
+      participantId,
+      token,
+    })
+    if (!authResponse.ok) return authResponse
+
+    const sessionResponse = await realtimeRequest(env, "/sessions/new", {
+      method: "POST",
+    })
+    if (!sessionResponse.ok) return json({ error: "sfu_session_failed" }, 502)
+    const session = (await sessionResponse.json()) as { sessionId?: string }
+    if (!session.sessionId) return json({ error: "sfu_session_invalid" }, 502)
+
+    const attachResponse = await roomControl(env, room, {
+      action: "agent-media-attach",
+      participantId,
+      token,
+      sessionId: session.sessionId,
+    })
+    if (!attachResponse.ok) return attachResponse
+    return json({ sessionId: session.sessionId })
+  }
+
+  if (route === "agent-room-media") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    if (!room || !participantId || !token) return badRequest("missing_session")
+    return roomControl(env, room, {
+      action: "agent-room-media",
+      participantId,
+      token,
+    })
   }
 
   if (route === "tracks" || route === "renegotiate") {
