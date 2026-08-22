@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import type { PeerConnectionLike } from "../src/media/peerConnectionLike.js"
+import {
+  createWeriftPeerConnection,
+  type PeerConnectionLike,
+} from "../src/media/peerConnectionLike.js"
 import { MeetingNotesController } from "../src/media/meetingNotesController.js"
 import type {
   RoomMediaParticipant,
@@ -24,9 +27,14 @@ class FakeRestClient implements SfuRestClientLike {
   participants: RoomMediaParticipant[] = []
   createAgentSessionCalls = 0
   createAgentSessionError: Error | undefined
+  /** When set, createAgentSession() awaits this before resolving/rejecting
+   * — lets tests deterministically hold a bridge.start() call open to
+   * exercise MeetingNotesController's race windows. */
+  createAgentSessionGate: Promise<void> | undefined
 
   async createAgentSession(): Promise<string> {
     this.createAgentSessionCalls += 1
+    if (this.createAgentSessionGate) await this.createAgentSessionGate
     if (this.createAgentSessionError) throw this.createAgentSessionError
     return "agent-session-1"
   }
@@ -282,4 +290,105 @@ test("stop() tears down a running bridge and future polls do nothing", async () 
   const callsBefore = client.roomInfoCalls
   await controller.poll()
   assert.equal(client.roomInfoCalls, callsBefore) // poll() is a no-op once stopped
+})
+
+test("the default (non-test) construction resolves createPeerConnection to the real werift factory", () => {
+  const client = new FakeClient()
+  const restClient = new FakeRestClient()
+  // Deliberately does NOT override createPeerConnection — this is exactly
+  // the shape ResidentRoomRuntime's real production wiring uses. Asserting
+  // the resolved reference is purely structural: it never invokes the
+  // factory, so this never touches werift/ICE or the network.
+  const controller = new MeetingNotesController({
+    client,
+    roomId: "room-1",
+    participantId: "agent-1",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: fakeHandle(),
+    onEvent: () => undefined,
+    restClient,
+  })
+  assert.equal(
+    controller.resolvedCreatePeerConnection,
+    createWeriftPeerConnection
+  )
+})
+
+test("Stop while bridge.start() is still in flight closes it and it never becomes running", async () => {
+  const client = new FakeClient()
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
+  }
+  const restClient = new FakeRestClient()
+  let releaseGate: () => void = () => undefined
+  restClient.createAgentSessionGate = new Promise((resolve) => {
+    releaseGate = resolve
+  })
+  const pc = new FakePeerConnection()
+  const { controller } = makeController(client, restClient, pc)
+
+  const startPromise = controller.start()
+  // Let the microtask chain (start -> poll -> ensureRunning ->
+  // bridge.start -> createAgentSession) run all the way up to the gate
+  // before Stop fires, without resolving it ourselves.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(pc.closed, false) // start() hasn't settled yet — nothing to close
+
+  const stopPromise = controller.stop()
+  // stop() must resolve promptly — it must not block on the still-pending
+  // bridge.start() call it is superseding.
+  await stopPromise
+  assert.equal(pc.closed, false) // still pending — closing it now would race SfuMediaBridge's own internal state
+
+  releaseGate()
+  await startPromise // the superseded ensureRunning() now settles and self-closes
+
+  assert.equal(pc.closed, true)
+  assert.equal(restClient.createAgentSessionCalls, 1)
+
+  // The controller is fully stopped and idle — a later authorized poll can
+  // start a genuinely fresh bridge (retryable, not wedged).
+  restClient.createAgentSessionGate = undefined
+  const pc2 = new FakePeerConnection()
+  const controller2 = new MeetingNotesController({
+    client,
+    roomId: "room-1",
+    participantId: "agent-1",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: fakeHandle(),
+    onEvent: () => undefined,
+    restClient,
+    createPeerConnection: () => pc2,
+    pollIntervalMs: 1_000_000,
+  })
+  await controller2.start()
+  assert.equal(restClient.createAgentSessionCalls, 2)
+  await controller2.stop()
+})
+
+test("overlapping polls while a start is in flight never create a second bridge/session", async () => {
+  const client = new FakeClient()
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
+  }
+  const restClient = new FakeRestClient()
+  let releaseGate: () => void = () => undefined
+  restClient.createAgentSessionGate = new Promise((resolve) => {
+    releaseGate = resolve
+  })
+  const pc = new FakePeerConnection()
+  const { controller } = makeController(client, restClient, pc)
+
+  const startPromise = controller.start()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  // A second poll tick fires while the first is still starting (e.g. the
+  // interval firing before the initial poll settled).
+  const secondPoll = controller.poll()
+  releaseGate()
+  await Promise.all([startPromise, secondPoll])
+
+  assert.equal(restClient.createAgentSessionCalls, 1)
+  await controller.stop()
 })

@@ -550,3 +550,232 @@ describe("Meeting Notes room grant is a real authorization boundary, not just to
     expect((await json(res)).error).toBe("meeting_notes_not_authorized")
   })
 })
+
+// Finding #2: revocation must apply to *every* subsequent Agent media
+// operation, not just the initial agent-room-media discovery call — an
+// Agent that already knows its own sessionId and a Human's
+// sessionId/trackName from before Stop must not be able to keep creating
+// subscriptions with those cached identifiers. /tracks and /renegotiate
+// both gate on the DO's shared "authorize" action, so these tests simulate
+// what the *fixed* DO now returns for a revoked agent (see RoomSession.ts's
+// "authorize" action, which now also calls isAgentAuthorizedForMedia) and
+// confirm the Worker correctly propagates that rejection instead of
+// forwarding the request upstream to Cloudflare.
+describe("Meeting Notes revocation blocks every subsequent Agent media operation, not just discovery", () => {
+  const revokedAuthorizeResponder: DoResponder = (body) => {
+    if (body.action === "authorize")
+      return { status: 403, body: { error: "meeting_notes_not_authorized" } }
+    return { status: 200, body: { ok: true } }
+  }
+
+  it("/tracks rejects a revoked agent even with a previously-valid sessionId/participantId", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ tracks: [] }))
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      revokedAuthorizeResponder
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-1",
+              trackName: "audio-human",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("meeting_notes_not_authorized")
+    expect(fetchMock).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it("/renegotiate rejects a revoked agent even with a previously-valid sessionId", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      revokedAuthorizeResponder
+    )
+    const res = await handleSfuRequest(
+      req("renegotiate", {
+        method: "PUT",
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          sessionDescription: { type: "answer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("meeting_notes_not_authorized")
+    expect(fetchMock).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+
+  it("reassignment (A denied, B allowed) is exactly what the same authorize gate now enforces", async () => {
+    // A is no longer the named agent -> its authorize() call now fails; B
+    // is -> its authorize() call now succeeds. Modeled here as two separate
+    // requests against two differently-configured fake DOs, mirroring how
+    // RoomSession's single isAgentAuthorizedForMedia check would actually
+    // answer each at that point in time.
+    const fetchMock = vi.fn(async () => Response.json({ tracks: [] }))
+    vi.stubGlobal("fetch", fetchMock)
+    const deniedEnv = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      revokedAuthorizeResponder
+    )
+    const deniedRes = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-a",
+          token: "tok-a",
+          sessionId: "sess-a",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-1",
+              trackName: "audio-human",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      deniedEnv
+    )
+    expect(deniedRes.status).toBe(403)
+
+    const allowedEnv = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const allowedRes = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-b",
+          token: "tok-b",
+          sessionId: "sess-b",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-1",
+              trackName: "audio-human",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      allowedEnv
+    )
+    expect(allowedRes.status).toBe(200)
+    vi.unstubAllGlobals()
+  })
+})
+
+// Finding #3: an Agent's remote-track subscriptions must be closeable
+// server-side later (Stop, reassignment, leave, lease expiry all actively
+// terminate already-flowing RTP, not just block future subscriptions) —
+// which requires knowing the Cloudflare-assigned mid for each one. This
+// suite proves the Worker captures that mid from the upstream tracks/new
+// response and hands it to the DO via "agent-track-subscribed", scoped to
+// agent-kind callers only.
+describe("Agent remote-track subscriptions register their assigned mids for later revocation", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("records the upstream-assigned mid for an agent's remote subscription", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ tracks: [{ mid: "5" }] }))
+    )
+    const seenActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-1",
+              trackName: "audio-human",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    const registerCall = seenActions.find(
+      (action) => action.action === "agent-track-subscribed"
+    )
+    expect(registerCall).toBeDefined()
+    expect(registerCall?.mids).toEqual(["5"])
+    expect(registerCall?.sessionId).toBe("sess-1")
+    expect(registerCall?.participantId).toBe("agent-1")
+  })
+
+  it("does not register anything for a Human's own remote subscription", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ tracks: [{ mid: "5" }] }))
+    )
+    const seenActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({}, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "human" } }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "human-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-2",
+              trackName: "audio-2",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(
+      seenActions.some((action) => action.action === "agent-track-subscribed")
+    ).toBe(false)
+  })
+})

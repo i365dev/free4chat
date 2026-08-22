@@ -129,6 +129,7 @@ export default function RoomContent({
     connectionStatus,
     resolvedRoomType,
     meetingNotes,
+    meetingNotesMediaAvailable,
     startMeetingNotes,
     stopMeetingNotes,
   } = useSfuChatRoom(roomName, nickName, roomType, {
@@ -494,38 +495,40 @@ export default function RoomContent({
               📝 Stop
             </button>
           ) : (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setMeetingNotesPickerOpen((open) => !open)}
-                disabled={roomAgents.length === 0}
-                className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-                title={
-                  roomAgents.length === 0
-                    ? "Invite an Agent to the room first"
-                    : "Start Meeting Notes"
-                }
-              >
-                📝 Meeting Notes
-              </button>
-              {meetingNotesPickerOpen && roomAgents.length > 0 && (
-                <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
-                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
-                    Note-taker
-                  </p>
-                  {roomAgents.map((agent) => (
-                    <button
-                      key={agent.peerId}
-                      type="button"
-                      onClick={() => handleStartMeetingNotes(agent.peerId)}
-                      className="block w-full truncate px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
-                    >
-                      {agent.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            meetingNotesMediaAvailable && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setMeetingNotesPickerOpen((open) => !open)}
+                  disabled={roomAgents.length === 0}
+                  className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={
+                    roomAgents.length === 0
+                      ? "Invite an Agent to the room first"
+                      : "Start Meeting Notes"
+                  }
+                >
+                  📝 Meeting Notes
+                </button>
+                {meetingNotesPickerOpen && roomAgents.length > 0 && (
+                  <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
+                    <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
+                      Note-taker
+                    </p>
+                    {roomAgents.map((agent) => (
+                      <button
+                        key={agent.peerId}
+                        type="button"
+                        onClick={() => handleStartMeetingNotes(agent.peerId)}
+                        className="block w-full truncate px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
+                      >
+                        {agent.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
           )}
           <button
             type="button"
@@ -559,7 +562,7 @@ export default function RoomContent({
           <strong className="text-sm font-normal"> {error} </strong>
         </div>
       )}
-      {meetingNotes.active && (
+      {meetingNotes.active && meetingNotesMediaAvailable && (
         <div
           className="mx-4 mt-1 flex flex-none items-center gap-2 rounded border border-rose-700/50 bg-rose-900/30 px-4 py-2 text-rose-100"
           role="status"

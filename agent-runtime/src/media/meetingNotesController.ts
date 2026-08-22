@@ -1,3 +1,4 @@
+import { createWeriftPeerConnection } from "./peerConnectionLike.js"
 import type { PeerConnectionFactory } from "./peerConnectionLike.js"
 import type { DecodedParticipantHandle } from "./participantHandle.js"
 import { SfuMediaBridge } from "./sfuMediaBridge.js"
@@ -6,6 +7,8 @@ import type { MediaBridgeEventHandler } from "./types.js"
 import type { Free4ChatClient } from "../types.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
+
+type BridgeState = "idle" | "starting" | "running"
 
 export interface MeetingNotesControllerOptions {
   client: Free4ChatClient
@@ -36,9 +39,15 @@ export interface MeetingNotesControllerOptions {
  */
 export class MeetingNotesController {
   private readonly pollIntervalMs: number
+  private readonly createPeerConnection: PeerConnectionFactory
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private bridge: SfuMediaBridge | null = null
-  private bridgeRunning = false
+  private bridgeState: BridgeState = "idle"
+  // Bumped on every teardown; an in-flight ensureRunning() call compares
+  // its own snapshot against the current value after `bridge.start()`
+  // settles to detect whether it was superseded (Stop, rejoin, or another
+  // poll's unauthorized result) while it was awaiting.
+  private generation = 0
   private stopped = true
   private readonly log: (
     event: string,
@@ -48,6 +57,19 @@ export class MeetingNotesController {
   constructor(private readonly options: MeetingNotesControllerOptions) {
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.log = options.log ?? (() => undefined)
+    // Production wiring: the real, non-test ResidentRoomRuntime path never
+    // passes createPeerConnection explicitly, so it must resolve to a
+    // usable factory here rather than relying on every caller to remember
+    // injection (see SfuMediaBridge's own throwing default, which exists
+    // only to catch a *test* that forgot to inject one).
+    this.createPeerConnection =
+      options.createPeerConnection ?? createWeriftPeerConnection
+  }
+
+  /** Exposed for tests: proves the real production wiring resolves to the
+   * actual werift-backed factory, without invoking it (no network/ICE). */
+  get resolvedCreatePeerConnection(): PeerConnectionFactory {
+    return this.createPeerConnection
   }
 
   // Mirrors SfuMediaBridge.start()'s own shape: await the initial poll
@@ -70,7 +92,7 @@ export class MeetingNotesController {
     this.stopped = true
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
-    await this.stopBridge()
+    await this.teardownBridge()
   }
 
   /** Exposed for tests; also called internally on the poll timer. */
@@ -89,44 +111,69 @@ export class MeetingNotesController {
       authorized = false
     }
     if (this.stopped) return
-    if (authorized) await this.startBridgeIfNeeded()
-    else await this.stopBridge()
+    if (authorized) await this.ensureRunning()
+    else await this.teardownBridge()
   }
 
-  private async startBridgeIfNeeded(): Promise<void> {
-    if (this.bridgeRunning) return // already running — no duplicate bridge
+  // Serialized start: the synchronous "already starting/running -> return"
+  // check happens with no `await` before it, so two poll() calls racing
+  // each other can never both pass it — only one ever proceeds to actually
+  // construct and start a bridge.
+  private async ensureRunning(): Promise<void> {
+    if (this.bridgeState !== "idle") return // already starting or running
+    this.bridgeState = "starting"
+    const myGeneration = ++this.generation
     const bridge =
       this.options.createBridge?.(this.options.handle) ??
       new SfuMediaBridge({
         mcpUrl: this.options.mcpUrl,
         handle: this.options.handle,
         onEvent: this.options.onEvent,
-        createPeerConnection: this.options.createPeerConnection,
+        createPeerConnection: this.createPeerConnection,
         restClient: this.options.restClient,
       })
     this.bridge = bridge
     try {
       await bridge.start()
-      this.bridgeRunning = true
-      this.log("meeting_notes_media_started")
     } catch (error) {
       // A failed MediaBridge start must never break text Agent operation —
       // log and let the next poll retry; SfuMediaBridge.start() itself is
       // transactional, so `bridge` is already back in a clean, retryable
-      // state and safe to call start() on again next poll.
-      this.bridge = null
-      this.bridgeRunning = false
+      // state. Only reset controller state if nothing superseded us while
+      // we were awaiting — teardownBridge() already did so otherwise.
+      if (this.generation === myGeneration) {
+        this.bridge = null
+        this.bridgeState = "idle"
+      }
       this.log("meeting_notes_media_start_failed", {
         error: error instanceof Error ? error.message : "unknown error",
       })
+      return
     }
+    if (this.generation !== myGeneration) {
+      // Superseded while starting (Stop, a rejoin's fresh controller, or a
+      // later poll finding no authorization all bump `generation`) — this
+      // bridge must never become active. teardownBridge() deliberately
+      // left closing this exact instance to us: calling SfuMediaBridge.
+      // stop() before its own start() has settled would race its internal
+      // state, so only the attempt that owns the now-settled promise may
+      // close it.
+      bridge.stop()
+      return
+    }
+    this.bridgeState = "running"
+    this.log("meeting_notes_media_started")
   }
 
-  private async stopBridge(): Promise<void> {
-    if (!this.bridgeRunning || !this.bridge) return
-    this.bridge.stop()
+  private async teardownBridge(): Promise<void> {
+    this.generation += 1 // invalidate any in-flight ensureRunning() start
+    if (this.bridgeState === "idle") return
+    const wasRunning = this.bridgeState === "running"
+    const bridge = this.bridge
     this.bridge = null
-    this.bridgeRunning = false
+    this.bridgeState = "idle"
+    if (!wasRunning) return // still starting — see ensureRunning()'s catch-up close above
+    bridge?.stop()
     this.log("meeting_notes_media_stopped")
   }
 }

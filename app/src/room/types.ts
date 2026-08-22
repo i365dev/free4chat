@@ -13,6 +13,15 @@ export interface RoomMediaState {
   muted: boolean
   fileChannelReady: boolean
   tracks: RoomMediaTrack[]
+  // Cloudflare-assigned `mid`s for an agent's active *remote* (subscribe)
+  // track negotiations on this sessionId — never set for a human. Exists
+  // solely so the DO can actively close these tracks server-side when the
+  // Meeting Notes grant naming this agent is revoked (Stop, reassignment,
+  // leave, lease expiry): flipping room state alone does not stop RTP
+  // already flowing over an established PeerConnection. Stripped out of
+  // every human-facing broadcast (see RoomSession.stateFor) — it is
+  // Cloudflare session bookkeeping, not participant-visible state.
+  agentSubscribedMids?: string[]
 }
 
 export interface AgentCapabilities {
@@ -77,6 +86,13 @@ export interface RoomState {
   participants: Array<Omit<RoomParticipant, "token" | "connectionNonce">>
   messages: RoomMessage[]
   meetingNotes: MeetingNotesState
+  // Whether the server-side Meeting Notes media capability (the
+  // AGENT_MEDIA_ENABLED master switch) is on in this environment at all —
+  // independent of whether any grant is currently active. The client must
+  // never offer Start, and must never claim "Listening", when this is
+  // false: every actual Runtime media request would 403 regardless of the
+  // room-visible grant.
+  meetingNotesMediaAvailable: boolean
 }
 
 export interface RoomRecord {

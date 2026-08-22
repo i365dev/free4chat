@@ -6,6 +6,7 @@ import {
   NO_MEETING_NOTES,
   startMeetingNotes,
 } from "./meetingNotesAuth"
+import { closeRealtimeTracks } from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import type {
   AgentEvent,
@@ -27,6 +28,12 @@ const MAX_AGENT_ATTACHMENTS = 8
 const MAX_AGENT_IMAGE_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
+// Bounded per-agent scratch state for server-side revocation (finding #3):
+// one mid per Human audio track the note-taker Agent is currently
+// subscribed to. Not a general media-session database — cleared to empty
+// on every revocation (Stop, reassignment, leave, lease expiry) and never
+// grows past a small, room-sized cap.
+const MAX_AGENT_SUBSCRIBED_MIDS = 64
 
 const ROOM_CAPABILITIES: RoomCapabilities = {
   text: true,
@@ -40,6 +47,19 @@ const ROOM_CAPABILITIES: RoomCapabilities = {
 
 export interface RoomSessionEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
+  // RoomSession is bound within the same Worker as sfu/server.ts (see
+  // wrangler.jsonc), so its runtime `env` is already the full Worker env —
+  // these three are declared here only to widen the *type*, not because any
+  // new binding/secret needs to be added. SFU_APP_ID/SFU_APP_SECRET are used
+  // to actively close Cloudflare Realtime tracks on Meeting Notes
+  // revocation (see realtimeMedia.ts); AGENT_MEDIA_ENABLED gates the
+  // "meeting-notes-start" WS message the same way it already gates
+  // agent-session/agent-room-media in sfu/server.ts, so the room-visible
+  // grant can never claim "active" in an environment where every actual
+  // Runtime media request would 403.
+  SFU_APP_ID?: string
+  SFU_APP_SECRET?: string
+  AGENT_MEDIA_ENABLED?: string
 }
 
 interface ConnectionAttachment {
@@ -156,6 +176,13 @@ type ControlRequest =
       participantId: string
       token: string
     }
+  | {
+      action: "agent-track-subscribed"
+      participantId: string
+      token: string
+      sessionId: string
+      mids: string[]
+    }
 
 type ClientMessage =
   | { type: "chat"; text: string; targets?: string[] }
@@ -217,6 +244,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         if (participant.media && participant.media.tracks.length > 0) {
           participant.media = { ...participant.media, tracks: [] }
           changed = true
+        }
+        if (participant.media?.agentSubscribedMids !== undefined) {
+          const validMids = Array.isArray(participant.media.agentSubscribedMids)
+            ? participant.media.agentSubscribedMids
+                .filter((mid) => typeof mid === "string" && mid.length > 0)
+                .slice(-MAX_AGENT_SUBSCRIBED_MIDS)
+            : []
+          if (
+            validMids.length !== participant.media.agentSubscribedMids.length
+          ) {
+            participant.media = {
+              ...participant.media,
+              agentSubscribedMids: validMids,
+            }
+            changed = true
+          }
         }
       } else if (!participant.media && participant.sessionId) {
         participant.media = {
@@ -365,12 +408,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       expiresAt: room.expiresAt,
       participants: Object.values(room.participants)
         .filter((participant) => participant.connected)
-        .map(
-          ({ token: _token, connectionNonce: _nonce, ...participant }) =>
-            participant
-        ),
+        .map(({ token: _token, connectionNonce: _nonce, ...participant }) => {
+          // agentSubscribedMids is Cloudflare session bookkeeping used only
+          // for server-side revocation (see realtimeMedia.ts) — never
+          // participant-visible state.
+          if (!participant.media?.agentSubscribedMids) return participant
+          const { agentSubscribedMids: _mids, ...media } = participant.media
+          return { ...participant, media }
+        }),
       messages: room.messages,
       meetingNotes: room.meetingNotes,
+      meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     }
   }
 
@@ -412,7 +460,42 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return room
   }
 
+  // The real revocation boundary for Meeting Notes (finding #3): actively
+  // closes the granted Agent's already-established Cloudflare Realtime
+  // remote-track subscriptions, not just the room-state grant. Must be
+  // called (and awaited) *before* the participant is removed from
+  // room.participants at every departure/expiry site, since it needs
+  // media.sessionId/agentSubscribedMids to still be present. No-ops
+  // cheaply when there is nothing to close (ordinary text-only agents, or
+  // an agent that was granted but never actually subscribed to anything).
+  private async closeAgentMediaTracks(
+    room: RoomRecord,
+    agentParticipantId: string
+  ): Promise<void> {
+    const participant = room.participants[agentParticipantId]
+    if (!participant || participant.kind !== "agent" || !participant.media)
+      return
+    const mids = participant.media.agentSubscribedMids
+    if (!mids || mids.length === 0) return
+    const sessionId = participant.media.sessionId
+    participant.media = { ...participant.media, agentSubscribedMids: [] }
+    try {
+      await closeRealtimeTracks(this.env, sessionId, mids)
+    } catch {
+      // Best-effort — see closeRealtimeTracks's own comment. The room-state
+      // mutation that triggered this call must still succeed, and every
+      // subsequent Agent media request independently re-checks the current
+      // grant regardless of whether this specific close call succeeded.
+    }
+  }
+
   private async expireRoom(room: RoomRecord): Promise<void> {
+    if (room.meetingNotes.active && room.meetingNotes.agentParticipantId) {
+      await this.closeAgentMediaTracks(
+        room,
+        room.meetingNotes.agentParticipantId
+      )
+    }
     for (const attachment of room.attachments)
       await this.deleteAttachmentChunks(attachment)
     await this.ctx.storage.delete("room")
@@ -694,6 +777,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // Room-visible state, not a capability secret — the same
         // agentParticipantId is already visible in `participants` above.
         meetingNotes: room?.meetingNotes ?? NO_MEETING_NOTES,
+        meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
       })
     }
 
@@ -858,6 +942,38 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ participants, expiresAt: room.expiresAt })
     }
 
+    if (request.action === "agent-track-subscribed") {
+      // Records the Cloudflare-assigned mid(s) for the granted Agent's
+      // remote (subscribe) track negotiations, so an active Meeting Notes
+      // revocation can actually close them server-side (see
+      // closeAgentMediaTracks/realtimeMedia.ts) instead of only preventing
+      // *future* subscriptions. Bounded scratch state — see
+      // MAX_AGENT_SUBSCRIBED_MIDS.
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token,
+        request.sessionId
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (!participant.media)
+        return this.json({ error: "media_unavailable" }, 400)
+      const mids = request.mids.filter(
+        (mid) => typeof mid === "string" && mid.length > 0
+      )
+      participant.media.agentSubscribedMids = [
+        ...new Set([...(participant.media.agentSubscribedMids ?? []), ...mids]),
+      ].slice(-MAX_AGENT_SUBSCRIBED_MIDS)
+      await this.saveRoom(room)
+      return this.json({ ok: true })
+    }
+
     if (request.action === "agent-read-attachment") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
@@ -912,6 +1028,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "already_left" }, 404)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      await this.closeAgentMediaTracks(room, participant.id)
       delete room.participants[participant.id]
       room.meetingNotes = clearGrantIfParticipantDeparting(
         room.meetingNotes,
@@ -949,6 +1066,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         request.sessionId
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
+      // Finding #2: the generic authorize() gate backs every subsequent
+      // Agent media operation (/tracks, /renegotiate, /tracks/close,
+      // /datachannels/*), not just the initial agent-room-media discovery
+      // call — so a previously-authorized Agent that already knows its own
+      // sessionId and a Human's sessionId/trackName cannot keep creating
+      // subscriptions via cached identifiers after Stop/reassignment. Human
+      // authorization is completely unaffected.
+      if (
+        participant.kind === "agent" &&
+        !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
+      )
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
       if (request.trackSessionId && request.trackName) {
         const trackExists = Object.values(room.participants).some(
           (candidate) =>
@@ -1114,6 +1243,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     if (message.type === "meeting-notes-start") {
+      // The room-visible grant must never be able to claim "active" in an
+      // environment where the master switch is off — every actual Runtime
+      // media request would 403 regardless, and the browser must not show
+      // "Listening" for a capability that cannot possibly be delivered.
+      if (this.env.AGENT_MEDIA_ENABLED !== "true") {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "meeting_notes_media_disabled",
+          })
+        )
+        return
+      }
       const agent = room.participants[message.agentParticipantId]
       if (!agent || agent.kind !== "agent" || !agent.connected) {
         socket.send(
@@ -1121,13 +1263,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
         return
       }
+      const previousAgentId = room.meetingNotes.agentParticipantId
       room.meetingNotes = startMeetingNotes(agent.id, Date.now())
+      // Reassignment (A -> B): A's already-established subscription must be
+      // torn down, not merely left to expire on its own lease.
+      if (previousAgentId && previousAgentId !== agent.id)
+        await this.closeAgentMediaTracks(room, previousAgentId)
       await this.saveRoom(room)
       await this.broadcastState(room)
       return
     }
     if (message.type === "meeting-notes-stop") {
+      const previousAgentId = room.meetingNotes.agentParticipantId
       room.meetingNotes = NO_MEETING_NOTES
+      if (previousAgentId)
+        await this.closeAgentMediaTracks(room, previousAgentId)
       await this.saveRoom(room)
       await this.broadcastState(room)
       return
@@ -1367,6 +1517,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant.kind === "agent" &&
         participant.lastSeenAt + AGENT_LEASE_MS <= now
       if (expiredHuman || expiredAgent) {
+        if (expiredAgent) await this.closeAgentMediaTracks(room, id)
         delete room.participants[id]
         room.meetingNotes = clearGrantIfParticipantDeparting(
           room.meetingNotes,
