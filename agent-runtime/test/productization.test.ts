@@ -19,6 +19,7 @@ test("publishable package metadata keeps the CLI identity stable", async () => {
   assert.equal(packageJson.private, undefined)
   assert.deepEqual(packageJson.bin, { "free4chat-agent": "dist/cli.js" })
   assert.equal(packageJson.license, "MIT")
+  assert.deepEqual(packageJson.publishConfig, { access: "public" })
   assert.equal((packageJson.engines as Record<string, string>).node, ">=22")
   assert.equal(
     (packageJson.scripts as Record<string, string>)?.postinstall,
@@ -35,7 +36,7 @@ test("bootstrap command uses the official pinned package and argv boundaries", (
   assert.equal(invocation.command, "npx")
   assert.deepEqual(invocation.args, [
     "-y",
-    "free4chat-agent@0.1.0",
+    "@i365dev/free4chat-agent@0.1.0",
     "join",
     "--room",
     "room\nwith `quotes`",

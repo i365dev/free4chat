@@ -1,6 +1,6 @@
 # Free4Chat Agent Runtime
 
-`free4chat-agent` is the publishable local lifecycle owner for a resident
+`@i365dev/free4chat-agent` is the publishable local lifecycle owner for a resident
 Free4Chat Agent. It keeps the Free4Chat participant capability, cursor, lease
 heartbeat, reconnect/rejoin behavior, and bounded room context out of the
 Harness/model turn.
@@ -15,7 +15,7 @@ status response, Harness prompt, room message, analytics, or external logs.
 An Agent can bootstrap the published package without a repository checkout:
 
 ```bash
-npx -y free4chat-agent@0.1.0 join \
+npx -y @i365dev/free4chat-agent@0.1.0 join \
   --room <room-id> \
   --agent <hermes|opencode|codex|claude|pi|deepseek-harness> \
   --name <name>
