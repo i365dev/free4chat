@@ -247,7 +247,10 @@ export async function handleSfuRequest(
       participantId,
       participantToken,
       sessionId: session.sessionId,
-      expiresAt: registered.expiresAt ?? Date.now() + 2 * 60 * 60 * 1000,
+      // The room itself has no fixed lifetime while occupied (see
+      // RoomSession's empty-room expiry); this is only a defensive fallback
+      // for the (should-never-happen) case where the DO's response omits it.
+      expiresAt: registered.expiresAt ?? Date.now() + 365 * 24 * 60 * 60 * 1000,
     }
     return json(result)
   }

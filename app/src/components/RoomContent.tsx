@@ -125,23 +125,13 @@ export default function RoomContent({
     toggleScreenShare,
     retryVerification,
     error,
-    expiryWarning,
     connectionStatus,
     resolvedRoomType,
-    timeLeft,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
-
-  const timerH = Math.floor(timeLeft / 3600)
-  const timerM = Math.floor((timeLeft % 3600) / 60)
-  const timerS = timeLeft % 60
-  const timerFormatted = `${timerH}:${String(timerM).padStart(2, "0")}:${String(
-    timerS
-  ).padStart(2, "0")}`
-  const timerWarning = timeLeft > 0 && timeLeft <= 600
 
   const activeScreenShares = participants.filter(
     (p) =>
@@ -439,18 +429,6 @@ export default function RoomContent({
       <div className="flex flex-none flex-wrap items-center gap-2 border-b border-gray-800 px-4 py-3">
         <h1 className="min-w-0 truncate text-lg font-medium">#{roomName}</h1>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-          {timeLeft > 0 && (
-            <span
-              className={`rounded-md border px-2 py-1 font-mono text-xs ${
-                timerWarning
-                  ? "border-amber-700/60 bg-amber-900/40 text-amber-300"
-                  : "border-gray-700 bg-gray-800 text-gray-400"
-              }`}
-              title="Room expires in"
-            >
-              {timerFormatted}
-            </span>
-          )}
           <button
             type="button"
             onClick={copyRoomLink}
@@ -513,7 +491,7 @@ export default function RoomContent({
           <strong className="text-sm font-normal"> {error} </strong>
         </div>
       )}
-      {(expiryWarning !== "" || screenShareWarning !== "") && (
+      {screenShareWarning !== "" && (
         <div
           className="mx-4 mt-1 flex flex-none items-center gap-4 rounded border border-amber-700/50 bg-amber-900/40 px-4 py-2 text-amber-200"
           role="alert"
@@ -532,7 +510,7 @@ export default function RoomContent({
               d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
             />
           </svg>
-          <span className="text-sm">{screenShareWarning || expiryWarning}</span>
+          <span className="text-sm">{screenShareWarning}</span>
         </div>
       )}
 

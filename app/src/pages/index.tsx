@@ -69,7 +69,7 @@ export default function Home() {
               No sign-up. No permanent room history on our servers.
             </p>
             <p className="mx-auto mt-1 text-gray-600 sm:text-xs sm:leading-relaxed">
-              Rooms automatically close after 2 hours.
+              Rooms close automatically once everyone has left.
             </p>
 
             <div className="mx-auto mt-8 max-w-xl">

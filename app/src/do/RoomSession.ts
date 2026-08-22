@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers"
 
+import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import type {
   AgentEvent,
   RoomCapabilities,
@@ -12,7 +13,6 @@ import type {
   RoomState,
 } from "../room/types"
 
-const ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000
 const RECONNECT_GRACE_MS = 30 * 1000
 const AGENT_LEASE_MS = 90 * 1000
 const MAX_MESSAGES = 100
@@ -330,6 +330,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return Date.now() >= room.expiresAt
   }
 
+  // Recomputes room.expiresAt from current participant count. Must run after
+  // every mutation that adds or removes a participant. See roomExpiry.ts.
+  private applyEmptyRoomExpiry(room: RoomRecord, now: number): void {
+    room.expiresAt = computeExpiresAt(
+      Object.keys(room.participants).length,
+      room.expiresAt,
+      now
+    )
+  }
+
   private async activeRoom(): Promise<RoomRecord | null> {
     const room = await this.loadRoom()
     if (!room) return null
@@ -634,7 +644,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!room) {
         room = {
           createdAt: now,
-          expiresAt: now + ROOM_MAX_AGE_MS,
+          expiresAt: NO_EXPIRY,
           participants: {},
           messages: [],
           attachments: [],
@@ -658,6 +668,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(isAgent ? { capabilities: { text: true }, media: undefined } : {}),
       }
       room.participants[participant.id] = participant
+      this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       if (isAgent) {
@@ -762,6 +773,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
       delete room.participants[participant.id]
+      this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       const waiter = this.agentWaiters.get(participant.id)
       if (waiter) {
@@ -881,6 +893,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     delete room.participants[participant.id]
+    this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
     await this.broadcastState(room)
     await this.scheduleNextAlarm(room)
@@ -915,8 +928,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "leave") {
       delete room.participants[participant.id]
+      this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       await this.broadcastState(room)
+      await this.scheduleNextAlarm(room)
       socket.close(1000, "Left room")
       return
     }
@@ -1194,6 +1209,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
     }
     if (changed) {
+      this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.broadcastState(room)
     }
