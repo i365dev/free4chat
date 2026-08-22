@@ -185,3 +185,75 @@ describe("useTurnstile", () => {
     await expect(second).resolves.toBe("shared-token")
   })
 })
+
+describe("useTurnstile — script load retry", () => {
+  const SCRIPT_SELECTOR = 'script[src*="challenges.cloudflare.com/turnstile"]'
+
+  afterEach(() => {
+    delete (window as { turnstile?: unknown }).turnstile
+    document.querySelectorAll(SCRIPT_SELECTOR).forEach((el) => el.remove())
+    vi.restoreAllMocks()
+  })
+
+  function attachContainer(result: {
+    current: { containerRef: React.RefObject<HTMLDivElement> }
+  }) {
+    const div = document.createElement("div")
+    document.body.appendChild(div)
+    ;(result.current.containerRef as { current: HTMLDivElement }).current = div
+  }
+
+  it("removes a failed script element, starts a genuinely fresh load on retry, and can still succeed", async () => {
+    const { result } = renderHook(() => useTurnstile())
+    attachContainer(result)
+
+    let failing: Promise<string> | undefined
+    act(() => {
+      failing = result.current.requestToken()
+    })
+
+    await waitFor(() =>
+      expect(document.querySelectorAll(SCRIPT_SELECTOR).length).toBe(1)
+    )
+    const firstScript =
+      document.querySelector<HTMLScriptElement>(SCRIPT_SELECTOR)
+    expect(firstScript).not.toBeNull()
+
+    act(() => {
+      firstScript!.dispatchEvent(new Event("error"))
+    })
+    await expect(failing).rejects.toThrow()
+
+    // The failed element must not linger in the DOM — a stale element has
+    // already fired its one-shot "error" event, so a retry that reused it
+    // would wait forever for events that can never happen again.
+    expect(document.contains(firstScript!)).toBe(false)
+
+    let retrying: Promise<string> | undefined
+    act(() => {
+      retrying = result.current.requestToken()
+    })
+
+    await waitFor(() =>
+      expect(document.querySelectorAll(SCRIPT_SELECTOR).length).toBe(1)
+    )
+    const secondScript =
+      document.querySelector<HTMLScriptElement>(SCRIPT_SELECTOR)
+    expect(secondScript).not.toBeNull()
+    expect(secondScript).not.toBe(firstScript)
+
+    // Simulate the real script succeeding this time: it sets window.turnstile
+    // before firing "load".
+    const mock = installMockTurnstile()
+    act(() => {
+      secondScript!.dispatchEvent(new Event("load"))
+    })
+
+    await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
+    act(() => {
+      mock.fireSuccess("token-after-script-retry")
+    })
+
+    await expect(retrying).resolves.toBe("token-after-script-retry")
+  })
+})

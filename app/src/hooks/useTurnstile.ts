@@ -32,24 +32,24 @@ function loadTurnstileScript(): Promise<void> {
     return Promise.reject(new Error("turnstile_unavailable"))
   if (window.turnstile) return Promise.resolve()
   if (!scriptPromise) {
+    // Always create a brand-new <script> element for this attempt. Reusing
+    // whatever the DOM happens to have is what caused the retry hang: a
+    // previously-failed element has already fired its one-shot "error"
+    // event, so listeners attached to it after the fact never fire and the
+    // returned promise never settles.
     scriptPromise = new Promise((resolve, reject) => {
-      const existing = document.querySelector<HTMLScriptElement>(
-        `script[src="${TURNSTILE_SCRIPT_SRC}"]`
-      )
-      const onReady = () => resolve()
-      const onFail = () => {
-        scriptPromise = null
-        reject(new Error("turnstile_script_failed"))
-      }
-      if (existing) {
-        existing.addEventListener("load", onReady, { once: true })
-        existing.addEventListener("error", onFail, { once: true })
-        return
-      }
       const script = document.createElement("script")
       script.src = TURNSTILE_SCRIPT_SRC
       script.async = true
       script.defer = true
+      const onReady = () => resolve()
+      const onFail = () => {
+        script.removeEventListener("load", onReady)
+        script.removeEventListener("error", onFail)
+        script.remove()
+        scriptPromise = null
+        reject(new Error("turnstile_script_failed"))
+      }
       script.addEventListener("load", onReady, { once: true })
       script.addEventListener("error", onFail, { once: true })
       document.head.appendChild(script)
