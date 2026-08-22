@@ -496,15 +496,24 @@ export async function handleSfuRequest(
           const closed = await closeRealtimeTracks(env, sessionId, remoteMids)
           if (!closed) {
             // The abort-path close itself didn't confirm — hand the mids to
-            // RoomSession's existing bounded pending-cleanup/retry
-            // mechanism (Blocker 1) rather than losing track of them.
-            await roomControl(env, room, {
+            // RoomSession's pending-cleanup/retry mechanism rather than
+            // losing track of them. Its result is not ignored: a failure
+            // here means this specific untracked subscription may never
+            // get retried, which is worth surfacing even though the Agent
+            // still correctly receives the original registration failure
+            // either way (never the stale Cloudflare success).
+            const queued = await roomControl(env, room, {
               action: "agent-media-cleanup-pending",
-              participantId,
-              token,
               sessionId,
               mids: remoteMids,
             })
+            if (!queued.ok) {
+              console.error(
+                "meeting_notes_cleanup_handoff_failed",
+                room,
+                sessionId
+              )
+            }
           }
           return registerResponse
         }

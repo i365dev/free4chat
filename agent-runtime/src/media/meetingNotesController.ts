@@ -48,6 +48,16 @@ export class MeetingNotesController {
   // settles to detect whether it was superseded (Stop, rejoin, or another
   // poll's unauthorized result) while it was awaiting.
   private generation = 0
+  // The grant `startedAt` (epoch) the current/most-recently-started bridge
+  // was built for — null when no bridge has been started yet. A room can
+  // go Stop -> Start for the *same* agentParticipantId entirely between two
+  // polls (this controller only samples room_info periodically, so it
+  // never observes the intermediate `active: false`); comparing
+  // agentParticipantId alone would then wrongly conclude "still
+  // authorized, nothing to do" even though the server already closed the
+  // previous grant's SFU subscriptions and this bridge's SFU session is
+  // now stale. Comparing the epoch instead of just the id catches that.
+  private grantEpoch: number | null = null
   private stopped = true
   private readonly log: (
     event: string,
@@ -99,6 +109,7 @@ export class MeetingNotesController {
   async poll(): Promise<void> {
     if (this.stopped) return
     let authorized = false
+    let epoch: number | null = null
     try {
       const info = await this.options.client.roomInfo(this.options.roomId)
       // The master switch is checked on every poll, not just at grant
@@ -113,6 +124,7 @@ export class MeetingNotesController {
         info.meetingNotesMediaAvailable &&
         info.meetingNotes.active &&
         info.meetingNotes.agentParticipantId === this.options.participantId
+      epoch = info.meetingNotes.startedAt ?? null
     } catch {
       // A transient room_info failure fails closed: do not keep an
       // already-running bridge alive on stale authorization, and do not
@@ -120,8 +132,20 @@ export class MeetingNotesController {
       authorized = false
     }
     if (this.stopped) return
-    if (authorized) await this.ensureRunning()
-    else await this.teardownBridge()
+    if (authorized) {
+      if (this.bridgeState !== "idle" && epoch !== this.grantEpoch) {
+        // Stop + Start for the same agent happened entirely between two
+        // polls — the server already closed the previous grant's SFU
+        // subscriptions, so this bridge (built for the old epoch) is stale
+        // and must be torn down before a fresh one is started.
+        await this.teardownBridge()
+      }
+      this.grantEpoch = epoch
+      await this.ensureRunning()
+    } else {
+      this.grantEpoch = null
+      await this.teardownBridge()
+    }
   }
 
   // Serialized start: the synchronous "already starting/running -> return"

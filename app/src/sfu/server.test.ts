@@ -835,6 +835,60 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
     expect(res.status).toBe(502)
     expect((await json(res)).error).toBe("agent_subscription_unverifiable")
   })
+
+  // Round 4: RoomSession must persist a revocation *before* attempting any
+  // Cloudflare fetch, specifically so a concurrent /tracks request arriving
+  // while that fetch is still in flight sees the *already-durable* revoked
+  // grant — never a stale, pre-revocation grant that a later save could
+  // resurrect. This models exactly that interleaving: Stop's own
+  // Cloudflare tracks/close call is still pending (simulated by the DO's
+  // "authorize" action already reflecting the revoked grant, since
+  // RoomSession persists the revocation synchronously before ever touching
+  // Cloudflare) when /tracks arrives for the same now-revoked agent.
+  it("a /tracks request arriving while Stop's own Cloudflare close is still pending sees the already-persisted revocation, not a stale grant", async () => {
+    const closeCalls: Array<Record<string, unknown>> = []
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const href = String(url)
+      if (href.includes("/tracks/close")) {
+        closeCalls.push(JSON.parse(init?.body as string))
+        return new Response("", { status: 200 })
+      }
+      return Response.json({ tracks: [{ mid: "9" }] }) // tracks/new
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const seenActions: Array<Record<string, unknown>> = []
+    // Models RoomSession *after* round 4's fix: the grant is already
+    // revoked and persisted (so "authorize" rejects) well before Stop's own
+    // Cloudflare close attempt (which this test's /tracks request races
+    // against) ever resolves — there is no window where a concurrent
+    // request could observe a stale "still granted" state.
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      if (body.action === "agent-track-subscribed")
+        return { status: 403, body: { error: "meeting_notes_not_authorized" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const res = await handleSfuRequest(
+      req("tracks", { body: JSON.stringify(agentRemoteBody) }),
+      env
+    )
+
+    expect(res.status).toBe(403)
+    // The subscription this /tracks call itself just created upstream is
+    // actively closed — it can never become an untracked, unrevocable
+    // subscription regardless of how Stop's own (separate, concurrent)
+    // cleanup attempt is progressing.
+    expect(closeCalls).toHaveLength(1)
+    expect(closeCalls[0]).toMatchObject({ tracks: [{ mid: "9" }] })
+    expect(
+      seenActions.some(
+        (action) => action.action === "agent-media-cleanup-pending"
+      )
+    ).toBe(false)
+  })
 })
 
 // Finding #3: an Agent's remote-track subscriptions must be closeable

@@ -444,3 +444,50 @@ test("the master switch (meetingNotesMediaAvailable) being off is treated as rev
   assert.equal(pc.closed, true)
   await controller.stop()
 })
+
+test("Stop then Start for the same Agent between two polls tears down and recreates the bridge (grant epoch changed)", async () => {
+  const client = new FakeClient()
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotesMediaAvailable: true,
+    meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
+  }
+  const restClient = new FakeRestClient()
+  const pc = new FakePeerConnection()
+  const controller = new MeetingNotesController({
+    client,
+    roomId: "room-1",
+    participantId: "agent-1",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: fakeHandle(),
+    onEvent: () => undefined,
+    restClient,
+    createPeerConnection: () => pc,
+    pollIntervalMs: 1_000_000,
+  })
+
+  await controller.start()
+  assert.equal(restClient.createAgentSessionCalls, 1)
+  assert.equal(pc.closed, false)
+
+  // The room went Stop -> Start for the *same* agent entirely between two
+  // Runtime polls — this controller only samples room_info periodically,
+  // so it never observed the intermediate `active: false`. From its
+  // perspective, `meetingNotes` still just says "agent-1 is authorized" —
+  // but the server already closed the previous grant's SFU subscriptions
+  // (epoch 1 -> epoch 2 is the only visible signal of that).
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotesMediaAvailable: true,
+    meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 2 },
+  }
+  await controller.poll()
+
+  // The stale bridge (built for epoch 1) is torn down...
+  assert.equal(pc.closed, true)
+  // ...and a fresh subscription is established for the new grant, not
+  // silently treated as "already running, nothing to do".
+  assert.equal(restClient.createAgentSessionCalls, 2)
+
+  await controller.stop()
+})
