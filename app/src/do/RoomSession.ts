@@ -127,6 +127,11 @@ type ControlRequest =
       trackSessionId?: string
       trackName?: string
       dataChannelSessionId?: string
+      // Round 5 (P2): when set, an Agent caller about to request this many
+      // new remote-subscribe tracks from Cloudflare is also preflight-
+      // checked for pending-cleanup and active-mid capacity here — before
+      // any Cloudflare tracks/new call is made. Ignored for Human callers.
+      remoteTrackCount?: number
     }
   | {
       action: "reconnect"
@@ -993,6 +998,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      // Round 5 (P1): the Worker's authorize() check before creating this
+      // Cloudflare session (agent-room-media, in the "agent-session"
+      // route) is not enough on its own — that /sessions/new call is
+      // external I/O, during which the Human could Stop or reassign
+      // Meeting Notes. Re-check the CURRENT grant here and refuse to
+      // attach — never mutate the participant into a new active media
+      // session — if it's no longer valid.
+      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (participant.media?.sessionId === request.sessionId) {
+        // Idempotent: the same session re-attaching (e.g. a retried
+        // request) must not disturb already-tracked subscriptions.
+        participant.lastSeenAt = Date.now()
+        await this.saveRoom(room)
+        await this.scheduleNextAlarm(room)
+        return this.json({ ok: true, expiresAt: room.expiresAt })
+      }
+      // Rotating an existing session (S1 -> S2): Cloudflare does not close
+      // S1 merely because RoomSession now points at S2, so S1's
+      // already-tracked subscriptions must not be silently forgotten —
+      // reuse the exact same stage/persist/fetch/fresh-reload/narrow-merge
+      // pattern as every other revocation path (round 4). A no-op when
+      // there is no existing session yet (a brand-new agent's first
+      // attach) since stageAgentMediaRevocation itself no-ops without
+      // existing media.
+      this.stageAgentMediaRevocation(room, participant.id)
       // Subscribe-only: an agent never publishes in the current protocol,
       // so its media state never carries tracks of its own.
       participant.media = {
@@ -1004,6 +1035,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
       return this.json({ ok: true, expiresAt: room.expiresAt })
     }
 
@@ -1244,6 +1276,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
       )
         return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      // Round 5 (P2): preflight capacity check *before* the Worker ever
+      // calls Cloudflare's tracks/new for these remote subscriptions —
+      // catching an already-backpressured room here means it never creates
+      // yet another upstream subscription only to have agent-track-
+      // subscribed reject it afterward (which would just grow the very
+      // backlog that caused the rejection). This is in addition to, not a
+      // replacement for, that post-upstream check: a grant can still be
+      // revoked or reassigned in the window between this call and
+      // tracks/new actually completing (the TOCTOU race — finding #2/
+      // Blocker 2), which only the post-upstream registration can catch.
+      if (
+        participant.kind === "agent" &&
+        request.remoteTrackCount &&
+        request.remoteTrackCount > 0
+      ) {
+        const activeMids = participant.media?.agentSubscribedMids?.length ?? 0
+        if (activeMids + request.remoteTrackCount > MAX_AGENT_SUBSCRIBED_MIDS)
+          return this.json({ error: "agent_media_capacity_exceeded" }, 503)
+        const sessionId =
+          participant.media?.sessionId ?? request.sessionId ?? ""
+        if (
+          !pendingCleanupHasCapacity(
+            room.pendingMediaCleanup,
+            sessionId,
+            request.remoteTrackCount
+          )
+        )
+          return this.json({ error: "agent_media_cleanup_backlog" }, 503)
+      }
       if (request.trackSessionId && request.trackName) {
         const trackExists = Object.values(room.participants).some(
           (candidate) =>
@@ -1426,6 +1487,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!agent || agent.kind !== "agent" || !agent.connected) {
         socket.send(
           JSON.stringify({ type: "error", error: "agent_not_in_room" })
+        )
+        return
+      }
+      // Idempotence hardening (round 5): a duplicate/replayed Start for the
+      // *same* agent that is already the active note-taker must not
+      // generate a new grant epoch (MeetingNotesState.startedAt) —
+      // MeetingNotesController (agent-runtime) treats an epoch change as
+      // "the server already closed the previous session, tear down and
+      // rebuild the bridge", so a spurious epoch bump here would cause an
+      // unnecessary teardown/restart even though nothing actually changed.
+      // A genuine Stop -> Start for the same agent still gets a fresh
+      // epoch below, since meetingNotes.active is false in between. Reuses
+      // isAgentAuthorizedForMedia's exact predicate — "is this agent
+      // already the active grant holder" is the same question either way.
+      if (isAgentAuthorizedForMedia(room.meetingNotes, agent.id)) {
+        socket.send(
+          JSON.stringify({ type: "state", state: this.stateFor(room) })
         )
         return
       }

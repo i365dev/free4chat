@@ -981,3 +981,247 @@ describe("Agent remote-track subscriptions register their assigned mids for late
     ).toBe(false)
   })
 })
+
+// Round 5, P1: the Worker's initial agent-room-media check before creating
+// a Cloudflare session is not enough on its own — /sessions/new is external
+// I/O, during which the Human can Stop or reassign Meeting Notes. The DO's
+// agent-media-attach action re-checks the grant itself and must reject the
+// attach (never silently rotating the participant into a new "active"
+// media session) if it's no longer valid — this proves the Worker's
+// /agent-session route correctly surfaces that rejection instead of
+// returning the newly-created (but never attached) sessionId.
+//
+// The deeper DO-internal behavior this finding also requires — rotating an
+// existing Agent session (S1 -> S2) must move S1's already-tracked
+// agentSubscribedMids into pendingMediaCleanup rather than silently
+// forgetting them — is implemented by reusing stageAgentMediaRevocation
+// (see RoomSession.ts's "agent-media-attach" action) and, like RoomSession's
+// other internal state transitions, cannot be exercised here: RoomSession
+// extends DurableObject from "cloudflare:workers", which doesn't exist
+// outside the Workers runtime, so this project (no
+// @cloudflare/vitest-pool-workers) can't instantiate it directly — the same
+// pre-existing limitation documented throughout this file. It reuses
+// queuePendingCleanup/attemptCleanupNow's own pattern, already covered by
+// realtimeMedia.test.ts and the interleaving-safety tests above; verified
+// by code review here.
+describe("agent-session rejects when the grant is no longer valid by the time attach runs", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("propagates agent-media-attach's rejection instead of returning the orphaned sessionId", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ sessionId: "cf-session-1" }))
+    )
+    const seenActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(body)
+      if (body.action === "agent-room-media")
+        return { status: 200, body: { participants: [] } }
+      // The grant was revoked/reassigned while /sessions/new was in
+      // flight — agent-media-attach's own re-check now rejects.
+      if (body.action === "agent-media-attach")
+        return { status: 403, body: { error: "meeting_notes_not_authorized" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const res = await handleSfuRequest(
+      req("agent-session", { body: JSON.stringify(agentBody) }),
+      env
+    )
+
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("meeting_notes_not_authorized")
+    expect(seenActions.some((a) => a.action === "agent-media-attach")).toBe(
+      true
+    )
+  })
+})
+
+// Round 5, P2: reject a backpressured room *before* ever calling
+// Cloudflare's tracks/new for an Agent's remote subscriptions — not just
+// after, via agent-track-subscribed's own capacity check (round 4). The
+// Worker now tells the DO's "authorize" action how many new remote-
+// subscribe tracks this request would create, so a room that's already at
+// capacity is rejected without ever creating (and then immediately having
+// to close) yet another upstream Cloudflare subscription.
+describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P2)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const agentRemoteBody = {
+    room: "room-1",
+    participantId: "agent-1",
+    token: "tok-1",
+    sessionId: "sess-1",
+    tracks: [
+      {
+        location: "remote",
+        sessionId: "human-sess-1",
+        trackName: "audio-human",
+      },
+    ],
+    sessionDescription: { type: "offer", sdp: "sdp" },
+  }
+
+  it("rejects before calling Cloudflare when the DO's preflight reports capacity exhausted", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ tracks: [{ mid: "1" }] })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const seenActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 503, body: { error: "agent_media_cleanup_backlog" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const res = await handleSfuRequest(
+      req("tracks", { body: JSON.stringify(agentRemoteBody) }),
+      env
+    )
+
+    expect(res.status).toBe(503)
+    expect((await json(res)).error).toBe("agent_media_cleanup_backlog")
+    // Cloudflare's tracks/new must never be reached once the preflight
+    // already rejected — creating the subscription only to immediately
+    // fail to register it would just grow the very backlog that caused
+    // the rejection.
+    expect(fetchMock).not.toHaveBeenCalled()
+    const authorizeCall = seenActions.find((a) => a.action === "authorize")
+    expect(authorizeCall?.remoteTrackCount).toBe(1)
+  })
+
+  it("rejects before calling Cloudflare when the preflight reports active-mid capacity exhausted", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ tracks: [{ mid: "1" }] })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize")
+        return { status: 503, body: { error: "agent_media_capacity_exceeded" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const res = await handleSfuRequest(
+      req("tracks", { body: JSON.stringify(agentRemoteBody) }),
+      env
+    )
+
+    expect(res.status).toBe(503)
+    expect((await json(res)).error).toBe("agent_media_capacity_exceeded")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("passes remoteTrackCount for a multi-track request and 0 for a Human's own request", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ tracks: [{ mid: "1" }, { mid: "2" }] }))
+    )
+    const seenActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-1",
+              trackName: "audio-1",
+            },
+            {
+              location: "remote",
+              sessionId: "human-sess-2",
+              trackName: "audio-2",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+
+    const authorizeCall = seenActions.find((a) => a.action === "authorize")
+    expect(authorizeCall?.remoteTrackCount).toBe(2)
+    vi.unstubAllGlobals()
+
+    seenActions.length = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ tracks: [{ mid: "1" }] }))
+    )
+    const humanEnv = makeEnv({}, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "human" } }
+      return { status: 200, body: { ok: true } }
+    })
+    await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "human-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-2",
+              trackName: "audio-2",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      humanEnv
+    )
+    const humanAuthorizeCall = seenActions.find((a) => a.action === "authorize")
+    expect(humanAuthorizeCall?.remoteTrackCount).toBe(1) // sent regardless of kind — the DO only *acts* on it for agent-kind callers
+  })
+
+  it("does not send a nonzero remoteTrackCount for renegotiate (no new tracks)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } })
+      )
+    )
+    const seenActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    await handleSfuRequest(
+      req("renegotiate", {
+        method: "PUT",
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          sessionDescription: { type: "answer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+
+    const authorizeCall = seenActions.find((a) => a.action === "authorize")
+    expect(authorizeCall?.remoteTrackCount).toBe(0)
+  })
+})

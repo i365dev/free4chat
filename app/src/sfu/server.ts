@@ -128,7 +128,14 @@ async function authorize(
   sessionId?: string,
   trackSessionId?: string,
   trackName?: string,
-  dataChannelSessionId?: string
+  dataChannelSessionId?: string,
+  // Round 5 (P2): when about to request this many new Agent remote-
+  // subscribe tracks from Cloudflare, asks the DO's "authorize" action to
+  // also preflight-check pending-cleanup and active-mid capacity *before*
+  // any Cloudflare tracks/new call is made — never sent for a Human caller
+  // or for renegotiate (which creates no new tracks). See the "tracks"
+  // route below.
+  remoteTrackCount?: number
 ): Promise<Response> {
   return roomControl(env, roomName, {
     action: "authorize",
@@ -138,6 +145,7 @@ async function authorize(
     trackSessionId,
     trackName,
     dataChannelSessionId,
+    remoteTrackCount,
   })
 }
 
@@ -379,7 +387,25 @@ export async function handleSfuRequest(
     const requestedTracks = Array.isArray(body.tracks)
       ? (body.tracks as Array<Record<string, unknown>>)
       : []
-    const auth = await authorize(env, room, participantId, token, sessionId)
+    // Round 5 (P2): known *before* any Cloudflare call — how many new
+    // remote-subscribe tracks this request would create, so the DO can
+    // preflight-check capacity and reject before tracks/new ever runs
+    // (rather than only after, once Cloudflare has already created a
+    // subscription that would immediately fail to register).
+    const remoteTrackCount = requestedTracks.filter(
+      (track) => track.location === "remote"
+    ).length
+    const auth = await authorize(
+      env,
+      room,
+      participantId,
+      token,
+      sessionId,
+      undefined,
+      undefined,
+      undefined,
+      remoteTrackCount
+    )
     if (!auth.ok) return auth
     // The DO's "authorize" action now also re-checks the current Meeting
     // Notes grant for an agent participant (finding #2) — so `kind` here
