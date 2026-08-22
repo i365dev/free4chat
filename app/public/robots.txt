@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /mcp
+Disallow: /api/
+
+Sitemap: https://www.free4.chat/sitemap.xml
