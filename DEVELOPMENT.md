@@ -22,7 +22,7 @@ Required local values are documented in `app/.dev.vars.example`:
 | `SFU_APP_ID`     | Cloudflare Realtime SFU App ID     |
 | `SFU_APP_SECRET` | Cloudflare Realtime SFU App Secret |
 
-Turnstile is optional locally. Set `TURNSTILE_SECRET_KEY` when testing the production verification flow.
+Turnstile is optional locally. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey, so the just-in-time challenge (triggered when joining a room, not on page load) resolves instantly. Set both `NEXT_PUBLIC_TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` when testing the production verification flow end-to-end.
 
 The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. It supports text/actions, explicit Agent targeting, and bounded ephemeral image vision through `read_attachment`; Agent voice is not implemented. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
 
@@ -90,7 +90,7 @@ The public room URL is:
 https://www.free4.chat/room?id=<room-name>
 ```
 
-`TurnstileGate` wraps the app in `_app.tsx`. The browser sends its session token to `/api/sfu/session`, and the Worker verifies it before creating an SFU session.
+Turnstile is just-in-time, not a page-wide gate: `/` and `/room?id=...` render immediately. `useTurnstile` (`app/src/hooks/useTurnstile.ts`) renders a bounded, `interaction-only` widget and only executes a challenge — via `useSfuChatRoom`'s `getTurnstileToken` — right before the browser creates a brand-new Human SFU session. The fresh, single-use token is sent to `/api/sfu/session`, and the Worker verifies it with Siteverify before creating the session. Reconnects prove authorization with the previous participant/session id instead and never trigger a new challenge. Room pages are `noindex, nofollow`.
 
 ## Directory structure
 
@@ -99,12 +99,13 @@ free4chat/
 ├── app/
 │   ├── worker.ts                     # Worker entry and Durable Object exports
 │   ├── src/
-│   │   ├── components/               # Room UI, chat, Turnstile, participants
+│   │   ├── components/               # Room UI, chat, participants
 │   │   ├── common/origin.ts          # Shared production/local origin policy
 │   │   ├── do/                       # RoomSession
 │   │   ├── mcp/server.ts             # Stateless MCP Agent room endpoint
 │   │   ├── room/types.ts              # Transport-neutral room contracts
 │   │   ├── hooks/useSfuChatRoom.ts   # SFU media and DataChannel transport
+│   │   ├── hooks/useTurnstile.ts     # Just-in-time Turnstile challenge
 │   │   └── sfu/                      # SFU Worker routes and types
 │   └── wrangler.jsonc
 └── .github/workflows/deploy-web.yml

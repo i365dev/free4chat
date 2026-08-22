@@ -13,6 +13,7 @@
     "type-check": "tsc --pretty --noEmit",
     "format": "prettier --write .",
     "lint": "eslint src --fix",
+    "test": "vitest run",
     "prepare": "husky"
   },
   "dependencies": {
@@ -31,9 +32,13 @@
     "@tailwindcss/aspect-ratio": "^0.4.0",
     "@tailwindcss/forms": "^0.5.0",
     "@tailwindcss/typography": "^0.5.2",
+    "@testing-library/dom": "^10",
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
     "@types/node": "^20.0.0",
     "@types/react": "19",
     "@types/react-dom": "19",
+    "@vitejs/plugin-react": "^4",
     "autoprefixer": "^10.4.2",
     "eslint": "^8.12.0",
     "eslint-config-next": "^14.2.5",
@@ -41,12 +46,15 @@
     "eslint-plugin-prettier": "^4.0.0",
     "eslint-plugin-unused-imports": "^2.0.0",
     "husky": "^9.1.7",
+    "jsdom": "^25",
     "lint-staged": "15",
     "postcss": "^8.4.12",
     "prettier": "^2.6.1",
     "prettier-plugin-tailwindcss": "^0.1.8",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.5.2",
+    "vite-tsconfig-paths": "^5",
+    "vitest": "^2",
     "wrangler": "^4.0.0"
   },
   "resolutions": {

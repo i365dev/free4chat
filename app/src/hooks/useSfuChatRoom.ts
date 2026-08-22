@@ -12,7 +12,20 @@ import type {
   SfuTrack,
 } from "../sfu/types"
 
-type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "failed"
+type ConnectionStatus =
+  | "verifying"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "verification_failed"
+  | "failed"
+
+class TurnstileVerificationError extends Error {
+  constructor(message = "Verification failed") {
+    super(message)
+    this.name = "TurnstileVerificationError"
+  }
+}
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 const FILE_CHUNK_SIZE = 32 * 1024
@@ -124,18 +137,28 @@ const roomMessageToMessage = (
   }
 }
 
+export interface UseSfuChatRoomOptions {
+  enabled?: boolean
+  /**
+   * Called only when creating a brand-new Human SFU session (never on
+   * reconnect). Must resolve with a fresh, single-use Turnstile token.
+   */
+  getTurnstileToken?: () => Promise<string>
+}
+
 export function useSfuChatRoom(
   roomName: string,
   nickName: string,
   roomType: "audio" | "screenshare",
-  enabled = true
+  options: UseSfuChatRoomOptions = {}
 ) {
+  const { enabled = true, getTurnstileToken } = options
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState("")
   const [expiryWarning, setExpiryWarning] = useState("")
   const [connectionStatus, setConnectionStatus] =
-    useState<ConnectionStatus>("connecting")
+    useState<ConnectionStatus>("verifying")
   const [timeLeft, setTimeLeft] = useState(2 * 60 * 60)
   const [resolvedRoomType] = useState<"audio" | "screenshare">(roomType)
 
@@ -164,6 +187,7 @@ export function useSfuChatRoom(
   const mediaReconnectAttemptsRef = useRef(0)
   const mediaReconnectPromiseRef = useRef<Promise<void> | null>(null)
   const mediaReconnectRef = useRef<(() => Promise<void>) | null>(null)
+  const initialConnectRef = useRef<(() => Promise<void>) | null>(null)
   const localFileChannelRef = useRef<RTCDataChannel | null>(null)
   const remoteFileChannelsRef = useRef(new Map<string, RTCDataChannel>())
   const remoteFileChannelIdsRef = useRef(new Map<string, number>())
@@ -1020,6 +1044,22 @@ export function useSfuChatRoom(
         pendingRemoteTrackRef.current = null
       }
 
+      // A fresh Human session must be Turnstile-verified; reconnects prove
+      // authorization with the previous participant/session id instead and
+      // never need — or trigger — a new challenge.
+      let turnstileToken: string | undefined
+      if (!reconnecting && getTurnstileToken) {
+        setConnectionStatus("verifying")
+        try {
+          turnstileToken = await getTurnstileToken()
+        } catch (err) {
+          throw new TurnstileVerificationError(
+            err instanceof Error ? err.message : "Verification failed"
+          )
+        }
+      }
+      setConnectionStatus(reconnecting ? "reconnecting" : "connecting")
+
       let audioTrack = localAudioTrackRef.current
       if (!audioTrack) {
         const media = await navigator.mediaDevices.getUserMedia({
@@ -1042,7 +1082,7 @@ export function useSfuChatRoom(
         room: roomName,
         name: nickName,
         kind: "human",
-        turnstileToken: sessionStorage.getItem("ts_token") ?? undefined,
+        turnstileToken,
       }
       if (reconnecting && previousSession) {
         body.reconnect = {
@@ -1060,12 +1100,15 @@ export function useSfuChatRoom(
         const data = (await response.json().catch(() => ({}))) as {
           error?: string
         }
-        if (response.status === 403) sessionStorage.removeItem("ts_token")
+        if (!reconnecting && response.status === 403) {
+          throw new TurnstileVerificationError(
+            data.error || "Verification failed"
+          )
+        }
         throw new Error(data.error || "Unable to create SFU session")
       }
       const session = (await response.json()) as SfuSessionResponse
       sessionRef.current = { ...session, room: roomName }
-      sessionStorage.removeItem("ts_token")
       expiresAtRef.current = session.expiresAt
       setTimeLeft(
         Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000))
@@ -1086,6 +1129,7 @@ export function useSfuChatRoom(
       connectWebSocket,
       createPeerConnection,
       establishDataChannelTransport,
+      getTurnstileToken,
       nickName,
       publishTrack,
       rebuildParticipants,
@@ -1137,6 +1181,11 @@ export function useSfuChatRoom(
       try {
         await connectMediaSession(false)
       } catch (err) {
+        if (err instanceof TurnstileVerificationError) {
+          setError(err.message)
+          setConnectionStatus("verification_failed")
+          return
+        }
         setError(
           err instanceof Error ? err.message : "Unable to connect to SFU"
         )
@@ -1144,6 +1193,7 @@ export function useSfuChatRoom(
       }
     }
     mediaReconnectRef.current = reconnectMedia
+    initialConnectRef.current = start
     void start()
 
     const remoteFileChannels = remoteFileChannelsRef.current
@@ -1200,6 +1250,7 @@ export function useSfuChatRoom(
       dataChannelReadyRef.current = false
       localTrackMids.clear()
       mediaReconnectRef.current = null
+      initialConnectRef.current = null
       peerConnectionRef.current?.close()
       peerConnectionRef.current = null
     }
@@ -1373,6 +1424,12 @@ export function useSfuChatRoom(
     ]
   )
 
+  const retryVerification = useCallback(() => {
+    if (closingRef.current) return
+    setError("")
+    void initialConnectRef.current?.()
+  }, [])
+
   return {
     participants,
     messages,
@@ -1381,6 +1438,7 @@ export function useSfuChatRoom(
     sendActionMessage,
     muteSelf,
     toggleScreenShare,
+    retryVerification,
     error,
     expiryWarning,
     connectionStatus,

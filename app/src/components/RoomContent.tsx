@@ -14,6 +14,7 @@ import {
   participantsBucket,
 } from "../common/utils"
 import { useSfuChatRoom } from "../hooks/useSfuChatRoom"
+import { useTurnstile } from "../hooks/useTurnstile"
 
 const REACTION_EMOJIS = ["👍", "😂", "🔥", "❓"]
 
@@ -112,6 +113,8 @@ export default function RoomContent({
     )
   }, [])
 
+  const { containerRef: turnstileContainerRef, requestToken } = useTurnstile()
+
   const {
     participants,
     messages,
@@ -120,12 +123,15 @@ export default function RoomContent({
     sendActionMessage,
     muteSelf,
     toggleScreenShare,
+    retryVerification,
     error,
     expiryWarning,
     connectionStatus,
     resolvedRoomType,
     timeLeft,
-  } = useSfuChatRoom(roomName, nickName, roomType)
+  } = useSfuChatRoom(roomName, nickName, roomType, {
+    getTurnstileToken: requestToken,
+  })
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -380,10 +386,43 @@ export default function RoomContent({
     )
   }
 
-  if (connectionStatus === "connecting" && participants.length === 0) {
+  if (
+    (connectionStatus === "verifying" ||
+      connectionStatus === "connecting" ||
+      connectionStatus === "verification_failed") &&
+    participants.length === 0
+  ) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-950">
-        <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
+      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-gray-950 px-4 text-center text-white">
+        {connectionStatus === "verification_failed" ? (
+          <>
+            <p className="text-lg font-semibold text-gray-200">
+              Verification failed
+            </p>
+            <p className="max-w-sm text-sm text-gray-500">
+              {error || "We couldn't verify you're human. Please try again."}
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
+            <p className="text-sm text-gray-500">
+              {connectionStatus === "verifying" ? "Verifying…" : "Joining…"}
+            </p>
+          </>
+        )}
+        {/* Bounded, interaction-only Turnstile mount point — stays empty
+            unless Cloudflare decides the visitor needs to interact. */}
+        <div ref={turnstileContainerRef} />
+        {connectionStatus === "verification_failed" && (
+          <button
+            type="button"
+            onClick={retryVerification}
+            className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
+          >
+            Try again
+          </button>
+        )}
       </main>
     )
   }
