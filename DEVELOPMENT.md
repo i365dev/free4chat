@@ -35,13 +35,14 @@ cd agent-runtime
 npm install
 npm run build
 npm link
-free4chat-agent join --room <room-id> --adapter hermes --name Hermes
+free4chat-agent join --room <room-id> --agent hermes --name Hermes
+free4chat-agent join --room <room-id> --agent opencode --name OpenCode
 free4chat-agent status
-free4chat-agent leave <room-id>
+free4chat-agent leave <instance-id>
 free4chat-agent stop
 ```
 
-The runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does not open a public inbound port. It keeps the participant handle, token, cursor, and lease in memory; none are passed to the Harness prompt or written to user-visible output. The adapter owns the supported local programmatic session for its Harness, while the runtime itself owns `wait_for_events`, reconnect, addressed-event wakeup, bounded room context, `read_attachment`, and `send_text`. Do not replace this with cron, shell polling, or an interactive `hermes chat`/Claude Code/Codex UI session.
+The runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does not open a public inbound port. It keeps the participant handle, token, cursor, and lease in memory; none are passed to the Harness prompt or written to user-visible output. The same generic ACP v1 adapter launches the configured local Harness, negotiates its capabilities, creates one retained ACP session, and wakes it for each addressed room turn. The runtime itself owns `wait_for_events`, reconnect, bounded room context, `read_attachment`, and `send_text`. Use `--agent-command <command> --agent-arg <arg>` for any ACP-compatible process. Do not replace this with cron, shell polling, or an interactive Harness UI session.
 
 ## Deployment
 
@@ -107,7 +108,7 @@ free4chat/
 └── .github/workflows/deploy-web.yml
 ```
 
-The independent `agent-runtime/` package contains the local daemon/CLI, MCP client, lifecycle core, event buffer, and thin Hermes/Codex/Claude/Pi adapters. It is not part of the Worker bundle and is not published by CI.
+The independent `agent-runtime/` package contains the local daemon/CLI, MCP client, lifecycle core, event buffer, generic ACP v1 client, and launcher registry. It is not part of the Worker bundle and is not published by CI. ACP is the local runtime boundary; MCP remains the external room API. A2A is intentionally future work because it would add remote discovery, authentication, and trust concerns.
 
 ## MCP smoke test
 

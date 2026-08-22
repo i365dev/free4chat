@@ -118,6 +118,7 @@ test("cursor timeout continues and addressed turns are delivered once", async ()
     async close() {},
   }
   const runtime = new ResidentRoomRuntime({
+    instanceId: "instance-1",
     roomId: "test",
     name: "Agent",
     client,
@@ -185,6 +186,7 @@ test("an expired capability rejoins from a fresh cursor without replay", async (
     async close() {},
   }
   const runtime = new ResidentRoomRuntime({
+    instanceId: "instance-2",
     roomId: "test",
     name: "Agent",
     client,
@@ -257,6 +259,7 @@ test("an addressed event resolves its image in the runtime before the Harness tu
     async close() {},
   }
   const runtime = new ResidentRoomRuntime({
+    instanceId: "instance-3",
     roomId: "test",
     name: "Agent",
     client,

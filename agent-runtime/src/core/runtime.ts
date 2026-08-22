@@ -13,6 +13,7 @@ const MAX_PENDING_TURNS = 8
 const MAX_IMAGES_PER_TURN = 2
 
 export interface RuntimeStatus {
+  instanceId: string
   roomId: string
   name: string
   adapter: string
@@ -24,6 +25,7 @@ export interface RuntimeStatus {
 }
 
 export interface ResidentRuntimeOptions {
+  instanceId: string
   roomId: string
   name: string
   client: Free4ChatClient
@@ -87,6 +89,7 @@ export class ResidentRoomRuntime {
 
   getStatus(): RuntimeStatus {
     return {
+      instanceId: this.options.instanceId,
       roomId: this.options.roomId,
       name: this.options.name,
       adapter: this.options.adapter.name,
@@ -141,7 +144,8 @@ export class ResidentRoomRuntime {
         const code =
           error instanceof Free4ChatClientError ? error.code : "transient"
         if (code === "invalid_participant_handle") {
-          await this.rejoinAfterExpiry()
+          const rejoined = await this.rejoinAfterExpiry()
+          if (!rejoined) break
           continue
         }
         if (code === "room_expired") {
@@ -206,6 +210,7 @@ export class ResidentRoomRuntime {
     input: HarnessTurnInput
   ): Promise<HarnessTurnInput> {
     if (!this.participantHandle) return input
+    if (this.options.adapter.capabilities?.images === false) return input
     let imageCount = 0
     for (const event of input.events) {
       if (!event.attachment || imageCount >= MAX_IMAGES_PER_TURN) continue
@@ -227,25 +232,43 @@ export class ResidentRoomRuntime {
     return input
   }
 
-  private async rejoinAfterExpiry(): Promise<void> {
-    if (this.stopped) return
+  private async rejoinAfterExpiry(): Promise<boolean> {
+    if (this.stopped) return false
     this.state = "reconnecting"
     this.log("participant_rejoin")
     this.participantHandle = undefined
     this.participantId = undefined
-    try {
-      await this.join()
-    } catch (error) {
-      this.lastError =
-        error instanceof Error ? error.message : "Unable to rejoin room"
-      this.state = "failed"
-      await new Promise((resolve) => setTimeout(resolve, retryDelay(1)))
+    let attempt = 0
+    while (!this.stopped && !this.participantHandle) {
+      try {
+        await this.join()
+        return true
+      } catch (error) {
+        const code =
+          error instanceof Free4ChatClientError ? error.code : "transient"
+        if (code === "room_expired") {
+          this.state = "stopped"
+          this.lastError = "room_expired"
+          return false
+        }
+        attempt += 1
+        this.lastError =
+          error instanceof Error ? error.message : "Unable to rejoin room"
+        this.log("rejoin_retry", { delayMs: retryDelay(attempt) })
+        await new Promise((resolve) => setTimeout(resolve, retryDelay(attempt)))
+      }
     }
+    return false
   }
 
   async stop(): Promise<void> {
     this.stopped = true
     this.state = "stopped"
+    try {
+      await this.options.adapter.cancelTurn?.()
+    } catch {
+      // Closing the ACP process below is the final cancellation boundary.
+    }
     if (this.participantHandle) {
       try {
         await this.options.client.leaveRoom(this.participantHandle)

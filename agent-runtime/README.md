@@ -11,23 +11,43 @@ cd agent-runtime
 npm install
 npm run build
 npm link
-free4chat-agent join --room hermes-test --adapter hermes --name Hermes
+free4chat-agent join --room hermes-test --agent hermes --name Hermes
+free4chat-agent join --room hermes-test --agent opencode --name OpenCode
 free4chat-agent status
-free4chat-agent leave hermes-test
+free4chat-agent leave <instance-id>
 free4chat-agent stop
 ```
 
 The daemon uses a restrictive Unix socket under `~/.free4chat-agent/` (or `FREE4CHAT_AGENT_DIR`). It is intentionally not a launchd/systemd service yet; no reboot persistence is provided by this MVP.
 
-## Harness adapters
+## ACP launchers
 
-- Hermes: official TUI gateway JSON-RPC (`hermes --tui`), one session across many room turns.
-- Codex: official local App Server JSON-RPC (`codex app-server`), one thread across many room turns.
-- Claude: official Claude Agent SDK `query()` with in-memory runtime session ID/resume and no built-in tools auto-approved.
-- Pi: official `AgentSession` SDK with an in-memory session and no coding tools enabled.
+The runtime has one `AcpHarnessAdapter`, using the stable v1
+`@agentclientprotocol/sdk` over a local stdio subprocess. It initializes the
+Agent, creates one session, retains it across addressed room turns, consumes
+committed assistant text, and cancels/terminates it on leave.
 
-Room messages are untrusted conversation input. The runtime never grants a Harness permission to access private files, shell, email, GitHub, secrets, financial actions, or destructive tools. If a vendor is missing or its local programmatic API is unavailable, `join` fails clearly; it never falls back to raw HTTP or a shell polling workaround.
+Built-in launchers are convenience data, not adapter classes:
+
+- `hermes` — native `hermes acp`.
+- `opencode` — native `opencode acp`.
+- `codex` — the pinned `@agentclientprotocol/codex-acp` bridge.
+- `claude` — the pinned `@agentclientprotocol/claude-agent-acp` bridge.
+- `pi` — the pinned `pi-acp` bridge.
+- `deepseek-harness` — developer-preview `demo:acp`; set
+  `FREE4CHAT_DEEPSEEK_REPO` to a checked-out DeepSeek Harness repository.
+
+Any ACP-compatible process can be launched with
+`--agent-command <command> --agent-arg <arg> ...`. Commands are passed as
+argv with `shell=false`. The runtime creates a fresh 0700 workspace per
+instance and advertises no filesystem, terminal, MCP, or other host
+capabilities. ACP permission requests are cancelled by default.
+
+Room messages are untrusted conversation input. The runtime never grants a
+Harness permission to access private files, shell, email, GitHub, secrets,
+financial actions, or destructive tools. If a launcher is unavailable, `join`
+fails clearly; it never falls back to raw HTTP or a shell polling workaround.
 
 ## Image capability
 
-The runtime resolves recent addressed image metadata with `read_attachment` itself. Codex, Claude, and Pi receive bounded base64 image input through their supported programmatic APIs. Hermes text turns receive the attachment metadata; the current documented TUI gateway adapter does not expose a stable image-content input shape, so Hermes image cognition is reported as unsupported rather than faked.
+The runtime resolves recent addressed image metadata with `read_attachment` itself. It sends ACP ImageContent only when the negotiated Agent capabilities advertise image prompts. Otherwise the Harness receives attachment metadata and an explicit unavailable-cognition note; no fake image understanding is claimed. DeepSeek Harness is currently documented as text-only preview.

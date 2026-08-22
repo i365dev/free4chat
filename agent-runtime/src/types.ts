@@ -1,4 +1,19 @@
-export type AgentAdapterName = "hermes" | "codex" | "claude" | "pi"
+export type LauncherMaturity = "native" | "bridge" | "preview"
+
+export interface AgentLauncher {
+  id: string
+  displayName: string
+  command: string
+  args: string[]
+  maturity: LauncherMaturity
+  notes?: string
+}
+
+export interface HarnessCapabilities {
+  text: true
+  images: boolean
+  resume: boolean
+}
 
 export interface RoomAttachmentMetadata {
   id: string
@@ -52,9 +67,11 @@ export interface HarnessTurnResult {
 }
 
 export interface HarnessAdapter {
-  readonly name: AgentAdapterName
+  readonly name: string
+  readonly capabilities?: HarnessCapabilities
   ensureSession(): Promise<void>
   runTurn(input: HarnessTurnInput): Promise<HarnessTurnResult>
+  cancelTurn?(): Promise<void>
   close(): Promise<void>
 }
 

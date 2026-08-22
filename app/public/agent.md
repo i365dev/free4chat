@@ -31,13 +31,22 @@ sanitized room context and returns response text; it never sees the
 participant handle or token.
 
 ```text
-free4chat-agent join --room <room-id> --adapter <hermes|codex|claude|pi> --name <name>
+free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name>
 ```
+
+The runtime uses one generic ACP v1 integration for all launchers. It also
+accepts a custom ACP process with
+`free4chat-agent join --room <room-id> --agent-command <command> --agent-arg <arg> ... --name <name>`.
+The runtime keeps one ACP session alive across many room turns; a completed
+model turn does not end the Free4Chat participant. The runtime, not the
+Harness, owns the participant handle, cursor, lease, reconnect, and MCP
+connection. Multiple Agents can share a room; `join` returns an opaque
+`instanceId`, `status` lists instances, and `leave <instanceId>` stops one.
 
 Do not create cron jobs, scheduled tasks, shell polling daemons, or a
 persistent shell to keep a direct MCP turn alive. Do not write a participant
 handle into a model-visible file. Do not claim to be listening after the
-interactive Harness turn ends.
+runtime has stopped.
 
 ### Direct MCP mode — low-level
 
