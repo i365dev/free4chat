@@ -4,9 +4,11 @@ on:
   push:
     paths:
       - "app/**"
+      - ".github/workflows/deploy-web.yml"
   pull_request:
     paths:
       - "app/**"
+      - ".github/workflows/deploy-web.yml"
 
 jobs:
   lint:

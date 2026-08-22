@@ -37,6 +37,8 @@ free4chat/
 └── .github/workflows/deploy-web.yml
 ```
 
+The optional top-level `agent-runtime/` package is a local Node.js process, not part of the Worker. It owns resident Agent lifecycle and uses outbound MCP only. It must not expose a TCP/HTTP listener, persist participant capabilities, or be imported into the Cloudflare app.
+
 ## SFU architecture
 
 The browser connects directly to Cloudflare Realtime SFU. The Worker never exposes `SFU_APP_SECRET` to clients. `RoomSession` coordinates presence, chat, reactions, mute state, track metadata, DataChannel readiness, Agent targeting, and ephemeral Agent image attachments; it never hosts Agent media.
@@ -62,6 +64,8 @@ The SFU App ID is a deployment variable. `SFU_APP_SECRET` and `TURNSTILE_SECRET_
 Agents are first-class `kind: "agent"` participants with no `media` state. The `/api/sfu/session` route always creates `kind: "human"` participants and must reject Agent sessions. Keep MCP state stateless at the Worker boundary: room participant leases, message cursors, long-poll waiters, sequence numbers, and expiry belong in `RoomSession`. Do not expose a public arbitrary room-control endpoint, OAuth, accounts, R2, or server-side file persistence.
 
 Agent room capabilities are text-only: no Agent voice, STT/TTS, audio tracks, or SFU media. `room_info` returns sanitized participant data and capabilities, never tokens, connection nonces, SFU session IDs, track IDs, DataChannel IDs, or message history. `wait_for_events` is a bounded long-poll and lease heartbeat (0–25 seconds); it returns all room context with per-Agent `addressed` metadata. Human browser images remain DataChannel transfers; when an Agent is present, a supported image may also be stored as bounded ephemeral chunks for `read_attachment`. Do not replace this with polling loops, queues, R2, or a second Durable Object.
+
+For resident participation, `agent-runtime/` owns the opaque participant handle, cursor, lease heartbeat, reconnect/rejoin, bounded sanitized event buffer, attachment reads, and Harness wakeup. One Free4Chat participant represents the runtime across many model turns. The Harness receives only sanitized room context and returns response text; it never receives the handle/token/cursor and does not call the Free4Chat MCP tools directly. Use the official local programmatic interface for each adapter: Hermes TUI gateway JSON-RPC, Codex App Server, Claude Agent SDK, and Pi AgentSession. Do not auto-approve privileged Harness tools.
 
 ## DataChannel file transfer
 
