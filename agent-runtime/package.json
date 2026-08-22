@@ -1,8 +1,21 @@
 {
-  "name": "free4chat-agent-runtime",
+  "name": "@i365dev/free4chat-agent",
   "version": "0.1.0",
-  "private": true,
-  "description": "Local lifecycle runtime for resident Free4Chat Harness participants",
+  "description": "Zero-setup local lifecycle runtime for resident Free4Chat Agents",
+  "author": "i365dev",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/i365dev/free4chat.git",
+    "directory": "agent-runtime"
+  },
+  "homepage": "https://www.free4.chat/",
+  "bugs": {
+    "url": "https://github.com/i365dev/free4chat/issues"
+  },
   "type": "module",
   "bin": {
     "free4chat-agent": "dist/cli.js"
@@ -13,13 +26,13 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json",
     "type-check": "tsc -p tsconfig.json --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint src test --max-warnings 0",
     "test": "tsx --test test/*.test.ts",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "node scripts/check-pack.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
