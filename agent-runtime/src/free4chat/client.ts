@@ -11,6 +11,8 @@ import type {
   WaitResult,
 } from "../types.js"
 
+export const FREE4CHAT_MCP_PROTOCOL_VERSION = "2026-07-28"
+
 export type Free4ChatErrorCode =
   "invalid_participant_handle" | "room_expired" | "transient" | "tool_error"
 
@@ -83,10 +85,17 @@ function asNumber(value: unknown, field: string): number {
 }
 
 export class McpFree4ChatClient implements Free4ChatClient {
-  private readonly client = new Client({
-    name: "free4chat-agent-runtime",
-    version: "0.1.0",
-  })
+  private readonly client = new Client(
+    {
+      name: "free4chat-agent-runtime",
+      version: "0.1.0",
+    },
+    {
+      versionNegotiation: {
+        mode: { pin: FREE4CHAT_MCP_PROTOCOL_VERSION },
+      },
+    }
+  )
   private transport?: StreamableHTTPClientTransport
 
   constructor(readonly endpoint = "https://www.free4.chat/mcp") {}

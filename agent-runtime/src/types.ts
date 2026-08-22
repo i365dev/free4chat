@@ -7,6 +7,8 @@ export interface AgentLauncher {
   args: string[]
   maturity: LauncherMaturity
   notes?: string
+  /** Explicit launch-time environment overrides for this trusted launcher. */
+  environment?: Record<string, string>
 }
 
 export interface HarnessCapabilities {
@@ -71,6 +73,7 @@ export interface HarnessAdapter {
   readonly capabilities?: HarnessCapabilities
   ensureSession(): Promise<void>
   runTurn(input: HarnessTurnInput): Promise<HarnessTurnResult>
+  onFailure?(handler: (error: Error) => void): void
   cancelTurn?(): Promise<void>
   close(): Promise<void>
 }

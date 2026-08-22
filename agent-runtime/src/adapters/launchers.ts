@@ -12,8 +12,18 @@ const builtInLaunchers: AgentLauncher[] = [
     id: "opencode",
     displayName: "OpenCode",
     command: "opencode",
-    args: ["acp"],
+    args: [
+      "acp",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      "0",
+      "--mdns=false",
+      "--pure",
+    ],
     maturity: "native",
+    notes:
+      "Local-only ACP server: loopback hostname, ephemeral port, mDNS disabled, and pure mode.",
   },
   {
     id: "codex",
@@ -21,8 +31,9 @@ const builtInLaunchers: AgentLauncher[] = [
     command: "npx",
     args: ["-y", "@agentclientprotocol/codex-acp@1.6.2"],
     maturity: "bridge",
+    environment: { INITIAL_AGENT_MODE: "read-only" },
     notes:
-      "Official ACP bridge for Codex; pin or install it locally for offline use.",
+      "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
   },
   {
     id: "claude",

@@ -19,8 +19,6 @@ export interface RuntimeStatus {
   adapter: string
   state: "starting" | "waiting" | "turn" | "reconnecting" | "stopped" | "failed"
   participantId?: string
-  cursor: number
-  expiresAt?: number
   lastError?: string
 }
 
@@ -75,6 +73,7 @@ export class ResidentRoomRuntime {
   private stopped = false
   private loopPromise?: Promise<void>
   private turnRunning = false
+  private harnessFailed = false
   private lastHarnessSequence = 0
   private readonly pendingAddressed: number[] = []
   private readonly eventBuffer = new EventBuffer()
@@ -85,6 +84,13 @@ export class ResidentRoomRuntime {
 
   constructor(private readonly options: ResidentRuntimeOptions) {
     this.log = options.log ?? defaultLog
+    options.adapter.onFailure?.((error) => {
+      if (this.stopped) return
+      this.harnessFailed = true
+      this.state = "reconnecting"
+      this.lastError = error.message
+      this.log("harness_failed")
+    })
   }
 
   getStatus(): RuntimeStatus {
@@ -95,8 +101,6 @@ export class ResidentRoomRuntime {
       adapter: this.options.adapter.name,
       state: this.state,
       participantId: this.participantId,
-      cursor: this.cursor,
-      expiresAt: this.expiresAt,
       lastError: this.lastError,
     }
   }
@@ -161,7 +165,12 @@ export class ResidentRoomRuntime {
         await new Promise((resolve) =>
           setTimeout(resolve, retryDelay(retryAttempt))
         )
-        if (!this.stopped) this.state = this.turnRunning ? "turn" : "waiting"
+        if (!this.stopped)
+          this.state = this.harnessFailed
+            ? "reconnecting"
+            : this.turnRunning
+              ? "turn"
+              : "waiting"
       }
     }
   }
@@ -187,6 +196,7 @@ export class ResidentRoomRuntime {
         const input = await this.resolveImages(buildHarnessTurn(events))
         this.state = "turn"
         const result = await this.options.adapter.runTurn(input)
+        this.harnessFailed = false
         const text = result.text?.trim()
         if (text && this.participantHandle) {
           const sent = await this.options.client.sendText(
@@ -202,7 +212,8 @@ export class ResidentRoomRuntime {
       this.log("turn_failed")
     } finally {
       this.turnRunning = false
-      if (!this.stopped) this.state = "waiting"
+      if (!this.stopped)
+        this.state = this.harnessFailed ? "reconnecting" : "waiting"
     }
   }
 

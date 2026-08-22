@@ -22,6 +22,52 @@ import { renderUntrustedRoomTurn } from "./types.js"
 
 const SHUTDOWN_TIMEOUT_MS = 2_000
 
+const SAFE_ENVIRONMENT_KEYS = new Set([
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TMPDIR",
+  "TERM",
+  "NO_COLOR",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "ZAI_API_KEY",
+  "GLM_API_KEY",
+  "NOUS_API_KEY",
+  "MISTRAL_API_KEY",
+  "XAI_API_KEY",
+  "COHERE_API_KEY",
+  "MINIMAX_API_KEY",
+  "MOONSHOT_API_KEY",
+  "DASHSCOPE_API_KEY",
+])
+
+export function buildHarnessEnvironment(
+  launcher: AgentLauncher,
+  baseEnvironment: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {}
+  for (const key of SAFE_ENVIRONMENT_KEYS) {
+    const value = baseEnvironment[key]
+    if (value !== undefined) environment[key] = value
+  }
+  // Never inherit ambient Codex privilege/configuration policy. A built-in
+  // launcher may opt into an explicit safe value below.
+  delete environment.CODEX_CONFIG
+  delete environment.INITIAL_AGENT_MODE
+  for (const [key, value] of Object.entries(launcher.environment ?? {}))
+    environment[key] = value
+  return environment
+}
+
 function asWebReadable(
   stream: NodeJS.ReadableStream
 ): ReadableStream<Uint8Array> {
@@ -60,6 +106,8 @@ export class AcpHarnessAdapter implements HarnessAdapter {
   private session?: ActiveSession
   private initializeResponse?: InitializeResponse
   private promptInFlight = false
+  private closing = false
+  private failureHandler?: (error: Error) => void
 
   constructor(
     readonly launcher: AgentLauncher,
@@ -78,6 +126,23 @@ export class AcpHarnessAdapter implements HarnessAdapter {
     }
   }
 
+  onFailure(handler: (error: Error) => void): void {
+    this.failureHandler = handler
+  }
+
+  private markProcessDead(child: ChildProcess, error: Error): void {
+    if (this.child !== child || this.closing) return
+    const connection = this.connection
+    const session = this.session
+    this.child = undefined
+    this.connection = undefined
+    this.session = undefined
+    this.initializeResponse = undefined
+    session?.dispose()
+    connection?.close(error)
+    this.failureHandler?.(error)
+  }
+
   async ensureSession(): Promise<void> {
     if (this.session) return
     if (this.child || this.connection)
@@ -85,19 +150,19 @@ export class AcpHarnessAdapter implements HarnessAdapter {
 
     const child = spawn(this.launcher.command, this.launcher.args, {
       cwd: this.workingDirectory,
-      env: process.env,
+      env: buildHarnessEnvironment(this.launcher),
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     })
     this.child = child
     child.stderr?.resume()
-    child.once("error", (error) => this.connection?.close(error))
-    child.once("exit", (code, signal) => {
-      if (this.connection && !this.connection.signal.aborted)
-        this.connection.close(
-          new Error(`ACP process exited (${code ?? `signal:${signal}`})`)
-        )
-    })
+    child.once("error", (error) => this.markProcessDead(child, error))
+    child.once("exit", (code, signal) =>
+      this.markProcessDead(
+        child,
+        new Error(`ACP process exited (${code ?? `signal:${signal}`})`)
+      )
+    )
 
     const app = client({ name: "free4chat-agent-runtime" }).onRequest(
       CLIENT_METHODS.session_request_permission,
@@ -160,6 +225,7 @@ export class AcpHarnessAdapter implements HarnessAdapter {
   }
 
   async close(): Promise<void> {
+    this.closing = true
     const connection = this.connection
     const child = this.child
     const session = this.session
@@ -182,17 +248,19 @@ export class AcpHarnessAdapter implements HarnessAdapter {
     } else {
       connection?.close()
     }
-    if (!child || child.exitCode !== null || child.signalCode !== null) return
-    child.kill("SIGTERM")
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL")
-        resolve()
-      }, SHUTDOWN_TIMEOUT_MS)
-      child.once("exit", () => {
-        clearTimeout(timer)
-        resolve()
+    if (child && child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM")
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL")
+          resolve()
+        }, SHUTDOWN_TIMEOUT_MS)
+        child.once("exit", () => {
+          clearTimeout(timer)
+          resolve()
+        })
       })
-    })
+    }
+    this.closing = false
   }
 }

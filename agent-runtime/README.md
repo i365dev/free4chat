@@ -37,9 +37,17 @@ Built-in launchers are convenience data, not adapter classes:
 - `deepseek-harness` — developer-preview `demo:acp`; set
   `FREE4CHAT_DEEPSEEK_REPO` to a checked-out DeepSeek Harness repository.
 
+The built-in OpenCode launcher forces ACP onto `127.0.0.1` with an ephemeral
+port, disables mDNS, and enables pure mode. Built-in launchers also receive a
+minimal environment: provider authentication variables may be passed through,
+but unrelated AWS, GitHub, shell, and ambient Codex privilege/configuration
+variables are not. Codex is launched in explicit read-only mode.
+
 Any ACP-compatible process can be launched with
 `--agent-command <command> --agent-arg <arg> ...`. Commands are passed as
-argv with `shell=false`. The runtime creates a fresh 0700 workspace per
+argv with `shell=false`. This is a trusted local ACP implementation boundary:
+Free4Chat cannot sandbox a malicious or non-compliant custom ACP process merely
+because it speaks ACP. The runtime creates a fresh 0700 workspace per
 instance and advertises no filesystem, terminal, MCP, or other host
 capabilities. ACP permission requests are cancelled by default.
 

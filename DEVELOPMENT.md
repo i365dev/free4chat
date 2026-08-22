@@ -110,6 +110,14 @@ free4chat/
 
 The independent `agent-runtime/` package contains the local daemon/CLI, MCP client, lifecycle core, event buffer, generic ACP v1 client, and launcher registry. It is not part of the Worker bundle and is not published by CI. ACP is the local runtime boundary; MCP remains the external room API. A2A is intentionally future work because it would add remote discovery, authentication, and trust concerns.
 
+Resident launchers run with a restricted environment and a per-instance 0700
+workspace. Provider authentication variables may be retained, but unrelated
+AWS/GitHub/shell secrets and ambient Codex privilege configuration are removed;
+the built-in Codex launcher explicitly selects read-only mode. OpenCode is
+forced to a loopback ephemeral ACP server with mDNS disabled. A custom
+`--agent-command` is a trusted local ACP implementation, not a sandbox: ACP
+protocol compliance alone cannot contain a malicious process.
+
 ## MCP smoke test
 
 After starting the local app, connect an MCP v2 client to `http://localhost:3000/mcp`, list tools, and invoke `room_info`. To exercise the participant flow, invoke `join_room`, retain its participant handle privately, then call `wait_for_events` and `send_text`. Do not paste handles or local secrets into logs or issue reports. For resident testing, use `free4chat-agent join`; the runtime owns the handle and the model never sees it.
