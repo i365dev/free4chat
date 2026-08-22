@@ -6,6 +6,7 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
 
+import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
 
 interface PendingFile {
@@ -507,7 +508,7 @@ export default function TextChatCard({
     if (message.trim() !== "") {
       onSendText(
         message.trim(),
-        selectedAgents.map((agent) => agent.id)
+        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
       )
       setMessage("")
       setSelectedAgents([])
@@ -548,7 +549,7 @@ export default function TextChatCard({
     ) {
       onSendText(
         message.trim(),
-        selectedAgents.map((agent) => agent.id)
+        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
       )
       setMessage("")
       setSelectedAgents([])
@@ -935,7 +936,9 @@ export default function TextChatCard({
               setMessage(nextMessage)
               setSelectedAgents((current) =>
                 current.filter((agent) =>
-                  nextMessage.includes(`@${agent.name}`)
+                  resolveAgentTargetIds(nextMessage, connectedAgents, [
+                    agent,
+                  ]).includes(agent.id)
                 )
               )
               setPickerDismissed(false)
