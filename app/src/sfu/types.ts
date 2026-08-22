@@ -1,4 +1,5 @@
 export type {
+  MeetingNotesState as SfuMeetingNotesState,
   ParticipantKind,
   RoomMessage as SfuMessage,
   RoomParticipant as SfuParticipant,

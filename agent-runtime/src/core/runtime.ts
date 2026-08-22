@@ -1,4 +1,7 @@
 import { Free4ChatClientError } from "../free4chat/client.js"
+import { MeetingNotesController } from "../media/meetingNotesController.js"
+import { decodeParticipantHandle } from "../media/participantHandle.js"
+import type { MediaBridgeEventHandler } from "../media/types.js"
 import { EventBuffer, boundedPush } from "./eventBuffer.js"
 import type {
   Free4ChatClient,
@@ -29,6 +32,14 @@ export interface ResidentRuntimeOptions {
   client: Free4ChatClient
   adapter: HarnessAdapter
   log?: (event: string, details?: Record<string, string | number>) => void
+  /** Same MCP endpoint `client` was built with — needed to derive the site
+   * origin for the Meeting Notes media REST surface. */
+  mcpUrl: string
+  onMediaEvent?: MediaBridgeEventHandler
+  /** Injectable for tests. */
+  createMeetingNotesController?: (
+    handle: ReturnType<typeof decodeParticipantHandle>
+  ) => MeetingNotesController
 }
 
 function defaultLog(
@@ -81,6 +92,7 @@ export class ResidentRoomRuntime {
     event: string,
     details?: Record<string, string | number>
   ) => void
+  private meetingNotes: MeetingNotesController | null = null
 
   constructor(private readonly options: ResidentRuntimeOptions) {
     this.log = options.log ?? defaultLog
@@ -128,6 +140,40 @@ export class ResidentRoomRuntime {
     this.pendingAddressed.length = 0
     this.state = "waiting"
     this.lastError = undefined
+    await this.restartMeetingNotesController()
+  }
+
+  // Called once per (re)join, since a rejoin gets a fresh
+  // participantHandle/participantId — the previous controller's grant
+  // check (matching the *old* participantId) would never authorize again
+  // even if the room still names this Agent, so it must be replaced, not
+  // reused. A failure constructing/starting this must never fail join()
+  // itself — Meeting Notes media is strictly additive to text/ACP.
+  private async restartMeetingNotesController(): Promise<void> {
+    const previous = this.meetingNotes
+    this.meetingNotes = null
+    if (previous) await previous.stop().catch(() => undefined)
+    if (!this.participantHandle || !this.participantId) return
+    try {
+      const handle = decodeParticipantHandle(this.participantHandle)
+      const controller =
+        this.options.createMeetingNotesController?.(handle) ??
+        new MeetingNotesController({
+          client: this.options.client,
+          roomId: this.options.roomId,
+          participantId: this.participantId,
+          mcpUrl: this.options.mcpUrl,
+          handle,
+          onEvent: this.options.onMediaEvent ?? (() => undefined),
+          log: this.log,
+        })
+      this.meetingNotes = controller
+      void controller.start()
+    } catch (error) {
+      this.log("meeting_notes_controller_init_failed", {
+        error: error instanceof Error ? error.message : "unknown error",
+      })
+    }
   }
 
   private async waitLoop(): Promise<void> {
@@ -275,6 +321,10 @@ export class ResidentRoomRuntime {
   async stop(): Promise<void> {
     this.stopped = true
     this.state = "stopped"
+    if (this.meetingNotes) {
+      await this.meetingNotes.stop().catch(() => undefined)
+      this.meetingNotes = null
+    }
     try {
       await this.options.adapter.cancelTurn?.()
     } catch {

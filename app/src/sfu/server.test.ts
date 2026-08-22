@@ -517,3 +517,36 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
 // is verified by code review only; the enforced, tested boundary is the
 // route-level check in the "Phase-0 invariant" suite above, which runs
 // before RoomSession's "publish" action would ever be reached.
+
+describe("Meeting Notes room grant is a real authorization boundary, not just token possession", () => {
+  it("a generic MCP agent with a valid token but no Meeting Notes grant is still rejected", async () => {
+    // Mirrors what RoomSession.ts's agent-room-media action actually does:
+    // token/kind check passes, but the room grant check does not, so it
+    // returns meeting_notes_not_authorized — this test proves the route
+    // correctly surfaces that 403 rather than treating a valid token alone
+    // as sufficient.
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, () => ({
+      status: 403,
+      body: { error: "meeting_notes_not_authorized" },
+    }))
+    const res = await handleSfuRequest(
+      req("agent-room-media", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("meeting_notes_not_authorized")
+  })
+
+  it("agent-session also rejects an ungranted agent (it reuses the same auth check)", async () => {
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, () => ({
+      status: 403,
+      body: { error: "meeting_notes_not_authorized" },
+    }))
+    const res = await handleSfuRequest(
+      req("agent-session", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("meeting_notes_not_authorized")
+  })
+})

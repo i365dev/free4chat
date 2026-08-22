@@ -1,11 +1,18 @@
 import { DurableObject } from "cloudflare:workers"
 
+import {
+  clearGrantIfParticipantDeparting,
+  isAgentAuthorizedForMedia,
+  NO_MEETING_NOTES,
+  startMeetingNotes,
+} from "./meetingNotesAuth"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import type {
   AgentEvent,
   RoomCapabilities,
   RoomAttachment,
   AgentImageMimeType,
+  MeetingNotesState,
   RoomMediaTrack,
   RoomMessage,
   RoomParticipant,
@@ -51,12 +58,17 @@ interface StoredParticipant extends RoomParticipant {
 interface StoredRoom
   extends Omit<
     RoomRecord,
-    "participants" | "messages" | "attachments" | "nextMessageSequence"
+    | "participants"
+    | "messages"
+    | "attachments"
+    | "nextMessageSequence"
+    | "meetingNotes"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
   attachments?: RoomAttachment[]
   nextMessageSequence?: number
+  meetingNotes?: MeetingNotesState
 }
 
 interface AgentWaiter {
@@ -157,6 +169,8 @@ type ClientMessage =
   | { type: "datachannel-ready" }
   | { type: "resync" }
   | { type: "leave" }
+  | { type: "meeting-notes-start"; agentParticipantId: string }
+  | { type: "meeting-notes-stop" }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
@@ -258,6 +272,25 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       : []
     if (!Array.isArray(stored.attachments)) changed = true
 
+    let meetingNotes: MeetingNotesState
+    if (this.validMeetingNotes(stored.meetingNotes)) {
+      meetingNotes = stored.meetingNotes
+    } else {
+      meetingNotes = NO_MEETING_NOTES
+      changed = true
+    }
+    if (
+      meetingNotes.active &&
+      (!meetingNotes.agentParticipantId ||
+        participants[meetingNotes.agentParticipantId]?.kind !== "agent")
+    ) {
+      // The selected note-taker no longer exists (left, expired, or the
+      // stored grant was pointing at a participant that was never an
+      // agent) — a stale grant must not silently keep authorizing media.
+      meetingNotes = NO_MEETING_NOTES
+      changed = true
+    }
+
     return {
       room: {
         createdAt: stored.createdAt,
@@ -266,9 +299,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         messages,
         attachments,
         nextMessageSequence,
+        meetingNotes,
       },
       changed,
     }
+  }
+
+  private validMeetingNotes(value: unknown): value is MeetingNotesState {
+    if (!value || typeof value !== "object") return false
+    const candidate = value as Partial<MeetingNotesState>
+    if (typeof candidate.active !== "boolean") return false
+    if (!candidate.active) return true
+    return (
+      typeof candidate.agentParticipantId === "string" &&
+      candidate.agentParticipantId.length > 0 &&
+      typeof candidate.startedAt === "number"
+    )
   }
 
   private async saveRoom(room: RoomRecord): Promise<void> {
@@ -324,6 +370,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             participant
         ),
       messages: room.messages,
+      meetingNotes: room.meetingNotes,
     }
   }
 
@@ -644,6 +691,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               .map((participant) => this.participantForInfo(participant))
           : [],
         capabilities: ROOM_CAPABILITIES,
+        // Room-visible state, not a capability secret — the same
+        // agentParticipantId is already visible in `participants` above.
+        meetingNotes: room?.meetingNotes ?? NO_MEETING_NOTES,
       })
     }
 
@@ -664,6 +714,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           messages: [],
           attachments: [],
           nextMessageSequence: 0,
+          meetingNotes: NO_MEETING_NOTES,
         }
       }
       const isAgent = request.action === "agent-register"
@@ -769,19 +820,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      // The real authorization boundary: this agent must be the one
+      // Human-selected note-taker for an *active* Meeting Notes grant on
+      // this room. Holding a valid agent participant token is necessary
+      // but never sufficient — an ordinary text-only agent that joined
+      // the room but was never granted the Meeting Notes role is rejected
+      // here even though its token is perfectly valid. AGENT_MEDIA_ENABLED
+      // (sfu/server.ts) is an additional, coarser master switch on top of
+      // this — off, it blocks everyone regardless of any room grant; on,
+      // it still requires this per-room, per-agent grant to actually see
+      // Human media. Setting it alone was never meant to be sufficient.
+      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       // Deliberately narrower than participantForInfo/room-info: this is
-      // not exposed through the MCP tool surface, and reaching it requires
-      // an authorized agent participant token — but that token opacity is
-      // not an additional security layer by itself (the participantHandle
-      // is just base64url(JSON), decodable by anything that has it). The
-      // real production gate is AGENT_MEDIA_ENABLED in sfu/server.ts,
-      // which is off by default and not set by the deploy workflow — see
-      // its comment for why, and what the eventual replacement is. Only
-      // Human media is exposed — Phase 0 MediaBridge only ever ingests
-      // Human audio.
+      // not exposed through the MCP tool surface. Only Human media is
+      // exposed — Phase 0 MediaBridge only ever ingests Human audio.
       const participants = Object.values(room.participants)
         .filter(
           (
@@ -857,6 +913,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
       delete room.participants[participant.id]
+      room.meetingNotes = clearGrantIfParticipantDeparting(
+        room.meetingNotes,
+        participant.id
+      )
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       const waiter = this.agentWaiters.get(participant.id)
@@ -987,6 +1047,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     delete room.participants[participant.id]
+    room.meetingNotes = clearGrantIfParticipantDeparting(
+      room.meetingNotes,
+      participant.id
+    )
     this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
     await this.broadcastState(room)
@@ -1045,6 +1109,25 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "datachannel-ready") {
       participant.media.fileChannelReady = true
+      await this.saveRoom(room)
+      await this.broadcastState(room)
+      return
+    }
+    if (message.type === "meeting-notes-start") {
+      const agent = room.participants[message.agentParticipantId]
+      if (!agent || agent.kind !== "agent" || !agent.connected) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "agent_not_in_room" })
+        )
+        return
+      }
+      room.meetingNotes = startMeetingNotes(agent.id, Date.now())
+      await this.saveRoom(room)
+      await this.broadcastState(room)
+      return
+    }
+    if (message.type === "meeting-notes-stop") {
+      room.meetingNotes = NO_MEETING_NOTES
       await this.saveRoom(room)
       await this.broadcastState(room)
       return
@@ -1285,6 +1368,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant.lastSeenAt + AGENT_LEASE_MS <= now
       if (expiredHuman || expiredAgent) {
         delete room.participants[id]
+        room.meetingNotes = clearGrantIfParticipantDeparting(
+          room.meetingNotes,
+          id
+        )
         changed = true
         const waiter = this.agentWaiters.get(id)
         if (waiter) {

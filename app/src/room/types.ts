@@ -60,11 +60,23 @@ export interface RoomAttachment {
   sequence: number
 }
 
+// Room-scoped Meeting Notes media-listening grant (#82). Visible to every
+// participant via room state — never a capability secret. `active: false`
+// is the only state that carries no `agentParticipantId`/`startedAt`;
+// deliberately mirrors the shape of "no grant" so a room that was never
+// started, and a room that was started then stopped, look identical.
+export interface MeetingNotesState {
+  active: boolean
+  agentParticipantId?: string
+  startedAt?: number
+}
+
 export interface RoomState {
   createdAt: number
   expiresAt: number
   participants: Array<Omit<RoomParticipant, "token" | "connectionNonce">>
   messages: RoomMessage[]
+  meetingNotes: MeetingNotesState
 }
 
 export interface RoomRecord {
@@ -74,6 +86,7 @@ export interface RoomRecord {
   messages: RoomMessage[]
   attachments: RoomAttachment[]
   nextMessageSequence: number
+  meetingNotes: MeetingNotesState
 }
 
 export interface RoomCapabilities {
