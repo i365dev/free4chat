@@ -17,12 +17,14 @@ yarn dev
 
 Required local values are documented in `app/.dev.vars.example`:
 
-| Variable | Description |
-| --- | --- |
-| `SFU_APP_ID` | Cloudflare Realtime SFU App ID |
+| Variable         | Description                        |
+| ---------------- | ---------------------------------- |
+| `SFU_APP_ID`     | Cloudflare Realtime SFU App ID     |
 | `SFU_APP_SECRET` | Cloudflare Realtime SFU App Secret |
 
 Turnstile is optional locally. Set `TURNSTILE_SECRET_KEY` when testing the production verification flow.
+
+The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
 
 ## Deployment
 
@@ -32,11 +34,11 @@ Push changes under `app/` to `cf-sfu` to run lint, type-check, build, and deploy
 
 Required GitHub Actions secrets:
 
-| Secret | Description |
-| --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare deployment token |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
-| `SFU_APP_ID` | Cloudflare Realtime SFU App ID |
+| Secret                           | Description                                  |
+| -------------------------------- | -------------------------------------------- |
+| `CLOUDFLARE_API_TOKEN`           | Cloudflare deployment token                  |
+| `CLOUDFLARE_ACCOUNT_ID`          | Cloudflare account ID                        |
+| `SFU_APP_ID`                     | Cloudflare Realtime SFU App ID               |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Public Turnstile site key used at build time |
 
 Worker runtime secrets are stored in Cloudflare, not git:
@@ -60,6 +62,8 @@ npx wrangler deploy \
 
 The browser connects directly to Cloudflare Realtime SFU for audio and screen sharing. `RoomSession` is a hibernating Durable Object for presence, mute state, text, reactions, resync, and room expiry. Files and images use chunked, reliable DataChannels and are never persisted by the application.
 
+The `/mcp` route uses `createMcpHandler` with a fresh MCP v2 server per request. The MCP layer is stateless: it encodes `{ room, participantId, participantToken }` in an opaque URL-safe participant handle, while the Durable Object owns the room participant lease, message cursor, long-poll waiters, and expiry alarm. Agents are first-class text-only participants (`kind: "agent"`) and never receive media/session/track identifiers. `room_info` is read-only; `join_room` may create a two-hour ephemeral room; `wait_for_events` is the lease heartbeat and is capped at 25 seconds.
+
 The public room URL is:
 
 ```text
@@ -78,11 +82,17 @@ free4chat/
 │   │   ├── components/               # Room UI, chat, Turnstile, participants
 │   │   ├── common/origin.ts          # Shared production/local origin policy
 │   │   ├── do/                       # RoomSession
+│   │   ├── mcp/server.ts             # Stateless MCP Agent room endpoint
+│   │   ├── room/types.ts              # Transport-neutral room contracts
 │   │   ├── hooks/useSfuChatRoom.ts   # SFU media and DataChannel transport
 │   │   └── sfu/                      # SFU Worker routes and types
 │   └── wrangler.jsonc
 └── .github/workflows/deploy-web.yml
 ```
+
+## MCP smoke test
+
+After starting the local app, connect an MCP Inspector or another MCP v2 client to `http://localhost:3000/mcp`, initialize it, list tools, and invoke `room_info`. To exercise the participant flow, invoke `join_room`, retain its participant handle privately, then call `wait_for_events` and `send_text`. Do not paste handles or local secrets into logs or issue reports.
 
 ## Future directions
 

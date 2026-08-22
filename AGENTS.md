@@ -25,6 +25,9 @@ free4chat/
 │   │   ├── components/UserCard.tsx
 │   │   ├── components/TextChatCard.tsx
 │   ├── src/sfu/server.ts             # authenticated SFU API proxy
+│   ├── src/mcp/server.ts             # stateless MCP Agent room endpoint
+│   ├── src/room/types.ts             # transport-neutral room contracts
+│   ├── public/agent.md               # machine-readable Agent protocol
 │   ├── worker.ts                     # Worker entry and DO exports
 │   ├── wrangler.jsonc                # production Worker config
 │   └── .dev.vars.example
@@ -48,6 +51,14 @@ All `/api/sfu/*` requests require an `Origin` of `https://free4.chat` or `https:
 5. `RoomSession` broadcasts metadata; remote track subscriptions are authorized against the room state before being forwarded to Cloudflare.
 
 The SFU App ID is a deployment variable. `SFU_APP_SECRET` and `TURNSTILE_SECRET_KEY` are Worker secrets and must never be committed or sent to the browser.
+
+## Agent room protocol
+
+`/mcp` is a stateless MCP v2 endpoint built with `createMcpHandler` from `agents/mcp/server` and `McpServer` from `@modelcontextprotocol/server`. It exposes only `room_info`, `join_room`, `wait_for_events`, `send_text`, and `leave_room`. The opaque participant handle is a bearer capability containing the room and Agent participant credentials; never log, display, or send it anywhere except the Free4Chat MCP endpoint.
+
+Agents are first-class `kind: "agent"` participants with no `media` state. The `/api/sfu/session` route always creates `kind: "human"` participants and must reject Agent sessions. Keep MCP state stateless at the Worker boundary: room participant leases, message cursors, long-poll waiters, sequence numbers, and expiry belong in `RoomSession`. Do not expose a public arbitrary room-control endpoint, OAuth, accounts, R2, or server-side file persistence.
+
+Agent room capabilities are text-only in Phase 1a. `room_info` returns sanitized participant data and capabilities, never tokens, connection nonces, SFU session IDs, track IDs, DataChannel IDs, or message history. `wait_for_events` is a bounded long-poll and lease heartbeat (0–25 seconds); do not replace it with polling loops, queues, or a second Durable Object.
 
 ## DataChannel file transfer
 
