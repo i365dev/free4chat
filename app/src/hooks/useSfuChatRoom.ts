@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
+import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
 import { ActionType, Message, UserInfo } from "@common/types"
 
 import type {
@@ -114,6 +115,9 @@ const roomMessageToMessage = (
     name: message.name,
     kind: message.kind,
     type: message.type === "action" ? "action" : "text",
+    messageId: message.id,
+    createdAt: message.createdAt,
+    sequence: message.sequence,
     text: message.text,
     actionType: message.actionType as ActionType | undefined,
     actionPayload: message.actionPayload,
@@ -169,6 +173,8 @@ export function useSfuChatRoom(
   const localTrackMidsRef = useRef(new Map<string, string>())
   const incomingFilesRef = useRef(new Map<string, IncomingFileTransfer>())
   const objectUrlsRef = useRef(new Set<string>())
+  const roomMessagesRef = useRef<Message[]>([])
+  const ephemeralMessagesRef = useRef<Message[]>([])
   const fileSendQueueRef = useRef(Promise.resolve())
   const dataChannelReadyRef = useRef(false)
   const closingRef = useRef(false)
@@ -346,29 +352,68 @@ export function useSfuChatRoom(
     []
   )
 
+  const replaceRoomMessages = useCallback((nextMessages: Message[]) => {
+    roomMessagesRef.current = nextMessages
+    setMessages(
+      mergeRoomAndEphemeralMessages(
+        roomMessagesRef.current,
+        ephemeralMessagesRef.current
+      )
+    )
+  }, [])
+
+  const appendRoomMessage = useCallback((message: Message) => {
+    roomMessagesRef.current = [...roomMessagesRef.current, message]
+    setMessages(
+      mergeRoomAndEphemeralMessages(
+        roomMessagesRef.current,
+        ephemeralMessagesRef.current
+      )
+    )
+  }, [])
+
+  const appendEphemeralMessage = useCallback((message: Message) => {
+    if (
+      message.messageId &&
+      ephemeralMessagesRef.current.some(
+        (existing) => existing.messageId === message.messageId
+      )
+    )
+      return
+    ephemeralMessagesRef.current = [
+      ...ephemeralMessagesRef.current,
+      { ...message, ephemeral: true },
+    ]
+    setMessages(
+      mergeRoomAndEphemeralMessages(
+        roomMessagesRef.current,
+        ephemeralMessagesRef.current
+      )
+    )
+  }, [])
+
   const addReceivedFileMessage = useCallback(
     (
       peerId: string,
       name: string,
-      file: Pick<IncomingFileTransfer, "name" | "mime" | "size">,
+      file: Pick<IncomingFileTransfer, "id" | "name" | "mime" | "size">,
       chunks: ArrayBuffer[]
     ) => {
       const blob = new Blob(chunks, { type: file.mime })
       const fileLink = URL.createObjectURL(blob)
       objectUrlsRef.current.add(fileLink)
-      setMessages((previous) => [
-        ...previous,
-        {
-          peerId,
-          name,
-          type: file.mime.startsWith("image/") ? "image" : "file",
-          fileLink,
-          fileName: file.name,
-          fileSize: file.size,
-        },
-      ])
+      appendEphemeralMessage({
+        peerId,
+        name,
+        type: file.mime.startsWith("image/") ? "image" : "file",
+        messageId: file.id,
+        createdAt: Date.now(),
+        fileLink,
+        fileName: file.name,
+        fileSize: file.size,
+      })
     },
-    []
+    [appendEphemeralMessage]
   )
 
   const resetRemoteParticipant = useCallback((participantId: string) => {
@@ -740,7 +785,7 @@ export function useSfuChatRoom(
         ])
       )
       const localParticipantId = sessionRef.current?.participantId
-      setMessages(
+      replaceRoomMessages(
         state.messages.map((message) =>
           roomMessageToMessage(message, localParticipantId)
         )
@@ -762,6 +807,7 @@ export function useSfuChatRoom(
     [
       rebuildParticipants,
       resetRemoteParticipant,
+      replaceRoomMessages,
       subscribeFileChannel,
       subscribeTrack,
     ]
@@ -901,10 +947,9 @@ export function useSfuChatRoom(
         }
       } else if (message.type === "message" && message.message) {
         const localParticipantId = sessionRef.current?.participantId
-        setMessages((previous) => [
-          ...previous,
-          roomMessageToMessage(message.message!, localParticipantId),
-        ])
+        appendRoomMessage(
+          roomMessageToMessage(message.message, localParticipantId)
+        )
       } else if (message.type === "expired") {
         setError(
           "This room has expired (2-hour limit). Please open a new room."
@@ -931,6 +976,7 @@ export function useSfuChatRoom(
       )
     }
   }, [
+    appendRoomMessage,
     applyRoomState,
     rebuildParticipants,
     resetRemoteParticipant,
@@ -1149,6 +1195,8 @@ export function useSfuChatRoom(
       incomingFiles.clear()
       for (const url of objectUrls) URL.revokeObjectURL(url)
       objectUrls.clear()
+      roomMessagesRef.current = []
+      ephemeralMessagesRef.current = []
       dataChannelReadyRef.current = false
       localTrackMids.clear()
       mediaReconnectRef.current = null
@@ -1274,17 +1322,16 @@ export function useSfuChatRoom(
         channel.send(JSON.stringify({ type: "file-end", id }))
         const fileLink = URL.createObjectURL(file)
         objectUrlsRef.current.add(fileLink)
-        setMessages((previous) => [
-          ...previous,
-          {
-            peerId: LOCAL_PEER_ID,
-            name: nickName,
-            type: mime.startsWith("image/") ? "image" : "file",
-            fileLink,
-            fileName: file.name,
-            fileSize: file.size,
-          },
-        ])
+        appendEphemeralMessage({
+          peerId: LOCAL_PEER_ID,
+          name: nickName,
+          type: mime.startsWith("image/") ? "image" : "file",
+          messageId: id,
+          createdAt: Date.now(),
+          fileLink,
+          fileName: file.name,
+          fileSize: file.size,
+        })
         const session = sessionRef.current
         const hasConnectedAgent = [...participantMapRef.current.values()].some(
           (participant) => participant.kind === "agent" && participant.connected
@@ -1317,7 +1364,13 @@ export function useSfuChatRoom(
       )
       return next
     },
-    [nickName, roomName, waitForDataChannelOpen, waitForSendCapacity]
+    [
+      appendEphemeralMessage,
+      nickName,
+      roomName,
+      waitForDataChannelOpen,
+      waitForSendCapacity,
+    ]
   )
 
   return {

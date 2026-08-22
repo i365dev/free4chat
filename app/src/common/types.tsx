@@ -19,6 +19,10 @@ export interface Message {
   name: string
   kind?: "human" | "agent"
   type: MessageType
+  messageId?: string
+  createdAt?: number
+  sequence?: number
+  ephemeral?: boolean
   text?: string
   fileLink?: string
   fileName?: string
