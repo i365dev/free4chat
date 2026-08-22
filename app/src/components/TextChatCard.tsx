@@ -6,6 +6,8 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
 
+import type { UserInfo } from "../common/types"
+
 interface PendingFile {
   id: string
   fileName: string
@@ -18,8 +20,9 @@ interface TextChatCardProps {
   room: string
   nickName: string
   messages: Message[]
+  participants: UserInfo[]
   pendingFiles?: PendingFile[]
-  onSendText: (text: string) => void
+  onSendText: (text: string, targets?: string[]) => void
   onSendFile: (file: File) => void
   onSendAction: (
     actionType: ActionType,
@@ -459,6 +462,7 @@ export default function TextChatCard({
   room,
   nickName,
   messages,
+  participants,
   pendingFiles = [],
   onSendText,
   onSendFile,
@@ -468,6 +472,10 @@ export default function TextChatCard({
   const [submenu, setSubmenu] = useState<"games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const [pickerIndex, setPickerIndex] = useState(0)
+  const [selectedAgents, setSelectedAgents] = useState<
+    Array<{ id: string; name: string }>
+  >([])
+  const [pickerDismissed, setPickerDismissed] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -497,30 +505,38 @@ export default function TextChatCard({
 
   const handleSend = () => {
     if (message.trim() !== "") {
-      onSendText(message.trim())
+      onSendText(
+        message.trim(),
+        selectedAgents.map((agent) => agent.id)
+      )
       setMessage("")
+      setSelectedAgents([])
     }
   }
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (showPicker) {
+    if (pickerVisible) {
       if (event.key === "ArrowDown") {
         event.preventDefault()
-        setPickerIndex((i) => (i + 1) % pickerItems.length)
+        setPickerIndex((i) => (i + 1) % pickerLength)
         return
       }
       if (event.key === "ArrowUp") {
         event.preventDefault()
-        setPickerIndex((i) => (i - 1 + pickerItems.length) % pickerItems.length)
+        setPickerIndex((i) => (i - 1 + pickerLength) % pickerLength)
         return
       }
-      if (event.key === "Enter" && !isComposingRef.current) {
+      if (
+        (event.key === "Enter" || event.key === "Tab") &&
+        !isComposingRef.current
+      ) {
         event.preventDefault()
-        commitPicker(pickerIndex)
+        if (showAgentPicker) selectAgent(mentionAgents[pickerIndex])
+        else commitPicker(pickerIndex)
         return
       }
       if (event.key === "Escape") {
-        setMessage("")
+        setPickerDismissed(true)
         setPickerIndex(0)
         return
       }
@@ -530,8 +546,12 @@ export default function TextChatCard({
       !isComposingRef.current &&
       message.trim() !== ""
     ) {
-      onSendText(message.trim())
+      onSendText(
+        message.trim(),
+        selectedAgents.map((agent) => agent.id)
+      )
       setMessage("")
+      setSelectedAgents([])
     }
   }
 
@@ -614,6 +634,53 @@ export default function TextChatCard({
       : []
 
   const showPicker = pickerItems.length > 0
+
+  const connectedAgents = participants.filter(
+    (participant) =>
+      participant.kind === "agent" && participant.peerId !== LOCAL_PEER_ID
+  )
+  const caretPosition = inputRef.current?.selectionStart ?? message.length
+  const mentionMatch = message
+    .slice(0, caretPosition)
+    .match(/(?:^|\s)@([^\s@]*)$/)
+  const mentionQuery = mentionMatch?.[1] ?? null
+  const mentionAgents =
+    mentionQuery === null
+      ? []
+      : connectedAgents.filter((agent) =>
+          agent.name.toLowerCase().startsWith(mentionQuery.toLowerCase())
+        )
+  const showAgentPicker = !pickerDismissed && mentionAgents.length > 0
+
+  const selectAgent = (agent: UserInfo) => {
+    if (!agent) return
+    const caret = inputRef.current?.selectionStart ?? message.length
+    const before = message.slice(0, caret)
+    const match = before.match(/(?:^|\s)@([^\s@]*)$/)
+    if (!match) return
+    const start = caret - match[0].length + (match[0].startsWith(" ") ? 1 : 0)
+    const nextMessage = `${message.slice(0, start)}@${
+      agent.name
+    } ${message.slice(caret)}`
+    setMessage(nextMessage)
+    setSelectedAgents((current) =>
+      current.some((selected) => selected.id === agent.peerId)
+        ? current
+        : [...current, { id: agent.peerId, name: agent.name }]
+    )
+    setPickerDismissed(false)
+    setPickerIndex(0)
+    window.setTimeout(() => {
+      const nextCaret = start + agent.name.length + 2
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(nextCaret, nextCaret)
+    }, 0)
+  }
+
+  const pickerVisible = showAgentPicker || showPicker
+  const pickerLength = showAgentPicker
+    ? mentionAgents.length
+    : pickerItems.length
 
   const commitPicker = (idx: number) => {
     pickerItems[idx]?.action()
@@ -814,31 +881,47 @@ export default function TextChatCard({
         </div>
 
         <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
-          {showPicker && (
+          {pickerVisible && (
             <div className="absolute bottom-full left-3 right-3 mb-1 overflow-hidden rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
-              {pickerItems.map((item, i) => (
-                <button
-                  key={item.label}
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault()
-                    commitPicker(i)
-                  }}
-                  onTouchEnd={(e) => {
-                    e.preventDefault()
-                    commitPicker(i)
-                  }}
-                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
-                    i === pickerIndex
-                      ? "bg-gray-700 text-white"
-                      : "text-gray-300 hover:bg-gray-700"
-                  }`}
-                >
-                  <span className="text-base">{item.icon}</span>
-                  <span className="font-medium">{item.label}</span>
-                  <span className="text-xs text-gray-500">{item.desc}</span>
-                </button>
-              ))}
+              {(showAgentPicker ? mentionAgents : pickerItems).map(
+                (item, i) => (
+                  <button
+                    key={showAgentPicker ? item.peerId : item.label}
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      if (showAgentPicker) selectAgent(item as UserInfo)
+                      else commitPicker(i)
+                    }}
+                    onTouchEnd={(e) => {
+                      e.preventDefault()
+                      if (showAgentPicker) selectAgent(item as UserInfo)
+                      else commitPicker(i)
+                    }}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
+                      i === pickerIndex
+                        ? "bg-gray-700 text-white"
+                        : "text-gray-300 hover:bg-gray-700"
+                    }`}
+                  >
+                    {showAgentPicker ? (
+                      <>
+                        <span className="text-base">🤖</span>
+                        <span className="font-medium">{item.name}</span>
+                        <span className="text-xs text-gray-500">Agent</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-base">{item.icon}</span>
+                        <span className="font-medium">{item.label}</span>
+                        <span className="text-xs text-gray-500">
+                          {item.desc}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                )
+              )}
             </div>
           )}
           <input
@@ -848,7 +931,14 @@ export default function TextChatCard({
             value={message}
             onKeyDown={handleKeyDown}
             onChange={(e) => {
-              setMessage(e.target.value)
+              const nextMessage = e.target.value
+              setMessage(nextMessage)
+              setSelectedAgents((current) =>
+                current.filter((agent) =>
+                  nextMessage.includes(`@${agent.name}`)
+                )
+              )
+              setPickerDismissed(false)
               setPickerIndex(0)
             }}
             onCompositionStart={() => {

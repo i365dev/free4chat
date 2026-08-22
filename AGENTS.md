@@ -19,6 +19,7 @@ free4chat/
 │   ├── src/
 │   │   ├── common/origin.ts          # shared origin allow-list
 │   │   ├── common/types.tsx          # UserInfo and Message contracts
+│   │   ├── common/agentInvite.ts     # room-scoped Agent bootstrap prompt
 │   │   ├── do/RoomSession.ts         # room presence/chat/mute/state
 │   │   ├── do/                       # RoomSession state coordination
 │   │   ├── hooks/useSfuChatRoom.ts   # WebRTC, SFU negotiation, DataChannels
@@ -26,6 +27,7 @@ free4chat/
 │   │   ├── components/UserCard.tsx
 │   │   ├── components/TextChatCard.tsx
 │   ├── src/sfu/server.ts             # authenticated SFU API proxy
+│   ├── src/room/server.ts            # transport-neutral room attachment upload
 │   ├── src/mcp/server.ts             # stateless MCP Agent room endpoint
 │   ├── src/room/types.ts             # transport-neutral room contracts
 │   ├── public/agent.md               # machine-readable Agent protocol
@@ -37,7 +39,7 @@ free4chat/
 
 ## SFU architecture
 
-The browser connects directly to Cloudflare Realtime SFU. The Worker never exposes `SFU_APP_SECRET` to clients. `RoomSession` only coordinates presence, chat, reactions, mute state, track metadata, DataChannel readiness, and room expiry.
+The browser connects directly to Cloudflare Realtime SFU. The Worker never exposes `SFU_APP_SECRET` to clients. `RoomSession` coordinates presence, chat, reactions, mute state, track metadata, DataChannel readiness, Agent targeting, and ephemeral Agent image attachments; it never hosts Agent media.
 
 All `/api/sfu/*` requests require an `Origin` of `https://free4.chat` or `https://www.free4.chat`; `http://localhost:3000` is allowed for local development. The Worker URL is not an allowed production origin.
 
@@ -55,11 +57,11 @@ The SFU App ID is a deployment variable. `SFU_APP_SECRET` and `TURNSTILE_SECRET_
 
 ## Agent room protocol
 
-`/mcp` is a stateless MCP v2 endpoint built with `createMcpHandler` from `agents/mcp/server` and `McpServer` from `@modelcontextprotocol/server`. It exposes only `room_info`, `join_room`, `wait_for_events`, `send_text`, and `leave_room`. The opaque participant handle is a bearer capability containing the room and Agent participant credentials; never log, display, or send it anywhere except the Free4Chat MCP endpoint.
+`/mcp` is a stateless MCP v2 endpoint built with `createMcpHandler` from `agents/mcp/server` and `McpServer` from `@modelcontextprotocol/server`. It exposes `room_info`, `join_room`, `wait_for_events`, `send_text`, `read_attachment`, and `leave_room`. The opaque participant handle is a bearer capability containing the room and Agent participant credentials; never log, display, or send it anywhere except the Free4Chat MCP endpoint.
 
 Agents are first-class `kind: "agent"` participants with no `media` state. The `/api/sfu/session` route always creates `kind: "human"` participants and must reject Agent sessions. Keep MCP state stateless at the Worker boundary: room participant leases, message cursors, long-poll waiters, sequence numbers, and expiry belong in `RoomSession`. Do not expose a public arbitrary room-control endpoint, OAuth, accounts, R2, or server-side file persistence.
 
-Agent room capabilities are text-only in Phase 1a. `room_info` returns sanitized participant data and capabilities, never tokens, connection nonces, SFU session IDs, track IDs, DataChannel IDs, or message history. `wait_for_events` is a bounded long-poll and lease heartbeat (0–25 seconds); do not replace it with polling loops, queues, or a second Durable Object.
+Agent room capabilities are text-only: no Agent voice, STT/TTS, audio tracks, or SFU media. `room_info` returns sanitized participant data and capabilities, never tokens, connection nonces, SFU session IDs, track IDs, DataChannel IDs, or message history. `wait_for_events` is a bounded long-poll and lease heartbeat (0–25 seconds); it returns all room context with per-Agent `addressed` metadata. Human browser images remain DataChannel transfers; when an Agent is present, a supported image may also be stored as bounded ephemeral chunks for `read_attachment`. Do not replace this with polling loops, queues, R2, or a second Durable Object.
 
 ## DataChannel file transfer
 
@@ -102,4 +104,6 @@ Pushes to `cf-sfu` that touch `app/**` run lint, type-check, build, and deploy t
 - Preserve the `LOCAL_PEER_ID = "local-peer-id"` sentinel.
 - Keep the Worker URL out of the production origin allow-list.
 - Do not add R2 or server-side file persistence.
+- Agent attachment chunks are room-scoped ephemeral state and must be deleted on eviction and room expiry; never add public attachment URLs.
+- Do not place participant capabilities in query strings, logs, analytics, or copied Agent prompts.
 - Do not commit `.dev.vars`, generated secrets, or `*.tsbuildinfo`.

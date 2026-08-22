@@ -3,6 +3,8 @@ import { DurableObject } from "cloudflare:workers"
 import type {
   AgentEvent,
   RoomCapabilities,
+  RoomAttachment,
+  AgentImageMimeType,
   RoomMediaTrack,
   RoomMessage,
   RoomParticipant,
@@ -14,6 +16,10 @@ const ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000
 const RECONNECT_GRACE_MS = 30 * 1000
 const AGENT_LEASE_MS = 90 * 1000
 const MAX_MESSAGES = 100
+const MAX_AGENT_ATTACHMENTS = 8
+const MAX_AGENT_IMAGE_BYTES = 768 * 1024
+const ATTACHMENT_CHUNK_SIZE = 64 * 1024
+const MAX_TARGETS = 8
 
 const ROOM_CAPABILITIES: RoomCapabilities = {
   text: true,
@@ -21,6 +27,8 @@ const ROOM_CAPABILITIES: RoomCapabilities = {
   screenShare: true,
   files: true,
   agentText: true,
+  agentImages: true,
+  agentTargeting: true,
 }
 
 export interface RoomSessionEnv {
@@ -43,10 +51,11 @@ interface StoredParticipant extends RoomParticipant {
 interface StoredRoom
   extends Omit<
     RoomRecord,
-    "participants" | "messages" | "nextMessageSequence"
+    "participants" | "messages" | "attachments" | "nextMessageSequence"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
+  attachments?: RoomAttachment[]
   nextMessageSequence?: number
 }
 
@@ -114,13 +123,19 @@ type ControlRequest =
       text: string
     }
   | {
+      action: "agent-read-attachment"
+      participantId: string
+      token: string
+      attachmentId: string
+    }
+  | {
       action: "agent-leave"
       participantId: string
       token: string
     }
 
 type ClientMessage =
-  | { type: "chat"; text: string }
+  | { type: "chat"; text: string; targets?: string[] }
   | {
       type: "action"
       actionType: string
@@ -206,9 +221,27 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           : nextMessageSequence + 1
       if (rawMessage.sequence !== sequence) changed = true
       if (sequence > nextMessageSequence) nextMessageSequence = sequence
-      messages.push({ ...rawMessage, sequence })
+      const targets = Array.isArray(rawMessage.targets)
+        ? [
+            ...new Set(
+              rawMessage.targets.filter((id) => typeof id === "string")
+            ),
+          ].slice(0, MAX_TARGETS)
+        : undefined
+      if (targets?.length !== rawMessage.targets?.length) changed = true
+      messages.push({
+        ...rawMessage,
+        sequence,
+        ...(targets?.length ? { targets } : {}),
+      })
     }
     if (stored.nextMessageSequence !== nextMessageSequence) changed = true
+    const attachments = Array.isArray(stored.attachments)
+      ? stored.attachments.filter((attachment) =>
+          this.validAttachment(attachment)
+        )
+      : []
+    if (!Array.isArray(stored.attachments)) changed = true
 
     return {
       room: {
@@ -216,6 +249,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         expiresAt: stored.expiresAt,
         participants,
         messages,
+        attachments,
         nextMessageSequence,
       },
       changed,
@@ -224,6 +258,44 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private async saveRoom(room: RoomRecord): Promise<void> {
     await this.ctx.storage.put("room", room)
+  }
+
+  private validAttachment(value: unknown): value is RoomAttachment {
+    if (!value || typeof value !== "object") return false
+    const attachment = value as Partial<RoomAttachment>
+    return (
+      typeof attachment.id === "string" &&
+      typeof attachment.senderId === "string" &&
+      typeof attachment.senderName === "string" &&
+      (attachment.mimeType === "image/jpeg" ||
+        attachment.mimeType === "image/png" ||
+        attachment.mimeType === "image/webp") &&
+      typeof attachment.fileName === "string" &&
+      typeof attachment.size === "number" &&
+      Number.isSafeInteger(attachment.size) &&
+      attachment.size > 0 &&
+      attachment.size <= MAX_AGENT_IMAGE_BYTES &&
+      typeof attachment.chunkCount === "number" &&
+      Number.isSafeInteger(attachment.chunkCount) &&
+      attachment.chunkCount > 0 &&
+      attachment.chunkCount <=
+        Math.ceil(MAX_AGENT_IMAGE_BYTES / ATTACHMENT_CHUNK_SIZE) &&
+      typeof attachment.createdAt === "number" &&
+      typeof attachment.sequence === "number"
+    )
+  }
+
+  private attachmentChunkKey(id: string, index: number): string {
+    return `attachment:${id}:${index}`
+  }
+
+  private async deleteAttachmentChunks(
+    attachment: Pick<RoomAttachment, "id" | "chunkCount">
+  ): Promise<void> {
+    for (let index = 0; index < attachment.chunkCount; index += 1)
+      await this.ctx.storage.delete(
+        this.attachmentChunkKey(attachment.id, index)
+      )
   }
 
   private stateFor(room: RoomRecord): RoomState {
@@ -269,6 +341,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private async expireRoom(room: RoomRecord): Promise<void> {
+    for (const attachment of room.attachments)
+      await this.deleteAttachmentChunks(attachment)
     await this.ctx.storage.delete("room")
     for (const waiter of this.agentWaiters.values()) {
       if (!waiter) continue
@@ -355,7 +429,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return roomMessage
   }
 
-  private toAgentEvent(message: RoomMessage): AgentEvent {
+  private toAgentEvent(
+    message: RoomMessage,
+    participantId: string
+  ): AgentEvent {
     return {
       sequence: message.sequence,
       type: message.type,
@@ -371,7 +448,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ...(message.actionPayload === undefined
         ? {}
         : { actionPayload: message.actionPayload }),
+      addressed: message.targets?.includes(participantId) === true,
       createdAt: message.createdAt,
+    }
+  }
+
+  private toAttachmentEvent(attachment: RoomAttachment): AgentEvent {
+    return {
+      sequence: attachment.sequence,
+      type: "image",
+      participant: {
+        id: attachment.senderId,
+        name: attachment.senderName,
+        kind: "human",
+      },
+      attachment: {
+        id: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      },
+      addressed: false,
+      createdAt: attachment.createdAt,
     }
   }
 
@@ -387,18 +485,29 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   } {
     const serverCursor = room.nextMessageSequence
     const clampedCursor = Math.min(Math.max(cursor, 0), serverCursor)
-    const firstSequence = room.messages[0]?.sequence
+    const events = [
+      ...room.messages.map((message) => ({
+        sequence: message.sequence,
+        event: this.toAgentEvent(message, participantId),
+        peerId: message.peerId,
+      })),
+      ...room.attachments.map((attachment) => ({
+        sequence: attachment.sequence,
+        event: this.toAttachmentEvent(attachment),
+        peerId: attachment.senderId,
+      })),
+    ].sort((left, right) => left.sequence - right.sequence)
+    const firstSequence = events[0]?.sequence
     const truncated =
       firstSequence !== undefined && clampedCursor < firstSequence - 1
     const effectiveCursor = truncated ? firstSequence - 1 : clampedCursor
     return {
-      events: room.messages
+      events: events
         .filter(
-          (message) =>
-            message.sequence > effectiveCursor &&
-            message.peerId !== participantId
+          (entry) =>
+            entry.sequence > effectiveCursor && entry.peerId !== participantId
         )
-        .map((message) => this.toAgentEvent(message)),
+        .map((entry) => entry.event),
       cursor: serverCursor,
       expiresAt: room.expiresAt,
       ...(truncated ? { truncated: true } : {}),
@@ -528,6 +637,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           expiresAt: now + ROOM_MAX_AGE_MS,
           participants: {},
           messages: [],
+          attachments: [],
           nextMessageSequence: 0,
         }
       }
@@ -593,6 +703,49 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.resolveAgentWaiters(room)
       return this.json({
         sequence: roomMessage.sequence,
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-read-attachment") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      const attachment = room.attachments.find(
+        (candidate) => candidate.id === request.attachmentId
+      )
+      if (!attachment)
+        return this.json({ error: "attachment_unavailable" }, 404)
+
+      const chunks: Uint8Array[] = []
+      for (let index = 0; index < attachment.chunkCount; index += 1) {
+        const chunk = await this.ctx.storage.get<ArrayBuffer>(
+          this.attachmentChunkKey(attachment.id, index)
+        )
+        if (!chunk) return this.json({ error: "attachment_unavailable" }, 404)
+        chunks.push(new Uint8Array(chunk))
+      }
+      let binary = ""
+      for (const chunk of chunks)
+        for (const byte of chunk) binary += String.fromCharCode(byte)
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      return this.json({
+        attachment: {
+          id: attachment.id,
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+        },
+        data: btoa(binary),
         expiresAt: room.expiresAt,
       })
     }
@@ -796,6 +949,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         kind: participant.kind,
         type: "text",
         text: message.text.trim().slice(0, 4000),
+        ...(() => {
+          const targets = [
+            ...new Set(
+              (Array.isArray(message.targets) ? message.targets : [])
+                .filter((id): id is string => typeof id === "string")
+                .filter((id) => room.participants[id]?.kind === "agent")
+            ),
+          ].slice(0, MAX_TARGETS)
+          return targets.length ? { targets } : {}
+        })(),
         createdAt: Date.now(),
       })
       await this.saveRoom(room)
@@ -823,6 +986,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    if (request.method === "POST" && url.pathname === "/attachment")
+      return this.handleAttachmentUpload(request)
     if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
       if (request.method !== "GET")
         return this.json({ error: "method_not_allowed" }, 405)
@@ -862,6 +1027,85 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return await this.handleControl((await request.json()) as ControlRequest)
     } catch {
       return this.json({ error: "invalid_request" }, 400)
+    }
+  }
+
+  private isAgentImageMimeType(value: string): value is AgentImageMimeType {
+    return (
+      value === "image/jpeg" || value === "image/png" || value === "image/webp"
+    )
+  }
+
+  private async handleAttachmentUpload(request: Request): Promise<Response> {
+    const room = await this.activeRoom()
+    if (!room) return this.json({ error: "room_expired" }, 410)
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    const participant = this.findParticipant(room, participantId, token)
+    if (!participant) return this.json({ error: "unauthorized" }, 401)
+    if (participant.kind !== "human")
+      return this.json({ error: "human_only" }, 403)
+
+    const mimeType = (request.headers.get("Content-Type") ?? "")
+      .split(";", 1)[0]
+      .toLowerCase()
+    if (!this.isAgentImageMimeType(mimeType))
+      return this.json({ error: "unsupported_image_type" }, 415)
+    const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
+    if (declaredSize > MAX_AGENT_IMAGE_BYTES)
+      return this.json({ error: "attachment_too_large" }, 413)
+    const bytes = new Uint8Array(await request.arrayBuffer())
+    if (
+      bytes.byteLength === 0 ||
+      bytes.byteLength > MAX_AGENT_IMAGE_BYTES ||
+      (declaredSize > 0 && declaredSize !== bytes.byteLength)
+    )
+      return this.json({ error: "invalid_attachment" }, 400)
+
+    let fileName = request.headers.get("X-File-Name") ?? "image"
+    try {
+      fileName = decodeURIComponent(fileName)
+    } catch {
+      fileName = "image"
+    }
+    fileName = fileName.trim().slice(0, 256) || "image"
+    const id = crypto.randomUUID()
+    const chunkCount = Math.ceil(bytes.byteLength / ATTACHMENT_CHUNK_SIZE)
+    const attachment: RoomAttachment = {
+      id,
+      senderId: participant.id,
+      senderName: participant.name,
+      mimeType,
+      fileName,
+      size: bytes.byteLength,
+      chunkCount,
+      createdAt: Date.now(),
+      sequence: room.nextMessageSequence + 1,
+    }
+    try {
+      for (let index = 0; index < chunkCount; index += 1) {
+        const start = index * ATTACHMENT_CHUNK_SIZE
+        await this.ctx.storage.put(
+          this.attachmentChunkKey(id, index),
+          bytes.slice(start, start + ATTACHMENT_CHUNK_SIZE)
+        )
+      }
+      room.nextMessageSequence = attachment.sequence
+      room.attachments = [...room.attachments, attachment]
+      const evicted = room.attachments.splice(
+        0,
+        Math.max(0, room.attachments.length - MAX_AGENT_ATTACHMENTS)
+      )
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      for (const oldAttachment of evicted)
+        await this.deleteAttachmentChunks(oldAttachment)
+      await this.scheduleNextAlarm(room)
+      this.resolveAgentWaiters(room)
+      return this.json({ attachment: { ...attachment } })
+    } catch {
+      await this.deleteAttachmentChunks(attachment)
+      return this.json({ error: "attachment_unavailable" }, 503)
     }
   }
 

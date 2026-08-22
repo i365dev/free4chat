@@ -3,6 +3,7 @@ import { default as handler } from "./.open-next/worker.js"
 
 import { handleSfuRequest } from "./src/sfu/server"
 import { handleMcpRequest } from "./src/mcp/server"
+import { handleRoomRequest } from "./src/room/server"
 
 export { RoomSession } from "./src/do/RoomSession"
 
@@ -14,6 +15,9 @@ export default {
     }
     if (pathname.startsWith("/api/sfu/")) {
       return handleSfuRequest(request, env)
+    }
+    if (pathname === "/api/room/attachments") {
+      return handleRoomRequest(request, env)
     }
     return handler.fetch(request, env, ctx)
   },
