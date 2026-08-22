@@ -36,6 +36,17 @@ function fakeSfuRoom(respond: DoResponder): SfuEnv["SFU_ROOM"] {
 
 const okDoResponder: DoResponder = () => ({ status: 200, body: { ok: true } })
 
+// Responds to "authorize" with the given participant kind (as the real DO
+// now does — see RoomSession.ts) and "ok" to everything else (publish,
+// remote-track authorize, etc).
+function doResponderForKind(kind: "human" | "agent"): DoResponder {
+  return (body) => {
+    if (body.action === "authorize")
+      return { status: 200, body: { ok: true, kind } }
+    return { status: 200, body: { ok: true } }
+  }
+}
+
 function makeEnv(
   overrides: Partial<SfuEnv> = {},
   respond: DoResponder = okDoResponder
@@ -300,3 +311,209 @@ describe("agent-session rate limiting", () => {
     expect(humanRes.status).not.toBe(429)
   })
 })
+
+describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () =>
+      Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const humanTracksBody = (track: Record<string, unknown>) => ({
+    room: "room-1",
+    participantId: "human-1",
+    token: "tok-1",
+    sessionId: "sess-1",
+    tracks: [track],
+    sessionDescription: { type: "offer", sdp: "sdp" },
+  })
+
+  const agentTracksBody = (track: Record<string, unknown>) => ({
+    room: "room-1",
+    participantId: "agent-1",
+    token: "tok-1",
+    sessionId: "sess-1",
+    tracks: [track],
+    sessionDescription: { type: "offer", sdp: "sdp" },
+  })
+
+  it("Human + local audio track => allowed", async () => {
+    const env = makeEnv({}, doResponderForKind("human"))
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          humanTracksBody({
+            location: "local",
+            trackName: "audio-1",
+            kind: "audio",
+            mid: "0",
+          })
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("Human + local video track => allowed", async () => {
+    const env = makeEnv({}, doResponderForKind("human"))
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          humanTracksBody({
+            location: "local",
+            trackName: "video-1",
+            kind: "video",
+            mid: "1",
+          })
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("Agent + remote Human audio track => allowed (subscribing is the whole point of Phase 0)", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          agentTracksBody({
+            location: "remote",
+            sessionId: "human-sess-1",
+            trackName: "audio-human",
+          })
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("Agent + local audio track => 403 before any Cloudflare upstream call", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          agentTracksBody({
+            location: "local",
+            trackName: "audio-1",
+            kind: "audio",
+            mid: "0",
+          })
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + local video track => 403 before any Cloudflare upstream call", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          agentTracksBody({
+            location: "local",
+            trackName: "video-1",
+            kind: "video",
+            mid: "1",
+          })
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + a mix of one remote and one local track => still 403, nothing forwarded upstream", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-sess-1",
+              trackName: "audio-human",
+            },
+            {
+              location: "local",
+              trackName: "audio-1",
+              kind: "audio",
+              mid: "0",
+            },
+          ],
+          sessionDescription: { type: "offer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("does not affect renegotiate (no tracks array, route-scoped check)", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("renegotiate", {
+        method: "PUT",
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "agent-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          sessionDescription: { type: "answer", sdp: "sdp" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+  })
+})
+
+// RoomSession.ts's "publish" action now also rejects an agent participant
+// directly (`if (participant.kind === "agent") return this.json({ error:
+// "agent_publish_not_allowed" }, 403)`, defense in depth alongside the
+// route-level check above). It is NOT covered by an automated test here:
+// RoomSession extends DurableObject from "cloudflare:workers", which
+// doesn't exist outside the Workers runtime, so instantiating it needs
+// @cloudflare/vitest-pool-workers — not set up in this project (the same
+// pre-existing limitation documented on roomExpiry.ts, which was extracted
+// as a pure function for exactly this reason). This defense-in-depth guard
+// is verified by code review only; the enforced, tested boundary is the
+// route-level check in the "Phase-0 invariant" suite above, which runs
+// before RoomSession's "publish" action would ever be reached.

@@ -908,7 +908,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         if (!sessionExists)
           return this.json({ error: "datachannel_session_not_found" }, 404)
       }
-      return this.json({ ok: true })
+      // kind lets the Worker enforce protocol-level invariants (e.g. an
+      // agent's media session must stay subscribe-only) before forwarding
+      // a request upstream to Cloudflare Realtime — see /api/sfu/tracks.
+      return this.json({ ok: true, kind: participant.kind })
     }
 
     if (request.action === "reconnect") {
@@ -942,6 +945,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!participant) return this.json({ error: "unauthorized" }, 401)
 
     if (request.action === "publish") {
+      // Defense in depth: /api/sfu/tracks already rejects an agent's
+      // "local" track before it ever reaches Cloudflare Realtime, so this
+      // should be unreachable for an agent in practice — but the room
+      // model itself must not accept an agent publication either. Phase-0
+      // agent media capability is subscribe-only, full stop.
+      if (participant.kind === "agent")
+        return this.json({ error: "agent_publish_not_allowed" }, 403)
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
       participant.media.tracks = [

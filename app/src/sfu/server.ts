@@ -377,6 +377,19 @@ export async function handleSfuRequest(
       : []
     const auth = await authorize(env, room, participantId, token, sessionId)
     if (!auth.ok) return auth
+    // Phase-0 (#82) invariant: an agent's media session is subscribe-only.
+    // Reject a "local" (publish) track *before* it ever reaches Cloudflare
+    // Realtime — rejecting only RoomSession's later `publish` bookkeeping
+    // would be too late, since the upstream SFU publication could already
+    // have succeeded by then. Human publishing is completely unaffected.
+    if (route === "tracks") {
+      const { kind } = (await auth.json()) as { kind?: string }
+      const hasLocalTrack = requestedTracks.some(
+        (track) => track.location === "local"
+      )
+      if (kind === "agent" && hasLocalTrack)
+        return json({ error: "agent_publish_not_allowed" }, 403)
+    }
     for (const remoteTrack of requestedTracks.filter(
       (track) => track.location === "remote"
     )) {
