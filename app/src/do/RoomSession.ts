@@ -772,11 +772,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
-      // Deliberately narrower than participantForInfo/room-info: this is a
-      // privileged, first-party-Runtime-only surface (the caller must
-      // already hold a valid agent participant token), not something a
-      // generic third-party MCP client can reach. Only Human media is
-      // exposed — Phase 0 MediaBridge only ever ingests Human audio.
+      // Deliberately narrower than participantForInfo/room-info: this is
+      // not exposed through the MCP tool surface, and reaching it requires
+      // an authorized agent participant token — but that token opacity is
+      // not an additional security layer by itself (the participantHandle
+      // is just base64url(JSON), decodable by anything that has it). The
+      // real production gate is AGENT_MEDIA_ENABLED in sfu/server.ts,
+      // which is off by default and not set by the deploy workflow — see
+      // its comment for why, and what the eventual replacement is. Only
+      // Human media is exposed — Phase 0 MediaBridge only ever ingests
+      // Human audio.
       const participants = Object.values(room.participants)
         .filter(
           (

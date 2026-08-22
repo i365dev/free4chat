@@ -23,11 +23,17 @@ class FakeRestClient implements SfuRestClientLike {
   participants: RoomMediaParticipant[] = []
   subscribeCalls: Array<{ sessionId: string; trackName: string }> = []
   renegotiateCalls = 0
+  createAgentSessionError: Error | undefined
+  roomMediaError: Error | undefined
+  createAgentSessionCalls = 0
 
   async createAgentSession(): Promise<string> {
+    this.createAgentSessionCalls += 1
+    if (this.createAgentSessionError) throw this.createAgentSessionError
     return "agent-session-1"
   }
   async roomMedia(): Promise<RoomMediaParticipant[]> {
+    if (this.roomMediaError) throw this.roomMediaError
     return this.participants
   }
   async subscribeTrack(
@@ -265,5 +271,90 @@ test("audio frame stats are throttled, not emitted per packet (bounded, not unbo
     statsEvents.length < 5,
     `expected throttled stats events, got ${statsEvents.length}`
   )
+  bridge.stop()
+})
+
+test("failed start() (session creation) leaves the bridge stopped and retryable", async () => {
+  const restClient = new FakeRestClient()
+  restClient.createAgentSessionError = new Error("boom: session creation")
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc)
+
+  await assert.rejects(() => bridge.start(), /boom: session creation/)
+  assert.equal(
+    pc.closed,
+    false,
+    "peer connection was never created, nothing to close"
+  )
+
+  // Retry: fix the failure and start again — must succeed cleanly, not be
+  // wedged in a half-started state.
+  restClient.createAgentSessionError = undefined
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  await bridge.start()
+  assert.equal(restClient.createAgentSessionCalls, 2)
+  assert.equal(restClient.subscribeCalls.length, 1)
+  bridge.stop()
+})
+
+test("failed start() (peer connection creation) leaves the bridge stopped and retryable", async () => {
+  const restClient = new FakeRestClient()
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  let attempt = 0
+  const pcFactory = () => {
+    attempt += 1
+    if (attempt === 1) throw new Error("boom: peer connection creation")
+    return new FakePeerConnection()
+  }
+  const events: MediaBridgeEvent[] = []
+  const bridge = new SfuMediaBridge({
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: fakeHandle(),
+    onEvent: (event) => events.push(event),
+    restClient,
+    createPeerConnection: pcFactory,
+  })
+
+  await assert.rejects(() => bridge.start(), /boom: peer connection creation/)
+
+  // Retry with a working factory — must succeed cleanly.
+  await bridge.start()
+  assert.equal(restClient.subscribeCalls.length, 1)
+  bridge.stop()
+})
+
+test("failed start() (initial poll) leaves the bridge stopped, closes the peer connection, and is retryable", async () => {
+  const restClient = new FakeRestClient()
+  restClient.roomMediaError = new Error("boom: room-media unreachable")
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc)
+
+  await assert.rejects(() => bridge.start(), /boom: room-media unreachable/)
+  assert.equal(
+    pc.closed,
+    true,
+    "the peer connection created before the failing poll must be closed"
+  )
+
+  // Retry: fix the failure and start again with a *new* peer connection —
+  // must succeed cleanly.
+  restClient.roomMediaError = undefined
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  const pc2 = new FakePeerConnection()
+  const { bridge: bridge2 } = makeBridge(restClient, pc2)
+  await bridge2.start()
+  assert.equal(restClient.subscribeCalls.length, 1)
+  bridge2.stop()
+})
+
+test("start() is a no-op while already running (does not create a second session)", async () => {
+  const restClient = new FakeRestClient()
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc)
+
+  await bridge.start()
+  await bridge.start()
+  assert.equal(restClient.createAgentSessionCalls, 1)
   bridge.stop()
 })

@@ -13,6 +13,14 @@ export interface SfuEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   TURNSTILE_SECRET_KEY?: string
+  // Phase-0 (#82) kill switch for the agent-session / agent-room-media
+  // routes. Absent/anything other than "true" => both routes reject. Not
+  // set in the production deploy workflow — this is a development-only
+  // escape hatch, not the eventual production authorization model. A real
+  // product PR must replace this with explicit, room/user-visible
+  // media-listening consent before agent audio access ships to production;
+  // see agent-runtime/src/media/README or the #82 PR description.
+  AGENT_MEDIA_ENABLED?: string
 }
 
 function json(data: unknown, status = 200): Response {
@@ -23,16 +31,28 @@ function badRequest(message: string): Response {
   return json({ error: message }, 400)
 }
 
-// A present-but-wrong Origin is always rejected (a browser can't lie about
-// its own Origin, so this stops other websites' JS from calling these
-// routes with a victim's browser). A *missing* Origin means the caller
-// isn't a browser at all — e.g. the local Runtime process's MediaBridge,
-// which (like the /mcp route it also uses — see handleMcpRequest's
-// allowedOriginHostnames) authenticates via its own participant token
-// instead, not via Origin.
-function originAllowed(request: Request, env: SfuEnv): boolean {
+// Routes the non-browser Runtime (MediaBridge) legitimately calls with no
+// Origin header at all. Scoped deliberately narrow: "session" (initial
+// Human creation, Turnstile-gated) and "ws" keep requiring a real browser
+// Origin, since there's no demonstrated non-browser caller for them.
+const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
+  "agent-session",
+  "agent-room-media",
+  "tracks",
+  "renegotiate",
+])
+
+// A present-but-wrong Origin is always rejected on every route (a browser
+// can't lie about its own Origin, so this stops other websites' JS from
+// calling these routes with a victim's browser). A *missing* Origin is
+// only accepted on the routes above — see MISSING_ORIGIN_ALLOWED_ROUTES —
+// matching how /mcp already treats non-browser callers (its own
+// allowedOriginHostnames). Everywhere else, a missing Origin is rejected
+// exactly like an invalid one, same as before this route-scoping existed.
+function originAllowed(request: Request, route: string): boolean {
   const origin = request.headers.get("Origin")
-  return origin === null || isAllowedOrigin(origin)
+  if (origin === null) return MISSING_ORIGIN_ALLOWED_ROUTES.has(route)
+  return isAllowedOrigin(origin)
 }
 
 function getAppCredentials(
@@ -43,9 +63,21 @@ function getAppCredentials(
   return appId && appSecret ? { appId, appSecret } : null
 }
 
-async function checkRateLimit(request: Request, env: SfuEnv): Promise<boolean> {
+// Not a real authorization boundary — see AGENT_MEDIA_ENABLED's own
+// comment. This only decides whether the Phase-0 dev/test escape hatch is
+// switched on at all; agent-room-media/agent-session still separately
+// require a valid, DO-verified agent participant token either way.
+function agentMediaEnabled(env: SfuEnv): boolean {
+  return env.AGENT_MEDIA_ENABLED === "true"
+}
+
+async function checkRateLimit(
+  request: Request,
+  env: SfuEnv,
+  keyPrefix = "sfu:rl"
+): Promise<boolean> {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown"
-  const key = `sfu:rl:${ip}`
+  const key = `${keyPrefix}:${ip}`
   const raw = await env.ROOMS_KV.get(key)
   const count = raw ? Number.parseInt(raw, 10) : 0
   if (count >= RATE_LIMIT_MAX) return false
@@ -140,10 +172,11 @@ export async function handleSfuRequest(
   request: Request,
   env: SfuEnv
 ): Promise<Response> {
-  if (!originAllowed(request, env))
-    return json({ error: "forbidden_origin" }, 403)
   const url = new URL(request.url)
   const route = url.pathname.replace(/^\/api\/sfu\/?/, "")
+
+  if (!originAllowed(request, route))
+    return json({ error: "forbidden_origin" }, 403)
 
   if (route === "ws") {
     if (request.method !== "GET")
@@ -266,6 +299,13 @@ export async function handleSfuRequest(
   if (route === "agent-session") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)
+    if (!agentMediaEnabled(env))
+      return json({ error: "agent_media_disabled" }, 403)
+    // Bounded separately from Human session creation (own KV key prefix,
+    // same window/primitive) — a legitimate Runtime restart/reconnect
+    // stays well under this; a tight retry loop does not.
+    if (!(await checkRateLimit(request, env, "sfu:rl:agent-session")))
+      return json({ error: "rate_limited" }, 429)
     const body = await readBody(request)
     if (!body) return badRequest("invalid_json")
     const room = typeof body.room === "string" ? body.room : ""
@@ -303,6 +343,8 @@ export async function handleSfuRequest(
   if (route === "agent-room-media") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)
+    if (!agentMediaEnabled(env))
+      return json({ error: "agent_media_disabled" }, 403)
     const body = await readBody(request)
     if (!body) return badRequest("invalid_json")
     const room = typeof body.room === "string" ? body.room : ""

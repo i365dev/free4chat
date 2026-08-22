@@ -92,35 +92,55 @@ export class SfuMediaBridge {
       })
   }
 
+  // start() is transactional: if any initialization step fails partway —
+  // session creation, peer connection creation, or the first poll — every
+  // partial resource is torn down and `stopped` goes back to true before
+  // rethrowing, so the bridge is never left "logically started" with a
+  // half-built PeerConnection/timer that a caller can neither use nor
+  // retry past. A later start() call after a failure begins genuinely
+  // fresh (new session, new PeerConnection) rather than trying to resume
+  // whatever partially succeeded.
   async start(): Promise<void> {
     if (!this.stopped) return
     this.stopped = false
-    this.mySessionId = await this.restClient.createAgentSession()
-    this.pc = await this.createPeerConnection()
-    this.pc.onTrack.subscribe((track) => this.handleIncomingTrack(track))
-    await this.poll()
-    this.pollTimer = setInterval(() => {
-      void this.poll().catch(() => undefined)
-    }, this.pollIntervalMs)
+    try {
+      this.mySessionId = await this.restClient.createAgentSession()
+      this.pc = await this.createPeerConnection()
+      this.pc.onTrack.subscribe((track) => this.handleIncomingTrack(track))
+      await this.poll()
+      this.pollTimer = setInterval(() => {
+        void this.poll().catch(() => undefined)
+      }, this.pollIntervalMs)
+    } catch (error) {
+      this.resetToStoppedState(false)
+      throw error
+    }
   }
 
   stop(): void {
     if (this.stopped) return
-    this.stopped = true
+    this.resetToStoppedState(true)
+  }
+
+  private resetToStoppedState(emitEndedEvents: boolean): void {
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
-    for (const subscription of this.subscriptions.values()) {
-      this.onEvent({
-        type: "audioTrackEnded",
-        participantId: subscription.participantId,
-        trackName: subscription.trackName,
-        reason: "bridge_stopped",
-      })
+    if (emitEndedEvents) {
+      for (const subscription of this.subscriptions.values()) {
+        this.onEvent({
+          type: "audioTrackEnded",
+          participantId: subscription.participantId,
+          trackName: subscription.trackName,
+          reason: "bridge_stopped",
+        })
+      }
     }
     this.subscriptions.clear()
+    this.pendingSubscription = null
     this.pc?.close()
     this.pc = null
     this.mySessionId = null
+    this.stopped = true
   }
 
   /** Exposed for tests; also called internally on the poll timer. */
