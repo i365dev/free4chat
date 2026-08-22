@@ -56,10 +56,10 @@ export default function Home() {
   }
 
   return (
-    <div>
+    <div className="bg-gray-900">
       <Header></Header>
-      <main className="bg-gray-900 text-white">
-        <div className="mx-auto h-screen max-w-screen-xl px-4 py-32 lg:flex lg:items-center">
+      <main className="flex h-screen flex-col bg-gray-900 text-white">
+        <div className="mx-auto max-w-screen-xl flex-1 overflow-y-auto px-4 py-12 lg:flex lg:items-center">
           <div className="slogan mx-auto max-w-3xl text-center">
             <h1 className="bg-gradient-to-r from-green-300 via-blue-500 to-purple-600 bg-clip-text text-3xl font-extrabold text-transparent sm:text-4xl">
               Open a room. Talk instantly.
@@ -262,8 +262,8 @@ export default function Home() {
             </p>
           </div>
         </div>
+        <DiscoveryFooter />
       </main>
-      <DiscoveryFooter />
     </div>
   )
 }

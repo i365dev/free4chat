@@ -14,6 +14,12 @@
     { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" }
   ],
   "observability": { "enabled": true },
+  // Explicitly empty: clears a stale Cron Trigger left over from the removed
+  // legacy RTK cleanup handler. Without this, wrangler deploy leaves
+  // whatever cron triggers already exist on the zone untouched, and
+  // Cloudflare keeps invoking a scheduled() handler this Worker no longer
+  // exports (per-room expiry is owned by each Durable Object's own alarm).
+  "triggers": { "crons": [] },
   "vars": {
     // The production App ID is injected by GitHub Actions at deploy time.
     "SFU_APP_ID": "set-during-deployment"

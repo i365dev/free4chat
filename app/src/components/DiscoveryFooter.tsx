@@ -16,7 +16,7 @@ export default function DiscoveryFooter() {
   return (
     <nav
       aria-label="Learn more"
-      className="mx-auto flex max-w-3xl flex-wrap justify-center gap-x-4 gap-y-2 px-4 py-8 text-xs text-gray-500"
+      className="mx-auto flex max-w-3xl flex-none flex-wrap justify-center gap-x-4 gap-y-2 px-4 py-4 text-xs text-gray-500"
     >
       {LINKS.map((link) => (
         <Link
