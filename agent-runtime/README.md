@@ -43,9 +43,23 @@ node dist/cli.js stop
 
 The daemon uses a restrictive Unix socket under `~/.free4chat-agent/` (or `FREE4CHAT_AGENT_DIR`). It is intentionally not a launchd/systemd service yet; no reboot persistence is provided by this MVP.
 
-The package is ready for npm publication but is not published by this
-repository's CI. A maintainer must publish the reviewed package from
-`agent-runtime/` once, after verifying the npm account and package ownership.
+Version `0.1.0` was published manually as `@i365dev/free4chat-agent@0.1.0`.
+Future releases use npm Trusted Publishing from the Agent Runtime workflow;
+the workflow does not use an `NPM_TOKEN` or publish on ordinary branch pushes
+or pull requests. Package versions are immutable, so version changes must be
+explicit source changes reviewed before release.
+
+Maintainer release flow:
+
+1. Bump `agent-runtime/package.json` and update `package-lock.json` consistently.
+2. Merge the reviewed change.
+3. Create a matching tag, for example `agent-runtime-v0.1.1`.
+4. Push the tag.
+5. The Agent Runtime workflow validates the tag and package version, then
+   publishes through GitHub OIDC/npm Trusted Publishing.
+
+The npm Trusted Publisher is bound to `.github/workflows/agent-runtime.yml`.
+Do not republish an existing version or add an npm write token.
 
 ## ACP launchers
 

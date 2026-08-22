@@ -5,6 +5,8 @@ on:
     paths:
       - "agent-runtime/**"
       - ".github/workflows/agent-runtime.yml"
+    tags:
+      - "agent-runtime-v*"
   pull_request:
     paths:
       - "agent-runtime/**"
@@ -49,4 +51,77 @@ jobs:
 
       - name: Package check
         run: npm run pack:check
+        working-directory: agent-runtime
+
+  publish:
+    name: Publish Agent Runtime
+    if: startsWith(github.ref, 'refs/tags/agent-runtime-v')
+    needs: agent-runtime
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Use npm Trusted Publishing client
+        run: npm install --global npm@11.5.1
+
+      - name: Verify tag and package version
+        working-directory: agent-runtime
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${TAG_NAME#agent-runtime-v}"
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "Tag $TAG_NAME does not match package.json version $package_version" >&2
+            exit 1
+          fi
+          echo "Publishing @i365dev/free4chat-agent@$package_version"
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: agent-runtime
+
+      - name: Verify npm version is not already published
+        working-directory: agent-runtime
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          set +e
+          lookup="$(npm view "$package_name@$package_version" version --registry=https://registry.npmjs.org 2>&1)"
+          lookup_status=$?
+          set -e
+          if [ "$lookup_status" -eq 0 ]; then
+            echo "$package_name@$package_version already exists on npm" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$lookup" | grep -Eiq 'E404|404 Not Found|not found'; then
+            echo "Could not confirm that $package_name@$package_version is absent from npm:" >&2
+            printf '%s\n' "$lookup" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build
+        working-directory: agent-runtime
+
+      - name: Test
+        run: npm test
+        working-directory: agent-runtime
+
+      - name: Package check
+        run: npm run pack:check
+        working-directory: agent-runtime
+
+      - name: Publish through npm Trusted Publishing
+        run: npm publish
         working-directory: agent-runtime

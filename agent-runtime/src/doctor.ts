@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process"
 
 import { listLaunchers } from "./adapters/launchers.js"
 import { RUNTIME_PACKAGE_NAME, RUNTIME_PACKAGE_VERSION } from "./bootstrap.js"
+import type { AgentLauncher } from "./types.js"
 
 export interface DoctorLauncherReport {
   id: string
@@ -22,11 +23,36 @@ export interface DoctorReport {
   launchers: DoctorLauncherReport[]
 }
 
-function canRun(command: string): boolean {
+const DOCTOR_ENVIRONMENT_KEYS = [
+  "PATH",
+  "HOME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TERM",
+  "NO_COLOR",
+] as const
+
+export function buildDoctorEnvironment(
+  launcher: AgentLauncher,
+  baseEnvironment: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {}
+  for (const key of DOCTOR_ENVIRONMENT_KEYS) {
+    const value = baseEnvironment[key]
+    if (value !== undefined) environment[key] = value
+  }
+  for (const [key, value] of Object.entries(launcher.environment ?? {}))
+    environment[key] = value
+  return environment
+}
+
+function canRun(command: string, environment: NodeJS.ProcessEnv): boolean {
   const result = spawnSync(command, ["--version"], {
     stdio: "ignore",
     shell: false,
     timeout: 5_000,
+    env: environment,
   })
   return result.error === undefined && result.status === 0
 }
@@ -45,7 +71,10 @@ export function collectDoctorReport(
     nodeCompatible: nodeMajor >= 22,
     platform: `${process.platform}/${process.arch}`,
     launchers: listLaunchers().map((launcher) => {
-      const executableAvailable = canRun(launcher.command)
+      const executableAvailable = canRun(
+        launcher.command,
+        buildDoctorEnvironment(launcher, environment)
+      )
       const configured = launcher.id !== "deepseek-harness" || hasDeepSeekRepo
       const ready = executableAvailable && configured
       let note: string | undefined

@@ -8,7 +8,12 @@ import {
   RUNTIME_PACKAGE_VERSION,
   buildBootstrapInvocation,
 } from "../src/bootstrap.js"
-import { collectDoctorReport, formatDoctorReport } from "../src/doctor.js"
+import {
+  buildDoctorEnvironment,
+  collectDoctorReport,
+  formatDoctorReport,
+} from "../src/doctor.js"
+import { getLauncher } from "../src/adapters/launchers.js"
 
 test("publishable package metadata keeps the CLI identity stable", async () => {
   const packageJson = JSON.parse(
@@ -68,4 +73,33 @@ test("doctor reports readiness without exposing environment or secret paths", ()
     /must-not-appear|secret-checkout|ANTHROPIC_API_KEY/
   )
   assert.doesNotMatch(output, /participantHandle|cursor|expiresAt|token/i)
+})
+
+test("doctor probes use a minimal environment", () => {
+  const environment = buildDoctorEnvironment(getLauncher("codex"), {
+    PATH: "/safe/bin",
+    HOME: "/home/test",
+    LANG: "en_US.UTF-8",
+    OPENAI_API_KEY: "provider-secret",
+    AWS_SECRET_ACCESS_KEY: "cloud-secret",
+    GH_TOKEN: "github-secret",
+    CODEX_CONFIG: "/private/codex-config",
+    INITIAL_AGENT_MODE: "full-access",
+  })
+
+  assert.deepEqual(environment, {
+    PATH: "/safe/bin",
+    HOME: "/home/test",
+    LANG: "en_US.UTF-8",
+    INITIAL_AGENT_MODE: "read-only",
+  })
+})
+
+test("agent protocol uses the pinned doctor fallback for npx bootstrap", async () => {
+  const protocol = await readFile(
+    new URL("../../app/public/agent.md", import.meta.url),
+    "utf8"
+  )
+  assert.match(protocol, /npx -y @i365dev\/free4chat-agent@0\.1\.0 doctor/)
+  assert.match(protocol, /When the `free4chat-agent` CLI is already installed/)
 })

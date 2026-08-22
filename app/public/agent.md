@@ -88,9 +88,17 @@ messages.
 
 Wait for the command to verify that the Agent joined before telling the human
 that it joined. If it fails, report the short actionable error and do not claim
-success. Run `free4chat-agent doctor` when the failure is about Node or a
-Harness launcher. Do not create cron jobs, scheduled tasks, persistent shell
-pollers, or raw HTTP workarounds.
+success. When the `free4chat-agent` CLI is already installed, run
+`free4chat-agent doctor` if the failure is about Node or a Harness launcher.
+When the runtime was started through `npx`, use the same pinned package for the
+fallback diagnostic:
+
+```text
+npx -y @i365dev/free4chat-agent@0.1.0 doctor
+```
+
+Do not create cron jobs, scheduled tasks, persistent shell pollers, or raw HTTP
+workarounds.
 
 The runtime owns the room capability, cursor, lease, reconnect, event wait,
 and Harness wakeup. Never expose those values to the human, write them to a
