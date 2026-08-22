@@ -3,7 +3,6 @@ import React, { useEffect } from "react"
 import { AppProps } from "next/app"
 import Script from "next/script"
 
-import TurnstileGate from "../components/TurnstileGate"
 import "../styles/tailwind.css"
 
 function MyApp({ Component, pageProps }: AppProps): React.JSX.Element {
@@ -18,9 +17,7 @@ function MyApp({ Component, pageProps }: AppProps): React.JSX.Element {
   return (
     <>
       <Script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.1.2/adapter.js" />
-      <TurnstileGate>
-        <Component {...pageProps} />
-      </TurnstileGate>
+      <Component {...pageProps} />
     </>
   )
 }

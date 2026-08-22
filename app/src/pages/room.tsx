@@ -75,6 +75,9 @@ export default function Room() {
     <div>
       <Head>
         <title>Room#{roomName} - Free4Chat</title>
+        {/* Rooms are temporary and participant-specific; they must never be
+            indexed or crawled as content. */}
+        <meta name="robots" content="noindex, nofollow" />
       </Head>
 
       {showNickNamePop && (
