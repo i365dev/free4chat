@@ -40,8 +40,9 @@ export default function PrivacyPage() {
       <ul>
         <li>
           <strong>Room state.</strong> A per-room Durable Object holds presence,
-          recent text/action messages, and media track metadata for up to two
-          hours, then deletes it when the room expires.
+          recent text/action messages, and media track metadata for as long as
+          the room stays occupied, and deletes it automatically once the room
+          has been empty for a while.
         </li>
         <li>
           <strong>Media transport.</strong> Voice and screen-share video are

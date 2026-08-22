@@ -6,7 +6,7 @@ export default function TemporaryChatRoomPage() {
   return (
     <DiscoveryPageLayout
       title="Temporary Chat Room — No Sign-Up, No History | Free4Chat"
-      description="Open an instant temporary room for voice, text, and screen sharing. No account, no persistent history — rooms close automatically after two hours."
+      description="Open an instant temporary room for voice, text, and screen sharing. No account, no persistent history — rooms close automatically once everyone has left."
       path="/temporary-chat-room"
       ctaId="temporary-chat-room"
       h1="A temporary room for voice, text, and screen sharing"
@@ -36,7 +36,11 @@ export default function TemporaryChatRoomPage() {
           room&apos;s presence, messages, and expiry state live only while the
           room is active.
         </li>
-        <li>Every room closes automatically after two hours.</li>
+        <li>
+          A room isn&apos;t on a fixed timer — it stays open as long as
+          someone&apos;s in it, and closes automatically a while after everyone
+          has left.
+        </li>
         <li>
           Sharing is just a link: open a room, copy the URL, send it to whoever
           should join.

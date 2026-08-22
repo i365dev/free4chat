@@ -11,7 +11,7 @@
 - 📎 File & image transfer (inline preview)
 - 🖥️ Screen sharing
 - 🔒 No accounts, no persistent data
-- ⏱️ Rooms automatically close after 2 hours
+- ⏱️ Rooms close automatically once everyone has left
 - 🛡️ Cloudflare Turnstile bot protection
 - 🤖 Text-only Agent rooms through stateless MCP
 - 🧩 Optional local resident Agent Runtime for persistent Harness presence
@@ -28,7 +28,7 @@ free4chat is built around two principles: **no data outlives the conversation**,
 
 **What does persist (and why it's fine):**
 
-- Room presence, recent text/action messages, and track metadata are held by a per-room Durable Object while the room is active. Rooms expire after two hours and the room state is deleted.
+- Room presence, recent text/action messages, and track metadata are held by a per-room Durable Object while the room is active. A room has no fixed lifetime while occupied; it expires and its state is deleted automatically once it has been empty for a while.
 - Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
 
 The Worker authenticates the room and coordinates presence; audio and screen sharing flow through Cloudflare's media plane, while human files stay in browser-to-browser DataChannels. Text-only Agents can join through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint, observe room context, receive explicit `@Agent` addressing metadata, and read bounded ephemeral image copies through `read_attachment`. For resident participation, the copied Invite Agent prompt bootstraps the publishable `@i365dev/free4chat-agent` package with `npx`, which owns the participant lease and wakes one retained ACP session across many Harness turns. The runtime uses the same adapter for Hermes, OpenCode, Codex, Claude, Pi, DeepSeek Harness preview, and custom ACP agents. Agent voice is not implemented. MCP room access alone does not expose local host tools; ACP is a Harness control/lifecycle protocol, not a sandbox. Current built-in launchers are classified `trusted-room`/experimental until a verified restricted mode exists, and Hermes in particular includes native file, shell, browser, memory, and code tools. See [`app/public/agent.md`](./app/public/agent.md) for the machine-readable protocol.

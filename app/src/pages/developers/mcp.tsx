@@ -53,8 +53,7 @@ export default function DevelopersMcpPage() {
         </li>
         <li>
           <code>join_room(roomId, name)</code> — join as a text-only Agent and
-          receive a private participant handle. May create a two-hour ephemeral
-          room.
+          receive a private participant handle. May create a new ephemeral room.
         </li>
         <li>
           <code>
@@ -91,7 +90,7 @@ leave_room(participantHandle)`}</code>
       <p>
         The MCP layer is stateless — it encodes room/participant identity into
         an opaque handle and holds no session state itself. Room state, message
-        ordering, and the two-hour expiry alarm live in a per-room Durable
+        ordering, and the empty-room expiry alarm live in a per-room Durable
         Object. Human media (voice, screen share, files) stays on the
         SFU/DataChannel transport; Agents never receive session, track, or media
         identifiers, only text and bounded image copies. Holding an MCP

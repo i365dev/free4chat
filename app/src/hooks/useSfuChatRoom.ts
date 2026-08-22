@@ -156,10 +156,8 @@ export function useSfuChatRoom(
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [error, setError] = useState("")
-  const [expiryWarning, setExpiryWarning] = useState("")
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
-  const [timeLeft, setTimeLeft] = useState(2 * 60 * 60)
   const [resolvedRoomType] = useState<"audio" | "screenshare">(roomType)
 
   const sessionRef = useRef<SfuSession | null>(null)
@@ -202,7 +200,6 @@ export function useSfuChatRoom(
   const fileSendQueueRef = useRef(Promise.resolve())
   const dataChannelReadyRef = useRef(false)
   const closingRef = useRef(false)
-  const expiresAtRef = useRef(0)
 
   const rebuildParticipants = useCallback(() => {
     const state = roomStateRef.current
@@ -814,7 +811,6 @@ export function useSfuChatRoom(
           roomMessageToMessage(message, localParticipantId)
         )
       )
-      expiresAtRef.current = state.expiresAt
       rebuildParticipants()
       const localId = sessionRef.current?.participantId
       for (const participant of state.participants) {
@@ -976,7 +972,7 @@ export function useSfuChatRoom(
         )
       } else if (message.type === "expired") {
         setError(
-          "This room has expired (2-hour limit). Please open a new room."
+          "This room has closed after being empty for a while. Please open a new room."
         )
         setConnectionStatus("failed")
       } else if (message.type === "error") {
@@ -1109,10 +1105,6 @@ export function useSfuChatRoom(
       }
       const session = (await response.json()) as SfuSessionResponse
       sessionRef.current = { ...session, room: roomName }
-      expiresAtRef.current = session.expiresAt
-      setTimeLeft(
-        Math.max(0, Math.floor((session.expiresAt - Date.now()) / 1000))
-      )
       await establishDataChannelTransport()
       await publishTrack(audioTrack, "audio", `audio-${session.participantId}`)
       if (screenTrack && screenTrack.readyState === "live") {
@@ -1203,29 +1195,8 @@ export function useSfuChatRoom(
     const dataChannels = dataChannelsRef.current
     const localTrackMids = localTrackMidsRef.current
 
-    const countdown = setInterval(() => {
-      if (!expiresAtRef.current) return
-      const remaining = Math.max(
-        0,
-        Math.floor((expiresAtRef.current - Date.now()) / 1000)
-      )
-      setTimeLeft(remaining)
-      if (remaining > 0 && remaining <= 600) {
-        setExpiryWarning(
-          "This room will expire in 10 minutes. Copy the link and re-open to continue."
-        )
-      }
-      if (remaining === 0) {
-        setError(
-          "This room has expired (2-hour limit). Please open a new room."
-        )
-        setConnectionStatus("failed")
-      }
-    }, 1000)
-
     return () => {
       closingRef.current = true
-      clearInterval(countdown)
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       if (mediaReconnectTimerRef.current)
         clearTimeout(mediaReconnectTimerRef.current)
@@ -1440,9 +1411,7 @@ export function useSfuChatRoom(
     toggleScreenShare,
     retryVerification,
     error,
-    expiryWarning,
     connectionStatus,
     resolvedRoomType,
-    timeLeft,
   }
 }
