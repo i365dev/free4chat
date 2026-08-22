@@ -84,7 +84,7 @@ describe("useTurnstile", () => {
     await expect(tokenPromise).resolves.toBe("token-1")
   })
 
-  it("never reuses a token: every requestToken() call resets first and returns a fresh value", async () => {
+  it("never reuses a token: every requestToken() call renders a fresh widget and returns a fresh value", async () => {
     const { result } = renderHook(() => useTurnstile())
     attachContainer(result)
 
@@ -108,13 +108,54 @@ describe("useTurnstile", () => {
     })
     await expect(second).resolves.toBe("token-2")
 
-    // The widget is rendered once and reused; every call resets it first so a
-    // consumed/stale token can never be handed back.
-    expect(mock.render).toHaveBeenCalledTimes(1)
+    // A settled widget is torn down immediately, so the second call renders
+    // a genuinely new widget rather than resetting the first one.
+    expect(mock.render).toHaveBeenCalledTimes(2)
     expect(mock.reset).toHaveBeenCalledTimes(2)
   })
 
-  it("rejects on error-callback and allows a fresh retry afterwards", async () => {
+  it("explicitly removes the widget as soon as a token is successfully obtained", async () => {
+    const { result } = renderHook(() => useTurnstile())
+    attachContainer(result)
+
+    act(() => {
+      void result.current.requestToken()
+    })
+    await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
+    const widgetId = mock.getLastOptions() && mock.render.mock.results[0].value
+
+    expect(mock.remove).not.toHaveBeenCalled()
+    act(() => {
+      mock.fireSuccess("token-1")
+    })
+
+    await waitFor(() => expect(mock.remove).toHaveBeenCalledTimes(1))
+    expect(mock.remove).toHaveBeenCalledWith(widgetId)
+  })
+
+  it("clears the widget id on success so the next call always renders instead of reusing", async () => {
+    const { result } = renderHook(() => useTurnstile())
+    attachContainer(result)
+
+    act(() => {
+      void result.current.requestToken()
+    })
+    await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
+    act(() => {
+      mock.fireSuccess("token-1")
+    })
+    await waitFor(() => expect(mock.remove).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      void result.current.requestToken()
+    })
+    await waitFor(() => expect(mock.render).toHaveBeenCalledTimes(2))
+    const firstWidgetId = mock.render.mock.results[0].value
+    const secondWidgetId = mock.render.mock.results[1].value
+    expect(secondWidgetId).not.toBe(firstWidgetId)
+  })
+
+  it("rejects on error-callback, removes the failed widget, and renders a fresh one on retry", async () => {
     const { result } = renderHook(() => useTurnstile())
     attachContainer(result)
 
@@ -123,23 +164,27 @@ describe("useTurnstile", () => {
       failing = result.current.requestToken()
     })
     await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
+    const failedWidgetId = mock.render.mock.results[0].value
     act(() => {
       mock.fireError()
     })
     await expect(failing).rejects.toThrow()
+    expect(mock.remove).toHaveBeenCalledWith(failedWidgetId)
 
     let retry: Promise<string> | undefined
     act(() => {
       retry = result.current.requestToken()
     })
     await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(2))
+    expect(mock.render).toHaveBeenCalledTimes(2)
+    expect(mock.render.mock.results[1].value).not.toBe(failedWidgetId)
     act(() => {
       mock.fireSuccess("token-after-retry")
     })
     await expect(retry).resolves.toBe("token-after-retry")
   })
 
-  it("rejects on expired-callback and on timeout-callback", async () => {
+  it("rejects on expired-callback and on timeout-callback, each renders a fresh widget next time", async () => {
     const { result } = renderHook(() => useTurnstile())
     attachContainer(result)
 
@@ -152,16 +197,19 @@ describe("useTurnstile", () => {
       mock.fireExpired()
     })
     await expect(expired).rejects.toThrow()
+    expect(mock.remove).toHaveBeenCalledTimes(1)
 
     let timedOut: Promise<string> | undefined
     act(() => {
       timedOut = result.current.requestToken()
     })
     await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(2))
+    expect(mock.render).toHaveBeenCalledTimes(2)
     act(() => {
       mock.fireTimeout()
     })
     await expect(timedOut).rejects.toThrow()
+    expect(mock.remove).toHaveBeenCalledTimes(2)
   })
 
   it("dedupes concurrent requestToken() calls into a single in-flight challenge", async () => {
