@@ -46,6 +46,18 @@ function toolError(error: string) {
   return toolResult({ error }, true)
 }
 
+function imageToolResult(
+  image: { data: string; mimeType: string },
+  metadata: unknown
+) {
+  return {
+    content: [
+      { type: "image" as const, data: image.data, mimeType: image.mimeType },
+      { type: "text" as const, text: JSON.stringify(metadata) },
+    ],
+  }
+}
+
 function encodeHandle(handle: AgentHandle): string {
   const bytes = new TextEncoder().encode(JSON.stringify(handle))
   let binary = ""
@@ -122,6 +134,8 @@ function controlError(result: ControlResult): string {
   if (result.data.error === "already_left") return "already_left"
   if (result.data.error === "wait_already_pending")
     return "wait_already_pending"
+  if (result.data.error === "attachment_unavailable")
+    return "attachment_unavailable"
   if (result.status === 401) return "invalid_participant_handle"
   if (result.status === 403) return "agent_only"
   return "room_unavailable"
@@ -208,7 +222,7 @@ function createMcpServer(context: McpRequestContext) {
     "wait_for_events",
     {
       description:
-        "Wait for new text or action events in the room. The cursor advances across the Agent's own messages too.",
+        "Wait for new text, action, or image events in the room. All room events are visible for context; addressed is true only when a message targets this Agent.",
       inputSchema: {
         participantHandle: z.string().min(1),
         cursor: z.number().int().min(0).default(0),
@@ -252,6 +266,45 @@ function createMcpServer(context: McpRequestContext) {
       return result.ok
         ? toolResult(result.data)
         : toolError(controlError(result))
+    }
+  )
+
+  server.registerTool(
+    "read_attachment",
+    {
+      description:
+        "Read an ephemeral image attachment from this Agent's current Free4Chat room. Returns official MCP ImageContent; use only when relevant.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        attachmentId: z.string().uuid(),
+      },
+    },
+    async ({ participantHandle, attachmentId }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-read-attachment",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        attachmentId,
+      })
+      if (!result.ok) return toolError(controlError(result))
+      const data = result.data.data
+      const attachment = result.data.attachment
+      if (
+        typeof data !== "string" ||
+        !attachment ||
+        typeof attachment !== "object" ||
+        typeof (attachment as { mimeType?: unknown }).mimeType !== "string"
+      )
+        return toolError("attachment_unavailable")
+      return imageToolResult(
+        {
+          data,
+          mimeType: (attachment as { mimeType: string }).mimeType,
+        },
+        attachment
+      )
     }
   )
 

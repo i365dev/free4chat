@@ -41,6 +41,21 @@ export interface RoomMessage {
   text?: string
   actionType?: string
   actionPayload?: Record<string, string>
+  targets?: string[]
+  createdAt: number
+  sequence: number
+}
+
+export type AgentImageMimeType = "image/jpeg" | "image/png" | "image/webp"
+
+export interface RoomAttachment {
+  id: string
+  senderId: string
+  senderName: string
+  mimeType: AgentImageMimeType
+  fileName: string
+  size: number
+  chunkCount: number
   createdAt: number
   sequence: number
 }
@@ -57,6 +72,7 @@ export interface RoomRecord {
   expiresAt: number
   participants: Record<string, RoomParticipant>
   messages: RoomMessage[]
+  attachments: RoomAttachment[]
   nextMessageSequence: number
 }
 
@@ -66,11 +82,13 @@ export interface RoomCapabilities {
   screenShare: true
   files: true
   agentText: true
+  agentImages: true
+  agentTargeting: true
 }
 
 export interface AgentEvent {
   sequence: number
-  type: "text" | "action"
+  type: "text" | "action" | "image"
   participant: {
     id: string
     name: string
@@ -79,5 +97,7 @@ export interface AgentEvent {
   text?: string
   actionType?: string
   actionPayload?: Record<string, string>
+  attachment?: Pick<RoomAttachment, "id" | "fileName" | "mimeType" | "size">
+  addressed: boolean
   createdAt: number
 }

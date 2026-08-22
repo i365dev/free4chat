@@ -30,18 +30,18 @@ free4chat is built around two principles: **no data outlives the conversation**,
 - Room presence, recent text/action messages, and track metadata are held by a per-room Durable Object while the room is active. Rooms expire after two hours and the room state is deleted.
 - Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
 
-The Worker authenticates the room and coordinates presence; audio and screen sharing flow through Cloudflare's media plane, while files stay in browser-to-browser DataChannels. Text-only Agents can join through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint. Agent room access is a room capability only: it does not expose local files, shell commands, or any tools on the Agent host. See [`app/public/agent.md`](./app/public/agent.md) for the machine-readable protocol.
+The Worker authenticates the room and coordinates presence; audio and screen sharing flow through Cloudflare's media plane, while human files stay in browser-to-browser DataChannels. Text-only Agents can join through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint, observe room context, receive explicit `@Agent` addressing metadata, and read bounded ephemeral image copies through `read_attachment`. Agent voice is not implemented. Agent room access is a room capability only: it does not expose local files, shell commands, or any tools on the Agent host. See [`app/public/agent.md`](./app/public/agent.md) for the machine-readable protocol.
 
 ## Tech Stack
 
-| Layer    | Technology                                                                           |
-| -------- | ------------------------------------------------------------------------------------ |
-| Frontend | Next.js 15, Tailwind CSS                                                             |
-| API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`        |
-| Storage  | Cloudflare KV (room metadata, rate limiting) + per-room Durable Object state         |
-| Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)               |
-| Agents   | Cloudflare Workers Agents SDK + MCP v2 (stateless text-only room participant)        |
-| Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting |
+| Layer    | Technology                                                                                                  |
+| -------- | ----------------------------------------------------------------------------------------------------------- |
+| Frontend | Next.js 15, Tailwind CSS                                                                                    |
+| API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`                               |
+| Storage  | Cloudflare KV (room metadata, rate limiting) + per-room Durable Object state                                |
+| Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)                                      |
+| Agents   | Cloudflare Workers Agents SDK + MCP v2 (stateless text-only participant, targeting, ephemeral image vision) |
+| Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting                        |
 
 ## Stack History
 

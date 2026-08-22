@@ -17,6 +17,9 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024
 const FILE_CHUNK_SIZE = 32 * 1024
 const FILE_BUFFER_HIGH_WATER_MARK = 256 * 1024
 const FILE_BUFFER_LOW_WATER_MARK = 64 * 1024
+const AGENT_IMAGE_MAX_BYTES = 768 * 1024
+const AGENT_IMAGE_MAX_DIMENSION = 1600
+const AGENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"])
 
 interface IncomingFileTransfer {
   id: string
@@ -32,6 +35,50 @@ interface SfuApiResponse {
   requiresImmediateRenegotiation?: boolean
   sessionDescription?: RTCSessionDescriptionInit
   tracks?: Array<{ trackName?: string }>
+}
+
+function isAgentImage(file: File): boolean {
+  return AGENT_IMAGE_TYPES.has(file.type)
+}
+
+async function createAgentVisionCopy(file: File): Promise<Blob> {
+  const sourceUrl = URL.createObjectURL(file)
+  try {
+    const image = new Image()
+    image.src = sourceUrl
+    await image.decode()
+    const sourceWidth = image.naturalWidth
+    const sourceHeight = image.naturalHeight
+    if (
+      sourceWidth <= AGENT_IMAGE_MAX_DIMENSION &&
+      sourceHeight <= AGENT_IMAGE_MAX_DIMENSION &&
+      file.size <= AGENT_IMAGE_MAX_BYTES
+    )
+      return file.slice(0, file.size, file.type)
+
+    let scale = Math.min(
+      1,
+      AGENT_IMAGE_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight)
+    )
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const canvas = document.createElement("canvas")
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale))
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale))
+      const context = canvas.getContext("2d")
+      if (!context) throw new Error("Canvas is unavailable")
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      for (const quality of [0.82, 0.68, 0.52, 0.38]) {
+        const blob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", quality)
+        )
+        if (blob && blob.size <= AGENT_IMAGE_MAX_BYTES) return blob
+      }
+      scale *= 0.75
+    }
+    throw new Error("Image is too large for Agent vision")
+  } finally {
+    URL.revokeObjectURL(sourceUrl)
+  }
 }
 
 interface SfuSession extends SfuSessionResponse {
@@ -1184,8 +1231,8 @@ export function useSfuChatRoom(
   ])
 
   const sendTextMessage = useCallback(
-    (text: string) => {
-      sendSocketMessage({ type: "chat", text })
+    (text: string, targets: string[] = []) => {
+      sendSocketMessage({ type: "chat", text, targets })
     },
     [sendSocketMessage]
   )
@@ -1238,6 +1285,30 @@ export function useSfuChatRoom(
             fileSize: file.size,
           },
         ])
+        const session = sessionRef.current
+        const hasConnectedAgent = [...participantMapRef.current.values()].some(
+          (participant) => participant.kind === "agent" && participant.connected
+        )
+        if (session && hasConnectedAgent && isAgentImage(file)) {
+          void (async () => {
+            try {
+              const visionCopy = await createAgentVisionCopy(file)
+              await fetch("/api/room/attachments", {
+                method: "POST",
+                headers: {
+                  "Content-Type": visionCopy.type || file.type,
+                  "X-Room-Id": roomName,
+                  "X-Room-Participant-Id": session.participantId,
+                  "X-Room-Participant-Token": session.participantToken,
+                  "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
+                },
+                body: await visionCopy.arrayBuffer(),
+              })
+            } catch {
+              // Agent vision is secondary; human DataChannel delivery already succeeded.
+            }
+          })()
+        }
       }
       const next = fileSendQueueRef.current.then(send, send)
       fileSendQueueRef.current = next.then(
@@ -1246,7 +1317,7 @@ export function useSfuChatRoom(
       )
       return next
     },
-    [nickName, waitForDataChannelOpen, waitForSendCapacity]
+    [nickName, roomName, waitForDataChannelOpen, waitForSendCapacity]
   )
 
   return {

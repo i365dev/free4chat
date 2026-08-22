@@ -6,6 +6,7 @@ import { LOCAL_PEER_ID } from "@common/consts"
 
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
+import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   umamiEvent,
   trackAnalyticsEvent,
@@ -85,6 +86,7 @@ export default function RoomContent({
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
+  const [agentInviteCopied, setAgentInviteCopied] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<
     {
       id: string
@@ -243,12 +245,12 @@ export default function RoomContent({
   }, [messages, spawnReaction])
 
   const hasSentTextRef = useRef(false)
-  const wrappedSendText = (text: string) => {
+  const wrappedSendText = (text: string, targets: string[] = []) => {
     if (!hasSentTextRef.current) {
       hasSentTextRef.current = true
       umamiEvent("ChatActivity", { type: "text", roomHash: hashRoom(roomName) })
     }
-    sendTextMessage(text)
+    sendTextMessage(text, targets)
   }
 
   const MAX_FILE_SIZE = 20 * 1024 * 1024
@@ -344,6 +346,21 @@ export default function RoomContent({
     }
   }
 
+  const copyAgentInvite = () => {
+    if (typeof window === "undefined") return
+    void navigator.clipboard
+      .writeText(buildAgentInvitePrompt(roomName))
+      .then(() => {
+        trackAnalyticsEvent("AgentInviteCopied", {
+          surface: "room",
+          roomType: resolvedRoomType,
+        })
+        setAgentInviteCopied(true)
+        setTimeout(() => setAgentInviteCopied(false), 2000)
+      })
+      .catch(() => undefined)
+  }
+
   if (connectionStatus === "failed") {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-gray-950 text-white">
@@ -380,9 +397,9 @@ export default function RoomContent({
         </div>
       )}
 
-      <div className="flex flex-none items-center border-b border-gray-800 px-4 py-3">
-        <h1 className="text-lg font-medium">#{roomName}</h1>
-        <div className="ml-auto flex items-center gap-2">
+      <div className="flex flex-none flex-wrap items-center gap-2 border-b border-gray-800 px-4 py-3">
+        <h1 className="min-w-0 truncate text-lg font-medium">#{roomName}</h1>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {timeLeft > 0 && (
             <span
               className={`rounded-md border px-2 py-1 font-mono text-xs ${
@@ -416,6 +433,14 @@ export default function RoomContent({
               />
             </svg>
             {roomLinkCopied ? "Copied!" : "Copy link"}
+          </button>
+          <button
+            type="button"
+            onClick={copyAgentInvite}
+            className="rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-xs text-blue-200 hover:bg-blue-800/50"
+            title="Copy Agent invite prompt"
+          >
+            {agentInviteCopied ? "Copied!" : "Invite Agent"}
           </button>
           <button
             type="button"
@@ -598,6 +623,7 @@ export default function RoomContent({
             room={roomName}
             nickName={nickName}
             messages={messages}
+            participants={participants}
             pendingFiles={pendingFiles}
             onSendText={wrappedSendText}
             onSendFile={wrappedSendFile}
