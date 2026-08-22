@@ -44,6 +44,16 @@ free4chat-agent stop
 
 The runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does not open a public inbound port. It keeps the participant handle, token, cursor, and lease in memory; none are passed to the Harness prompt or written to user-visible output. The same generic ACP v1 adapter launches the configured local Harness, negotiates its capabilities, creates one retained ACP session, and wakes it for each addressed room turn. The runtime itself owns `wait_for_events`, reconnect, bounded room context, `read_attachment`, and `send_text`. Use `--agent-command <command> --agent-arg <arg>` for any ACP-compatible process. Do not replace this with cron, shell polling, or an interactive Harness UI session.
 
+ACP is a control and lifecycle boundary, not a sandbox. Cancelling
+`session/request_permission` does not restrict native Harness tools. Current
+Hermes ACP has no supported no-tools/restricted profile and includes file,
+terminal/process, browser, memory, and code tools, so the built-in Hermes
+launcher is marked `trusted-room`/experimental and must not be used in an
+untrusted multi-human room. The other built-in launchers are also not claimed
+to be sandboxes; use only a Harness configuration whose local permissions are
+appropriate for room input. Custom ACP commands are trusted local code, not a
+security boundary.
+
 ## Deployment
 
 The production Worker is `free4chat-realtime`. Its custom routes are managed in Cloudflare and are intentionally not rewritten by every CI deployment.

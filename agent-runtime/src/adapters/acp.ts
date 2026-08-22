@@ -21,6 +21,8 @@ import type {
 import { renderUntrustedRoomTurn } from "./types.js"
 
 const SHUTDOWN_TIMEOUT_MS = 2_000
+const DEFAULT_TURN_TIMEOUT_MS = 120_000
+const DEFAULT_CANCEL_GRACE_MS = 2_000
 
 const SAFE_ENVIRONMENT_KEYS = new Set([
   "PATH",
@@ -68,6 +70,18 @@ export function buildHarnessEnvironment(
   return environment
 }
 
+export interface AcpHarnessAdapterOptions {
+  turnTimeoutMs?: number
+  cancelGraceMs?: number
+}
+
+export class AcpTurnTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`ACP turn timed out after ${timeoutMs}ms`)
+    this.name = "AcpTurnTimeoutError"
+  }
+}
+
 function asWebReadable(
   stream: NodeJS.ReadableStream
 ): ReadableStream<Uint8Array> {
@@ -108,12 +122,23 @@ export class AcpHarnessAdapter implements HarnessAdapter {
   private promptInFlight = false
   private closing = false
   private failureHandler?: (error: Error) => void
+  private readonly turnTimeoutMs: number
+  private readonly cancelGraceMs: number
 
   constructor(
     readonly launcher: AgentLauncher,
-    private readonly workingDirectory: string
+    private readonly workingDirectory: string,
+    options: AcpHarnessAdapterOptions = {}
   ) {
     this.name = launcher.id
+    this.turnTimeoutMs = Math.max(
+      1,
+      options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
+    )
+    this.cancelGraceMs = Math.max(
+      1,
+      options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS
+    )
   }
 
   get capabilities(): HarnessCapabilities | undefined {
@@ -206,14 +231,98 @@ export class AcpHarnessAdapter implements HarnessAdapter {
     if (!this.session) throw new Error("ACP session is unavailable")
     if (this.promptInFlight) throw new Error("ACP prompt is already running")
     this.promptInFlight = true
+    let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+    let turn: Promise<[unknown, string]> | undefined
     try {
-      const prompt = this.session.prompt(
-        promptBlocks(input, this.capabilities?.images === true)
-      )
-      const [text] = await Promise.all([this.session.readText(), prompt])
+      turn = Promise.all([
+        this.session.prompt(
+          promptBlocks(input, this.capabilities?.images === true)
+        ),
+        this.session.readText(),
+      ])
+      void turn.catch(() => undefined)
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(
+          () => reject(new AcpTurnTimeoutError(this.turnTimeoutMs)),
+          this.turnTimeoutMs
+        )
+      })
+      const [, text] = await Promise.race([turn, timeout])
       return { text: text.trim() }
+    } catch (error) {
+      if (!(error instanceof AcpTurnTimeoutError)) throw error
+      if (turn) await this.recoverTimedOutTurn(turn)
+      throw error
     } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer)
       this.promptInFlight = false
+    }
+  }
+
+  private async recoverTimedOutTurn(turn: Promise<unknown>): Promise<void> {
+    const cancel = this.cancelTurn().catch(() => undefined)
+    const settled = await Promise.race([
+      Promise.all([
+        cancel,
+        turn.then(
+          () => undefined,
+          () => undefined
+        ),
+      ]).then(() => true),
+      new Promise<boolean>((resolve) =>
+        setTimeout(() => resolve(false), this.cancelGraceMs)
+      ),
+    ])
+    if (!settled) await this.forceClose()
+  }
+
+  private async forceClose(): Promise<void> {
+    await this.closeInternal(true)
+  }
+
+  /*
+   * `force` deliberately skips session/close. A stuck Harness is allowed to
+   * ignore both the prompt cancellation and a normal ACP request, so process
+   * termination is the final recovery boundary.
+   */
+  private async closeInternal(force: boolean): Promise<void> {
+    this.closing = true
+    const connection = this.connection
+    const child = this.child
+    const session = this.session
+    const initializeResponse = this.initializeResponse
+    this.session = undefined
+    this.connection = undefined
+    this.child = undefined
+    this.initializeResponse = undefined
+    try {
+      if (connection && session && !force) {
+        try {
+          if (initializeResponse?.agentCapabilities?.sessionCapabilities?.close)
+            await connection.agent.request(methods.agent.session.close, {
+              sessionId: session.sessionId,
+            })
+        } catch {
+          // Process termination below is the final cleanup boundary.
+        }
+      }
+      session?.dispose()
+      connection?.close()
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM")
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            child.kill("SIGKILL")
+            resolve()
+          }, SHUTDOWN_TIMEOUT_MS)
+          child.once("exit", () => {
+            clearTimeout(timer)
+            resolve()
+          })
+        })
+      }
+    } finally {
+      this.closing = false
     }
   }
 
@@ -225,42 +334,6 @@ export class AcpHarnessAdapter implements HarnessAdapter {
   }
 
   async close(): Promise<void> {
-    this.closing = true
-    const connection = this.connection
-    const child = this.child
-    const session = this.session
-    this.session = undefined
-    this.connection = undefined
-    this.child = undefined
-    if (connection && session) {
-      try {
-        if (
-          this.initializeResponse?.agentCapabilities?.sessionCapabilities?.close
-        )
-          await connection.agent.request(methods.agent.session.close, {
-            sessionId: session.sessionId,
-          })
-      } catch {
-        // Process termination below is the final cleanup boundary.
-      }
-      session.dispose()
-      connection.close()
-    } else {
-      connection?.close()
-    }
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM")
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          child.kill("SIGKILL")
-          resolve()
-        }, SHUTDOWN_TIMEOUT_MS)
-        child.once("exit", () => {
-          clearTimeout(timer)
-          resolve()
-        })
-      })
-    }
-    this.closing = false
+    await this.closeInternal(false)
   }
 }

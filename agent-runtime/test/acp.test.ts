@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -6,6 +7,7 @@ import { test } from "node:test"
 
 import {
   AcpHarnessAdapter,
+  AcpTurnTimeoutError,
   buildHarnessEnvironment,
 } from "../src/adapters/acp.js"
 import { getLauncher } from "../src/adapters/launchers.js"
@@ -61,6 +63,7 @@ function launcher(script: string): AgentLauncher {
     command: process.execPath,
     args: ["-e", script],
     maturity: "preview",
+    security: "unverified",
   }
 }
 
@@ -136,6 +139,10 @@ test("room capability never enters the ACP prompt", () => {
   const rendered = renderUntrustedRoomTurn(input("hello"))
   assert.equal(rendered.includes("participantHandle"), false)
   assert.equal(rendered.includes("token"), false)
+  assert.match(rendered, /not a coding, research, or computer-use task/i)
+  assert.match(rendered, /do not call MCP or Free4Chat tools/i)
+  assert.match(rendered, /do not ask for or invent room identity/i)
+  assert.match(rendered, /brief conversational reply/i)
 })
 
 test("ACP process exit fails promptly", async () => {
@@ -204,6 +211,71 @@ process.stdin.on("data", (chunk) => {
     await processFailed
     assert.match(failed?.message ?? "", /ACP process exited/)
     assert.equal((await adapter.runTurn(input("second"))).text, "reply-2")
+  } finally {
+    await adapter.close()
+    await rm(workspace, { recursive: true, force: true })
+  }
+})
+
+test("a stuck ACP turn is cancelled, terminated, and recoverable", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "free4chat-acp-"))
+  const stateMarker = join(workspace, "timeout-process")
+  const cancelMarker = join(workspace, "cancel-sent")
+  const script = `
+const fs = require("node:fs");
+const stateMarker = process.env.FAKE_TIMEOUT_STATE;
+const cancelMarker = process.env.FAKE_CANCEL_MARKER;
+const restarted = fs.existsSync(stateMarker);
+let buffer = "";
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf("\\n")) >= 0) {
+    const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+    if (!line) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      send({jsonrpc:"2.0",id:message.id,result:{protocolVersion:1,agentCapabilities:{promptCapabilities:{},sessionCapabilities:{close:{}}}}});
+    } else if (message.method === "session/new") {
+      send({jsonrpc:"2.0",id:message.id,result:{sessionId:"session-1"}});
+    } else if (message.method === "session/prompt") {
+      if (restarted) {
+        send({jsonrpc:"2.0",method:"session/update",params:{sessionId:"session-1",update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"recovered"}}}});
+        send({jsonrpc:"2.0",id:message.id,result:{stopReason:"end_turn"}});
+      } else {
+        fs.writeFileSync(stateMarker, "started");
+        process.on("SIGTERM", () => {});
+      }
+    } else if (message.method === "session/cancel") {
+      fs.writeFileSync(cancelMarker, "sent");
+    } else if (message.method === "session/close") {
+      send({jsonrpc:"2.0",id:message.id,result:{}});
+    }
+  }
+});
+`
+  const testLauncher: AgentLauncher = {
+    ...launcher(script),
+    environment: {
+      FAKE_TIMEOUT_STATE: stateMarker,
+      FAKE_CANCEL_MARKER: cancelMarker,
+    },
+  }
+  const adapter = new AcpHarnessAdapter(testLauncher, workspace, {
+    turnTimeoutMs: 30,
+    cancelGraceMs: 20,
+  })
+  try {
+    await adapter.ensureSession()
+    await assert.rejects(
+      adapter.runTurn(input("timeout-test")),
+      (error: unknown) => error instanceof AcpTurnTimeoutError
+    )
+    assert.equal(existsSync(cancelMarker), true)
+    assert.equal(existsSync(stateMarker), true)
+    assert.equal((await adapter.runTurn(input("recover"))).text, "recovered")
   } finally {
     await adapter.close()
     await rm(workspace, { recursive: true, force: true })

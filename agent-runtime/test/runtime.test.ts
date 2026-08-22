@@ -132,6 +132,73 @@ test("cursor timeout continues and addressed turns are delivered once", async ()
   assert.ok(waits > 1)
 })
 
+test("a timed-out Harness turn releases turn state without replaying the event", async () => {
+  let waits = 0
+  let turns = 0
+  const client: Free4ChatClient = {
+    async connect() {},
+    async listTools() {
+      return []
+    },
+    async roomInfo() {
+      return {}
+    },
+    async joinRoom(): Promise<JoinResult> {
+      return {
+        participantId: "agent",
+        participantHandle: "secret",
+        cursor: 0,
+        expiresAt: Date.now() + 90_000,
+      }
+    },
+    async waitForEvents(_handle, cursor): Promise<WaitResult> {
+      waits += 1
+      if (waits === 1)
+        return {
+          events: [event(1, true)],
+          cursor: 1,
+          expiresAt: Date.now() + 90_000,
+        }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      return { events: [], cursor, expiresAt: Date.now() + 90_000 }
+    },
+    async sendText() {
+      throw new Error("timed-out turns must not send a reply")
+    },
+    async readAttachment() {
+      throw new Error("not used")
+    },
+    async leaveRoom() {},
+    async close() {},
+  }
+  const adapter: HarnessAdapter = {
+    name: "hermes",
+    async ensureSession() {},
+    async runTurn() {
+      turns += 1
+      throw new Error("ACP turn timed out")
+    },
+    async close() {},
+  }
+  const runtime = new ResidentRoomRuntime({
+    instanceId: "timeout-instance",
+    roomId: "test",
+    name: "Hermes",
+    client,
+    adapter,
+  })
+  await runtime.start()
+  for (
+    let attempt = 0;
+    attempt < 40 && (turns === 0 || runtime.getStatus().state === "turn");
+    attempt += 1
+  )
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  assert.equal(turns, 1)
+  assert.equal(runtime.getStatus().state, "waiting")
+  await runtime.stop()
+})
+
 test("pending addressed events are bounded", () => {
   const values: number[] = []
   for (let index = 0; index < 10; index += 1) boundedPush(values, index, 8)

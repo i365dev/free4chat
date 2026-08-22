@@ -28,6 +28,15 @@ export function socketPath(): string {
   return join(runtimeDirectory(), "daemon.sock")
 }
 
+function optionalMilliseconds(name: string): number | undefined {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === "") return undefined
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 1)
+    throw new Error(`${name} must be a positive number of milliseconds`)
+  return Math.floor(value)
+}
+
 export interface IpcRequest {
   op: "join" | "status" | "leave" | "stop"
   room?: string
@@ -101,6 +110,12 @@ export class AgentDaemon {
       const launcher = request.agentCommand
         ? customLauncher(request.agentCommand, request.agentArgs ?? [])
         : getLauncher(request.agent ?? "")
+      const turnTimeoutMs = optionalMilliseconds(
+        "FREE4CHAT_ACP_TURN_TIMEOUT_MS"
+      )
+      const cancelGraceMs = optionalMilliseconds(
+        "FREE4CHAT_ACP_CANCEL_GRACE_MS"
+      )
       const instanceId = randomUUID()
       const workspace = join(runtimeDirectory(), "workspaces", instanceId)
       await mkdir(workspace, { recursive: true, mode: 0o700 })
@@ -111,7 +126,10 @@ export class AgentDaemon {
         client: new McpFree4ChatClient(
           process.env.FREE4CHAT_MCP_URL ?? "https://www.free4.chat/mcp"
         ),
-        adapter: new AcpHarnessAdapter(launcher, workspace),
+        adapter: new AcpHarnessAdapter(launcher, workspace, {
+          turnTimeoutMs,
+          cancelGraceMs,
+        }),
       })
       this.instances.set({ instanceId, roomId: request.room, runtime })
       this.workspaces.set(instanceId, workspace)

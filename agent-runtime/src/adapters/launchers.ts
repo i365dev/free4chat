@@ -7,6 +7,9 @@ const builtInLaunchers: AgentLauncher[] = [
     command: "hermes",
     args: ["acp"],
     maturity: "native",
+    security: "trusted-room",
+    notes:
+      "Experimental trusted-room mode only. Current Hermes ACP has native file, shell, browser, memory, and code tools; its current CLI exposes no safe no-tools profile.",
   },
   {
     id: "opencode",
@@ -22,6 +25,7 @@ const builtInLaunchers: AgentLauncher[] = [
       "--pure",
     ],
     maturity: "native",
+    security: "trusted-room",
     notes:
       "Local-only ACP server: loopback hostname, ephemeral port, mDNS disabled, and pure mode.",
   },
@@ -31,6 +35,7 @@ const builtInLaunchers: AgentLauncher[] = [
     command: "npx",
     args: ["-y", "@agentclientprotocol/codex-acp@1.6.2"],
     maturity: "bridge",
+    security: "trusted-room",
     environment: { INITIAL_AGENT_MODE: "read-only" },
     notes:
       "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
@@ -41,6 +46,7 @@ const builtInLaunchers: AgentLauncher[] = [
     command: "npx",
     args: ["-y", "@agentclientprotocol/claude-agent-acp@0.70.0"],
     maturity: "bridge",
+    security: "trusted-room",
     notes: "ACP bridge maintained by the Agent Client Protocol project.",
   },
   {
@@ -49,6 +55,7 @@ const builtInLaunchers: AgentLauncher[] = [
     command: "npx",
     args: ["-y", "pi-acp@0.0.33"],
     maturity: "bridge",
+    security: "trusted-room",
     notes: "ACP bridge listed by the official ACP registry.",
   },
   {
@@ -57,6 +64,7 @@ const builtInLaunchers: AgentLauncher[] = [
     command: "pnpm",
     args: ["run", "demo:acp"],
     maturity: "preview",
+    security: "trusted-room",
     notes:
       "Developer-preview automation ACP. Set FREE4CHAT_DEEPSEEK_REPO to its checkout or use a custom launcher.",
   },
@@ -91,5 +99,6 @@ export function customLauncher(command: string, args: string[]): AgentLauncher {
     command,
     args: [...args],
     maturity: "preview",
+    security: "trusted-room",
   }
 }

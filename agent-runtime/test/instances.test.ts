@@ -31,3 +31,9 @@ test("OpenCode launcher is forced to a loopback ephemeral ACP server", () => {
     "--pure",
   ])
 })
+
+test("Hermes launcher is explicitly marked trusted-room", () => {
+  const launcher = getLauncher("hermes")
+  assert.equal(launcher.security, "trusted-room")
+  assert.match(launcher.notes ?? "", /no safe no-tools profile/i)
+})

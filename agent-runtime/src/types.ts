@@ -1,4 +1,5 @@
 export type LauncherMaturity = "native" | "bridge" | "preview"
+export type LauncherSecurity = "trusted-room" | "unverified"
 
 export interface AgentLauncher {
   id: string
@@ -6,6 +7,7 @@ export interface AgentLauncher {
   command: string
   args: string[]
   maturity: LauncherMaturity
+  security: LauncherSecurity
   notes?: string
   /** Explicit launch-time environment overrides for this trusted launcher. */
   environment?: Record<string, string>
