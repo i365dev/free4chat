@@ -75,7 +75,35 @@ jobs:
         env:
           SFU_APP_ID: ${{ secrets.SFU_APP_ID }}
 
+      # Second, independent guard against a stale deploy (the concurrency
+      # group above should normally prevent this by cancelling an
+      # in-progress older run, but this check covers any window where an
+      # older run's Deploy step is reached anyway). "Stale" means cf-sfu
+      # now has a commit that itself touches app/ or this workflow file —
+      # see check-deploy-freshness.sh for why raw SHA equality against
+      # cf-sfu's tip is wrong under this workflow's path-filtered push
+      # trigger (a docs-only commit landing afterward must NOT mark an
+      # in-flight app deploy stale). `set -euo pipefail` here means a
+      # fetch/resolution failure fails this step (and the job) visibly —
+      # it must never be silently treated as "stale, skip deploy, job
+      # green". No extra token needed: actions/checkout persists
+      # credentials for the job by default, so `git fetch origin` works.
+      - name: Verify this commit is still the latest deploy-relevant cf-sfu push
+        id: freshness
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin cf-sfu
+          latest_sha="$(git rev-parse --verify FETCH_HEAD)"
+          echo "Building commit: $GITHUB_SHA"
+          echo "Latest cf-sfu:    $latest_sha"
+          result="$(.github/scripts/check-deploy-freshness.sh "$GITHUB_SHA" "$latest_sha")"
+          echo "$result" >> "$GITHUB_OUTPUT"
+          if [ "$result" = "stale=true" ]; then
+            echo "::notice::Skipping deploy — cf-sfu has a newer commit ($latest_sha) that touches app/ or this workflow file. That commit's own run will (or already did) cover this push."
+          fi
+
       - name: Deploy
+        if: steps.freshness.outputs.stale != 'true'
         run: |
           npx wrangler deploy \
             --var "SFU_APP_ID:${SFU_APP_ID}"

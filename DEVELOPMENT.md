@@ -69,7 +69,7 @@ npx wrangler secret put SFU_APP_SECRET
 npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
-Manual deployment:
+Manual deployment (recovery only — see note below):
 
 ```bash
 cd app
@@ -77,6 +77,15 @@ yarn cf-build
 npx wrangler deploy \
   --var "SFU_APP_ID:$SFU_APP_ID"
 ```
+
+**Production deploys should go through CI, not this manual path.** A local
+`wrangler deploy` builds with whatever's in your own environment/`.dev.vars`
+— pairing a local dev value (e.g. `NEXT_PUBLIC_TURNSTILE_SITE_KEY`) with the
+real production `TURNSTILE_SECRET_KEY` (a Cloudflare Worker secret, unaffected
+by any deploy) silently breaks verification. If a deployment needs retrying,
+re-run the `CI / Deploy` workflow run in GitHub Actions instead of deploying
+locally, unless you're deliberately reproducing the full production build-time
+configuration.
 
 ## SFU architecture
 
