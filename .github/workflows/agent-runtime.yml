@@ -2,6 +2,8 @@ name: Agent Runtime
 
 on:
   push:
+    branches:
+      - "**"
     paths:
       - "agent-runtime/**"
       - ".github/workflows/agent-runtime.yml"
