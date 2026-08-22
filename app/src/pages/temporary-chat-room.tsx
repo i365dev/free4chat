@@ -13,8 +13,8 @@ export default function TemporaryChatRoomPage() {
     >
       <p>
         Free4Chat rooms exist to have one conversation and then disappear. There
-        is no account to create, nothing to install, and nothing left behind
-        once the room closes.
+        is no account to create and nothing to install, and the room itself
+        leaves no permanent history on our servers once it closes.
       </p>
 
       <h2>What you get</h2>
@@ -32,8 +32,9 @@ export default function TemporaryChatRoomPage() {
       <ul>
         <li>No sign-up, no account, no identity to manage.</li>
         <li>
-          Free4Chat keeps no permanent room history — a room&apos;s presence,
-          messages, and expiry state live only while the room is active.
+          Free4Chat keeps no permanent room history on our servers — a
+          room&apos;s presence, messages, and expiry state live only while the
+          room is active.
         </li>
         <li>Every room closes automatically after two hours.</li>
         <li>
@@ -47,8 +48,11 @@ export default function TemporaryChatRoomPage() {
         Free4Chat is not an end-to-end encrypted messenger. Voice and screen
         sharing are relayed through Cloudflare&apos;s media network so multiple
         participants can hear and see each other; that network sees the media in
-        transit. Files and images travel browser-to-browser over a data channel
-        and are never written to a database. See{" "}
+        transit. Files and images between Humans travel browser-to-browser over
+        a data channel and are never written to a database — the one exception
+        is a bounded, temporary copy stored when an image is shared with a
+        connected Agent. Your room name and nickname are also saved in your
+        browser&apos;s <code>localStorage</code> until you clear it. See{" "}
         <Link href="/privacy">Privacy</Link> for the full picture.
       </p>
 

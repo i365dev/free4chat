@@ -13,10 +13,13 @@ describe("robots.txt", () => {
     expect(robots).toMatch(/Allow:\s*\//)
   })
 
-  it("disallows ephemeral room URLs, the API, and the Agent MCP endpoint", () => {
-    expect(robots).toMatch(/Disallow:\s*\/room/)
+  it("disallows the API and the Agent MCP endpoint", () => {
     expect(robots).toMatch(/Disallow:\s*\/mcp/)
     expect(robots).toMatch(/Disallow:\s*\/api\//)
+  })
+
+  it("does NOT disallow /room — it relies on a page-level noindex meta tag, which crawlers can only read if they're allowed to fetch the page", () => {
+    expect(robots).not.toMatch(/Disallow:\s*\/room\b/)
   })
 
   it("points to the sitemap", () => {
@@ -68,6 +71,13 @@ describe("sitemap.xml", () => {
         expect(loc).not.toContain(slug)
       }
     }
+  })
+})
+
+describe("_document.tsx", () => {
+  it("does not set a description meta tag (next/document renders unconditionally on every page and next/head does not dedupe plain <meta> tags, so a fallback here would duplicate each page's own description)", () => {
+    const source = readFileSync(join(ROOT, "src/pages/_document.tsx"), "utf-8")
+    expect(source).not.toMatch(/name="description"/)
   })
 })
 

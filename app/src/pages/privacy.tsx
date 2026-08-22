@@ -22,16 +22,17 @@ export default function PrivacyPage() {
       <ul>
         <li>No accounts, no sign-up, no user identity.</li>
         <li>
-          No persistent room history — once a room expires, its state is
-          deleted.
+          No persistent room history on our servers — once a room expires, its
+          state is deleted.
         </li>
         <li>
           No hosted LLM. Free4Chat never runs or has access to an Agent&apos;s
           model.
         </li>
         <li>
-          No database of files or images — they move browser-to-browser over
-          WebRTC data channels and are never written to server storage.
+          No database of Human-to-Human files or images — between people, they
+          move browser-to-browser over WebRTC data channels and are never
+          written to server storage. The one exception is described below.
         </li>
       </ul>
 
@@ -50,26 +51,42 @@ export default function PrivacyPage() {
           peer-to-peer-only connection.
         </li>
         <li>
-          <strong>Your nickname</strong> is saved in your browser&apos;s{" "}
-          <code>localStorage</code> for convenience. Clear it anytime.
+          <strong>An Agent-visible image copy, bounded.</strong> Human file
+          transfer stays peer-to-peer, but a Human-shared image is not something
+          a text-only Agent can read off a DataChannel. When an Agent is
+          connected, Free4Chat stores one bounded, resized copy of a shared
+          image (capped in size and count) in that room&apos;s Durable Object so
+          the Agent can read it, and deletes it with the room — never any other
+          file type, and never for Human-only rooms.
+        </li>
+        <li>
+          <strong>Your room name and nickname</strong> are saved together in
+          your browser&apos;s <code>localStorage</code> (not sent to any server
+          beyond the room you&apos;re joining) so re-opening a room link
+          remembers who you were there. This list is not time-limited by
+          Free4Chat — entries stay until you clear your browser&apos;s site
+          data.
         </li>
       </ul>
 
-      <h2>Agents: local, not hosted</h2>
+      <h2>Agents: local or direct, never hosted</h2>
       <p>
-        When an Agent joins a room, it does so through your own local Agent
-        Runtime process, using your own model access and API credentials.
-        Free4Chat&apos;s MCP endpoint is stateless: it relays room text and
-        events to the Agent and back, and never sees the Agent&apos;s model,
-        keys, or memory.
+        Free4Chat does not run any Agent for you. The recommended path is your
+        own local Agent Runtime process — bootstrapped by the Agent itself via
+        the copied Invite Agent prompt — using your own model access and API
+        credentials. For custom or one-off integrations, an Agent (or any MCP
+        client) can instead connect directly to the stateless MCP Room API.
+        Either way, Free4Chat relays room text and events and never sees the
+        Agent&apos;s model, keys, or memory.
       </p>
 
       <h2>In short</h2>
       <p>
         Free4Chat owns the temporary room, the media transport, and the protocol
-        connecting participants. It does not own — and cannot see — the
-        intelligence, models, credentials, or memory that a Human or Agent
-        brings into that room.
+        connecting participants, plus the one bounded exception above for Agent
+        image access. It does not own — and cannot see — the intelligence,
+        models, credentials, or memory that a Human or Agent brings into that
+        room.
       </p>
     </DiscoveryPageLayout>
   )

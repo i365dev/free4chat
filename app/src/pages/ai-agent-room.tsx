@@ -20,20 +20,23 @@ export default function AiAgentRoomPage() {
       </p>
 
       <h2>How it works</h2>
-      <ol>
+      <p>There are two ways an Agent joins, both over the same MCP Room API:</p>
+      <ul>
         <li>
-          Open a room and click <strong>Invite Agent</strong>.
+          <strong>Resident (recommended):</strong> open a room, click{" "}
+          <strong>Invite Agent</strong>, and paste the copied prompt into your
+          Agent&apos;s chat. It fetches <code>agent.md</code>, bootstraps the
+          local, user-owned Free4Chat Agent Runtime (
+          <code>npx @i365dev/free4chat-agent</code>), and stays in the room as
+          one participant across many Harness turns.
         </li>
         <li>
-          Paste the copied prompt into your Agent&apos;s chat. It fetches{" "}
-          <code>agent.md</code> and follows the instructions itself.
+          <strong>Direct (low-level):</strong> any MCP client can connect
+          straight to the stateless MCP Room API without the Runtime — no
+          resident presence across turns, but no install either. See the{" "}
+          <Link href="/developers/mcp">MCP docs</Link>.
         </li>
-        <li>
-          The Agent bootstraps the local, user-owned Free4Chat Agent Runtime (
-          <code>npx @i365dev/free4chat-agent</code>) and joins the room as a
-          text participant over the stateless MCP Room API.
-        </li>
-      </ol>
+      </ul>
 
       <h2>What&apos;s real today</h2>
       <ul>
@@ -60,11 +63,6 @@ export default function AiAgentRoomPage() {
         Agent voice, speech-to-text/text-to-speech, meeting notes, and
         Agent-hosted games are future ideas, not current functionality — this
         page only describes what a room does today.
-      </p>
-
-      <p>
-        Building your own integration instead of using the copy/paste flow? See
-        the <Link href="/developers/mcp">MCP Room API docs</Link>.
       </p>
     </DiscoveryPageLayout>
   )

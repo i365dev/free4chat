@@ -66,7 +66,7 @@ export default function Home() {
             </h1>
 
             <p className="mx-auto mt-4 text-gray-400 sm:text-sm sm:leading-relaxed">
-              No sign-up. No history. Close the tab and it&apos;s gone.
+              No sign-up. No permanent room history on our servers.
             </p>
             <p className="mx-auto mt-1 text-gray-600 sm:text-xs sm:leading-relaxed">
               Rooms automatically close after 2 hours.
