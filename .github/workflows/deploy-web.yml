@@ -46,6 +46,9 @@ jobs:
     needs: lint
     if: github.ref == 'refs/heads/cf-sfu' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    concurrency:
+      group: cf-sfu-deploy
+      cancel-in-progress: true
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
