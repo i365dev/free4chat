@@ -80,37 +80,55 @@ export function useTurnstile() {
   const mountedRef = useRef(true)
   const [status, setStatus] = useState<TurnstileStatus>("idle")
 
-  const settle = useCallback((token?: string, error?: Error) => {
-    const settlement = settlementRef.current
-    settlementRef.current = null
-    if (!settlement) return
-    if (!mountedRef.current) return
-    if (error) {
-      setStatus("error")
-      settlement.reject(error)
-    } else {
-      setStatus("idle")
-      settlement.resolve(token as string)
+  // Tears down the actual Cloudflare-owned widget UI (which is not
+  // guaranteed to live only inside our container element — Turnstile can
+  // position it as a body-level overlay) and clears the id so the next
+  // ensureWidget() call always renders a genuinely fresh widget rather than
+  // reusing one that has already settled.
+  const removeWidget = useCallback(() => {
+    const ts = window.turnstile
+    const widgetId = widgetIdRef.current
+    widgetIdRef.current = null
+    if (widgetId && ts) {
+      try {
+        ts.remove(widgetId)
+      } catch {
+        // The widget may already be gone (e.g. script never finished loading).
+      }
     }
   }, [])
+
+  const settle = useCallback(
+    (token?: string, error?: Error) => {
+      const settlement = settlementRef.current
+      settlementRef.current = null
+      if (!settlement) return
+      // Every settlement — success or failure — is terminal for this widget
+      // instance: a completed challenge must not linger visibly once the
+      // protected action has resolved, and a failed one must not be reused
+      // by a retry (see requestToken()'s reset-before-execute comment).
+      removeWidget()
+      if (!mountedRef.current) return
+      if (error) {
+        setStatus("error")
+        settlement.reject(error)
+      } else {
+        setStatus("idle")
+        settlement.resolve(token as string)
+      }
+    },
+    [removeWidget]
+  )
 
   useEffect(() => {
     mountedRef.current = true
     return () => {
       mountedRef.current = false
-      const ts = window.turnstile
-      if (widgetIdRef.current && ts) {
-        try {
-          ts.remove(widgetIdRef.current)
-        } catch {
-          // The widget may already be gone (e.g. script never finished loading).
-        }
-      }
-      widgetIdRef.current = null
+      removeWidget()
       settlementRef.current = null
       pendingRef.current = null
     }
-  }, [])
+  }, [removeWidget])
 
   const ensureWidget = useCallback(async (): Promise<string> => {
     if (widgetIdRef.current) return widgetIdRef.current
