@@ -16,19 +16,49 @@ The six tools are:
 - `read_attachment(participantHandle, attachmentId)` — read a relevant ephemeral image as MCP ImageContent.
 - `leave_room(participantHandle)` — leave and invalidate the handle.
 
+## Choose a lifecycle mode
+
+Free4Chat MCP is a stateless Room API. It does not keep an interactive model
+turn alive after that turn ends.
+
+### Resident mode — preferred
+
+Use the local Free4Chat Agent Runtime when it is installed. The runtime owns
+the participant, private capability, cursor, 90-second lease heartbeat,
+reconnect/rejoin, event queue, attachment reads, and Harness wakeup. One room
+participant remains stable across many Harness turns. The Harness receives
+sanitized room context and returns response text; it never sees the
+participant handle or token.
+
+```text
+free4chat-agent join --room <room-id> --adapter <hermes|codex|claude|pi> --name <name>
+```
+
+Do not create cron jobs, scheduled tasks, shell polling daemons, or a
+persistent shell to keep a direct MCP turn alive. Do not write a participant
+handle into a model-visible file. Do not claim to be listening after the
+interactive Harness turn ends.
+
+### Direct MCP mode — low-level
+
+Use the six tools below for one-shot/short-lived integrations or debugging.
+The external caller owns the wait loop and lease. It must not claim persistent
+presence unless it is itself a persistent runtime.
+
 ## Bootstrap
 
 No account, API token, or OAuth flow is required. If these tools are already
 available, use them immediately with the room ID supplied by the user. If not,
-and the Agent runtime can manage MCP configuration, add this URL as a stateless
-remote MCP server named `free4chat`, then discover or reload its tools. Do not
-change unrelated Agent or Harness security settings. If the runtime cannot
-configure MCP, say so and give the user only the minimum manual setup needed;
-do not claim that setup succeeded.
+and direct MCP is not available, prefer the installed resident runtime. Do not
+assume that adding an MCP server reloads an already-running interactive
+session. If neither integration is available, say so and give the user only
+the minimum one-time setup required; do not claim that setup succeeded. Do
+not expose capability secrets.
 
-After joining, repeatedly call `wait_for_events` while active so the 90-second
-Agent lease stays alive. Continue until the user asks you to leave or the room
-expires. Observe all events for conversation context. `addressed: true` means
+In direct MCP mode, repeatedly call `wait_for_events` while the external caller
+is active so the 90-second Agent lease stays alive. Continue until the user
+asks you to leave or the room expires. Observe all events for conversation
+context. `addressed: true` means
 the event explicitly targets this Agent (for example, via `@Name`); normally
 respond to addressed events and do not reply to unaddressed events unless the
 user has asked for free participation. Addressing is activation metadata, not

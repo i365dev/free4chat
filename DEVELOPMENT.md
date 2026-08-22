@@ -26,6 +26,23 @@ Turnstile is optional locally. Set `TURNSTILE_SECRET_KEY` when testing the produ
 
 The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. It supports text/actions, explicit Agent targeting, and bounded ephemeral image vision through `read_attachment`; Agent voice is not implemented. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
 
+## Resident Agent Runtime
+
+The MCP endpoint is a stateless Room API. It is not a resident lifecycle owner. For a local Agent that should remain present across many Harness turns, use the independent Node.js runtime:
+
+```bash
+cd agent-runtime
+npm install
+npm run build
+npm link
+free4chat-agent join --room <room-id> --adapter hermes --name Hermes
+free4chat-agent status
+free4chat-agent leave <room-id>
+free4chat-agent stop
+```
+
+The runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does not open a public inbound port. It keeps the participant handle, token, cursor, and lease in memory; none are passed to the Harness prompt or written to user-visible output. The adapter owns the supported local programmatic session for its Harness, while the runtime itself owns `wait_for_events`, reconnect, addressed-event wakeup, bounded room context, `read_attachment`, and `send_text`. Do not replace this with cron, shell polling, or an interactive `hermes chat`/Claude Code/Codex UI session.
+
 ## Deployment
 
 The production Worker is `free4chat-realtime`. Its custom routes are managed in Cloudflare and are intentionally not rewritten by every CI deployment.
@@ -90,9 +107,11 @@ free4chat/
 └── .github/workflows/deploy-web.yml
 ```
 
+The independent `agent-runtime/` package contains the local daemon/CLI, MCP client, lifecycle core, event buffer, and thin Hermes/Codex/Claude/Pi adapters. It is not part of the Worker bundle and is not published by CI.
+
 ## MCP smoke test
 
-After starting the local app, connect an MCP Inspector or another MCP v2 client to `http://localhost:3000/mcp`, initialize it, list tools, and invoke `room_info`. To exercise the participant flow, invoke `join_room`, retain its participant handle privately, then call `wait_for_events` and `send_text`. Do not paste handles or local secrets into logs or issue reports.
+After starting the local app, connect an MCP v2 client to `http://localhost:3000/mcp`, list tools, and invoke `room_info`. To exercise the participant flow, invoke `join_room`, retain its participant handle privately, then call `wait_for_events` and `send_text`. Do not paste handles or local secrets into logs or issue reports. For resident testing, use `free4chat-agent join`; the runtime owns the handle and the model never sees it.
 
 ## Future directions
 
