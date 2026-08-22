@@ -76,7 +76,11 @@ test("cursor timeout continues and addressed turns are delivered once", async ()
       return []
     },
     async roomInfo() {
-      return {}
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: true,
+        meetingNotes: { active: false },
+      }
     },
     async joinRoom(): Promise<JoinResult> {
       joins += 1
@@ -141,7 +145,11 @@ test("a timed-out Harness turn releases turn state without replaying the event",
       return []
     },
     async roomInfo() {
-      return {}
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: true,
+        meetingNotes: { active: false },
+      }
     },
     async joinRoom(): Promise<JoinResult> {
       return {
@@ -214,7 +222,11 @@ test("an expired capability rejoins from a fresh cursor without replay", async (
       return []
     },
     async roomInfo() {
-      return {}
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: true,
+        meetingNotes: { active: false },
+      }
     },
     async joinRoom(): Promise<JoinResult> {
       joins += 1
@@ -274,7 +286,11 @@ test("an addressed event resolves its image in the runtime before the Harness tu
       return []
     },
     async roomInfo() {
-      return {}
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: true,
+        meetingNotes: { active: false },
+      }
     },
     async joinRoom(): Promise<JoinResult> {
       return {

@@ -119,17 +119,18 @@ export class AgentDaemon {
       const instanceId = randomUUID()
       const workspace = join(runtimeDirectory(), "workspaces", instanceId)
       await mkdir(workspace, { recursive: true, mode: 0o700 })
+      const mcpUrl =
+        process.env.FREE4CHAT_MCP_URL ?? "https://www.free4.chat/mcp"
       const runtime = new ResidentRoomRuntime({
         instanceId,
         roomId: request.room,
         name: request.name,
-        client: new McpFree4ChatClient(
-          process.env.FREE4CHAT_MCP_URL ?? "https://www.free4.chat/mcp"
-        ),
+        client: new McpFree4ChatClient(mcpUrl),
         adapter: new AcpHarnessAdapter(launcher, workspace, {
           turnTimeoutMs,
           cancelGraceMs,
         }),
+        mcpUrl,
       })
       this.instances.set({ instanceId, roomId: request.room, runtime })
       this.workspaces.set(instanceId, workspace)

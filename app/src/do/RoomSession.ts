@@ -1,11 +1,26 @@
 import { DurableObject } from "cloudflare:workers"
 
+import {
+  clearGrantIfParticipantDeparting,
+  isAgentAuthorizedForMedia,
+  NO_MEETING_NOTES,
+  startMeetingNotes,
+} from "./meetingNotesAuth"
+import {
+  closeRealtimeTracks,
+  MAX_PENDING_CLEANUP_ENTRIES,
+  pendingCleanupHasCapacity,
+  queuePendingCleanup,
+  removeConfirmedMids,
+} from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import type {
   AgentEvent,
   RoomCapabilities,
   RoomAttachment,
   AgentImageMimeType,
+  MeetingNotesState,
+  PendingMediaCleanup,
   RoomMediaTrack,
   RoomMessage,
   RoomParticipant,
@@ -20,6 +35,19 @@ const MAX_AGENT_ATTACHMENTS = 8
 const MAX_AGENT_IMAGE_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
+// Bounded per-agent scratch state for server-side revocation (finding #3):
+// one mid per Human audio track the note-taker Agent is currently
+// subscribed to. Not a general media-session database — cleared to empty
+// on every revocation (Stop, reassignment, leave, lease expiry). Enforced
+// by *refusing* a new subscription that would exceed this rather than
+// silently truncating older, still-active mids — see the
+// "agent-track-subscribed" action.
+const MAX_AGENT_SUBSCRIBED_MIDS = 64
+// How soon to retry a failed Cloudflare tracks/close call (Blocker 1): must
+// be much sooner than the lease/reconnect-driven alarm deadlines that
+// otherwise dominate scheduleNextAlarm(), since a stuck pending cleanup
+// means RTP may still be flowing to a revoked Agent.
+const MEDIA_CLEANUP_RETRY_MS = 30 * 1000
 
 const ROOM_CAPABILITIES: RoomCapabilities = {
   text: true,
@@ -33,6 +61,19 @@ const ROOM_CAPABILITIES: RoomCapabilities = {
 
 export interface RoomSessionEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
+  // RoomSession is bound within the same Worker as sfu/server.ts (see
+  // wrangler.jsonc), so its runtime `env` is already the full Worker env —
+  // these three are declared here only to widen the *type*, not because any
+  // new binding/secret needs to be added. SFU_APP_ID/SFU_APP_SECRET are used
+  // to actively close Cloudflare Realtime tracks on Meeting Notes
+  // revocation (see realtimeMedia.ts); AGENT_MEDIA_ENABLED gates the
+  // "meeting-notes-start" WS message the same way it already gates
+  // agent-session/agent-room-media in sfu/server.ts, so the room-visible
+  // grant can never claim "active" in an environment where every actual
+  // Runtime media request would 403.
+  SFU_APP_ID?: string
+  SFU_APP_SECRET?: string
+  AGENT_MEDIA_ENABLED?: string
 }
 
 interface ConnectionAttachment {
@@ -51,12 +92,19 @@ interface StoredParticipant extends RoomParticipant {
 interface StoredRoom
   extends Omit<
     RoomRecord,
-    "participants" | "messages" | "attachments" | "nextMessageSequence"
+    | "participants"
+    | "messages"
+    | "attachments"
+    | "nextMessageSequence"
+    | "meetingNotes"
+    | "pendingMediaCleanup"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
   attachments?: RoomAttachment[]
   nextMessageSequence?: number
+  meetingNotes?: MeetingNotesState
+  pendingMediaCleanup?: PendingMediaCleanup[]
 }
 
 interface AgentWaiter {
@@ -79,6 +127,11 @@ type ControlRequest =
       trackSessionId?: string
       trackName?: string
       dataChannelSessionId?: string
+      // Round 5 (P2): when set, an Agent caller about to request this many
+      // new remote-subscribe tracks from Cloudflare is also preflight-
+      // checked for pending-cleanup and active-mid capacity here — before
+      // any Cloudflare tracks/new call is made. Ignored for Human callers.
+      remoteTrackCount?: number
     }
   | {
       action: "reconnect"
@@ -144,6 +197,24 @@ type ControlRequest =
       participantId: string
       token: string
     }
+  | {
+      action: "agent-track-subscribed"
+      participantId: string
+      token: string
+      sessionId: string
+      mids: string[]
+    }
+  | {
+      // Hand-off for the /api/sfu/tracks TOCTOU close-on-reject path
+      // (Blocker 2): the Worker already attempted to close a
+      // just-created-but-now-unauthorized Agent subscription itself; if
+      // that close call didn't confirm success, this queues it for retry.
+      // No participantId/token — the Agent may already have left/expired
+      // by the time this arrives, and sessionId/mids are self-contained.
+      action: "agent-media-cleanup-pending"
+      sessionId: string
+      mids: string[]
+    }
 
 type ClientMessage =
   | { type: "chat"; text: string; targets?: string[] }
@@ -157,6 +228,8 @@ type ClientMessage =
   | { type: "datachannel-ready" }
   | { type: "resync" }
   | { type: "leave" }
+  | { type: "meeting-notes-start"; agentParticipantId: string }
+  | { type: "meeting-notes-stop" }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
@@ -203,6 +276,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         if (participant.media && participant.media.tracks.length > 0) {
           participant.media = { ...participant.media, tracks: [] }
           changed = true
+        }
+        if (participant.media?.agentSubscribedMids !== undefined) {
+          const validMids = Array.isArray(participant.media.agentSubscribedMids)
+            ? participant.media.agentSubscribedMids
+                .filter((mid) => typeof mid === "string" && mid.length > 0)
+                .slice(-MAX_AGENT_SUBSCRIBED_MIDS)
+            : []
+          if (
+            validMids.length !== participant.media.agentSubscribedMids.length
+          ) {
+            participant.media = {
+              ...participant.media,
+              agentSubscribedMids: validMids,
+            }
+            changed = true
+          }
         }
       } else if (!participant.media && participant.sessionId) {
         participant.media = {
@@ -258,6 +347,33 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       : []
     if (!Array.isArray(stored.attachments)) changed = true
 
+    let meetingNotes: MeetingNotesState
+    if (this.validMeetingNotes(stored.meetingNotes)) {
+      meetingNotes = stored.meetingNotes
+    } else {
+      meetingNotes = NO_MEETING_NOTES
+      changed = true
+    }
+    if (
+      meetingNotes.active &&
+      (!meetingNotes.agentParticipantId ||
+        participants[meetingNotes.agentParticipantId]?.kind !== "agent")
+    ) {
+      // The selected note-taker no longer exists (left, expired, or the
+      // stored grant was pointing at a participant that was never an
+      // agent) — a stale grant must not silently keep authorizing media.
+      meetingNotes = NO_MEETING_NOTES
+      changed = true
+    }
+
+    let pendingMediaCleanup: PendingMediaCleanup[]
+    if (this.validPendingMediaCleanup(stored.pendingMediaCleanup)) {
+      pendingMediaCleanup = stored.pendingMediaCleanup
+    } else {
+      pendingMediaCleanup = []
+      changed = true
+    }
+
     return {
       room: {
         createdAt: stored.createdAt,
@@ -266,9 +382,39 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         messages,
         attachments,
         nextMessageSequence,
+        meetingNotes,
+        pendingMediaCleanup,
       },
       changed,
     }
+  }
+
+  private validMeetingNotes(value: unknown): value is MeetingNotesState {
+    if (!value || typeof value !== "object") return false
+    const candidate = value as Partial<MeetingNotesState>
+    if (typeof candidate.active !== "boolean") return false
+    if (!candidate.active) return true
+    return (
+      typeof candidate.agentParticipantId === "string" &&
+      candidate.agentParticipantId.length > 0 &&
+      typeof candidate.startedAt === "number"
+    )
+  }
+
+  private validPendingMediaCleanup(
+    value: unknown
+  ): value is PendingMediaCleanup[] {
+    if (!Array.isArray(value)) return false
+    return value.every((entry) => {
+      if (!entry || typeof entry !== "object") return false
+      const candidate = entry as Partial<PendingMediaCleanup>
+      return (
+        typeof candidate.sessionId === "string" &&
+        candidate.sessionId.length > 0 &&
+        Array.isArray(candidate.mids) &&
+        candidate.mids.every((mid) => typeof mid === "string" && mid.length > 0)
+      )
+    })
   }
 
   private async saveRoom(room: RoomRecord): Promise<void> {
@@ -319,11 +465,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       expiresAt: room.expiresAt,
       participants: Object.values(room.participants)
         .filter((participant) => participant.connected)
-        .map(
-          ({ token: _token, connectionNonce: _nonce, ...participant }) =>
-            participant
-        ),
+        .map(({ token: _token, connectionNonce: _nonce, ...participant }) => {
+          // agentSubscribedMids is Cloudflare session bookkeeping used only
+          // for server-side revocation (see realtimeMedia.ts) — never
+          // participant-visible state.
+          if (!participant.media?.agentSubscribedMids) return participant
+          const { agentSubscribedMids: _mids, ...media } = participant.media
+          return { ...participant, media }
+        }),
       messages: room.messages,
+      meetingNotes: room.meetingNotes,
+      meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     }
   }
 
@@ -365,10 +517,100 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return room
   }
 
+  // Step 1-2 of the revocation sequence (round 4): SYNCHRONOUS, no I/O.
+  // Moves an agent's tracked subscription mids out of its participant
+  // record and into room.pendingMediaCleanup, in memory only — the caller
+  // is responsible for persisting `room` (saveRoom/scheduleNextAlarm/
+  // broadcastState) *before* ever attempting the actual Cloudflare close
+  // (see attemptCleanupNow). This split exists specifically so a Cloudflare
+  // fetch() is never awaited while an in-memory RoomRecord sits unsaved:
+  // Durable Objects can interleave handling of another incoming request
+  // during that await, and a stale RoomRecord saved afterward would
+  // silently clobber whatever that other request persisted in the
+  // meantime. Never truncates agentSubscribedMids or evicts an existing
+  // pendingMediaCleanup entry — queuePendingCleanup is purely additive; the
+  // bound is enforced elsewhere by refusing *new* Agent media work (see
+  // pendingCleanupHasCapacity), not by dropping data here. No-ops cheaply
+  // when there is nothing to move (ordinary text-only agents, or an agent
+  // that was granted but never actually subscribed to anything).
+  private stageAgentMediaRevocation(
+    room: RoomRecord,
+    agentParticipantId: string
+  ): void {
+    const participant = room.participants[agentParticipantId]
+    if (!participant || participant.kind !== "agent" || !participant.media)
+      return
+    const mids = participant.media.agentSubscribedMids
+    if (!mids || mids.length === 0) return
+    const sessionId = participant.media.sessionId
+    participant.media = { ...participant.media, agentSubscribedMids: [] }
+    room.pendingMediaCleanup = queuePendingCleanup(
+      room.pendingMediaCleanup,
+      sessionId,
+      mids
+    )
+  }
+
+  // Steps 6-7 of the revocation sequence (round 4): the actual Cloudflare
+  // tracks/close attempt(s), performed strictly *after* the caller has
+  // already persisted the revocation (stageAgentMediaRevocation + saveRoom
+  // + scheduleNextAlarm + broadcastState). Takes a read-only snapshot of
+  // the entries to attempt — it never touches the RoomRecord that snapshot
+  // came from. Once every fetch settles, it re-reads the *current*
+  // persisted room fresh and merges in only the specific mids that were
+  // just confirmed closed (removeConfirmedMids), so a concurrent request
+  // that wrote newer state during these fetches is never overwritten with
+  // stale data. Shared by every revocation trigger (Stop, reassignment,
+  // Agent leave, lease expiry) and by alarm()'s periodic retry of whatever
+  // is still outstanding.
+  private async attemptCleanupNow(
+    entries: PendingMediaCleanup[]
+  ): Promise<void> {
+    if (entries.length === 0) return
+    const confirmed: PendingMediaCleanup[] = []
+    for (const entry of entries) {
+      const closed = await closeRealtimeTracks(
+        this.env,
+        entry.sessionId,
+        entry.mids
+      )
+      if (closed) confirmed.push(entry)
+    }
+    if (confirmed.length === 0) return
+    const fresh = await this.loadRoom()
+    if (!fresh) return // room expired/deleted while these fetches were in flight
+    fresh.pendingMediaCleanup = removeConfirmedMids(
+      fresh.pendingMediaCleanup,
+      confirmed
+    )
+    await this.saveRoom(fresh)
+    await this.scheduleNextAlarm(fresh)
+  }
+
   private async expireRoom(room: RoomRecord): Promise<void> {
+    // Best-effort, single attempt only — deliberately not retried through
+    // the usual pendingMediaCleanup/alarm mechanism like the other
+    // revocation sites: room expiry only fires for an *empty* room (see
+    // applyEmptyRoomExpiry), so a still-active grant here means the granted
+    // Agent's own departure (agent-leave/lease expiry, which already runs
+    // the full stage+attempt+retry flow) is what emptied the room in the
+    // first place — this is a defensive catch-all for an edge case that
+    // should already be clear. Deliberately attempted *after* storage is
+    // deleted below: there is no room left to persist a merge into either
+    // way, so there's nothing to gain from ordering it before the delete,
+    // and doing it after keeps the deletion itself uncontested by an
+    // in-flight fetch.
+    let pendingClose: PendingMediaCleanup[] = []
+    if (room.meetingNotes.active && room.meetingNotes.agentParticipantId) {
+      this.stageAgentMediaRevocation(room, room.meetingNotes.agentParticipantId)
+      pendingClose = room.pendingMediaCleanup
+    }
     for (const attachment of room.attachments)
       await this.deleteAttachmentChunks(attachment)
     await this.ctx.storage.delete("room")
+    for (const entry of pendingClose) {
+      await closeRealtimeTracks(this.env, entry.sessionId, entry.mids)
+    }
     for (const waiter of this.agentWaiters.values()) {
       if (!waiter) continue
       clearTimeout(waiter.timer)
@@ -426,6 +668,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         deadlines.push(participant.lastSeenAt + RECONNECT_GRACE_MS)
       }
     }
+    // A pending media cleanup (Blocker 1) needs a much sooner wakeup than
+    // the lease/reconnect/expiry deadlines above would otherwise provide —
+    // otherwise a failed Cloudflare close could sit unretried for however
+    // long the room happens to stay quiet.
+    if (room.pendingMediaCleanup.length > 0)
+      deadlines.push(Date.now() + MEDIA_CLEANUP_RETRY_MS)
     await this.ctx.storage.setAlarm(Math.min(...deadlines))
   }
 
@@ -644,6 +892,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               .map((participant) => this.participantForInfo(participant))
           : [],
         capabilities: ROOM_CAPABILITIES,
+        // Room-visible state, not a capability secret — the same
+        // agentParticipantId is already visible in `participants` above.
+        meetingNotes: room?.meetingNotes ?? NO_MEETING_NOTES,
+        meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
       })
     }
 
@@ -664,6 +916,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           messages: [],
           attachments: [],
           nextMessageSequence: 0,
+          meetingNotes: NO_MEETING_NOTES,
+          pendingMediaCleanup: [],
         }
       }
       const isAgent = request.action === "agent-register"
@@ -744,6 +998,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      // Round 5 (P1): the Worker's authorize() check before creating this
+      // Cloudflare session (agent-room-media, in the "agent-session"
+      // route) is not enough on its own — that /sessions/new call is
+      // external I/O, during which the Human could Stop or reassign
+      // Meeting Notes. Re-check the CURRENT grant here and refuse to
+      // attach — never mutate the participant into a new active media
+      // session — if it's no longer valid.
+      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (participant.media?.sessionId === request.sessionId) {
+        // Idempotent: the same session re-attaching (e.g. a retried
+        // request) must not disturb already-tracked subscriptions.
+        participant.lastSeenAt = Date.now()
+        await this.saveRoom(room)
+        await this.scheduleNextAlarm(room)
+        return this.json({ ok: true, expiresAt: room.expiresAt })
+      }
+      // Rotating an existing session (S1 -> S2): Cloudflare does not close
+      // S1 merely because RoomSession now points at S2, so S1's
+      // already-tracked subscriptions must not be silently forgotten —
+      // reuse the exact same stage/persist/fetch/fresh-reload/narrow-merge
+      // pattern as every other revocation path (round 4). A no-op when
+      // there is no existing session yet (a brand-new agent's first
+      // attach) since stageAgentMediaRevocation itself no-ops without
+      // existing media.
+      this.stageAgentMediaRevocation(room, participant.id)
       // Subscribe-only: an agent never publishes in the current protocol,
       // so its media state never carries tracks of its own.
       participant.media = {
@@ -755,6 +1035,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
       return this.json({ ok: true, expiresAt: room.expiresAt })
     }
 
@@ -769,19 +1050,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      // The real authorization boundary: this agent must be the one
+      // Human-selected note-taker for an *active* Meeting Notes grant on
+      // this room. Holding a valid agent participant token is necessary
+      // but never sufficient — an ordinary text-only agent that joined
+      // the room but was never granted the Meeting Notes role is rejected
+      // here even though its token is perfectly valid. AGENT_MEDIA_ENABLED
+      // (sfu/server.ts) is an additional, coarser master switch on top of
+      // this — off, it blocks everyone regardless of any room grant; on,
+      // it still requires this per-room, per-agent grant to actually see
+      // Human media. Setting it alone was never meant to be sufficient.
+      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       // Deliberately narrower than participantForInfo/room-info: this is
-      // not exposed through the MCP tool surface, and reaching it requires
-      // an authorized agent participant token — but that token opacity is
-      // not an additional security layer by itself (the participantHandle
-      // is just base64url(JSON), decodable by anything that has it). The
-      // real production gate is AGENT_MEDIA_ENABLED in sfu/server.ts,
-      // which is off by default and not set by the deploy workflow — see
-      // its comment for why, and what the eventual replacement is. Only
-      // Human media is exposed — Phase 0 MediaBridge only ever ingests
-      // Human audio.
+      // not exposed through the MCP tool surface. Only Human media is
+      // exposed — Phase 0 MediaBridge only ever ingests Human audio.
       const participants = Object.values(room.participants)
         .filter(
           (
@@ -800,6 +1086,85 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           tracks: candidate.media.tracks,
         }))
       return this.json({ participants, expiresAt: room.expiresAt })
+    }
+
+    if (request.action === "agent-track-subscribed") {
+      // Records the Cloudflare-assigned mid(s) for the granted Agent's
+      // remote (subscribe) track negotiations, so an active Meeting Notes
+      // revocation can actually close them server-side (see
+      // stageAgentMediaRevocation/realtimeMedia.ts) instead of only
+      // preventing *future* subscriptions.
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token,
+        request.sessionId
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (!participant.media)
+        return this.json({ error: "media_unavailable" }, 400)
+      const mids = request.mids.filter(
+        (mid) => typeof mid === "string" && mid.length > 0
+      )
+      const merged = new Set([
+        ...(participant.media.agentSubscribedMids ?? []),
+        ...mids,
+      ])
+      // Fail closed rather than silently truncating (round 4): an agent's
+      // actively subscribed mids must never be dropped from tracking — a
+      // dropped mid could never be closed later on revocation. Also refuse
+      // while the room's pending-cleanup queue is already at capacity
+      // (below), since admitting more trackable media while existing
+      // revoked media hasn't confirmed closed only compounds the backlog.
+      if (merged.size > MAX_AGENT_SUBSCRIBED_MIDS)
+        return this.json({ error: "agent_media_capacity_exceeded" }, 503)
+      if (
+        !pendingCleanupHasCapacity(
+          room.pendingMediaCleanup,
+          participant.media.sessionId
+        )
+      )
+        return this.json({ error: "agent_media_cleanup_backlog" }, 503)
+      participant.media.agentSubscribedMids = [...merged]
+      await this.saveRoom(room)
+      return this.json({ ok: true })
+    }
+
+    if (request.action === "agent-media-cleanup-pending") {
+      // Blocker 2 hand-off: the Worker's /api/sfu/tracks route already
+      // tried to close a just-created-but-now-unauthorized Agent
+      // subscription itself (the grant was revoked/reassigned between
+      // authorize() and the upstream tracks/new call completing); if that
+      // close attempt didn't confirm success, this queues it for retry.
+      // Deliberately does not require the Agent participant to still
+      // exist — it may already have left or expired by the time this
+      // arrives, and sessionId/mids are self-contained enough to retry
+      // closing without it. Unlike admitting a *new* subscription
+      // (agent-track-subscribed above), this is corrective hand-off for
+      // media Cloudflare has already created — it is never refused for
+      // capacity, only queued, matching queuePendingCleanup's own
+      // never-evict contract.
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const mids = request.mids.filter(
+        (mid) => typeof mid === "string" && mid.length > 0
+      )
+      if (mids.length === 0 || !request.sessionId)
+        return this.json({ error: "invalid_track" }, 400)
+      room.pendingMediaCleanup = queuePendingCleanup(
+        room.pendingMediaCleanup,
+        request.sessionId,
+        mids
+      )
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      return this.json({ ok: true })
     }
 
     if (request.action === "agent-read-attachment") {
@@ -856,7 +1221,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "already_left" }, 404)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      // Revocation must be durable *before* any Cloudflare fetch is
+      // attempted (round 4) — stage the mutation, persist it, then only
+      // afterward attempt the actual close against a fresh reload. See
+      // stageAgentMediaRevocation/attemptCleanupNow's own comments.
+      this.stageAgentMediaRevocation(room, participant.id)
       delete room.participants[participant.id]
+      room.meetingNotes = clearGrantIfParticipantDeparting(
+        room.meetingNotes,
+        participant.id
+      )
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       const waiter = this.agentWaiters.get(participant.id)
@@ -875,6 +1249,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       await this.broadcastState(room)
       await this.scheduleNextAlarm(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
       return this.json({ ok: true })
     }
 
@@ -889,6 +1264,47 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         request.sessionId
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
+      // Finding #2: the generic authorize() gate backs every subsequent
+      // Agent media operation (/tracks, /renegotiate, /tracks/close,
+      // /datachannels/*), not just the initial agent-room-media discovery
+      // call — so a previously-authorized Agent that already knows its own
+      // sessionId and a Human's sessionId/trackName cannot keep creating
+      // subscriptions via cached identifiers after Stop/reassignment. Human
+      // authorization is completely unaffected.
+      if (
+        participant.kind === "agent" &&
+        !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
+      )
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      // Round 5 (P2): preflight capacity check *before* the Worker ever
+      // calls Cloudflare's tracks/new for these remote subscriptions —
+      // catching an already-backpressured room here means it never creates
+      // yet another upstream subscription only to have agent-track-
+      // subscribed reject it afterward (which would just grow the very
+      // backlog that caused the rejection). This is in addition to, not a
+      // replacement for, that post-upstream check: a grant can still be
+      // revoked or reassigned in the window between this call and
+      // tracks/new actually completing (the TOCTOU race — finding #2/
+      // Blocker 2), which only the post-upstream registration can catch.
+      if (
+        participant.kind === "agent" &&
+        request.remoteTrackCount &&
+        request.remoteTrackCount > 0
+      ) {
+        const activeMids = participant.media?.agentSubscribedMids?.length ?? 0
+        if (activeMids + request.remoteTrackCount > MAX_AGENT_SUBSCRIBED_MIDS)
+          return this.json({ error: "agent_media_capacity_exceeded" }, 503)
+        const sessionId =
+          participant.media?.sessionId ?? request.sessionId ?? ""
+        if (
+          !pendingCleanupHasCapacity(
+            room.pendingMediaCleanup,
+            sessionId,
+            request.remoteTrackCount
+          )
+        )
+          return this.json({ error: "agent_media_cleanup_backlog" }, 503)
+      }
       if (request.trackSessionId && request.trackName) {
         const trackExists = Object.values(room.participants).some(
           (candidate) =>
@@ -987,6 +1403,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     delete room.participants[participant.id]
+    room.meetingNotes = clearGrantIfParticipantDeparting(
+      room.meetingNotes,
+      participant.id
+    )
     this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
     await this.broadcastState(room)
@@ -1047,6 +1467,79 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.media.fileChannelReady = true
       await this.saveRoom(room)
       await this.broadcastState(room)
+      return
+    }
+    if (message.type === "meeting-notes-start") {
+      // The room-visible grant must never be able to claim "active" in an
+      // environment where the master switch is off — every actual Runtime
+      // media request would 403 regardless, and the browser must not show
+      // "Listening" for a capability that cannot possibly be delivered.
+      if (this.env.AGENT_MEDIA_ENABLED !== "true") {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "meeting_notes_media_disabled",
+          })
+        )
+        return
+      }
+      const agent = room.participants[message.agentParticipantId]
+      if (!agent || agent.kind !== "agent" || !agent.connected) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "agent_not_in_room" })
+        )
+        return
+      }
+      // Idempotence hardening (round 5): a duplicate/replayed Start for the
+      // *same* agent that is already the active note-taker must not
+      // generate a new grant epoch (MeetingNotesState.startedAt) —
+      // MeetingNotesController (agent-runtime) treats an epoch change as
+      // "the server already closed the previous session, tear down and
+      // rebuild the bridge", so a spurious epoch bump here would cause an
+      // unnecessary teardown/restart even though nothing actually changed.
+      // A genuine Stop -> Start for the same agent still gets a fresh
+      // epoch below, since meetingNotes.active is false in between. Reuses
+      // isAgentAuthorizedForMedia's exact predicate — "is this agent
+      // already the active grant holder" is the same question either way.
+      if (isAgentAuthorizedForMedia(room.meetingNotes, agent.id)) {
+        socket.send(
+          JSON.stringify({ type: "state", state: this.stateFor(room) })
+        )
+        return
+      }
+      // Refuse *new* Agent media work while the cleanup backlog is already
+      // at capacity (round 4) — see agent-track-subscribed's own comment.
+      if (room.pendingMediaCleanup.length >= MAX_PENDING_CLEANUP_ENTRIES) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "agent_media_cleanup_backlog",
+          })
+        )
+        return
+      }
+      const previousAgentId = room.meetingNotes.agentParticipantId
+      room.meetingNotes = startMeetingNotes(agent.id, Date.now())
+      // Reassignment (A -> B): A's already-established subscription must be
+      // torn down, not merely left to expire on its own lease. Revocation
+      // must be durable *before* any Cloudflare fetch is attempted — stage,
+      // persist, only then attempt the close against a fresh reload.
+      if (previousAgentId && previousAgentId !== agent.id)
+        this.stageAgentMediaRevocation(room, previousAgentId)
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
+      return
+    }
+    if (message.type === "meeting-notes-stop") {
+      const previousAgentId = room.meetingNotes.agentParticipantId
+      room.meetingNotes = NO_MEETING_NOTES
+      if (previousAgentId) this.stageAgentMediaRevocation(room, previousAgentId)
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
       return
     }
 
@@ -1284,7 +1777,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant.kind === "agent" &&
         participant.lastSeenAt + AGENT_LEASE_MS <= now
       if (expiredHuman || expiredAgent) {
+        // Synchronous staging only here — no Cloudflare fetch is attempted
+        // until after this whole sweep is persisted below (round 4).
+        if (expiredAgent) this.stageAgentMediaRevocation(room, id)
         delete room.participants[id]
+        room.meetingNotes = clearGrantIfParticipantDeparting(
+          room.meetingNotes,
+          id
+        )
         changed = true
         const waiter = this.agentWaiters.get(id)
         if (waiter) {
@@ -1308,5 +1808,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.broadcastState(room)
     }
     await this.scheduleNextAlarm(room)
+    // External I/O last, after every storage-only mutation above is
+    // already durable (round 4): attemptCleanupNow takes a read-only
+    // snapshot and does its own fresh reload + narrow merge afterward — it
+    // never reuses this `room` reference for its own save.
+    await this.attemptCleanupNow(room.pendingMediaCleanup)
   }
 }

@@ -5,6 +5,7 @@ import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
 import { ActionType, Message, UserInfo } from "@common/types"
 
 import type {
+  SfuMeetingNotesState,
   SfuMessage,
   SfuParticipant,
   SfuRoomState,
@@ -159,6 +160,15 @@ export function useSfuChatRoom(
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
   const [resolvedRoomType] = useState<"audio" | "screenshare">(roomType)
+  const [meetingNotes, setMeetingNotes] = useState<SfuMeetingNotesState>({
+    active: false,
+  })
+  // Whether the server-side media capability is even on in this
+  // environment — independent of any specific grant. Starts `false` so the
+  // Start control stays hidden/disabled until the first real room state
+  // arrives, rather than defaulting to an optimistic "available".
+  const [meetingNotesMediaAvailable, setMeetingNotesMediaAvailable] =
+    useState(false)
 
   const sessionRef = useRef<SfuSession | null>(null)
   const roomStateRef = useRef<SfuRoomState | null>(null)
@@ -790,6 +800,8 @@ export function useSfuChatRoom(
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
+      setMeetingNotes(state.meetingNotes)
+      setMeetingNotesMediaAvailable(state.meetingNotesMediaAvailable)
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
         if (
@@ -1314,6 +1326,20 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  const startMeetingNotes = useCallback(
+    (agentParticipantId: string) => {
+      sendSocketMessage({
+        type: "meeting-notes-start",
+        agentParticipantId,
+      })
+    },
+    [sendSocketMessage]
+  )
+
+  const stopMeetingNotes = useCallback(() => {
+    sendSocketMessage({ type: "meeting-notes-stop" })
+  }, [sendSocketMessage])
+
   const sendFileMessage = useCallback(
     async (file: File) => {
       const send = async () => {
@@ -1413,5 +1439,9 @@ export function useSfuChatRoom(
     error,
     connectionStatus,
     resolvedRoomType,
+    meetingNotes,
+    meetingNotesMediaAvailable,
+    startMeetingNotes,
+    stopMeetingNotes,
   }
 }

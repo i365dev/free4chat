@@ -1,5 +1,6 @@
 import type { SfuSessionResponse, SfuTrack } from "./types"
 import { isAllowedOrigin } from "../common/origin"
+import { closeRealtimeTracks } from "../do/realtimeMedia"
 import type { RoomSession } from "../do/RoomSession"
 
 const MAX_ROOM_LENGTH = 64
@@ -13,13 +14,16 @@ export interface SfuEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   TURNSTILE_SECRET_KEY?: string
-  // Phase-0 (#82) kill switch for the agent-session / agent-room-media
-  // routes. Absent/anything other than "true" => both routes reject. Not
-  // set in the production deploy workflow — this is a development-only
-  // escape hatch, not the eventual production authorization model. A real
-  // product PR must replace this with explicit, room/user-visible
-  // media-listening consent before agent audio access ships to production;
-  // see agent-runtime/src/media/README or the #82 PR description.
+  // Coarse, environment-wide master switch for Agent SFU media (#82).
+  // Absent/anything other than "true" => agent-session/agent-room-media
+  // reject unconditionally, and RoomSession also refuses to ever start a
+  // room-visible Meeting Notes grant (its "meeting-notes-start" WS
+  // handler). The *real* per-room authorization boundary is the explicit,
+  // human-visible Meeting Notes grant enforced by RoomSession
+  // (isAgentAuthorizedForMedia) — this switch is only ever an AND on top of
+  // that grant, never a substitute for it: turning it on does not by
+  // itself give any Agent audio access. Not set in the production deploy
+  // workflow today.
   AGENT_MEDIA_ENABLED?: string
 }
 
@@ -124,7 +128,14 @@ async function authorize(
   sessionId?: string,
   trackSessionId?: string,
   trackName?: string,
-  dataChannelSessionId?: string
+  dataChannelSessionId?: string,
+  // Round 5 (P2): when about to request this many new Agent remote-
+  // subscribe tracks from Cloudflare, asks the DO's "authorize" action to
+  // also preflight-check pending-cleanup and active-mid capacity *before*
+  // any Cloudflare tracks/new call is made — never sent for a Human caller
+  // or for renegotiate (which creates no new tracks). See the "tracks"
+  // route below.
+  remoteTrackCount?: number
 ): Promise<Response> {
   return roomControl(env, roomName, {
     action: "authorize",
@@ -134,6 +145,7 @@ async function authorize(
     trackSessionId,
     trackName,
     dataChannelSessionId,
+    remoteTrackCount,
   })
 }
 
@@ -375,19 +387,43 @@ export async function handleSfuRequest(
     const requestedTracks = Array.isArray(body.tracks)
       ? (body.tracks as Array<Record<string, unknown>>)
       : []
-    const auth = await authorize(env, room, participantId, token, sessionId)
+    // Round 5 (P2): known *before* any Cloudflare call — how many new
+    // remote-subscribe tracks this request would create, so the DO can
+    // preflight-check capacity and reject before tracks/new ever runs
+    // (rather than only after, once Cloudflare has already created a
+    // subscription that would immediately fail to register).
+    const remoteTrackCount = requestedTracks.filter(
+      (track) => track.location === "remote"
+    ).length
+    const auth = await authorize(
+      env,
+      room,
+      participantId,
+      token,
+      sessionId,
+      undefined,
+      undefined,
+      undefined,
+      remoteTrackCount
+    )
     if (!auth.ok) return auth
+    // The DO's "authorize" action now also re-checks the current Meeting
+    // Notes grant for an agent participant (finding #2) — so `kind` here
+    // doubles as proof that, as of this call, an agent caller is still the
+    // authorized note-taker. Read once and reused below for the mid-capture
+    // step that lets a *future* revocation actually close what gets
+    // subscribed in this same call.
+    const { kind: participantKind } = (await auth.json()) as { kind?: string }
     // Phase-0 (#82) invariant: an agent's media session is subscribe-only.
     // Reject a "local" (publish) track *before* it ever reaches Cloudflare
     // Realtime — rejecting only RoomSession's later `publish` bookkeeping
     // would be too late, since the upstream SFU publication could already
     // have succeeded by then. Human publishing is completely unaffected.
     if (route === "tracks") {
-      const { kind } = (await auth.json()) as { kind?: string }
       const hasLocalTrack = requestedTracks.some(
         (track) => track.location === "local"
       )
-      if (kind === "agent" && hasLocalTrack)
+      if (participantKind === "agent" && hasLocalTrack)
         return json({ error: "agent_publish_not_allowed" }, 403)
     }
     for (const remoteTrack of requestedTracks.filter(
@@ -431,14 +467,82 @@ export async function handleSfuRequest(
       for (const track of body.tracks as Array<Record<string, unknown>>) {
         if (track.location !== "local" || typeof track.trackName !== "string")
           continue
-        const kind: SfuTrack["kind"] =
+        const trackKind: SfuTrack["kind"] =
           track.kind === "video" ? "video" : "audio"
         await roomControl(env, room, {
           action: "publish",
           participantId,
           token,
-          track: { trackName: track.trackName, kind },
+          track: { trackName: track.trackName, kind: trackKind },
         })
+      }
+      // Record the Cloudflare-assigned mid(s) for the Agent's newly
+      // established *remote* (subscribe) tracks, so a future Meeting Notes
+      // revocation can actually close them server-side (finding #3) instead
+      // of only blocking future subscriptions. Never done for a Human's own
+      // subscriptions — only the granted Agent's Human-audio ingress needs
+      // this bookkeeping.
+      const hasRemoteTrack = requestedTracks.some(
+        (track) => track.location === "remote"
+      )
+      if (participantKind === "agent" && hasRemoteTrack) {
+        let upstreamJson: { tracks?: Array<{ mid?: unknown }> } = {}
+        try {
+          upstreamJson = JSON.parse(responseBody)
+        } catch {
+          // Handled by the empty-mids fail-closed check below.
+        }
+        const remoteMids = (upstreamJson.tracks ?? [])
+          .map((track) => track.mid)
+          .filter(
+            (mid): mid is string => typeof mid === "string" && mid.length > 0
+          )
+        // An Agent remote subscription whose upstream response carries no
+        // usable mid can never be revoked later — Cloudflare's tracks/close
+        // needs exactly that mid. A 2xx upstream status alone is not
+        // sufficient to report success: fail closed rather than silently
+        // reporting a subscription the server could never actually enforce
+        // Stop against.
+        if (remoteMids.length === 0)
+          return json({ error: "agent_subscription_unverifiable" }, 502)
+
+        const registerResponse = await roomControl(env, room, {
+          action: "agent-track-subscribed",
+          participantId,
+          token,
+          sessionId,
+          mids: remoteMids,
+        })
+        if (!registerResponse.ok) {
+          // TOCTOU (Blocker 2): the grant was revoked or reassigned between
+          // the authorize() check above and this point — Cloudflare already
+          // created the subscription upstream, so it must be actively
+          // closed rather than left untracked and unrevocable. Never report
+          // the original upstream success to the Agent in this case.
+          const closed = await closeRealtimeTracks(env, sessionId, remoteMids)
+          if (!closed) {
+            // The abort-path close itself didn't confirm — hand the mids to
+            // RoomSession's pending-cleanup/retry mechanism rather than
+            // losing track of them. Its result is not ignored: a failure
+            // here means this specific untracked subscription may never
+            // get retried, which is worth surfacing even though the Agent
+            // still correctly receives the original registration failure
+            // either way (never the stale Cloudflare success).
+            const queued = await roomControl(env, room, {
+              action: "agent-media-cleanup-pending",
+              sessionId,
+              mids: remoteMids,
+            })
+            if (!queued.ok) {
+              console.error(
+                "meeting_notes_cleanup_handoff_failed",
+                room,
+                sessionId
+              )
+            }
+          }
+          return registerResponse
+        }
       }
     }
     return new Response(responseBody, {

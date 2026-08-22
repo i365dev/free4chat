@@ -7,7 +7,9 @@ import {
 import type {
   Free4ChatClient,
   JoinResult,
+  MeetingNotesInfo,
   RoomEvent,
+  RoomInfo,
   WaitResult,
 } from "../types.js"
 
@@ -150,8 +152,29 @@ export class McpFree4ChatClient implements Free4ChatClient {
     }
   }
 
-  async roomInfo(roomId: string): Promise<unknown> {
-    return this.call("room_info", { roomId })
+  async roomInfo(roomId: string): Promise<RoomInfo> {
+    const result = asRecord(await this.call("room_info", { roomId }))
+    const rawMeetingNotes =
+      result.meetingNotes && typeof result.meetingNotes === "object"
+        ? (result.meetingNotes as Record<string, unknown>)
+        : {}
+    const meetingNotes: MeetingNotesInfo = {
+      active: rawMeetingNotes.active === true,
+      ...(typeof rawMeetingNotes.agentParticipantId === "string"
+        ? { agentParticipantId: rawMeetingNotes.agentParticipantId }
+        : {}),
+      ...(typeof rawMeetingNotes.startedAt === "number"
+        ? { startedAt: rawMeetingNotes.startedAt }
+        : {}),
+    }
+    return {
+      exists: result.exists === true,
+      meetingNotes,
+      // Fail closed on anything but an explicit `true` — an absent/
+      // malformed field (a stale server, a parsing edge case) must never
+      // be interpreted as "the media capability is available".
+      meetingNotesMediaAvailable: result.meetingNotesMediaAvailable === true,
+    }
   }
 
   async joinRoom(roomId: string, name: string): Promise<JoinResult> {

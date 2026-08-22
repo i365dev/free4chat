@@ -88,6 +88,7 @@ export default function RoomContent({
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
   const [agentInviteCopied, setAgentInviteCopied] = useState(false)
+  const [meetingNotesPickerOpen, setMeetingNotesPickerOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<
     {
       id: string
@@ -127,11 +128,36 @@ export default function RoomContent({
     error,
     connectionStatus,
     resolvedRoomType,
+    meetingNotes,
+    meetingNotesMediaAvailable,
+    startMeetingNotes,
+    stopMeetingNotes,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
+
+  const roomAgents = participants.filter((p) => p.kind === "agent")
+  const meetingNotesAgentName = meetingNotes.active
+    ? roomAgents.find((p) => p.peerId === meetingNotes.agentParticipantId)
+        ?.name ?? "an Agent"
+    : null
+
+  const handleStartMeetingNotes = (agentParticipantId: string) => {
+    startMeetingNotes(agentParticipantId)
+    setMeetingNotesPickerOpen(false)
+    trackAnalyticsEvent("MeetingNotesStarted", {
+      roomType: resolvedRoomType,
+    })
+  }
+
+  const handleStopMeetingNotes = () => {
+    stopMeetingNotes()
+    trackAnalyticsEvent("MeetingNotesStopped", {
+      roomType: resolvedRoomType,
+    })
+  }
 
   const activeScreenShares = participants.filter(
     (p) =>
@@ -459,6 +485,51 @@ export default function RoomContent({
           >
             {agentInviteCopied ? "Copied!" : "Invite Agent"}
           </button>
+          {meetingNotes.active ? (
+            <button
+              type="button"
+              onClick={handleStopMeetingNotes}
+              className="flex items-center gap-1 rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-1 text-xs text-rose-200 hover:bg-rose-800/50"
+              title="Stop Meeting Notes"
+            >
+              📝 Stop
+            </button>
+          ) : (
+            meetingNotesMediaAvailable && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setMeetingNotesPickerOpen((open) => !open)}
+                  disabled={roomAgents.length === 0}
+                  className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={
+                    roomAgents.length === 0
+                      ? "Invite an Agent to the room first"
+                      : "Start Meeting Notes"
+                  }
+                >
+                  📝 Meeting Notes
+                </button>
+                {meetingNotesPickerOpen && roomAgents.length > 0 && (
+                  <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
+                    <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
+                      Note-taker
+                    </p>
+                    {roomAgents.map((agent) => (
+                      <button
+                        key={agent.peerId}
+                        type="button"
+                        onClick={() => handleStartMeetingNotes(agent.peerId)}
+                        className="block w-full truncate px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
+                      >
+                        {agent.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          )}
           <button
             type="button"
             onClick={() => router.push("/")}
@@ -489,6 +560,20 @@ export default function RoomContent({
             />
           </svg>
           <strong className="text-sm font-normal"> {error} </strong>
+        </div>
+      )}
+      {meetingNotes.active && meetingNotesMediaAvailable && (
+        <div
+          className="mx-4 mt-1 flex flex-none items-center gap-2 rounded border border-rose-700/50 bg-rose-900/30 px-4 py-2 text-rose-100"
+          role="status"
+        >
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-rose-500" />
+          </span>
+          <span className="text-sm">
+            📝 Meeting Notes — Listening… ({meetingNotesAgentName})
+          </span>
         </div>
       )}
       {screenShareWarning !== "" && (

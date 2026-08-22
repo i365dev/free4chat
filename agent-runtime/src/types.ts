@@ -87,6 +87,25 @@ export interface JoinResult {
   expiresAt: number
 }
 
+/** Room-visible Meeting Notes grant (#82) — never a capability secret. */
+export interface MeetingNotesInfo {
+  active: boolean
+  agentParticipantId?: string
+  startedAt?: number
+}
+
+export interface RoomInfo {
+  exists: boolean
+  meetingNotes: MeetingNotesInfo
+  // Whether the server-side Meeting Notes media capability (the
+  // AGENT_MEDIA_ENABLED master switch) is on at all in this environment —
+  // independent of whether `meetingNotes` names this Agent. Required, not
+  // optional: MeetingNotesController treats an active grant as authorized
+  // only when this is also true, so every caller must be explicit rather
+  // than accidentally failing open on a missing field.
+  meetingNotesMediaAvailable: boolean
+}
+
 export interface WaitResult {
   events: RoomEvent[]
   cursor: number
@@ -96,7 +115,7 @@ export interface WaitResult {
 export interface Free4ChatClient {
   connect(): Promise<void>
   listTools(): Promise<string[]>
-  roomInfo(roomId: string): Promise<unknown>
+  roomInfo(roomId: string): Promise<RoomInfo>
   joinRoom(roomId: string, name: string): Promise<JoinResult>
   waitForEvents(
     participantHandle: string,

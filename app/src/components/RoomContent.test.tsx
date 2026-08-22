@@ -56,6 +56,10 @@ const baseHookReturn = {
   connectionStatus: "verifying" as string,
   resolvedRoomType: "audio" as const,
   timeLeft: 0,
+  meetingNotes: { active: false } as { active: boolean },
+  meetingNotesMediaAvailable: true,
+  startMeetingNotes: vi.fn(),
+  stopMeetingNotes: vi.fn(),
 }
 
 describe("RoomContent — Turnstile widget lifecycle", () => {
