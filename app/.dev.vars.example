@@ -4,3 +4,8 @@ SFU_APP_SECRET=your_realtime_sfu_app_secret
 # Turnstile (use test keys below for local dev — always pass)
 NEXT_PUBLIC_TURNSTILE_SITE_KEY=your_turnstile_site_key (build-time env for turnstile)
 TURNSTILE_SECRET_KEY=your_turnstile_secret_key
+
+# Phase-0 (#82) MediaBridge dev/test kill switch — NOT the production
+# authorization model, and NOT set by the CI deploy workflow. Uncomment
+# only to locally test the agent-session / agent-room-media routes.
+# AGENT_MEDIA_ENABLED=true

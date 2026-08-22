@@ -13,6 +13,14 @@ export interface SfuEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   TURNSTILE_SECRET_KEY?: string
+  // Phase-0 (#82) kill switch for the agent-session / agent-room-media
+  // routes. Absent/anything other than "true" => both routes reject. Not
+  // set in the production deploy workflow — this is a development-only
+  // escape hatch, not the eventual production authorization model. A real
+  // product PR must replace this with explicit, room/user-visible
+  // media-listening consent before agent audio access ships to production;
+  // see agent-runtime/src/media/README or the #82 PR description.
+  AGENT_MEDIA_ENABLED?: string
 }
 
 function json(data: unknown, status = 200): Response {
@@ -23,8 +31,28 @@ function badRequest(message: string): Response {
   return json({ error: message }, 400)
 }
 
-function originAllowed(request: Request, env: SfuEnv): boolean {
-  return isAllowedOrigin(request.headers.get("Origin"))
+// Routes the non-browser Runtime (MediaBridge) legitimately calls with no
+// Origin header at all. Scoped deliberately narrow: "session" (initial
+// Human creation, Turnstile-gated) and "ws" keep requiring a real browser
+// Origin, since there's no demonstrated non-browser caller for them.
+const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
+  "agent-session",
+  "agent-room-media",
+  "tracks",
+  "renegotiate",
+])
+
+// A present-but-wrong Origin is always rejected on every route (a browser
+// can't lie about its own Origin, so this stops other websites' JS from
+// calling these routes with a victim's browser). A *missing* Origin is
+// only accepted on the routes above — see MISSING_ORIGIN_ALLOWED_ROUTES —
+// matching how /mcp already treats non-browser callers (its own
+// allowedOriginHostnames). Everywhere else, a missing Origin is rejected
+// exactly like an invalid one, same as before this route-scoping existed.
+function originAllowed(request: Request, route: string): boolean {
+  const origin = request.headers.get("Origin")
+  if (origin === null) return MISSING_ORIGIN_ALLOWED_ROUTES.has(route)
+  return isAllowedOrigin(origin)
 }
 
 function getAppCredentials(
@@ -35,9 +63,21 @@ function getAppCredentials(
   return appId && appSecret ? { appId, appSecret } : null
 }
 
-async function checkRateLimit(request: Request, env: SfuEnv): Promise<boolean> {
+// Not a real authorization boundary — see AGENT_MEDIA_ENABLED's own
+// comment. This only decides whether the Phase-0 dev/test escape hatch is
+// switched on at all; agent-room-media/agent-session still separately
+// require a valid, DO-verified agent participant token either way.
+function agentMediaEnabled(env: SfuEnv): boolean {
+  return env.AGENT_MEDIA_ENABLED === "true"
+}
+
+async function checkRateLimit(
+  request: Request,
+  env: SfuEnv,
+  keyPrefix = "sfu:rl"
+): Promise<boolean> {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown"
-  const key = `sfu:rl:${ip}`
+  const key = `${keyPrefix}:${ip}`
   const raw = await env.ROOMS_KV.get(key)
   const count = raw ? Number.parseInt(raw, 10) : 0
   if (count >= RATE_LIMIT_MAX) return false
@@ -132,10 +172,11 @@ export async function handleSfuRequest(
   request: Request,
   env: SfuEnv
 ): Promise<Response> {
-  if (!originAllowed(request, env))
-    return json({ error: "forbidden_origin" }, 403)
   const url = new URL(request.url)
   const route = url.pathname.replace(/^\/api\/sfu\/?/, "")
+
+  if (!originAllowed(request, route))
+    return json({ error: "forbidden_origin" }, 403)
 
   if (route === "ws") {
     if (request.method !== "GET")
@@ -255,6 +296,69 @@ export async function handleSfuRequest(
     return json(result)
   }
 
+  if (route === "agent-session") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    if (!agentMediaEnabled(env))
+      return json({ error: "agent_media_disabled" }, 403)
+    // Bounded separately from Human session creation (own KV key prefix,
+    // same window/primitive) — a legitimate Runtime restart/reconnect
+    // stays well under this; a tight retry loop does not.
+    if (!(await checkRateLimit(request, env, "sfu:rl:agent-session")))
+      return json({ error: "rate_limited" }, 429)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    if (!room || !participantId || !token) return badRequest("missing_session")
+    // Confirms the caller is an existing, authorized *agent* participant
+    // before spending a real Cloudflare Realtime session on it. Reuses the
+    // same DO auth path as everything else — no separate credential system.
+    const authResponse = await roomControl(env, room, {
+      action: "agent-room-media",
+      participantId,
+      token,
+    })
+    if (!authResponse.ok) return authResponse
+
+    const sessionResponse = await realtimeRequest(env, "/sessions/new", {
+      method: "POST",
+    })
+    if (!sessionResponse.ok) return json({ error: "sfu_session_failed" }, 502)
+    const session = (await sessionResponse.json()) as { sessionId?: string }
+    if (!session.sessionId) return json({ error: "sfu_session_invalid" }, 502)
+
+    const attachResponse = await roomControl(env, room, {
+      action: "agent-media-attach",
+      participantId,
+      token,
+      sessionId: session.sessionId,
+    })
+    if (!attachResponse.ok) return attachResponse
+    return json({ sessionId: session.sessionId })
+  }
+
+  if (route === "agent-room-media") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    if (!agentMediaEnabled(env))
+      return json({ error: "agent_media_disabled" }, 403)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    if (!room || !participantId || !token) return badRequest("missing_session")
+    return roomControl(env, room, {
+      action: "agent-room-media",
+      participantId,
+      token,
+    })
+  }
+
   if (route === "tracks" || route === "renegotiate") {
     if (request.method !== "POST" && request.method !== "PUT") {
       return json({ error: "method_not_allowed" }, 405)
@@ -273,6 +377,19 @@ export async function handleSfuRequest(
       : []
     const auth = await authorize(env, room, participantId, token, sessionId)
     if (!auth.ok) return auth
+    // Phase-0 (#82) invariant: an agent's media session is subscribe-only.
+    // Reject a "local" (publish) track *before* it ever reaches Cloudflare
+    // Realtime — rejecting only RoomSession's later `publish` bookkeeping
+    // would be too late, since the upstream SFU publication could already
+    // have succeeded by then. Human publishing is completely unaffected.
+    if (route === "tracks") {
+      const { kind } = (await auth.json()) as { kind?: string }
+      const hasLocalTrack = requestedTracks.some(
+        (track) => track.location === "local"
+      )
+      if (kind === "agent" && hasLocalTrack)
+        return json({ error: "agent_publish_not_allowed" }, 403)
+    }
     for (const remoteTrack of requestedTracks.filter(
       (track) => track.location === "remote"
     )) {

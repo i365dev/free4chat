@@ -133,6 +133,17 @@ type ControlRequest =
       participantId: string
       token: string
     }
+  | {
+      action: "agent-media-attach"
+      participantId: string
+      token: string
+      sessionId: string
+    }
+  | {
+      action: "agent-room-media"
+      participantId: string
+      token: string
+    }
 
 type ClientMessage =
   | { type: "chat"; text: string; targets?: string[] }
@@ -170,10 +181,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const [id, rawParticipant] of Object.entries(stored.participants)) {
       const participant = { ...rawParticipant } as StoredParticipant
       if (participant.kind === "agent") {
-        if (participant.media) {
-          delete participant.media
-          changed = true
-        }
+        // An agent participant may optionally carry a subscribe-only media
+        // session (see the "agent-media-attach" action) — unlike a human's,
+        // it is never populated from tracks/muted/fileChannelReady legacy
+        // fields, since an agent never publishes in the current protocol.
         if (participant.capabilities?.text !== true) {
           participant.capabilities = { text: true }
           changed = true
@@ -188,6 +199,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             delete participant[key]
             changed = true
           }
+        }
+        if (participant.media && participant.media.tracks.length > 0) {
+          participant.media = { ...participant.media, tracks: [] }
+          changed = true
         }
       } else if (!participant.media && participant.sessionId) {
         participant.media = {
@@ -718,6 +733,75 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })
     }
 
+    if (request.action === "agent-media-attach") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      // Subscribe-only: an agent never publishes in the current protocol,
+      // so its media state never carries tracks of its own.
+      participant.media = {
+        sessionId: request.sessionId,
+        muted: true,
+        fileChannelReady: false,
+        tracks: [],
+      }
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      return this.json({ ok: true, expiresAt: room.expiresAt })
+    }
+
+    if (request.action === "agent-room-media") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      // Deliberately narrower than participantForInfo/room-info: this is
+      // not exposed through the MCP tool surface, and reaching it requires
+      // an authorized agent participant token — but that token opacity is
+      // not an additional security layer by itself (the participantHandle
+      // is just base64url(JSON), decodable by anything that has it). The
+      // real production gate is AGENT_MEDIA_ENABLED in sfu/server.ts,
+      // which is off by default and not set by the deploy workflow — see
+      // its comment for why, and what the eventual replacement is. Only
+      // Human media is exposed — Phase 0 MediaBridge only ever ingests
+      // Human audio.
+      const participants = Object.values(room.participants)
+        .filter(
+          (
+            candidate
+          ): candidate is RoomParticipant & {
+            media: NonNullable<RoomParticipant["media"]>
+          } =>
+            candidate.kind === "human" &&
+            candidate.connected &&
+            Boolean(candidate.media)
+        )
+        .map((candidate) => ({
+          participantId: candidate.id,
+          name: candidate.name,
+          sessionId: candidate.media.sessionId,
+          tracks: candidate.media.tracks,
+        }))
+      return this.json({ participants, expiresAt: room.expiresAt })
+    }
+
     if (request.action === "agent-read-attachment") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
@@ -824,7 +908,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         if (!sessionExists)
           return this.json({ error: "datachannel_session_not_found" }, 404)
       }
-      return this.json({ ok: true })
+      // kind lets the Worker enforce protocol-level invariants (e.g. an
+      // agent's media session must stay subscribe-only) before forwarding
+      // a request upstream to Cloudflare Realtime — see /api/sfu/tracks.
+      return this.json({ ok: true, kind: participant.kind })
     }
 
     if (request.action === "reconnect") {
@@ -858,6 +945,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!participant) return this.json({ error: "unauthorized" }, 401)
 
     if (request.action === "publish") {
+      // Defense in depth: /api/sfu/tracks already rejects an agent's
+      // "local" track before it ever reaches Cloudflare Realtime, so this
+      // should be unreachable for an agent in practice — but the room
+      // model itself must not accept an agent publication either. Phase-0
+      // agent media capability is subscribe-only, full stop.
+      if (participant.kind === "agent")
+        return this.json({ error: "agent_publish_not_allowed" }, 403)
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
       participant.media.tracks = [

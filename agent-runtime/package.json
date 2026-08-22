@@ -36,7 +36,8 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
-    "@modelcontextprotocol/client": "2.0.0"
+    "@modelcontextprotocol/client": "2.0.0",
+    "werift": "^0.24.4"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
