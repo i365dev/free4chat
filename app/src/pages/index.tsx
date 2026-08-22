@@ -9,6 +9,7 @@ import {
   trackAnalyticsEvent,
   hashRoom,
 } from "../common/utils"
+import DiscoveryFooter from "../components/DiscoveryFooter"
 import Header from "../components/Header"
 
 export default function Home() {
@@ -262,6 +263,7 @@ export default function Home() {
           </div>
         </div>
       </main>
+      <DiscoveryFooter />
     </div>
   )
 }

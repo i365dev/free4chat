@@ -18,9 +18,11 @@ class MyDocument extends Document {
     return (
       <Html>
         <Head>
+          {/* Site-wide fallback only — indexable pages set their own
+              title/description/canonical via next/head (see SeoHead). */}
           <meta
             name="description"
-            content="free4.chat is an instant audio conferencing service."
+            content="Free4Chat: open a temporary room for voice, text, and screen sharing, or bring your own AI Agent in — no account, no history, no hosted LLM."
           />
 
           <link rel="icon" href="/favicon.ico" />
