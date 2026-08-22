@@ -6,7 +6,11 @@ import {
   NO_MEETING_NOTES,
   startMeetingNotes,
 } from "./meetingNotesAuth"
-import { closeRealtimeTracks } from "./realtimeMedia"
+import {
+  applyCleanupResults,
+  closeRealtimeTracks,
+  queuePendingCleanup,
+} from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import type {
   AgentEvent,
@@ -14,6 +18,7 @@ import type {
   RoomAttachment,
   AgentImageMimeType,
   MeetingNotesState,
+  PendingMediaCleanup,
   RoomMediaTrack,
   RoomMessage,
   RoomParticipant,
@@ -34,6 +39,11 @@ const MAX_TARGETS = 8
 // on every revocation (Stop, reassignment, leave, lease expiry) and never
 // grows past a small, room-sized cap.
 const MAX_AGENT_SUBSCRIBED_MIDS = 64
+// How soon to retry a failed Cloudflare tracks/close call (Blocker 1): must
+// be much sooner than the lease/reconnect-driven alarm deadlines that
+// otherwise dominate scheduleNextAlarm(), since a stuck pending cleanup
+// means RTP may still be flowing to a revoked Agent.
+const MEDIA_CLEANUP_RETRY_MS = 30 * 1000
 
 const ROOM_CAPABILITIES: RoomCapabilities = {
   text: true,
@@ -83,12 +93,14 @@ interface StoredRoom
     | "attachments"
     | "nextMessageSequence"
     | "meetingNotes"
+    | "pendingMediaCleanup"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
   attachments?: RoomAttachment[]
   nextMessageSequence?: number
   meetingNotes?: MeetingNotesState
+  pendingMediaCleanup?: PendingMediaCleanup[]
 }
 
 interface AgentWaiter {
@@ -178,6 +190,19 @@ type ControlRequest =
     }
   | {
       action: "agent-track-subscribed"
+      participantId: string
+      token: string
+      sessionId: string
+      mids: string[]
+    }
+  | {
+      // Hand-off for the /api/sfu/tracks TOCTOU close-on-reject path
+      // (Blocker 2): the Worker already attempted to close a
+      // just-created-but-now-unauthorized Agent subscription itself; if
+      // that close call didn't confirm success, this queues it into the
+      // same bounded pending-cleanup/retry mechanism as
+      // closeAgentMediaTracks — see realtimeMedia.ts.
+      action: "agent-media-cleanup-pending"
       participantId: string
       token: string
       sessionId: string
@@ -334,6 +359,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       changed = true
     }
 
+    let pendingMediaCleanup: PendingMediaCleanup[]
+    if (this.validPendingMediaCleanup(stored.pendingMediaCleanup)) {
+      pendingMediaCleanup = stored.pendingMediaCleanup
+    } else {
+      pendingMediaCleanup = []
+      changed = true
+    }
+
     return {
       room: {
         createdAt: stored.createdAt,
@@ -343,6 +376,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachments,
         nextMessageSequence,
         meetingNotes,
+        pendingMediaCleanup,
       },
       changed,
     }
@@ -358,6 +392,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       candidate.agentParticipantId.length > 0 &&
       typeof candidate.startedAt === "number"
     )
+  }
+
+  private validPendingMediaCleanup(
+    value: unknown
+  ): value is PendingMediaCleanup[] {
+    if (!Array.isArray(value)) return false
+    return value.every((entry) => {
+      if (!entry || typeof entry !== "object") return false
+      const candidate = entry as Partial<PendingMediaCleanup>
+      return (
+        typeof candidate.sessionId === "string" &&
+        candidate.sessionId.length > 0 &&
+        Array.isArray(candidate.mids) &&
+        candidate.mids.every((mid) => typeof mid === "string" && mid.length > 0)
+      )
+    })
   }
 
   private async saveRoom(room: RoomRecord): Promise<void> {
@@ -468,6 +518,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // media.sessionId/agentSubscribedMids to still be present. No-ops
   // cheaply when there is nothing to close (ordinary text-only agents, or
   // an agent that was granted but never actually subscribed to anything).
+  // Fail-closed (Blocker 1): the mids are only ever discarded once
+  // closeRealtimeTracks() *confirms* the Cloudflare close succeeded — a
+  // failure (non-2xx, missing credentials, network error) moves them into
+  // room.pendingMediaCleanup instead of losing them, so alarm()'s retry can
+  // keep trying. Note this deliberately clears participant.media.
+  // agentSubscribedMids either way: once a close attempt has been made,
+  // sole responsibility for the mids transfers to pendingMediaCleanup — the
+  // participant record itself may be deleted by the caller immediately
+  // after this returns (agent-leave, lease expiry), which pendingMediaCleanup
+  // survives since it isn't keyed to any specific participant.
   private async closeAgentMediaTracks(
     room: RoomRecord,
     agentParticipantId: string
@@ -479,17 +539,51 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!mids || mids.length === 0) return
     const sessionId = participant.media.sessionId
     participant.media = { ...participant.media, agentSubscribedMids: [] }
-    try {
-      await closeRealtimeTracks(this.env, sessionId, mids)
-    } catch {
-      // Best-effort — see closeRealtimeTracks's own comment. The room-state
-      // mutation that triggered this call must still succeed, and every
-      // subsequent Agent media request independently re-checks the current
-      // grant regardless of whether this specific close call succeeded.
+    const closed = await closeRealtimeTracks(this.env, sessionId, mids)
+    if (!closed) {
+      room.pendingMediaCleanup = queuePendingCleanup(
+        room.pendingMediaCleanup,
+        sessionId,
+        mids
+      )
     }
   }
 
+  // Retries every pending Cloudflare tracks/close still awaiting
+  // confirmation (see closeAgentMediaTracks). Called from alarm() on a
+  // short, bounded interval (MEDIA_CLEANUP_RETRY_MS) whenever any entries
+  // are outstanding — independent of, and much sooner than, the
+  // lease/reconnect-driven alarm cadence. Returns whether anything actually
+  // cleared, so the caller only persists a write when needed.
+  private async retryPendingMediaCleanup(room: RoomRecord): Promise<boolean> {
+    if (room.pendingMediaCleanup.length === 0) return false
+    const results = new Map<PendingMediaCleanup, boolean>()
+    for (const entry of room.pendingMediaCleanup) {
+      results.set(
+        entry,
+        await closeRealtimeTracks(this.env, entry.sessionId, entry.mids)
+      )
+    }
+    const remaining = applyCleanupResults(
+      room.pendingMediaCleanup,
+      (entry) => results.get(entry) === true
+    )
+    if (remaining.length === room.pendingMediaCleanup.length) return false
+    room.pendingMediaCleanup = remaining
+    return true
+  }
+
   private async expireRoom(room: RoomRecord): Promise<void> {
+    // Best-effort, single attempt only — deliberately not retried through
+    // pendingMediaCleanup like the other revocation sites: room expiry only
+    // fires for an *empty* room (see applyEmptyRoomExpiry), so a still-active
+    // grant here means the granted Agent's own departure (agent-leave/lease
+    // expiry, which already runs closeAgentMediaTracks with full retry) is
+    // what emptied the room in the first place — this is a defensive
+    // catch-all for an edge case that should already be clear. Any mids this
+    // queues into room.pendingMediaCleanup are moot: storage is deleted
+    // immediately below, so there is no room left for alarm() to retry
+    // against.
     if (room.meetingNotes.active && room.meetingNotes.agentParticipantId) {
       await this.closeAgentMediaTracks(
         room,
@@ -556,6 +650,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         deadlines.push(participant.lastSeenAt + RECONNECT_GRACE_MS)
       }
     }
+    // A pending media cleanup (Blocker 1) needs a much sooner wakeup than
+    // the lease/reconnect/expiry deadlines above would otherwise provide —
+    // otherwise a failed Cloudflare close could sit unretried for however
+    // long the room happens to stay quiet.
+    if (room.pendingMediaCleanup.length > 0)
+      deadlines.push(Date.now() + MEDIA_CLEANUP_RETRY_MS)
     await this.ctx.storage.setAlarm(Math.min(...deadlines))
   }
 
@@ -799,6 +899,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           attachments: [],
           nextMessageSequence: 0,
           meetingNotes: NO_MEETING_NOTES,
+          pendingMediaCleanup: [],
         }
       }
       const isAgent = request.action === "agent-register"
@@ -971,6 +1072,37 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...new Set([...(participant.media.agentSubscribedMids ?? []), ...mids]),
       ].slice(-MAX_AGENT_SUBSCRIBED_MIDS)
       await this.saveRoom(room)
+      return this.json({ ok: true })
+    }
+
+    if (request.action === "agent-media-cleanup-pending") {
+      // Blocker 2 hand-off: the Worker's /api/sfu/tracks route already
+      // tried to close a just-created-but-now-unauthorized Agent
+      // subscription itself (the grant was revoked/reassigned between
+      // authorize() and the upstream tracks/new call completing); if that
+      // close attempt didn't confirm success, this queues it into the same
+      // bounded pending-cleanup/retry mechanism closeAgentMediaTracks uses,
+      // rather than the Worker silently losing track of it.
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant || participant.kind !== "agent")
+        return this.json({ error: "unauthorized" }, 401)
+      const mids = request.mids.filter(
+        (mid) => typeof mid === "string" && mid.length > 0
+      )
+      if (mids.length > 0) {
+        room.pendingMediaCleanup = queuePendingCleanup(
+          room.pendingMediaCleanup,
+          request.sessionId,
+          mids
+        )
+        await this.saveRoom(room)
+      }
       return this.json({ ok: true })
     }
 
@@ -1507,6 +1639,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.expireRoom(room)
       return
     }
+    // Independent of the participant-expiry sweep below: a pending media
+    // cleanup (Blocker 1) is retried every time this alarm fires, since
+    // scheduleNextAlarm() already ensures it fires soon whenever one is
+    // outstanding.
+    const cleanupChanged = await this.retryPendingMediaCleanup(room)
     let changed = false
     for (const [id, participant] of Object.entries(room.participants)) {
       const expiredHuman =
@@ -1544,6 +1681,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.broadcastState(room)
+    } else if (cleanupChanged) {
+      await this.saveRoom(room)
     }
     await this.scheduleNextAlarm(room)
   }

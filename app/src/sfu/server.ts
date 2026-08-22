@@ -1,5 +1,6 @@
 import type { SfuSessionResponse, SfuTrack } from "./types"
 import { isAllowedOrigin } from "../common/origin"
+import { closeRealtimeTracks } from "../do/realtimeMedia"
 import type { RoomSession } from "../do/RoomSession"
 
 const MAX_ROOM_LENGTH = 64
@@ -455,27 +456,57 @@ export async function handleSfuRequest(
       // of only blocking future subscriptions. Never done for a Human's own
       // subscriptions — only the granted Agent's Human-audio ingress needs
       // this bookkeeping.
-      if (participantKind === "agent") {
+      const hasRemoteTrack = requestedTracks.some(
+        (track) => track.location === "remote"
+      )
+      if (participantKind === "agent" && hasRemoteTrack) {
         let upstreamJson: { tracks?: Array<{ mid?: unknown }> } = {}
         try {
           upstreamJson = JSON.parse(responseBody)
         } catch {
-          // Already confirmed upstream.ok above; a malformed body here just
-          // means no mids get recorded, not that the request itself failed.
+          // Handled by the empty-mids fail-closed check below.
         }
         const remoteMids = (upstreamJson.tracks ?? [])
           .map((track) => track.mid)
           .filter(
             (mid): mid is string => typeof mid === "string" && mid.length > 0
           )
-        if (remoteMids.length > 0) {
-          await roomControl(env, room, {
-            action: "agent-track-subscribed",
-            participantId,
-            token,
-            sessionId,
-            mids: remoteMids,
-          })
+        // An Agent remote subscription whose upstream response carries no
+        // usable mid can never be revoked later — Cloudflare's tracks/close
+        // needs exactly that mid. A 2xx upstream status alone is not
+        // sufficient to report success: fail closed rather than silently
+        // reporting a subscription the server could never actually enforce
+        // Stop against.
+        if (remoteMids.length === 0)
+          return json({ error: "agent_subscription_unverifiable" }, 502)
+
+        const registerResponse = await roomControl(env, room, {
+          action: "agent-track-subscribed",
+          participantId,
+          token,
+          sessionId,
+          mids: remoteMids,
+        })
+        if (!registerResponse.ok) {
+          // TOCTOU (Blocker 2): the grant was revoked or reassigned between
+          // the authorize() check above and this point — Cloudflare already
+          // created the subscription upstream, so it must be actively
+          // closed rather than left untracked and unrevocable. Never report
+          // the original upstream success to the Agent in this case.
+          const closed = await closeRealtimeTracks(env, sessionId, remoteMids)
+          if (!closed) {
+            // The abort-path close itself didn't confirm — hand the mids to
+            // RoomSession's existing bounded pending-cleanup/retry
+            // mechanism (Blocker 1) rather than losing track of them.
+            await roomControl(env, room, {
+              action: "agent-media-cleanup-pending",
+              participantId,
+              token,
+              sessionId,
+              mids: remoteMids,
+            })
+          }
+          return registerResponse
         }
       }
     }

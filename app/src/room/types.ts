@@ -95,6 +95,16 @@ export interface RoomState {
   meetingNotesMediaAvailable: boolean
 }
 
+// A Cloudflare Realtime track-close attempt that hasn't been confirmed
+// successful yet (a non-2xx response, missing credentials, or a network
+// failure) — retained so RoomSession's alarm can retry it, rather than
+// silently losing track of media that must still be revoked. Server-only:
+// never part of RoomState (see realtimeMedia.ts).
+export interface PendingMediaCleanup {
+  sessionId: string
+  mids: string[]
+}
+
 export interface RoomRecord {
   createdAt: number
   expiresAt: number
@@ -103,6 +113,7 @@ export interface RoomRecord {
   attachments: RoomAttachment[]
   nextMessageSequence: number
   meetingNotes: MeetingNotesState
+  pendingMediaCleanup: PendingMediaCleanup[]
 }
 
 export interface RoomCapabilities {

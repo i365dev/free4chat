@@ -170,6 +170,10 @@ export class McpFree4ChatClient implements Free4ChatClient {
     return {
       exists: result.exists === true,
       meetingNotes,
+      // Fail closed on anything but an explicit `true` — an absent/
+      // malformed field (a stale server, a parsing edge case) must never
+      // be interpreted as "the media capability is available".
+      meetingNotesMediaAvailable: result.meetingNotesMediaAvailable === true,
     }
   }
 

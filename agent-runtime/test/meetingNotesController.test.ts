@@ -63,7 +63,11 @@ class FakePeerConnection implements PeerConnectionLike {
 /** A fake Free4ChatClient whose roomInfo() response can be swapped between
  * calls, so tests can simulate Meeting Notes being started/stopped. */
 class FakeClient implements Free4ChatClient {
-  roomInfoResponse: RoomInfo = { exists: true, meetingNotes: { active: false } }
+  roomInfoResponse: RoomInfo = {
+    exists: true,
+    meetingNotesMediaAvailable: true,
+    meetingNotes: { active: false },
+  }
   roomInfoError: Error | undefined
   roomInfoCalls = 0
 
@@ -116,6 +120,7 @@ test("an authorized grant starts the MediaBridge", async () => {
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -145,6 +150,7 @@ test("a grant for a different agent never starts the MediaBridge", async () => {
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-2", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -161,6 +167,7 @@ test("revocation stops the MediaBridge and closes the peer connection", async ()
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -170,7 +177,11 @@ test("revocation stops the MediaBridge and closes the peer connection", async ()
   await controller.start()
   assert.equal(restClient.createAgentSessionCalls, 1)
 
-  client.roomInfoResponse = { exists: true, meetingNotes: { active: false } }
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotesMediaAvailable: true,
+    meetingNotes: { active: false },
+  }
   await controller.poll()
 
   assert.equal(pc.closed, true)
@@ -181,6 +192,7 @@ test("repeated polling while authorized does not start a duplicate bridge", asyn
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -199,6 +211,7 @@ test("resync: active -> revoked -> active again restarts a fresh bridge each tim
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -218,12 +231,17 @@ test("resync: active -> revoked -> active again restarts a fresh bridge each tim
   await controller.start()
   assert.equal(restClient.createAgentSessionCalls, 1)
 
-  client.roomInfoResponse = { exists: true, meetingNotes: { active: false } }
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotesMediaAvailable: true,
+    meetingNotes: { active: false },
+  }
   await controller.poll()
   assert.equal(pc1.closed, true)
 
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 2 },
   }
   await controller.poll()
@@ -236,6 +254,7 @@ test("a room_info failure fails closed: does not start, and stops an already-run
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -256,6 +275,7 @@ test("a failed MediaBridge start is caught, logged, and does not throw — next 
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -277,6 +297,7 @@ test("stop() tears down a running bridge and future polls do nothing", async () 
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -318,6 +339,7 @@ test("Stop while bridge.start() is still in flight closes it and it never become
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -371,6 +393,7 @@ test("overlapping polls while a start is in flight never create a second bridge/
   const client = new FakeClient()
   client.roomInfoResponse = {
     exists: true,
+    meetingNotesMediaAvailable: true,
     meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
   }
   const restClient = new FakeRestClient()
@@ -390,5 +413,34 @@ test("overlapping polls while a start is in flight never create a second bridge/
   await Promise.all([startPromise, secondPoll])
 
   assert.equal(restClient.createAgentSessionCalls, 1)
+  await controller.stop()
+})
+
+test("the master switch (meetingNotesMediaAvailable) being off is treated as revocation even while the room grant is still active", async () => {
+  const client = new FakeClient()
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotesMediaAvailable: true,
+    meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
+  }
+  const restClient = new FakeRestClient()
+  const pc = new FakePeerConnection()
+  const { controller } = makeController(client, restClient, pc)
+
+  await controller.start()
+  assert.equal(restClient.createAgentSessionCalls, 1)
+
+  // The room-visible grant itself never changed — only the environment-wide
+  // master switch flipped off (e.g. an emergency disable) — but the
+  // cooperative Runtime must still stop within one poll cycle rather than
+  // keeping the bridge alive on a now-meaningless "active" grant.
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotesMediaAvailable: false,
+    meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
+  }
+  await controller.poll()
+
+  assert.equal(pc.closed, true)
   await controller.stop()
 })

@@ -101,7 +101,16 @@ export class MeetingNotesController {
     let authorized = false
     try {
       const info = await this.options.client.roomInfo(this.options.roomId)
+      // The master switch is checked on every poll, not just at grant
+      // start: if it flips off while a session is already active, this
+      // cooperative Runtime must stop within one poll cycle rather than
+      // keeping an already-running bridge alive just because the room
+      // grant itself is still (now-meaninglessly) active. This is a
+      // nice-to-have on top of the real, unconditional server-side
+      // enforcement (every /tracks, /renegotiate, /tracks/close request
+      // independently re-checks the grant) — not a substitute for it.
       authorized =
+        info.meetingNotesMediaAvailable &&
         info.meetingNotes.active &&
         info.meetingNotes.agentParticipantId === this.options.participantId
     } catch {
