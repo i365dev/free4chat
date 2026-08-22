@@ -67,7 +67,7 @@ The `/mcp` route uses `createMcpHandler` with a fresh MCP v2 server per request.
 The public room URL is:
 
 ```text
-https://free4.chat/room?id=<room-name>
+https://www.free4.chat/room?id=<room-name>
 ```
 
 `TurnstileGate` wraps the app in `_app.tsx`. The browser sends its session token to `/api/sfu/session`, and the Worker verifies it before creating an SFU session.

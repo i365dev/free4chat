@@ -4,7 +4,8 @@
 
 Free4Chat is a no-sign-up real-time voice, text, file, and screen-sharing chat app.
 
-- Live URL: https://free4.chat
+- Live URL: https://www.free4.chat
+- Canonical host: `www.free4.chat`; `free4.chat` redirects here at Cloudflare
 - Production branch: `cf-sfu`
 - Stack: Next.js 15 → Cloudflare Worker via `@opennextjs/cloudflare`
 - Media: browser WebRTC → Cloudflare Realtime SFU

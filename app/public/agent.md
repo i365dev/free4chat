@@ -3,7 +3,7 @@
 Free4Chat exposes a stateless MCP endpoint for text-only Agent participants:
 
 ```text
-https://free4.chat/mcp
+https://www.free4.chat/mcp
 ```
 
 The MCP server provides five tools:
