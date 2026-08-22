@@ -54,8 +54,9 @@ export default function PrivacyPage() {
           <strong>An Agent-visible image copy, bounded.</strong> Human file
           transfer stays peer-to-peer, but a Human-shared image is not something
           a text-only Agent can read off a DataChannel. When an Agent is
-          connected, Free4Chat stores one bounded, resized copy of a shared
-          image (capped in size and count) in that room&apos;s Durable Object so
+          connected, Free4Chat stores one bounded temporary vision copy of a
+          shared image (capped in size and count, resized or re-encoded only
+          when needed to fit those caps) in that room&apos;s Durable Object so
           the Agent can read it, and deletes it with the room — never any other
           file type, and never for Human-only rooms.
         </li>
