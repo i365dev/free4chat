@@ -78,20 +78,28 @@ jobs:
       # Second, independent guard against a stale deploy (the concurrency
       # group above should normally prevent this by cancelling an
       # in-progress older run, but this check covers any window where an
-      # older run's Deploy step is reached anyway). No extra token needed:
-      # actions/checkout persists credentials for the job by default, so
-      # `git ls-remote` against `origin` just works.
-      - name: Verify this commit is still the latest cf-sfu push
+      # older run's Deploy step is reached anyway). "Stale" means cf-sfu
+      # now has a commit that itself touches app/ or this workflow file —
+      # see check-deploy-freshness.sh for why raw SHA equality against
+      # cf-sfu's tip is wrong under this workflow's path-filtered push
+      # trigger (a docs-only commit landing afterward must NOT mark an
+      # in-flight app deploy stale). `set -euo pipefail` here means a
+      # fetch/resolution failure fails this step (and the job) visibly —
+      # it must never be silently treated as "stale, skip deploy, job
+      # green". No extra token needed: actions/checkout persists
+      # credentials for the job by default, so `git fetch origin` works.
+      - name: Verify this commit is still the latest deploy-relevant cf-sfu push
         id: freshness
         run: |
-          latest_sha="$(git ls-remote origin refs/heads/cf-sfu | cut -f1)"
+          set -euo pipefail
+          git fetch --depth=1 origin cf-sfu
+          latest_sha="$(git rev-parse --verify FETCH_HEAD)"
           echo "Building commit: $GITHUB_SHA"
           echo "Latest cf-sfu:    $latest_sha"
-          if [ "$latest_sha" != "$GITHUB_SHA" ]; then
-            echo "::notice::Skipping deploy — cf-sfu has moved on to $latest_sha since this run started. A newer run will (or already did) cover this push."
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "stale=false" >> "$GITHUB_OUTPUT"
+          result="$(.github/scripts/check-deploy-freshness.sh "$GITHUB_SHA" "$latest_sha")"
+          echo "$result" >> "$GITHUB_OUTPUT"
+          if [ "$result" = "stale=true" ]; then
+            echo "::notice::Skipping deploy — cf-sfu has a newer commit ($latest_sha) that touches app/ or this workflow file. That commit's own run will (or already did) cover this push."
           fi
 
       - name: Deploy
