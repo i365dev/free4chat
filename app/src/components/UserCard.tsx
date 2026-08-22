@@ -88,6 +88,11 @@ export default function UserCard(user: UserCardProps) {
           <p className="mt-1.5 w-full truncate text-center text-xs text-white">
             {displayName}
           </p>
+          {user.kind === "agent" && (
+            <span className="mt-1 rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
+              🤖 Agent
+            </span>
+          )}
           {isSelf && (
             <div className="mt-1 flex gap-1">
               <button
@@ -225,7 +230,7 @@ export default function UserCard(user: UserCardProps) {
 
         <div className="mb-1 flex min-h-[18px] items-center justify-center gap-1">
           <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
-            {user.kind === "agent" ? "Agent" : "Human"}
+            {user.kind === "agent" ? "🤖 Agent" : "Human"}
           </span>
         </div>
 

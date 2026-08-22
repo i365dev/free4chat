@@ -133,7 +133,9 @@ type ClientMessage =
   | { type: "leave" }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
-  private readonly agentWaiters = new Map<string, Set<AgentWaiter>>()
+  // A participant has at most one outstanding long-poll. A null value is a
+  // short-lived reservation while the request refreshes its lease.
+  private readonly agentWaiters = new Map<string, AgentWaiter | null>()
 
   private async loadRoom(): Promise<RoomRecord | null> {
     const stored = await this.ctx.storage.get<StoredRoom>("room")
@@ -268,18 +270,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private async expireRoom(room: RoomRecord): Promise<void> {
     await this.ctx.storage.delete("room")
-    for (const waiterSet of this.agentWaiters.values()) {
-      for (const waiter of waiterSet) {
-        clearTimeout(waiter.timer)
-        waiter.resolve(
-          this.json({
-            events: [],
-            cursor: room.nextMessageSequence,
-            expiresAt: room.expiresAt,
-            expired: true,
-          })
-        )
-      }
+    for (const waiter of this.agentWaiters.values()) {
+      if (!waiter) continue
+      clearTimeout(waiter.timer)
+      waiter.resolve(
+        this.json({
+          events: [],
+          cursor: room.nextMessageSequence,
+          expiresAt: room.expiresAt,
+          expired: true,
+        })
+      )
     }
     this.agentWaiters.clear()
     for (const socket of this.ctx.getWebSockets()) {
@@ -384,9 +385,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     expiresAt: number
     truncated?: boolean
   } {
+    const serverCursor = room.nextMessageSequence
+    const clampedCursor = Math.min(Math.max(cursor, 0), serverCursor)
     const firstSequence = room.messages[0]?.sequence
-    const truncated = firstSequence !== undefined && cursor < firstSequence - 1
-    const effectiveCursor = truncated ? firstSequence - 1 : cursor
+    const truncated =
+      firstSequence !== undefined && clampedCursor < firstSequence - 1
+    const effectiveCursor = truncated ? firstSequence - 1 : clampedCursor
     return {
       events: room.messages
         .filter(
@@ -395,7 +399,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             message.peerId !== participantId
         )
         .map((message) => this.toAgentEvent(message)),
-      cursor: Math.max(cursor, room.nextMessageSequence),
+      cursor: serverCursor,
       expiresAt: room.expiresAt,
       ...(truncated ? { truncated: true } : {}),
     }
@@ -403,27 +407,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private finishWaiter(waiter: AgentWaiter, response: Response): void {
     clearTimeout(waiter.timer)
-    const waiters = this.agentWaiters.get(waiter.participantId)
-    waiters?.delete(waiter)
-    if (waiters?.size === 0) this.agentWaiters.delete(waiter.participantId)
+    if (this.agentWaiters.get(waiter.participantId) === waiter)
+      this.agentWaiters.delete(waiter.participantId)
     waiter.resolve(response)
   }
 
   private resolveAgentWaiters(room: RoomRecord): void {
-    for (const waiterSet of this.agentWaiters.values()) {
-      for (const waiter of [...waiterSet]) {
-        const result = this.agentEvents(
-          room,
-          waiter.participantId,
-          waiter.cursor
-        )
-        if (
-          result.events.length > 0 ||
-          result.cursor > waiter.cursor ||
-          result.truncated
-        ) {
-          this.finishWaiter(waiter, this.json(result))
-        }
+    for (const waiter of this.agentWaiters.values()) {
+      if (!waiter) continue
+      const result = this.agentEvents(room, waiter.participantId, waiter.cursor)
+      if (
+        result.events.length > 0 ||
+        result.cursor > waiter.cursor ||
+        result.truncated
+      ) {
+        this.finishWaiter(waiter, this.json(result))
       }
     }
   }
@@ -441,57 +439,63 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!participant) return this.json({ error: "unauthorized" }, 401)
     if (participant.kind !== "agent")
       return this.json({ error: "agent_only" }, 403)
+    if (this.agentWaiters.has(participant.id))
+      return this.json({ error: "wait_already_pending" }, 409)
 
-    participant.lastSeenAt = Date.now()
-    await this.saveRoom(room)
-    await this.scheduleNextAlarm(room)
+    this.agentWaiters.set(participant.id, null)
 
-    const result = this.agentEvents(room, participant.id, request.cursor)
-    if (
-      result.events.length > 0 ||
-      result.cursor > request.cursor ||
-      result.truncated ||
-      request.timeoutSeconds === 0
-    ) {
-      return this.json(result)
-    }
+    try {
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
 
-    return new Promise<Response>((resolve) => {
-      const waiter: AgentWaiter = {
-        participantId: participant.id,
-        cursor: request.cursor,
-        resolve,
-        timer: setTimeout(() => {
-          const waiters = this.agentWaiters.get(participant.id)
-          waiters?.delete(waiter)
-          if (waiters?.size === 0) this.agentWaiters.delete(participant.id)
-          void this.activeRoom().then((current) => {
-            if (!current) {
+      const result = this.agentEvents(room, participant.id, request.cursor)
+      const cursorWasAhead = request.cursor > room.nextMessageSequence
+      if (
+        cursorWasAhead ||
+        result.events.length > 0 ||
+        result.cursor > request.cursor ||
+        result.truncated ||
+        request.timeoutSeconds === 0
+      ) {
+        this.agentWaiters.delete(participant.id)
+        return this.json(result)
+      }
+
+      return new Promise<Response>((resolve) => {
+        const waiter: AgentWaiter = {
+          participantId: participant.id,
+          cursor: request.cursor,
+          resolve,
+          timer: setTimeout(() => {
+            if (this.agentWaiters.get(participant.id) !== waiter) return
+            this.agentWaiters.delete(participant.id)
+            void this.activeRoom().then((current) => {
+              if (!current) {
+                resolve(
+                  this.json({
+                    events: [],
+                    cursor: room.nextMessageSequence,
+                    expiresAt: room.expiresAt,
+                    expired: true,
+                  })
+                )
+                return
+              }
               resolve(
-                this.json({
-                  events: [],
-                  cursor: request.cursor,
-                  expiresAt: room.expiresAt,
-                  expired: true,
-                })
+                this.json(
+                  this.agentEvents(current, participant.id, request.cursor)
+                )
               )
-              return
-            }
-            resolve(
-              this.json(
-                this.agentEvents(current, participant.id, request.cursor)
-              )
-            )
-          })
-        }, request.timeoutSeconds * 1000),
-      }
-      let waiters = this.agentWaiters.get(participant.id)
-      if (!waiters) {
-        waiters = new Set()
-        this.agentWaiters.set(participant.id, waiters)
-      }
-      waiters.add(waiter)
-    })
+            })
+          }, request.timeoutSeconds * 1000),
+        }
+        this.agentWaiters.set(participant.id, waiter)
+      })
+    } catch (error) {
+      this.agentWaiters.delete(participant.id)
+      throw error
+    }
   }
 
   private async handleControl(request: ControlRequest): Promise<Response> {
@@ -606,19 +610,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "agent_only" }, 403)
       delete room.participants[participant.id]
       await this.saveRoom(room)
-      const waiters = this.agentWaiters.get(participant.id)
-      if (waiters) {
-        for (const waiter of [...waiters]) {
-          this.finishWaiter(
-            waiter,
-            this.json({
-              events: [],
-              cursor: room.nextMessageSequence,
-              expiresAt: room.expiresAt,
-              left: true,
-            })
-          )
-        }
+      const waiter = this.agentWaiters.get(participant.id)
+      if (waiter) {
+        this.finishWaiter(
+          waiter,
+          this.json({
+            events: [],
+            cursor: room.nextMessageSequence,
+            expiresAt: room.expiresAt,
+            left: true,
+          })
+        )
+      } else {
+        this.agentWaiters.delete(participant.id)
       }
       await this.broadcastState(room)
       await this.scheduleNextAlarm(room)
@@ -929,19 +933,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (expiredHuman || expiredAgent) {
         delete room.participants[id]
         changed = true
-        const waiters = this.agentWaiters.get(id)
-        if (waiters) {
-          for (const waiter of [...waiters]) {
-            this.finishWaiter(
-              waiter,
-              this.json({
-                events: [],
-                cursor: room.nextMessageSequence,
-                expiresAt: room.expiresAt,
-                left: true,
-              })
-            )
-          }
+        const waiter = this.agentWaiters.get(id)
+        if (waiter) {
+          this.finishWaiter(
+            waiter,
+            this.json({
+              events: [],
+              cursor: room.nextMessageSequence,
+              expiresAt: room.expiresAt,
+              left: true,
+            })
+          )
+        } else {
+          this.agentWaiters.delete(id)
         }
       }
     }

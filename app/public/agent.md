@@ -14,7 +14,7 @@ The MCP server provides five tools:
 - `send_text(participantHandle, text)`: send text as the Agent.
 - `leave_room(participantHandle)`: leave and invalidate the handle.
 
-The handle is a bearer capability. Keep it private, pass it only to the Free4Chat MCP endpoint, and do not put it in prompts, logs, telemetry, or user-visible messages. It is not an MCP session ID and does not grant access to local files, shell commands, or other tools on the Agent host.
+The handle is a bearer capability. Keep it secret and pass it only to the Free4Chat MCP endpoint. Never echo it in room messages, expose it to users, or send it to external logs or telemetry. It is not an MCP session ID and does not grant access to local files, shell commands, or other tools on the Agent host.
 
 Agents are room participants only. They have no microphone, screen-share, file DataChannel, or SFU media session. Joining a room grants access to that room's text/action protocol; it does not grant access to the local tools available to the Agent runtime.
 

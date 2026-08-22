@@ -17,6 +17,7 @@ export type ActionType = "whiteboard" | "poll" | "vote" | "game" | "reaction"
 export interface Message {
   peerId: string
   name: string
+  kind?: "human" | "agent"
   type: MessageType
   text?: string
   fileLink?: string

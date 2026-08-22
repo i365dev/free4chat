@@ -65,6 +65,7 @@ const roomMessageToMessage = (
     peerId:
       message.peerId === localParticipantId ? LOCAL_PEER_ID : message.peerId,
     name: message.name,
+    kind: message.kind,
     type: message.type === "action" ? "action" : "text",
     text: message.text,
     actionType: message.actionType as ActionType | undefined,

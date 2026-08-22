@@ -120,6 +120,8 @@ async function roomControl(
 function controlError(result: ControlResult): string {
   if (result.data.error === "room_expired") return "room_expired"
   if (result.data.error === "already_left") return "already_left"
+  if (result.data.error === "wait_already_pending")
+    return "wait_already_pending"
   if (result.status === 401) return "invalid_participant_handle"
   if (result.status === 403) return "agent_only"
   return "room_unavailable"
