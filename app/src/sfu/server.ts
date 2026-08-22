@@ -1,4 +1,4 @@
-import type { SfuSessionResponse, SfuTrack, ParticipantKind } from "./types"
+import type { SfuSessionResponse, SfuTrack } from "./types"
 import { isAllowedOrigin } from "../common/origin"
 import type { RoomSession } from "../do/RoomSession"
 
@@ -166,7 +166,7 @@ export async function handleSfuRequest(
     if (!body) return badRequest("invalid_json")
     const room = typeof body.room === "string" ? body.room.trim() : ""
     const name = typeof body.name === "string" ? body.name.trim() : ""
-    const kind: ParticipantKind = body.kind === "agent" ? "agent" : "human"
+    if (body.kind === "agent") return badRequest("agent_sessions_not_supported")
     if (!room || room.length > MAX_ROOM_LENGTH)
       return badRequest("invalid_room")
     if (!name || name.length > MAX_NAME_LENGTH)
@@ -228,10 +228,13 @@ export async function handleSfuRequest(
           participant: {
             id: participantId,
             name,
-            kind,
-            sessionId: session.sessionId,
-            muted: false,
-            tracks: [],
+            kind: "human",
+            media: {
+              sessionId: session.sessionId,
+              muted: false,
+              fileChannelReady: false,
+              tracks: [],
+            },
             joinedAt: Date.now(),
             token: participantToken,
           },

@@ -650,7 +650,14 @@ export default function TextChatCard({
                 </div>
                 <div style={{ maxWidth: "72%" }}>
                   {!isSelf && (
-                    <p className="mb-1 ml-1 text-xs text-gray-400">{p.name}</p>
+                    <p className="mb-1 ml-1 text-xs text-gray-400">
+                      {p.name}
+                      {p.kind === "agent" && (
+                        <span className="ml-1 text-[10px] text-blue-300">
+                          🤖 Agent
+                        </span>
+                      )}
+                    </p>
                   )}
                   {p.type === "text" ? (
                     <div

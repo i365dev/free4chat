@@ -1,52 +1,20 @@
-export type ParticipantKind = "human" | "agent"
+export type {
+  ParticipantKind,
+  RoomMessage as SfuMessage,
+  RoomParticipant as SfuParticipant,
+  RoomRecord as SfuRoomRecord,
+  RoomState as SfuRoomState,
+  RoomMediaTrack as SfuTrack,
+} from "../room/types"
 
 export type SfuTrackKind = "audio" | "video"
 
-export interface SfuTrack {
-  trackName: string
-  kind: SfuTrackKind
-  mid?: string
-}
-
-export interface SfuParticipant {
+export interface SfuPublishedTrackParticipant {
   id: string
   name: string
-  kind: ParticipantKind
+  kind: import("../room/types").ParticipantKind
   sessionId: string
-  muted: boolean
-  connected: boolean
-  fileChannelReady?: boolean
-  tracks: SfuTrack[]
-  joinedAt: number
-  lastSeenAt: number
-  connectionNonce?: string
-  token: string
-}
-
-export interface SfuMessage {
-  id: string
-  peerId: string
-  name: string
-  kind: ParticipantKind
-  type: "text" | "action"
-  text?: string
-  actionType?: string
-  actionPayload?: Record<string, string>
-  createdAt: number
-}
-
-export interface SfuRoomState {
-  createdAt: number
-  expiresAt: number
-  participants: Array<Omit<SfuParticipant, "token" | "connectionNonce">>
-  messages: SfuMessage[]
-}
-
-export interface SfuRoomRecord {
-  createdAt: number
-  expiresAt: number
-  participants: Record<string, SfuParticipant>
-  messages: SfuMessage[]
+  track: import("../room/types").RoomMediaTrack
 }
 
 export interface SfuSessionResponse {

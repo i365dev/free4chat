@@ -47,7 +47,12 @@ interface SfuServerMessage {
     | "expired"
     | "error"
   state?: SfuRoomState
-  participant?: Partial<SfuParticipant> & { track?: SfuTrack }
+  participant?: Partial<SfuParticipant> & {
+    track?: SfuTrack
+    sessionId?: string
+    muted?: boolean
+    fileChannelReady?: boolean
+  }
   message?: SfuMessage
   error?: string
 }
@@ -60,6 +65,7 @@ const roomMessageToMessage = (
     peerId:
       message.peerId === localParticipantId ? LOCAL_PEER_ID : message.peerId,
     name: message.name,
+    kind: message.kind,
     type: message.type === "action" ? "action" : "text",
     text: message.text,
     actionType: message.actionType as ActionType | undefined,
@@ -134,7 +140,7 @@ export function useSfuChatRoom(
         room: roomName,
         peerId: LOCAL_PEER_ID,
         muteState:
-          local?.muted ?? !(localAudioTrackRef.current?.enabled ?? true),
+          local?.media?.muted ?? !(localAudioTrackRef.current?.enabled ?? true),
         audioStream: localAudioTrackRef.current
           ? new MediaStream([localAudioTrackRef.current])
           : null,
@@ -146,7 +152,7 @@ export function useSfuChatRoom(
     }
     for (const participant of state?.participants ?? []) {
       if (participant.id === localId) continue
-      const hasScreenShare = participant.tracks.some(
+      const hasScreenShare = (participant.media?.tracks ?? []).some(
         (track) => track.kind === "video"
       )
       list.push({
@@ -154,7 +160,7 @@ export function useSfuChatRoom(
         kind: participant.kind,
         room: roomName,
         peerId: participant.id,
-        muteState: participant.muted,
+        muteState: participant.media?.muted,
         audioStream: remoteAudioStreamsRef.current.get(participant.id) ?? null,
         screenShareEnabled: hasScreenShare,
         screenShareStream:
@@ -490,10 +496,11 @@ export function useSfuChatRoom(
         !pc ||
         !session ||
         participant.id === session.participantId ||
-        !participant.fileChannelReady ||
+        !participant.media?.fileChannelReady ||
         remoteFileChannelsRef.current.has(participant.id)
       )
         return
+      const media = participant.media
       const channelKey = participant.id
       const fileChannelName = `files-${participant.id}`
       const response = await apiRequest("datachannels/new", {
@@ -501,11 +508,11 @@ export function useSfuChatRoom(
         participantId: session.participantId,
         token: session.participantToken,
         sessionId: session.sessionId,
-        publisherSessionId: participant.sessionId,
+        publisherSessionId: media.sessionId,
         dataChannels: [
           {
             location: "remote",
-            sessionId: participant.sessionId,
+            sessionId: media.sessionId,
             dataChannelName: fileChannelName,
             ordered: true,
             waitForAck: true,
@@ -615,25 +622,26 @@ export function useSfuChatRoom(
     async (participant: SfuParticipant, track: SfuTrack) => {
       const session = sessionRef.current
       const pc = peerConnectionRef.current
-      if (!session || !pc) return
-      const key = `${participant.id}:${participant.sessionId}:${track.trackName}`
+      const media = participant.media
+      if (!session || !pc || !media) return
+      const key = `${participant.id}:${media.sessionId}:${track.trackName}`
       if (subscribedTracksRef.current.has(key)) return
       if (
-        participantMapRef.current.get(participant.id)?.sessionId !==
-        participant.sessionId
+        participantMapRef.current.get(participant.id)?.media?.sessionId !==
+        media.sessionId
       )
         return
       subscribedTracksRef.current.add(key)
       await enqueueNegotiation(async () => {
         if (
-          participantMapRef.current.get(participant.id)?.sessionId !==
-          participant.sessionId
+          participantMapRef.current.get(participant.id)?.media?.sessionId !==
+          media.sessionId
         )
           return
         pendingRemoteTrackRef.current = {
           peerId: participant.id,
           kind: track.kind,
-          sessionId: participant.sessionId,
+          sessionId: media.sessionId,
         }
         const response = await apiRequest("tracks", {
           room: roomName,
@@ -643,7 +651,7 @@ export function useSfuChatRoom(
           tracks: [
             {
               location: "remote",
-              sessionId: participant.sessionId,
+              sessionId: media.sessionId,
               trackName: track.trackName,
             },
           ],
@@ -671,7 +679,11 @@ export function useSfuChatRoom(
       roomStateRef.current = state
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
-        if (previous && previous.sessionId !== participant.sessionId)
+        if (
+          previous?.media &&
+          participant.media &&
+          previous.media.sessionId !== participant.media.sessionId
+        )
           resetRemoteParticipant(participant.id)
       }
       participantMapRef.current = new Map(
@@ -693,10 +705,10 @@ export function useSfuChatRoom(
         if (participant.id === localId) continue
         const fullParticipant = participantMapRef.current.get(participant.id)
         if (!fullParticipant) continue
-        for (const track of participant.tracks) {
+        for (const track of participant.media?.tracks ?? []) {
           void subscribeTrack(fullParticipant, track)
         }
-        if (fullParticipant.fileChannelReady)
+        if (fullParticipant.media?.fileChannelReady)
           void subscribeFileChannel(fullParticipant)
       }
     },
@@ -717,7 +729,7 @@ export function useSfuChatRoom(
       const pending = pendingRemoteTrackRef.current
       if (!pending) return
       if (
-        participantMapRef.current.get(pending.peerId)?.sessionId !==
+        participantMapRef.current.get(pending.peerId)?.media?.sessionId !==
         pending.sessionId
       ) {
         pendingRemoteTrackRef.current = null
@@ -777,14 +789,21 @@ export function useSfuChatRoom(
         if (
           current &&
           incomingSessionId &&
-          current.sessionId !== incomingSessionId
+          current.media?.sessionId !== incomingSessionId
         ) {
           resetRemoteParticipant(participantId)
-          current.sessionId = incomingSessionId
-          current.tracks = [message.participant.track]
+          if (current.media) {
+            current.media = {
+              ...current.media,
+              sessionId: incomingSessionId,
+              fileChannelReady: false,
+              tracks: [message.participant.track],
+            }
+          }
         } else if (current) {
-          current.tracks = [
-            ...current.tracks.filter(
+          if (!current.media) return
+          current.media.tracks = [
+            ...current.media.tracks.filter(
               (track) =>
                 track.trackName !== message.participant!.track!.trackName
             ),
@@ -795,10 +814,13 @@ export function useSfuChatRoom(
             id: participantId,
             name: message.participant.name,
             kind: message.participant.kind ?? "human",
-            sessionId: incomingSessionId,
-            muted: false,
             connected: true,
-            tracks: [message.participant.track],
+            media: {
+              sessionId: incomingSessionId,
+              muted: false,
+              fileChannelReady: false,
+              tracks: [message.participant.track],
+            },
             joinedAt: Date.now(),
             lastSeenAt: Date.now(),
             token: "",
@@ -815,12 +837,18 @@ export function useSfuChatRoom(
         const participant = participantMapRef.current.get(
           message.participant.id
         )
-        if (participant && typeof message.participant.muted === "boolean") {
-          participant.muted = message.participant.muted
+        if (
+          participant?.media &&
+          typeof message.participant.muted === "boolean"
+        ) {
+          participant.media.muted = message.participant.muted
           rebuildParticipants()
         }
-        if (participant && message.participant.fileChannelReady === true) {
-          participant.fileChannelReady = true
+        if (
+          participant?.media &&
+          message.participant.fileChannelReady === true
+        ) {
+          participant.media.fileChannelReady = true
           void subscribeFileChannel(participant)
           rebuildParticipants()
         }
