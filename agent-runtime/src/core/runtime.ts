@@ -150,7 +150,13 @@ export class ResidentRoomRuntime {
   }
 
   async start(): Promise<void> {
-    await this.transcript?.ready()
+    try {
+      await this.transcript?.ready()
+    } catch {
+      // Transcript persistence is optional. A filesystem failure here must
+      // never prevent the text Agent from joining the room.
+      this.log("meeting_transcript_init_failed")
+    }
     await this.options.client.connect()
     await this.options.adapter.ensureSession()
     await this.join()
