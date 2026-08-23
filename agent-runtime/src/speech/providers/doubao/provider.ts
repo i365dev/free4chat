@@ -26,11 +26,13 @@ import {
 const CONNECT_TIMEOUT_MS = 10_000
 const CLOSE_TIMEOUT_MS = 2_000
 const MAX_PENDING_EVENTS = 256
+const FINAL_DRAIN_TIMEOUT_MS = 2_000
+const SEND_CALLBACK_TIMEOUT_MS = 5_000
 
 export interface DoubaoWebSocketLike {
   readonly readyState: number
   on(event: string, listener: (...args: unknown[]) => void): this
-  send(data: Buffer): void
+  send(data: Buffer, callback?: (error?: Error) => void): void
   close(): void
   terminate?(): void
 }
@@ -122,9 +124,15 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
   private readonly webSocketFactory: DoubaoWebSocketFactory
   private readonly requestIdFactory: () => string
   private socket: DoubaoWebSocketLike | null = null
-  private sequence = 1
+  // Sequence 1 belongs to the initial request. Audio starts at 2; the
+  // negative final packet uses the next unused sequence number.
+  private sequence = 2
   private closed = false
+  private closing = false
   private failed = false
+  private closePromise?: Promise<void>
+  private finalResponseResolve?: () => void
+  private finalResponsePromise?: Promise<void>
   private speechOpen = false
   private pendingConnect:
     | {
@@ -188,7 +196,16 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
         socket.on("open", () => {
           if (settled) return
           try {
-            socket.send(buildInitialRequest(requestOptions))
+            socket.send(buildInitialRequest(requestOptions), (error) => {
+              if (!error || settled) return
+              const sendError = new DoubaoProviderError(
+                "send_failed",
+                "Doubao request could not be sent",
+                true
+              )
+              this.fail(sendError)
+              settleReject(sendError)
+            })
           } catch {
             const error = new DoubaoProviderError(
               "send_failed",
@@ -227,7 +244,7 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
             )
             this.fail(error)
             settleReject(error)
-          } else if (!this.closed) {
+          } else if (!this.closed && !this.closing) {
             this.fail(
               new DoubaoProviderError(
                 "connection_closed",
@@ -269,7 +286,7 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
   }
 
   async pushAudio(frame: AudioFrame): Promise<void> {
-    if (this.closed) return
+    if (this.closed || this.closing) return
     if (
       this.failed ||
       !this.socket ||
@@ -286,7 +303,10 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
         "Doubao audio codec is unsupported"
       )
     try {
-      this.socket.send(buildAudioRequest(this.sequence++, frame.data))
+      await this.send(
+        buildAudioRequest(this.sequence++, frame.data),
+        "Doubao audio could not be sent"
+      )
     } catch {
       const error = new DoubaoProviderError(
         "send_failed",
@@ -303,19 +323,42 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
   }
 
   async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise
     if (this.closed) return
-    this.closed = true
+    this.closing = true
+    this.closePromise = this.closeInternal()
+    return this.closePromise
+  }
+
+  private async closeInternal(): Promise<void> {
+    this.finalResponsePromise = new Promise<void>((resolve) => {
+      this.finalResponseResolve = resolve
+    })
     if (
       this.socket &&
       !this.failed &&
       this.socket.readyState === WebSocket.OPEN
     ) {
       try {
-        this.socket.send(buildAudioRequest(-this.sequence, new Uint8Array()))
+        // Stop accepting audio before asking Doubao to finalize the stream,
+        // but keep handleMessage alive during the bounded drain window so the
+        // last definite result is still delivered to events().
+        await this.send(
+          buildAudioRequest(-this.sequence, new Uint8Array()),
+          "Doubao final audio could not be sent"
+        )
       } catch {
         // Closing is best effort; the session is already being torn down.
       }
+      await Promise.race([
+        this.finalResponsePromise,
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, FINAL_DRAIN_TIMEOUT_MS)
+        ),
+      ])
     }
+    this.closed = true
+    this.eventsQueue.close()
     const socket = this.socket
     if (socket && socket.readyState === WebSocket.OPEN) {
       await new Promise<void>((resolve) => {
@@ -327,7 +370,31 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
         socket.close()
       })
     }
-    this.eventsQueue.close()
+  }
+
+  private send(data: Buffer, failureMessage: string): Promise<void> {
+    const socket = this.socket
+    if (!socket) return Promise.reject(new Error(failureMessage))
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        reject(new Error(failureMessage))
+      }, SEND_CALLBACK_TIMEOUT_MS)
+      const finish = (error?: Error): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (error) reject(error)
+        else resolve()
+      }
+      try {
+        socket.send(data, finish)
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(failureMessage))
+      }
+    })
   }
 
   private handleMessage(data: unknown): void {
@@ -366,7 +433,10 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
     this.pendingConnect?.resolve()
     for (const utterance of responseUtterances(response.payload))
       this.emitUtterance(utterance)
-    if (response.isLastPackage && !this.closed) this.eventsQueue.close()
+    if (response.isLastPackage) {
+      this.finalResponseResolve?.()
+      this.eventsQueue.close()
+    }
   }
 
   private emitUtterance(utterance: DoubaoUtterance): void {

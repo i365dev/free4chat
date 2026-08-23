@@ -38,10 +38,11 @@ class FakeWebSocket implements DoubaoWebSocketLike {
     return this
   }
 
-  send(data: Buffer): void {
+  send(data: Buffer, callback?: (error?: Error) => void): void {
     this.sent.push(data)
     if (this.sent.length === 1) {
       this.emit("message", responseFrame({}))
+      callback?.()
       return
     }
     this.audioMessages += 1
@@ -68,6 +69,26 @@ class FakeWebSocket implements DoubaoWebSocketLike {
           },
         })
       )
+    else if (this.audioMessages === 3)
+      this.emit(
+        "message",
+        responseFrame(
+          {
+            result: {
+              utterances: [
+                {
+                  start_time: 120,
+                  end_time: 220,
+                  text: "再见",
+                  definite: true,
+                },
+              ],
+            },
+          },
+          true
+        )
+      )
+    callback?.()
   }
 
   close(): void {
@@ -80,11 +101,14 @@ class FakeWebSocket implements DoubaoWebSocketLike {
   }
 }
 
-function responseFrame(payload: Record<string, unknown>): Buffer {
+function responseFrame(
+  payload: Record<string, unknown>,
+  isLastPackage = false
+): Buffer {
   const body = gzipSync(Buffer.from(JSON.stringify(payload), "utf8"))
   const frame = Buffer.alloc(12 + body.length)
   frame[0] = 0x11
-  frame[1] = 0x91
+  frame[1] = isLastPackage ? 0x93 : 0x91
   frame[2] = 0x11
   frame.writeInt32BE(1, 4)
   frame.writeUInt32BE(body.length, 8)
@@ -166,7 +190,32 @@ test("Doubao session waits for protocol acknowledgement and normalizes semantic 
     events[1]?.type === "partial" ? events[1].text : undefined,
     "你好"
   )
+  assert.deepEqual(
+    socket.sent.map((frame) => frame.readInt32BE(4)),
+    [1, 2, 3]
+  )
+  assert.deepEqual([...socket.sent[1]!.subarray(0, 4)], [0x11, 0x21, 0x11, 0])
+  assert.deepEqual(
+    gunzipSync(socket.sent[1]!.subarray(12)).toJSON().data,
+    [1, 2, 3]
+  )
   await session.close()
+  assert.deepEqual(
+    socket.sent.map((frame) => frame.readInt32BE(4)),
+    [1, 2, 3, -4]
+  )
+  assert.deepEqual([...socket.sent[3]!.subarray(0, 4)], [0x11, 0x23, 0x11, 0])
+  assert.deepEqual(gunzipSync(socket.sent[3]!.subarray(12)).toJSON().data, [])
+  const finalEvents = []
+  for await (const event of session.events()) finalEvents.push(event)
+  assert.deepEqual(
+    finalEvents.map((event) => event.type),
+    ["speech_started", "committed", "speech_ended"]
+  )
+  assert.equal(
+    finalEvents[1]?.type === "committed" ? finalEvents[1].text : undefined,
+    "再见"
+  )
   await session.close()
   assert.equal(socket.readyState, 3)
 })

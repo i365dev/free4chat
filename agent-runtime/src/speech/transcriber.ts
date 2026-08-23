@@ -31,9 +31,12 @@ interface TrackState {
   source: AudioSource
   frames: AudioFrame[]
   session?: StreamingSttSession
+  eventsPromise?: Promise<void>
   pumping: boolean
+  stopping: boolean
   ended: boolean
   failed: boolean
+  closingPromise?: Promise<void>
   pumpPromise?: Promise<void>
 }
 
@@ -66,12 +69,13 @@ export class SpeechTranscriber {
         source: { ...source },
         frames: [],
         pumping: false,
+        stopping: false,
         ended: false,
         failed: false,
       }
       this.tracks.set(key, state)
     }
-    if (state.ended || state.failed) return
+    if (state.stopping || state.ended || state.failed) return
     if (state.frames.length >= this.maxFramesPerTrack) {
       this.failTrack(state, {
         code: "audio_queue_overflow",
@@ -144,7 +148,7 @@ export class SpeechTranscriber {
           return
         }
         state.session = createdSession
-        void this.forwardEvents(state, state.session)
+        state.eventsPromise = this.forwardEvents(state, state.session)
       }
       while (!state.ended && !state.failed && state.frames.length > 0) {
         const frame = state.frames.shift()!
@@ -174,15 +178,31 @@ export class SpeechTranscriber {
 
   private async endTrack(state: TrackState): Promise<void> {
     if (state.ended) return
-    state.ended = true
+    if (state.stopping) {
+      await state.closingPromise
+      return
+    }
+    state.stopping = true
     state.frames.length = 0
-    this.tracks.delete(state.key)
-    await state.session?.close().catch((error: unknown) => {
-      this.emit({
-        source: state.source,
-        event: { type: "error", error: normalizeSpeechError(error) },
+    state.closingPromise = (async () => {
+      // Do not close the provider while a frame is still waiting for its
+      // transport send callback. Queued frames are discarded above, while
+      // the frame already in flight is allowed to finish before finalization.
+      await state.pumpPromise?.catch(() => undefined)
+      await state.session?.close().catch((error: unknown) => {
+        this.emit({
+          source: state.source,
+          event: { type: "error", error: normalizeSpeechError(error) },
+        })
       })
-    })
+      // The provider close drains its final response, but the event iterator
+      // must also finish before ended becomes true; otherwise the last
+      // committed event can be filtered out by forwardEvents().
+      await state.eventsPromise?.catch(() => undefined)
+      state.ended = true
+      this.tracks.delete(state.key)
+    })()
+    await state.closingPromise
   }
 
   private failTrack(state: TrackState, error: SttError): void {

@@ -26,6 +26,7 @@ function source(id: string, trackName = "mic"): AudioSource {
 class ControlledSession implements StreamingSttSession {
   readonly frames: AudioFrame[] = []
   closed = false
+  constructor(private readonly finalEvent?: SttEvent) {}
   private readonly output: SttEvent[] = []
   private readonly waiters: ((result: IteratorResult<SttEvent>) => void)[] = []
 
@@ -54,6 +55,7 @@ class ControlledSession implements StreamingSttSession {
   }
 
   async close(): Promise<void> {
+    if (this.finalEvent) this.emit(this.finalEvent)
     this.closed = true
     while (this.waiters.length > 0)
       this.waiters.shift()!({ value: undefined, done: true })
@@ -135,5 +137,40 @@ test("transcriber fails only the overflowing track and keeps other tracks alive"
   await waitFor(() => sessions.length === 2)
   assert.equal(sessions[0]!.closed, true)
   assert.equal(sessions[1]!.frames[0]?.data[0], 4)
+  await transcriber.close()
+})
+
+test("transcriber drains a provider's final event before ending a track", async () => {
+  let session: ControlledSession | undefined
+  const events: { source: AudioSource; event: SttEvent }[] = []
+  const provider: StreamingSttProvider = {
+    async createSession() {
+      const created = new ControlledSession({
+        type: "committed",
+        text: "最后一句",
+      })
+      session = created
+      return created
+    },
+  }
+  const transcriber = new SpeechTranscriber({
+    provider,
+    onEvent: (event) => events.push(event),
+  })
+  transcriber.acceptAudio(source("human"), audio(1))
+  await waitFor(() => Boolean(session))
+
+  transcriber.handleMediaEvent({
+    type: "audioTrackEnded",
+    participantId: "human",
+    trackName: "mic",
+    reason: "participant_left",
+  })
+  await waitFor(() => Boolean(session?.closed && events.length === 1))
+  assert.equal(events[0]!.event.type, "committed")
+  assert.equal(
+    events[0]!.event.type === "committed" ? events[0]!.event.text : undefined,
+    "最后一句"
+  )
   await transcriber.close()
 })
