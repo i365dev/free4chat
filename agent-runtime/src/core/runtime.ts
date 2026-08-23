@@ -35,6 +35,9 @@ export interface RuntimeStatus {
   state: "starting" | "waiting" | "turn" | "reconnecting" | "stopped" | "failed"
   participantId?: string
   lastError?: string
+  /** Optional Meeting Notes bridge lifecycle state. This is deliberately
+   * status-only: no media credentials, SDP, audio, or transcript content. */
+  meetingNotesMediaState?: "idle" | "starting" | "running"
 }
 
 export interface ResidentRuntimeOptions {
@@ -146,6 +149,7 @@ export class ResidentRoomRuntime {
       state: this.state,
       participantId: this.participantId,
       lastError: this.lastError,
+      meetingNotesMediaState: this.meetingNotes?.state,
     }
   }
 

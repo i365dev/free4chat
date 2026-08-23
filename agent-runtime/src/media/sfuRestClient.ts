@@ -91,10 +91,14 @@ export class SfuRestClient implements SfuRestClientLike {
     const raw = await response.text()
     const data = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
     if (!response.ok) {
+      const errorCode =
+        typeof data.errorCode === "string" ? data.errorCode : undefined
       const error =
         typeof data.error === "string"
           ? data.error
-          : `SFU request failed (${response.status})`
+          : errorCode
+            ? `sfu_${path.replaceAll("/", "_")}_${errorCode}`
+            : `SFU request failed (${response.status})`
       throw new Error(error)
     }
     return data

@@ -55,6 +55,9 @@ class FakeRestClient implements SfuRestClientLike {
 class FakePeerConnection implements PeerConnectionLike {
   closed = false
   onTrack = { subscribe: () => undefined }
+  prepareReceiveOnlyAudio(): void {}
+  prepareServerEventsDataChannel(): void {}
+  async waitForConnection(): Promise<void> {}
   async createOffer(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
@@ -138,7 +141,9 @@ test("an authorized grant starts the MediaBridge", async () => {
   await controller.start()
 
   assert.equal(restClient.createAgentSessionCalls, 1)
+  assert.equal(controller.state, "running")
   await controller.stop()
+  assert.equal(controller.state, "idle")
 })
 
 test("no grant never starts the MediaBridge", async () => {

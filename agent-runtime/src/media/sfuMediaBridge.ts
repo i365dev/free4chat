@@ -17,6 +17,7 @@ import type { MediaTrackLike, RtpPacketLike } from "./peerConnectionLike.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
 const INCOMING_TRACK_TIMEOUT_MS = 10000
+const CONNECTION_TIMEOUT_MS = 10000
 /** Emit a bounded stats event at most this often per track, not per packet. */
 const STATS_FLUSH_INTERVAL_MS = 2000
 
@@ -120,11 +121,18 @@ export class SfuMediaBridge {
       this.mySessionId = await this.restClient.createAgentSession()
       this.pc = await this.createPeerConnection()
       this.pc.onTrack.subscribe((track) => this.handleIncomingTrack(track))
-      // Cloudflare's official example supports the server-offer bootstrap:
-      // establish first, then answer its SDP. This avoids relying on a
-      // client-created DataChannel offer before the transport exists.
+      // The browser's initial transport SDP already has an audio m-line from
+      // its microphone. The subscribe-only Runtime must offer the equivalent
+      // recvonly m-line before it establishes its DataChannel transport.
+      this.pc.prepareReceiveOnlyAudio()
+      // Match the browser's working initial transport setup exactly: create
+      // the in-band server-events channel, then offer it to the SFU.
+      this.pc.prepareServerEventsDataChannel()
+      const initialOffer = await this.pc.createOffer()
+      await this.pc.setLocalDescription(initialOffer)
       const transport = await this.restClient.establishDataChannelTransport(
-        this.mySessionId
+        this.mySessionId,
+        initialOffer
       )
       if (!transport.sessionDescription)
         throw new Error("missing_datachannel_session_description")
@@ -134,6 +142,11 @@ export class SfuMediaBridge {
         await this.pc.setLocalDescription(answer)
         await this.restClient.renegotiate(this.mySessionId, answer)
       }
+      // Cloudflare rejects or blocks remote-track operations until ICE/DTLS
+      // reaches connected. Completing the initial SDP exchange alone is not
+      // sufficient, especially for a Node/werift peer without browser event
+      // loop timing. Wait once, bounded, before asking for room media.
+      await this.pc.waitForConnection(CONNECTION_TIMEOUT_MS)
       await this.poll()
       this.pollTimer = setInterval(() => {
         void this.poll().catch(() => undefined)

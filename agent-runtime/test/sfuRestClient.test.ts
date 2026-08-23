@@ -65,3 +65,30 @@ test("serializes a class-like renegotiation answer as a plain SDP payload", asyn
     globalThis.fetch = originalFetch
   }
 })
+
+test("reports an SFU route and error code without echoing its response body", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () =>
+    Response.json(
+      {
+        errorCode: "decoding_error",
+        errorDescription: "untrusted upstream detail",
+      },
+      { status: 400 }
+    )
+
+  try {
+    const client = new SfuRestClient("https://example.test", {
+      room: "room",
+      participantId: "participant",
+      participantToken: "token",
+    })
+
+    await assert.rejects(
+      client.establishDataChannelTransport("session"),
+      /sfu_datachannels_establish_decoding_error/
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

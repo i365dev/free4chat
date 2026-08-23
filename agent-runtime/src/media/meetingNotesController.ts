@@ -83,6 +83,12 @@ export class MeetingNotesController {
     return this.createPeerConnection
   }
 
+  /** A sanitized lifecycle indicator for local runtime diagnostics. It never
+   * includes an SFU session, participant capability, SDP, or audio data. */
+  get state(): BridgeState {
+    return this.bridgeState
+  }
+
   // Mirrors SfuMediaBridge.start()'s own shape: await the initial poll
   // before arming the interval, so a caller that awaits start() sees the
   // first authorization check settle deterministically. Callers on the

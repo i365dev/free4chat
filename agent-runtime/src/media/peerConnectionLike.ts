@@ -28,8 +28,18 @@ export interface MediaTrackLike {
  * of a real WebRTC/ICE/DTLS stack.
  */
 export interface PeerConnectionLike {
+  /** Adds the Runtime's single subscribe-only audio m-line before its first
+   * SDP offer. This is never a publishing track. */
+  prepareReceiveOnlyAudio(): void
+  /** Creates the initial in-band server-events channel before the first
+   * browser-compatible SDP offer. The Runtime never reads or publishes
+   * application messages on this transport channel. */
+  prepareServerEventsDataChannel(): void
   createOffer(): Promise<SessionDescriptionLike>
   setRemoteDescription(description: SessionDescriptionLike): Promise<void>
+  /** Wait until ICE/DTLS has made this PeerConnection usable by the SFU for
+   * remote-track operations. */
+  waitForConnection(timeoutMs: number): Promise<void>
   createAnswer(): Promise<SessionDescriptionLike>
   setLocalDescription(description: SessionDescriptionLike): Promise<void>
   onTrack: { subscribe(callback: (track: MediaTrackLike) => void): void }
@@ -51,12 +61,47 @@ export async function createWeriftPeerConnection(): Promise<PeerConnectionLike> 
     bundlePolicy: "max-bundle",
   })
   return {
+    prepareReceiveOnlyAudio: () => {
+      pc.addTransceiver("audio", { direction: "recvonly" })
+    },
+    prepareServerEventsDataChannel: () => {
+      pc.createDataChannel("server-events")
+    },
     createOffer: async () =>
       (await pc.createOffer()) as unknown as SessionDescriptionLike,
     setRemoteDescription: async (description) => {
       await pc.setRemoteDescription(
         description as unknown as Parameters<typeof pc.setRemoteDescription>[0]
       )
+    },
+    waitForConnection: async (timeoutMs) => {
+      if (pc.connectionState === "connected") return
+      if (pc.connectionState === "closed" || pc.connectionState === "failed")
+        throw new Error("peer_connection_not_connected")
+      await new Promise<void>((resolve, reject) => {
+        let settled = false
+        let timeout: ReturnType<typeof setTimeout> | undefined = undefined
+        let subscription: { unSubscribe(): void } | undefined = undefined
+        const finish = (result: "connected" | "failed") => {
+          if (settled) return
+          settled = true
+          if (timeout) clearTimeout(timeout)
+          subscription?.unSubscribe()
+          if (result === "connected") resolve()
+          else reject(new Error("peer_connection_not_connected"))
+        }
+        subscription = pc.connectionStateChange.subscribe((state) => {
+          if (state === "connected") finish("connected")
+          else if (state === "closed" || state === "failed") finish("failed")
+        })
+        timeout = setTimeout(() => {
+          if (settled) return
+          settled = true
+          subscription?.unSubscribe()
+          reject(new Error("peer_connection_connect_timeout"))
+        }, timeoutMs)
+        if (settled) clearTimeout(timeout)
+      })
     },
     createAnswer: async () =>
       (await pc.createAnswer()) as unknown as SessionDescriptionLike,

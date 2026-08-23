@@ -38,6 +38,7 @@ class FakeRestClient implements SfuRestClientLike {
   establishTransportError: Error | undefined
   roomMediaError: Error | undefined
   createAgentSessionCalls = 0
+  roomMediaCalls = 0
 
   async createAgentSession(): Promise<string> {
     this.createAgentSessionCalls += 1
@@ -48,13 +49,16 @@ class FakeRestClient implements SfuRestClientLike {
     mySessionId: string,
     offer?: SessionDescriptionLike
   ) {
-    this.establishTransportCalls.push({ sessionId: mySessionId, offer })
+    this.establishTransportCalls.push(
+      offer ? { sessionId: mySessionId, offer } : { sessionId: mySessionId }
+    )
     if (this.establishTransportError) throw this.establishTransportError
     return {
       sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
     }
   }
   async roomMedia(): Promise<RoomMediaParticipant[]> {
+    this.roomMediaCalls += 1
     if (this.roomMediaError) throw this.roomMediaError
     return this.participants
   }
@@ -91,6 +95,8 @@ type RtpCallback = (packet: {
  * `lastRtpCallback` so a test can drive fake packets through it. */
 class FakePeerConnection implements PeerConnectionLike {
   closed = false
+  waitForConnectionCalls = 0
+  connectionGate: Promise<void> | undefined
   localDescriptions: SessionDescriptionLike[] = []
   codec: MediaCodecLike | undefined
   lastRtpCallback: RtpCallback | undefined
@@ -101,11 +107,21 @@ class FakePeerConnection implements PeerConnectionLike {
     },
   }
 
+  prepareReceiveOnlyAudio(): void {}
+  prepareServerEventsDataChannel(): void {}
+  async waitForConnection(): Promise<void> {
+    this.waitForConnectionCalls += 1
+    await this.connectionGate
+  }
+
   async createOffer(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
 
-  async setRemoteDescription(): Promise<void> {
+  async setRemoteDescription(
+    description: SessionDescriptionLike
+  ): Promise<void> {
+    if (description.sdp !== "fake-sdp") return
     const track: MediaTrackLike = {
       kind: "audio",
       codec: this.codec,
@@ -150,11 +166,18 @@ class DelayedPeerConnection implements PeerConnectionLike {
     },
   }
 
+  prepareReceiveOnlyAudio(): void {}
+  prepareServerEventsDataChannel(): void {}
+  async waitForConnection(): Promise<void> {}
+
   async createOffer(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
 
-  async setRemoteDescription(): Promise<void> {
+  async setRemoteDescription(
+    description: SessionDescriptionLike
+  ): Promise<void> {
+    if (description.sdp !== "fake-sdp") return
     const track: MediaTrackLike = {
       kind: "audio",
       codec: this.codec,
@@ -234,6 +257,25 @@ function makeBridge(
   return { bridge, events }
 }
 
+test("waits for the initial PeerConnection connection before listing remote tracks", async () => {
+  const restClient = new FakeRestClient()
+  const pc = new FakePeerConnection()
+  let releaseConnection: (() => void) | undefined
+  pc.connectionGate = new Promise<void>((resolve) => {
+    releaseConnection = resolve
+  })
+  const { bridge } = makeBridge(restClient, pc)
+
+  const starting = bridge.start()
+  await waitFor(() => pc.waitForConnectionCalls === 1)
+  assert.equal(restClient.roomMediaCalls, 0)
+
+  releaseConnection?.()
+  await starting
+  assert.equal(restClient.roomMediaCalls, 1)
+  bridge.stop()
+})
+
 test("raw negotiated Opus reaches only the dedicated audio callback with attribution and copied bytes", async () => {
   const restClient = new FakeRestClient()
   restClient.participants = [humanTrack("human-1", "sess-1")]
@@ -248,6 +290,7 @@ test("raw negotiated Opus reaches only the dedicated audio callback with attribu
   )
 
   await bridge.start()
+  assert.equal(pc.waitForConnectionCalls, 1)
   const rtp = pc.lastRtpCallback
   assert.ok(rtp)
   if (!rtp) return
@@ -313,6 +356,7 @@ test("subscribes to a newly discovered Human audio track and reports it started"
   assert.deepEqual(restClient.establishTransportCalls, [
     {
       sessionId: "agent-session-1",
+      offer: { type: "offer", sdp: "fake-initial-offer" },
     },
   ])
   assert.equal(restClient.renegotiateCalls, 1)
