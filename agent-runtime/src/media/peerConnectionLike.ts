@@ -14,6 +14,10 @@ export interface MediaCodecLike {
 
 export interface MediaTrackLike {
   kind: "audio" | "video"
+  /** The remote SDP m-line this track belongs to. Werift exposes this on the
+   * RTCTrackEvent transceiver; keeping it here lets the SFU bridge bind the
+   * track to the exact subscription instead of relying on callback order. */
+  mid?: string
   codec?: MediaCodecLike
   onReceiveRtp: { subscribe(callback: (packet: RtpPacketLike) => void): void }
 }
@@ -24,6 +28,13 @@ export interface MediaTrackLike {
  * of a real WebRTC/ICE/DTLS stack.
  */
 export interface PeerConnectionLike {
+  /** Adds the Runtime's single subscribe-only audio m-line before its first
+   * SDP offer. This is never a publishing track. */
+  prepareReceiveOnlyAudio(): void
+  /** Mirrors the browser's initial SFU transport setup. The Runtime never
+   * consumes or publishes application messages on this channel. */
+  prepareServerEventsDataChannel(): void
+  createOffer(): Promise<SessionDescriptionLike>
   setRemoteDescription(description: SessionDescriptionLike): Promise<void>
   createAnswer(): Promise<SessionDescriptionLike>
   setLocalDescription(description: SessionDescriptionLike): Promise<void>
@@ -40,6 +51,14 @@ export async function createWeriftPeerConnection(): Promise<PeerConnectionLike> 
   const { RTCPeerConnection } = await import("werift")
   const pc = new RTCPeerConnection({})
   return {
+    prepareReceiveOnlyAudio: () => {
+      pc.addTransceiver("audio", { direction: "recvonly" })
+    },
+    prepareServerEventsDataChannel: () => {
+      pc.createDataChannel("server-events")
+    },
+    createOffer: async () =>
+      (await pc.createOffer()) as unknown as SessionDescriptionLike,
     setRemoteDescription: async (description) => {
       await pc.setRemoteDescription(
         description as unknown as Parameters<typeof pc.setRemoteDescription>[0]
@@ -53,10 +72,17 @@ export async function createWeriftPeerConnection(): Promise<PeerConnectionLike> 
       )
     },
     onTrack: {
-      subscribe: (callback) =>
-        pc.onTrack.subscribe(
-          callback as unknown as (...args: unknown[]) => void
-        ),
+      subscribe: (callback) => {
+        // RTCPeerConnection.onTrack only exposes the track and drops the
+        // transceiver. The DOM-style ontrack callback retains the transceiver
+        // and therefore the negotiated m-line (mid), which is the only stable
+        // way to attribute a track after repeated SFU renegotiations.
+        pc.ontrack = (event) => {
+          const track = event.track as unknown as MediaTrackLike
+          track.mid = event.transceiver.mid ?? undefined
+          callback(track)
+        }
+      },
     },
     close: () => pc.close(),
   }

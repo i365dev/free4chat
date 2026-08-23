@@ -16,6 +16,7 @@ import type {
 import type { MediaTrackLike, RtpPacketLike } from "./peerConnectionLike.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
+const INCOMING_TRACK_TIMEOUT_MS = 10000
 /** Emit a bounded stats event at most this often per track, not per packet. */
 const STATS_FLUSH_INTERVAL_MS = 2000
 
@@ -81,6 +82,9 @@ export class SfuMediaBridge {
     participantId: string
     participantName: string
     trackName: string
+    expectedMid?: string
+    resolve: (track: MediaTrackLike) => void
+    reject: (error: Error) => void
   } | null = null
   private readonly subscriptions = new Map<string, TrackSubscription>()
 
@@ -116,6 +120,22 @@ export class SfuMediaBridge {
       this.mySessionId = await this.restClient.createAgentSession()
       this.pc = await this.createPeerConnection()
       this.pc.onTrack.subscribe((track) => this.handleIncomingTrack(track))
+      this.pc.prepareReceiveOnlyAudio()
+      this.pc.prepareServerEventsDataChannel()
+      const initialOffer = await this.pc.createOffer()
+      await this.pc.setLocalDescription(initialOffer)
+      const transport = await this.restClient.establishDataChannelTransport(
+        this.mySessionId,
+        initialOffer
+      )
+      if (!transport.sessionDescription)
+        throw new Error("missing_datachannel_session_description")
+      await this.pc.setRemoteDescription(transport.sessionDescription)
+      if (transport.requiresImmediateRenegotiation) {
+        const answer = await this.pc.createAnswer()
+        await this.pc.setLocalDescription(answer)
+        await this.restClient.renegotiate(this.mySessionId, answer)
+      }
       await this.poll()
       this.pollTimer = setInterval(() => {
         void this.poll().catch(() => undefined)
@@ -223,24 +243,68 @@ export class SfuMediaBridge {
     // enqueueNegotiation pattern for this exact protocol.
     const run = this.negotiationQueue.then(async () => {
       if (this.stopped || !this.pc || !this.mySessionId) return
-      try {
+      const incomingTrack = new Promise<MediaTrackLike>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          if (this.pendingSubscription?.key !== key) return
+          this.pendingSubscription = null
+          reject(new Error("incoming_audio_track_timeout"))
+        }, INCOMING_TRACK_TIMEOUT_MS)
         this.pendingSubscription = {
           key,
           participantId: participant.participantId,
           participantName: participant.name,
           trackName,
+          resolve: (track) => {
+            clearTimeout(timeout)
+            resolve(track)
+          },
+          reject: (error) => {
+            clearTimeout(timeout)
+            reject(error)
+          },
         }
+      })
+      // subscribeTrack() can fail before the SDP offer has a chance to
+      // produce an onTrack callback. Keep a rejection handler attached from
+      // creation time so cancelling this deferred promise in the catch block
+      // below cannot become an unhandled rejection and terminate the daemon.
+      // The awaited path still observes the original rejection normally.
+      void incomingTrack.catch(() => undefined)
+      try {
         const offer = await this.restClient.subscribeTrack(
           this.mySessionId,
           participant.sessionId,
           trackName
         )
+        if (this.pendingSubscription?.key === key)
+          this.pendingSubscription.expectedMid = offer.mid
         await this.pc.setRemoteDescription(offer)
         const answer = await this.pc.createAnswer()
         await this.pc.setLocalDescription(answer)
         await this.restClient.renegotiate(this.mySessionId, answer)
+        // Do not let the next queued negotiation overwrite the binding for
+        // this one. Werift may deliver onTrack asynchronously after the SDP
+        // calls resolve; waiting here keeps one pending subscription per
+        // negotiation and preserves speaker attribution.
+        const track = await incomingTrack
+        this.bindIncomingTrack(
+          {
+            key,
+            participantId: participant.participantId,
+            participantName: participant.name,
+            trackName,
+          },
+          track
+        )
       } catch (error) {
-        this.pendingSubscription = null
+        if (this.pendingSubscription?.key === key) {
+          this.pendingSubscription.reject(
+            error instanceof Error
+              ? error
+              : new Error("track_subscription_failed")
+          )
+          this.pendingSubscription = null
+        }
         this.subscriptions.delete(key)
         throw error
       }
@@ -250,9 +314,24 @@ export class SfuMediaBridge {
   }
 
   private handleIncomingTrack(track: MediaTrackLike): void {
+    if (track.kind !== "audio") return
     const pending = this.pendingSubscription
+    if (!pending) return
+    // Werift may surface an already-negotiated track before the newly added
+    // m-line during renegotiation. Never attach that callback to the current
+    // participant just because it arrived first; use the negotiated mid.
+    if (pending.expectedMid && track.mid !== pending.expectedMid) return
     this.pendingSubscription = null
-    if (!pending || track.kind !== "audio") return
+    pending.resolve(track)
+  }
+
+  private bindIncomingTrack(
+    pending: Omit<
+      NonNullable<SfuMediaBridge["pendingSubscription"]>,
+      "resolve" | "reject"
+    >,
+    track: MediaTrackLike
+  ): void {
     const key = pending.key
     const subscription = this.subscriptions.get(key)
     if (!subscription) return

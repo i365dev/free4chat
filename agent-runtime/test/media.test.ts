@@ -23,9 +23,19 @@ function fakeHandle() {
  * calls, so tests can simulate a Human joining/leaving/reconnecting. */
 class FakeRestClient implements SfuRestClientLike {
   participants: RoomMediaParticipant[] = []
-  subscribeCalls: Array<{ sessionId: string; trackName: string }> = []
+  subscribeCalls: Array<{
+    sessionId: string
+    trackName: string
+  }> = []
+  subscribeMids: string[] = []
+  subscribeErrors = new Map<string, Error>()
+  establishTransportCalls: Array<{
+    sessionId: string
+    offer: SessionDescriptionLike
+  }> = []
   renegotiateCalls = 0
   createAgentSessionError: Error | undefined
+  establishTransportError: Error | undefined
   roomMediaError: Error | undefined
   createAgentSessionCalls = 0
 
@@ -33,6 +43,16 @@ class FakeRestClient implements SfuRestClientLike {
     this.createAgentSessionCalls += 1
     if (this.createAgentSessionError) throw this.createAgentSessionError
     return "agent-session-1"
+  }
+  async establishDataChannelTransport(
+    mySessionId: string,
+    offer: SessionDescriptionLike
+  ) {
+    this.establishTransportCalls.push({ sessionId: mySessionId, offer })
+    if (this.establishTransportError) throw this.establishTransportError
+    return {
+      sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
+    }
   }
   async roomMedia(): Promise<RoomMediaParticipant[]> {
     if (this.roomMediaError) throw this.roomMediaError
@@ -43,8 +63,16 @@ class FakeRestClient implements SfuRestClientLike {
     remoteSessionId: string,
     trackName: string
   ): Promise<SessionDescriptionLike> {
-    this.subscribeCalls.push({ sessionId: remoteSessionId, trackName })
-    return { type: "offer", sdp: "fake-offer" }
+    this.subscribeCalls.push({
+      sessionId: remoteSessionId,
+      trackName,
+    })
+    const error = this.subscribeErrors.get(trackName)
+    if (error) throw error
+    const mid = this.subscribeMids[this.subscribeCalls.length - 1]
+    return mid
+      ? { type: "offer", sdp: "fake-sdp", mid }
+      : { type: "offer", sdp: "fake-sdp" }
   }
   async renegotiate(): Promise<void> {
     this.renegotiateCalls += 1
@@ -63,6 +91,9 @@ type RtpCallback = (packet: {
  * `lastRtpCallback` so a test can drive fake packets through it. */
 class FakePeerConnection implements PeerConnectionLike {
   closed = false
+  receiveOnlyAudioPrepared = false
+  serverEventsDataChannelPrepared = false
+  localDescriptions: SessionDescriptionLike[] = []
   codec: MediaCodecLike | undefined
   lastRtpCallback: RtpCallback | undefined
   private trackHandlers: Array<(track: MediaTrackLike) => void> = []
@@ -70,6 +101,16 @@ class FakePeerConnection implements PeerConnectionLike {
     subscribe: (callback: (track: MediaTrackLike) => void) => {
       this.trackHandlers.push(callback)
     },
+  }
+
+  prepareReceiveOnlyAudio(): void {
+    this.receiveOnlyAudioPrepared = true
+  }
+  prepareServerEventsDataChannel(): void {
+    this.serverEventsDataChannelPrepared = true
+  }
+  async createOffer(): Promise<SessionDescriptionLike> {
+    return { type: "offer", sdp: "fake-initial-offer" }
   }
 
   async setRemoteDescription(): Promise<void> {
@@ -87,10 +128,88 @@ class FakePeerConnection implements PeerConnectionLike {
   async createAnswer(): Promise<SessionDescriptionLike> {
     return { type: "answer", sdp: "fake-answer" }
   }
+  async setLocalDescription(
+    description: SessionDescriptionLike
+  ): Promise<void> {
+    this.localDescriptions.push(description)
+  }
+  close(): void {
+    this.closed = true
+  }
+}
+
+/** Production werift can deliver onTrack after the SDP calls resolve. This
+ * fake deliberately delays each event so attribution tests do not accidentally
+ * rely on the synchronous behavior above. */
+class DelayedPeerConnection implements PeerConnectionLike {
+  private readonly trackHandlers: Array<(track: MediaTrackLike) => void> = []
+  private readonly pendingTracks: MediaTrackLike[] = []
+  readonly rtpCallbacks: RtpCallback[] = []
+  closed = false
+  codec: MediaCodecLike = {
+    mimeType: "audio/opus",
+    clockRate: 48000,
+    channels: 2,
+  }
+
+  onTrack = {
+    subscribe: (callback: (track: MediaTrackLike) => void) => {
+      this.trackHandlers.push(callback)
+    },
+  }
+
+  prepareReceiveOnlyAudio(): void {}
+  prepareServerEventsDataChannel(): void {}
+  async createOffer(): Promise<SessionDescriptionLike> {
+    return { type: "offer", sdp: "fake-initial-offer" }
+  }
+
+  async setRemoteDescription(): Promise<void> {
+    const track: MediaTrackLike = {
+      kind: "audio",
+      codec: this.codec,
+      onReceiveRtp: {
+        subscribe: (handler) => {
+          this.rtpCallbacks.push(handler as RtpCallback)
+        },
+      },
+    }
+    this.pendingTracks.push(track)
+  }
+
+  emitNextTrack(mid?: string): void {
+    const track = this.pendingTracks.shift()
+    assert.ok(track, "expected a pending delayed track")
+    if (!track) return
+    track.mid = mid
+    for (const handler of this.trackHandlers) handler(track)
+  }
+
+  /** Emits the currently pending track without consuming it. This models a
+   * stale onTrack callback arriving before the newly negotiated m-line. */
+  emitTrackWithMid(mid: string): void {
+    const track = this.pendingTracks[0]
+    assert.ok(track, "expected a pending delayed track")
+    if (!track) return
+    track.mid = mid
+    for (const handler of this.trackHandlers) handler(track)
+  }
+
+  async createAnswer(): Promise<SessionDescriptionLike> {
+    return { type: "answer", sdp: "fake-answer" }
+  }
   async setLocalDescription(): Promise<void> {}
   close(): void {
     this.closed = true
   }
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  assert.fail("condition did not become true")
 }
 
 function humanTrack(
@@ -201,6 +320,14 @@ test("subscribes to a newly discovered Human audio track and reports it started"
     sessionId: "sess-1",
     trackName: "audio-1",
   })
+  assert.equal(pc.receiveOnlyAudioPrepared, true)
+  assert.equal(pc.serverEventsDataChannelPrepared, true)
+  assert.deepEqual(restClient.establishTransportCalls, [
+    {
+      sessionId: "agent-session-1",
+      offer: { type: "offer", sdp: "fake-initial-offer" },
+    },
+  ])
   assert.equal(restClient.renegotiateCalls, 1)
   const started = events.find((e) => e.type === "audioTrackStarted")
   assert.ok(started)
@@ -277,6 +404,116 @@ test("two distinct Human participants remain independently attributable", async 
     "human-1",
     "human-2",
   ])
+  bridge.stop()
+})
+
+test("a stale remote track failure does not terminate the bridge or block other tracks", async () => {
+  const restClient = new FakeRestClient()
+  restClient.participants = [
+    humanTrack("gone", "expired-session", "audio-gone"),
+    humanTrack("live", "live-session", "audio-live"),
+  ]
+  restClient.subscribeErrors.set(
+    "audio-gone",
+    new Error("SFU request failed (410)")
+  )
+  const pc = new FakePeerConnection()
+  const { bridge, events } = makeBridge(restClient, pc)
+
+  await bridge.start()
+
+  assert.deepEqual(
+    restClient.subscribeCalls.map(({ sessionId, trackName }) => ({
+      sessionId,
+      trackName,
+    })),
+    [
+      { sessionId: "expired-session", trackName: "audio-gone" },
+      { sessionId: "live-session", trackName: "audio-live" },
+    ]
+  )
+  assert.equal(pc.closed, false)
+  assert.deepEqual(
+    events
+      .filter((event) => event.type === "audioTrackStarted")
+      .map((event) => event.participantId),
+    ["live"]
+  )
+  bridge.stop()
+})
+
+test("delayed onTrack events preserve attribution across serialized subscriptions", async () => {
+  const restClient = new FakeRestClient()
+  restClient.participants = [
+    humanTrack("human-1", "sess-1"),
+    humanTrack("human-2", "sess-2"),
+  ]
+  const pc = new DelayedPeerConnection()
+  const frames: AudioSource[] = []
+  const { bridge } = makeBridge(restClient, pc, undefined, (source) => {
+    frames.push(source)
+  })
+
+  const start = bridge.start()
+  await waitFor(() => restClient.subscribeCalls.length === 1)
+  pc.emitNextTrack("mid-1")
+  await waitFor(() => restClient.subscribeCalls.length === 2)
+  pc.emitNextTrack("mid-2")
+  await start
+
+  assert.equal(pc.rtpCallbacks.length, 2)
+  pc.rtpCallbacks[0]?.({
+    payload: new Uint8Array([1]),
+    header: { timestamp: 1 },
+  })
+  pc.rtpCallbacks[1]?.({
+    payload: new Uint8Array([2]),
+    header: { timestamp: 2 },
+  })
+  assert.deepEqual(
+    frames.map((source) => source.participantId),
+    ["human-1", "human-2"]
+  )
+  bridge.stop()
+})
+
+test("track attribution ignores stale onTrack callbacks from another mid", async () => {
+  const restClient = new FakeRestClient()
+  restClient.participants = [
+    humanTrack("human-1", "sess-1"),
+    humanTrack("human-2", "sess-2"),
+  ]
+  restClient.subscribeMids = ["mid-1", "mid-2"]
+  const pc = new DelayedPeerConnection()
+  const frames: AudioSource[] = []
+  const { bridge } = makeBridge(restClient, pc, undefined, (source) => {
+    frames.push(source)
+  })
+
+  const start = bridge.start()
+  await waitFor(() => restClient.subscribeCalls.length === 1)
+  pc.emitTrackWithMid("old-mid")
+  assert.equal(restClient.subscribeCalls.length, 1)
+  pc.emitNextTrack("mid-1")
+  await waitFor(() => restClient.subscribeCalls.length === 2)
+  pc.emitTrackWithMid("mid-1")
+  assert.equal(restClient.subscribeCalls.length, 2)
+  pc.emitNextTrack("mid-2")
+  await start
+
+  assert.equal(pc.rtpCallbacks.length, 2)
+  pc.rtpCallbacks[0]?.({
+    payload: new Uint8Array([1]),
+    header: { timestamp: 1 },
+  })
+  pc.rtpCallbacks[1]?.({
+    payload: new Uint8Array([2]),
+    header: { timestamp: 2 },
+  })
+  assert.deepEqual(
+    frames.map((source) => source.participantId),
+    ["human-1", "human-2"]
+  )
   bridge.stop()
 })
 
@@ -414,6 +651,22 @@ test("failed start() (initial poll) leaves the bridge stopped, closes the peer c
   await bridge2.start()
   assert.equal(restClient.subscribeCalls.length, 1)
   bridge2.stop()
+})
+
+test("failed start() (transport bootstrap) closes the peer connection and is retryable", async () => {
+  const restClient = new FakeRestClient()
+  restClient.establishTransportError = new Error("boom: transport bootstrap")
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc)
+
+  await assert.rejects(() => bridge.start(), /boom: transport bootstrap/)
+  assert.equal(pc.closed, true)
+
+  restClient.establishTransportError = undefined
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  await bridge.start()
+  assert.equal(restClient.subscribeCalls.length, 1)
+  bridge.stop()
 })
 
 test("start() is a no-op while already running (does not create a second session)", async () => {

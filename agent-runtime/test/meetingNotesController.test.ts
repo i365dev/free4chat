@@ -38,6 +38,11 @@ class FakeRestClient implements SfuRestClientLike {
     if (this.createAgentSessionError) throw this.createAgentSessionError
     return "agent-session-1"
   }
+  async establishDataChannelTransport() {
+    return {
+      sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
+    }
+  }
   async roomMedia(): Promise<RoomMediaParticipant[]> {
     return this.participants
   }
@@ -50,6 +55,11 @@ class FakeRestClient implements SfuRestClientLike {
 class FakePeerConnection implements PeerConnectionLike {
   closed = false
   onTrack = { subscribe: () => undefined }
+  prepareReceiveOnlyAudio(): void {}
+  prepareServerEventsDataChannel(): void {}
+  async createOffer(): Promise<SessionDescriptionLike> {
+    return { type: "offer", sdp: "fake-initial-offer" }
+  }
   async setRemoteDescription(): Promise<void> {}
   async createAnswer(): Promise<SessionDescriptionLike> {
     return { type: "answer", sdp: "fake-answer" }

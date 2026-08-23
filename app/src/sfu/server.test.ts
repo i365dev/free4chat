@@ -176,6 +176,7 @@ describe("Origin policy is route-scoped, not global", () => {
     "agent-room-media",
     "tracks",
     "renegotiate",
+    "datachannels/establish",
   ]
   const missingOriginRejected = ["session"]
 

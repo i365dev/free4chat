@@ -44,6 +44,10 @@ const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
   "agent-room-media",
   "tracks",
   "renegotiate",
+  // The resident, subscribe-only Meeting Notes Runtime has no browser Origin
+  // but must establish its own WebRTC transport before it can pull Human
+  // tracks. The route still performs the normal token/session/grant checks.
+  "datachannels/establish",
 ])
 
 // A present-but-wrong Origin is always rejected on every route (a browser
