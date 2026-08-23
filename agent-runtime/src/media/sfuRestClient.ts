@@ -27,13 +27,30 @@ export interface DataChannelTransportLike {
   requiresImmediateRenegotiation?: boolean
 }
 
+/**
+ * DOM and werift descriptions are class instances. Cross the REST boundary
+ * with the browser's literal `{ type, sdp }` shape instead of relying on a
+ * library instance's JSON serialization.
+ */
+function sessionDescriptionPayload(description: SessionDescriptionLike): {
+  type: string
+  sdp: string
+} {
+  if (
+    typeof description.type !== "string" ||
+    typeof description.sdp !== "string"
+  )
+    throw new Error("invalid_session_description")
+  return { type: description.type, sdp: description.sdp }
+}
+
 /** The subset of SfuRestClient that SfuMediaBridge depends on — kept as an
  * interface so tests can inject a fake instead of doing real network I/O. */
 export interface SfuRestClientLike {
   createAgentSession(): Promise<string>
   establishDataChannelTransport(
     mySessionId: string,
-    offer: SessionDescriptionLike
+    offer?: SessionDescriptionLike
   ): Promise<DataChannelTransportLike>
   roomMedia(): Promise<RoomMediaParticipant[]>
   subscribeTrack(
@@ -104,13 +121,15 @@ export class SfuRestClient implements SfuRestClientLike {
    * no DataChannel payload is observed or forwarded by this Runtime. */
   async establishDataChannelTransport(
     mySessionId: string,
-    offer: SessionDescriptionLike
+    offer?: SessionDescriptionLike
   ): Promise<DataChannelTransportLike> {
     const data = await this.request("datachannels/establish", "POST", {
       ...this.base(),
       sessionId: mySessionId,
       dataChannel: { location: "remote", dataChannelName: "server-events" },
-      sessionDescription: offer,
+      ...(offer
+        ? { sessionDescription: sessionDescriptionPayload(offer) }
+        : {}),
     })
     const sessionDescription = data.sessionDescription as
       SessionDescriptionLike | undefined
@@ -176,7 +195,7 @@ export class SfuRestClient implements SfuRestClientLike {
     await this.request("renegotiate", "PUT", {
       ...this.base(),
       sessionId: mySessionId,
-      sessionDescription: answer,
+      sessionDescription: sessionDescriptionPayload(answer),
     })
   }
 }

@@ -15,11 +15,16 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
   })
 
   it("a 2xx response is confirmed success", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("", { status: 200 }))
-    )
+    let requestedUrl: string | undefined
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      requestedUrl = String(input)
+      return new Response("", { status: 200 })
+    })
+    vi.stubGlobal("fetch", fetchMock)
     await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(true)
+    expect(requestedUrl).toBe(
+      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/sess-1/tracks/close"
+    )
   })
 
   it("a 401 response is not treated as success", async () => {

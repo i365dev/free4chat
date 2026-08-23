@@ -28,12 +28,6 @@ export interface MediaTrackLike {
  * of a real WebRTC/ICE/DTLS stack.
  */
 export interface PeerConnectionLike {
-  /** Adds the Runtime's single subscribe-only audio m-line before its first
-   * SDP offer. This is never a publishing track. */
-  prepareReceiveOnlyAudio(): void
-  /** Mirrors the browser's initial SFU transport setup. The Runtime never
-   * consumes or publishes application messages on this channel. */
-  prepareServerEventsDataChannel(): void
   createOffer(): Promise<SessionDescriptionLike>
   setRemoteDescription(description: SessionDescriptionLike): Promise<void>
   createAnswer(): Promise<SessionDescriptionLike>
@@ -49,14 +43,14 @@ export type PeerConnectionFactory = () =>
  * that file has zero direct werift dependency and stays fully unit-testable. */
 export async function createWeriftPeerConnection(): Promise<PeerConnectionLike> {
   const { RTCPeerConnection } = await import("werift")
-  const pc = new RTCPeerConnection({})
+  // Match Cloudflare's official DataChannel example rather than werift's
+  // defaults (Google STUN + max-compat). This connection receives the SFU's
+  // server-offer transport bootstrap before any MediaBridge subscription.
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
+    bundlePolicy: "max-bundle",
+  })
   return {
-    prepareReceiveOnlyAudio: () => {
-      pc.addTransceiver("audio", { direction: "recvonly" })
-    },
-    prepareServerEventsDataChannel: () => {
-      pc.createDataChannel("server-events")
-    },
     createOffer: async () =>
       (await pc.createOffer()) as unknown as SessionDescriptionLike,
     setRemoteDescription: async (description) => {

@@ -31,7 +31,7 @@ class FakeRestClient implements SfuRestClientLike {
   subscribeErrors = new Map<string, Error>()
   establishTransportCalls: Array<{
     sessionId: string
-    offer: SessionDescriptionLike
+    offer?: SessionDescriptionLike
   }> = []
   renegotiateCalls = 0
   createAgentSessionError: Error | undefined
@@ -46,7 +46,7 @@ class FakeRestClient implements SfuRestClientLike {
   }
   async establishDataChannelTransport(
     mySessionId: string,
-    offer: SessionDescriptionLike
+    offer?: SessionDescriptionLike
   ) {
     this.establishTransportCalls.push({ sessionId: mySessionId, offer })
     if (this.establishTransportError) throw this.establishTransportError
@@ -91,8 +91,6 @@ type RtpCallback = (packet: {
  * `lastRtpCallback` so a test can drive fake packets through it. */
 class FakePeerConnection implements PeerConnectionLike {
   closed = false
-  receiveOnlyAudioPrepared = false
-  serverEventsDataChannelPrepared = false
   localDescriptions: SessionDescriptionLike[] = []
   codec: MediaCodecLike | undefined
   lastRtpCallback: RtpCallback | undefined
@@ -103,12 +101,6 @@ class FakePeerConnection implements PeerConnectionLike {
     },
   }
 
-  prepareReceiveOnlyAudio(): void {
-    this.receiveOnlyAudioPrepared = true
-  }
-  prepareServerEventsDataChannel(): void {
-    this.serverEventsDataChannelPrepared = true
-  }
   async createOffer(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
@@ -158,8 +150,6 @@ class DelayedPeerConnection implements PeerConnectionLike {
     },
   }
 
-  prepareReceiveOnlyAudio(): void {}
-  prepareServerEventsDataChannel(): void {}
   async createOffer(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
@@ -320,12 +310,9 @@ test("subscribes to a newly discovered Human audio track and reports it started"
     sessionId: "sess-1",
     trackName: "audio-1",
   })
-  assert.equal(pc.receiveOnlyAudioPrepared, true)
-  assert.equal(pc.serverEventsDataChannelPrepared, true)
   assert.deepEqual(restClient.establishTransportCalls, [
     {
       sessionId: "agent-session-1",
-      offer: { type: "offer", sdp: "fake-initial-offer" },
     },
   ])
   assert.equal(restClient.renegotiateCalls, 1)

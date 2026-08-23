@@ -120,13 +120,11 @@ export class SfuMediaBridge {
       this.mySessionId = await this.restClient.createAgentSession()
       this.pc = await this.createPeerConnection()
       this.pc.onTrack.subscribe((track) => this.handleIncomingTrack(track))
-      this.pc.prepareReceiveOnlyAudio()
-      this.pc.prepareServerEventsDataChannel()
-      const initialOffer = await this.pc.createOffer()
-      await this.pc.setLocalDescription(initialOffer)
+      // Cloudflare's official example supports the server-offer bootstrap:
+      // establish first, then answer its SDP. This avoids relying on a
+      // client-created DataChannel offer before the transport exists.
       const transport = await this.restClient.establishDataChannelTransport(
-        this.mySessionId,
-        initialOffer
+        this.mySessionId
       )
       if (!transport.sessionDescription)
         throw new Error("missing_datachannel_session_description")

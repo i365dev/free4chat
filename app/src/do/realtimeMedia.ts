@@ -59,7 +59,7 @@ export async function closeRealtimeTracks(
   if (!credentials) return false
   try {
     const response = await fetch(
-      `https://rtc.live.cloudflare.com/apps/${encodeURIComponent(
+      `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(
         credentials.appId
       )}/sessions/${encodeURIComponent(sessionId)}/tracks/close`,
       {
