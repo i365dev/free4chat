@@ -103,3 +103,27 @@ test("agent protocol uses the pinned doctor fallback for npx bootstrap", async (
   assert.match(protocol, /npx -y @i365dev\/free4chat-agent@0\.1\.0 doctor/)
   assert.match(protocol, /When the `free4chat-agent` CLI is already installed/)
 })
+
+test("agent protocol hands speech setup to the local runtime without collecting secrets", async () => {
+  const protocol = await readFile(
+    new URL("../../app/public/agent.md", import.meta.url),
+    "utf8"
+  )
+  assert.match(protocol, /https:\/\/www\.free4\.chat\/speech\.md/)
+  assert.match(
+    protocol,
+    /Never ask the human to paste[\s\S]*speech-provider credential/
+  )
+
+  const speech = await readFile(
+    new URL("../../app/public/speech.md", import.meta.url),
+    "utf8"
+  )
+  assert.match(speech, /speech status --json/)
+  assert.match(speech, /speech doctor --json/)
+  assert.match(
+    speech,
+    /Never ask the human to paste a speech-provider credential/
+  )
+  assert.doesNotMatch(speech, /(?:sk-|api[_-]?key\s*[:=]|credentials\.json)/i)
+})

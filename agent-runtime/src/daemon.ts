@@ -1,6 +1,5 @@
 import { chmod, mkdir, rm } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
@@ -12,20 +11,15 @@ import {
 } from "./adapters/index.js"
 import { ResidentRoomRuntime } from "./core/runtime.js"
 import { InstanceRegistry } from "./core/instanceRegistry.js"
+import { runtimeDirectory, socketPath } from "./core/paths.js"
 import { McpFree4ChatClient } from "./free4chat/client.js"
+
+export { runtimeDirectory, socketPath } from "./core/paths.js"
 
 interface ResidentInstance {
   instanceId: string
   roomId: string
   runtime: ResidentRoomRuntime
-}
-
-export function runtimeDirectory(): string {
-  return process.env.FREE4CHAT_AGENT_DIR || join(homedir(), ".free4chat-agent")
-}
-
-export function socketPath(): string {
-  return join(runtimeDirectory(), "daemon.sock")
 }
 
 function optionalMilliseconds(name: string): number | undefined {

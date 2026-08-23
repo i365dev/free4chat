@@ -3,7 +3,7 @@ import type { PeerConnectionFactory } from "./peerConnectionLike.js"
 import type { DecodedParticipantHandle } from "./participantHandle.js"
 import { SfuMediaBridge } from "./sfuMediaBridge.js"
 import type { SfuRestClientLike } from "./sfuRestClient.js"
-import type { MediaBridgeEventHandler } from "./types.js"
+import type { AudioFrameHandler, MediaBridgeEventHandler } from "./types.js"
 import type { Free4ChatClient } from "../types.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
@@ -17,6 +17,7 @@ export interface MeetingNotesControllerOptions {
   mcpUrl: string
   handle: DecodedParticipantHandle
   onEvent: MediaBridgeEventHandler
+  onAudioFrame?: AudioFrameHandler
   pollIntervalMs?: number
   /** Injectable for tests. */
   createBridge?: (handle: DecodedParticipantHandle) => SfuMediaBridge
@@ -162,6 +163,7 @@ export class MeetingNotesController {
         mcpUrl: this.options.mcpUrl,
         handle: this.options.handle,
         onEvent: this.options.onEvent,
+        onAudioFrame: this.options.onAudioFrame,
         createPeerConnection: this.createPeerConnection,
         restClient: this.options.restClient,
       })

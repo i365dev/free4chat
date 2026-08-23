@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 import { AgentDaemon, ensureDaemon, sendIpc } from "./daemon.js"
 import { collectDoctorReport, formatDoctorReport } from "./doctor.js"
+import { runSpeechCommand } from "./speech/cli.js"
+import { redactSecrets } from "./speech/redaction.js"
 
 function usage(): never {
   console.error(`Usage:
   free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name>
   free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name>
   free4chat-agent doctor [--json]
+  free4chat-agent speech status [--json]
+  free4chat-agent speech doctor [--json]
+  free4chat-agent speech setup <provider>
   free4chat-agent status
   free4chat-agent leave <instance-id>
   free4chat-agent stop`)
@@ -64,6 +69,10 @@ async function main(): Promise<void> {
     )
     return
   }
+  if (command === "speech") {
+    await runSpeechCommand(args)
+    return
+  }
   if (command === "status") {
     await ensureDaemon()
     console.log(JSON.stringify(await sendIpc({ op: "status" }), null, 2))
@@ -87,7 +96,9 @@ async function main(): Promise<void> {
 }
 
 function formatCliError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = redactSecrets(
+    error instanceof Error ? error.message : String(error)
+  )
   if (/authentication required|not logged in/i.test(message))
     return "Harness authentication is required. Authenticate the selected Harness locally, then retry."
   if (/ENOENT|not found|spawn .* failed/i.test(message))

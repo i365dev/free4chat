@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import type {
+  MediaCodecLike,
   MediaTrackLike,
   PeerConnectionLike,
 } from "../src/media/peerConnectionLike.js"
@@ -12,6 +13,7 @@ import type {
 } from "../src/media/sfuRestClient.js"
 import { SfuMediaBridge } from "../src/media/sfuMediaBridge.js"
 import type { MediaBridgeEvent } from "../src/media/types.js"
+import type { AudioFrame, AudioSource } from "../src/media/types.js"
 
 function fakeHandle() {
   return { room: "room-1", participantId: "agent-1", participantToken: "t" }
@@ -61,6 +63,7 @@ type RtpCallback = (packet: {
  * `lastRtpCallback` so a test can drive fake packets through it. */
 class FakePeerConnection implements PeerConnectionLike {
   closed = false
+  codec: MediaCodecLike | undefined
   lastRtpCallback: RtpCallback | undefined
   private trackHandlers: Array<(track: MediaTrackLike) => void> = []
   onTrack = {
@@ -72,6 +75,7 @@ class FakePeerConnection implements PeerConnectionLike {
   async setRemoteDescription(): Promise<void> {
     const track: MediaTrackLike = {
       kind: "audio",
+      codec: this.codec,
       onReceiveRtp: {
         subscribe: (callback) => {
           this.lastRtpCallback = callback as RtpCallback
@@ -105,7 +109,8 @@ function humanTrack(
 function makeBridge(
   restClient: FakeRestClient,
   pc: FakePeerConnection,
-  now?: () => number
+  now?: () => number,
+  onAudioFrame?: (source: AudioSource, frame: AudioFrame) => void
 ) {
   const events: MediaBridgeEvent[] = []
   const bridge = new SfuMediaBridge({
@@ -115,9 +120,73 @@ function makeBridge(
     restClient,
     createPeerConnection: () => pc,
     ...(now ? { now } : {}),
+    ...(onAudioFrame ? { onAudioFrame } : {}),
   })
   return { bridge, events }
 }
+
+test("raw negotiated Opus reaches only the dedicated audio callback with attribution and copied bytes", async () => {
+  const restClient = new FakeRestClient()
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  const pc = new FakePeerConnection()
+  pc.codec = { mimeType: "audio/opus", clockRate: 48000, channels: 2 }
+  const frames: Array<{ source: AudioSource; frame: AudioFrame }> = []
+  const { bridge, events } = makeBridge(
+    restClient,
+    pc,
+    undefined,
+    (source, frame) => frames.push({ source, frame })
+  )
+
+  await bridge.start()
+  const rtp = pc.lastRtpCallback
+  assert.ok(rtp)
+  if (!rtp) return
+  const payload = new Uint8Array([1, 2, 3])
+  rtp({ payload, header: { timestamp: 480 } })
+  payload[0] = 99
+
+  assert.equal(frames.length, 1)
+  assert.deepEqual(frames[0]?.source, {
+    participantId: "human-1",
+    participantName: "human-1",
+    trackName: "audio-1",
+  })
+  assert.equal(frames[0]?.frame.codec, "opus")
+  assert.equal(frames[0]?.frame.sampleRateHz, 48000)
+  assert.equal(frames[0]?.frame.channels, 2)
+  assert.equal(frames[0]?.frame.timestampMs, 10)
+  assert.deepEqual(
+    [...((frames[0]?.frame.data ?? new Uint8Array()) as Uint8Array)],
+    [1, 2, 3]
+  )
+  assert.equal(
+    events.some((event) => "data" in event),
+    false
+  )
+  assert.equal(
+    events.filter((event) => event.type === "audioFrameStats").length,
+    1
+  )
+  bridge.stop()
+})
+
+test("raw audio callback is omitted when negotiated metadata is unavailable", async () => {
+  const restClient = new FakeRestClient()
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  const pc = new FakePeerConnection()
+  let callbacks = 0
+  const { bridge } = makeBridge(restClient, pc, undefined, () => {
+    callbacks += 1
+  })
+  await bridge.start()
+  pc.lastRtpCallback?.({
+    payload: new Uint8Array([1]),
+    header: { timestamp: 1 },
+  })
+  assert.equal(callbacks, 0)
+  bridge.stop()
+})
 
 test("subscribes to a newly discovered Human audio track and reports it started", async () => {
   const restClient = new FakeRestClient()
