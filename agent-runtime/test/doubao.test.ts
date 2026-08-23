@@ -3,6 +3,7 @@ import { gunzipSync, gzipSync } from "node:zlib"
 import { test } from "node:test"
 
 import type { AudioFrame } from "../src/media/types.js"
+import type { SttEvent } from "../src/speech/types.js"
 import {
   buildInitialRequest,
   createDoubaoHeaders,
@@ -126,6 +127,26 @@ function frameAudio(): AudioFrame {
   }
 }
 
+async function nextEvent(iterator: AsyncIterator<SttEvent>): Promise<SttEvent> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const result = await Promise.race([
+      iterator.next(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("timed out waiting for speech event")),
+          250
+        )
+      }),
+    ])
+    if (result.done || !result.value)
+      throw new Error("speech event stream ended unexpectedly")
+    return result.value
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 test("Doubao protocol uses current headers and JSON+gzip binary framing", () => {
   const headers = createDoubaoHeaders("api-secret", "request-id")
   assert.deepEqual(headers, {
@@ -222,4 +243,37 @@ test("Doubao session waits for protocol acknowledgement and normalizes semantic 
 
 test("Doubao response parser rejects malformed binary frames", () => {
   assert.throws(() => parseResponse(new Uint8Array([0x11])), /invalid Doubao/)
+})
+
+test("Doubao events drain every event from responses while already consuming", async () => {
+  FakeWebSocket.instances.length = 0
+  const provider = new DoubaoSttProvider("api-secret", {
+    endpoint: "wss://example.invalid/asr",
+    webSocketFactory: (url, options) => new FakeWebSocket(url, options),
+    requestIdFactory: () => "request-id",
+  })
+  const session = await provider.createSession({
+    audio: { codec: "opus", rate: 48_000, channel: 2 },
+  })
+  const iterator = session.events()[Symbol.asyncIterator]()
+
+  // Start the consumer first, matching SpeechTranscriber's production
+  // ordering. The first response then synchronously emits two events while
+  // the iterator has only one waiter available.
+  const firstEvent = iterator.next()
+  await Promise.resolve()
+  await session.pushAudio(frameAudio())
+  const events = [(await firstEvent).value!]
+  events.push(await nextEvent(iterator))
+
+  // The next response also emits two events synchronously; both must remain
+  // observable rather than leaving the second one stranded in the queue.
+  await session.pushAudio(frameAudio())
+  events.push(await nextEvent(iterator))
+  events.push(await nextEvent(iterator))
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["speech_started", "partial", "committed", "speech_ended"]
+  )
+  await session.close()
 })

@@ -107,12 +107,16 @@ class EventQueue {
   }
 
   async *iterate(): AsyncIterable<SttEvent> {
-    while (this.events.length > 0) yield this.events.shift()!
-    while (!this.closed) {
+    while (true) {
+      if (this.events.length > 0) {
+        yield this.events.shift()!
+        continue
+      }
+      if (this.closed) return
       const next = await new Promise<IteratorResult<SttEvent>>((resolve) =>
         this.waiters.push(resolve)
       )
-      if (next.done) return
+      if (next.done) continue
       yield next.value
     }
   }
