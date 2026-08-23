@@ -8,7 +8,12 @@ import type {
   RoomMediaParticipant,
   SfuRestClientLike,
 } from "./sfuRestClient.js"
-import type { MediaBridgeEventHandler } from "./types.js"
+import type {
+  AudioFrameHandler,
+  AudioSource,
+  MediaBridgeEventHandler,
+} from "./types.js"
+import type { MediaTrackLike, RtpPacketLike } from "./peerConnectionLike.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
 /** Emit a bounded stats event at most this often per track, not per packet. */
@@ -20,6 +25,8 @@ export interface SfuMediaBridgeOptions {
   mcpUrl: string
   handle: DecodedParticipantHandle
   onEvent: MediaBridgeEventHandler
+  /** Optional raw-audio path; never included in MediaBridgeEvent diagnostics. */
+  onAudioFrame?: AudioFrameHandler
   pollIntervalMs?: number
   restClient?: SfuRestClientLike
   createPeerConnection?: PeerConnectionFactory
@@ -60,6 +67,7 @@ export class SfuMediaBridge {
   private readonly restClient: SfuRestClientLike
   private readonly createPeerConnection: PeerConnectionFactory
   private readonly onEvent: MediaBridgeEventHandler
+  private readonly onAudioFrame?: AudioFrameHandler
   private readonly pollIntervalMs: number
   private readonly now: () => number
 
@@ -78,6 +86,7 @@ export class SfuMediaBridge {
 
   constructor(options: SfuMediaBridgeOptions) {
     this.onEvent = options.onEvent
+    this.onAudioFrame = options.onAudioFrame
     this.now = options.now ?? Date.now
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.restClient =
@@ -240,17 +249,7 @@ export class SfuMediaBridge {
     return run
   }
 
-  private handleIncomingTrack(track: {
-    kind: "audio" | "video"
-    onReceiveRtp: {
-      subscribe(
-        callback: (packet: {
-          payload: Uint8Array
-          header: { timestamp: number }
-        }) => void
-      ): void
-    }
-  }): void {
+  private handleIncomingTrack(track: MediaTrackLike): void {
     const pending = this.pendingSubscription
     this.pendingSubscription = null
     if (!pending || track.kind !== "audio") return
@@ -267,6 +266,7 @@ export class SfuMediaBridge {
 
     track.onReceiveRtp.subscribe((packet) => {
       if (!this.subscriptions.has(key)) return
+      this.emitAudioFrame(pending, track, packet)
       subscription.frameCount += 1
       subscription.byteCount += packet.payload.byteLength
       if (subscription.firstTimestamp === undefined)
@@ -297,5 +297,48 @@ export class SfuMediaBridge {
         approxFrameDurationMs,
       })
     })
+  }
+
+  private emitAudioFrame(
+    pending: AudioSource,
+    track: MediaTrackLike,
+    packet: RtpPacketLike
+  ): void {
+    const handler = this.onAudioFrame
+    if (!handler) return
+    const codec = track.codec
+    if (!codec || !Number.isFinite(codec.clockRate) || codec.clockRate <= 0)
+      return
+    const mimeType = codec.mimeType.toLowerCase()
+    const normalizedCodec =
+      mimeType === "audio/opus"
+        ? "opus"
+        : mimeType === "audio/pcm_s16le"
+          ? "pcm_s16le"
+          : undefined
+    if (!normalizedCodec || !codec.channels || codec.channels < 1) return
+    const frame = {
+      codec: normalizedCodec,
+      sampleRateHz: codec.clockRate,
+      channels: codec.channels,
+      timestampMs: (packet.header.timestamp / codec.clockRate) * 1000,
+      // Buffer.prototype.slice() is a view, not a copy. Constructing a new
+      // Uint8Array keeps a speech consumer from observing a reused werift
+      // packet buffer.
+      data: new Uint8Array(packet.payload),
+    } as const
+    try {
+      handler(
+        {
+          participantId: pending.participantId,
+          participantName: pending.participantName,
+          trackName: pending.trackName,
+        },
+        frame
+      )
+    } catch {
+      // A future speech consumer is additive. Its failure must not interrupt
+      // diagnostics or the subscribe-only media bridge.
+    }
   }
 }

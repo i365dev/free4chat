@@ -5,8 +5,16 @@ export interface RtpPacketLike {
   header: { timestamp: number }
 }
 
+/** The negotiated codec metadata exposed by werift's MediaStreamTrack. */
+export interface MediaCodecLike {
+  mimeType: string
+  clockRate: number
+  channels?: number
+}
+
 export interface MediaTrackLike {
   kind: "audio" | "video"
+  codec?: MediaCodecLike
   onReceiveRtp: { subscribe(callback: (packet: RtpPacketLike) => void): void }
 }
 

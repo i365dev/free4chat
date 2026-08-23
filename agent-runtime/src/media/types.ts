@@ -43,3 +43,21 @@ export type MediaBridgeEvent =
   AudioTrackStarted | AudioFrameStats | AudioTrackEnded
 
 export type MediaBridgeEventHandler = (event: MediaBridgeEvent) => void
+
+/** Runtime-owned attribution that stays outside provider-specific speech code. */
+export interface AudioSource {
+  participantId: string
+  participantName: string
+  trackName: string
+}
+
+/** Canonical raw audio boundary. No decoding or resampling is implied. */
+export interface AudioFrame {
+  codec: "opus" | "pcm_s16le"
+  sampleRateHz: number
+  channels: number
+  timestampMs: number
+  data: Uint8Array
+}
+
+export type AudioFrameHandler = (source: AudioSource, frame: AudioFrame) => void
