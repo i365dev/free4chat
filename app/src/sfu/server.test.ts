@@ -116,9 +116,11 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
   })
 
   it("agent-session proceeds past the gate when explicitly enabled, and still enforces agent auth", async () => {
-    const fetchMock = vi.fn(async () =>
-      Response.json({ sessionId: "cf-session-1" })
-    )
+    let requestedUrl: string | undefined
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      requestedUrl = String(input)
+      return Response.json({ sessionId: "cf-session-1" })
+    })
     vi.stubGlobal("fetch", fetchMock)
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, okDoResponder)
     const res = await handleSfuRequest(
@@ -127,6 +129,9 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
     )
     expect(res.status).toBe(200)
     expect((await json(res)).sessionId).toBe("cf-session-1")
+    expect(requestedUrl).toBe(
+      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/new"
+    )
     vi.unstubAllGlobals()
   })
 

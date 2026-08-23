@@ -164,7 +164,7 @@ async function realtimeRequest(
   headers.set("Authorization", `Bearer ${credentials.appSecret}`)
   headers.set("Content-Type", "application/json")
   return fetch(
-    `https://rtc.live.cloudflare.com/apps/${encodeURIComponent(
+    `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(
       credentials.appId
     )}${path}`,
     { ...init, headers }

@@ -55,8 +55,6 @@ class FakeRestClient implements SfuRestClientLike {
 class FakePeerConnection implements PeerConnectionLike {
   closed = false
   onTrack = { subscribe: () => undefined }
-  prepareReceiveOnlyAudio(): void {}
-  prepareServerEventsDataChannel(): void {}
   async createOffer(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
