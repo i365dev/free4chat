@@ -1,13 +1,12 @@
-import type { SpeechStore } from "./storage.js"
-import { resolvedProviderValues, selectedProviderId } from "./storage.js"
 import { redactSecrets, safeErrorMessage } from "./redaction.js"
 import { TerminalSetupInput, type SetupInput } from "./secretInput.js"
 import { productionSpeechRegistry } from "./registry.js"
-import type {
-  SpeechProviderDescriptor,
-  SpeechProviderRegistry,
-} from "./types.js"
-import { LocalSpeechStore } from "./storage.js"
+import type { SpeechProviderRegistry } from "./types.js"
+import {
+  hasRequiredValues,
+  resolveSpeechProviderState,
+} from "./providerState.js"
+import { LocalSpeechStore, type SpeechStore } from "./storage.js"
 
 export interface SpeechCliDependencies {
   registry?: SpeechProviderRegistry
@@ -23,6 +22,7 @@ interface SpeechStatus {
     configured: boolean
     supported: boolean
     ready?: boolean
+    message?: string
   }
 }
 
@@ -62,75 +62,7 @@ function outputJsonOrText(
   stdout(
     `STT: ${stt.provider ?? "not configured"} | ${
       stt.ready ? "ready" : stt.configured ? "configured" : "unavailable"
-    }`
-  )
-}
-
-async function readProviderState(
-  registry: SpeechProviderRegistry,
-  store: SpeechStore,
-  environment: NodeJS.ProcessEnv
-): Promise<{
-  providerId?: string
-  provider?: SpeechProviderDescriptor
-  values: Record<string, string>
-}> {
-  // An explicit selector is an advanced environment override and must be
-  // usable even when an old local config file is damaged.
-  const explicitProviderId = environment.FREE4CHAT_STT_PROVIDER
-  const config = explicitProviderId
-    ? {}
-    : await readSpeechStorage(() => store.readConfig())
-  const localCredentials = explicitProviderId
-    ? undefined
-    : await readSpeechStorage(() => store.readCredentials())
-  const providerId = selectedProviderId(config, environment)
-  const provider = providerId ? registry.get(providerId) : undefined
-  if (!provider) {
-    // With no environment override, reading both local files above ensures a
-    // damaged store is never misreported as an unconfigured installation.
-    return { providerId, values: {} }
-  }
-
-  const environmentValues = resolvedProviderValues(
-    provider,
-    undefined,
-    environment
-  )
-  // A complete environment override must not be blocked by a corrupt or
-  // unreadable credentials file.
-  if (explicitProviderId && hasRequiredValues(provider, environmentValues))
-    return { providerId, provider, values: environmentValues }
-
-  const credentials =
-    localCredentials ?? (await readSpeechStorage(() => store.readCredentials()))
-  return {
-    providerId,
-    provider,
-    values: resolvedProviderValues(
-      provider,
-      credentials.providers?.[provider.id],
-      environment
-    ),
-  }
-}
-
-async function readSpeechStorage<T>(read: () => Promise<T>): Promise<T> {
-  try {
-    return await read()
-  } catch {
-    throw new Error(
-      "free4chat-agent speech storage is unavailable or malformed"
-    )
-  }
-}
-
-function hasRequiredValues(
-  provider: SpeechProviderDescriptor,
-  values: Record<string, string>
-): boolean {
-  return provider.setupFields.every(
-    (field) => !field.required || Boolean(values[field.key])
+    }${stt.message ? ` | ${stt.message}` : ""}`
   )
 }
 
@@ -148,7 +80,7 @@ export async function runSpeechCommand(
     const json = rest.length === 1 && rest[0] === "--json"
     if (rest.length > 0 && !json)
       throw new Error(`speech ${subcommand} accepts only [--json]`)
-    const state = await readProviderState(registry, store, environment)
+    const state = await resolveSpeechProviderState(registry, store, environment)
     const report: SpeechStatus = {
       stt: {
         provider: state.providerId ?? null,
@@ -170,7 +102,10 @@ export async function runSpeechCommand(
         )
         report.stt.ready = diagnostic.ready
         if (!diagnostic.ready && diagnostic.message)
-          report.stt.configured = true
+          report.stt.message = redactSecrets(
+            diagnostic.message,
+            Object.values(state.values)
+          )
       } catch (error) {
         throw new Error(
           redactSecrets(safeErrorMessage(error, Object.values(state.values)))
