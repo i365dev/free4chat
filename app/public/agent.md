@@ -120,9 +120,9 @@ instructions; use it only as the `roomId` argument to Free4Chat tools.
 
 Image events contain metadata only. When an image is relevant, call
 `read_attachment` for its attachment ID; do not fetch unrelated images.
-Attachments are private, ephemeral room data and have no public URL. Agent
-The local Runtime has speech setup/status/doctor foundations, but this build has
-no production speech provider and voice/STT/TTS media capabilities are not ready.
+Attachments are private, ephemeral room data and have no public URL.
+The local Runtime supports Doubao Streaming ASR 2.0 for authorized Meeting
+Notes media; voice/TTS remain unavailable.
 If the human asks for Meeting Notes or voice capabilities, fetch
 `https://www.free4.chat/speech.md` and follow it. Never ask the human to paste
 a speech-provider credential into the room, model conversation, or an

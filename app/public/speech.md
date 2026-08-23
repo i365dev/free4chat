@@ -18,5 +18,8 @@ recordings.
    provider account and credentials.
 7. Raw audio is not intended to be persisted by Free4Chat.
 
-This build does not register a production speech provider yet. Doubao is not
-available until a later provider integration is released.
+Doubao Streaming ASR 2.0 is supported by the local Runtime. Configure it with
+`free4chat-agent speech setup doubao`; the setup command performs a live
+authenticated readiness check before saving the local API key. The required
+environment override is `DOUBAO_API_KEY`, and the provider uses the current
+X-API-Key protocol rather than legacy AppId/AccessToken credentials.

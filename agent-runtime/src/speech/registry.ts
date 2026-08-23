@@ -2,6 +2,7 @@ import type {
   SpeechProviderDescriptor,
   SpeechProviderRegistry,
 } from "./types.js"
+import { doubaoSpeechProvider } from "./providers/doubao/descriptor.js"
 
 export class MutableSpeechProviderRegistry implements SpeechProviderRegistry {
   private readonly providers = new Map<string, SpeechProviderDescriptor>()
@@ -23,7 +24,8 @@ export class MutableSpeechProviderRegistry implements SpeechProviderRegistry {
   }
 }
 
-/** PR A intentionally ships with no production STT provider. */
 export function productionSpeechRegistry(): SpeechProviderRegistry {
-  return new MutableSpeechProviderRegistry()
+  const registry = new MutableSpeechProviderRegistry()
+  registry.register(doubaoSpeechProvider)
+  return registry
 }

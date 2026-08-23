@@ -5,7 +5,10 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 import type { AudioFrame } from "../src/media/types.js"
-import { MutableSpeechProviderRegistry } from "../src/speech/registry.js"
+import {
+  MutableSpeechProviderRegistry,
+  productionSpeechRegistry,
+} from "../src/speech/registry.js"
 import { runSpeechCommand } from "../src/speech/cli.js"
 import { LocalSpeechStore } from "../src/speech/storage.js"
 import type {
@@ -118,6 +121,22 @@ test("fake STT provider registers and its session consumes semantic audio events
   assert.equal(closed, 2)
 })
 
+test("production speech registry exposes Doubao with the local X-API-Key setup contract", () => {
+  const provider = productionSpeechRegistry().get("doubao")
+  assert.ok(provider)
+  assert.deepEqual(provider.setupFields, [
+    {
+      key: "apiKey",
+      label: "Doubao X-API-Key",
+      secret: true,
+      required: true,
+      environmentVariable: "DOUBAO_API_KEY",
+    },
+  ])
+  assert.equal(provider.capabilities.includes("stt"), true)
+  assert.equal(typeof provider.createSttProvider, "function")
+})
+
 test("local speech storage uses a private directory, private credentials, and atomic replacement", async () => {
   const directory = await mkdtemp(join(tmpdir(), "free4chat-speech-"))
   const store = new LocalSpeechStore(directory)
@@ -201,6 +220,30 @@ test("environment provider and complete environment credentials bypass corrupt l
     output[0] ?? "",
     /config-secret|credential-secret|secret-sentinel/
   )
+})
+
+test("complete environment credentials bypass corrupt credentials for a locally selected provider", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "free4chat-speech-"))
+  await writeFile(
+    join(directory, "config.json"),
+    JSON.stringify({ speech: { stt: { provider: "fake" } } }),
+    "utf8"
+  )
+  await writeFile(join(directory, "credentials.json"), "{broken:", "utf8")
+  const calls = { validate: 0, diagnose: 0 }
+  const registry = new MutableSpeechProviderRegistry()
+  registry.register(fakeProvider(calls))
+  const output: string[] = []
+
+  await runSpeechCommand(["doctor", "--json"], {
+    registry,
+    store: new LocalSpeechStore(directory),
+    environment: { FREE4CHAT_FAKE_TOKEN: "secret-sentinel" },
+    stdout: (text) => output.push(text),
+  })
+
+  assert.equal(calls.diagnose, 1)
+  assert.match(output[0] ?? "", /"ready": true/)
 })
 
 test("required local storage corruption is an explicit secret-free command error", async () => {

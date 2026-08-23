@@ -1,7 +1,15 @@
 import { Free4ChatClientError } from "../free4chat/client.js"
 import { MeetingNotesController } from "../media/meetingNotesController.js"
 import { decodeParticipantHandle } from "../media/participantHandle.js"
-import type { MediaBridgeEventHandler } from "../media/types.js"
+import type {
+  AudioFrameHandler,
+  MediaBridgeEventHandler,
+} from "../media/types.js"
+import {
+  createConfiguredSpeechTranscriber,
+  type SpeechRuntimeOptions,
+} from "../speech/runtime.js"
+import type { SpeechTranscriber } from "../speech/transcriber.js"
 import { EventBuffer, boundedPush } from "./eventBuffer.js"
 import type {
   Free4ChatClient,
@@ -36,6 +44,7 @@ export interface ResidentRuntimeOptions {
    * origin for the Meeting Notes media REST surface. */
   mcpUrl: string
   onMediaEvent?: MediaBridgeEventHandler
+  speech?: SpeechRuntimeOptions
   /** Injectable for tests. */
   createMeetingNotesController?: (
     handle: ReturnType<typeof decodeParticipantHandle>
@@ -93,6 +102,7 @@ export class ResidentRoomRuntime {
     details?: Record<string, string | number>
   ) => void
   private meetingNotes: MeetingNotesController | null = null
+  private transcriber: SpeechTranscriber | null = null
 
   constructor(private readonly options: ResidentRuntimeOptions) {
     this.log = options.log ?? defaultLog
@@ -153,9 +163,29 @@ export class ResidentRoomRuntime {
     const previous = this.meetingNotes
     this.meetingNotes = null
     if (previous) await previous.stop().catch(() => undefined)
+    const previousTranscriber = this.transcriber
+    this.transcriber = null
+    if (previousTranscriber)
+      await previousTranscriber.close().catch(() => undefined)
     if (!this.participantHandle || !this.participantId) return
     try {
       const handle = decodeParticipantHandle(this.participantHandle)
+      try {
+        this.transcriber = await createConfiguredSpeechTranscriber(
+          this.options.speech
+        )
+      } catch {
+        // Speech setup is an optional capability. Storage corruption or an
+        // incomplete provider config must never stop the text Agent joining.
+        this.log("speech_transcriber_unavailable")
+      }
+      const onMediaEvent: MediaBridgeEventHandler = (event) => {
+        this.transcriber?.handleMediaEvent(event)
+        this.options.onMediaEvent?.(event)
+      }
+      const onAudioFrame: AudioFrameHandler = (source, frame) => {
+        this.transcriber?.acceptAudio(source, frame)
+      }
       const controller =
         this.options.createMeetingNotesController?.(handle) ??
         new MeetingNotesController({
@@ -164,7 +194,8 @@ export class ResidentRoomRuntime {
           participantId: this.participantId,
           mcpUrl: this.options.mcpUrl,
           handle,
-          onEvent: this.options.onMediaEvent ?? (() => undefined),
+          onEvent: onMediaEvent,
+          onAudioFrame,
           log: this.log,
         })
       this.meetingNotes = controller
@@ -324,6 +355,10 @@ export class ResidentRoomRuntime {
     if (this.meetingNotes) {
       await this.meetingNotes.stop().catch(() => undefined)
       this.meetingNotes = null
+    }
+    if (this.transcriber) {
+      await this.transcriber.close().catch(() => undefined)
+      this.transcriber = null
     }
     try {
       await this.options.adapter.cancelTurn?.()
