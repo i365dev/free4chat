@@ -15,13 +15,26 @@ export interface RoomMediaParticipant {
 
 export interface SessionDescriptionLike {
   type: string
-  sdp: string
+  sdp?: string
+  /** Cloudflare's mid for the newly requested remote track, when this is an
+   * offer returned by /tracks. It is intentionally optional for test fakes and
+   * non-SFU descriptions. */
+  mid?: string
+}
+
+export interface DataChannelTransportLike {
+  sessionDescription?: SessionDescriptionLike
+  requiresImmediateRenegotiation?: boolean
 }
 
 /** The subset of SfuRestClient that SfuMediaBridge depends on — kept as an
  * interface so tests can inject a fake instead of doing real network I/O. */
 export interface SfuRestClientLike {
   createAgentSession(): Promise<string>
+  establishDataChannelTransport(
+    mySessionId: string,
+    offer: SessionDescriptionLike
+  ): Promise<DataChannelTransportLike>
   roomMedia(): Promise<RoomMediaParticipant[]>
   subscribeTrack(
     mySessionId: string,
@@ -86,6 +99,31 @@ export class SfuRestClient implements SfuRestClientLike {
     return data.sessionId
   }
 
+  /** Creates the initial WebRTC transport exactly as the browser does. The
+   * server-events DataChannel is transport plumbing only for Meeting Notes;
+   * no DataChannel payload is observed or forwarded by this Runtime. */
+  async establishDataChannelTransport(
+    mySessionId: string,
+    offer: SessionDescriptionLike
+  ): Promise<DataChannelTransportLike> {
+    const data = await this.request("datachannels/establish", "POST", {
+      ...this.base(),
+      sessionId: mySessionId,
+      dataChannel: { location: "remote", dataChannelName: "server-events" },
+      sessionDescription: offer,
+    })
+    const sessionDescription = data.sessionDescription as
+      SessionDescriptionLike | undefined
+    if (sessionDescription && !sessionDescription.sdp)
+      throw new Error("invalid_datachannel_session_description")
+    return {
+      ...(sessionDescription ? { sessionDescription } : {}),
+      ...(data.requiresImmediateRenegotiation === true
+        ? { requiresImmediateRenegotiation: true }
+        : {}),
+    }
+  }
+
   /**
    * Human participants' sessionId/trackName — deliberately not exposed by
    * the sanitized MCP room_info tool; this endpoint authenticates with the
@@ -120,7 +158,15 @@ export class SfuRestClient implements SfuRestClientLike {
     const description = data.sessionDescription as
       SessionDescriptionLike | undefined
     if (!description?.sdp) throw new Error("no_session_description")
-    return description
+    const tracks = Array.isArray(data.tracks) ? data.tracks : []
+    const mid =
+      tracks.length > 0 &&
+      typeof tracks[0] === "object" &&
+      tracks[0] !== null &&
+      typeof (tracks[0] as { mid?: unknown }).mid === "string"
+        ? (tracks[0] as { mid: string }).mid
+        : undefined
+    return mid ? { ...description, mid } : description
   }
 
   async renegotiate(
