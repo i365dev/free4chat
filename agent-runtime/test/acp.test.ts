@@ -145,6 +145,26 @@ test("room capability never enters the ACP prompt", () => {
   assert.match(rendered, /brief conversational reply/i)
 })
 
+test("ACP prompt includes only the explicitly supplied meeting transcript", () => {
+  const rendered = renderUntrustedRoomTurn({
+    ...input("what did I say?"),
+    meetingTranscript: {
+      path: ".meeting-notes/transcript.jsonl",
+      segments: [
+        {
+          participantId: "human-1",
+          speaker: "Human",
+          text: "The launch is Friday.",
+        },
+      ],
+    },
+  })
+  assert.match(rendered, /meeting transcript/i)
+  assert.match(rendered, /The launch is Friday\./)
+  assert.match(rendered, /do not inspect any other local file/i)
+  assert.equal(rendered.includes("participantHandle"), false)
+})
+
 test("ACP process exit fails promptly", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "free4chat-acp-"))
   const adapter = new AcpHarnessAdapter(

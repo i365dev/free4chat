@@ -1,4 +1,4 @@
-import { chmod, mkdir, rm } from "node:fs/promises"
+import { chmod, mkdir, readdir, rm } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
@@ -53,6 +53,7 @@ export class AgentDaemon {
       recursive: true,
       mode: 0o700,
     })
+    await removeStaleWorkspaces(join(runtimeDirectory(), "workspaces"))
     await rm(socketPath(), { force: true })
     this.server = createServer((socket) => this.handleSocket(socket))
     await new Promise<void>((resolve, reject) => {
@@ -125,6 +126,12 @@ export class AgentDaemon {
           cancelGraceMs,
         }),
         mcpUrl,
+        // Every join gets a fresh UUID workspace, and the transcript lives in
+        // a hidden child directory inside it. The workspace is never reused
+        // across rooms, so one resident Agent cannot leak speech memory from
+        // one room into another.
+        transcriptPath: join(workspace, ".meeting-notes", "transcript.jsonl"),
+        onRoomExpired: () => this.removeInstance(instanceId),
       })
       this.instances.set({ instanceId, roomId: request.room, runtime })
       this.workspaces.set(instanceId, workspace)
@@ -171,6 +178,26 @@ export class AgentDaemon {
     this.workspaces.delete(instanceId)
     await rm(workspace, { recursive: true, force: true })
   }
+
+  private async removeInstance(instanceId: string): Promise<void> {
+    this.instances.delete(instanceId)
+    await this.removeWorkspace(instanceId)
+  }
+}
+
+/**
+ * `ensureDaemon()` has already failed to reach the previous daemon before a
+ * new one is spawned. Its per-instance workspaces are therefore stale; remove
+ * them before accepting new joins so meeting transcripts cannot survive a
+ * daemon crash indefinitely.
+ */
+export async function removeStaleWorkspaces(workspaces: string): Promise<void> {
+  const entries = await readdir(workspaces, { withFileTypes: true })
+  await Promise.all(
+    entries.map((entry) =>
+      rm(join(workspaces, entry.name), { recursive: true, force: true })
+    )
+  )
 }
 
 async function waitForSocket(timeoutMs = 5000): Promise<void> {

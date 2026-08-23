@@ -1,5 +1,8 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
   decodeToolResult,
@@ -18,6 +21,7 @@ import type {
   RoomEvent,
   WaitResult,
 } from "../src/types.js"
+import { MeetingTranscriptStore } from "../src/speech/transcript.js"
 
 function event(sequence: number, addressed = false): RoomEvent {
   return {
@@ -134,6 +138,253 @@ test("cursor timeout continues and addressed turns are delivered once", async ()
   await runtime.stop()
   assert.deepEqual(sent, ["reply"])
   assert.ok(waits > 1)
+})
+
+test("transcript write failure does not consume an addressed text turn", async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), "free4chat-runtime-transcript-")
+  )
+  const transcript = new MeetingTranscriptStore(
+    join(directory, ".meeting-notes", "transcript.jsonl"),
+    {
+      writeFile: async () => {
+        throw new Error("private transcript contents")
+      },
+    }
+  )
+  transcript.record(
+    { participantId: "human-1", participantName: "Alice", trackName: "mic" },
+    "The launch is Friday."
+  )
+  void transcript.flush().catch(() => undefined)
+  const logs: string[] = []
+  const sent: string[] = []
+  let waits = 0
+  const client: Free4ChatClient = {
+    async connect() {},
+    async listTools() {
+      return []
+    },
+    async roomInfo() {
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: true,
+        meetingNotes: { active: false },
+      }
+    },
+    async joinRoom(): Promise<JoinResult> {
+      return {
+        participantId: "agent",
+        participantHandle: "secret",
+        cursor: 0,
+        expiresAt: Date.now() + 90_000,
+      }
+    },
+    async waitForEvents(_handle, cursor): Promise<WaitResult> {
+      waits += 1
+      if (waits === 1)
+        return {
+          events: [event(1, true)],
+          cursor: 1,
+          expiresAt: Date.now() + 90_000,
+        }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      return { events: [], cursor, expiresAt: Date.now() + 90_000 }
+    },
+    async sendText(_handle, text) {
+      sent.push(text)
+      return { sequence: 2 }
+    },
+    async readAttachment() {
+      throw new Error("not used")
+    },
+    async leaveRoom() {},
+    async close() {},
+  }
+  const adapter: HarnessAdapter = {
+    name: "pi",
+    async ensureSession() {},
+    async runTurn(input) {
+      assert.equal(input.events[0].text, "message-1")
+      assert.equal(input.meetingTranscript?.segments[0]?.speaker, "Alice")
+      return { text: "reply" }
+    },
+    async close() {},
+  }
+  const runtime = new ResidentRoomRuntime({
+    instanceId: "transcript-failure-instance",
+    roomId: "test",
+    name: "Agent",
+    client,
+    adapter,
+    transcriptStore: transcript,
+    log: (name) => logs.push(name),
+  })
+  try {
+    await runtime.start()
+    for (let attempt = 0; attempt < 20 && sent.length === 0; attempt += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.deepEqual(sent, ["reply"])
+    assert.ok(logs.includes("meeting_transcript_write_failed"))
+    assert.equal(logs.includes("private transcript contents"), false)
+  } finally {
+    await runtime.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("transcript initialization failure does not block joining or text turns", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "free4chat-runtime-init-"))
+  const transcriptPath = join(directory, ".meeting-notes", "transcript.jsonl")
+  await mkdir(transcriptPath, { recursive: true })
+  const logs: string[] = []
+  const sent: string[] = []
+  let waits = 0
+  const client: Free4ChatClient = {
+    async connect() {},
+    async listTools() {
+      return []
+    },
+    async roomInfo() {
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: true,
+        meetingNotes: { active: false },
+      }
+    },
+    async joinRoom(): Promise<JoinResult> {
+      return {
+        participantId: "agent",
+        participantHandle: "secret",
+        cursor: 0,
+        expiresAt: Date.now() + 90_000,
+      }
+    },
+    async waitForEvents(_handle, cursor): Promise<WaitResult> {
+      waits += 1
+      if (waits === 1)
+        return {
+          events: [event(1, true)],
+          cursor: 1,
+          expiresAt: Date.now() + 90_000,
+        }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      return { events: [], cursor, expiresAt: Date.now() + 90_000 }
+    },
+    async sendText(_handle, text) {
+      sent.push(text)
+      return { sequence: 2 }
+    },
+    async readAttachment() {
+      throw new Error("not used")
+    },
+    async leaveRoom() {},
+    async close() {},
+  }
+  const adapter: HarnessAdapter = {
+    name: "pi",
+    async ensureSession() {},
+    async runTurn(input) {
+      assert.equal(input.events[0].text, "message-1")
+      return { text: "reply" }
+    },
+    async close() {},
+  }
+  const runtime = new ResidentRoomRuntime({
+    instanceId: "transcript-init-failure-instance",
+    roomId: "test",
+    name: "Agent",
+    client,
+    adapter,
+    transcriptPath,
+    log: (name) => logs.push(name),
+  })
+  try {
+    await runtime.start()
+    for (let attempt = 0; attempt < 20 && sent.length === 0; attempt += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.deepEqual(sent, ["reply"])
+    assert.ok(logs.includes("meeting_transcript_init_failed"))
+    assert.equal(logs.includes("EISDIR"), false)
+  } finally {
+    await runtime.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("room expiry releases runtime resources and removes its transcript", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "free4chat-runtime-expiry-"))
+  const transcriptPath = join(directory, ".meeting-notes", "transcript.jsonl")
+  let expired = false
+  let adapterClosed = false
+  let clientClosed = false
+  const client: Free4ChatClient = {
+    async connect() {},
+    async listTools() {
+      return []
+    },
+    async roomInfo() {
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: true,
+        meetingNotes: { active: false },
+      }
+    },
+    async joinRoom(): Promise<JoinResult> {
+      return {
+        participantId: "agent",
+        participantHandle: "secret",
+        cursor: 0,
+        expiresAt: Date.now() + 90_000,
+      }
+    },
+    async waitForEvents(): Promise<WaitResult> {
+      throw new Free4ChatClientError("expired", "room_expired")
+    },
+    async sendText() {
+      return { sequence: 1 }
+    },
+    async readAttachment() {
+      throw new Error("not used")
+    },
+    async leaveRoom() {},
+    async close() {
+      clientClosed = true
+    },
+  }
+  const adapter: HarnessAdapter = {
+    name: "pi",
+    async ensureSession() {},
+    async runTurn() {
+      return {}
+    },
+    async close() {
+      adapterClosed = true
+    },
+  }
+  const runtime = new ResidentRoomRuntime({
+    instanceId: "expiry-instance",
+    roomId: "test",
+    name: "Agent",
+    client,
+    adapter,
+    transcriptPath,
+    onRoomExpired: () => {
+      expired = true
+    },
+  })
+  try {
+    await runtime.start()
+    for (let attempt = 0; attempt < 20 && !expired; attempt += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    assert.equal(expired, true)
+    assert.equal(adapterClosed, true)
+    assert.equal(clientClosed, true)
+    await assert.rejects(stat(transcriptPath))
+  } finally {
+    await runtime.stop()
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test("a timed-out Harness turn releases turn state without replaying the event", async () => {

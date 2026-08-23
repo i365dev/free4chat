@@ -1,7 +1,8 @@
 /**
  * MediaBridge Phase 0 (#82): a resident Agent's SFU audio-ingress
  * capability. Subscribe-only — an Agent never publishes audio in this
- * phase. No STT, no persistence, no cloud upload; see sfuMediaBridge.ts.
+ * phase. Raw audio remains transient; optional Runtime-owned STT may produce
+ * a bounded local transcript outside the Worker/DO; see sfuMediaBridge.ts.
  */
 
 export interface RoomAudioTrack {

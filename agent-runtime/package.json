@@ -37,6 +37,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
     "@modelcontextprotocol/client": "2.0.0",
+    "opus-decoder": "^0.7.11",
     "werift": "^0.24.4",
     "ws": "^8.21.3"
   },

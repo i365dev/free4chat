@@ -11,7 +11,11 @@ import type {
   StreamingSttSession,
 } from "./types.js"
 
-const MAX_FRAMES_PER_TRACK = 32
+// Keep enough bounded headroom for a normal provider handshake before the
+// first STT session is ready. At 48 kHz Opus, 128 RTP frames is roughly 2.5 s
+// of startup audio; once the session is ready, the send callback provides the
+// ongoing backpressure boundary.
+const MAX_FRAMES_PER_TRACK = 128
 
 export interface AttributedSttEvent {
   source: AudioSource

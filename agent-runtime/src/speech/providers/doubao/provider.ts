@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 
 import WebSocket from "ws"
+import { OpusDecoder } from "opus-decoder"
 
 import type { AudioFrame } from "../../../media/types.js"
 import type {
@@ -28,6 +29,7 @@ const CLOSE_TIMEOUT_MS = 2_000
 const MAX_PENDING_EVENTS = 256
 const FINAL_DRAIN_TIMEOUT_MS = 2_000
 const SEND_CALLBACK_TIMEOUT_MS = 5_000
+const DOUBAO_PCM_SAMPLE_RATE_HZ = 16_000
 
 export interface DoubaoWebSocketLike {
   readonly readyState: number
@@ -146,6 +148,8 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
     | undefined
   private readonly committed = new Set<string>()
   private readonly partials = new Map<string, string>()
+  private readonly opusDecoder?: OpusDecoder<16_000>
+  private decoderReleased = false
 
   constructor(
     private readonly apiKey: string,
@@ -155,6 +159,17 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
     this.webSocketFactory = options.webSocketFactory ?? defaultWebSocketFactory
     this.requestIdFactory = options.requestIdFactory ?? (() => randomUUID())
     this.requestOptions = options.requestOptions
+    const audio = this.requestOptions.audio as
+      Record<string, unknown> | undefined
+    if (audio?.codec === "opus") {
+      this.opusDecoder = new OpusDecoder<16_000>({
+        sampleRate: DOUBAO_PCM_SAMPLE_RATE_HZ,
+        channels: 2,
+        streamCount: 1,
+        coupledStreamCount: 1,
+        channelMappingTable: [0, 1],
+      })
+    }
   }
 
   private readonly requestOptions: SttSessionOptions
@@ -165,6 +180,7 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
         "missing_api_key",
         "Doubao API key is required"
       )
+    await this.opusDecoder?.ready
     const headers = createDoubaoHeaders(this.apiKey, this.requestIdFactory())
     const requestOptions = this.requestOptionsFromOptions()
     const socket = this.webSocketFactory(this.endpoint, { headers })
@@ -264,6 +280,7 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
       this.socket?.terminate?.()
       this.socket?.close()
       this.eventsQueue.close()
+      this.releaseDecoder()
       throw error
     }
   }
@@ -271,6 +288,7 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
   private requestOptionsFromOptions(): DoubaoRequestOptions {
     const audio = this.requestOptions.audio as
       Record<string, unknown> | undefined
+    const isOpus = audio?.codec === "opus"
     return {
       uid:
         typeof this.requestOptions.uid === "string"
@@ -279,11 +297,22 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
       audio:
         audio && typeof audio === "object"
           ? {
-              codec: audio.codec === "raw" ? "raw" : "opus",
-              rate: typeof audio.rate === "number" ? audio.rate : undefined,
-              channel:
-                typeof audio.channel === "number" ? audio.channel : undefined,
-              bits: typeof audio.bits === "number" ? audio.bits : undefined,
+              codec: "raw",
+              rate: isOpus
+                ? DOUBAO_PCM_SAMPLE_RATE_HZ
+                : typeof audio.rate === "number"
+                  ? audio.rate
+                  : undefined,
+              channel: isOpus
+                ? 1
+                : typeof audio.channel === "number"
+                  ? audio.channel
+                  : undefined,
+              bits: isOpus
+                ? 16
+                : typeof audio.bits === "number"
+                  ? audio.bits
+                  : undefined,
             }
           : undefined,
     }
@@ -307,8 +336,10 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
         "Doubao audio codec is unsupported"
       )
     try {
+      const data =
+        frame.codec === "opus" ? this.decodeOpusToPcm(frame.data) : frame.data
       await this.send(
-        buildAudioRequest(this.sequence++, frame.data),
+        buildAudioRequest(this.sequence++, data),
         "Doubao audio could not be sent"
       )
     } catch {
@@ -320,6 +351,31 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
       this.fail(error)
       throw error
     }
+  }
+
+  private decodeOpusToPcm(data: Uint8Array): Uint8Array {
+    if (!this.opusDecoder)
+      throw new DoubaoProviderError(
+        "decoder_unavailable",
+        "Doubao Opus decoder is unavailable"
+      )
+    const decoded = this.opusDecoder.decodeFrame(data)
+    if (decoded.errors.length > 0 || decoded.samplesDecoded <= 0)
+      throw new DoubaoProviderError(
+        "decode_failed",
+        "Doubao could not decode the Opus audio frame"
+      )
+    const left = decoded.channelData[0]
+    const right = decoded.channelData[1] ?? left
+    const pcm = new DataView(new ArrayBuffer(decoded.samplesDecoded * 2))
+    for (let index = 0; index < decoded.samplesDecoded; index += 1) {
+      const sample = Math.max(
+        -1,
+        Math.min(1, ((left?.[index] ?? 0) + (right?.[index] ?? 0)) / 2)
+      )
+      pcm.setInt16(index * 2, Math.round(sample * 32767), true)
+    }
+    return new Uint8Array(pcm.buffer)
   }
 
   events(): AsyncIterable<SttEvent> {
@@ -374,6 +430,13 @@ export class DoubaoStreamingSttSession implements StreamingSttSession {
         socket.close()
       })
     }
+    this.releaseDecoder()
+  }
+
+  private releaseDecoder(): void {
+    if (this.decoderReleased) return
+    this.decoderReleased = true
+    this.opusDecoder?.free()
   }
 
   private send(data: Buffer, failureMessage: string): Promise<void> {
