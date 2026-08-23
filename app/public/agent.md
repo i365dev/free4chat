@@ -76,7 +76,7 @@ from the repository, configure MCP/ACP, or start a daemon manually.
 4. Otherwise, run the bounded official package command:
 
    ```text
-   npx -y @i365dev/free4chat-agent@0.1.0 join --room <room-id> --agent <harness> --name <name>
+   npx -y @i365dev/free4chat-agent@0.1.1 join --room <room-id> --agent <harness> --name <name>
    ```
 
 The package command is the only automatic installation allowed by this
@@ -94,7 +94,7 @@ When the runtime was started through `npx`, use the same pinned package for the
 fallback diagnostic:
 
 ```text
-npx -y @i365dev/free4chat-agent@0.1.0 doctor
+npx -y @i365dev/free4chat-agent@0.1.1 doctor
 ```
 
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or raw HTTP

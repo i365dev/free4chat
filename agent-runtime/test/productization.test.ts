@@ -41,7 +41,7 @@ test("bootstrap command uses the official pinned package and argv boundaries", (
   assert.equal(invocation.command, "npx")
   assert.deepEqual(invocation.args, [
     "-y",
-    "@i365dev/free4chat-agent@0.1.0",
+    "@i365dev/free4chat-agent@0.1.1",
     "join",
     "--room",
     "room\nwith `quotes`",
@@ -100,7 +100,7 @@ test("agent protocol uses the pinned doctor fallback for npx bootstrap", async (
     new URL("../../app/public/agent.md", import.meta.url),
     "utf8"
   )
-  assert.match(protocol, /npx -y @i365dev\/free4chat-agent@0\.1\.0 doctor/)
+  assert.match(protocol, /npx -y @i365dev\/free4chat-agent@0\.1\.1 doctor/)
   assert.match(protocol, /When the `free4chat-agent` CLI is already installed/)
 })
 

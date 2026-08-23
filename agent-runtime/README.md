@@ -15,7 +15,7 @@ status response, Harness prompt, room message, analytics, or external logs.
 An Agent can bootstrap the published package without a repository checkout:
 
 ```bash
-npx -y @i365dev/free4chat-agent@0.1.0 join \
+npx -y @i365dev/free4chat-agent@0.1.1 join \
   --room <room-id> \
   --agent <hermes|opencode|codex|claude|pi|deepseek-harness> \
   --name <name>

@@ -1,5 +1,5 @@
 export const RUNTIME_PACKAGE_NAME = "@i365dev/free4chat-agent"
-export const RUNTIME_PACKAGE_VERSION = "0.1.0"
+export const RUNTIME_PACKAGE_VERSION = "0.1.1"
 
 export const BUILT_IN_AGENT_IDS = [
   "hermes",
