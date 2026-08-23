@@ -1,10 +1,7 @@
 import { appendFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import {
-  McpFree4ChatClient,
-  ResidentRoomRuntime,
-} from "../dist/index.js"
+import { McpFree4ChatClient, ResidentRoomRuntime } from "../dist/index.js"
 
 const room = process.argv[2]
 const name = process.argv[3] ?? "Doubao Canary"
