@@ -41,6 +41,7 @@ test("meeting transcript stores committed attributed speech and cleans up", asyn
         text: "The launch is Friday.",
       },
     ])
+    assert.equal(store.snapshot().path, ".meeting-notes/transcript.jsonl")
     assert.match(await readFile(path, "utf8"), /The launch is Friday\./)
     assert.equal((await stat(path)).mode & 0o777, 0o600)
   } finally {

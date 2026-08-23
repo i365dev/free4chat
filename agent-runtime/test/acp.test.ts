@@ -149,7 +149,7 @@ test("ACP prompt includes only the explicitly supplied meeting transcript", () =
   const rendered = renderUntrustedRoomTurn({
     ...input("what did I say?"),
     meetingTranscript: {
-      path: "/private/runtime/workspaces/instance/.meeting-notes/transcript.jsonl",
+      path: ".meeting-notes/transcript.jsonl",
       segments: [
         {
           participantId: "human-1",

@@ -51,6 +51,10 @@ export interface ResidentRuntimeOptions {
   speech?: SpeechRuntimeOptions
   /** Per-instance temporary transcript path, owned and cleaned by Runtime. */
   transcriptPath?: string
+  /** Injectable for proving transcript failure cannot break text turns. */
+  transcriptStore?: MeetingTranscriptStore
+  /** Called after a natural room expiry has released Runtime resources. */
+  onRoomExpired?: () => Promise<void> | void
   /** Injectable for tests. */
   createMeetingNotesController?: (
     handle: ReturnType<typeof decodeParticipantHandle>
@@ -114,11 +118,15 @@ export class ResidentRoomRuntime {
   private meetingNotes: MeetingNotesController | null = null
   private transcriber: SpeechTranscriber | null = null
   private readonly transcript?: MeetingTranscriptStore
+  private cleanupPromise?: Promise<void>
+  private roomExpiryHandled = false
 
   constructor(private readonly options: ResidentRuntimeOptions) {
-    this.transcript = options.transcriptPath
-      ? new MeetingTranscriptStore(options.transcriptPath)
-      : undefined
+    this.transcript =
+      options.transcriptStore ??
+      (options.transcriptPath
+        ? new MeetingTranscriptStore(options.transcriptPath)
+        : undefined)
     this.log = options.log ?? defaultLog
     options.adapter.onFailure?.((error) => {
       if (this.stopped) return
@@ -250,8 +258,7 @@ export class ResidentRoomRuntime {
           continue
         }
         if (code === "room_expired") {
-          this.state = "stopped"
-          this.lastError = "room_expired"
+          await this.cleanupAfterRoomExpiry()
           break
         }
         retryAttempt += 1
@@ -290,7 +297,13 @@ export class ResidentRoomRuntime {
           this.lastHarnessSequence,
           ...events.map((event) => event.sequence)
         )
-        await this.transcript?.flush()
+        try {
+          await this.transcript?.flush()
+        } catch {
+          // Transcript persistence is optional and must never gate a normal
+          // text turn. The in-memory snapshot remains available below.
+          this.log("meeting_transcript_write_failed")
+        }
         const input = await this.resolveImages(
           buildHarnessTurn(events, this.transcript?.snapshot())
         )
@@ -358,8 +371,7 @@ export class ResidentRoomRuntime {
         const code =
           error instanceof Free4ChatClientError ? error.code : "transient"
         if (code === "room_expired") {
-          this.state = "stopped"
-          this.lastError = "room_expired"
+          await this.cleanupAfterRoomExpiry()
           return false
         }
         attempt += 1
@@ -375,29 +387,51 @@ export class ResidentRoomRuntime {
   async stop(): Promise<void> {
     this.stopped = true
     this.state = "stopped"
-    if (this.meetingNotes) {
-      await this.meetingNotes.stop().catch(() => undefined)
-      this.meetingNotes = null
-    }
-    if (this.transcriber) {
-      await this.transcriber.close().catch(() => undefined)
-      this.transcriber = null
-    }
-    await this.transcript?.dispose()
-    try {
-      await this.options.adapter.cancelTurn?.()
-    } catch {
-      // Closing the ACP process below is the final cancellation boundary.
-    }
-    if (this.participantHandle) {
-      try {
-        await this.options.client.leaveRoom(this.participantHandle)
-      } catch {
-        // Expiry and network loss are already a clean enough termination.
-      }
-    }
-    await this.options.adapter.close()
-    await this.options.client.close()
+    await this.cleanupResources()
     await this.loopPromise
+  }
+
+  private async cleanupAfterRoomExpiry(): Promise<void> {
+    if (this.roomExpiryHandled) return
+    this.roomExpiryHandled = true
+    this.stopped = true
+    this.state = "stopped"
+    this.lastError = "room_expired"
+    await this.cleanupResources()
+    try {
+      await this.options.onRoomExpired?.()
+    } catch {
+      this.log("room_expiry_cleanup_failed")
+    }
+  }
+
+  private async cleanupResources(): Promise<void> {
+    if (this.cleanupPromise) return this.cleanupPromise
+    this.cleanupPromise = (async () => {
+      if (this.meetingNotes) {
+        await this.meetingNotes.stop().catch(() => undefined)
+        this.meetingNotes = null
+      }
+      if (this.transcriber) {
+        await this.transcriber.close().catch(() => undefined)
+        this.transcriber = null
+      }
+      await this.transcript?.dispose()
+      try {
+        await this.options.adapter.cancelTurn?.()
+      } catch {
+        // Closing the ACP process below is the final cancellation boundary.
+      }
+      if (this.participantHandle) {
+        try {
+          await this.options.client.leaveRoom(this.participantHandle)
+        } catch {
+          // Expiry and network loss are already a clean enough termination.
+        }
+      }
+      await this.options.adapter.close()
+      await this.options.client.close()
+    })()
+    return this.cleanupPromise
   }
 }

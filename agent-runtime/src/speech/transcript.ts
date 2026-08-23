@@ -6,6 +6,12 @@ import type { AttributedSttEvent } from "./transcriber.js"
 
 const MAX_SEGMENTS = 500
 const MAX_TEXT_CHARS = 64_000
+const HARNESS_TRANSCRIPT_PATH = ".meeting-notes/transcript.jsonl"
+
+export interface MeetingTranscriptStoreOptions {
+  /** Injectable for verifying that transcript I/O never gates text turns. */
+  writeFile?: (path: string, contents: string) => Promise<void>
+}
 
 export interface MeetingTranscriptSegment {
   participantId: string
@@ -31,8 +37,22 @@ export class MeetingTranscriptStore {
   private readonly segments: MeetingTranscriptSegment[] = []
   private writeQueue: Promise<void> = Promise.resolve()
   private disposed = false
+  private readonly persist: (path: string, contents: string) => Promise<void>
 
-  constructor(readonly path: string) {}
+  constructor(
+    readonly path: string,
+    options: MeetingTranscriptStoreOptions = {}
+  ) {
+    this.persist =
+      options.writeFile ??
+      (async (filePath, contents) => {
+        await writeFile(filePath, contents, {
+          encoding: "utf8",
+          mode: 0o600,
+        })
+        await chmod(filePath, 0o600)
+      })
+  }
 
   async ready(): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 })
@@ -59,7 +79,7 @@ export class MeetingTranscriptStore {
 
   snapshot(): MeetingTranscriptSnapshot {
     return {
-      path: this.path,
+      path: HARNESS_TRANSCRIPT_PATH,
       segments: this.segments.map((segment) => ({ ...segment })),
     }
   }
@@ -82,11 +102,7 @@ export class MeetingTranscriptStore {
     this.writeQueue = this.writeQueue
       .catch(() => undefined)
       .then(async () => {
-        await writeFile(this.path, contents ? `${contents}\n` : "", {
-          encoding: "utf8",
-          mode: 0o600,
-        })
-        await chmod(this.path, 0o600)
+        await this.persist(this.path, contents ? `${contents}\n` : "")
       })
   }
 }
