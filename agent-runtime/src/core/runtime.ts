@@ -10,6 +10,10 @@ import {
   type SpeechRuntimeOptions,
 } from "../speech/runtime.js"
 import type { SpeechTranscriber } from "../speech/transcriber.js"
+import {
+  MeetingTranscriptStore,
+  recordCommittedTranscriptEvent,
+} from "../speech/transcript.js"
 import { EventBuffer, boundedPush } from "./eventBuffer.js"
 import type {
   Free4ChatClient,
@@ -45,6 +49,8 @@ export interface ResidentRuntimeOptions {
   mcpUrl: string
   onMediaEvent?: MediaBridgeEventHandler
   speech?: SpeechRuntimeOptions
+  /** Per-instance temporary transcript path, owned and cleaned by Runtime. */
+  transcriptPath?: string
   /** Injectable for tests. */
   createMeetingNotesController?: (
     handle: ReturnType<typeof decodeParticipantHandle>
@@ -59,7 +65,10 @@ function defaultLog(
   else console.error(`[free4chat-agent] ${event}`)
 }
 
-export function buildHarnessTurn(events: RoomEvent[]): HarnessTurnInput {
+export function buildHarnessTurn(
+  events: RoomEvent[],
+  meetingTranscript?: HarnessTurnInput["meetingTranscript"]
+): HarnessTurnInput {
   return {
     room: { ephemeral: true },
     events: events.map((event) => {
@@ -76,6 +85,7 @@ export function buildHarnessTurn(events: RoomEvent[]): HarnessTurnInput {
       }
       return normalized
     }),
+    ...(meetingTranscript ? { meetingTranscript } : {}),
   }
 }
 
@@ -103,8 +113,12 @@ export class ResidentRoomRuntime {
   ) => void
   private meetingNotes: MeetingNotesController | null = null
   private transcriber: SpeechTranscriber | null = null
+  private readonly transcript?: MeetingTranscriptStore
 
   constructor(private readonly options: ResidentRuntimeOptions) {
+    this.transcript = options.transcriptPath
+      ? new MeetingTranscriptStore(options.transcriptPath)
+      : undefined
     this.log = options.log ?? defaultLog
     options.adapter.onFailure?.((error) => {
       if (this.stopped) return
@@ -128,6 +142,7 @@ export class ResidentRoomRuntime {
   }
 
   async start(): Promise<void> {
+    await this.transcript?.ready()
     await this.options.client.connect()
     await this.options.adapter.ensureSession()
     await this.join()
@@ -171,9 +186,14 @@ export class ResidentRoomRuntime {
     try {
       const handle = decodeParticipantHandle(this.participantHandle)
       try {
-        this.transcriber = await createConfiguredSpeechTranscriber(
-          this.options.speech
-        )
+        this.transcriber = await createConfiguredSpeechTranscriber({
+          ...(this.options.speech ?? {}),
+          onEvent: (event) => {
+            if (this.transcript)
+              recordCommittedTranscriptEvent(this.transcript, event)
+            this.options.speech?.onEvent?.(event)
+          },
+        })
       } catch {
         // Speech setup is an optional capability. Storage corruption or an
         // incomplete provider config must never stop the text Agent joining.
@@ -270,7 +290,10 @@ export class ResidentRoomRuntime {
           this.lastHarnessSequence,
           ...events.map((event) => event.sequence)
         )
-        const input = await this.resolveImages(buildHarnessTurn(events))
+        await this.transcript?.flush()
+        const input = await this.resolveImages(
+          buildHarnessTurn(events, this.transcript?.snapshot())
+        )
         this.state = "turn"
         const result = await this.options.adapter.runTurn(input)
         this.harnessFailed = false
@@ -360,6 +383,7 @@ export class ResidentRoomRuntime {
       await this.transcriber.close().catch(() => undefined)
       this.transcriber = null
     }
+    await this.transcript?.dispose()
     try {
       await this.options.adapter.cancelTurn?.()
     } catch {

@@ -140,6 +140,40 @@ test("transcriber fails only the overflowing track and keeps other tracks alive"
   await transcriber.close()
 })
 
+test("transcriber keeps bounded startup audio while the provider handshakes", async () => {
+  const sessions: ControlledSession[] = []
+  let releaseSession!: () => void
+  const sessionReady = new Promise<void>((resolve) => {
+    releaseSession = resolve
+  })
+  const events: { source: AudioSource; event: SttEvent }[] = []
+  const provider: StreamingSttProvider = {
+    async createSession() {
+      await sessionReady
+      const session = new ControlledSession()
+      sessions.push(session)
+      return session
+    },
+  }
+  const transcriber = new SpeechTranscriber({
+    provider,
+    onEvent: (event) => events.push(event),
+  })
+  for (let value = 1; value <= 64; value += 1)
+    transcriber.acceptAudio(source("handshake"), audio(value))
+
+  assert.equal(
+    events.some((event) => event.event.type === "error"),
+    false
+  )
+  releaseSession()
+  await waitFor(() => sessions.length === 1)
+  await waitFor(() => sessions[0]!.frames.length === 64)
+  assert.equal(sessions[0]!.frames[0]!.data[0], 1)
+  assert.equal(sessions[0]!.frames[63]!.data[0], 64)
+  await transcriber.close()
+})
+
 test("transcriber drains a provider's final event before ending a track", async () => {
   let session: ControlledSession | undefined
   const events: { source: AudioSource; event: SttEvent }[] = []

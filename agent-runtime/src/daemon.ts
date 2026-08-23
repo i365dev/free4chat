@@ -125,6 +125,11 @@ export class AgentDaemon {
           cancelGraceMs,
         }),
         mcpUrl,
+        // Every join gets a fresh UUID workspace, and the transcript lives in
+        // a hidden child directory inside it. The workspace is never reused
+        // across rooms, so one resident Agent cannot leak speech memory from
+        // one room into another.
+        transcriptPath: join(workspace, ".meeting-notes", "transcript.jsonl"),
       })
       this.instances.set({ instanceId, roomId: request.room, runtime })
       this.workspaces.set(instanceId, workspace)

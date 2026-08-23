@@ -123,7 +123,9 @@ function frameAudio(): AudioFrame {
     sampleRateHz: 48_000,
     channels: 2,
     timestampMs: 0,
-    data: new Uint8Array([1, 2, 3]),
+    // A valid 20 ms Opus silence packet, decoded by the provider to 16 kHz
+    // mono PCM before it is sent to Doubao.
+    data: new Uint8Array([0xf8, 0xff, 0xfe]),
   }
 }
 
@@ -166,7 +168,7 @@ test("Doubao protocol uses current headers and JSON+gzip binary framing", () => 
     gunzipSync(request.subarray(12, 12 + size)).toString("utf8")
   ) as Record<string, Record<string, unknown>>
   assert.deepEqual(payload.audio, {
-    format: "raw",
+    format: "ogg",
     codec: "opus",
     rate: 48_000,
     channel: 2,
@@ -196,6 +198,17 @@ test("Doubao session waits for protocol acknowledgement and normalizes semantic 
   assert.equal(socket.url, "wss://example.invalid/asr")
   assert.equal(socket.options.headers["X-Api-Key"], "api-secret")
   assert.equal(socket.options.headers["X-Api-Sequence"], "-1")
+  const initialSize = socket.sent[0]!.readUInt32BE(8)
+  const initialPayload = JSON.parse(
+    gunzipSync(socket.sent[0]!.subarray(12, 12 + initialSize)).toString("utf8")
+  ) as { audio: Record<string, unknown> }
+  assert.deepEqual(initialPayload.audio, {
+    format: "pcm",
+    codec: "raw",
+    rate: 16_000,
+    bits: 16,
+    channel: 1,
+  })
 
   await session.pushAudio(frameAudio())
   await session.pushAudio(frameAudio())
@@ -216,10 +229,7 @@ test("Doubao session waits for protocol acknowledgement and normalizes semantic 
     [1, 2, 3]
   )
   assert.deepEqual([...socket.sent[1]!.subarray(0, 4)], [0x11, 0x21, 0x11, 0])
-  assert.deepEqual(
-    gunzipSync(socket.sent[1]!.subarray(12)).toJSON().data,
-    [1, 2, 3]
-  )
+  assert.equal(gunzipSync(socket.sent[1]!.subarray(12)).byteLength, 640)
   await session.close()
   assert.deepEqual(
     socket.sent.map((frame) => frame.readInt32BE(4)),

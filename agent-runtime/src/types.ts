@@ -61,9 +61,22 @@ export interface HarnessEvent {
   createdAt: number
 }
 
+export interface HarnessTranscriptSegment {
+  participantId: string
+  speaker: string
+  text: string
+}
+
+export interface HarnessMeetingTranscript {
+  /** Runtime-local temporary file; never a Worker/DO attachment or URL. */
+  path: string
+  segments: HarnessTranscriptSegment[]
+}
+
 export interface HarnessTurnInput {
   room: { ephemeral: true }
   events: HarnessEvent[]
+  meetingTranscript?: HarnessMeetingTranscript
 }
 
 export interface HarnessTurnResult {

@@ -21,7 +21,7 @@ const GZIP_COMPRESSION = 0x1
 const MAX_FRAME_PAYLOAD_BYTES = 8 * 1024 * 1024
 
 export interface DoubaoAudioConfig {
-  format: "raw"
+  format: "pcm" | "wav" | "ogg" | "mp3"
   codec: "opus" | "raw"
   rate: number
   bits?: number
@@ -93,7 +93,7 @@ export function buildInitialRequest(
   options: DoubaoRequestOptions = {}
 ): Buffer {
   const audio: DoubaoAudioConfig = {
-    format: "raw",
+    format: options.audio?.codec === "opus" ? "ogg" : "pcm",
     codec: options.audio?.codec ?? "opus",
     rate: options.audio?.rate ?? 48_000,
     channel: options.audio?.channel ?? 2,
@@ -230,14 +230,14 @@ export function parseResponse(message: Uint8Array): DoubaoResponse {
 export function audioConfigFromFrame(frame: AudioFrame): DoubaoAudioConfig {
   if (frame.codec === "opus") {
     return {
-      format: "raw",
+      format: "ogg",
       codec: "opus",
       rate: frame.sampleRateHz,
       channel: frame.channels,
     }
   }
   return {
-    format: "raw",
+    format: "pcm",
     codec: "raw",
     rate: frame.sampleRateHz,
     bits: 16,
