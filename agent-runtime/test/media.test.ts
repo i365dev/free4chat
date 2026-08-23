@@ -48,7 +48,9 @@ class FakeRestClient implements SfuRestClientLike {
     mySessionId: string,
     offer?: SessionDescriptionLike
   ) {
-    this.establishTransportCalls.push({ sessionId: mySessionId, offer })
+    this.establishTransportCalls.push(
+      offer ? { sessionId: mySessionId, offer } : { sessionId: mySessionId }
+    )
     if (this.establishTransportError) throw this.establishTransportError
     return {
       sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
@@ -105,7 +107,12 @@ class FakePeerConnection implements PeerConnectionLike {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
 
-  async setRemoteDescription(): Promise<void> {
+  async setRemoteDescription(
+    description: SessionDescriptionLike
+  ): Promise<void> {
+    // The initial server-offer DataChannel transport does not add a media
+    // track. Only a later /tracks subscription offer should fire onTrack.
+    if (description.sdp !== "fake-sdp") return
     const track: MediaTrackLike = {
       kind: "audio",
       codec: this.codec,
@@ -154,7 +161,11 @@ class DelayedPeerConnection implements PeerConnectionLike {
     return { type: "offer", sdp: "fake-initial-offer" }
   }
 
-  async setRemoteDescription(): Promise<void> {
+  async setRemoteDescription(
+    description: SessionDescriptionLike
+  ): Promise<void> {
+    // As above, transport bootstrap is not a subscribed media track.
+    if (description.sdp !== "fake-sdp") return
     const track: MediaTrackLike = {
       kind: "audio",
       codec: this.codec,
