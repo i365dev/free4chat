@@ -174,9 +174,11 @@ export async function createPionPeerConnection(
       const waiter = pending.get(msg.id)
       if (waiter) {
         pending.delete(msg.id)
-        msg.ok
-          ? waiter.resolve(msg)
-          : waiter.reject(new PionChildError(msg.error ?? "pion op failed"))
+        if (msg.ok) {
+          waiter.resolve(msg)
+        } else {
+          waiter.reject(new PionChildError(msg.error ?? "pion op failed"))
+        }
       }
     }
   })

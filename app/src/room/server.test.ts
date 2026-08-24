@@ -10,19 +10,40 @@ import { handleRoomRequest, type RoomProtocolEnv } from "./server"
 
 const ORIGIN = "http://localhost:3000"
 
-function makeEnv(doFetch: (request: Request) => Response): RoomProtocolEnv {
-  return {
-    SFU_ROOM: {
-      idFromName: (name: string) => ({ name } as never),
-      get: () =>
-        ({
-          fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-            const request = new Request(input, init)
-            return Promise.resolve(doFetch(request))
-          },
-        } as never),
-    },
+type CapturedUpload = { contentType: string | null }
+
+function makeEnv(
+  doFetch: (upload: { contentType: string | null }) => Response
+): RoomProtocolEnv {
+  const namespace = {
+    idFromName: (name: string) => ({ name }),
+    // handleRoomRequest calls stub.fetch(url, init); capture the forwarded
+    // Content-Type from the init headers.
+    get: () => ({
+      fetch: (
+        _url: string | URL,
+        init?: { headers?: { get: (name: string) => string | null } }
+      ) =>
+        Promise.resolve(
+          doFetch({
+            contentType:
+              init?.headers?.get("Content-Type") ??
+              init?.headers?.get("content-type") ??
+              null,
+          })
+        ),
+    }),
   }
+  return {
+    SFU_ROOM: namespace as unknown as RoomProtocolEnv["SFU_ROOM"],
+  }
+}
+
+function envCapturing(uploads: CapturedUpload[]): RoomProtocolEnv {
+  return makeEnv((upload) => {
+    uploads.push(upload)
+    return Response.json({ id: "att-x" })
+  })
 }
 
 function uploadRequest(
@@ -49,46 +70,35 @@ function uploadRequest(
 }
 
 describe("room attachment upload gate", () => {
-  let doRequests: Request[]
+  let uploads: CapturedUpload[]
 
   beforeEach(() => {
-    doRequests = []
+    uploads = []
   })
 
   it("accepts text/markdown and forwards it to the DO with the same type", async () => {
-    const env = makeEnv((request) => {
-      doRequests.push(request.clone())
-      return Response.json({ id: "att-1" })
-    })
+    const env = envCapturing(uploads)
     const response = await handleRoomRequest(
-      uploadRequest(
-        "text/markdown",
-        "# agenda\n\n- \u7b2c\u4e00\u9879：\u9a8c\u8bc1\u6587\u672c\u9644\u4ef6\n",
-        {
-          id: "human-1",
-          token: "tok-1",
-        }
-      ),
+      uploadRequest("text/markdown", "# agenda\n\n- item one\n", {
+        id: "human-1",
+        token: "tok-1",
+      }),
       env
     )
     expect(response.status).toBe(200)
-    expect(doRequests).toHaveLength(1)
-    expect(doRequests[0].headers.get("Content-Type")).toBe("text/markdown")
+    expect(uploads).toEqual([{ contentType: "text/markdown" }])
   })
 
   it("accepts text/plain, text/csv and application/json", async () => {
     for (const mime of ["text/plain", "text/csv", "application/json"]) {
-      doRequests = []
-      const env = makeEnv((request) => {
-        doRequests.push(request)
-        return Response.json({ id: "att-2" })
-      })
+      uploads = []
+      const env = envCapturing(uploads)
       const response = await handleRoomRequest(
         uploadRequest(mime, "{}", { id: "h", token: "t" }),
         env
       )
       expect(response.status).toBe(200)
-      expect(doRequests[0].headers.get("Content-Type")).toBe(mime)
+      expect(uploads[0]?.contentType).toBe(mime)
     }
   })
 
