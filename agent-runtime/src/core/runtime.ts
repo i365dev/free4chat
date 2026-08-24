@@ -276,6 +276,17 @@ export class ResidentRoomRuntime {
     try {
       const handle = decodeParticipantHandle(this.participantHandle)
       this.transcriber = await this.createTranscriber()
+      // #105: when Meeting Notes is granted but speech-to-text could not be
+      // configured (typically a missing provider API key), say so in the
+      // room instead of silently producing an empty transcript. The human
+      // then supplies the key once; the reload path picks it up live.
+      if (!this.transcriber) {
+        void this.options.client
+          .sendText(this.participantHandle, 
+            "Meeting Notes is listening, but speech-to-text isn't configured yet — I need an API key for it. I've started the local setup flow; the next step needs the key itself, which only you can provide."
+          )
+          .catch(() => undefined)
+      }
       const onMediaEvent: MediaBridgeEventHandler = (event) => {
         this.transcriber?.handleMediaEvent(event)
         this.options.onMediaEvent?.(event)
