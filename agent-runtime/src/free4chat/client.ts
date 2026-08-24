@@ -17,7 +17,6 @@ import type {
   UploadedAttachment,
   WaitResult,
 } from "../types.js"
-
 export const FREE4CHAT_MCP_PROTOCOL_VERSION = "2026-07-28"
 
 export type Free4ChatErrorCode =
@@ -89,6 +88,28 @@ function asNumber(value: unknown, field: string): number {
       "tool_error"
     )
   return value
+}
+
+function parseRosterEntry(value: unknown): ParticipantRosterEntry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const id = typeof record.id === "string" ? record.id : ""
+  if (!id) return null
+  const capabilities =
+    record.capabilities && typeof record.capabilities === "object"
+      ? (record.capabilities as Record<string, unknown>)
+      : undefined
+  const advertised = Array.isArray(capabilities?.advertised)
+    ? capabilities.advertised.filter(
+        (token): token is string => typeof token === "string"
+      )
+    : undefined
+  return {
+    id,
+    name: typeof record.name === "string" ? record.name : "",
+    kind: (record.kind === "agent" ? "agent" : "human") as "agent" | "human",
+    ...(advertised && advertised.length > 0 ? { advertised } : {}),
+  }
 }
 
 export class McpFree4ChatClient implements Free4ChatClient {
@@ -179,6 +200,15 @@ export class McpFree4ChatClient implements Free4ChatClient {
     }
     return {
       exists: result.exists === true,
+      ...(Array.isArray(result.participants)
+        ? {
+            participants: result.participants
+              .map(parseRosterEntry)
+              .filter(
+                (entry): entry is NonNullable<typeof entry> => entry !== null
+              ),
+          }
+        : {}),
       meetingNotes,
       // Fail closed on anything but an explicit `true` — an absent/
       // malformed field (a stale server, a parsing edge case) must never

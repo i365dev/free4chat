@@ -249,12 +249,14 @@ export class AgentDaemon {
         case "attach": {
           if (!request.fileName || !request.mimeType || !request.dataBase64)
             throw new Error("attach requires file name, mime type, and data")
-          await runtime.uploadAttachment({
+          // The uploaded attachment id is the whole point: a collaboration
+          // result references it via --attach, so it must reach the caller.
+          const uploaded = await runtime.uploadAttachment({
             fileName: request.fileName,
             mimeType: request.mimeType,
             dataBase64: request.dataBase64,
           })
-          return { ok: true }
+          return { ok: true, attachment: uploaded }
         }
       }
     }

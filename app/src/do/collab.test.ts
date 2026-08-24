@@ -283,7 +283,7 @@ describe("validateCollabEvent", () => {
   })
 
   it("enforces boring explicit requestId shapes", () => {
-    for (const bad of ["", "abc", "has space", `${"a".repeat(65)}`])
+    for (const bad of ["abc", "has space", `${"a".repeat(65)}`])
       expect(
         validateCollabEvent(
           {
@@ -295,6 +295,28 @@ describe("validateCollabEvent", () => {
           collabContext()
         ).ok
       ).toBe(false)
+  })
+
+  it("generates a valid requestId when a request omits one; responses still require one", () => {
+    const generated = validateCollabEvent(
+      {
+        kind: "request",
+        targetParticipantId: "agent-b",
+        summary: "no manual id",
+      },
+      collabContext(),
+      { generateRequestId: () => "generated-id-1" }
+    )
+    expect(generated.ok).toBe(true)
+    if (generated.ok) expect(generated.event.requestId).toBe("generated-id-1")
+
+    expect(
+      validateCollabEvent(
+        { kind: "accepted", requestId: "", targetParticipantId: "" },
+        collabContext(),
+        { generateRequestId: () => "should-not-be-used" }
+      ).ok
+    ).toBe(false)
   })
 
   it("shape-checks response/result kinds without requiring routing fields", () => {
@@ -406,5 +428,150 @@ describe("CollabRegistry", () => {
     expect(registry.find("r1")).toBeUndefined()
     expect(registry.find("r2")).toBeDefined()
     expect(registry.size).toBe(2)
+  })
+})
+
+describe("CollabRegistry precheck/commit idempotency", () => {
+  const requestEvent = {
+    requestId: "req-1",
+    kind: "request" as const,
+    fromParticipantId: "agent-a",
+    targetParticipantId: "agent-b",
+    summary: "do a thing",
+  }
+
+  it("decides duplicates before commit so a retry appends no second event", () => {
+    const registry = new CollabRegistry()
+    registry.recordRequest(requestEvent, 7)
+    expect(registry.precheckResponse("req-1", "accepted", "agent-b")).toEqual({
+      action: "record",
+    })
+    expect(registry.precheckResponse("req-1", "accepted", "agent-a")).toEqual({
+      action: "rejected",
+      error: "not_request_target",
+    })
+
+    registry.commitResponse("req-1", "accepted", 9)
+    expect(registry.precheckResponse("req-1", "accepted", "agent-b")).toEqual({
+      action: "duplicate",
+      sequence: 9,
+    })
+    expect(registry.precheckResponse("req-1", "completed", "agent-b")).toEqual({
+      action: "record",
+    })
+  })
+
+  it("precheck is a pure lookup: a rejected or duplicate decision mutates nothing", () => {
+    const registry = new CollabRegistry()
+    expect(registry.precheckResponse("ghost", "accepted", "agent-b")).toEqual({
+      action: "rejected",
+      error: "unknown_request",
+    })
+    expect(registry.find("ghost")).toBeUndefined()
+    registry.recordRequest(requestEvent, 7)
+    registry.commitResponse("req-1", "declined", 8)
+    expect(registry.find("req-1")?.sequenceByKind).toEqual({
+      request: 7,
+      declined: 8,
+    })
+  })
+})
+
+describe("CollabRegistry rebuild after DO eviction/restart", () => {
+  function buildLog() {
+    return [
+      {
+        event: {
+          requestId: "req-1",
+          kind: "request" as const,
+          fromParticipantId: "agent-a",
+          targetParticipantId: "agent-b",
+          summary: "check the page",
+        },
+        sequence: 10,
+      },
+      {
+        event: {
+          requestId: "req-1",
+          kind: "accepted" as const,
+          fromParticipantId: "agent-b",
+          targetParticipantId: "agent-a",
+        },
+        sequence: 11,
+      },
+      {
+        event: {
+          requestId: "req-1",
+          kind: "completed" as const,
+          fromParticipantId: "agent-b",
+          targetParticipantId: "agent-a",
+          summary: "done",
+        },
+        sequence: 12,
+      },
+    ]
+  }
+
+  it("restores routing so the original requester can still be answered", () => {
+    const freshRegistry = new CollabRegistry()
+    freshRegistry.rebuild(buildLog())
+    expect(freshRegistry.routingFor("req-1", "agent-b")).toEqual({
+      fromParticipantId: "agent-b",
+      targetParticipantId: "agent-a",
+    })
+    expect(
+      freshRegistry.precheckResponse("req-1", "accepted", "agent-b")
+    ).toEqual({ action: "duplicate", sequence: 11 })
+    expect(
+      freshRegistry.precheckResponse("req-1", "failed", "agent-b")
+    ).toEqual({ action: "record" })
+  })
+
+  it("keeps retried-send dedup working across a restart", () => {
+    const freshRegistry = new CollabRegistry()
+    freshRegistry.rebuild(buildLog())
+    expect(
+      freshRegistry.recordRequest(
+        {
+          requestId: "req-1",
+          kind: "request",
+          fromParticipantId: "agent-a",
+          targetParticipantId: "agent-b",
+          summary: "check the page",
+        },
+        999
+      )
+    ).toEqual({ action: "duplicate", sequence: 10 })
+  })
+
+  it("ignores malformed entries and keeps the newest requests within the bound", () => {
+    const freshRegistry = new CollabRegistry(2)
+    freshRegistry.rebuild([
+      ...buildLog(),
+      {
+        event: {
+          requestId: "r2",
+          kind: "request",
+          fromParticipantId: "a",
+          targetParticipantId: "b",
+        },
+        sequence: 13,
+      },
+      {
+        event: {
+          requestId: "r3",
+          kind: "request",
+          fromParticipantId: "a",
+          targetParticipantId: "b",
+        },
+        sequence: 14,
+      },
+      // Malformed log entry (possible only from legacy storage) must not wedge the rebuild.
+      { event: null as unknown as never, sequence: 15 },
+    ])
+    expect(freshRegistry.size).toBe(2)
+    expect(freshRegistry.find("req-1")).toBeUndefined()
+    expect(freshRegistry.find("r2")).toBeDefined()
+    expect(freshRegistry.find("r3")).toBeDefined()
   })
 })

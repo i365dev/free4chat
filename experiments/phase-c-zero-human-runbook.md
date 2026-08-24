@@ -69,8 +69,11 @@ needed check, e.g.:
 > part off. Continue your review once you have their findings."
 
 Expected behavior: A reads its turn context roster ("Participants and
-advertised capabilities"), sees AgentB advertising `browser.control` /
-`browser.authenticated`, and sends a structured request:
+advertised capabilities", each entry carrying `participantId=...`) — or runs
+`free4chat-agent peers --room <room-id>` for an event-free discovery query —
+sees AgentB advertising `browser.control` / `browser.authenticated`, and sends
+a structured request (`--request-id` is optional; one is generated and
+returned):
 
 ```bash
 free4chat-agent collab request \
@@ -87,7 +90,7 @@ structured `collab` envelope. B autonomously:
 ```bash
 free4chat-agent collab respond --request-id <id> --decision accepted
 # ...performs the real browser action locally...
-free4chat-agent attach --file ./evidence.png          # screenshot artifact
+free4chat-agent attach --file ./evidence.png          # prints the attachment id
 free4chat-agent collab result --request-id <id> --status completed \
   --summary "Landing page CTA renders correctly; no console errors." \
   --detail console=clean --detail network="all 200" \

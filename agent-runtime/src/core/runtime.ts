@@ -26,6 +26,7 @@ import type {
   HarnessTurnInput,
   ParticipantRosterEntry,
   RoomEvent,
+  UploadedAttachment,
 } from "../types.js"
 
 const WAIT_SECONDS = 20
@@ -594,8 +595,11 @@ export class ResidentRoomRuntime {
     return this.options.client.sendCollabResult(this.requireHandle(), args)
   }
 
-  async uploadAttachment(file: AttachmentUpload): Promise<void> {
-    await this.options.client.uploadAttachment(this.requireHandle(), file)
+  /** Uploads an artifact into the room's ephemeral attachment store and
+   * returns its metadata — the attachment id is what a collaboration result
+   * references via --attach, so it must reach the caller. */
+  async uploadAttachment(file: AttachmentUpload): Promise<UploadedAttachment> {
+    return this.options.client.uploadAttachment(this.requireHandle(), file)
   }
 
   async stop(): Promise<void> {

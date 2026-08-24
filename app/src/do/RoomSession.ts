@@ -267,7 +267,36 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private readonly agentWaiters = new Map<string, AgentWaiter | null>()
   // #106 Phase B: room-lifetime collaboration bookkeeping (request
   // correlation + retried-send dedup). In-memory by design — see CollabRegistry.
+  // Recoverable: rebuilt from the durable room.messages log on first use
+  // after an eviction/restart (collabRebuilt flag below).
   private readonly collabRegistry = new CollabRegistry()
+  private collabRebuilt = false
+
+  // Correlation must never leak across room generations on the same DO
+  // instance (a recycled room name after expiry would otherwise inherit
+  // stale requestIds), so tracking resets whenever the room is recreated.
+  private resetCollabTracking(): void {
+    this.collabRegistry.clear()
+    this.collabRebuilt = false
+  }
+
+  // Restores routing/dedup state from the bounded durable message log once
+  // per DO instance lifetime (no-op afterwards): after eviction/restart the
+  // registry starts empty and this replays actionType "collab" messages so
+  // late responses still correlate and retried sends still collapse.
+  private warmCollabRegistry(room: RoomRecord): void {
+    if (this.collabRebuilt) return
+    const entries = room.messages
+      .filter(
+        (message) => message.actionType === COLLAB_ACTION_TYPE && message.collab
+      )
+      .map((message) => ({
+        event: message.collab!,
+        sequence: message.sequence,
+      }))
+    this.collabRegistry.rebuild(entries)
+    this.collabRebuilt = true
+  }
 
   private async loadRoom(): Promise<RoomRecord | null> {
     const stored = await this.ctx.storage.get<StoredRoom>("room")
@@ -629,6 +658,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private async expireRoom(room: RoomRecord): Promise<void> {
+    // A recycled room name must not inherit collaboration bookkeeping from
+    // the expired generation (stale requestIds could suppress new ones).
+    this.resetCollabTracking()
     // Best-effort, single attempt only — deliberately not retried through
     // the usual pendingMediaCleanup/alarm mechanism like the other
     // revocation sites: room expiry only fires for an *empty* room (see
@@ -970,6 +1002,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "room_expired" }, 410)
       }
       if (!room) {
+        this.resetCollabTracking()
         room = {
           createdAt: now,
           expiresAt: NO_EXPIRY,
@@ -1105,11 +1138,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
       participant.lastSeenAt = Date.now()
-      const validated = validateCollabEvent(request.event ?? {}, {
-        senderParticipantId: participant.id,
-        participants: room.participants,
-        attachments: room.attachments,
-      })
+      // Restore correlation state from the durable log first (no-op after
+      // the first call in this DO instance's lifetime) so late responses and
+      // retried sends stay correct even after an eviction/restart.
+      this.warmCollabRegistry(room)
+      const validated = validateCollabEvent(
+        request.event ?? {},
+        {
+          senderParticipantId: participant.id,
+          participants: room.participants,
+          attachments: room.attachments,
+        },
+        { generateRequestId: () => crypto.randomUUID() }
+      )
       if (validated.ok === false)
         return this.json({ error: validated.error }, 400)
 
@@ -1129,19 +1170,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             expiresAt: room.expiresAt,
           })
       } else {
+        // Idempotency is decided BEFORE any append/wake: a retried identical
+        // response/result returns the original sequence without producing a
+        // second event.
+        const precheck = this.collabRegistry.precheckResponse(
+          event.requestId,
+          event.kind,
+          participant.id
+        )
+        if (precheck.action === "rejected")
+          return this.json({ error: precheck.error }, 403)
+        if (precheck.action === "duplicate")
+          return this.json({
+            requestId: event.requestId,
+            duplicate: true,
+            sequence: precheck.sequence,
+            expiresAt: room.expiresAt,
+          })
         const routing = this.collabRegistry.routingFor(
           event.requestId,
           participant.id
         )
-        if (!routing)
-          return this.json(
-            {
-              error: this.collabRegistry.find(event.requestId)
-                ? "not_request_target"
-                : "unknown_request",
-            },
-            403
-          )
+        if (!routing) return this.json({ error: "unknown_request" }, 403)
         event = {
           ...event,
           fromParticipantId: routing.fromParticipantId,
@@ -1164,9 +1214,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         createdAt: Date.now(),
       })
       if (event.kind !== "request")
-        this.collabRegistry.recordResponse(
-          event,
-          participant.id,
+        this.collabRegistry.commitResponse(
+          event.requestId,
+          event.kind,
           roomMessage.sequence
         )
       await this.saveRoom(room)

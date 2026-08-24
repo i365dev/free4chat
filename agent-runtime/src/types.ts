@@ -153,6 +153,10 @@ export interface MeetingNotesInfo {
 
 export interface RoomInfo {
   exists: boolean
+  /** Connected-participant/capability projection (#106): lets an Agent
+   * discover peers and their advertised tokens even with no triggering room
+   * event. Never contains tokens or media identifiers. */
+  participants?: ParticipantRosterEntry[]
   meetingNotes: MeetingNotesInfo
   // Whether the server-side Meeting Notes media capability (the
   // AGENT_MEDIA_ENABLED master switch) is on at all in this environment —

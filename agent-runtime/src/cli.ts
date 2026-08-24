@@ -25,6 +25,7 @@ function usage(): never {
   free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
   free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
+  free4chat-agent peers --room <room-id>
   free4chat-agent collab request --target <participant-id> --summary <text> [--request-id <id>] [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
   free4chat-agent collab respond --request-id <id> --decision <accepted|declined> [--summary <text>] [--instance <id>]
   free4chat-agent collab result --request-id <id> --status <completed|failed> --summary <text> [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
@@ -113,6 +114,28 @@ async function main(): Promise<void> {
         2
       )
     )
+    return
+  }
+  if (command === "peers") {
+    const room = option(args, "--room")
+    if (!room) usage()
+    const { ModernMcpFree4ChatClient } =
+      await import("./free4chat/modernClient.js")
+    const { McpFree4ChatClient } = await import("./free4chat/client.js")
+    const mcpUrl = process.env.FREE4CHAT_MCP_URL ?? "https://www.free4.chat/mcp"
+    const client =
+      process.env.FREE4CHAT_MCP_LEGACY === "1"
+        ? new McpFree4ChatClient(mcpUrl)
+        : new ModernMcpFree4ChatClient(mcpUrl)
+    try {
+      // Read-only discovery surface (#106): works with or without a resident
+      // instance — an Agent can find peers and their participant ids before
+      // any room event gives them context.
+      const info = await client.roomInfo(room)
+      console.log(JSON.stringify(info, null, 2))
+    } finally {
+      await client.close().catch(() => undefined)
+    }
     return
   }
   if (command === "collab") {

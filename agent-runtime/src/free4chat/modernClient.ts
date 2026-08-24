@@ -80,6 +80,33 @@ function toToolErrorCode(error: string | undefined): Free4ChatErrorCode {
   return "tool_error"
 }
 
+/** Projects raw room-info participant records into the sanitized roster
+ * shape: identity, kind, and self-advertised capability tokens only. */
+function parseRoster(raw: unknown[]): ParticipantRosterEntry[] {
+  return raw
+    .map((item) => (item !== null && typeof item === "object" ? item : {}))
+    .map((record) => {
+      const participant = record as Record<string, unknown>
+      const capabilities =
+        participant.capabilities && typeof participant.capabilities === "object"
+          ? (participant.capabilities as Record<string, unknown>)
+          : undefined
+      const advertised = Array.isArray(capabilities?.advertised)
+        ? capabilities.advertised.filter(
+            (token): token is string => typeof token === "string"
+          )
+        : undefined
+      return {
+        id: String(participant.id ?? ""),
+        name: String(participant.name ?? ""),
+        kind: (participant.kind === "agent" ? "agent" : "human") as
+          "agent" | "human",
+        ...(advertised && advertised.length > 0 ? { advertised } : {}),
+      }
+    })
+    .filter((entry) => entry.id.length > 0)
+}
+
 function decodeTextPayload(raw: unknown): unknown {
   const result = asRecord(raw)
   if (result.isError === true) {
@@ -258,6 +285,9 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
         : {}
     return {
       exists: result.exists === true,
+      ...(Array.isArray(result.participants)
+        ? { participants: parseRoster(result.participants) }
+        : {}),
       meetingNotes: {
         active: rawMeetingNotes.active === true,
         ...(typeof rawMeetingNotes.agentParticipantId === "string"

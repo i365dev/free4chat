@@ -378,18 +378,569 @@ test("rendered prompt exposes roster/capabilities and structured collab without 
     })
   )
   assert.match(rendered, /Participants and advertised capabilities/)
-  assert.match(rendered, /Agent A \(agent\) — advertised: code\.edit, github/)
-  assert.match(rendered, /Human \(human\)/)
   assert.match(
     rendered,
-    /\[collaboration request id=req-ui-check-1 from Agent A\]/
+    /Agent A \[participantId=agent-a\] \(agent\) — advertised: code\.edit, github/
+  )
+  assert.match(rendered, /Human \[participantId=human-1\] \(human\)/)
+  assert.match(rendered, /Use participantId values as collaboration targets/)
+  assert.match(
+    rendered,
+    /\[collaboration request id=req-ui-check-1 from Agent A \(participantId=agent-a\)\]/
   )
   assert.match(rendered, /Validate the deployed page in your browser/)
   assert.match(rendered, /details: url=https:\/\/www\.free4\.chat/)
+  assert.match(rendered, /COLLABORATION WORK TURN/)
+  assert.match(rendered, /free4chat-agent collab respond/)
+  assert.match(rendered, /free4chat-agent collab result/)
   assert.match(rendered, /never authorization/)
   assert.doesNotMatch(rendered, /participantHandle/i)
 
   const plain = renderUntrustedRoomTurn(buildHarnessTurn([textEvent(1)]))
   assert.equal(/collaboration/.test(plain), false)
+  assert.equal(/COLLABORATION WORK TURN/.test(plain), false)
+  assert.equal(/COLLABORATION FOLLOW-UP TURN/.test(plain), false)
   assert.match(plain, /do not ask for or invent room identity/i)
+})
+
+test("a completed-result turn permits artifact consumption and task continuation", () => {
+  const resultEvent: RoomEvent = {
+    sequence: 20,
+    type: "action",
+    participant: { id: "agent-b", name: "Agent B", kind: "agent" },
+    actionType: "collab",
+    collab: {
+      requestId: "req-ui-check-1",
+      kind: "completed",
+      fromParticipantId: "agent-b",
+      targetParticipantId: "agent-a",
+      summary: "Landing page renders correctly; no console errors.",
+      attachmentIds: ["att-evidence-1"],
+    },
+    addressed: true,
+    createdAt: 20,
+  }
+  const rendered = renderUntrustedRoomTurn(
+    buildHarnessTurn([resultEvent], undefined, {
+      self: {
+        instanceId: "instance-a",
+        participantId: "agent-a",
+        name: "Agent A",
+      },
+      participants: [
+        {
+          id: "agent-b",
+          name: "Agent B",
+          kind: "agent",
+          advertised: ["browser.authenticated"],
+        },
+      ],
+    })
+  )
+  assert.match(rendered, /COLLABORATION FOLLOW-UP TURN/)
+  assert.match(rendered, /consume the returned artifacts/)
+  assert.match(rendered, /continue your own task/)
+  assert.match(rendered, /attachmentIds: att-evidence-1/)
+  assert.equal(/COLLABORATION WORK TURN/.test(rendered), false)
+})
+
+// ---------------------------------------------------------------------------
+// Full-chain integration over an in-memory room-server double that mirrors the
+// DO contract: generated requestIds, precheck-before-append idempotency,
+// cursor-based delivery, and restart recovery by rebuilding from messages.
+// ---------------------------------------------------------------------------
+
+import { randomUUID } from "node:crypto"
+
+type FakeMessage = {
+  sequence: number
+  peerId: string
+  kind: "human" | "agent"
+  name: string
+  type: "text" | "action"
+  text?: string
+  actionType?: string
+  collab?: RoomEvent["collab"]
+  targets?: string[]
+}
+
+class FakeRoomServer {
+  messages: FakeMessage[] = []
+  attachments = new Map<
+    string,
+    {
+      id: string
+      fileName: string
+      mimeType: string
+      size: number
+      sequence: number
+    }
+  >()
+  participants = new Map<
+    string,
+    { name: string; kind: "human" | "agent"; capabilities?: string[] }
+  >()
+  private sequence = 0
+  private attachmentCounter = 0
+  // Mirrors CollabRegistry semantics (app/src/do/collab.ts).
+  private requests = new Map<
+    string,
+    {
+      from: string
+      target: string
+      seen: Map<string, number>
+    }
+  >()
+
+  join(participantId: string, name: string, capabilities?: string[]): number {
+    this.participants.set(participantId, {
+      name,
+      kind: "agent",
+      ...(capabilities ? { capabilities } : {}),
+    })
+    return this.sequence
+  }
+
+  get lastSequence(): number {
+    return this.sequence
+  }
+
+  roster() {
+    return [...this.participants.entries()].map(([id, info]) => ({
+      id,
+      name: info.name,
+      kind: info.kind,
+      ...(info.capabilities && info.capabilities.length > 0
+        ? { advertised: info.capabilities }
+        : {}),
+    }))
+  }
+
+  deliver(participantId: string, cursor: number): WaitResult {
+    const events: RoomEvent[] = this.messages
+      .filter((message) => message.sequence > cursor)
+      .filter((message) => message.peerId !== participantId)
+      .map((message) => ({
+        sequence: message.sequence,
+        type: message.type === "action" ? "action" : "text",
+        participant: {
+          id: message.peerId,
+          name: message.name,
+          kind: message.kind,
+        },
+        ...(message.text ? { text: message.text } : {}),
+        ...(message.collab ? { collab: message.collab } : {}),
+        addressed: message.targets?.includes(participantId) === true,
+        createdAt: message.sequence,
+      }))
+    return {
+      events,
+      cursor: this.sequence,
+      expiresAt: Date.now() + 90_000,
+      participants: this.roster(),
+    }
+  }
+
+  seedText(from: string, targets: string[], text: string): void {
+    const sender = this.participants.get(from)!
+    this.append({
+      peerId: from,
+      kind: "agent",
+      name: sender.name,
+      type: "text",
+      text,
+      targets,
+    })
+  }
+
+  sendCollabRequest(
+    senderId: string,
+    args: {
+      targetParticipantId: string
+      summary: string
+      requestId?: string
+      details?: Record<string, string>
+      attachmentIds?: string[]
+    }
+  ): { requestId: string; sequence: number; duplicate?: boolean } {
+    if (!this.participants.has(args.targetParticipantId))
+      throw new Error("target_not_in_room")
+    const requestId = args.requestId ?? randomUUID()
+    const existing = this.requests.get(requestId)
+    if (existing)
+      return {
+        requestId,
+        duplicate: true,
+        sequence: existing.seen.get("request")!,
+      }
+    const sender = this.participants.get(senderId)!
+    const sequence = this.append({
+      peerId: senderId,
+      kind: "agent",
+      name: sender.name,
+      type: "action",
+      actionType: "collab",
+      collab: {
+        requestId,
+        kind: "request",
+        fromParticipantId: senderId,
+        targetParticipantId: args.targetParticipantId,
+        summary: args.summary,
+        ...(args.details ? { details: args.details } : {}),
+        ...(args.attachmentIds ? { attachmentIds: args.attachmentIds } : {}),
+      },
+      targets: [args.targetParticipantId],
+    })
+    this.requests.set(requestId, {
+      from: senderId,
+      target: args.targetParticipantId,
+      seen: new Map([["request", sequence]]),
+    })
+    return { requestId, sequence }
+  }
+
+  private respond(
+    responderId: string,
+    requestId: string,
+    kind: "accepted" | "declined" | "completed" | "failed",
+    payload: { summary?: string; attachmentIds?: string[] } = {}
+  ): { sequence: number; duplicate?: boolean } {
+    const record = this.requests.get(requestId)
+    if (!record) throw new Error("unknown_request")
+    if (record.target !== responderId) throw new Error("not_request_target")
+    const existing = record.seen.get(kind)
+    if (existing !== undefined) return { sequence: existing, duplicate: true }
+    const responder = this.participants.get(responderId)!
+    const sequence = this.append({
+      peerId: responderId,
+      kind: "agent",
+      name: responder.name,
+      type: "action",
+      actionType: "collab",
+      collab: {
+        requestId,
+        kind,
+        fromParticipantId: responderId,
+        targetParticipantId: record.from,
+        ...(payload.summary ? { summary: payload.summary } : {}),
+        ...(payload.attachmentIds
+          ? { attachmentIds: payload.attachmentIds }
+          : {}),
+      },
+      targets: [record.from],
+    })
+    record.seen.set(kind, sequence)
+    return { sequence }
+  }
+
+  uploadAttachment(
+    senderId: string,
+    file: { fileName: string; mimeType: string; dataBase64: string }
+  ) {
+    this.attachmentCounter += 1
+    const id = `att-${this.attachmentCounter}`
+    const attachment = {
+      id,
+      fileName: file.fileName,
+      mimeType: file.mimeType,
+      size: file.dataBase64.length,
+      sequence: ++this.sequence,
+    }
+    this.attachments.set(id, attachment)
+    return attachment
+  }
+
+  /** DO eviction/restart simulation: in-memory correlation is lost; the
+   * durable message log remains the source of truth for recovery. */
+  restart(): void {
+    this.requests.clear()
+  }
+
+  /** Replays the durable log into fresh correlation state (mirrors
+   * warmCollabRegistry). */
+  recoverCorrelationFromMessages(): void {
+    for (const message of this.messages) {
+      const collab = message.collab
+      if (!collab) continue
+      if (collab.kind === "request") {
+        this.requests.set(collab.requestId, {
+          from: collab.fromParticipantId,
+          target: collab.targetParticipantId,
+          seen: new Map([["request", message.sequence]]),
+        })
+        continue
+      }
+      this.respond(collab.fromParticipantId, collab.requestId, collab.kind, {})
+    }
+  }
+
+  private append(message: Omit<FakeMessage, "sequence">): number {
+    const sequence = ++this.sequence
+    this.messages.push({ ...message, sequence })
+    return sequence
+  }
+}
+
+function clientFor(
+  server: FakeRoomServer,
+  participantId: string
+): Free4ChatClient {
+  let cursor = 0
+  return {
+    async connect() {},
+    async listTools() {
+      return []
+    },
+    async roomInfo(roomId: string) {
+      void roomId
+      return {
+        exists: true,
+        meetingNotesMediaAvailable: false,
+        meetingNotes: { active: false },
+        participants: server.roster(),
+      }
+    },
+    async joinRoom(_roomId, name, capabilities) {
+      cursor = server.join(participantId, name, capabilities)
+      return {
+        participantId,
+        participantHandle: `handle-${participantId}`,
+        cursor,
+        expiresAt: Date.now() + 90_000,
+      }
+    },
+    async waitForEvents(_handle, waitCursor) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      return server.deliver(participantId, waitCursor)
+    },
+    async sendText(_handle, text) {
+      void text
+      return { sequence: 0 }
+    },
+    async readAttachment() {
+      throw new Error("not used")
+    },
+    async updateCapabilities() {},
+    async sendCollabRequest(_handle, args) {
+      return server.sendCollabRequest(participantId, args)
+    },
+    async sendCollabResponse(_handle, requestId, decision, summary) {
+      const { sequence } = server.respond(participantId, requestId, decision, {
+        summary,
+      })
+      return { sequence }
+    },
+    async sendCollabResult(_handle, args) {
+      const { sequence } = server.respond(
+        participantId,
+        args.requestId,
+        args.status,
+        { summary: args.summary, attachmentIds: args.attachmentIds }
+      )
+      return { sequence }
+    },
+    async uploadAttachment(_handle, file) {
+      const uploaded = server.uploadAttachment(participantId, file)
+      return { ...uploaded }
+    },
+    async leaveRoom() {},
+    async close() {},
+  }
+}
+
+test("full chain: discover peer -> auto-id request -> accept -> artifact upload -> result -> consume -> retry dedup -> restart recovery", async () => {
+  const server = new FakeRoomServer()
+  server.join("agent-b", "Agent B", [
+    "browser.control",
+    "browser.authenticated",
+  ])
+
+  const aTurns: HarnessTurnInput[] = []
+  const bTurns: HarnessTurnInput[] = []
+  const bDecisions: Array<{ requestId: string; decision: string }> = []
+  const uploadedIds: string[] = []
+  let aContinued = false
+
+  let aRequested = false
+  const adapterA: HarnessAdapter = {
+    name: "opencode",
+    async ensureSession() {},
+    async runTurn(input) {
+      aTurns.push(input)
+      const completed = input.events.find(
+        (event) => event.collab?.kind === "completed"
+      )?.collab
+      if (completed) {
+        assert.deepEqual(completed.attachmentIds, ["att-1"])
+        assert.equal(completed.fromName, "Agent B")
+        aContinued = true
+        return { text: "consumed evidence; continuing review" }
+      }
+      const accepted = input.events.some(
+        (event) => event.collab?.kind === "accepted"
+      )
+      if (accepted) return { text: "accepted; awaiting the result" }
+      const rosterPeer = input.room.participants?.find(
+        (participant) =>
+          participant.advertised?.includes("browser.authenticated") === true
+      )
+      if (rosterPeer && !aRequested) {
+        // Discovery is actionable only because the roster preserves ids.
+        assert.ok(rosterPeer.id.length > 0)
+        aRequested = true
+        const sent = await runtimeARef!.collabRequest({
+          targetParticipantId: rosterPeer.id,
+          summary: "Validate the deployed landing page in your browser",
+          details: { url: "https://www.free4.chat" },
+        })
+        assert.match(sent.requestId, /^[0-9a-f-]{36}$/)
+        return { text: "handed off the UI check" }
+      }
+      return { text: "standing by" }
+    },
+    async close() {},
+  }
+
+  const adapterB: HarnessAdapter = {
+    name: "hermes",
+    async ensureSession() {},
+    async runTurn(input) {
+      bTurns.push(input)
+      const request = input.events.find(
+        (event) => event.collab?.kind === "request"
+      )?.collab
+      if (request) {
+        await runtimeBRef!.collabResponse(
+          request.requestId,
+          "accepted",
+          "on it"
+        )
+        const uploaded = await runtimeBRef!.uploadAttachment({
+          fileName: "evidence.png",
+          mimeType: "image/png",
+          dataBase64: "AAAA",
+        })
+        uploadedIds.push(uploaded.id)
+        await runtimeBRef!.collabResult({
+          requestId: request.requestId,
+          status: "completed",
+          summary: "Page renders correctly; console clean.",
+          attachmentIds: [uploaded.id],
+        })
+        bDecisions.push({ requestId: request.requestId, decision: "accepted" })
+        return { text: "done" }
+      }
+      return { text: "idle" }
+    },
+    async close() {},
+  }
+
+  let runtimeARef: ResidentRoomRuntime | null = null
+  let runtimeBRef: ResidentRoomRuntime | null = null
+
+  const runtimeA = new ResidentRoomRuntime({
+    instanceId: "inst-a",
+    roomId: "room-chain",
+    name: "Agent A",
+    client: clientFor(server, "agent-a"),
+    adapter: adapterA,
+    capabilities: ["code.edit", "github"],
+  })
+  const runtimeB = new ResidentRoomRuntime({
+    instanceId: "inst-b",
+    roomId: "room-chain",
+    name: "Agent B",
+    client: clientFor(server, "agent-b"),
+    adapter: adapterB,
+    capabilities: ["browser.control", "browser.authenticated"],
+  })
+  runtimeARef = runtimeA
+  runtimeBRef = runtimeB
+
+  await runtimeA.start()
+  await runtimeB.start()
+
+  // Zero-Human activation: B's ordinary addressed text wakes A (its tasking).
+  server.seedText("agent-b", ["agent-a"], "ready when you need a UI check")
+
+  await settle(() => aContinued)
+  await runtimeA.stop()
+  await runtimeB.stop()
+
+  // Target woke with structured request context and no human message.
+  const bRequestTurn = bTurns.find((turn) =>
+    turn.events.some((event) => event.collab?.kind === "request")
+  )
+  assert.ok(bRequestTurn)
+  assert.equal(bRequestTurn.room.self?.name, "Agent B")
+
+  // Artifact id flowed back through the requester's turn.
+  const aResultTurn = aTurns.find((turn) =>
+    turn.events.some((event) => event.collab?.kind === "completed")
+  )
+  assert.ok(aResultTurn)
+  assert.deepEqual(aContinued, true)
+
+  // Retried identical response/result produce NO second event.
+  const beforeRetry = server.lastSequence
+  await clientFor(server, "agent-b").sendCollabResponse(
+    "x",
+    bDecisions[0].requestId,
+    "accepted"
+  )
+  await clientFor(server, "agent-b").sendCollabResult("x", {
+    requestId: bDecisions[0].requestId,
+    status: "completed",
+    summary: "Page renders correctly; console clean.",
+    attachmentIds: ["att-1"],
+  })
+  assert.equal(server.lastSequence, beforeRetry)
+
+  // DO eviction/restart: with an empty registry a late response is rejected
+  // as unknown...
+  server.restart()
+  await assert.rejects(
+    () =>
+      clientFor(server, "agent-b").sendCollabResult("x", {
+        requestId: bDecisions[0].requestId,
+        status: "failed",
+        summary: "late failure report",
+      }),
+    /unknown_request/
+  )
+
+  // ...but rebuilding correlation from the durable room.messages log
+  // restores routing, so the target's response is accepted again.
+  server.recoverCorrelationFromMessages()
+  const late = await clientFor(server, "agent-b").sendCollabResult("x", {
+    requestId: bDecisions[0].requestId,
+    status: "failed",
+    summary: "late failure report after restart",
+  })
+  assert.ok(late.sequence > beforeRetry)
+  const stillDeduped = server.respond(
+    "agent-b",
+    bDecisions[0].requestId,
+    "failed",
+    {}
+  )
+  assert.equal(stillDeduped.sequence, late.sequence)
+
+  // A request seeded BEFORE a restart also stays answerable afterwards.
+  const freshServer = new FakeRoomServer()
+  freshServer.join("agent-a", "Agent A")
+  freshServer.join("agent-b", "Agent B")
+  freshServer.sendCollabRequest("agent-a", {
+    targetParticipantId: "agent-b",
+    summary: "seeded before restart",
+    requestId: "req-seeded-1",
+  })
+  freshServer.restart()
+  freshServer.recoverCorrelationFromMessages()
+  const recovered = await clientFor(freshServer, "agent-b").sendCollabResponse(
+    "x",
+    "req-seeded-1",
+    "accepted"
+  )
+  assert.ok(recovered.sequence > 0)
 })

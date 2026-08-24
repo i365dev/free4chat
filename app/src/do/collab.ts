@@ -214,11 +214,15 @@ const COLLAB_KINDS: CollabEventKind[] = [
 /** Validates one collaboration envelope against current room state. The
  * request kind requires a live target participant; response/result kinds are
  * shape-checked here while correlation (requestId known, responder is the
- * request's target) is enforced by CollabRegistry in the DO. Free4Chat only
- * transports these envelopes — it never decides their content. */
+ * request's target) is enforced by CollabRegistry in the DO. A request may
+ * omit requestId — one is generated (injectable for deterministic tests) so
+ * the plain "send a request" path works without manual bookkeeping.
+ * Free4Chat only transports these envelopes — it never decides their
+ * content. */
 export function validateCollabEvent(
   input: CollabEventInput,
-  context: CollabValidationContext
+  context: CollabValidationContext,
+  options?: { generateRequestId?: () => string }
 ): CollabValidationResult {
   const kind = input.kind
   if (
@@ -226,12 +230,14 @@ export function validateCollabEvent(
     !COLLAB_KINDS.includes(kind as CollabEventKind)
   )
     return { ok: false, error: "invalid_collab_kind" }
+  const collabKind = kind as CollabEventKind
 
-  const requestId =
+  let requestId =
     typeof input.requestId === "string" ? input.requestId.trim() : ""
+  if (!requestId && collabKind === "request")
+    requestId = (options?.generateRequestId ?? (() => crypto.randomUUID()))()
   if (!REQUEST_ID_PATTERN.test(requestId))
     return { ok: false, error: "invalid_request_id" }
-  const collabKind = kind as CollabEventKind
 
   const targetParticipantId =
     typeof input.targetParticipantId === "string"
@@ -319,6 +325,13 @@ export class CollabRegistry {
     return this.requests.get(requestId)
   }
 
+  /** Drops all tracking — used when a DO instance's room is recreated after
+   * expiry so stale requestIds from a previous room generation can never
+   * suppress or redirect new ones. */
+  clear(): void {
+    this.requests.clear()
+  }
+
   /** Records a new request. A repeated requestId (network retry after the
    * first append succeeded) collapses to the original sequence instead of
    * appending a second, double-execution-inducing event. */
@@ -339,26 +352,96 @@ export class CollabRegistry {
     return { action: "recorded", sequence }
   }
 
-  /** Records accepted/declined/completed/failed for a tracked request. Only
-   * the request's TARGET may respond — anyone else holding a valid token for
-   * a different participant cannot answer on its behalf. Duplicate kinds are
-   * idempotent; distinct lifecycle steps stay allowed because Free4Chat does
-   * not orchestrate (a declined request may still carry a failed result, and
-   * deciding that is the Harnesses' business). */
+  /** Decides a response/result BEFORE anything is appended so retried
+   * identical lifecycle steps short-circuit idempotently instead of waking
+   * the peer twice. Pure lookup — mutates nothing. */
+  precheckResponse(
+    requestId: string,
+    kind: CollabEventKind,
+    responderParticipantId: string
+  ):
+    | { action: "record" }
+    | { action: "duplicate"; sequence: number }
+    | {
+        action: "rejected"
+        error: "unknown_request" | "not_request_target"
+      } {
+    const record = this.requests.get(requestId)
+    if (!record) return { action: "rejected", error: "unknown_request" }
+    if (responderParticipantId !== record.targetParticipantId)
+      return { action: "rejected", error: "not_request_target" }
+    const existing = record.sequenceByKind[kind]
+    if (existing !== undefined)
+      return { action: "duplicate", sequence: existing }
+    return { action: "record" }
+  }
+
+  /** Commits the sequence of an already-prechecked response/result. */
+  commitResponse(
+    requestId: string,
+    kind: CollabEventKind,
+    sequence: number
+  ): void {
+    const record = this.requests.get(requestId)
+    if (!record) return
+    record.sequenceByKind[kind] = sequence
+  }
+
+  /** Combined check+commit for replay paths that already trust the durable
+   * log (rebuild). */
   recordResponse(
     event: CollabEvent,
     responderParticipantId: string,
     sequence: number
   ): CollabRegistryOutcome {
-    const record = this.requests.get(event.requestId)
-    if (!record) return { action: "rejected", error: "unknown_request" }
-    if (responderParticipantId !== record.targetParticipantId)
-      return { action: "rejected", error: "not_request_target" }
-    const existing = record.sequenceByKind[event.kind]
-    if (existing !== undefined)
-      return { action: "duplicate", sequence: existing }
-    record.sequenceByKind[event.kind] = sequence
+    const precheck = this.precheckResponse(
+      event.requestId,
+      event.kind,
+      responderParticipantId
+    )
+    if (precheck.action === "rejected")
+      return { action: "rejected", error: precheck.error }
+    if (precheck.action === "duplicate")
+      return { action: "duplicate", sequence: precheck.sequence }
+    this.commitResponse(event.requestId, event.kind, sequence)
     return { action: "recorded", sequence }
+  }
+
+  /** Rebuilds correlation state from the bounded durable message log after a
+   * Durable Object eviction/restart (#106 review fix): room.messages is the
+   * source of truth; this only restores the in-memory routing/dedup indexes.
+   * The newest requests win when the log holds more than the registry bound;
+   * entries older than that horizon lose their bookkeeping, which degrades
+   * to rejecting very late responses as unknown — never to double-execution.
+   * */
+  rebuild(
+    entries: ReadonlyArray<{ event: CollabEvent; sequence: number }>
+  ): void {
+    const grouped = new Map<
+      string,
+      Array<{ event: CollabEvent; sequence: number }>
+    >()
+    for (const entry of entries) {
+      const event = entry?.event
+      if (!event || typeof event.requestId !== "string" || !event.kind) continue
+      const log = grouped.get(event.requestId) ?? []
+      log.push({ event, sequence: entry.sequence })
+      grouped.set(event.requestId, log)
+    }
+    for (const requestId of [...grouped.keys()].slice(-this.maxRequests)) {
+      const log = grouped.get(requestId)!
+      const first = log[0].event
+      this.requests.set(requestId, {
+        requestId,
+        fromParticipantId: first.fromParticipantId,
+        targetParticipantId: first.targetParticipantId,
+        sequenceByKind: {},
+      })
+      for (const { event, sequence } of log)
+        if (event.kind === "request")
+          this.requests.get(requestId)!.sequenceByKind.request ??= sequence
+        else this.recordResponse(event, event.fromParticipantId, sequence)
+    }
   }
 
   /** Fills from/target for a response/result envelope from the tracked
