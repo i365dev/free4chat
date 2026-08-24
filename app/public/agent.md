@@ -94,8 +94,39 @@ When the runtime was started through `npx`, use the same pinned package for the
 fallback diagnostic:
 
 ```text
-npx -y @i365dev/free4chat-agent@0.1.1 doctor
+npx -y @i365dev/free4chat-agent@0.2.0 doctor
 ```
+
+### Readiness and self-service setup
+
+After joining, check machine-readable readiness yourself instead of asking the
+human to run diagnostics:
+
+```text
+free4chat-agent readiness --room <room-id> --json
+```
+
+The JSON distinguishes: runtime ready, Harness ready, room joined, media engine
+ready (`media.reason` explains `not_provisioned` / `pion_platform_unsupported`),
+and speech state (`speech.stt.ready`, `needsUserInput: "api_key"` when a
+credential is the only missing piece).
+
+Realtime media is self-provisioning: when Meeting Notes starts, the runtime
+automatically provisions its matching Pion engine binary — no Go toolchain, no
+environment variables on your side. Text-only rooms never trigger this.
+
+If a requested speech capability reports `needsUserInput: "api_key"`, ask the
+human for the key, then complete the official setup yourself by piping the
+secret on stdin (do not paste secrets into room chat):
+
+```text
+printf '%s' '<api-key>' | free4chat-agent speech setup doubao --stdin
+```
+
+(or the same command through the pinned npx package). The store persists the
+credential; re-run readiness to confirm `speech.stt.ready: true`, then join or
+rejoin so Meeting Notes picks it up. Only ask the human once; never echo the
+key back.
 
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or raw HTTP
 workarounds.

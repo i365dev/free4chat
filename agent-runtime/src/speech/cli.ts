@@ -117,18 +117,38 @@ export async function runSpeechCommand(
   }
 
   if (subcommand === "setup") {
-    if (rest.length !== 1 || rest[0]?.startsWith("--"))
-      throw new Error("usage: free4chat-agent speech setup <provider>")
-    const providerId = rest[0]
+    const useStdin = rest.includes("--stdin")
+    const positional = rest.filter((a) => !a.startsWith("--"))
+    if (positional.length !== 1 || positional[0] === "")
+      throw new Error(
+        "usage: free4chat-agent speech setup <provider> [--stdin]"
+      )
+    const providerId = positional[0]
     const provider = registry.get(providerId)
     if (!provider)
       throw new Error(
         `speech provider ${providerId} is not available in this build`
       )
+    // --stdin (#105): a calling Agent pipes the secret non-interactively so
+    // it can complete setup itself; interactive TTY entry remains the
+    // default for humans. Only the first secret field is read from stdin;
+    // remaining optional fields fall back to their prompts.
+    let stdinSecret: string | undefined
+    if (useStdin) {
+      const chunks: Buffer[] = []
+      for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+      stdinSecret = Buffer.concat(chunks).toString("utf8").trim()
+      if (!stdinSecret) throw new Error("empty --stdin secret")
+    }
     const input = dependencies.input ?? new TerminalSetupInput()
     const values: Record<string, string> = {}
     for (const field of provider.setupFields) {
-      const value = (await input.read(field)).trim()
+      let value: string
+      if (stdinSecret !== undefined && field.secret && field.key === "apiKey") {
+        value = stdinSecret
+      } else {
+        value = (await input.read(field)).trim()
+      }
       if (field.required && !value)
         throw new Error(`${field.label} is required`)
       values[field.key] = value

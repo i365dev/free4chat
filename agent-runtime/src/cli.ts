@@ -60,6 +60,12 @@ async function main(): Promise<void> {
     )
     return
   }
+  if (command === "readiness") {
+    const { buildReadinessReport } = await import("./readiness.js")
+    const report = await buildReadinessReport()
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
   if (command === "doctor") {
     const report = collectDoctorReport()
     console.log(

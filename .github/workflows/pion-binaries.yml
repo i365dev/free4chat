@@ -1,0 +1,71 @@
+name: Pion Binaries
+
+# Builds and publishes the version-matched Pion media-engine binaries used
+# by @i365dev/free4chat-agent's lazy provisioning (#105). Push a tag
+# `pion-v<runtime version>` (e.g. pion-v0.2.0) to build and attach:
+#   pion-<version>-<os>-<arch>  (raw executable, one per supported platform)
+#   SHA256SUMS                  (sha256sum-format manifest)
+
+on:
+  push:
+    tags:
+      - "pion-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, goos: darwin, goarch: arm64 }
+          - { os: macos-13, goos: darwin, goarch: amd64 }
+          - { os: ubuntu-22.04, goos: linux, goarch: amd64 }
+          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build
+        working-directory: experiments/pion-cloudflare
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          VERSION="${GITHUB_REF_NAME#pion-v}"
+          go build -trimpath -ldflags "-s -w" \
+            -o "pion-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pion-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: pion-*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: sha256sum pion-* > SHA256SUMS
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/pion-*
+            dist/SHA256SUMS
