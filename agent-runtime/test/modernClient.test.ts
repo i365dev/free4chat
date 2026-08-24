@@ -15,7 +15,8 @@ function mcpEnvelope(result: unknown): Response {
 
 test("readAttachment decodes text-like attachments from the JSON envelope", async () => {
   const originalFetch = globalThis.fetch
-  const fileText = "# \u672c\u5730\u6d4b\u8bd5\u8bae\u7a0b\n\n- \u7b2c\u4e00\u9879：\u9a8c\u8bc1\u6587\u672c\u9644\u4ef6\n"
+  const fileText =
+    "# \u672c\u5730\u6d4b\u8bd5\u8bae\u7a0b\n\n- \u7b2c\u4e00\u9879：\u9a8c\u8bc1\u6587\u672c\u9644\u4ef6\n"
   globalThis.fetch = async (_input, init) => {
     const body = JSON.parse(String(init?.body)) as {
       params?: { name?: string; arguments?: Record<string, unknown> }

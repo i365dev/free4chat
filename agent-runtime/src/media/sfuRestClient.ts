@@ -116,9 +116,10 @@ export class SfuRestClient implements SfuRestClientLike {
   }
 
   /** Creates this Agent's own Cloudflare Realtime session (subscribe-only). */
-  async createAgentSessionWithOffer(
-    offer: SessionDescriptionLike
-  ): Promise<{ sessionId: string; sessionDescription?: SessionDescriptionLike }> {
+  async createAgentSessionWithOffer(offer: SessionDescriptionLike): Promise<{
+    sessionId: string
+    sessionDescription?: SessionDescriptionLike
+  }> {
     const data = await this.request("agent-session", "POST", {
       ...this.base(),
       sessionDescription: sessionDescriptionPayload(offer),
@@ -128,14 +129,18 @@ export class SfuRestClient implements SfuRestClientLike {
     const sd =
       data.sessionDescription &&
       typeof data.sessionDescription === "object" &&
-      typeof (data.sessionDescription as { type?: unknown }).type === "string" &&
+      typeof (data.sessionDescription as { type?: unknown }).type ===
+        "string" &&
       typeof (data.sessionDescription as { sdp?: unknown }).sdp === "string"
         ? {
             type: (data.sessionDescription as { type: string }).type,
             sdp: (data.sessionDescription as { sdp: string }).sdp,
           }
         : undefined
-    return { sessionId: data.sessionId, ...(sd ? { sessionDescription: sd } : {}) }
+    return {
+      sessionId: data.sessionId,
+      ...(sd ? { sessionDescription: sd } : {}),
+    }
   }
 
   async createAgentSession(): Promise<string> {

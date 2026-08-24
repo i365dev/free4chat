@@ -67,10 +67,9 @@ const DEFAULT_BIN = join(
 class RtpTrack implements MediaTrackLike {
   public readonly kind = "audio" as const
   public codec?: { mimeType: string; clockRate: number; channels?: number }
-  private listeners: Array<(packet: {
-    payload: Uint8Array
-    header: { timestamp: number }
-  }) => void> = []
+  private listeners: Array<
+    (packet: { payload: Uint8Array; header: { timestamp: number } }) => void
+  > = []
 
   constructor(
     public readonly mid: string,
@@ -87,14 +86,17 @@ class RtpTrack implements MediaTrackLike {
 
   push(payloadB64: string, timestamp: number): void {
     const payload = Uint8Array.from(Buffer.from(payloadB64, "base64"))
-    for (const listener of this.listeners) listener({ payload, header: { timestamp } })
+    for (const listener of this.listeners)
+      listener({ payload, header: { timestamp } })
   }
 
   get onReceiveRtp(): {
-    subscribe(callback: (packet: {
-      payload: Uint8Array
-      header: { timestamp: number }
-    }) => void): void
+    subscribe(
+      callback: (packet: {
+        payload: Uint8Array
+        header: { timestamp: number }
+      }) => void
+    ): void
   } {
     return {
       subscribe: (callback) => {
@@ -109,29 +111,32 @@ class PionChildError extends Error {}
 export async function createPionPeerConnection(
   options?: PionEngineOptions
 ): Promise<PeerConnectionLike> {
-  const binPath = options?.binPath ?? process.env.FREE4CHAT_PION_BIN ?? DEFAULT_BIN
+  const binPath =
+    options?.binPath ?? process.env.FREE4CHAT_PION_BIN ?? DEFAULT_BIN
   const dumpDir =
     options?.dumpDir ??
     process.env.FREE4CHAT_PION_DUMP_DIR ??
     join("/tmp/free4chat-pion", `runtime-${Date.now()}`)
   mkdirSync(dumpDir, { recursive: true })
 
-  const child: ChildProcess = spawn(
-    binPath,
-    ["-dump-dir", dumpDir],
-    { stdio: ["pipe", "pipe", "inherit"] }
-  )
+  const child: ChildProcess = spawn(binPath, ["-dump-dir", dumpDir], {
+    stdio: ["pipe", "pipe", "inherit"],
+  })
   if (!child.stdin || !child.stdout)
     throw new Error(`pion engine failed to spawn at ${binPath}`)
 
   let rpcId = 0
-  const pending = new Map<number, { resolve: (v: GoResponse) => void; reject: (e: Error) => void }>()
+  const pending = new Map<
+    number,
+    { resolve: (v: GoResponse) => void; reject: (e: Error) => void }
+  >()
   const tracksByMid = new Map<string, RtpTrack>()
   let trackListener: ((track: MediaTrackLike) => void) | undefined
   let cachedAnswer: SessionDescriptionLike | undefined
 
   const fail = (message: string) => {
-    for (const entry of pending.values()) entry.reject(new PionChildError(message))
+    for (const entry of pending.values())
+      entry.reject(new PionChildError(message))
     pending.clear()
   }
 
@@ -149,27 +154,39 @@ export async function createPionPeerConnection(
         const info = msg.track
         let track = tracksByMid.get(info.mid)
         if (!track) {
-          track = new RtpTrack(info.mid, info.mime, info.clockRate, info.channels)
+          track = new RtpTrack(
+            info.mid,
+            info.mime,
+            info.clockRate,
+            info.channels
+          )
           tracksByMid.set(info.mid, track)
           trackListener?.(track)
         }
         continue
       }
       if (msg.ev === "rtp") {
-        tracksByMid.get(String(msg.mid))?.push(String(msg.payload), Number(msg.ts))
+        tracksByMid
+          .get(String(msg.mid))
+          ?.push(String(msg.payload), Number(msg.ts))
         continue
       }
       const waiter = pending.get(msg.id)
       if (waiter) {
         pending.delete(msg.id)
-        msg.ok ? waiter.resolve(msg) : waiter.reject(new PionChildError(msg.error ?? "pion op failed"))
+        msg.ok
+          ? waiter.resolve(msg)
+          : waiter.reject(new PionChildError(msg.error ?? "pion op failed"))
       }
     }
   })
   child.on("exit", (code) => fail(`pion engine exited early (code=${code})`))
   child.on("error", (err) => fail(`pion engine error: ${err.message}`))
 
-  function send(cmd: Record<string, unknown>, timeoutMs = 45000): Promise<GoResponse> {
+  function send(
+    cmd: Record<string, unknown>,
+    timeoutMs = 45000
+  ): Promise<GoResponse> {
     cmd.id = ++rpcId
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -200,7 +217,11 @@ export async function createPionPeerConnection(
       return reply.offer
     },
     setRemoteDescription: async (description: SessionDescriptionLike) => {
-      const reply = await send({ op: "apply-remote", type: description.type, sdp: description.sdp })
+      const reply = await send({
+        op: "apply-remote",
+        type: description.type,
+        sdp: description.sdp,
+      })
       if (reply.appliedType === "offer" && reply.answer) {
         // Remote OFFER: engine already answered locally; cache for the
         // bridge's subsequent createAnswer()/setLocalDescription() calls.
@@ -209,7 +230,9 @@ export async function createPionPeerConnection(
     },
     createAnswer: async () => {
       if (!cachedAnswer)
-        throw new PionChildError("createAnswer before a remote offer was applied")
+        throw new PionChildError(
+          "createAnswer before a remote offer was applied"
+        )
       return cachedAnswer
     },
     setLocalDescription: async () => {

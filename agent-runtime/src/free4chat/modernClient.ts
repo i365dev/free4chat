@@ -36,7 +36,11 @@ function asRecord(value: unknown): Record<string, unknown> {
     process.env.FREE4CHAT_MCP_DEBUG === "1" &&
     !(value !== null && typeof value === "object" && !Array.isArray(value))
   )
-    console.error("[mcp-debug] non-object payload:", JSON.stringify(value)?.slice(0, 300), new Error("trace").stack)
+    console.error(
+      "[mcp-debug] non-object payload:",
+      JSON.stringify(value)?.slice(0, 300),
+      new Error("trace").stack
+    )
   if (value !== null && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>
   throw new Free4ChatClientError(
@@ -139,7 +143,9 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
     if (!response.ok)
       throw new Free4ChatClientError(
         `Free4Chat MCP HTTP ${response.status}: ${text.slice(0, 200)}`,
-        response.status >= 500 || response.status === 429 ? "transient" : "tool_error"
+        response.status >= 500 || response.status === 429
+          ? "transient"
+          : "tool_error"
       )
     const contentType = response.headers.get("content-type") ?? ""
     let payload: Record<string, unknown>
@@ -171,17 +177,30 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
     toolName: string,
     args: Record<string, unknown>
   ): Promise<unknown> {
-    const body = this.envelope("tools/call", { name: toolName, arguments: args })
-    return decodeTextPayload(await this.post(body, { "Mcp-Method": "tools/call", "Mcp-Name": toolName }))
+    const body = this.envelope("tools/call", {
+      name: toolName,
+      arguments: args,
+    })
+    return decodeTextPayload(
+      await this.post(body, {
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": toolName,
+      })
+    )
   }
 
-  async callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(
+    toolName: string,
+    args: Record<string, unknown>
+  ): Promise<unknown> {
     try {
       return await this.rawCall(toolName, args)
     } catch (error) {
       if (error instanceof Free4ChatClientError) throw error
       throw new Free4ChatClientError(
-        error instanceof Error ? error.message : `Free4Chat tool ${toolName} failed`,
+        error instanceof Error
+          ? error.message
+          : `Free4Chat tool ${toolName} failed`,
         "transient"
       )
     }
