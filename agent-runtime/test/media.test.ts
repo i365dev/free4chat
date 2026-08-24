@@ -324,6 +324,7 @@ test("subscribes to a newly discovered Human audio track and reports it started"
   assert.deepEqual(restClient.establishTransportCalls, [
     {
       sessionId: "agent-session-1",
+      offer: { type: "offer", sdp: "fake-initial-offer" },
     },
   ])
   assert.equal(restClient.renegotiateCalls, 1)
@@ -587,8 +588,8 @@ test("failed start() (session creation) leaves the bridge stopped and retryable"
   await assert.rejects(() => bridge.start(), /boom: session creation/)
   assert.equal(
     pc.closed,
-    false,
-    "peer connection was never created, nothing to close"
+    true,
+    "peer connection is created before session setup now (it produces the offer), so a failed start must roll it back"
   )
 
   // Retry: fix the failure and start again — must succeed cleanly, not be

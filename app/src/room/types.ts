@@ -56,12 +56,18 @@ export interface RoomMessage {
 }
 
 export type AgentImageMimeType = "image/jpeg" | "image/png" | "image/webp"
+export type AgentTextMimeType =
+  | "text/plain"
+  | "text/markdown"
+  | "text/csv"
+  | "application/json"
+export type AgentAttachmentMimeType = AgentImageMimeType | AgentTextMimeType
 
 export interface RoomAttachment {
   id: string
   senderId: string
   senderName: string
-  mimeType: AgentImageMimeType
+  mimeType: AgentAttachmentMimeType
   fileName: string
   size: number
   chunkCount: number

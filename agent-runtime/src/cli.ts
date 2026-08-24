@@ -113,6 +113,8 @@ function formatCliError(error: unknown): string {
 }
 
 void main().catch((error) => {
+  if (process.env.FREE4CHAT_DEBUG === "1")
+    console.error("[debug]", error instanceof Error ? error.stack : String(error))
   console.error(formatCliError(error))
   process.exitCode = 1
 })

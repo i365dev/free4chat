@@ -23,7 +23,13 @@ const TURNSTILE_SCRIPT_SRC =
 // Cloudflare's published "always passes" test sitekey. Used automatically
 // when NEXT_PUBLIC_TURNSTILE_SITE_KEY is not configured (local dev).
 const TURNSTILE_SITEKEY =
-  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA"
+  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000"
+
+// Build-time kill switch for fully offline/local stacks: bake
+// NEXT_PUBLIC_TURNSTILE_DISABLED=1 and the widget never loads while
+// requestToken() resolves immediately with a placeholder (the server skips
+// verification too when its secret is empty). Production builds leave it
+// unset, so real verification is untouched.
 
 let scriptPromise: Promise<void> | null = null
 
@@ -160,6 +166,8 @@ export function useTurnstile() {
   /** Resolves with a freshly generated, single-use Turnstile token. */
   const requestToken = useCallback((): Promise<string> => {
     if (pendingRef.current) return pendingRef.current
+    if (process.env.NEXT_PUBLIC_TURNSTILE_DISABLED === "1")
+      return Promise.resolve("turnstile-disabled")
 
     const run = async (): Promise<string> => {
       const widgetId = await ensureWidget()

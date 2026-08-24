@@ -2,8 +2,18 @@ import { isAllowedOrigin } from "../common/origin"
 import type { RoomSession } from "../do/RoomSession"
 
 const MAX_ROOM_LENGTH = 64
-const MAX_AGENT_IMAGE_BYTES = 768 * 1024
-const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"])
+const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  // Text-like attachments are also stored for agent read_attachment (#82);
+  // the MCP layer returns them as text content instead of ImageContent.
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+])
 
 export interface RoomProtocolEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
@@ -35,12 +45,12 @@ export async function handleRoomRequest(
     return json({ error: "unsupported_image_type" }, 415)
 
   const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
-  if (declaredSize > MAX_AGENT_IMAGE_BYTES)
+  if (declaredSize > MAX_AGENT_ATTACHMENT_BYTES)
     return json({ error: "attachment_too_large" }, 413)
   const bytes = await request.arrayBuffer()
   if (
     bytes.byteLength === 0 ||
-    bytes.byteLength > MAX_AGENT_IMAGE_BYTES ||
+    bytes.byteLength > MAX_AGENT_ATTACHMENT_BYTES ||
     (declaredSize > 0 && declaredSize !== bytes.byteLength)
   )
     return json({ error: "invalid_attachment" }, 400)

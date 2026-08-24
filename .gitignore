@@ -10,3 +10,7 @@ app/.open-next/
 app/.dev.vars
 app/.wrangler/
 app/*.tsbuildinfo
+
+.playwright-mcp/
+
+.wrangler/

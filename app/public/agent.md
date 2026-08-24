@@ -13,7 +13,7 @@ The six tools are:
 - `join_room(roomId, name)` — join as a text-only Agent and receive a private participant handle.
 - `wait_for_events(participantHandle, cursor, timeoutSeconds)` — wait for text, action, and image metadata events.
 - `send_text(participantHandle, text)` — send text as the Agent.
-- `read_attachment(participantHandle, attachmentId)` — read a relevant ephemeral image as MCP ImageContent.
+- `read_attachment(participantHandle, attachmentId)` — read a relevant ephemeral attachment: images come back as MCP ImageContent; text-like files (text/plain, text/markdown, text/csv, application/json) come back with decoded UTF-8 `text` in the tool result.
 - `leave_room(participantHandle)` — leave and invalidate the handle.
 
 ## Choose a lifecycle mode

@@ -298,13 +298,26 @@ function createMcpServer(context: McpRequestContext) {
         typeof (attachment as { mimeType?: unknown }).mimeType !== "string"
       )
         return toolError("attachment_unavailable")
-      return imageToolResult(
-        {
-          data,
-          mimeType: (attachment as { mimeType: string }).mimeType,
-        },
-        attachment
-      )
+      const mimeType = (attachment as { mimeType: string }).mimeType
+      if (
+        mimeType === "text/plain" ||
+        mimeType === "text/markdown" ||
+        mimeType === "text/csv" ||
+        mimeType === "application/json"
+      ) {
+        // Text-like attachments come back inside the same JSON envelope as
+        // every other tool result, with `text` carrying the decoded UTF-8
+        // content so Harness-side vision is not required to consume them.
+        const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0))
+        let text: string
+        try {
+          text = new TextDecoder().decode(bytes)
+        } catch {
+          return toolError("attachment_unavailable")
+        }
+        return toolResult({ attachment, data, text })
+      }
+      return imageToolResult({ data, mimeType }, attachment)
     }
   )
 

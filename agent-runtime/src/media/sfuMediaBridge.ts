@@ -4,6 +4,7 @@ import type {
 } from "./peerConnectionLike.js"
 import type { DecodedParticipantHandle } from "./participantHandle.js"
 import { SfuRestClient, siteOriginFromMcpUrl } from "./sfuRestClient.js"
+import type { SessionDescriptionLike } from "./sfuRestClient.js"
 import type {
   RoomMediaParticipant,
   SfuRestClientLike,
@@ -117,19 +118,44 @@ export class SfuMediaBridge {
     if (!this.stopped) return
     this.stopped = false
     try {
-      this.mySessionId = await this.restClient.createAgentSession()
       this.pc = await this.createPeerConnection()
       this.pc.onTrack.subscribe((track) => this.handleIncomingTrack(track))
-      // Cloudflare's official example supports the server-offer bootstrap:
-      // establish first, then answer its SDP. This avoids relying on a
-      // client-created DataChannel offer before the transport exists.
-      const transport = await this.restClient.establishDataChannelTransport(
-        this.mySessionId
-      )
-      if (!transport.sessionDescription)
+      // Native initial-offer bootstrap (deployed contract): the gathered
+      // local offer rides on session creation itself, and Cloudflare's
+      // answer comes straight back. Falls back to the blank-session +
+      // datachannels/establish server-offer flow when the deployment only
+      // speaks that contract (#101 §3/§4: follow the actual responses).
+      const offer = await this.pc.createOffer()
+      let description: SessionDescriptionLike | undefined
+      if (typeof this.restClient.createAgentSessionWithOffer === "function") {
+        const created = await this.restClient.createAgentSessionWithOffer(offer)
+        this.mySessionId = created.sessionId
+        description = created.sessionDescription
+      } else {
+        this.mySessionId = await this.restClient.createAgentSession()
+      }
+      if (!description) {
+        const transport = await this.restClient.establishDataChannelTransport(
+          this.mySessionId,
+          offer
+        )
+        description = transport.sessionDescription
+        if (description && description.type === "offer") {
+          await this.pc.setRemoteDescription(description)
+          if (transport.requiresImmediateRenegotiation) {
+            const answer = await this.pc.createAnswer()
+            await this.pc.setLocalDescription(answer)
+            await this.restClient.renegotiate(this.mySessionId, answer)
+          }
+          description = undefined
+        }
+      }
+      if (!description)
         throw new Error("missing_datachannel_session_description")
-      await this.pc.setRemoteDescription(transport.sessionDescription)
-      if (transport.requiresImmediateRenegotiation) {
+      if (description.type !== "offer") {
+        await this.pc.setRemoteDescription(description)
+      } else {
+        await this.pc.setRemoteDescription(description)
         const answer = await this.pc.createAnswer()
         await this.pc.setLocalDescription(answer)
         await this.restClient.renegotiate(this.mySessionId, answer)
