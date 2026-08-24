@@ -12,12 +12,6 @@ import {
 
 const VERSION = "0.2.0"
 
-function fixtureServer(body: Uint8Array | string) {
-  const bytes =
-    typeof body === "string" ? Buffer.from(body, "utf8") : Buffer.from(body)
-  return async () => new Response(bytes)
-}
-
 test("detectPionPlatform maps darwin/linux arm64/x64 and rejects others", () => {
   assert.deepEqual(detectPionPlatform("darwin", "arm64"), {
     os: "darwin",
@@ -31,7 +25,6 @@ test("detectPionPlatform maps darwin/linux arm64/x64 and rejects others", () => 
 })
 
 test("developer override wins over cache/download and must exist", async () => {
-  let fetchCalls = 0
   const ready = await probePionBinary({
     binOverride: "/tmp/fake-pion-bin",
   })
@@ -43,8 +36,6 @@ test("developer override wins over cache/download and must exist", async () => {
     (e: unknown) =>
       e instanceof PionProvisionError && e.code === "pion_provision_failed"
   )
-  // No download attempted for the override path.
-  void fetchCalls
 })
 
 test("unsupported platform yields a typed actionable error", async () => {

@@ -6,7 +6,6 @@ import {
   type PeerConnectionLike,
 } from "../src/media/peerConnectionLike.js"
 import {
-  createPionEngineFactory,
   MeetingNotesController,
   resolveDefaultCreatePeerConnection,
 } from "../src/media/meetingNotesController.js"

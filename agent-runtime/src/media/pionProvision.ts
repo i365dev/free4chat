@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto"
 import { chmod, mkdir, rename, stat, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { join } from "node:path"
 
 import { RUNTIME_PACKAGE_VERSION } from "../bootstrap.js"

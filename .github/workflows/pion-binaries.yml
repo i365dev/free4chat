@@ -20,10 +20,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, goos: darwin, goarch: arm64 }
-          - { os: macos-13, goos: darwin, goarch: amd64 }
-          - { os: ubuntu-22.04, goos: linux, goarch: amd64 }
-          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64 }
+          - { os: macos-14, goos: darwin, goarch: arm64, nodearch: arm64 }
+          - { os: macos-13, goos: darwin, goarch: amd64, nodearch: x64 }
+          - { os: ubuntu-22.04, goos: linux, goarch: amd64, nodearch: x64 }
+          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64, nodearch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -38,16 +38,19 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+        # GOARCH uses Go's amd64 naming; the asset filename uses Node's x64
+        # so the runtime resolver (process.arch) matches exactly.
         run: |
+          mkdir -p ../../dist
           VERSION="${GITHUB_REF_NAME#pion-v}"
           go build -trimpath -ldflags "-s -w" \
-            -o "pion-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}" .
+            -o "../../dist/pion-${VERSION}-${{ matrix.goos }}-${{ matrix.nodearch }}" .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pion-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: pion-*
+          name: pion-${{ matrix.goos }}-${{ matrix.nodearch }}
+          path: dist/pion-*
           if-no-files-found: error
 
   release:
@@ -57,15 +60,15 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-          path: dist
+          path: release-assets
 
       - name: Generate SHA256SUMS
-        working-directory: dist
+        working-directory: release-assets
         run: sha256sum pion-* > SHA256SUMS
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/pion-*
-            dist/SHA256SUMS
+            release-assets/pion-*
+            release-assets/SHA256SUMS

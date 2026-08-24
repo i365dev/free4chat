@@ -1,4 +1,3 @@
-import { RUNTIME_PACKAGE_VERSION } from "./bootstrap.js"
 import { resolveMediaEngineName } from "./media/engine.js"
 import {
   probePionBinary,
@@ -34,10 +33,34 @@ export interface SpeechSttReadiness {
   message?: string
 }
 
+export interface RoomReadiness {
+  joined: boolean
+  roomId?: string
+  instanceId?: string
+  participantId?: string
+  reason?: string
+}
+
+export interface HarnessReadiness {
+  id: string
+  ready: boolean
+  note?: string
+}
+
 export interface ReadinessReport {
   runtime: RuntimeReadiness
   media: MediaReadiness
   speech: { stt: SpeechSttReadiness }
+  room?: RoomReadiness
+  harness?: HarnessReadiness
+}
+
+export interface ReadinessRoomOptions {
+  /** When set, readiness queries the resident daemon for an actual live
+   * instance in this room instead of only reporting local prerequisites. */
+  roomId?: string
+  /** Optional requested Harness launcher id to include readiness for. */
+  agentId?: string
 }
 
 function nodeMajor(): number {
@@ -150,7 +173,31 @@ export async function speechSttReadiness(
   }
 }
 
-export interface ReadinessDeps extends SpeechReadinessDeps {}
+export type ReadinessDeps = SpeechReadinessDeps
+
+/** Pure projection of daemon instance status into room readiness. */
+export function roomReadinessFromStatus(
+  roomId: string | undefined,
+  instances:
+    | Array<{
+        instanceId: string
+        roomId?: string
+        participantId?: string
+      }>
+    | null
+    | undefined
+): RoomReadiness | undefined {
+  if (!roomId) return undefined
+  const inst = (instances ?? []).find((i) => i.roomId === roomId)
+  if (inst)
+    return {
+      joined: true,
+      roomId,
+      instanceId: inst.instanceId,
+      participantId: inst.participantId,
+    }
+  return { joined: false, roomId, reason: "not_joined" }
+}
 
 export async function buildReadinessReport(
   environment: NodeJS.ProcessEnv = process.env,

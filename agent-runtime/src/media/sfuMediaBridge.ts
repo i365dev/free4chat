@@ -279,11 +279,9 @@ export class SfuMediaBridge {
     // used by every other subscribe() call, mirroring the browser client's
     // enqueueNegotiation pattern for this exact protocol.
     const run = this.negotiationQueue.then(async () => {
-      if (this.stopped || !this.pc || !this.mySessionId) {
-        console.error("[dbg-run] bail", key)
-        return
-      }
-      console.error("[dbg-run] enter", key)
+      if (this.stopped || !this.pc || !this.mySessionId) return
+      if (process.env.FREE4CHAT_MCP_DEBUG === "1")
+        console.error("[dbg-run] enter", key)
       this.pendingTracks.set(key, {
         participantId: participant.participantId,
         participantName: participant.name,
@@ -322,7 +320,8 @@ export class SfuMediaBridge {
           this.pendingTracks.delete(key)
         }
         this.subscriptions.delete(key)
-        console.error("[dbg-run] error-delete", key)
+        if (process.env.FREE4CHAT_MCP_DEBUG === "1")
+          console.error("[dbg-run] error-delete", key)
         throw error
       }
     })

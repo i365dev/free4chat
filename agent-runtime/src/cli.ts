@@ -61,9 +61,53 @@ async function main(): Promise<void> {
     return
   }
   if (command === "readiness") {
-    const { buildReadinessReport } = await import("./readiness.js")
+    const [
+      { buildReadinessReport, roomReadinessFromStatus },
+      { collectDoctorReport },
+    ] = await Promise.all([import("./readiness.js"), import("./doctor.js")])
+    const roomId = option(args, "--room")
+    const agentId = option(args, "--agent")
     const report = await buildReadinessReport()
-    console.log(JSON.stringify(report, null, 2))
+
+    let harness: { id: string; ready: boolean; note?: string } | undefined
+    if (agentId) {
+      const doctor = collectDoctorReport()
+      const launcher = doctor.launchers.find((l) => l.id === agentId)
+      if (launcher)
+        harness = {
+          id: launcher.id,
+          ready: launcher.ready,
+          ...(launcher.note ? { note: launcher.note } : {}),
+        }
+    }
+
+    let room: ReturnType<typeof roomReadinessFromStatus>
+    if (roomId) {
+      let instances: Array<{
+        instanceId: string
+        roomId?: string
+        participantId?: string
+      }> | null = null
+      try {
+        await ensureDaemon()
+        instances = (await sendIpc({ op: "status" })) as never
+      } catch {
+        instances = null
+      }
+      room = roomReadinessFromStatus(roomId, instances)
+    }
+
+    console.log(
+      JSON.stringify(
+        {
+          ...report,
+          ...(harness ? { harness } : {}),
+          ...(room ? { room } : {}),
+        },
+        null,
+        2
+      )
+    )
     return
   }
   if (command === "doctor") {
