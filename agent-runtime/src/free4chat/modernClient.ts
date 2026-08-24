@@ -1,4 +1,5 @@
 import { Free4ChatClientError } from "./client.js"
+import type { Free4ChatErrorCode } from "./client.js"
 import type { Free4ChatClient } from "../types.js"
 import type { JoinResult, RoomInfo, WaitResult } from "../types.js"
 
@@ -57,14 +58,35 @@ function asNumber(value: unknown, field: string): number {
   )
 }
 
+// Mirrors the legacy client's toErrorCode(): the runtime rejoin/room-expiry
+// lifecycle switches on these codes, so they must survive the modern
+// transport unchanged.
+function toToolErrorCode(error: string | undefined): Free4ChatErrorCode {
+  if (error === "invalid_participant_handle")
+    return "invalid_participant_handle"
+  if (error === "room_expired") return "room_expired"
+  return "tool_error"
+}
+
 function decodeTextPayload(raw: unknown): unknown {
   const result = asRecord(raw)
   if (result.isError === true) {
     const content = Array.isArray(result.content) ? result.content : []
     const first = asRecord(content[0] ?? {})
+    let errorString: string | undefined
+    if (typeof first.text === "string") {
+      try {
+        const parsed = JSON.parse(first.text) as { error?: unknown }
+        if (typeof parsed.error === "string") errorString = parsed.error
+      } catch {
+        errorString = undefined
+      }
+      if (errorString === undefined) errorString = first.text
+      throw new Free4ChatClientError(errorString, toToolErrorCode(errorString))
+    }
     throw new Free4ChatClientError(
-      typeof first.text === "string" ? first.text : "Free4Chat tool error",
-      "tool_error"
+      "Free4Chat tool error",
+      toToolErrorCode(undefined)
     )
   }
   const content = Array.isArray(result.content) ? result.content : []

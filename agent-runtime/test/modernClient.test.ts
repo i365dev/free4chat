@@ -130,3 +130,41 @@ test("enrichTurnAttachments inlines bounded text files and caps content", async 
   assert.equal(events[1].textFile, undefined)
   assert.equal(unavailable.length, 1)
 })
+
+test("readAttachment surfaces lifecycle codes from isError tool results", async () => {
+  const originalFetch = globalThis.fetch
+  const cases: Array<{ serverError: string; expectedCode: string }> = [
+    {
+      serverError: "invalid_participant_handle",
+      expectedCode: "invalid_participant_handle",
+    },
+    { serverError: "room_expired", expectedCode: "room_expired" },
+    { serverError: "attachment_unavailable", expectedCode: "tool_error" },
+  ]
+  try {
+    for (const c of cases) {
+      globalThis.fetch = async () =>
+        Response.json({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            isError: true,
+            content: [
+              { type: "text", text: JSON.stringify({ error: c.serverError }) },
+            ],
+          },
+        })
+      const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+      let caught: unknown
+      try {
+        await client.readAttachment("handle", "att-1")
+      } catch (e) {
+        caught = e
+      }
+      assert.ok(caught instanceof Error)
+      assert.equal((caught as { code?: string }).code, c.expectedCode)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

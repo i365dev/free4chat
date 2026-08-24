@@ -106,6 +106,30 @@ class RtpTrack implements MediaTrackLike {
   }
 }
 
+/**
+ * Accumulates raw stdout chunks and emits complete newline-terminated lines.
+ * Node `data` chunks carry no line-boundary guarantee (#100 Phase-2 review):
+ * a long RTP event or an SDP response can span any number of chunks, and a
+ * naive per-chunk split silently drops both fragments.
+ */
+export function createLineFramer(onLine: (line: string) => void): {
+  push: (chunk: string) => void
+} {
+  let buffer = ""
+  return {
+    push(chunk: string): void {
+      buffer += chunk
+      for (;;) {
+        const newline = buffer.indexOf("\n")
+        if (newline < 0) break
+        const line = buffer.slice(0, newline).trim()
+        buffer = buffer.slice(newline + 1)
+        if (line) onLine(line)
+      }
+    },
+  }
+}
+
 class PionChildError extends Error {}
 
 export async function createPionPeerConnection(
@@ -140,47 +164,48 @@ export async function createPionPeerConnection(
     pending.clear()
   }
 
-  child.stdout.on("data", (chunk: Buffer) => {
-    for (const rawLine of chunk.toString().split("\n")) {
-      const line = rawLine.trim()
-      if (!line) continue
-      let msg: GoResponse & GoEvent
-      try {
-        msg = JSON.parse(line)
-      } catch {
-        continue
+  const handleStdoutLine = (rawLine: string): void => {
+    const line = rawLine.trim()
+    if (!line) return
+    let msg: GoResponse & GoEvent
+    try {
+      msg = JSON.parse(line)
+    } catch {
+      return
+    }
+    if (msg.ev === "ontrack" && msg.track) {
+      const info = msg.track
+      let track = tracksByMid.get(info.mid)
+      if (!track) {
+        track = new RtpTrack(info.mid, info.mime, info.clockRate, info.channels)
+        tracksByMid.set(info.mid, track)
+        trackListener?.(track)
       }
-      if (msg.ev === "ontrack" && msg.track) {
-        const info = msg.track
-        let track = tracksByMid.get(info.mid)
-        if (!track) {
-          track = new RtpTrack(
-            info.mid,
-            info.mime,
-            info.clockRate,
-            info.channels
-          )
-          tracksByMid.set(info.mid, track)
-          trackListener?.(track)
-        }
-        continue
-      }
-      if (msg.ev === "rtp") {
-        tracksByMid
-          .get(String(msg.mid))
-          ?.push(String(msg.payload), Number(msg.ts))
-        continue
-      }
-      const waiter = pending.get(msg.id)
-      if (waiter) {
-        pending.delete(msg.id)
-        if (msg.ok) {
-          waiter.resolve(msg)
-        } else {
-          waiter.reject(new PionChildError(msg.error ?? "pion op failed"))
-        }
+      return
+    }
+    if (msg.ev === "rtp") {
+      tracksByMid
+        .get(String(msg.mid))
+        ?.push(String(msg.payload), Number(msg.ts))
+      return
+    }
+    const waiter = pending.get(msg.id)
+    if (waiter) {
+      pending.delete(msg.id)
+      if (msg.ok) {
+        waiter.resolve(msg)
+      } else {
+        waiter.reject(new PionChildError(msg.error ?? "pion op failed"))
       }
     }
+  }
+
+  // Node `data` chunks carry no line-boundary guarantee: a long RTP event or
+  // SDP response can span any number of chunks, so complete JSONL lines are
+  // framed across chunk edges instead of parsing raw fragments.
+  const stdoutFramer = createLineFramer((line) => handleStdoutLine(line))
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdoutFramer.push(chunk.toString())
   })
   child.on("exit", (code) => fail(`pion engine exited early (code=${code})`))
   child.on("error", (err) => fail(`pion engine error: ${err.message}`))
