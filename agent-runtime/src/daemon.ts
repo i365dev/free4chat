@@ -13,6 +13,7 @@ import { ResidentRoomRuntime } from "./core/runtime.js"
 import { InstanceRegistry } from "./core/instanceRegistry.js"
 import { runtimeDirectory, socketPath } from "./core/paths.js"
 import { McpFree4ChatClient } from "./free4chat/client.js"
+import { ModernMcpFree4ChatClient } from "./free4chat/modernClient.js"
 
 export { runtimeDirectory, socketPath } from "./core/paths.js"
 
@@ -120,7 +121,10 @@ export class AgentDaemon {
         instanceId,
         roomId: request.room,
         name: request.name,
-        client: new McpFree4ChatClient(mcpUrl),
+        client:
+          process.env.FREE4CHAT_MCP_LEGACY === "1"
+            ? new McpFree4ChatClient(mcpUrl)
+            : new ModernMcpFree4ChatClient(mcpUrl),
         adapter: new AcpHarnessAdapter(launcher, workspace, {
           turnTimeoutMs,
           cancelGraceMs,

@@ -32,9 +32,44 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024
 const FILE_CHUNK_SIZE = 32 * 1024
 const FILE_BUFFER_HIGH_WATER_MARK = 256 * 1024
 const FILE_BUFFER_LOW_WATER_MARK = 64 * 1024
-const AGENT_IMAGE_MAX_BYTES = 768 * 1024
+const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const AGENT_IMAGE_MAX_DIMENSION = 1600
 const AGENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"])
+const AGENT_TEXT_TYPES = new Set([
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+  "text/yaml",
+])
+const AGENT_TEXT_EXTENSIONS = new Set([
+  ".txt",
+  ".md",
+  ".csv",
+  ".json",
+  ".log",
+  ".yml",
+  ".yaml",
+])
+
+function agentTextMime(file: File): string | undefined {
+  if (AGENT_TEXT_TYPES.has(file.type)) return file.type
+  const name = file.name.toLowerCase()
+  const dot = name.lastIndexOf(".")
+  const ext = dot >= 0 ? name.slice(dot) : ""
+  if (!AGENT_TEXT_EXTENSIONS.has(ext)) return undefined
+  return (
+    {
+      ".txt": "text/plain",
+      ".md": "text/markdown",
+      ".csv": "text/csv",
+      ".json": "application/json",
+      ".log": "text/plain",
+      ".yml": "text/yaml",
+      ".yaml": "text/yaml",
+    }[ext] ?? "text/plain"
+  )
+}
 
 interface IncomingFileTransfer {
   id: string
@@ -56,6 +91,16 @@ function isAgentImage(file: File): boolean {
   return AGENT_IMAGE_TYPES.has(file.type)
 }
 
+/** Text-like files are uploaded for read_attachment too; the MCP layer
+ * returns them as decoded text instead of ImageContent. */
+function isAgentTextFile(file: File): boolean {
+  return (
+    file.size > 0 &&
+    file.size <= MAX_AGENT_ATTACHMENT_BYTES &&
+    agentTextMime(file) !== undefined
+  )
+}
+
 async function createAgentVisionCopy(file: File): Promise<Blob> {
   const sourceUrl = URL.createObjectURL(file)
   try {
@@ -67,7 +112,7 @@ async function createAgentVisionCopy(file: File): Promise<Blob> {
     if (
       sourceWidth <= AGENT_IMAGE_MAX_DIMENSION &&
       sourceHeight <= AGENT_IMAGE_MAX_DIMENSION &&
-      file.size <= AGENT_IMAGE_MAX_BYTES
+      file.size <= MAX_AGENT_ATTACHMENT_BYTES
     )
       return file.slice(0, file.size, file.type)
 
@@ -86,7 +131,7 @@ async function createAgentVisionCopy(file: File): Promise<Blob> {
         const blob = await new Promise<Blob | null>((resolve) =>
           canvas.toBlob(resolve, "image/jpeg", quality)
         )
-        if (blob && blob.size <= AGENT_IMAGE_MAX_BYTES) return blob
+        if (blob && blob.size <= MAX_AGENT_ATTACHMENT_BYTES) return blob
       }
       scale *= 0.75
     }
@@ -1384,20 +1429,32 @@ export function useSfuChatRoom(
         const hasConnectedAgent = [...participantMapRef.current.values()].some(
           (participant) => participant.kind === "agent" && participant.connected
         )
-        if (session && hasConnectedAgent && isAgentImage(file)) {
+        if (
+          session &&
+          hasConnectedAgent &&
+          (isAgentImage(file) || isAgentTextFile(file))
+        ) {
           void (async () => {
             try {
-              const visionCopy = await createAgentVisionCopy(file)
+              let uploadType = file.type
+              let uploadBody: ArrayBuffer | Blob = file
+              if (isAgentImage(file)) {
+                const visionCopy = await createAgentVisionCopy(file)
+                uploadType = visionCopy.type || file.type
+                uploadBody = await visionCopy.arrayBuffer()
+              } else {
+                uploadType = agentTextMime(file) ?? file.type
+              }
               await fetch("/api/room/attachments", {
                 method: "POST",
                 headers: {
-                  "Content-Type": visionCopy.type || file.type,
+                  "Content-Type": uploadType,
                   "X-Room-Id": roomName,
                   "X-Room-Participant-Id": session.participantId,
                   "X-Room-Participant-Token": session.participantToken,
                   "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
                 },
-                body: await visionCopy.arrayBuffer(),
+                body: uploadBody,
               })
             } catch {
               // Agent vision is secondary; human DataChannel delivery already succeeded.

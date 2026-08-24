@@ -38,6 +38,9 @@ export interface RoomEvent {
   actionType?: string
   actionPayload?: Record<string, string>
   attachment?: RoomAttachmentMetadata
+  /** Runtime-enriched for supported text attachments (#90/#82): decoded
+   * UTF-8 content, size-capped before it ever reaches the Harness. */
+  textFile?: { fileName: string; mimeType: string; content: string }
   addressed: boolean
   createdAt: number
 }
@@ -57,6 +60,7 @@ export interface HarnessEvent {
   addressed: boolean
   attachment?: RoomAttachmentMetadata
   image?: HarnessImage
+  textFile?: { fileName: string; mimeType: string; content: string }
   sequence: number
   createdAt: number
 }
@@ -142,7 +146,7 @@ export interface Free4ChatClient {
   readAttachment(
     participantHandle: string,
     attachmentId: string
-  ): Promise<{ data: string; mimeType: string }>
+  ): Promise<{ data: string; mimeType: string; text?: string }>
   leaveRoom(participantHandle: string): Promise<void>
   close(): Promise<void>
 }

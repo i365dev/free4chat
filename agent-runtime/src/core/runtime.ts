@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs"
 import { Free4ChatClientError } from "../free4chat/client.js"
 import { MeetingNotesController } from "../media/meetingNotesController.js"
 import { decodeParticipantHandle } from "../media/participantHandle.js"
@@ -26,6 +27,48 @@ import type {
 const WAIT_SECONDS = 20
 const MAX_PENDING_TURNS = 8
 const MAX_IMAGES_PER_TURN = 2
+const MAX_TEXT_FILE_CHARS = 32_000
+
+// Pure attachment-enrichment pass shared by the runtime turn pipeline.
+// Text-like attachments become bounded inline `textFile` content; binary
+// image attachments become `image` blocks; per-event failures are reported
+// and never abort the turn — attachments stay fail-open (#82).
+export async function enrichTurnAttachments(
+  input: HarnessTurnInput,
+  participantHandle: string,
+  readAttachment: (
+    attachmentId: string
+  ) => Promise<{ data: string; mimeType: string; text?: string }>,
+  onUnavailable?: (event: HarnessEvent, message: string) => void,
+  options?: { imagesSupported?: boolean }
+): Promise<HarnessTurnInput> {
+  const imagesSupported = options?.imagesSupported ?? true
+  let imageCount = 0
+  for (const event of input.events) {
+    if (!event.attachment) continue
+    try {
+      const attachment = await readAttachment(event.attachment.id)
+      if (typeof attachment.text === "string") {
+        event.textFile = {
+          fileName: event.attachment.fileName,
+          mimeType: attachment.mimeType,
+          content: attachment.text.slice(0, MAX_TEXT_FILE_CHARS),
+        }
+        continue
+      }
+      if (!imagesSupported || imageCount >= MAX_IMAGES_PER_TURN) continue
+      event.image = {
+        type: "image",
+        data: attachment.data,
+        mimeType: attachment.mimeType,
+      }
+      imageCount += 1
+    } catch (error) {
+      onUnavailable?.(event, error instanceof Error ? error.message : "unknown")
+    }
+  }
+  return input
+}
 
 export interface RuntimeStatus {
   instanceId: string
@@ -84,6 +127,7 @@ export function buildHarnessTurn(
         actionPayload: event.actionPayload,
         addressed: event.addressed,
         attachment: event.attachment,
+        ...(event.textFile ? { textFile: event.textFile } : {}),
         sequence: event.sequence,
         createdAt: event.createdAt,
       }
@@ -340,26 +384,33 @@ export class ResidentRoomRuntime {
     input: HarnessTurnInput
   ): Promise<HarnessTurnInput> {
     if (!this.participantHandle) return input
-    if (this.options.adapter.capabilities?.images === false) return input
-    let imageCount = 0
-    for (const event of input.events) {
-      if (!event.attachment || imageCount >= MAX_IMAGES_PER_TURN) continue
-      try {
-        const image = await this.options.client.readAttachment(
-          this.participantHandle,
-          event.attachment.id
-        )
-        event.image = {
-          type: "image",
-          data: image.data,
-          mimeType: image.mimeType,
+    // Text attachments serve every Harness; only image blocks depend on the
+    // negotiated image capability (#90 review follow-up).
+    const imagesSupported = this.options.adapter.capabilities?.images !== false
+    const handle = this.participantHandle
+    return enrichTurnAttachments(
+      input,
+      handle,
+      (attachmentId) =>
+        this.options.client.readAttachment(handle, attachmentId),
+      (event, message) => {
+        this.log("attachment_unavailable", {
+          attachmentId: event.attachment?.id ?? "unknown",
+          error: message,
+        })
+        if (process.env.FREE4CHAT_MCP_DEBUG === "1") {
+          try {
+            appendFileSync(
+              "/tmp/free4chat-pion/attachment-errors.log",
+              `${new Date().toISOString()} ${event.attachment?.id} ${message}\n`
+            )
+          } catch {
+            // Diagnostics only.
+          }
         }
-        imageCount += 1
-      } catch {
-        this.log("attachment_unavailable")
-      }
-    }
-    return input
+      },
+      { imagesSupported }
+    )
   }
 
   private async rejoinAfterExpiry(): Promise<boolean> {

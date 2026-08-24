@@ -6,9 +6,11 @@ export function renderUntrustedRoomTurn(input: HarnessTurnInput): string {
       const body = event.text ?? `[${event.actionType ?? "room event"}]`
       const image = event.image
         ? ` [image attachment: ${event.image.mimeType}; image content is supplied separately when supported]`
-        : event.attachment
-          ? ` [image attachment: ${event.attachment.fileName} (${event.attachment.mimeType}); cognition may be unavailable]`
-          : ""
+        : event.textFile
+          ? ` [text file attached: ${event.textFile.fileName} (${event.textFile.mimeType}); full content follows between the markers]\n<<<FILE_CONTENT>>>\n${event.textFile.content}\n<<<END_FILE_CONTENT>>>`
+          : event.attachment
+            ? ` [file attachment: ${event.attachment.fileName} (${event.attachment.mimeType}); content unavailable]`
+            : ""
       return `${event.sender} (${event.kind})${event.addressed ? " [addressed]" : ""}: ${body}${image}`
     })
     .join("\n")

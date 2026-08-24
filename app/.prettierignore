@@ -6,3 +6,5 @@ package-lock.json
 public
 *.jsonc
 cloudflare-env.d.ts
+.wrangler
+.playwright-mcp

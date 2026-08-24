@@ -18,10 +18,10 @@ import type {
   AgentEvent,
   RoomCapabilities,
   RoomAttachment,
-  AgentImageMimeType,
   MeetingNotesState,
   PendingMediaCleanup,
   RoomMediaTrack,
+  AgentAttachmentMimeType,
   RoomMessage,
   RoomParticipant,
   RoomRecord,
@@ -32,7 +32,7 @@ const RECONNECT_GRACE_MS = 30 * 1000
 const AGENT_LEASE_MS = 90 * 1000
 const MAX_MESSAGES = 100
 const MAX_AGENT_ATTACHMENTS = 8
-const MAX_AGENT_IMAGE_BYTES = 768 * 1024
+const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
 // Bounded per-agent scratch state for server-side revocation (finding #3):
@@ -430,17 +430,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       typeof attachment.senderName === "string" &&
       (attachment.mimeType === "image/jpeg" ||
         attachment.mimeType === "image/png" ||
-        attachment.mimeType === "image/webp") &&
+        attachment.mimeType === "image/webp" ||
+        attachment.mimeType === "text/plain" ||
+        attachment.mimeType === "text/markdown" ||
+        attachment.mimeType === "text/csv" ||
+        attachment.mimeType === "application/json" ||
+        attachment.mimeType === "text/yaml") &&
       typeof attachment.fileName === "string" &&
       typeof attachment.size === "number" &&
       Number.isSafeInteger(attachment.size) &&
       attachment.size > 0 &&
-      attachment.size <= MAX_AGENT_IMAGE_BYTES &&
+      attachment.size <= MAX_AGENT_ATTACHMENT_BYTES &&
       typeof attachment.chunkCount === "number" &&
       Number.isSafeInteger(attachment.chunkCount) &&
       attachment.chunkCount > 0 &&
       attachment.chunkCount <=
-        Math.ceil(MAX_AGENT_IMAGE_BYTES / ATTACHMENT_CHUNK_SIZE) &&
+        Math.ceil(MAX_AGENT_ATTACHMENT_BYTES / ATTACHMENT_CHUNK_SIZE) &&
       typeof attachment.createdAt === "number" &&
       typeof attachment.sequence === "number"
     )
@@ -1632,9 +1637,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
-  private isAgentImageMimeType(value: string): value is AgentImageMimeType {
+  private isAgentAttachmentMimeType(
+    value: string
+  ): value is AgentAttachmentMimeType {
     return (
-      value === "image/jpeg" || value === "image/png" || value === "image/webp"
+      value === "image/jpeg" ||
+      value === "image/png" ||
+      value === "image/webp" ||
+      value === "text/plain" ||
+      value === "text/markdown" ||
+      value === "text/csv" ||
+      value === "application/json" ||
+      value === "text/yaml"
     )
   }
 
@@ -1651,15 +1665,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const mimeType = (request.headers.get("Content-Type") ?? "")
       .split(";", 1)[0]
       .toLowerCase()
-    if (!this.isAgentImageMimeType(mimeType))
-      return this.json({ error: "unsupported_image_type" }, 415)
+    if (!this.isAgentAttachmentMimeType(mimeType))
+      return this.json({ error: "unsupported_attachment_type" }, 415)
     const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
-    if (declaredSize > MAX_AGENT_IMAGE_BYTES)
+    if (declaredSize > MAX_AGENT_ATTACHMENT_BYTES)
       return this.json({ error: "attachment_too_large" }, 413)
     const bytes = new Uint8Array(await request.arrayBuffer())
     if (
       bytes.byteLength === 0 ||
-      bytes.byteLength > MAX_AGENT_IMAGE_BYTES ||
+      bytes.byteLength > MAX_AGENT_ATTACHMENT_BYTES ||
       (declaredSize > 0 && declaredSize !== bytes.byteLength)
     )
       return this.json({ error: "invalid_attachment" }, 400)
@@ -1677,7 +1691,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       id,
       senderId: participant.id,
       senderName: participant.name,
-      mimeType,
+      mimeType: mimeType as AgentAttachmentMimeType,
       fileName,
       size: bytes.byteLength,
       chunkCount,

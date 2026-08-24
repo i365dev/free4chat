@@ -48,6 +48,13 @@ function sessionDescriptionPayload(description: SessionDescriptionLike): {
  * interface so tests can inject a fake instead of doing real network I/O. */
 export interface SfuRestClientLike {
   createAgentSession(): Promise<string>
+  /** Native initial-offer contract (deployed): session creation carries the
+   * gathered offer and returns Cloudflare's answer directly. Optional so
+   * legacy fakes stay valid; the bridge falls back when absent. */
+  createAgentSessionWithOffer?(offer: SessionDescriptionLike): Promise<{
+    sessionId: string
+    sessionDescription?: SessionDescriptionLike
+  }>
   establishDataChannelTransport(
     mySessionId: string,
     offer?: SessionDescriptionLike
@@ -109,6 +116,33 @@ export class SfuRestClient implements SfuRestClientLike {
   }
 
   /** Creates this Agent's own Cloudflare Realtime session (subscribe-only). */
+  async createAgentSessionWithOffer(offer: SessionDescriptionLike): Promise<{
+    sessionId: string
+    sessionDescription?: SessionDescriptionLike
+  }> {
+    const data = await this.request("agent-session", "POST", {
+      ...this.base(),
+      sessionDescription: sessionDescriptionPayload(offer),
+    })
+    if (typeof data.sessionId !== "string")
+      throw new Error("agent_session_invalid")
+    const sd =
+      data.sessionDescription &&
+      typeof data.sessionDescription === "object" &&
+      typeof (data.sessionDescription as { type?: unknown }).type ===
+        "string" &&
+      typeof (data.sessionDescription as { sdp?: unknown }).sdp === "string"
+        ? {
+            type: (data.sessionDescription as { type: string }).type,
+            sdp: (data.sessionDescription as { sdp: string }).sdp,
+          }
+        : undefined
+    return {
+      sessionId: data.sessionId,
+      ...(sd ? { sessionDescription: sd } : {}),
+    }
+  }
+
   async createAgentSession(): Promise<string> {
     const data = await this.request("agent-session", "POST", this.base())
     if (typeof data.sessionId !== "string")

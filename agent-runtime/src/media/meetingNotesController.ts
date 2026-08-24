@@ -1,4 +1,5 @@
 import { createWeriftPeerConnection } from "./peerConnectionLike.js"
+import { createPionPeerConnection } from "./pionPeerConnectionLike.js"
 import type { PeerConnectionFactory } from "./peerConnectionLike.js"
 import type { DecodedParticipantHandle } from "./participantHandle.js"
 import { SfuMediaBridge } from "./sfuMediaBridge.js"
@@ -73,8 +74,18 @@ export class MeetingNotesController {
     // usable factory here rather than relying on every caller to remember
     // injection (see SfuMediaBridge's own throwing default, which exists
     // only to catch a *test* that forgot to inject one).
+    // Production wiring: the real, non-test ResidentRoomRuntime path never
+    // passes createPeerConnection explicitly, so it must resolve to a
+    // usable factory here rather than relying on every caller to remember
+    // injection (see SfuMediaBridge's own throwing default, which exists
+    // only to catch a *test* that forgot to inject one).
+    // FREE4CHAT_MEDIA_ENGINE=pion routes the media plane through the local
+    // Go/Pion child process (#100 Phase 2); the default stays werift.
     this.createPeerConnection =
-      options.createPeerConnection ?? createWeriftPeerConnection
+      options.createPeerConnection ??
+      (process.env.FREE4CHAT_MEDIA_ENGINE === "pion"
+        ? createPionPeerConnection
+        : createWeriftPeerConnection)
   }
 
   /** Exposed for tests: proves the real production wiring resolves to the
