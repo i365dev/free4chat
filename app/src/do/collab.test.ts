@@ -575,3 +575,89 @@ describe("CollabRegistry rebuild after DO eviction/restart", () => {
     expect(freshRegistry.find("r3")).toBeDefined()
   })
 })
+
+describe("CollabRegistry rebuild fail-closed when the request itself is evicted", () => {
+  it("omits a requestId whose original request left the bounded log, so late responses are unknown_request", () => {
+    const freshRegistry = new CollabRegistry()
+    // Request R (agent-a -> agent-b) was evicted; only B's later
+    // accepted/completed envelopes survive in the log.
+    freshRegistry.rebuild([
+      {
+        event: {
+          requestId: "req-evicted",
+          kind: "accepted",
+          fromParticipantId: "agent-b",
+          targetParticipantId: "agent-a",
+        },
+        sequence: 11,
+      },
+      {
+        event: {
+          requestId: "req-evicted",
+          kind: "completed",
+          fromParticipantId: "agent-b",
+          targetParticipantId: "agent-a",
+          summary: "done",
+        },
+        sequence: 12,
+      },
+    ])
+    expect(freshRegistry.find("req-evicted")).toBeUndefined()
+    expect(freshRegistry.routingFor("req-evicted", "agent-b")).toBeNull()
+    // A must NOT be treated as the target of a phantom reversed request.
+    expect(
+      freshRegistry.precheckResponse("req-evicted", "failed", "agent-a")
+    ).toEqual({ action: "rejected", error: "unknown_request" })
+    expect(
+      freshRegistry.precheckResponse("req-evicted", "failed", "agent-b")
+    ).toEqual({ action: "rejected", error: "unknown_request" })
+  })
+
+  it("still recovers normally when the request and its responses are both retained", () => {
+    const freshRegistry = new CollabRegistry()
+    freshRegistry.rebuild([
+      {
+        event: {
+          requestId: "req-kept",
+          kind: "request",
+          fromParticipantId: "agent-a",
+          targetParticipantId: "agent-b",
+          summary: "check the page",
+        },
+        sequence: 10,
+      },
+      {
+        event: {
+          requestId: "req-kept",
+          kind: "accepted",
+          fromParticipantId: "agent-b",
+          targetParticipantId: "agent-a",
+        },
+        sequence: 11,
+      },
+      {
+        event: {
+          requestId: "req-kept",
+          kind: "completed",
+          fromParticipantId: "agent-b",
+          targetParticipantId: "agent-a",
+          summary: "done",
+        },
+        sequence: 12,
+      },
+    ])
+    const record = freshRegistry.find("req-kept")
+    expect(record?.fromParticipantId).toBe("agent-a")
+    expect(record?.targetParticipantId).toBe("agent-b")
+    expect(freshRegistry.routingFor("req-kept", "agent-b")).toEqual({
+      fromParticipantId: "agent-b",
+      targetParticipantId: "agent-a",
+    })
+    expect(
+      freshRegistry.precheckResponse("req-kept", "accepted", "agent-b")
+    ).toEqual({ action: "duplicate", sequence: 11 })
+    expect(
+      freshRegistry.precheckResponse("req-kept", "failed", "agent-b")
+    ).toEqual({ action: "record" })
+  })
+})

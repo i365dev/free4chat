@@ -430,11 +430,17 @@ export class CollabRegistry {
     }
     for (const requestId of [...grouped.keys()].slice(-this.maxRequests)) {
       const log = grouped.get(requestId)!
-      const first = log[0].event
+      // Fail closed (#106 final review): correlation identity comes ONLY
+      // from a retained kind:"request" event. If the bounded log has evicted
+      // the original request while keeping later responses, rebuilding from
+      // those responses would invert from/target routing — the requestId is
+      // omitted entirely and late responses degrade to unknown_request.
+      const requestEntry = log.find((entry) => entry.event.kind === "request")
+      if (!requestEntry) continue
       this.requests.set(requestId, {
         requestId,
-        fromParticipantId: first.fromParticipantId,
-        targetParticipantId: first.targetParticipantId,
+        fromParticipantId: requestEntry.event.fromParticipantId,
+        targetParticipantId: requestEntry.event.targetParticipantId,
         sequenceByKind: {},
       })
       for (const { event, sequence } of log)
