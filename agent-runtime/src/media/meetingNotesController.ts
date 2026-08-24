@@ -43,6 +43,11 @@ export interface MeetingNotesControllerOptions {
   handle: DecodedParticipantHandle
   onEvent: MediaBridgeEventHandler
   onAudioFrame?: AudioFrameHandler
+  /** Fired once per successful grant activation, after the media bridge is
+   * running (#105): the runtime uses this to check capability
+   * prerequisites (e.g. speech readiness) at the moment Meeting Notes
+   * actually starts — not at join time. */
+  onGrantActivated?: () => void
   pollIntervalMs?: number
   /** Injectable for tests. */
   createBridge?: (handle: DecodedParticipantHandle) => SfuMediaBridge
@@ -232,6 +237,7 @@ export class MeetingNotesController {
     }
     this.bridgeState = "running"
     this.log("meeting_notes_media_started")
+    this.options.onGrantActivated?.()
   }
 
   private async teardownBridge(): Promise<void> {

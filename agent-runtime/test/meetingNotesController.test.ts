@@ -110,7 +110,8 @@ class FakeClient implements Free4ChatClient {
 function makeController(
   client: FakeClient,
   restClient: FakeRestClient,
-  pc: FakePeerConnection
+  pc: FakePeerConnection,
+  extra?: { onGrantActivated?: () => void }
 ) {
   const events: MediaBridgeEvent[] = []
   const controller = new MeetingNotesController({
@@ -122,6 +123,9 @@ function makeController(
     onEvent: (event) => events.push(event),
     restClient,
     createPeerConnection: () => pc,
+    ...(extra?.onGrantActivated
+      ? { onGrantActivated: extra.onGrantActivated }
+      : {}),
     pollIntervalMs: 1_000_000, // never fire on its own during tests; we call poll() directly
   })
   return { controller, events }
@@ -362,6 +366,46 @@ test("the default (non-test) construction resolves createPeerConnection to the P
   )
   delete process.env.FREE4CHAT_MEDIA_ENGINE
 })
+
+test("onGrantActivated fires once when the bridge reaches running", async () => {
+  const client = new FakeClient()
+  client.roomInfoResponse = {
+    exists: true,
+    meetingNotesMediaAvailable: true,
+    meetingNotes: { active: true, agentParticipantId: "agent-1", startedAt: 1 },
+  }
+  const restClient = new FakeRestClient()
+  restClient.participants = [
+    {
+      participantId: "human-1",
+      name: "human-1",
+      sessionId: "sess-1",
+      tracks: [{ trackName: "audio-1", kind: "audio" }],
+    },
+  ]
+  const pc = new FakePeerConnection()
+  let activations = 0
+  const { controller } = makeController(client, restClient, pc, {
+    onGrantActivated: () => {
+      activations += 1
+    },
+  })
+
+  await bridgeStartAndPoll(controller)
+  assert.equal(activations, 1)
+
+  await controller.poll()
+  assert.equal(activations, 1)
+  controller.stop()
+})
+
+async function bridgeStartAndPoll(controller: {
+  start(): Promise<void>
+  poll(): Promise<void>
+}) {
+  await controller.start()
+  await controller.poll()
+}
 
 test("Stop while bridge.start() is still in flight closes it and it never becomes running", async () => {
   const client = new FakeClient()

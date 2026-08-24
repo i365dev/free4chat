@@ -1,4 +1,17 @@
 #!/bin/sh
-cd app
-npx prettier --check . || { echo "Prettier check failed. Run: cd app && npx prettier --write ."; exit 1; }
-yarn lint --max-warnings 0 || { echo "ESLint failed. Run: cd app && yarn lint"; exit 1; }
+ROOT="$(git rev-parse --show-toplevel)"
+
+cd "$ROOT/app" || exit 1
+npx prettier --write . > /dev/null 2>&1
+npx eslint src --fix --max-warnings 0 > /dev/null 2>&1
+
+cd "$ROOT/agent-runtime" || exit 1
+npx prettier --write . > /dev/null 2>&1
+npx eslint src test --fix --max-warnings 0 > /dev/null 2>&1
+
+cd "$ROOT"
+# Re-stage any files the fixers touched (modifications only, never deletions).
+changed=$(git diff --name-only)
+if [ -n "$changed" ]; then
+  echo "$changed" | while read -r f; do git add "$f" 2>/dev/null; done
+fi

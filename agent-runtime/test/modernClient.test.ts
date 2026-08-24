@@ -168,3 +168,32 @@ test("readAttachment surfaces lifecycle codes from isError tool results", async 
     globalThis.fetch = originalFetch
   }
 })
+
+test("buildSpeechNotice: accurate wording, never solicits keys in room", async () => {
+  const { buildSpeechNotice } = await import("../src/core/runtime.js")
+  const noProvider = buildSpeechNotice({
+    providerId: null,
+    hasProvider: false,
+    valuesComplete: false,
+  })
+  assert.match(noProvider ?? "", /no speech-to-text provider/)
+  assert.match(noProvider ?? "", /don't paste API keys into this room/)
+  assert.doesNotMatch(noProvider ?? "", /paste.*key.*here|reply with/i)
+
+  const missingKey = buildSpeechNotice({
+    providerId: "doubao",
+    hasProvider: true,
+    valuesComplete: false,
+  })
+  assert.match(missingKey ?? "", /missing its API key/)
+  assert.match(missingKey ?? "", /my own session/)
+
+  assert.equal(
+    buildSpeechNotice({
+      providerId: "doubao",
+      hasProvider: true,
+      valuesComplete: true,
+    }),
+    null
+  )
+})
