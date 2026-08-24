@@ -33,13 +33,34 @@ function optionalMilliseconds(name: string): number | undefined {
 }
 
 export interface IpcRequest {
-  op: "join" | "status" | "leave" | "stop" | "reload-speech"
+  op:
+    | "join"
+    | "status"
+    | "leave"
+    | "stop"
+    | "reload-speech"
+    | "update-capabilities"
+    | "collab-request"
+    | "collab-response"
+    | "collab-result"
+    | "attach"
   room?: string
   name?: string
   agent?: string
   agentCommand?: string
   agentArgs?: string[]
   instanceId?: string
+  capabilities?: string[]
+  targetParticipantId?: string
+  requestId?: string
+  decision?: "accepted" | "declined"
+  status?: "completed" | "failed"
+  summary?: string
+  details?: Record<string, string>
+  attachmentIds?: string[]
+  fileName?: string
+  mimeType?: string
+  dataBase64?: string
 }
 
 export class AgentDaemon {
@@ -121,6 +142,10 @@ export class AgentDaemon {
         instanceId,
         roomId: request.room,
         name: request.name,
+        capabilities:
+          request.capabilities && request.capabilities.length > 0
+            ? request.capabilities
+            : undefined,
         client:
           process.env.FREE4CHAT_MCP_LEGACY === "1"
             ? new McpFree4ChatClient(mcpUrl)
@@ -150,9 +175,89 @@ export class AgentDaemon {
       return runtime.getStatus()
     }
     if (request.op === "status")
-      return this.instances
-        .values()
-        .map((instance) => instance.runtime.getStatus())
+      return this.instances.values().map((instance) => ({
+        ...instance.runtime.getStatus(),
+        ...(instance.runtime.currentCapabilities().length > 0
+          ? { capabilities: instance.runtime.currentCapabilities() }
+          : {}),
+      }))
+    // #106 collaboration/capability operations: every one resolves the target
+    // instance (explicit --instance, or the single resident instance) and
+    // routes through the runtime, which owns the participant handle. The
+    // Harness never sees the handle itself.
+    if (
+      request.op === "update-capabilities" ||
+      request.op === "collab-request" ||
+      request.op === "collab-response" ||
+      request.op === "collab-result" ||
+      request.op === "attach"
+    ) {
+      const runtime = this.resolveRuntime(request.instanceId)
+      switch (request.op) {
+        case "update-capabilities": {
+          if (!request.capabilities)
+            return {
+              capabilities: runtime.currentCapabilities(),
+            }
+          await runtime.updateCapabilities(request.capabilities)
+          return { capabilities: runtime.currentCapabilities() }
+        }
+        case "collab-request": {
+          if (!request.targetParticipantId || !request.summary)
+            throw new Error("collab request requires target and summary")
+          return runtime.collabRequest({
+            targetParticipantId: request.targetParticipantId,
+            summary: request.summary,
+            ...(request.requestId ? { requestId: request.requestId } : {}),
+            ...(request.details ? { details: request.details } : {}),
+            ...(request.attachmentIds && request.attachmentIds.length > 0
+              ? { attachmentIds: request.attachmentIds }
+              : {}),
+          })
+        }
+        case "collab-response": {
+          if (
+            !request.requestId ||
+            (request.decision !== "accepted" && request.decision !== "declined")
+          )
+            throw new Error("collab respond requires requestId and decision")
+          return runtime.collabResponse(
+            request.requestId,
+            request.decision,
+            request.summary
+          )
+        }
+        case "collab-result": {
+          if (
+            !request.requestId ||
+            (request.status !== "completed" && request.status !== "failed") ||
+            !request.summary
+          )
+            throw new Error(
+              "collab result requires requestId, status, and summary"
+            )
+          return runtime.collabResult({
+            requestId: request.requestId,
+            status: request.status,
+            summary: request.summary,
+            ...(request.details ? { details: request.details } : {}),
+            ...(request.attachmentIds && request.attachmentIds.length > 0
+              ? { attachmentIds: request.attachmentIds }
+              : {}),
+          })
+        }
+        case "attach": {
+          if (!request.fileName || !request.mimeType || !request.dataBase64)
+            throw new Error("attach requires file name, mime type, and data")
+          await runtime.uploadAttachment({
+            fileName: request.fileName,
+            mimeType: request.mimeType,
+            dataBase64: request.dataBase64,
+          })
+          return { ok: true }
+        }
+      }
+    }
     if (request.op === "reload-speech") {
       // #105: speech setup completed out-of-band; hot-reload every resident
       // runtime's transcriber without touching room participants or leases.
@@ -188,6 +293,23 @@ export class AgentDaemon {
       return { state: "stopped" }
     }
     throw new Error("unknown daemon operation")
+  }
+
+  private resolveRuntime(instanceId?: string): ResidentRoomRuntime {
+    if (instanceId) {
+      const instance = this.instances.get(instanceId)
+      if (!instance)
+        throw new Error(
+          `No resident instance ${instanceId}. Run \`free4chat-agent status\`.`
+        )
+      return instance.runtime
+    }
+    const all = [...this.instances.values()]
+    if (all.length !== 1)
+      throw new Error(
+        "Multiple or no resident instances; pass --instance <id> (see `free4chat-agent status`)"
+      )
+    return all[0].runtime
   }
 
   private async removeWorkspace(instanceId: string): Promise<void> {

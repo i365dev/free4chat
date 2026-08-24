@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { ModernMcpFree4ChatClient } from "../src/free4chat/modernClient.js"
+import { Free4ChatClientError } from "../src/free4chat/client.js"
 
 function mcpEnvelope(result: unknown): Response {
   return Response.json({
@@ -196,4 +197,177 @@ test("buildSpeechNotice: accurate wording, never solicits keys in room", async (
     }),
     null
   )
+})
+
+test("joinRoom forwards capability advertisement and wait parses the roster projection", async () => {
+  const originalFetch = globalThis.fetch
+  const seenTools: Array<{ name?: string; args?: Record<string, unknown> }> = []
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      params?: { name?: string; arguments?: Record<string, unknown> }
+    }
+    seenTools.push({ name: body.params?.name, args: body.params?.arguments })
+    if (body.params?.name === "join_room")
+      return mcpEnvelope({
+        participant: { id: "agent-1" },
+        participantHandle: "handle",
+        cursor: 3,
+        expiresAt: 123,
+      })
+    if (body.params?.name === "wait_for_events")
+      return mcpEnvelope({
+        events: [],
+        cursor: 4,
+        expiresAt: 124,
+        participants: [
+          {
+            id: "agent-2",
+            name: "Peer",
+            kind: "agent",
+            advertised: ["browser.authenticated"],
+          },
+        ],
+      })
+    return mcpEnvelope({})
+  }
+
+  try {
+    const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+    const join = await client.joinRoom("room", "Agent", ["code.edit", "github"])
+    assert.equal(join.participantId, "agent-1")
+    const joinCall = seenTools.find((tool) => tool.name === "join_room")
+    assert.deepEqual(joinCall?.args, {
+      roomId: "room",
+      name: "Agent",
+      capabilities: ["code.edit", "github"],
+    })
+
+    const wait = await client.waitForEvents("handle", 0, 0)
+    assert.equal(wait.cursor, 4)
+    assert.equal(
+      wait.participants?.[0].advertised?.[0],
+      "browser.authenticated"
+    )
+    assert.deepEqual(
+      seenTools.find((tool) => tool.name === "wait_for_events")?.args,
+      { participantHandle: "handle", cursor: 0, timeoutSeconds: 0 }
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("collab tools forward boring explicit envelopes and surface server errors", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ name?: string; args?: Record<string, unknown> }> = []
+  const respond = (result: unknown) => mcpEnvelope(result)
+  let mode = "happy"
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      params?: { name?: string; arguments?: Record<string, unknown> }
+    }
+    calls.push({ name: body.params?.name, args: body.params?.arguments })
+    if (mode === "error")
+      return Response.json({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "not_request_target" }),
+            },
+          ],
+        },
+      })
+    if (body.params?.name === "send_collab_request")
+      return respond({ requestId: "req-9", sequence: 21 })
+    if (body.params?.name === "send_collab_response")
+      return respond({ sequence: 22 })
+    if (body.params?.name === "send_collab_result")
+      return respond({ sequence: 23 })
+    if (body.params?.name === "send_attachment")
+      return respond({
+        attachment: {
+          id: "att-5",
+          fileName: "shot.png",
+          mimeType: "image/png",
+          size: 3,
+          sequence: 24,
+        },
+      })
+    if (body.params?.name === "update_capabilities")
+      return respond({ ok: true })
+    return respond({})
+  }
+
+  try {
+    const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+
+    const request = await client.sendCollabRequest("handle", {
+      targetParticipantId: "agent-b",
+      summary: "Check the page",
+      details: { url: "https://www.free4.chat" },
+    })
+    assert.deepEqual(request, { requestId: "req-9", sequence: 21 })
+
+    await client.sendCollabResponse("handle", "req-9", "declined", "busy")
+    await client.sendCollabResult("handle", {
+      requestId: "req-9",
+      status: "completed",
+      summary: "done",
+      attachmentIds: ["att-5"],
+    })
+    const upload = await client.uploadAttachment("handle", {
+      fileName: "shot.png",
+      mimeType: "image/png",
+      dataBase64: "AAAA",
+    })
+    assert.equal(upload.id, "att-5")
+    await client.updateCapabilities("handle", ["shell"])
+
+    assert.deepEqual(
+      calls.find((call) => call.name === "send_collab_request")?.args,
+      {
+        participantHandle: "handle",
+        targetParticipantId: "agent-b",
+        summary: "Check the page",
+        details: { url: "https://www.free4.chat" },
+      }
+    )
+    assert.deepEqual(
+      calls.find((call) => call.name === "send_collab_response")?.args,
+      {
+        participantHandle: "handle",
+        requestId: "req-9",
+        decision: "declined",
+        summary: "busy",
+      }
+    )
+    assert.deepEqual(
+      calls.find((call) => call.name === "send_collab_result")?.args,
+      {
+        participantHandle: "handle",
+        requestId: "req-9",
+        status: "completed",
+        summary: "done",
+        attachmentIds: ["att-5"],
+      }
+    )
+    assert.deepEqual(
+      calls.find((call) => call.name === "update_capabilities")?.args,
+      { participantHandle: "handle", capabilities: ["shell"] }
+    )
+
+    mode = "error"
+    await assert.rejects(
+      () => client.sendCollabResponse("handle", "missing", "accepted"),
+      (error: unknown) =>
+        error instanceof Free4ChatClientError &&
+        error.message.includes("not_request_target")
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })

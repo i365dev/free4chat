@@ -241,6 +241,53 @@ function ActionCard({
 }) {
   if (msg.actionType === "reaction") return null
 
+  if (msg.actionType === "collab" && msg.collab) {
+    const collab = msg.collab
+    const icons: Record<string, string> = {
+      request: "🤝",
+      accepted: "✅",
+      declined: "🚫",
+      completed: "🎯",
+      failed: "❌",
+    }
+    return (
+      <div
+        className={`max-w-xs rounded-xl border border-white/10 bg-gray-900/80 px-3 py-2 text-xs text-white/80 ${
+          isSelf
+            ? "mr-2 rounded-br-3xl rounded-tl-xl rounded-tr-3xl"
+            : "ml-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl"
+        }`}
+      >
+        <p className="flex items-center gap-1.5 font-medium text-white">
+          <span>{icons[collab.kind] ?? "🤝"}</span>
+          {collab.kind === "request"
+            ? `${msg.name} → work request`
+            : `${msg.name} ${collab.kind} the request`}
+        </p>
+        {collab.summary && (
+          <p className="mt-1 break-words text-white/70">{collab.summary}</p>
+        )}
+        {collab.details &&
+          Object.entries(collab.details)
+            .slice(0, 6)
+            .map(([key, value]) => (
+              <p
+                key={key}
+                className="mt-0.5 break-all text-[11px] text-white/50"
+              >
+                {key}: {value}
+              </p>
+            ))}
+        {collab.attachmentIds && collab.attachmentIds.length > 0 && (
+          <p className="mt-1 text-[11px] text-blue-300">
+            📎 {collab.attachmentIds.length} attachment
+            {collab.attachmentIds.length > 1 ? "s" : ""}
+          </p>
+        )}
+      </div>
+    )
+  }
+
   if (msg.actionType === "whiteboard") {
     const url = msg.actionPayload?.url ?? ""
     const containerClass = isSelf

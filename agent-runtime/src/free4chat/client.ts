@@ -5,11 +5,16 @@ import {
 } from "@modelcontextprotocol/client"
 
 import type {
+  AttachmentUpload,
+  CollabRequestArgs,
+  CollabResultArgs,
   Free4ChatClient,
   JoinResult,
   MeetingNotesInfo,
+  ParticipantRosterEntry,
   RoomEvent,
   RoomInfo,
+  UploadedAttachment,
   WaitResult,
 } from "../types.js"
 
@@ -114,6 +119,11 @@ export class McpFree4ChatClient implements Free4ChatClient {
         "send_text",
         "read_attachment",
         "leave_room",
+        "update_capabilities",
+        "send_collab_request",
+        "send_collab_response",
+        "send_collab_result",
+        "send_attachment",
       ]
       if (
         required.some((name) => !tools.tools.some((tool) => tool.name === name))
@@ -177,8 +187,18 @@ export class McpFree4ChatClient implements Free4ChatClient {
     }
   }
 
-  async joinRoom(roomId: string, name: string): Promise<JoinResult> {
-    const result = asRecord(await this.call("join_room", { roomId, name }))
+  async joinRoom(
+    roomId: string,
+    name: string,
+    capabilities?: string[]
+  ): Promise<JoinResult> {
+    const result = asRecord(
+      await this.call("join_room", {
+        roomId,
+        name,
+        ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+      })
+    )
     const participant = asRecord(result.participant)
     if (
       typeof result.participantHandle !== "string" ||
@@ -214,6 +234,9 @@ export class McpFree4ChatClient implements Free4ChatClient {
         : [],
       cursor: asNumber(result.cursor, "cursor"),
       expiresAt: asNumber(result.expiresAt, "expiresAt"),
+      ...(Array.isArray(result.participants)
+        ? { participants: result.participants as ParticipantRosterEntry[] }
+        : {}),
     }
   }
 
@@ -255,6 +278,90 @@ export class McpFree4ChatClient implements Free4ChatClient {
 
   async leaveRoom(participantHandle: string): Promise<void> {
     await this.call("leave_room", { participantHandle })
+  }
+
+  async updateCapabilities(
+    participantHandle: string,
+    capabilities: string[]
+  ): Promise<void> {
+    await this.call("update_capabilities", { participantHandle, capabilities })
+  }
+
+  async sendCollabRequest(
+    participantHandle: string,
+    args: CollabRequestArgs
+  ): Promise<{ requestId: string; sequence: number; duplicate?: boolean }> {
+    const result = asRecord(
+      await this.call("send_collab_request", {
+        participantHandle,
+        targetParticipantId: args.targetParticipantId,
+        summary: args.summary,
+        ...(args.requestId ? { requestId: args.requestId } : {}),
+        ...(args.details ? { details: args.details } : {}),
+        ...(args.attachmentIds ? { attachmentIds: args.attachmentIds } : {}),
+      })
+    )
+    return {
+      requestId: String(result.requestId ?? ""),
+      sequence: asNumber(result.sequence, "sequence"),
+      ...(result.duplicate === true ? { duplicate: true } : {}),
+    }
+  }
+
+  async sendCollabResponse(
+    participantHandle: string,
+    requestId: string,
+    decision: "accepted" | "declined",
+    summary?: string
+  ): Promise<{ sequence: number }> {
+    const result = asRecord(
+      await this.call("send_collab_response", {
+        participantHandle,
+        requestId,
+        decision,
+        ...(summary ? { summary } : {}),
+      })
+    )
+    return { sequence: asNumber(result.sequence, "sequence") }
+  }
+
+  async sendCollabResult(
+    participantHandle: string,
+    args: CollabResultArgs
+  ): Promise<{ sequence: number }> {
+    const result = asRecord(
+      await this.call("send_collab_result", {
+        participantHandle,
+        requestId: args.requestId,
+        status: args.status,
+        summary: args.summary,
+        ...(args.details ? { details: args.details } : {}),
+        ...(args.attachmentIds ? { attachmentIds: args.attachmentIds } : {}),
+      })
+    )
+    return { sequence: asNumber(result.sequence, "sequence") }
+  }
+
+  async uploadAttachment(
+    participantHandle: string,
+    file: AttachmentUpload
+  ): Promise<UploadedAttachment> {
+    const result = asRecord(
+      await this.call("send_attachment", {
+        participantHandle,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        dataBase64: file.dataBase64,
+      })
+    )
+    const attachment = asRecord(result.attachment)
+    return {
+      id: String(attachment.id ?? ""),
+      fileName: String(attachment.fileName ?? file.fileName),
+      mimeType: String(attachment.mimeType ?? file.mimeType),
+      size: asNumber(attachment.size, "size"),
+      sequence: asNumber(attachment.sequence, "sequence"),
+    }
   }
 
   async close(): Promise<void> {

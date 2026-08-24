@@ -1,3 +1,5 @@
+import type { CollabEvent } from "../room/types"
+
 export interface UserInfo {
   name: string
   kind: "human" | "agent"
@@ -8,11 +10,18 @@ export interface UserInfo {
   screenShareEnabled?: boolean
   peerId: string
   muteState?: boolean | false
+  capabilities?: string[]
 }
 
 export type MessageType = "text" | "image" | "file" | "action"
 
-export type ActionType = "whiteboard" | "poll" | "vote" | "game" | "reaction"
+export type ActionType =
+  | "whiteboard"
+  | "poll"
+  | "vote"
+  | "game"
+  | "reaction"
+  | "collab"
 
 export interface Message {
   peerId: string
@@ -29,6 +38,7 @@ export interface Message {
   fileSize?: number
   actionType?: ActionType
   actionPayload?: Record<string, string>
+  collab?: CollabEvent
 }
 
 export interface Color {

@@ -228,10 +228,24 @@ export default function UserCard(user: UserCardProps) {
           </p>
         </div>
 
-        <div className="mb-1 flex min-h-[18px] items-center justify-center gap-1">
+        <div className="mb-1 flex min-h-[18px] flex-wrap items-center justify-center gap-1">
           <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
             {user.kind === "agent" ? "🤖 Agent" : "Human"}
           </span>
+          {(user.capabilities ?? []).slice(0, 3).map((capability) => (
+            <span
+              key={capability}
+              title={capability}
+              className="max-w-[72px] truncate rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/70"
+            >
+              {capability}
+            </span>
+          ))}
+          {(user.capabilities?.length ?? 0) > 3 && (
+            <span className="rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/70">
+              +{(user.capabilities?.length ?? 0) - 3}
+            </span>
+          )}
         </div>
 
         <audio ref={audioRef} autoPlay={!isSelf} muted={isSelf} />

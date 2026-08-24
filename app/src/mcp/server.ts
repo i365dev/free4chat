@@ -7,6 +7,13 @@ import type { RoomSession } from "../do/RoomSession"
 const MAX_ROOM_LENGTH = 64
 const MAX_NAME_LENGTH = 32
 const MAX_TEXT_LENGTH = 4000
+// #106 Phase A/B bounds mirrored from do/collab.ts so MCP clients get
+// fast, local shape errors before the DO rejects them anyway.
+const MAX_CAPABILITIES = 8
+const MAX_CAPABILITY_LENGTH = 48
+const MAX_COLLAB_SUMMARY_LENGTH = 1200
+const MAX_COLLAB_ATTACHMENT_REFS = 3
+const MAX_ATTACHMENT_BASE64 = 1400_000
 const JOIN_RATE_LIMIT = 10
 const JOIN_RATE_WINDOW_S = 60
 
@@ -182,17 +189,24 @@ function createMcpServer(context: McpRequestContext) {
     "join_room",
     {
       description:
-        "Join a Free4Chat room as a text-only Agent. The returned participant handle is a capability and must be kept private.",
+        "Join a Free4Chat room as a text-only Agent. The returned participant handle is a capability and must be kept private. Optionally advertise a small, honest list of capability tokens (e.g. code.edit, browser.authenticated) that describe what you may be able to do for THIS room — descriptions only, never authorization.",
       inputSchema: {
         roomId: z.string().trim().min(1).max(MAX_ROOM_LENGTH),
         name: z.string().trim().min(1).max(MAX_NAME_LENGTH),
+        capabilities: z
+          .array(z.string().trim().min(1).max(MAX_CAPABILITY_LENGTH))
+          .max(MAX_CAPABILITIES)
+          .optional(),
       },
     },
-    async ({ roomId, name }) => {
+    async ({ roomId, name, capabilities }) => {
       if (!(await allowJoin(env, context.requestInfo)))
         return toolError("rate_limited")
       const participantId = crypto.randomUUID()
       const participantToken = crypto.randomUUID()
+      const normalized = (capabilities ?? []).map((capability) =>
+        capability.trim().toLowerCase()
+      )
       const result = await roomControl(env, roomId, {
         action: "agent-register",
         participant: {
@@ -201,10 +215,18 @@ function createMcpServer(context: McpRequestContext) {
           kind: "agent",
           joinedAt: Date.now(),
           token: participantToken,
-          capabilities: { text: true },
+          capabilities: {
+            text: true,
+            ...(normalized.length > 0 ? { advertised: normalized } : {}),
+          },
         },
       })
-      if (!result.ok) return toolError(controlError(result))
+      if (!result.ok)
+        return toolError(
+          result.data.error === "invalid_capabilities"
+            ? "invalid_capabilities"
+            : controlError(result)
+        )
       return toolResult({
         participant: result.data.participant,
         participantHandle: encodeHandle({
@@ -219,10 +241,43 @@ function createMcpServer(context: McpRequestContext) {
   )
 
   server.registerTool(
+    "update_capabilities",
+    {
+      description:
+        "Replace this Agent's advertised capability list for the room. Advertised capabilities are discovery descriptions chosen by you — never authorization grants, never visible to humans as promises. Keep the list small and honest for this room.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        capabilities: z
+          .array(z.string().trim().min(1).max(MAX_CAPABILITY_LENGTH))
+          .max(MAX_CAPABILITIES),
+      },
+    },
+    async ({ participantHandle, capabilities }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-update-capabilities",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        capabilities: capabilities.map((capability) =>
+          capability.trim().toLowerCase()
+        ),
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(
+            result.data.error === "invalid_capabilities"
+              ? "invalid_capabilities"
+              : controlError(result)
+          )
+    }
+  )
+
+  server.registerTool(
     "wait_for_events",
     {
       description:
-        "Wait for new text, action, or image events in the room. All room events are visible for context; addressed is true only when a message targets this Agent.",
+        "Wait for new text, action, image, and collaboration events in the room. All room events are visible for context; addressed is true only when a message targets this Agent. The response also carries a compact connected-participant projection with advertised capability tokens for discovery.",
       inputSchema: {
         participantHandle: z.string().min(1),
         cursor: z.number().int().min(0).default(0),
@@ -266,6 +321,205 @@ function createMcpServer(context: McpRequestContext) {
       return result.ok
         ? toolResult(result.data)
         : toolError(controlError(result))
+    }
+  )
+
+  const collabDetailsSchema = z
+    .record(z.string(), z.string().max(512))
+    .optional()
+  const attachmentRefsSchema = z
+    .array(z.string().uuid())
+    .max(MAX_COLLAB_ATTACHMENT_REFS)
+    .optional()
+
+  server.registerTool(
+    "send_collab_request",
+    {
+      description:
+        "Send a structured work request to another room participant (#106). Collaboration intent only — the target decides autonomously whether to accept. Returns the requestId used for correlated responses.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        targetParticipantId: z.string().min(1),
+        summary: z.string().trim().min(1).max(MAX_COLLAB_SUMMARY_LENGTH),
+        requestId: z
+          .string()
+          .trim()
+          .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{3,63}$/)
+          .optional(),
+        details: collabDetailsSchema,
+        attachmentIds: attachmentRefsSchema,
+      },
+    },
+    async ({
+      participantHandle,
+      targetParticipantId,
+      summary,
+      requestId,
+      details,
+      attachmentIds,
+    }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-send-collab",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        event: {
+          kind: "request",
+          ...(requestId ? { requestId } : {}),
+          targetParticipantId,
+          summary,
+          ...(details ? { details } : {}),
+          ...(attachmentIds ? { attachmentIds } : {}),
+        },
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(
+            typeof result.data.error === "string"
+              ? result.data.error
+              : controlError(result)
+          )
+    }
+  )
+
+  server.registerTool(
+    "send_collab_response",
+    {
+      description:
+        "Answer a collaboration request addressed to you with accepted or declined (#106). Only the request's target can respond; correlation is enforced by requestId.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        requestId: z.string().min(1).max(64),
+        decision: z.enum(["accepted", "declined"]),
+        summary: z.string().trim().max(MAX_COLLAB_SUMMARY_LENGTH).optional(),
+      },
+    },
+    async ({ participantHandle, requestId, decision, summary }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-send-collab",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        event: {
+          kind: decision,
+          requestId,
+          ...(summary ? { summary } : {}),
+        },
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(
+            typeof result.data.error === "string"
+              ? result.data.error
+              : controlError(result)
+          )
+    }
+  )
+
+  server.registerTool(
+    "send_collab_result",
+    {
+      description:
+        "Return the terminal structured outcome of a collaboration request you handled: completed or failed (#106). May reference existing room attachments (e.g. a screenshot you uploaded via send_attachment) as artifacts.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        requestId: z.string().min(1).max(64),
+        status: z.enum(["completed", "failed"]),
+        summary: z.string().trim().min(1).max(MAX_COLLAB_SUMMARY_LENGTH),
+        details: collabDetailsSchema,
+        attachmentIds: attachmentRefsSchema,
+      },
+    },
+    async ({
+      participantHandle,
+      requestId,
+      status,
+      summary,
+      details,
+      attachmentIds,
+    }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-send-collab",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        event: {
+          kind: status,
+          requestId,
+          summary,
+          ...(details ? { details } : {}),
+          ...(attachmentIds ? { attachmentIds } : {}),
+        },
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(
+            typeof result.data.error === "string"
+              ? result.data.error
+              : controlError(result)
+          )
+    }
+  )
+
+  server.registerTool(
+    "send_attachment",
+    {
+      description:
+        "Upload one bounded ephemeral file (image jpeg/png/webp or text-like plain/markdown/csv/json/yaml, ≤768KB) into this Agent's current room so other participants can read it via read_attachment (#106 artifact path). Same store, limits, and eviction as human uploads; never persisted beyond the room.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        fileName: z.string().trim().min(1).max(256),
+        mimeType: z.enum([
+          "image/jpeg",
+          "image/png",
+          "image/webp",
+          "text/plain",
+          "text/markdown",
+          "text/csv",
+          "application/json",
+          "text/yaml",
+        ]),
+        dataBase64: z.string().min(1).max(MAX_ATTACHMENT_BASE64),
+      },
+    },
+    async ({ participantHandle, fileName, mimeType, dataBase64 }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      let bytes: Uint8Array<ArrayBuffer>
+      try {
+        const padded = dataBase64.replaceAll("-", "+").replaceAll("_", "/")
+        const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4))
+        bytes = new Uint8Array(new ArrayBuffer(binary.length))
+        for (let index = 0; index < binary.length; index += 1)
+          bytes[index] = binary.charCodeAt(index)
+      } catch {
+        return toolError("invalid_attachment")
+      }
+      const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(handle.room))
+      const response = await stub.fetch("https://room/attachment", {
+        method: "POST",
+        headers: {
+          "Content-Type": mimeType,
+          "X-Room-Participant-Id": handle.participantId,
+          "X-Room-Participant-Token": handle.participantToken,
+          "X-File-Name": encodeURIComponent(fileName),
+        },
+        body: bytes,
+      })
+      const data = (await response.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >
+      return response.ok
+        ? toolResult(data)
+        : toolError(
+            typeof data.error === "string"
+              ? data.error
+              : "attachment_unavailable"
+          )
     }
   )
 

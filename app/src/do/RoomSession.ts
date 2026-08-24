@@ -1,6 +1,16 @@
 import { DurableObject } from "cloudflare:workers"
 
 import {
+  agentCapabilitiesFrom,
+  CollabRegistry,
+  COLLAB_ACTION_TYPE,
+  rosterProjection,
+  sanitizeStoredAgentCapabilities,
+  validateAdvertisedCapabilities,
+  validateCollabEvent,
+  type CollabEventInput,
+} from "./collab"
+import {
   clearGrantIfParticipantDeparting,
   isAgentAuthorizedForMedia,
   NO_MEETING_NOTES,
@@ -15,6 +25,7 @@ import {
 } from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import type {
+  AgentCapabilities,
   AgentEvent,
   RoomCapabilities,
   RoomAttachment,
@@ -26,6 +37,7 @@ import type {
   RoomParticipant,
   RoomRecord,
   RoomState,
+  ParticipantKind,
 } from "../room/types"
 
 const RECONNECT_GRACE_MS = 30 * 1000
@@ -176,6 +188,24 @@ type ControlRequest =
       text: string
     }
   | {
+      // #106 Phase A: full replacement of this agent's advertised capability
+      // list. Rejected (not repaired) on invalid input so a misbehaving
+      // Runtime fails loudly instead of advertising a wrong self-image.
+      action: "agent-update-capabilities"
+      participantId: string
+      token: string
+      capabilities: string[]
+    }
+  | {
+      // #106 Phase B: one structured collaboration envelope. The request kind
+      // targets a live participant; responses/results are correlated to the
+      // tracked request by CollabRegistry before anything is broadcast.
+      action: "agent-send-collab"
+      participantId: string
+      token: string
+      event: CollabEventInput
+    }
+  | {
       action: "agent-read-attachment"
       participantId: string
       token: string
@@ -235,6 +265,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
   // short-lived reservation while the request refreshes its lease.
   private readonly agentWaiters = new Map<string, AgentWaiter | null>()
+  // #106 Phase B: room-lifetime collaboration bookkeeping (request
+  // correlation + retried-send dedup). In-memory by design — see CollabRegistry.
+  private readonly collabRegistry = new CollabRegistry()
 
   private async loadRoom(): Promise<RoomRecord | null> {
     const stored = await this.ctx.storage.get<StoredRoom>("room")
@@ -258,8 +291,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // session (see the "agent-media-attach" action) — unlike a human's,
         // it is never populated from tracks/muted/fileChannelReady legacy
         // fields, since an agent never publishes in the current protocol.
-        if (participant.capabilities?.text !== true) {
-          participant.capabilities = { text: true }
+        const sanitized = sanitizeStoredAgentCapabilities(
+          participant.capabilities
+        )
+        if (sanitized.changed) {
+          participant.capabilities = sanitized.capabilities
           changed = true
         }
         for (const key of [
@@ -726,19 +762,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ...(message.actionPayload === undefined
         ? {}
         : { actionPayload: message.actionPayload }),
+      ...(message.collab === undefined ? {} : { collab: message.collab }),
       addressed: message.targets?.includes(participantId) === true,
       createdAt: message.createdAt,
     }
   }
 
-  private toAttachmentEvent(attachment: RoomAttachment): AgentEvent {
+  private toAttachmentEvent(
+    attachment: RoomAttachment,
+    senderKind: ParticipantKind
+  ): AgentEvent {
     return {
       sequence: attachment.sequence,
       type: "image",
       participant: {
         id: attachment.senderId,
         name: attachment.senderName,
-        kind: "human",
+        kind: senderKind,
       },
       attachment: {
         id: attachment.id,
@@ -771,7 +811,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })),
       ...room.attachments.map((attachment) => ({
         sequence: attachment.sequence,
-        event: this.toAttachmentEvent(attachment),
+        event: this.toAttachmentEvent(
+          attachment,
+          room.participants[attachment.senderId]?.kind ?? "human"
+        ),
         peerId: attachment.senderId,
       })),
     ].sort((left, right) => left.sequence - right.sequence)
@@ -808,7 +851,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         result.cursor > waiter.cursor ||
         result.truncated
       ) {
-        this.finishWaiter(waiter, this.json(result))
+        this.finishWaiter(
+          waiter,
+          this.json({
+            ...result,
+            participants: rosterProjection(room.participants),
+          })
+        )
       }
     }
   }
@@ -846,7 +895,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         request.timeoutSeconds === 0
       ) {
         this.agentWaiters.delete(participant.id)
-        return this.json(result)
+        return this.json({
+          ...result,
+          // Compact participant/capability projection (#106 Phase A): lets a
+          // resident Harness answer "who here can potentially do X" without
+          // dumping the full room state into every turn.
+          participants: rosterProjection(room.participants),
+        })
       }
 
       return new Promise<Response>((resolve) => {
@@ -870,9 +925,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                 return
               }
               resolve(
-                this.json(
-                  this.agentEvents(current, participant.id, request.cursor)
-                )
+                this.json({
+                  ...this.agentEvents(current, participant.id, request.cursor),
+                  participants: rosterProjection(current.participants),
+                })
               )
             })
           }, request.timeoutSeconds * 1000),
@@ -935,11 +991,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ) {
         return this.json({ error: "invalid_participant_kind" }, 400)
       }
+      // #106 Phase A: a joining agent may advertise an explicit bounded
+      // capability list chosen by its Runtime/Harness. Invalid input rejects
+      // the join — never repaired silently (see do/collab.ts).
+      let registeredCapabilities: AgentCapabilities = { text: true }
+      if (isAgent) {
+        const validated = validateAdvertisedCapabilities(
+          request.participant.capabilities?.advertised ?? []
+        )
+        if (validated.ok === false)
+          return this.json(
+            { error: validated.error, reason: validated.reason },
+            400
+          )
+        registeredCapabilities = agentCapabilitiesFrom(validated.capabilities)
+      }
       const participant: RoomParticipant = {
         ...request.participant,
         connected: isAgent,
         lastSeenAt: now,
-        ...(isAgent ? { capabilities: { text: true }, media: undefined } : {}),
+        ...(isAgent
+          ? { capabilities: registeredCapabilities, media: undefined }
+          : {}),
       }
       room.participants[participant.id] = participant
       this.applyEmptyRoomExpiry(room, now)
@@ -987,6 +1060,121 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.broadcast({ type: "message", message: roomMessage })
       this.resolveAgentWaiters(room)
       return this.json({
+        sequence: roomMessage.sequence,
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-update-capabilities") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      const validated = validateAdvertisedCapabilities(request.capabilities)
+      if (validated.ok === false)
+        return this.json(
+          { error: validated.error, reason: validated.reason },
+          400
+        )
+      participant.capabilities = agentCapabilitiesFrom(validated.capabilities)
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      return this.json({
+        capabilities: participant.capabilities,
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-send-collab") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      participant.lastSeenAt = Date.now()
+      const validated = validateCollabEvent(request.event ?? {}, {
+        senderParticipantId: participant.id,
+        participants: room.participants,
+        attachments: room.attachments,
+      })
+      if (validated.ok === false)
+        return this.json({ error: validated.error }, 400)
+
+      let event = validated.event
+      if (event.kind === "request") {
+        const outcome = this.collabRegistry.recordRequest(
+          event,
+          room.nextMessageSequence + 1
+        )
+        // Retried send (same requestId): report the original append instead
+        // of creating a second, double-execution-inducing event.
+        if (outcome.action === "duplicate")
+          return this.json({
+            requestId: event.requestId,
+            duplicate: true,
+            sequence: outcome.sequence,
+            expiresAt: room.expiresAt,
+          })
+      } else {
+        const routing = this.collabRegistry.routingFor(
+          event.requestId,
+          participant.id
+        )
+        if (!routing)
+          return this.json(
+            {
+              error: this.collabRegistry.find(event.requestId)
+                ? "not_request_target"
+                : "unknown_request",
+            },
+            403
+          )
+        event = {
+          ...event,
+          fromParticipantId: routing.fromParticipantId,
+          targetParticipantId: routing.targetParticipantId,
+        }
+      }
+
+      const roomMessage = this.appendMessage(room, {
+        id: crypto.randomUUID(),
+        peerId: participant.id,
+        name: participant.name,
+        kind: participant.kind,
+        type: "action",
+        actionType: COLLAB_ACTION_TYPE,
+        collab: event,
+        targets:
+          event.targetParticipantId !== participant.id
+            ? [event.targetParticipantId]
+            : undefined,
+        createdAt: Date.now(),
+      })
+      if (event.kind !== "request")
+        this.collabRegistry.recordResponse(
+          event,
+          participant.id,
+          roomMessage.sequence
+        )
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcast({ type: "message", message: roomMessage })
+      this.resolveAgentWaiters(room)
+      return this.json({
+        requestId: event.requestId,
         sequence: roomMessage.sequence,
         expiresAt: room.expiresAt,
       })
@@ -1659,9 +1847,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const token = request.headers.get("X-Room-Participant-Token") ?? ""
     const participant = this.findParticipant(room, participantId, token)
     if (!participant) return this.json({ error: "unauthorized" }, 401)
-    if (participant.kind !== "human")
-      return this.json({ error: "human_only" }, 403)
-
+    // #106: agents as well as humans may contribute to the room's bounded
+    // ephemeral attachment set — a collaborating agent's screenshot/log/JSON
+    // artifact rides the exact same store, limits, and eviction rules as
+    // human uploads (no new persistence is introduced).
     const mimeType = (request.headers.get("Content-Type") ?? "")
       .split(";", 1)[0]
       .toLowerCase()
