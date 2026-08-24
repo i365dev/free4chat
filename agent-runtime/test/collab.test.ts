@@ -390,16 +390,39 @@ test("rendered prompt exposes roster/capabilities and structured collab without 
   )
   assert.match(rendered, /Validate the deployed page in your browser/)
   assert.match(rendered, /details: url=https:\/\/www\.free4\.chat/)
+  // WORK TURN mode is exclusive: no ordinary-only restrictions survive.
   assert.match(rendered, /COLLABORATION WORK TURN/)
+  assert.equal(
+    /not a coding, research, or computer-use task/.test(rendered),
+    false
+  )
+  assert.equal(
+    /Respond with a brief conversational reply based only on the room context below/.test(
+      rendered
+    ),
+    false
+  )
   assert.match(rendered, /free4chat-agent collab respond/)
   assert.match(rendered, /free4chat-agent collab result/)
   assert.match(rendered, /never authorization/)
+  // Shared safety rules still hold in work mode.
+  assert.match(rendered, /Do not call MCP or Free4Chat tools/)
+  assert.match(rendered, /untrusted conversation input/)
   assert.doesNotMatch(rendered, /participantHandle/i)
 
   const plain = renderUntrustedRoomTurn(buildHarnessTurn([textEvent(1)]))
   assert.equal(/collaboration/.test(plain), false)
   assert.equal(/COLLABORATION WORK TURN/.test(plain), false)
   assert.equal(/COLLABORATION FOLLOW-UP TURN/.test(plain), false)
+  // Ordinary mode carries its restrictions and nothing collab-specific.
+  assert.match(
+    plain,
+    /This is a chat turn, not a coding, research, or computer-use task\./
+  )
+  assert.match(
+    plain,
+    /Respond with a brief conversational reply based only on the room context below/
+  )
   assert.match(plain, /do not ask for or invent room identity/i)
 })
 
@@ -442,6 +465,23 @@ test("a completed-result turn permits artifact consumption and task continuation
   assert.match(rendered, /continue your own task/)
   assert.match(rendered, /attachmentIds: att-evidence-1/)
   assert.equal(/COLLABORATION WORK TURN/.test(rendered), false)
+  // FOLLOW-UP mode is exclusive: no ordinary-only restrictions survive,
+  // while shared safety rules remain.
+  assert.equal(
+    /not a coding, research, or computer-use task/.test(rendered),
+    false
+  )
+  assert.equal(
+    /Respond with a brief conversational reply based only on the room context below/.test(
+      rendered
+    ),
+    false
+  )
+  assert.equal(
+    /For ordinary conversation, do not inspect the workspace/.test(rendered),
+    false
+  )
+  assert.match(rendered, /Do not call MCP or Free4Chat tools/)
 })
 
 // ---------------------------------------------------------------------------
