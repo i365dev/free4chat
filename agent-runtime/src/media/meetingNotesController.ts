@@ -1,11 +1,35 @@
 import { createWeriftPeerConnection } from "./peerConnectionLike.js"
+import { ensurePionBinary } from "./pionProvision.js"
+import { resolveMediaEngineName } from "./engine.js"
 import { createPionPeerConnection } from "./pionPeerConnectionLike.js"
-import type { PeerConnectionFactory } from "./peerConnectionLike.js"
+import type {
+  PeerConnectionLike,
+  PeerConnectionFactory,
+} from "./peerConnectionLike.js"
 import type { DecodedParticipantHandle } from "./participantHandle.js"
 import { SfuMediaBridge } from "./sfuMediaBridge.js"
 import type { SfuRestClientLike } from "./sfuRestClient.js"
 import type { AudioFrameHandler, MediaBridgeEventHandler } from "./types.js"
 import type { Free4ChatClient } from "../types.js"
+
+/** Default production factory (#105): lazily provisions the version-matched
+ * Pion engine binary, then adapts the Go child to PeerConnectionLike.
+ * werift remains available as the explicit FREE4CHAT_MEDIA_ENGINE=werift
+ * developer fallback. */
+export async function createPionEngineFactory(): Promise<PeerConnectionLike> {
+  const resolved = await ensurePionBinary({
+    binOverride: process.env.FREE4CHAT_PION_BIN,
+  })
+  return createPionPeerConnection({ binPath: resolved.binPath })
+}
+
+/** Resolved at construction time so tests can flip FREE4CHAT_MEDIA_ENGINE
+ * before instantiating the controller. */
+export function resolveDefaultCreatePeerConnection(): PeerConnectionFactory {
+  return resolveMediaEngineName(process.env) === "werift"
+    ? createWeriftPeerConnection
+    : createPionEngineFactory
+}
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
 
@@ -79,13 +103,12 @@ export class MeetingNotesController {
     // usable factory here rather than relying on every caller to remember
     // injection (see SfuMediaBridge's own throwing default, which exists
     // only to catch a *test* that forgot to inject one).
-    // FREE4CHAT_MEDIA_ENGINE=pion routes the media plane through the local
-    // Go/Pion child process (#100 Phase 2); the default stays werift.
+    // Pion is the selected media engine after #103/#105: Meeting Notes uses
+    // it by default and provisions its binary lazily on first media need.
+    // FREE4CHAT_MEDIA_ENGINE=werift remains an explicit developer fallback;
+    // tests may still inject createPeerConnection directly.
     this.createPeerConnection =
-      options.createPeerConnection ??
-      (process.env.FREE4CHAT_MEDIA_ENGINE === "pion"
-        ? createPionPeerConnection
-        : createWeriftPeerConnection)
+      options.createPeerConnection ?? resolveDefaultCreatePeerConnection()
   }
 
   /** Exposed for tests: proves the real production wiring resolves to the

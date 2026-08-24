@@ -9,6 +9,7 @@ function usage(): never {
   free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name>
   free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name>
   free4chat-agent doctor [--json]
+  free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
   free4chat-agent speech status [--json]
   free4chat-agent speech doctor [--json]
   free4chat-agent speech setup <provider>
@@ -60,6 +61,56 @@ async function main(): Promise<void> {
     )
     return
   }
+  if (command === "readiness") {
+    const [
+      { buildReadinessReport, roomReadinessFromStatus },
+      { collectDoctorReport },
+    ] = await Promise.all([import("./readiness.js"), import("./doctor.js")])
+    const roomId = option(args, "--room")
+    const agentId = option(args, "--agent")
+    const report = await buildReadinessReport()
+
+    let harness: { id: string; ready: boolean; note?: string } | undefined
+    if (agentId) {
+      const doctor = collectDoctorReport()
+      const launcher = doctor.launchers.find((l) => l.id === agentId)
+      if (launcher)
+        harness = {
+          id: launcher.id,
+          ready: launcher.ready,
+          ...(launcher.note ? { note: launcher.note } : {}),
+        }
+    }
+
+    let room: ReturnType<typeof roomReadinessFromStatus>
+    if (roomId) {
+      let instances: Array<{
+        instanceId: string
+        roomId?: string
+        participantId?: string
+      }> | null = null
+      try {
+        await ensureDaemon()
+        instances = (await sendIpc({ op: "status" })) as never
+      } catch {
+        instances = null
+      }
+      room = roomReadinessFromStatus(roomId, instances)
+    }
+
+    console.log(
+      JSON.stringify(
+        {
+          ...report,
+          ...(harness ? { harness } : {}),
+          ...(room ? { room } : {}),
+        },
+        null,
+        2
+      )
+    )
+    return
+  }
   if (command === "doctor") {
     const report = collectDoctorReport()
     console.log(
@@ -70,7 +121,18 @@ async function main(): Promise<void> {
     return
   }
   if (command === "speech") {
+    const subcommand = args[0]
     await runSpeechCommand(args)
+    // Best-effort #105 hot reload: only a successful credential setup needs
+    // to reach resident runtimes; status/doctor must stay side-effect free.
+    if (subcommand === "setup") {
+      try {
+        await ensureDaemon()
+        await sendIpc({ op: "reload-speech" })
+      } catch {
+        // Readiness remains the source of truth for the calling agent.
+      }
+    }
     return
   }
   if (command === "status") {

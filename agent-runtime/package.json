@@ -1,6 +1,6 @@
 {
   "name": "@i365dev/free4chat-agent",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Zero-setup local lifecycle runtime for resident Free4Chat Agents",
   "author": "i365dev",
   "license": "MIT",

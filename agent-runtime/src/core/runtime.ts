@@ -232,6 +232,38 @@ export class ResidentRoomRuntime {
   // even if the room still names this Agent, so it must be replaced, not
   // reused. A failure constructing/starting this must never fail join()
   // itself — Meeting Notes media is strictly additive to text/ACP.
+  /** Builds the configured speech transcriber with transcript wiring.
+   * Shared by controller restarts and the #105 credential hot-reload path. */
+  private async createTranscriber(): Promise<SpeechTranscriber | null> {
+    return createConfiguredSpeechTranscriber({
+      ...(this.options.speech ?? {}),
+      onEvent: (event) => {
+        if (this.transcript)
+          recordCommittedTranscriptEvent(this.transcript, event)
+        this.options.speech?.onEvent?.(event)
+      },
+    })
+  }
+
+  /** Reloads speech configuration without touching the room participant
+   * (#105): closes any existing transcriber, then re-reads local speech
+   * storage so a just-completed credential setup is picked up by the
+   * resident instance while lease/room presence stay intact. If the rebuild
+   * itself fails, the transcriber stays absent until setup succeeds again —
+   * readiness remains the source of truth for the calling agent. */
+  async reloadSpeech(): Promise<boolean> {
+    const previous = this.transcriber
+    this.transcriber = null
+    if (previous) await previous.close().catch(() => undefined)
+    try {
+      this.transcriber = await this.createTranscriber()
+      return this.transcriber !== null
+    } catch {
+      this.transcriber = null
+      return false
+    }
+  }
+
   private async restartMeetingNotesController(): Promise<void> {
     const previous = this.meetingNotes
     this.meetingNotes = null
@@ -243,20 +275,7 @@ export class ResidentRoomRuntime {
     if (!this.participantHandle || !this.participantId) return
     try {
       const handle = decodeParticipantHandle(this.participantHandle)
-      try {
-        this.transcriber = await createConfiguredSpeechTranscriber({
-          ...(this.options.speech ?? {}),
-          onEvent: (event) => {
-            if (this.transcript)
-              recordCommittedTranscriptEvent(this.transcript, event)
-            this.options.speech?.onEvent?.(event)
-          },
-        })
-      } catch {
-        // Speech setup is an optional capability. Storage corruption or an
-        // incomplete provider config must never stop the text Agent joining.
-        this.log("speech_transcriber_unavailable")
-      }
+      this.transcriber = await this.createTranscriber()
       const onMediaEvent: MediaBridgeEventHandler = (event) => {
         this.transcriber?.handleMediaEvent(event)
         this.options.onMediaEvent?.(event)

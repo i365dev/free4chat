@@ -33,7 +33,7 @@ function optionalMilliseconds(name: string): number | undefined {
 }
 
 export interface IpcRequest {
-  op: "join" | "status" | "leave" | "stop"
+  op: "join" | "status" | "leave" | "stop" | "reload-speech"
   room?: string
   name?: string
   agent?: string
@@ -153,6 +153,20 @@ export class AgentDaemon {
       return this.instances
         .values()
         .map((instance) => instance.runtime.getStatus())
+    if (request.op === "reload-speech") {
+      // #105: speech setup completed out-of-band; hot-reload every resident
+      // runtime's transcriber without touching room participants or leases.
+      let reloaded = 0
+      for (const instance of this.instances.values()) {
+        try {
+          if (await instance.runtime.reloadSpeech()) reloaded += 1
+        } catch {
+          // A failed reload keeps the previous (possibly absent) transcriber;
+          // readiness remains the source of truth for the calling agent.
+        }
+      }
+      return { ok: true, reloaded }
+    }
     if (request.op === "leave") {
       if (!request.instanceId) throw new Error("leave requires instanceId")
       const instance = this.instances.get(request.instanceId)

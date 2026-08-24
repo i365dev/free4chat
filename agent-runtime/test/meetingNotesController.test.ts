@@ -5,7 +5,10 @@ import {
   createWeriftPeerConnection,
   type PeerConnectionLike,
 } from "../src/media/peerConnectionLike.js"
-import { MeetingNotesController } from "../src/media/meetingNotesController.js"
+import {
+  MeetingNotesController,
+  resolveDefaultCreatePeerConnection,
+} from "../src/media/meetingNotesController.js"
 import type {
   RoomMediaParticipant,
   SessionDescriptionLike,
@@ -321,14 +324,15 @@ test("stop() tears down a running bridge and future polls do nothing", async () 
   assert.equal(client.roomInfoCalls, callsBefore) // poll() is a no-op once stopped
 })
 
-test("the default (non-test) construction resolves createPeerConnection to the real werift factory", () => {
+test("the default (non-test) construction resolves createPeerConnection to the Pion engine (werift only as explicit fallback)", async () => {
   const client = new FakeClient()
   const restClient = new FakeRestClient()
   // Deliberately does NOT override createPeerConnection — this is exactly
   // the shape ResidentRoomRuntime's real production wiring uses. Asserting
   // the resolved reference is purely structural: it never invokes the
-  // factory, so this never touches werift/ICE or the network.
-  const controller = new MeetingNotesController({
+  // factory, so this never touches ICE/provisioning or the network.
+  process.env.FREE4CHAT_MEDIA_ENGINE = "pion"
+  const pionController = new MeetingNotesController({
     client,
     roomId: "room-1",
     participantId: "agent-1",
@@ -338,9 +342,25 @@ test("the default (non-test) construction resolves createPeerConnection to the r
     restClient,
   })
   assert.equal(
-    controller.resolvedCreatePeerConnection,
+    pionController.resolvedCreatePeerConnection,
+    resolveDefaultCreatePeerConnection()
+  )
+  // Explicit werift fallback stays available for developers.
+  process.env.FREE4CHAT_MEDIA_ENGINE = "werift"
+  const weriftController = new MeetingNotesController({
+    client,
+    roomId: "room-2",
+    participantId: "agent-2",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: fakeHandle(),
+    onEvent: () => undefined,
+    restClient,
+  })
+  assert.equal(
+    weriftController.resolvedCreatePeerConnection,
     createWeriftPeerConnection
   )
+  delete process.env.FREE4CHAT_MEDIA_ENGINE
 })
 
 test("Stop while bridge.start() is still in flight closes it and it never becomes running", async () => {
