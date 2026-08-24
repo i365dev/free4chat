@@ -246,9 +246,11 @@ export class ResidentRoomRuntime {
   }
 
   /** Reloads speech configuration without touching the room participant
-   * (#105): closes any existing transcriber and re-reads local speech
-   * storage, so a just-completed credential setup is picked up by the
-   * resident instance while lease/room presence stay intact. */
+   * (#105): closes any existing transcriber, then re-reads local speech
+   * storage so a just-completed credential setup is picked up by the
+   * resident instance while lease/room presence stay intact. If the rebuild
+   * itself fails, the transcriber stays absent until setup succeeds again —
+   * readiness remains the source of truth for the calling agent. */
   async reloadSpeech(): Promise<boolean> {
     const previous = this.transcriber
     this.transcriber = null

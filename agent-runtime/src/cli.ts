@@ -121,18 +121,20 @@ async function main(): Promise<void> {
     return
   }
   if (command === "speech") {
+    const subcommand = args[0]
     await runSpeechCommand(args)
-    // Best-effort #105 hot reload: a resident runtime picks up the new
-    // credential without any rejoin/restart. No-op when no daemon is up.
-    try {
-      await ensureDaemon()
-      await sendIpc({ op: "reload-speech" })
-    } catch {
-      // Readiness remains the source of truth for the calling agent.
+    // Best-effort #105 hot reload: only a successful credential setup needs
+    // to reach resident runtimes; status/doctor must stay side-effect free.
+    if (subcommand === "setup") {
+      try {
+        await ensureDaemon()
+        await sendIpc({ op: "reload-speech" })
+      } catch {
+        // Readiness remains the source of truth for the calling agent.
+      }
     }
     return
   }
-  return
   if (command === "status") {
     await ensureDaemon()
     console.log(JSON.stringify(await sendIpc({ op: "status" }), null, 2))
