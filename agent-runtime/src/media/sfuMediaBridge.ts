@@ -17,7 +17,6 @@ import type {
 import type { MediaTrackLike, RtpPacketLike } from "./peerConnectionLike.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
-const INCOMING_TRACK_TIMEOUT_MS = 10000
 /** Emit a bounded stats event at most this often per track, not per packet. */
 const STATS_FLUSH_INTERVAL_MS = 2000
 
@@ -78,15 +77,21 @@ export class SfuMediaBridge {
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private stopped = true
   private negotiationQueue: Promise<void> = Promise.resolve()
-  private pendingSubscription: {
-    key: string
-    participantId: string
-    participantName: string
-    trackName: string
-    expectedMid?: string
-    resolve: (track: MediaTrackLike) => void
-    reject: (error: Error) => void
-  } | null = null
+  /** Negotiated-but-media-not-yet-started subscriptions (#100 P1-4):
+   * tracks/new + renegotiate establish the upstream subscription; OnTrack /
+   * RTP may arrive much later (silent or muted humans never send packets),
+   * so late media binds here instead of tearing the subscription down and
+   * burning subscribed-MID quota on resubscribe loops. */
+  private readonly pendingTracks = new Map<
+    string,
+    {
+      participantId: string
+      participantName: string
+      trackName: string
+      expectedMid?: string
+      resolve: (track: MediaTrackLike) => void
+    }
+  >()
   private readonly subscriptions = new Map<string, TrackSubscription>()
 
   constructor(options: SfuMediaBridgeOptions) {
@@ -120,12 +125,14 @@ export class SfuMediaBridge {
     try {
       this.pc = await this.createPeerConnection()
       this.pc.onTrack.subscribe((track) => this.handleIncomingTrack(track))
-      // Native initial-offer bootstrap (deployed contract): the gathered
-      // local offer rides on session creation itself, and Cloudflare's
-      // answer comes straight back. Falls back to the blank-session +
-      // datachannels/establish server-offer flow when the deployment only
-      // speaks that contract (#101 §3/§4: follow the actual responses).
+      // Bootstrap, per #101 §3/§4: create the local offer AND set it as the
+      // local description before anything leaves the process (werift's
+      // createOffer does not imply setLocalDescription; PionEngine already
+      // applied its gathered offer internally, so setLocalDescription is a
+      // no-op there). Then follow whichever contract the deployment speaks,
+      // always branching on the actual returned description type.
       const offer = await this.pc.createOffer()
+      await this.pc.setLocalDescription(offer)
       let description: SessionDescriptionLike | undefined
       if (typeof this.restClient.createAgentSessionWithOffer === "function") {
         const created = await this.restClient.createAgentSessionWithOffer(offer)
@@ -140,25 +147,16 @@ export class SfuMediaBridge {
           offer
         )
         description = transport.sessionDescription
-        if (description && description.type === "offer") {
-          await this.pc.setRemoteDescription(description)
-          if (transport.requiresImmediateRenegotiation) {
-            const answer = await this.pc.createAnswer()
-            await this.pc.setLocalDescription(answer)
-            await this.restClient.renegotiate(this.mySessionId, answer)
-          }
-          description = undefined
-        }
       }
       if (!description)
         throw new Error("missing_datachannel_session_description")
-      if (description.type !== "offer") {
-        await this.pc.setRemoteDescription(description)
-      } else {
+      if (description.type === "offer") {
         await this.pc.setRemoteDescription(description)
         const answer = await this.pc.createAnswer()
         await this.pc.setLocalDescription(answer)
         await this.restClient.renegotiate(this.mySessionId, answer)
+      } else {
+        await this.pc.setRemoteDescription(description)
       }
       await this.poll()
       this.pollTimer = setInterval(() => {
@@ -189,7 +187,7 @@ export class SfuMediaBridge {
       }
     }
     this.subscriptions.clear()
-    this.pendingSubscription = null
+    this.pendingTracks.clear()
     this.pc?.close()
     this.pc = null
     this.mySessionId = null
@@ -205,7 +203,14 @@ export class SfuMediaBridge {
       for (const track of participant.tracks) {
         if (track.kind !== "audio") continue
         pending.push(
-          this.subscribe(participant, track.trackName).catch(() => undefined)
+          this.subscribe(participant, track.trackName).catch((e) => {
+            if (process.env.FREE4CHAT_MCP_DEBUG === "1")
+              console.error(
+                "[dbg-sub-err]",
+                participant.participantId,
+                e instanceof Error ? e.message : e
+              )
+          })
         )
       }
     }
@@ -242,6 +247,14 @@ export class SfuMediaBridge {
     participant: RoomMediaParticipant,
     trackName: string
   ): Promise<void> {
+    if (process.env.FREE4CHAT_MCP_DEBUG === "1")
+      console.error(
+        "[dbg-sub]",
+        participant.participantId,
+        trackName,
+        "queueLen:",
+        this.negotiationQueue === Promise.resolve() ? 0 : "busy"
+      )
     const key = subscriptionKey(
       participant.participantId,
       participant.sessionId,
@@ -266,70 +279,50 @@ export class SfuMediaBridge {
     // used by every other subscribe() call, mirroring the browser client's
     // enqueueNegotiation pattern for this exact protocol.
     const run = this.negotiationQueue.then(async () => {
-      if (this.stopped || !this.pc || !this.mySessionId) return
-      const incomingTrack = new Promise<MediaTrackLike>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          if (this.pendingSubscription?.key !== key) return
-          this.pendingSubscription = null
-          reject(new Error("incoming_audio_track_timeout"))
-        }, INCOMING_TRACK_TIMEOUT_MS)
-        this.pendingSubscription = {
-          key,
-          participantId: participant.participantId,
-          participantName: participant.name,
-          trackName,
-          resolve: (track) => {
-            clearTimeout(timeout)
-            resolve(track)
-          },
-          reject: (error) => {
-            clearTimeout(timeout)
-            reject(error)
-          },
-        }
+      if (this.stopped || !this.pc || !this.mySessionId) {
+        console.error("[dbg-run] bail", key)
+        return
+      }
+      console.error("[dbg-run] enter", key)
+      this.pendingTracks.set(key, {
+        participantId: participant.participantId,
+        participantName: participant.name,
+        trackName,
+        resolve: (track) =>
+          this.bindIncomingTrack(
+            {
+              key,
+              participantId: participant.participantId,
+              participantName: participant.name,
+              trackName,
+            },
+            track
+          ),
       })
-      // subscribeTrack() can fail before the SDP offer has a chance to
-      // produce an onTrack callback. Keep a rejection handler attached from
-      // creation time so cancelling this deferred promise in the catch block
-      // below cannot become an unhandled rejection and terminate the daemon.
-      // The awaited path still observes the original rejection normally.
-      void incomingTrack.catch(() => undefined)
       try {
         const offer = await this.restClient.subscribeTrack(
           this.mySessionId,
           participant.sessionId,
           trackName
         )
-        if (this.pendingSubscription?.key === key)
-          this.pendingSubscription.expectedMid = offer.mid
+        const pending = this.pendingTracks.get(key)
+        if (pending) pending.expectedMid = offer.mid
         await this.pc.setRemoteDescription(offer)
         const answer = await this.pc.createAnswer()
         await this.pc.setLocalDescription(answer)
+        // Renegotiation accepted ⇒ subscription established upstream.
+        // Media start (OnTrack/RTP) is tracked by pendingTracks and binds
+        // whenever the human actually sends packets — silent or muted
+        // participants must never trigger resubscribe loops that burn the
+        // subscribed-MID quota (#101 finding, Phase-2 review P1-4).
         await this.restClient.renegotiate(this.mySessionId, answer)
-        // Do not let the next queued negotiation overwrite the binding for
-        // this one. Werift may deliver onTrack asynchronously after the SDP
-        // calls resolve; waiting here keeps one pending subscription per
-        // negotiation and preserves speaker attribution.
-        const track = await incomingTrack
-        this.bindIncomingTrack(
-          {
-            key,
-            participantId: participant.participantId,
-            participantName: participant.name,
-            trackName,
-          },
-          track
-        )
       } catch (error) {
-        if (this.pendingSubscription?.key === key) {
-          this.pendingSubscription.reject(
-            error instanceof Error
-              ? error
-              : new Error("track_subscription_failed")
-          )
-          this.pendingSubscription = null
+        const pending = this.pendingTracks.get(key)
+        if (pending) {
+          this.pendingTracks.delete(key)
         }
         this.subscriptions.delete(key)
+        console.error("[dbg-run] error-delete", key)
         throw error
       }
     })
@@ -339,21 +332,27 @@ export class SfuMediaBridge {
 
   private handleIncomingTrack(track: MediaTrackLike): void {
     if (track.kind !== "audio") return
-    const pending = this.pendingSubscription
-    if (!pending) return
-    // Werift may surface an already-negotiated track before the newly added
-    // m-line during renegotiation. Never attach that callback to the current
-    // participant just because it arrived first; use the negotiated mid.
-    if (pending.expectedMid && track.mid !== pending.expectedMid) return
-    this.pendingSubscription = null
+    let fallbackKey: string | null = null
+    for (const [key, pending] of this.pendingTracks) {
+      // Bind by exact negotiated MID; entries without an expected MID keep
+      // legacy fake/test behavior of binding the first arriving track.
+      if (pending.expectedMid && pending.expectedMid !== track.mid) continue
+      fallbackKey = key
+      break
+    }
+    if (!fallbackKey) return
+    const pending = this.pendingTracks.get(fallbackKey)!
+    this.pendingTracks.delete(fallbackKey)
     pending.resolve(track)
   }
 
   private bindIncomingTrack(
-    pending: Omit<
-      NonNullable<SfuMediaBridge["pendingSubscription"]>,
-      "resolve" | "reject"
-    >,
+    pending: {
+      key: string
+      participantId: string
+      participantName: string
+      trackName: string
+    },
     track: MediaTrackLike
   ): void {
     const key = pending.key

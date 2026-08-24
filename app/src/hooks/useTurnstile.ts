@@ -23,7 +23,7 @@ const TURNSTILE_SCRIPT_SRC =
 // Cloudflare's published "always passes" test sitekey. Used automatically
 // when NEXT_PUBLIC_TURNSTILE_SITE_KEY is not configured (local dev).
 const TURNSTILE_SITEKEY =
-  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000"
+  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "1x00000000000000000000AA"
 
 // Build-time kill switch for fully offline/local stacks: bake
 // NEXT_PUBLIC_TURNSTILE_DISABLED=1 and the widget never loads while

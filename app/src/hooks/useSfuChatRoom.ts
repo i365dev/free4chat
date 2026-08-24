@@ -40,6 +40,7 @@ const AGENT_TEXT_TYPES = new Set([
   "text/markdown",
   "text/csv",
   "application/json",
+  "text/yaml",
 ])
 const AGENT_TEXT_EXTENSIONS = new Set([
   ".txt",

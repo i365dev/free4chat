@@ -61,10 +61,16 @@ class FakeRestClient implements SfuRestClientLike {
     return this.participants
   }
   async subscribeTrack(
-    _mySessionId: string,
+    mySessionId: string,
     remoteSessionId: string,
     trackName: string
   ): Promise<SessionDescriptionLike> {
+    const g = globalThis as Record<string, unknown>
+    console.error(
+      "[dbg-track]",
+      "sameInstance=" + ((g as { __probeRC?: unknown }).__probeRC === this),
+      "count=" + this.subscribeCalls.length
+    )
     this.subscribeCalls.push({
       sessionId: remoteSessionId,
       trackName,
@@ -78,6 +84,10 @@ class FakeRestClient implements SfuRestClientLike {
   }
   async renegotiate(): Promise<void> {
     this.renegotiateCalls += 1
+    console.error(
+      "[dbg-renego]",
+      new Error().stack?.split("\n").slice(2, 4).join(" <- ")
+    )
   }
 }
 
@@ -206,10 +216,24 @@ class DelayedPeerConnection implements PeerConnectionLike {
 }
 
 async function waitFor(condition: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     if (condition()) return
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    if (process.env.FREE4CHAT_MCP_DEBUG === "1" && attempt % 20 === 0)
+      console.error(
+        "[dbg-wait]",
+        condition.toString().slice(0, 80),
+        "=>",
+        condition()
+      )
+    await new Promise((resolve) => setTimeout(resolve, 25))
   }
+  if (process.env.FREE4CHAT_MCP_DEBUG === "1")
+    console.error(
+      "[dbg-wait-final]",
+      condition.toString().slice(0, 120),
+      "=>",
+      condition()
+    )
   assert.fail("condition did not become true")
 }
 
@@ -230,7 +254,8 @@ function makeBridge(
   restClient: FakeRestClient,
   pc: FakePeerConnection,
   now?: () => number,
-  onAudioFrame?: (source: AudioSource, frame: AudioFrame) => void
+  onAudioFrame?: (source: AudioSource, frame: AudioFrame) => void,
+  options?: { pollIntervalMs?: number }
 ) {
   const events: MediaBridgeEvent[] = []
   const bridge = new SfuMediaBridge({
@@ -241,6 +266,9 @@ function makeBridge(
     createPeerConnection: () => pc,
     ...(now ? { now } : {}),
     ...(onAudioFrame ? { onAudioFrame } : {}),
+    ...(options?.pollIntervalMs
+      ? { pollIntervalMs: options.pollIntervalMs }
+      : {}),
   })
   return { bridge, events }
 }
@@ -449,18 +477,33 @@ test("delayed onTrack events preserve attribution across serialized subscription
   ]
   const pc = new DelayedPeerConnection()
   const frames: AudioSource[] = []
-  const { bridge } = makeBridge(restClient, pc, undefined, (source) => {
+  const { bridge, events } = makeBridge(restClient, pc, undefined, (source) => {
     frames.push(source)
   })
 
-  const start = bridge.start()
-  await waitFor(() => restClient.subscribeCalls.length === 1)
-  pc.emitNextTrack("mid-1")
-  await waitFor(() => restClient.subscribeCalls.length === 2)
-  pc.emitNextTrack("mid-2")
-  await start
+  // Both negotiations complete up-front under the new lifecycle (#100 P1-4);
+  // media start (OnTrack) may arrive later, in any order, and attribution
+  // must follow each track's negotiated MID.
+  await bridge.start()
+  assert.equal(restClient.subscribeCalls.length, 2)
 
-  assert.equal(pc.rtpCallbacks.length, 2)
+  pc.emitNextTrack("mid-1")
+  await waitFor(
+    () =>
+      events.filter(
+        (e) => e.type === "audioTrackStarted" && e.participantId === "human-1"
+      ).length === 1
+  )
+
+  pc.emitNextTrack("mid-2")
+  await waitFor(
+    () =>
+      events.filter(
+        (e) => e.type === "audioTrackStarted" && e.participantId === "human-2"
+      ).length === 1
+  )
+  await waitFor(() => pc.rtpCallbacks.length === 2)
+
   pc.rtpCallbacks[0]?.({
     payload: new Uint8Array([1]),
     header: { timestamp: 1 },
@@ -485,34 +528,37 @@ test("track attribution ignores stale onTrack callbacks from another mid", async
   restClient.subscribeMids = ["mid-1", "mid-2"]
   const pc = new DelayedPeerConnection()
   const frames: AudioSource[] = []
-  const { bridge } = makeBridge(restClient, pc, undefined, (source) => {
+  const { bridge, events } = makeBridge(restClient, pc, undefined, (source) => {
     frames.push(source)
   })
 
-  const start = bridge.start()
-  await waitFor(() => restClient.subscribeCalls.length === 1)
-  pc.emitTrackWithMid("old-mid")
-  assert.equal(restClient.subscribeCalls.length, 1)
-  pc.emitNextTrack("mid-1")
-  await waitFor(() => restClient.subscribeCalls.length === 2)
-  pc.emitTrackWithMid("mid-1")
+  await bridge.start()
   assert.equal(restClient.subscribeCalls.length, 2)
-  pc.emitNextTrack("mid-2")
-  await start
 
-  assert.equal(pc.rtpCallbacks.length, 2)
-  pc.rtpCallbacks[0]?.({
-    payload: new Uint8Array([1]),
-    header: { timestamp: 1 },
-  })
-  pc.rtpCallbacks[1]?.({
-    payload: new Uint8Array([2]),
-    header: { timestamp: 2 },
-  })
-  assert.deepEqual(
-    frames.map((source) => source.participantId),
-    ["human-1", "human-2"]
+  // A stale onTrack from an unregistered MID must not bind anything.
+  pc.emitTrackWithMid("old-mid")
+  assert.equal(events.filter((e) => e.type === "audioTrackStarted").length, 0)
+
+  pc.emitNextTrack("mid-1")
+  await waitFor(
+    () =>
+      events.filter(
+        (e) => e.type === "audioTrackStarted" && e.participantId === "human-1"
+      ).length === 1
   )
+  // A duplicate stale callback for an already-bound MID is also ignored.
+  pc.emitTrackWithMid("mid-1")
+  await new Promise((r) => setTimeout(r, 25))
+  assert.equal(events.filter((e) => e.type === "audioTrackStarted").length, 1)
+
+  pc.emitNextTrack("mid-2")
+  await waitFor(
+    () =>
+      events.filter(
+        (e) => e.type === "audioTrackStarted" && e.participantId === "human-2"
+      ).length === 1
+  )
+  await waitFor(() => pc.rtpCallbacks.length === 2)
   bridge.stop()
 })
 

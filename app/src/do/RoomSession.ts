@@ -434,7 +434,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachment.mimeType === "text/plain" ||
         attachment.mimeType === "text/markdown" ||
         attachment.mimeType === "text/csv" ||
-        attachment.mimeType === "application/json") &&
+        attachment.mimeType === "application/json" ||
+        attachment.mimeType === "text/yaml") &&
       typeof attachment.fileName === "string" &&
       typeof attachment.size === "number" &&
       Number.isSafeInteger(attachment.size) &&
@@ -1646,7 +1647,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       value === "text/plain" ||
       value === "text/markdown" ||
       value === "text/csv" ||
-      value === "application/json"
+      value === "application/json" ||
+      value === "text/yaml"
     )
   }
 

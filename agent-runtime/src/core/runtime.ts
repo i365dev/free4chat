@@ -39,11 +39,13 @@ export async function enrichTurnAttachments(
   readAttachment: (
     attachmentId: string
   ) => Promise<{ data: string; mimeType: string; text?: string }>,
-  onUnavailable?: (event: HarnessEvent, message: string) => void
+  onUnavailable?: (event: HarnessEvent, message: string) => void,
+  options?: { imagesSupported?: boolean }
 ): Promise<HarnessTurnInput> {
+  const imagesSupported = options?.imagesSupported ?? true
   let imageCount = 0
   for (const event of input.events) {
-    if (!event.attachment || imageCount >= MAX_IMAGES_PER_TURN) continue
+    if (!event.attachment) continue
     try {
       const attachment = await readAttachment(event.attachment.id)
       if (typeof attachment.text === "string") {
@@ -52,14 +54,15 @@ export async function enrichTurnAttachments(
           mimeType: attachment.mimeType,
           content: attachment.text.slice(0, MAX_TEXT_FILE_CHARS),
         }
-      } else {
-        event.image = {
-          type: "image",
-          data: attachment.data,
-          mimeType: attachment.mimeType,
-        }
-        imageCount += 1
+        continue
       }
+      if (!imagesSupported || imageCount >= MAX_IMAGES_PER_TURN) continue
+      event.image = {
+        type: "image",
+        data: attachment.data,
+        mimeType: attachment.mimeType,
+      }
+      imageCount += 1
     } catch (error) {
       onUnavailable?.(event, error instanceof Error ? error.message : "unknown")
     }
@@ -381,7 +384,9 @@ export class ResidentRoomRuntime {
     input: HarnessTurnInput
   ): Promise<HarnessTurnInput> {
     if (!this.participantHandle) return input
-    if (this.options.adapter.capabilities?.images === false) return input
+    // Text attachments serve every Harness; only image blocks depend on the
+    // negotiated image capability (#90 review follow-up).
+    const imagesSupported = this.options.adapter.capabilities?.images !== false
     const handle = this.participantHandle
     return enrichTurnAttachments(
       input,
@@ -403,7 +408,8 @@ export class ResidentRoomRuntime {
             // Diagnostics only.
           }
         }
-      }
+      },
+      { imagesSupported }
     )
   }
 

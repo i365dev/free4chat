@@ -13,6 +13,7 @@ const SUPPORTED_IMAGE_TYPES = new Set([
   "text/markdown",
   "text/csv",
   "application/json",
+  "text/yaml",
 ])
 
 export interface RoomProtocolEnv {

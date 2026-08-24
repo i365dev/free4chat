@@ -140,13 +140,23 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
       )
     }
     const text = await response.text()
-    if (!response.ok)
+    if (!response.ok) {
+      // Lifecycle errors can surface at the HTTP layer; classify them so the
+      // runtime rejoin/expiry logic keeps working like the legacy client.
+      const knownLifecycle = [
+        "invalid_participant_handle",
+        "room_expired",
+      ] as const
+      for (const known of knownLifecycle) {
+        if (text.includes(known)) throw new Free4ChatClientError(known, known)
+      }
       throw new Free4ChatClientError(
         `Free4Chat MCP HTTP ${response.status}: ${text.slice(0, 200)}`,
         response.status >= 500 || response.status === 429
           ? "transient"
           : "tool_error"
       )
+    }
     const contentType = response.headers.get("content-type") ?? ""
     let payload: Record<string, unknown>
     if (contentType.includes("text/event-stream")) {

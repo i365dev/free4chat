@@ -303,7 +303,8 @@ function createMcpServer(context: McpRequestContext) {
         mimeType === "text/plain" ||
         mimeType === "text/markdown" ||
         mimeType === "text/csv" ||
-        mimeType === "application/json"
+        mimeType === "application/json" ||
+        mimeType === "text/yaml"
       ) {
         // Text-like attachments come back inside the same JSON envelope as
         // every other tool result, with `text` carrying the decoded UTF-8
