@@ -232,6 +232,42 @@ export class ResidentRoomRuntime {
   // even if the room still names this Agent, so it must be replaced, not
   // reused. A failure constructing/starting this must never fail join()
   // itself — Meeting Notes media is strictly additive to text/ACP.
+  /** Called when a Meeting Notes grant actually activates (#105): inspects
+   * real speech readiness and, only when a credential is the missing piece,
+   * tells the room once — pointing at the agent's local session for the key
+   * itself, never soliciting secrets in room chat. */
+  private async notifySpeechPrerequisite(): Promise<void> {
+    try {
+      const speech = this.options.speech ?? {}
+      const { LocalSpeechStore } = await import("../speech/storage.js")
+      const { productionSpeechRegistry } = await import("../speech/registry.js")
+      const { resolveSpeechProviderState, hasRequiredValues } =
+        await import("../speech/providerState.js")
+      const store = speech.store ?? new LocalSpeechStore()
+      const registry = speech.registry ?? productionSpeechRegistry()
+      const environment = speech.environment ?? process.env
+      const state = await resolveSpeechProviderState(
+        registry,
+        store,
+        environment
+      )
+      const notice = buildSpeechNotice({
+        providerId: state.providerId ?? null,
+        hasProvider: state.provider !== undefined,
+        valuesComplete:
+          state.provider !== undefined &&
+          hasRequiredValues(state.provider, state.values),
+      })
+      if (!notice) return
+      if (!this.participantHandle) return
+      await this.options.client
+        .sendText(this.participantHandle, notice)
+        .catch(() => undefined)
+    } catch {
+      // The notice is best-effort; readiness stays authoritative.
+    }
+  }
+
   /** Builds the configured speech transcriber with transcript wiring.
    * Shared by controller restarts and the #105 credential hot-reload path. */
   private async createTranscriber(): Promise<SpeechTranscriber | null> {
@@ -293,6 +329,7 @@ export class ResidentRoomRuntime {
           handle,
           onEvent: onMediaEvent,
           onAudioFrame,
+          onGrantActivated: () => void this.notifySpeechPrerequisite(),
           log: this.log,
         })
       this.meetingNotes = controller
@@ -510,4 +547,18 @@ export class ResidentRoomRuntime {
     })()
     return this.cleanupPromise
   }
+}
+
+/** Pure classifier for the #105 speech-prerequisite room notice.
+ * Returns null when there is nothing to tell the room. */
+export function buildSpeechNotice(state: {
+  providerId: string | null
+  hasProvider: boolean
+  valuesComplete: boolean
+}): string | null {
+  if (!state.hasProvider)
+    return "Meeting Notes was requested, but no speech-to-text provider is configured in my local runtime. I'll complete speech setup in my own session before transcribing — please don't paste API keys into this room."
+  if (!state.valuesComplete)
+    return "Meeting Notes was requested, but my local speech-to-text is missing its API key. I'll complete setup in my own session — please don't paste API keys into this room."
+  return null
 }
