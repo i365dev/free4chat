@@ -9,6 +9,7 @@ function usage(): never {
   free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name>
   free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name>
   free4chat-agent doctor [--json]
+  free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
   free4chat-agent speech status [--json]
   free4chat-agent speech doctor [--json]
   free4chat-agent speech setup <provider>
@@ -121,8 +122,17 @@ async function main(): Promise<void> {
   }
   if (command === "speech") {
     await runSpeechCommand(args)
+    // Best-effort #105 hot reload: a resident runtime picks up the new
+    // credential without any rejoin/restart. No-op when no daemon is up.
+    try {
+      await ensureDaemon()
+      await sendIpc({ op: "reload-speech" })
+    } catch {
+      // Readiness remains the source of truth for the calling agent.
+    }
     return
   }
+  return
   if (command === "status") {
     await ensureDaemon()
     console.log(JSON.stringify(await sendIpc({ op: "status" }), null, 2))

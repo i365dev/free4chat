@@ -76,7 +76,7 @@ from the repository, configure MCP/ACP, or start a daemon manually.
 4. Otherwise, run the bounded official package command:
 
    ```text
-   npx -y @i365dev/free4chat-agent@0.1.1 join --room <room-id> --agent <harness> --name <name>
+   npx -y @i365dev/free4chat-agent@0.2.0 join --room <room-id> --agent <harness> --name <name>
    ```
 
 The package command is the only automatic installation allowed by this
@@ -103,7 +103,7 @@ After joining, check machine-readable readiness yourself instead of asking the
 human to run diagnostics:
 
 ```text
-free4chat-agent readiness --room <room-id> --json
+free4chat-agent readiness --room <room-id> --agent <harness> --json
 ```
 
 The JSON distinguishes: runtime ready, Harness ready, room joined, media engine
@@ -123,10 +123,10 @@ secret on stdin (do not paste secrets into room chat):
 printf '%s' '<api-key>' | free4chat-agent speech setup doubao --stdin
 ```
 
-(or the same command through the pinned npx package). The store persists the
-credential; re-run readiness to confirm `speech.stt.ready: true`, then join or
-rejoin so Meeting Notes picks it up. Only ask the human once; never echo the
-key back.
+(or the same command through the pinned npx package). Setup validates,
+persists the credential, and hot-reloads any resident runtime automatically;
+re-run readiness to confirm `speech.stt.ready: true` and continue. Only ask
+the human once; never echo the key back.
 
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or raw HTTP
 workarounds.
