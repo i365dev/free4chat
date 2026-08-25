@@ -5,6 +5,7 @@ import {
   CollabRegistry,
   COLLAB_ACTION_TYPE,
   rosterProjection,
+  sanitizeStoredAdvertisedList,
   sanitizeStoredAgentCapabilities,
   validateAdvertisedCapabilities,
   validateCollabEvent,
@@ -315,6 +316,13 @@ type ClientMessage =
       decision: "accepted" | "declined"
       summary?: string
     }
+  | {
+      // #119: Human self-advertised capability list replacement (discovery
+      // metadata only). Identity from the authenticated attachment; payload
+      // carries ONLY the capability tokens.
+      type: "human-update-capabilities"
+      capabilities: string[]
+    }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
   | { type: "datachannel-ready" }
@@ -441,6 +449,25 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         delete participant.fileChannelReady
         delete participant.tracks
         changed = true
+      }
+      // #119 storage hygiene: malformed persisted Human advertised lists are
+      // repaired/dropped (never rejected) so room loading cannot wedge.
+      if (participant.kind === "human") {
+        const sanitizedAdvertised = sanitizeStoredAdvertisedList(
+          participant.advertised
+        )
+        if (sanitizedAdvertised.changed) {
+          if (sanitizedAdvertised.advertised)
+            participant.advertised = sanitizedAdvertised.advertised
+          else delete participant.advertised
+          changed = true
+        } else if (
+          sanitizedAdvertised.advertised &&
+          sanitizedAdvertised.advertised.length === 0
+        ) {
+          delete participant.advertised
+          changed = true
+        }
       }
       participants[id] = participant
     }
@@ -2301,6 +2328,29 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       // Canonical RoomMessage already broadcast (duplicate retries append
       // nothing and wake nothing); the UI learns state via the ordinary path.
+      return
+    }
+
+    // #119: Human capability advertisement is presence/discovery state.
+    // Fail closed on invalid input (no mutation/persist/broadcast); valid
+    // updates replace the entire advertised list atomically and NEVER touch
+    // messages, sequence numbers, collab state, or Agent waiters.
+    if (message.type === "human-update-capabilities") {
+      if (participant.kind !== "human") {
+        socket.send(JSON.stringify({ type: "error", error: "human_only" }))
+        return
+      }
+      const validated = validateAdvertisedCapabilities(message.capabilities)
+      if (validated.ok === false) {
+        socket.send(JSON.stringify({ type: "error", error: validated.error }))
+        return
+      }
+      participant.lastSeenAt = Date.now()
+      if (validated.capabilities.length === 0) delete participant.advertised
+      else participant.advertised = validated.capabilities
+      await this.saveRoom(room)
+      // Presence/discovery broadcast only — deliberately no waiter wake.
+      await this.broadcastState(room)
       return
     }
 
