@@ -4,6 +4,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Message } from "@common/types"
 
 import TextChatCard from "./TextChatCard"
+import type { RoomAttachmentRead } from "../room/types"
+
+const ATTACHMENT_READ: RoomAttachmentRead = {
+  attachment: {
+    id: "att-1",
+    fileName: "result.json",
+    mimeType: "application/json",
+    size: 3,
+  },
+  data: btoa("{}"),
+}
 
 function collabResultMessage(): Message {
   return {
@@ -28,7 +39,7 @@ function collabResultMessage(): Message {
 
 function renderCard(
   messages: Message[],
-  onReadArtifact: (attachmentId: string) => Promise<unknown>
+  onReadArtifact: (attachmentId: string) => Promise<RoomAttachmentRead>
 ) {
   return render(
     <TextChatCard
@@ -52,15 +63,9 @@ beforeEach(() => {
 
 describe("collab card artifact consumption (#117)", () => {
   it("renders one bounded action per attachmentId and fetches only on explicit click", async () => {
-    const onReadArtifact = vi.fn().mockResolvedValue({
-      attachment: {
-        id: "att-1",
-        fileName: "result.json",
-        mimeType: "application/json",
-        size: 3,
-      },
-      data: btoa("{}"),
-    })
+    const onReadArtifact = vi
+      .fn<(attachmentId: string) => Promise<RoomAttachmentRead>>()
+      .mockResolvedValue(ATTACHMENT_READ)
     const messages = [collabResultMessage()]
     const view = renderCard(messages, onReadArtifact)
 
