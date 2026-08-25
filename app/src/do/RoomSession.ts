@@ -1398,7 +1398,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const ingest = await this.ingestCollabResponse(
         room,
         participant,
-        eventInput as { requestId?: unknown; kind?: unknown; summary?: unknown }
+        eventInput as {
+          requestId?: unknown
+          kind?: unknown
+          summary?: unknown
+          details?: unknown
+          attachmentIds?: unknown
+        }
       )
       if (ingest.status === "rejected")
         return this.json(
@@ -1867,7 +1873,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private async ingestCollabResponse(
     room: RoomRecord,
     responder: RoomParticipant,
-    input: { requestId?: unknown; kind?: unknown; summary?: unknown }
+    input: {
+      requestId?: unknown
+      kind?: unknown
+      summary?: unknown
+      // Agent completed/failed results may carry bounded details and
+      // references to existing attachments (#109); validateCollabEvent
+      // preserves both on the canonical event. The Human WS path never
+      // supplies them (v0: accepted/declined only).
+      details?: unknown
+      attachmentIds?: unknown
+    }
   ): Promise<
     | {
         status: "recorded" | "duplicate"

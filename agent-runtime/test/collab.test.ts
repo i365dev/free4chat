@@ -794,7 +794,11 @@ class FakeRoomServer {
     responderId: string,
     requestId: string,
     kind: "accepted" | "declined" | "completed" | "failed",
-    payload: { summary?: string; attachmentIds?: string[] } = {}
+    payload: {
+      summary?: string
+      attachmentIds?: string[]
+      details?: Record<string, string>
+    } = {}
   ): { sequence: number; duplicate?: boolean } {
     const record = this.requests.get(requestId)
     if (!record) throw new Error("unknown_request")
@@ -814,6 +818,7 @@ class FakeRoomServer {
         fromParticipantId: responderId,
         targetParticipantId: record.from,
         ...(payload.summary ? { summary: payload.summary } : {}),
+        ...(payload.details ? { details: payload.details } : {}),
         ...(payload.attachmentIds
           ? { attachmentIds: payload.attachmentIds }
           : {}),
@@ -937,7 +942,11 @@ function clientFor(
         participantId,
         args.requestId,
         args.status,
-        { summary: args.summary, attachmentIds: args.attachmentIds }
+        {
+          summary: args.summary,
+          attachmentIds: args.attachmentIds,
+          details: args.details,
+        }
       )
       return { sequence }
     },
@@ -1656,6 +1665,92 @@ test("#115 Human accept/decline for an Agent-originated request: canonical routi
     server.recoverCorrelationFromMessages()
     const late = server.respond("human-h", sent.requestId, "declined", {})
     assert.ok(late.sequence > before)
+  } finally {
+    await runtimeA.stop()
+  }
+})
+
+test("#113/#115 Agent completed result preserves details and attachmentIds through canonical message and requester follow-up; duplicate appends nothing", async () => {
+  const server = new FakeRoomServer()
+  const aTurns: HarnessTurnInput[] = []
+  let completedSeenByA: RoomEvent["collab"] | undefined
+
+  // Requester Agent A is resident; Agent B performs the work.
+  server.join("agent-a", "Agent A", ["code.edit", "github"])
+  server.join("agent-b", "Agent B", ["shell"])
+  const runtimeA = new ResidentRoomRuntime({
+    instanceId: "inst-result-a",
+    roomId: server.roomId,
+    name: "Agent A",
+    client: clientFor(server, "agent-a"),
+    adapter: {
+      name: "opencode",
+      async ensureSession() {},
+      async runTurn(input) {
+        aTurns.push(input)
+        const completed = input.events.find(
+          (event) => event.collab?.kind === "completed"
+        )?.collab
+        if (completed) {
+          completedSeenByA = completed
+          return { text: "consumed the result" }
+        }
+        return { text: "standing by" }
+      },
+      async close() {},
+    },
+  })
+  try {
+    await runtimeA.start()
+
+    // B uploads an artifact first so the reference is valid at send time.
+    await clientFor(server, "agent-b").uploadAttachment("h", {
+      fileName: "evidence.json",
+      mimeType: "application/json",
+      dataBase64: "eyJvayI6dHJ1ZX0=",
+    })
+
+    // Agent A originates the structured request targeting Agent B.
+    await clientFor(server, "agent-a").sendCollabRequest("h", {
+      targetParticipantId: "agent-b",
+      summary: "Verify the production flow",
+      requestId: "req-res-1",
+    })
+
+    // B sends a completed result carrying details + attachmentIds (#109).
+    await clientFor(server, "agent-b").sendCollabResult("h", {
+      requestId: "req-res-1",
+      status: "completed",
+      summary: "Production flow verified",
+      details: { environment: "production" },
+      attachmentIds: ["att-1"],
+    })
+
+    // Canonical RoomMessage.collab preserves BOTH verbatim.
+    const canonical = server.messages.find(
+      (m) =>
+        m.collab?.kind === "completed" && m.collab.requestId === "req-res-1"
+    )!
+    assert.equal(canonical.collab.kind, "completed")
+    assert.equal(canonical.collab.details?.environment, "production")
+    assert.deepEqual(canonical.collab.attachmentIds, ["att-1"])
+
+    // Requester A receives the ADDRESSED follow-up preserving BOTH.
+    await settle(() => Boolean(completedSeenByA))
+    assert.ok(completedSeenByA)
+    assert.equal(completedSeenByA.details?.environment, "production")
+    assert.deepEqual(completedSeenByA.attachmentIds, ["att-1"])
+
+    // Duplicate identical result appends nothing.
+    const before = server.messages.length
+    await clientFor(server, "agent-b").sendCollabResult("h", {
+      requestId: "req-res-1",
+      status: "completed",
+      summary: "Production flow verified",
+      details: { environment: "production" },
+      attachmentIds: ["att-1"],
+    })
+    assert.equal(server.messages.length, before)
   } finally {
     await runtimeA.stop()
   }
