@@ -4,6 +4,7 @@ import { test } from "node:test"
 import { ResidentRoomRuntime } from "../src/core/runtime.js"
 import { ModernMcpFree4ChatClient } from "../src/free4chat/modernClient.js"
 import { Free4ChatClientError } from "../src/free4chat/client.js"
+import type { MeetingNotesController } from "../src/media/meetingNotesController.js"
 import type {
   CreateRoomResult,
   Free4ChatClient,
@@ -364,8 +365,6 @@ test("create adoption initializes Meeting Notes for the created participant; rej
       return { events: [], cursor, expiresAt: Date.now() + 90_000 }
     },
   })
-  const { MeetingNotesController } =
-    await import("../src/media/meetingNotesController.js")
   const runtime = new ResidentRoomRuntime({
     instanceId: "inst-create-mn",
     name: "Agent C",
