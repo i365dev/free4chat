@@ -26,6 +26,32 @@ export interface RoomMediaState {
 
 export interface AgentCapabilities {
   text: true
+  // #106 Phase A: the capability tokens this Agent explicitly chose to
+  // advertise for THIS room (for example "code.edit", "browser.authenticated").
+  // Pure discovery metadata chosen by the Runtime/Harness — never an
+  // authorization grant, never scanned from installed tools, never a claim
+  // another participant may invoke. Room-ephemeral: gone when the room is.
+  advertised?: string[]
+}
+
+// #106 Phase B lifecycle: request → accepted | declined → completed | failed.
+// Free4Chat transports these envelopes and correlates them by requestId; it
+// never decides, retries, or interprets them.
+export type CollabEventKind =
+  | "request"
+  | "accepted"
+  | "declined"
+  | "completed"
+  | "failed"
+
+export interface CollabEvent {
+  requestId: string
+  kind: CollabEventKind
+  fromParticipantId: string
+  targetParticipantId: string
+  summary?: string
+  details?: Record<string, string>
+  attachmentIds?: string[]
 }
 
 export interface RoomParticipant {
@@ -50,6 +76,10 @@ export interface RoomMessage {
   text?: string
   actionType?: string
   actionPayload?: Record<string, string>
+  // Set only when actionType is "collab": the structured #106 Phase B
+  // envelope validated by do/collab.ts. targets carries the addressed
+  // participant so the event wakes exactly the targeted resident Runtime.
+  collab?: CollabEvent
   targets?: string[]
   createdAt: number
   sequence: number
@@ -143,6 +173,7 @@ export interface AgentEvent {
   text?: string
   actionType?: string
   actionPayload?: Record<string, string>
+  collab?: CollabEvent
   attachment?: Pick<RoomAttachment, "id" | "fileName" | "mimeType" | "size">
   addressed: boolean
   createdAt: number

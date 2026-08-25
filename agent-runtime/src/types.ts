@@ -37,12 +37,47 @@ export interface RoomEvent {
   text?: string
   actionType?: string
   actionPayload?: Record<string, string>
+  /** #106 Phase B wire envelope on action messages with actionType "collab". */
+  collab?: WireCollabEvent
   attachment?: RoomAttachmentMetadata
   /** Runtime-enriched for supported text attachments (#90/#82): decoded
    * UTF-8 content, size-capped before it ever reaches the Harness. */
   textFile?: { fileName: string; mimeType: string; content: string }
   addressed: boolean
   createdAt: number
+}
+
+export type CollabKind =
+  "request" | "accepted" | "declined" | "completed" | "failed"
+
+export interface WireCollabEvent {
+  requestId: string
+  kind: CollabKind
+  fromParticipantId: string
+  targetParticipantId: string
+  summary?: string
+  details?: Record<string, string>
+  attachmentIds?: string[]
+}
+
+/** Harness-facing collaboration view: identical to the wire envelope plus a
+ * resolved fromName so the recipient never parses prose or joins rosters. */
+export interface CollabEventView extends WireCollabEvent {
+  fromName: string
+}
+
+export interface ParticipantRosterEntry {
+  id: string
+  name: string
+  kind: "human" | "agent"
+  advertised?: string[]
+}
+
+export interface RoomSelfContext {
+  instanceId: string
+  participantId?: string
+  name: string
+  capabilities?: string[]
 }
 
 export interface HarnessImage {
@@ -57,6 +92,7 @@ export interface HarnessEvent {
   text?: string
   actionType?: string
   actionPayload?: Record<string, string>
+  collab?: CollabEventView
   addressed: boolean
   attachment?: RoomAttachmentMetadata
   image?: HarnessImage
@@ -78,7 +114,11 @@ export interface HarnessMeetingTranscript {
 }
 
 export interface HarnessTurnInput {
-  room: { ephemeral: true }
+  room: {
+    ephemeral: true
+    self?: RoomSelfContext
+    participants?: ParticipantRosterEntry[]
+  }
   events: HarnessEvent[]
   meetingTranscript?: HarnessMeetingTranscript
 }
@@ -113,6 +153,10 @@ export interface MeetingNotesInfo {
 
 export interface RoomInfo {
   exists: boolean
+  /** Connected-participant/capability projection (#106): lets an Agent
+   * discover peers and their advertised tokens even with no triggering room
+   * event. Never contains tokens or media identifiers. */
+  participants?: ParticipantRosterEntry[]
   meetingNotes: MeetingNotesInfo
   // Whether the server-side Meeting Notes media capability (the
   // AGENT_MEDIA_ENABLED master switch) is on at all in this environment —
@@ -127,13 +171,42 @@ export interface WaitResult {
   events: RoomEvent[]
   cursor: number
   expiresAt: number
+  participants?: ParticipantRosterEntry[]
 }
+
+export interface CollabRequestArgs {
+  targetParticipantId: string
+  summary: string
+  requestId?: string
+  details?: Record<string, string>
+  attachmentIds?: string[]
+}
+
+export interface CollabResultArgs {
+  requestId: string
+  status: "completed" | "failed"
+  summary: string
+  details?: Record<string, string>
+  attachmentIds?: string[]
+}
+
+export interface AttachmentUpload {
+  fileName: string
+  mimeType: string
+  dataBase64: string
+}
+
+export type UploadedAttachment = RoomAttachmentMetadata & { sequence: number }
 
 export interface Free4ChatClient {
   connect(): Promise<void>
   listTools(): Promise<string[]>
   roomInfo(roomId: string): Promise<RoomInfo>
-  joinRoom(roomId: string, name: string): Promise<JoinResult>
+  joinRoom(
+    roomId: string,
+    name: string,
+    capabilities?: string[]
+  ): Promise<JoinResult>
   waitForEvents(
     participantHandle: string,
     cursor: number,
@@ -147,6 +220,28 @@ export interface Free4ChatClient {
     participantHandle: string,
     attachmentId: string
   ): Promise<{ data: string; mimeType: string; text?: string }>
+  updateCapabilities(
+    participantHandle: string,
+    capabilities: string[]
+  ): Promise<void>
+  sendCollabRequest(
+    participantHandle: string,
+    args: CollabRequestArgs
+  ): Promise<{ requestId: string; sequence: number; duplicate?: boolean }>
+  sendCollabResponse(
+    participantHandle: string,
+    requestId: string,
+    decision: "accepted" | "declined",
+    summary?: string
+  ): Promise<{ sequence: number }>
+  sendCollabResult(
+    participantHandle: string,
+    args: CollabResultArgs
+  ): Promise<{ sequence: number }>
+  uploadAttachment(
+    participantHandle: string,
+    file: AttachmentUpload
+  ): Promise<UploadedAttachment>
   leaveRoom(participantHandle: string): Promise<void>
   close(): Promise<void>
 }

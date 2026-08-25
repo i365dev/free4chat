@@ -1,13 +1,35 @@
 #!/usr/bin/env node
+import { readFile, stat } from "node:fs/promises"
 import { AgentDaemon, ensureDaemon, sendIpc } from "./daemon.js"
 import { collectDoctorReport, formatDoctorReport } from "./doctor.js"
 import { runSpeechCommand } from "./speech/cli.js"
 import { redactSecrets } from "./speech/redaction.js"
 
+const MAX_ATTACHMENT_BYTES = 768 * 1024
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".csv": "text/csv",
+  ".json": "application/json",
+  ".yaml": "text/yaml",
+  ".yml": "text/yaml",
+}
+
 function usage(): never {
   console.error(`Usage:
-  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name>
-  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name>
+  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
+  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
+  free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
+  free4chat-agent peers --room <room-id>
+  free4chat-agent collab request --target <participant-id> --summary <text> [--request-id <id>] [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
+  free4chat-agent collab respond --request-id <id> --decision <accepted|declined> [--summary <text>] [--instance <id>]
+  free4chat-agent collab result --request-id <id> --status <completed|failed> --summary <text> [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
+  free4chat-agent attach --file <path> [--name <file-name>] [--instance <id>]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
   free4chat-agent speech status [--json]
@@ -29,6 +51,16 @@ function repeatedOption(args: string[], name: string): string[] {
   for (let index = 0; index < args.length; index += 1)
     if (args[index] === name && args[index + 1]) values.push(args[index + 1])
   return values
+}
+
+function keyValueOption(args: string[], name: string): Record<string, string> {
+  const details: Record<string, string> = {}
+  for (const entry of repeatedOption(args, name)) {
+    const separator = entry.indexOf("=")
+    if (separator <= 0) usage()
+    details[entry.slice(0, separator)] = entry.slice(separator + 1)
+  }
+  return details
 }
 
 async function main(): Promise<void> {
@@ -54,6 +86,155 @@ async function main(): Promise<void> {
           agent,
           agentCommand,
           agentArgs: repeatedOption(args, "--agent-arg"),
+          capabilities: repeatedOption(args, "--capability"),
+        }),
+        null,
+        2
+      )
+    )
+    return
+  }
+  if (command === "capabilities") {
+    await ensureDaemon()
+    const setArgument = option(args, "--set")
+    const capabilities = setArgument
+      ? setArgument
+          .split(",")
+          .map((token) => token.trim())
+          .filter((token) => token.length > 0)
+      : undefined
+    console.log(
+      JSON.stringify(
+        await sendIpc({
+          op: "update-capabilities",
+          instanceId: option(args, "--instance"),
+          ...(capabilities ? { capabilities } : {}),
+        }),
+        null,
+        2
+      )
+    )
+    return
+  }
+  if (command === "peers") {
+    const room = option(args, "--room")
+    if (!room) usage()
+    const { ModernMcpFree4ChatClient } =
+      await import("./free4chat/modernClient.js")
+    const { McpFree4ChatClient } = await import("./free4chat/client.js")
+    const mcpUrl = process.env.FREE4CHAT_MCP_URL ?? "https://www.free4.chat/mcp"
+    const client =
+      process.env.FREE4CHAT_MCP_LEGACY === "1"
+        ? new McpFree4ChatClient(mcpUrl)
+        : new ModernMcpFree4ChatClient(mcpUrl)
+    try {
+      // Read-only discovery surface (#106): works with or without a resident
+      // instance — an Agent can find peers and their participant ids before
+      // any room event gives them context.
+      const info = await client.roomInfo(room)
+      console.log(JSON.stringify(info, null, 2))
+    } finally {
+      await client.close().catch(() => undefined)
+    }
+    return
+  }
+  if (command === "collab") {
+    const subcommand = args[0]
+    const rest = args.slice(1)
+    await ensureDaemon()
+    if (subcommand === "request") {
+      const target = option(rest, "--target")
+      const summary = option(rest, "--summary")
+      if (!target || !summary) usage()
+      console.log(
+        JSON.stringify(
+          await sendIpc({
+            op: "collab-request",
+            instanceId: option(rest, "--instance"),
+            targetParticipantId: target,
+            summary,
+            requestId: option(rest, "--request-id"),
+            details: keyValueOption(rest, "--detail"),
+            attachmentIds: repeatedOption(rest, "--attach"),
+          }),
+          null,
+          2
+        )
+      )
+      return
+    }
+    if (subcommand === "respond") {
+      const requestId = option(rest, "--request-id")
+      const decision = option(rest, "--decision")
+      if (!requestId || (decision !== "accepted" && decision !== "declined"))
+        usage()
+      console.log(
+        JSON.stringify(
+          await sendIpc({
+            op: "collab-response",
+            instanceId: option(rest, "--instance"),
+            requestId,
+            decision,
+            summary: option(rest, "--summary"),
+          }),
+          null,
+          2
+        )
+      )
+      return
+    }
+    if (subcommand === "result") {
+      const requestId = option(rest, "--request-id")
+      const status = option(rest, "--status")
+      const summary = option(rest, "--summary")
+      if (
+        !requestId ||
+        (status !== "completed" && status !== "failed") ||
+        !summary
+      )
+        usage()
+      console.log(
+        JSON.stringify(
+          await sendIpc({
+            op: "collab-result",
+            instanceId: option(rest, "--instance"),
+            requestId,
+            status,
+            summary,
+            details: keyValueOption(rest, "--detail"),
+            attachmentIds: repeatedOption(rest, "--attach"),
+          }),
+          null,
+          2
+        )
+      )
+      return
+    }
+    usage()
+  }
+  if (command === "attach") {
+    const filePath = option(args, "--file")
+    if (!filePath) usage()
+    const info = await stat(filePath)
+    if (!info.isFile() || info.size === 0 || info.size > MAX_ATTACHMENT_BYTES)
+      throw new Error(
+        `Attachment must be a non-empty file up to ${MAX_ATTACHMENT_BYTES} bytes`
+      )
+    const extension = filePath.slice(filePath.lastIndexOf(".")).toLowerCase()
+    const mimeType =
+      option(args, "--mime") ?? MIME_BY_EXTENSION[extension] ?? "text/plain"
+    const bytes = await readFile(filePath)
+    await ensureDaemon()
+    console.log(
+      JSON.stringify(
+        await sendIpc({
+          op: "attach",
+          instanceId: option(args, "--instance"),
+          fileName:
+            option(args, "--name") ??
+            filePath.slice(filePath.lastIndexOf("/") + 1),
+          mimeType,
+          dataBase64: bytes.toString("base64"),
         }),
         null,
         2

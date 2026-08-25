@@ -17,11 +17,16 @@ import {
 } from "../speech/transcript.js"
 import { EventBuffer, boundedPush } from "./eventBuffer.js"
 import type {
+  AttachmentUpload,
+  CollabRequestArgs,
+  CollabResultArgs,
   Free4ChatClient,
   HarnessAdapter,
   HarnessEvent,
   HarnessTurnInput,
+  ParticipantRosterEntry,
   RoomEvent,
+  UploadedAttachment,
 } from "../types.js"
 
 const WAIT_SECONDS = 20
@@ -86,6 +91,10 @@ export interface ResidentRuntimeOptions {
   name: string
   client: Free4ChatClient
   adapter: HarnessAdapter
+  /** Capability tokens this agent advertises for the room (#106 Phase A).
+   * Chosen by the operator/Harness at join time; re-advertised verbatim on
+   * every (re)join so presence metadata survives reconnects. */
+  capabilities?: string[]
   log?: (event: string, details?: Record<string, string | number>) => void
   /** Same MCP endpoint `client` was built with — needed to derive the site
    * origin for the Meeting Notes media REST surface. */
@@ -114,10 +123,20 @@ function defaultLog(
 
 export function buildHarnessTurn(
   events: RoomEvent[],
-  meetingTranscript?: HarnessTurnInput["meetingTranscript"]
+  meetingTranscript?: HarnessTurnInput["meetingTranscript"],
+  context?: {
+    self?: HarnessTurnInput["room"]["self"]
+    participants?: ParticipantRosterEntry[]
+  }
 ): HarnessTurnInput {
   return {
-    room: { ephemeral: true },
+    room: {
+      ephemeral: true,
+      ...(context?.self ? { self: context.self } : {}),
+      ...(context?.participants && context.participants.length > 0
+        ? { participants: context.participants }
+        : {}),
+    },
     events: events.map((event) => {
       const normalized: HarnessEvent = {
         sender: event.participant.name,
@@ -127,6 +146,14 @@ export function buildHarnessTurn(
         actionPayload: event.actionPayload,
         addressed: event.addressed,
         attachment: event.attachment,
+        ...(event.collab
+          ? {
+              collab: {
+                ...event.collab,
+                fromName: event.participant.name,
+              },
+            }
+          : {}),
         ...(event.textFile ? { textFile: event.textFile } : {}),
         sequence: event.sequence,
         createdAt: event.createdAt,
@@ -155,6 +182,14 @@ export class ResidentRoomRuntime {
   private lastHarnessSequence = 0
   private readonly pendingAddressed: number[] = []
   private readonly eventBuffer = new EventBuffer()
+  // Current advertised capability list. Starts from the configured options
+  // and is replaced in place by updateCapabilities() so a rejoin always
+  // re-advertises the latest list, never a stale one.
+  private advertisedCapabilities: string[]
+  // Latest compact roster seen from wait_for_events responses; injected into
+  // every Harness turn so peers and their advertised capabilities are
+  // visible without any extra polling.
+  private roster: ParticipantRosterEntry[] = []
   private readonly log: (
     event: string,
     details?: Record<string, string | number>
@@ -166,6 +201,7 @@ export class ResidentRoomRuntime {
   private roomExpiryHandled = false
 
   constructor(private readonly options: ResidentRuntimeOptions) {
+    this.advertisedCapabilities = [...(options.capabilities ?? [])]
     this.transcript =
       options.transcriptStore ??
       (options.transcriptPath
@@ -210,7 +246,10 @@ export class ResidentRoomRuntime {
   private async join(): Promise<void> {
     const joined = await this.options.client.joinRoom(
       this.options.roomId,
-      this.options.name
+      this.options.name,
+      this.advertisedCapabilities.length > 0
+        ? this.advertisedCapabilities
+        : undefined
     )
     // The capability is intentionally kept only in this object and is never
     // included in HarnessTurnInput, RuntimeStatus, or log details.
@@ -353,6 +392,7 @@ export class ResidentRoomRuntime {
         retryAttempt = 0
         this.cursor = Math.max(this.cursor, result.cursor)
         this.expiresAt = result.expiresAt
+        if (result.participants) this.roster = result.participants
         for (const event of result.events) this.acceptEvent(event)
         if (this.pendingAddressed.length > 0) void this.drainTurns()
       } catch (error) {
@@ -411,7 +451,19 @@ export class ResidentRoomRuntime {
           this.log("meeting_transcript_write_failed")
         }
         const input = await this.resolveImages(
-          buildHarnessTurn(events, this.transcript?.snapshot())
+          buildHarnessTurn(events, this.transcript?.snapshot(), {
+            self: {
+              instanceId: this.options.instanceId,
+              ...(this.participantId
+                ? { participantId: this.participantId }
+                : {}),
+              name: this.options.name,
+              ...(this.advertisedCapabilities.length > 0
+                ? { capabilities: this.advertisedCapabilities }
+                : {}),
+            },
+            participants: this.roster,
+          })
         )
         this.state = "turn"
         const result = await this.options.adapter.runTurn(input)
@@ -495,6 +547,59 @@ export class ResidentRoomRuntime {
       }
     }
     return false
+  }
+
+  /** Replaces the advertised capability list in place (#106 Phase A): the
+   * room record is updated immediately and every future (re)join re-uses
+   * this list, so the advertisement survives lease-expiry rejoins. */
+  async updateCapabilities(capabilities: string[]): Promise<void> {
+    if (!this.participantHandle)
+      throw new Error("Runtime is not connected to a room")
+    await this.options.client.updateCapabilities(
+      this.participantHandle,
+      capabilities
+    )
+    this.advertisedCapabilities = [...capabilities]
+  }
+
+  currentCapabilities(): string[] {
+    return [...this.advertisedCapabilities]
+  }
+
+  private requireHandle(): string {
+    if (!this.participantHandle)
+      throw new Error("Runtime is not connected to a room")
+    return this.participantHandle
+  }
+
+  async collabRequest(
+    args: CollabRequestArgs
+  ): Promise<{ requestId: string; sequence: number; duplicate?: boolean }> {
+    return this.options.client.sendCollabRequest(this.requireHandle(), args)
+  }
+
+  async collabResponse(
+    requestId: string,
+    decision: "accepted" | "declined",
+    summary?: string
+  ): Promise<{ sequence: number }> {
+    return this.options.client.sendCollabResponse(
+      this.requireHandle(),
+      requestId,
+      decision,
+      summary
+    )
+  }
+
+  async collabResult(args: CollabResultArgs): Promise<{ sequence: number }> {
+    return this.options.client.sendCollabResult(this.requireHandle(), args)
+  }
+
+  /** Uploads an artifact into the room's ephemeral attachment store and
+   * returns its metadata — the attachment id is what a collaboration result
+   * references via --attach, so it must reach the caller. */
+  async uploadAttachment(file: AttachmentUpload): Promise<UploadedAttachment> {
+    return this.options.client.uploadAttachment(this.requireHandle(), file)
   }
 
   async stop(): Promise<void> {

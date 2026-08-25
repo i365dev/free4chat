@@ -1,6 +1,13 @@
 import { Free4ChatClientError } from "./client.js"
 import type { Free4ChatErrorCode } from "./client.js"
-import type { Free4ChatClient } from "../types.js"
+import type {
+  AttachmentUpload,
+  CollabRequestArgs,
+  CollabResultArgs,
+  Free4ChatClient,
+  ParticipantRosterEntry,
+  UploadedAttachment,
+} from "../types.js"
 import type { JoinResult, RoomInfo, WaitResult } from "../types.js"
 
 /**
@@ -23,6 +30,11 @@ const REQUIRED_TOOLS = [
   "send_text",
   "read_attachment",
   "leave_room",
+  "update_capabilities",
+  "send_collab_request",
+  "send_collab_response",
+  "send_collab_result",
+  "send_attachment",
 ] as const
 
 function envelopeMeta(): Record<string, unknown> {
@@ -66,6 +78,33 @@ function toToolErrorCode(error: string | undefined): Free4ChatErrorCode {
     return "invalid_participant_handle"
   if (error === "room_expired") return "room_expired"
   return "tool_error"
+}
+
+/** Projects raw room-info participant records into the sanitized roster
+ * shape: identity, kind, and self-advertised capability tokens only. */
+function parseRoster(raw: unknown[]): ParticipantRosterEntry[] {
+  return raw
+    .map((item) => (item !== null && typeof item === "object" ? item : {}))
+    .map((record) => {
+      const participant = record as Record<string, unknown>
+      const capabilities =
+        participant.capabilities && typeof participant.capabilities === "object"
+          ? (participant.capabilities as Record<string, unknown>)
+          : undefined
+      const advertised = Array.isArray(capabilities?.advertised)
+        ? capabilities.advertised.filter(
+            (token): token is string => typeof token === "string"
+          )
+        : undefined
+      return {
+        id: String(participant.id ?? ""),
+        name: String(participant.name ?? ""),
+        kind: (participant.kind === "agent" ? "agent" : "human") as
+          "agent" | "human",
+        ...(advertised && advertised.length > 0 ? { advertised } : {}),
+      }
+    })
+    .filter((entry) => entry.id.length > 0)
 }
 
 function decodeTextPayload(raw: unknown): unknown {
@@ -246,6 +285,9 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
         : {}
     return {
       exists: result.exists === true,
+      ...(Array.isArray(result.participants)
+        ? { participants: parseRoster(result.participants) }
+        : {}),
       meetingNotes: {
         active: rawMeetingNotes.active === true,
         ...(typeof rawMeetingNotes.agentParticipantId === "string"
@@ -260,8 +302,18 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
     }
   }
 
-  async joinRoom(roomId: string, name: string): Promise<JoinResult> {
-    const result = asRecord(await this.callTool("join_room", { roomId, name }))
+  async joinRoom(
+    roomId: string,
+    name: string,
+    capabilities?: string[]
+  ): Promise<JoinResult> {
+    const result = asRecord(
+      await this.callTool("join_room", {
+        roomId,
+        name,
+        ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+      })
+    )
     const participant = asRecord(result.participant)
     if (
       typeof result.participantHandle !== "string" ||
@@ -295,6 +347,11 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
       events: Array.isArray(result.events) ? (result.events as never[]) : [],
       cursor: asNumber(result.cursor, "cursor"),
       expiresAt: asNumber(result.expiresAt, "expiresAt"),
+      ...(Array.isArray(result.participants)
+        ? {
+            participants: result.participants as ParticipantRosterEntry[],
+          }
+        : {}),
     }
   }
 
@@ -368,6 +425,93 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
 
   async leaveRoom(participantHandle: string): Promise<void> {
     await this.callTool("leave_room", { participantHandle })
+  }
+
+  async updateCapabilities(
+    participantHandle: string,
+    capabilities: string[]
+  ): Promise<void> {
+    await this.callTool("update_capabilities", {
+      participantHandle,
+      capabilities,
+    })
+  }
+
+  async sendCollabRequest(
+    participantHandle: string,
+    args: CollabRequestArgs
+  ): Promise<{ requestId: string; sequence: number; duplicate?: boolean }> {
+    const result = asRecord(
+      await this.callTool("send_collab_request", {
+        participantHandle,
+        targetParticipantId: args.targetParticipantId,
+        summary: args.summary,
+        ...(args.requestId ? { requestId: args.requestId } : {}),
+        ...(args.details ? { details: args.details } : {}),
+        ...(args.attachmentIds ? { attachmentIds: args.attachmentIds } : {}),
+      })
+    )
+    return {
+      requestId: String(result.requestId ?? ""),
+      sequence: asNumber(result.sequence, "sequence"),
+      ...(result.duplicate === true ? { duplicate: true } : {}),
+    }
+  }
+
+  async sendCollabResponse(
+    participantHandle: string,
+    requestId: string,
+    decision: "accepted" | "declined",
+    summary?: string
+  ): Promise<{ sequence: number }> {
+    const result = asRecord(
+      await this.callTool("send_collab_response", {
+        participantHandle,
+        requestId,
+        decision,
+        ...(summary ? { summary } : {}),
+      })
+    )
+    return { sequence: asNumber(result.sequence, "sequence") }
+  }
+
+  async sendCollabResult(
+    participantHandle: string,
+    args: CollabResultArgs
+  ): Promise<{ sequence: number }> {
+    const result = asRecord(
+      await this.callTool("send_collab_result", {
+        participantHandle,
+        requestId: args.requestId,
+        status: args.status,
+        summary: args.summary,
+        ...(args.details ? { details: args.details } : {}),
+        ...(args.attachmentIds ? { attachmentIds: args.attachmentIds } : {}),
+      })
+    )
+    return { sequence: asNumber(result.sequence, "sequence") }
+  }
+
+  async uploadAttachment(
+    participantHandle: string,
+    file: AttachmentUpload
+  ): Promise<UploadedAttachment> {
+    const result = asRecord(
+      await this.callTool("send_attachment", {
+        participantHandle,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        dataBase64: file.dataBase64,
+      })
+    )
+    const attachment = asRecord(result.attachment)
+    return {
+      id: String(attachment.id ?? ""),
+      fileName: String(attachment.fileName ?? file.fileName),
+      mimeType: String(attachment.mimeType ?? file.mimeType),
+      size: asNumber(attachment.size, "size"),
+      sequence: asNumber(attachment.sequence, "sequence"),
+    }
   }
 
   async close(): Promise<void> {

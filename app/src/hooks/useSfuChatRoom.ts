@@ -180,6 +180,7 @@ const roomMessageToMessage = (
     text: message.text,
     actionType: message.actionType as ActionType | undefined,
     actionPayload: message.actionPayload,
+    collab: message.collab,
   }
 }
 
@@ -290,6 +291,10 @@ export function useSfuChatRoom(
         room: roomName,
         peerId: participant.id,
         muteState: participant.media?.muted,
+        capabilities:
+          participant.kind === "agent"
+            ? participant.capabilities?.advertised
+            : undefined,
         audioStream: remoteAudioStreamsRef.current.get(participant.id) ?? null,
         screenShareEnabled: hasScreenShare,
         screenShareStream:
