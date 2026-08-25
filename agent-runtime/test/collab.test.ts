@@ -540,6 +540,15 @@ class FakeRoomServer {
   private surfaceCounter = 0
   // Set when a surface publish/clear happens; proves no event/wake occurs.
   surfaceEventsAppended = 0
+  // #111 review: participants whose OLD-surface chunk deletion should throw
+  // during their next publish (mirroring a DO storage hiccup), plus the
+  // record of those attempted deletions.
+  failOldDeleteFor = new Set<string>()
+  oldDeleteAttempts: Array<{
+    participantId: string
+    snapshotId: string
+    threw: boolean
+  }> = []
 
   publishSurface(
     participantId: string,
@@ -553,6 +562,23 @@ class FakeRoomServer {
       mimeType: payload.mimeType,
       size: payload.dataBase64.length,
       updatedAt: Date.now(),
+    }
+    const previousSnapshot = this.surfaces.get(participantId)
+    if (previousSnapshot) {
+      const attempt = {
+        participantId,
+        snapshotId: previousSnapshot.snapshotId,
+        threw: false,
+      }
+      try {
+        if (this.failOldDeleteFor.has(participantId))
+          throw new Error("storage hiccup deleting old chunks")
+      } catch {
+        // Swallowed exactly like the DO's best-effort cleanup.
+        attempt.threw = true
+      } finally {
+        this.oldDeleteAttempts.push(attempt)
+      }
     }
     this.surfaces.set(participantId, surface)
     return surface

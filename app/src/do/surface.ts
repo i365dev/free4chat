@@ -109,6 +109,24 @@ export async function deleteSurfaceChunksBestEffort(
   }
 }
 
+/** Post-commit half of a surface REPLACEMENT (#111 review): persists the new
+ * metadata, then deletes the previous snapshot's chunks strictly
+ * best-effort. Injectable `deleteOldChunks` keeps the failure path
+ * deterministically testable — a throw here can never fail a publish whose
+ * metadata is already committed. Returns the now-current metadata. */
+export async function swapSurfaceAfterPersist(params: {
+  participantId: string
+  previous?: RoomSurfaceV1
+  updated: RoomSurfaceV1
+  persist: () => Promise<void>
+  deleteOldChunks: () => Promise<void>
+}): Promise<RoomSurfaceV1> {
+  await params.persist()
+  if (params.previous)
+    await deleteSurfaceChunksBestEffort(params.deleteOldChunks)
+  return params.updated
+}
+
 /** Storage-hygiene pass for persisted metadata: invalid records are dropped
  * rather than rejected so a bad row can never wedge room loading. Returns
  * undefined when absent/invalid; `changed` reports whether the caller must

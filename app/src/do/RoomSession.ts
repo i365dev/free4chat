@@ -31,6 +31,7 @@ import {
   evaluateSurfacePublish,
   sanitizeStoredSurface,
   surfaceChunkKey,
+  swapSurfaceAfterPersist,
 } from "./surface"
 import type {
   AgentCapabilities,
@@ -2170,20 +2171,29 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ error: "surface_unavailable" }, 503)
     }
     const previous = participant.surface
-    participant.surface = {
-      kind: "workspace-snapshot",
+    const updated = {
+      kind: "workspace-snapshot" as const,
       snapshotId,
       mimeType: mimeType as RoomSurfaceV1["mimeType"],
       size: bytes.byteLength,
       updatedAt: Date.now(),
     }
-    await this.saveRoom(room)
-    await this.broadcastState(room)
-    if (previous) await this.deleteSurfaceChunks(participantId, previous)
-    return this.json({
-      surface: participant.surface,
-      expiresAt: room.expiresAt,
+    // Post-commit replacement (#111 review): persist + broadcast first, then
+    // best-effort old-chunk deletion via the injectable seam — a failure
+    // deleting A can never fail a publish whose B is already committed.
+    const surface = await swapSurfaceAfterPersist({
+      participantId,
+      previous,
+      updated,
+      persist: async () => {
+        await this.saveRoom(room)
+        await this.broadcastState(room)
+      },
+      deleteOldChunks: previous
+        ? () => this.deleteSurfaceChunks(participantId, previous)
+        : async () => {},
     })
+    return this.json({ surface, expiresAt: room.expiresAt })
   }
 
   private async handleAttachmentUpload(request: Request): Promise<Response> {

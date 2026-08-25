@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   deleteSurfaceChunksBestEffort,
+  swapSurfaceAfterPersist,
   evaluateSurfacePublish,
   MAX_SURFACE_BYTES,
   sanitizeStoredSurface,
@@ -155,5 +156,56 @@ describe("deleteSurfaceChunksBestEffort (#111 review)", () => {
       ran = true
     })
     expect(ran).toBe(true)
+  })
+})
+
+describe("swapSurfaceAfterPersist (#111 review call-site seam)", () => {
+  const surfaceA = {
+    kind: "workspace-snapshot" as const,
+    snapshotId: "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
+    mimeType: "image/png" as const,
+    size: 1024,
+    updatedAt: 1,
+  }
+  const surfaceB = {
+    kind: "workspace-snapshot" as const,
+    snapshotId: "bbbbbbbb-cccc-4ddd-aeee-ffffffffffff",
+    mimeType: "image/jpeg" as const,
+    size: 2048,
+    updatedAt: 2,
+  }
+
+  it("publish succeeds when old-chunk deletion throws after persist; returns B and still attempts A's deletion", async () => {
+    let persistRan = false
+    let deleteAttempts = 0
+    const current = await swapSurfaceAfterPersist({
+      participantId: "p1",
+      previous: surfaceA,
+      updated: surfaceB,
+      persist: async () => {
+        persistRan = true
+      },
+      deleteOldChunks: async () => {
+        deleteAttempts += 1
+        throw new Error("storage hiccup deleting A")
+      },
+    })
+    expect(persistRan).toBe(true)
+    expect(deleteAttempts).toBe(1)
+    expect(current).toEqual(surfaceB)
+  })
+
+  it("deletes nothing when there is no previous snapshot", async () => {
+    let deleteAttempts = 0
+    const current = await swapSurfaceAfterPersist({
+      participantId: "p1",
+      updated: surfaceB,
+      persist: async () => {},
+      deleteOldChunks: async () => {
+        deleteAttempts += 1
+      },
+    })
+    expect(current).toEqual(surfaceB)
+    expect(deleteAttempts).toBe(0)
   })
 })
