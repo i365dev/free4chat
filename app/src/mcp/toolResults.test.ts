@@ -14,7 +14,10 @@ describe("imageToolResult", () => {
       size: 2048,
       updatedAt: 42,
     }
-    const result = imageToolResult({ data: "QUJD", mimeType: "image/png" }, { surface })
+    const result = imageToolResult(
+      { data: "QUJD", mimeType: "image/png" },
+      { surface }
+    )
     expect(result.content).toHaveLength(2)
     expect(result.content[0]).toEqual({
       type: "image",

@@ -713,7 +713,3 @@ test("read_surface parses the real server envelope and rejects mismatches", asyn
     globalThis.fetch = originalFetch
   }
 })
-
-function expectLike(condition: unknown): void {
-  assert.equal(Boolean(condition), true)
-}
