@@ -144,6 +144,20 @@ export interface JoinResult {
   expiresAt: number
 }
 
+/** #51 portable public invite descriptor v1. Safe to hand to any Agent or
+ * Human over an existing channel: room identity plus a Human-convenience
+ * URL only — never handles, tokens, credentials, or bootstrap endpoints. */
+export interface RoomInviteDescriptorV1 {
+  kind: "free4chat.room-invite"
+  version: 1
+  roomId: string
+  roomUrl: string
+}
+
+export interface CreateRoomResult extends JoinResult {
+  invite: RoomInviteDescriptorV1
+}
+
 /** Room-visible Meeting Notes grant (#82) — never a capability secret. */
 export interface MeetingNotesInfo {
   active: boolean
@@ -207,6 +221,9 @@ export interface Free4ChatClient {
     name: string,
     capabilities?: string[]
   ): Promise<JoinResult>
+  /** #51: create-only fresh-room creation; the caller becomes participant #1
+   * of an ordinary room with no owner authority. */
+  createRoom(name: string, capabilities?: string[]): Promise<CreateRoomResult>
   waitForEvents(
     participantHandle: string,
     cursor: number,

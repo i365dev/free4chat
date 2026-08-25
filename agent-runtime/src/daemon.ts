@@ -35,6 +35,7 @@ function optionalMilliseconds(name: string): number | undefined {
 export interface IpcRequest {
   op:
     | "join"
+    | "create"
     | "status"
     | "leave"
     | "stop"
@@ -119,11 +120,19 @@ export class AgentDaemon {
   }
 
   private async dispatch(request: IpcRequest): Promise<unknown> {
-    if (request.op === "join") {
-      if (!request.room || !request.name)
+    if (request.op === "join" || request.op === "create") {
+      const isCreate = request.op === "create"
+      if (isCreate) {
+        if (!request.name) throw new Error("create requires name")
+        if (request.room)
+          throw new Error("create does not take a room; the room is generated")
+      } else if (!request.room || !request.name) {
         throw new Error("join requires room and name")
+      }
       if (request.agentCommand && request.agent)
         throw new Error("choose --agent or --agent-command, not both")
+      if (!isCreate && !request.agent && !request.agentCommand)
+        throw new Error("join requires agent or agent-command")
       const launcher = request.agentCommand
         ? customLauncher(request.agentCommand, request.agentArgs ?? [])
         : getLauncher(request.agent ?? "")
@@ -140,7 +149,7 @@ export class AgentDaemon {
         process.env.FREE4CHAT_MCP_URL ?? "https://www.free4.chat/mcp"
       const runtime = new ResidentRoomRuntime({
         instanceId,
-        roomId: request.room,
+        ...(isCreate ? {} : { roomId: request.room }),
         name: request.name,
         capabilities:
           request.capabilities && request.capabilities.length > 0
@@ -162,9 +171,22 @@ export class AgentDaemon {
         transcriptPath: join(workspace, ".meeting-notes", "transcript.jsonl"),
         onRoomExpired: () => this.removeInstance(instanceId),
       })
-      this.instances.set({ instanceId, roomId: request.room, runtime })
       this.workspaces.set(instanceId, workspace)
       try {
+        if (isCreate) {
+          // Register the instance only after the create+adopt succeeded: a
+          // failed startup leaves no ghost instance and performs best-effort
+          // leave/close via stop() below. The returned payload carries
+          // instance status and the PUBLIC invite — never handle/token.
+          const created = await runtime.startByCreate()
+          this.instances.set({
+            instanceId,
+            roomId: created.invite.roomId,
+            runtime,
+          })
+          return { ...runtime.getStatus(), invite: created.invite }
+        }
+        this.instances.set({ instanceId, roomId: request.room!, runtime })
         await runtime.start()
       } catch (error) {
         this.instances.delete(instanceId)

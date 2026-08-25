@@ -20,10 +20,12 @@ import type {
   AttachmentUpload,
   CollabRequestArgs,
   CollabResultArgs,
+  CreateRoomResult,
   Free4ChatClient,
   HarnessAdapter,
   HarnessEvent,
   HarnessTurnInput,
+  JoinResult,
   ParticipantRosterEntry,
   RoomEvent,
   UploadedAttachment,
@@ -77,7 +79,8 @@ export async function enrichTurnAttachments(
 
 export interface RuntimeStatus {
   instanceId: string
-  roomId: string
+  /** Absent only in the create-first lifecycle before the room is created. */
+  roomId?: string
   name: string
   adapter: string
   state: "starting" | "waiting" | "turn" | "reconnecting" | "stopped" | "failed"
@@ -87,7 +90,9 @@ export interface RuntimeStatus {
 
 export interface ResidentRuntimeOptions {
   instanceId: string
-  roomId: string
+  /** Known upfront for join lifecycles. Omitted for the create-first
+   * lifecycle (#51): startByCreate resolves it from the create result. */
+  roomId?: string
   name: string
   client: Free4ChatClient
   adapter: HarnessAdapter
@@ -190,6 +195,14 @@ export class ResidentRoomRuntime {
   // every Harness turn so peers and their advertised capabilities are
   // visible without any extra polling.
   private roster: ParticipantRosterEntry[] = []
+  // Room id for the current lifecycle: set at construction for joins, or by
+  // startByCreate from the create result. Empty until adopted in the
+  // create-first lifecycle.
+  private resolvedRoomId?: string
+
+  private get activeRoomId(): string {
+    return this.resolvedRoomId ?? this.options.roomId ?? ""
+  }
   private readonly log: (
     event: string,
     details?: Record<string, string | number>
@@ -220,7 +233,7 @@ export class ResidentRoomRuntime {
   getStatus(): RuntimeStatus {
     return {
       instanceId: this.options.instanceId,
-      roomId: this.options.roomId,
+      ...(this.activeRoomId ? { roomId: this.activeRoomId } : {}),
       name: this.options.name,
       adapter: this.options.adapter.name,
       state: this.state,
@@ -230,6 +243,43 @@ export class ResidentRoomRuntime {
   }
 
   async start(): Promise<void> {
+    await this.prepareLifecycle()
+    await this.join()
+    this.loopPromise = this.waitLoop()
+  }
+
+  /** Create-first lifecycle (#51): connects the Harness first (a Harness
+   * failure must never orphan a created room), then atomically creates a
+   * fresh room registering this agent as participant #1, adopts the create
+   * result exactly like a normal join — the wait loop starts from the
+   * create cursor and joinRoom is never called for this room until a later
+   * lease-expiry reconnect, which always uses the normal join path and can
+   * never re-create. Returns the public invite descriptor; the private
+   * handle/token never leaves this object. */
+  async startByCreate(): Promise<CreateRoomResult> {
+    await this.prepareLifecycle()
+    const created = await this.options.client.createRoom(
+      this.options.name,
+      this.advertisedCapabilities.length > 0
+        ? this.advertisedCapabilities
+        : undefined
+    )
+    this.resolvedRoomId = created.invite.roomId
+    this.adoptJoin(created)
+    // Identical adoption semantics to join(): the Meeting Notes controller
+    // must exist for THIS participant from the start, so a Human joining via
+    // the invite and granting Meeting Notes is picked up immediately — not
+    // only after some later lease-expiry rejoin.
+    await this.restartMeetingNotesController()
+    this.loopPromise = this.waitLoop()
+    return created
+  }
+
+  /** Shared pre-flight: transcript init, MCP connection, Harness session.
+   * Ordering matters — the Harness session exists before any room is
+   * joined or created, so local readiness failures happen before room
+   * admission. */
+  private async prepareLifecycle(): Promise<void> {
     try {
       await this.transcript?.ready()
     } catch {
@@ -239,18 +289,12 @@ export class ResidentRoomRuntime {
     }
     await this.options.client.connect()
     await this.options.adapter.ensureSession()
-    await this.join()
-    this.loopPromise = this.waitLoop()
   }
 
-  private async join(): Promise<void> {
-    const joined = await this.options.client.joinRoom(
-      this.options.roomId,
-      this.options.name,
-      this.advertisedCapabilities.length > 0
-        ? this.advertisedCapabilities
-        : undefined
-    )
+  /** Single adoption path for any successful room acquisition (join or
+   * create): resets cursor/event state from the returned capability and
+   * rebuilds the Meeting Notes controller against the fresh participant. */
+  private adoptJoin(joined: JoinResult): void {
     // The capability is intentionally kept only in this object and is never
     // included in HarnessTurnInput, RuntimeStatus, or log details.
     this.participantHandle = joined.participantHandle
@@ -262,6 +306,17 @@ export class ResidentRoomRuntime {
     this.pendingAddressed.length = 0
     this.state = "waiting"
     this.lastError = undefined
+  }
+
+  private async join(): Promise<void> {
+    const joined = await this.options.client.joinRoom(
+      this.activeRoomId,
+      this.options.name,
+      this.advertisedCapabilities.length > 0
+        ? this.advertisedCapabilities
+        : undefined
+    )
+    this.adoptJoin(joined)
     await this.restartMeetingNotesController()
   }
 
@@ -362,7 +417,7 @@ export class ResidentRoomRuntime {
         this.options.createMeetingNotesController?.(handle) ??
         new MeetingNotesController({
           client: this.options.client,
-          roomId: this.options.roomId,
+          roomId: this.activeRoomId,
           participantId: this.participantId,
           mcpUrl: this.options.mcpUrl,
           handle,
