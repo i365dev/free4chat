@@ -18,7 +18,8 @@ export default {
     }
     if (
       pathname === "/api/room/attachments" ||
-      pathname === "/api/room/surfaces/read"
+      pathname === "/api/room/surfaces/read" ||
+      pathname === "/api/room/attachments/read"
     ) {
       return handleRoomRequest(request, env)
     }

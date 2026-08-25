@@ -70,6 +70,43 @@ export async function handleRoomRequest(
     })
   }
 
+  // #117: Human-browser read of an existing room collaboration attachment.
+  // Same security shape as surfaces/read (#111): POST only, credentials in
+  // headers (never query strings), Origin allow-list; the DO enforces
+  // membership and CURRENT room.attachments metadata before touching chunks.
+  if (pathname === "/api/room/attachments/read") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    let body: { attachmentId?: unknown }
+    try {
+      body = (await request.json()) as typeof body
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (
+      typeof body.attachmentId !== "string" ||
+      body.attachmentId.length === 0 ||
+      body.attachmentId.length > MAX_ROOM_LENGTH
+    )
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "human-read-attachment",
+        participantId,
+        token,
+        attachmentId: body.attachmentId,
+      }),
+    })
+  }
+
   if (request.method !== "POST")
     return json({ error: "method_not_allowed" }, 405)
 

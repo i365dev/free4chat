@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
+import { validateRoomAttachmentRead } from "@common/roomAttachments"
 import { ActionType, Message, UserInfo } from "@common/types"
 import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
+import type { RoomAttachmentRead } from "../room/types"
 import type {
   SfuMeetingNotesState,
   SfuMessage,
@@ -1378,6 +1380,44 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #117: authenticated Human on-demand read of one existing room
+  // collaboration artifact. Credentials ride in request headers only; the
+  // response is validated strictly (id match, MIME allow-list, size bounds,
+  // exact base64 length) before it can reach any UI. Nothing is cached here.
+  const readRoomAttachment = useCallback(
+    async (attachmentId: string): Promise<RoomAttachmentRead> => {
+      if (!attachmentId) throw new Error("attachmentId is required")
+      const session = sessionRef.current
+      if (!session) throw new Error("Not connected to the room")
+      const response = await fetch("/api/room/attachments/read", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Room-Id": session.room,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+        },
+        body: JSON.stringify({ attachmentId }),
+      })
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as {
+          error?: unknown
+        }
+        throw new Error(
+          typeof payload.error === "string"
+            ? payload.error
+            : `attachment_read_failed_${response.status}`
+        )
+      }
+      const payload = (await response.json().catch(() => null)) as unknown
+      const validated = validateRoomAttachmentRead(payload, attachmentId)
+      if (validated.ok === false)
+        throw new Error(`invalid_attachment_payload: ${validated.error}`)
+      return validated.read
+    },
+    []
+  )
+
   // #115: Human accepted/declined for an Agent-originated request addressed
   // to this participant. Returns false when the socket is closed or inputs
   // are invalid — never claims success without sending. The canonical state
@@ -1565,6 +1605,7 @@ export function useSfuChatRoom(
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
+    readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
     muteSelf,
     toggleScreenShare,
