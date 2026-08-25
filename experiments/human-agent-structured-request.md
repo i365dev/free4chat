@@ -39,3 +39,22 @@ capability). Human sends "Open production and verify the signed-in dashboard
 loads without console errors." Accept → screenshot via surface publish or
 attachment → completed result referencing the artifact. Human joins mid-flow
 optionally to observe lifecycle cards.
+
+## Reverse direction (#115): Human responds to an Agent request
+
+Agents may target a Human with the same structured request (the protocol
+validator always allowed any connected participant). The Human browser now
+completes the loop:
+
+```text
+Agent A —request R (target=Human H)→ Human sees the request card
+Human clicks Accept / Decline
+  { type: "collab-response", requestId: R, decision: "accepted" | "declined" }
+→ ONE canonical accepted/declined message targeted back at Agent A
+→ Agent A receives the addressed follow-up turn and decides what to do next
+```
+
+Responder identity comes from the authenticated WS attachment; routing comes
+from CollabRegistry correlation; duplicates append nothing. **A Human Accept
+transports judgment only** — it is never ACP/tool/shell/browser/GitHub
+approval, a credential, or a media grant.
