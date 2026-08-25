@@ -127,6 +127,9 @@ export default function WorkspaceSnapshots({
               className="w-48 flex-none rounded-lg border border-gray-700 bg-gray-900/60"
             >
               {url ? (
+                // Blob object URLs cannot be optimized by next/image; this
+                // mirrors TextChatCard's ephemeral-preview pattern.
+                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={url}
                   alt={`${p.name} workspace snapshot`}
