@@ -109,19 +109,25 @@ export async function deleteSurfaceChunksBestEffort(
   }
 }
 
-/** Post-commit half of a surface REPLACEMENT (#111 review): persists the new
- * metadata, then deletes the previous snapshot's chunks strictly
- * best-effort. Injectable `deleteOldChunks` keeps the failure path
- * deterministically testable — a throw here can never fail a publish whose
- * metadata is already committed. Returns the now-current metadata. */
+/** Post-commit half of a surface REPLACEMENT (#111 review): assigns the new
+ * metadata onto the participant (the seam owns this mutation, so a call
+ * site cannot persist/broadcast without it), then persists + broadcasts,
+ * then deletes the previous snapshot's chunks strictly best-effort.
+ * Injectable `deleteOldChunks` keeps the failure path deterministically
+ * testable — a throw here can never fail a publish whose metadata is
+ * already committed. Returns the now-current metadata. */
 export async function swapSurfaceAfterPersist(params: {
-  participantId: string
+  /** Mutable participant record whose `surface` pointer is swapped here. */
+  participant: { surface?: RoomSurfaceV1 }
   previous?: RoomSurfaceV1
   updated: RoomSurfaceV1
-  persist: () => Promise<void>
+  persistAndBroadcast: () => Promise<void>
   deleteOldChunks: () => Promise<void>
 }): Promise<RoomSurfaceV1> {
-  await params.persist()
+  // Assignment MUST precede persist: the saved RoomRecord and every
+  // broadcast must already describe B, never the stale A.
+  params.participant.surface = params.updated
+  await params.persistAndBroadcast()
   if (params.previous)
     await deleteSurfaceChunksBestEffort(params.deleteOldChunks)
   return params.updated

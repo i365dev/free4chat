@@ -2182,10 +2182,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // best-effort old-chunk deletion via the injectable seam — a failure
     // deleting A can never fail a publish whose B is already committed.
     const surface = await swapSurfaceAfterPersist({
-      participantId,
+      participant,
       previous,
       updated,
-      persist: async () => {
+      persistAndBroadcast: async () => {
         await this.saveRoom(room)
         await this.broadcastState(room)
       },

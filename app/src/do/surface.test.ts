@@ -175,15 +175,19 @@ describe("swapSurfaceAfterPersist (#111 review call-site seam)", () => {
     updatedAt: 2,
   }
 
-  it("publish succeeds when old-chunk deletion throws after persist; returns B and still attempts A's deletion", async () => {
+  it("assigns B onto the participant BEFORE persist; delete throw cannot fail publish or revert state", async () => {
+    const participant: { surface?: typeof surfaceA } = { surface: surfaceA }
     let persistRan = false
     let deleteAttempts = 0
     const current = await swapSurfaceAfterPersist({
-      participantId: "p1",
+      participant,
       previous: surfaceA,
       updated: surfaceB,
-      persist: async () => {
+      persistAndBroadcast: async () => {
         persistRan = true
+        // Guarding the actual call-site mutation: by the time the RoomRecord
+        // is saved/broadcast, the participant must already describe B.
+        expect(participant.surface).toEqual(surfaceB)
       },
       deleteOldChunks: async () => {
         deleteAttempts += 1
@@ -193,19 +197,24 @@ describe("swapSurfaceAfterPersist (#111 review call-site seam)", () => {
     expect(persistRan).toBe(true)
     expect(deleteAttempts).toBe(1)
     expect(current).toEqual(surfaceB)
+    expect(participant.surface).toEqual(surfaceB)
   })
 
   it("deletes nothing when there is no previous snapshot", async () => {
+    const participant: { surface?: typeof surfaceA } = {}
     let deleteAttempts = 0
     const current = await swapSurfaceAfterPersist({
-      participantId: "p1",
+      participant,
       updated: surfaceB,
-      persist: async () => {},
+      persistAndBroadcast: async () => {
+        expect(participant.surface).toEqual(surfaceB)
+      },
       deleteOldChunks: async () => {
         deleteAttempts += 1
       },
     })
     expect(current).toEqual(surfaceB)
+    expect(participant.surface).toEqual(surfaceB)
     expect(deleteAttempts).toBe(0)
   })
 })
