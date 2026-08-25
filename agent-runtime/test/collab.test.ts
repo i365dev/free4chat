@@ -533,6 +533,42 @@ class FakeRoomServer {
     }
   >()
 
+  surfaces = new Map<
+    string,
+    { snapshotId: string; mimeType: string; size: number; updatedAt: number }
+  >()
+  private surfaceCounter = 0
+  // Set when a surface publish/clear happens; proves no event/wake occurs.
+  surfaceEventsAppended = 0
+
+  publishSurface(
+    participantId: string,
+    payload: { mimeType: string; dataBase64: string }
+  ) {
+    if (!this.participants.has(participantId)) throw new Error("unauthorized")
+    this.surfaceCounter += 1
+    const surface = {
+      kind: "workspace-snapshot" as const,
+      snapshotId: `snap-${this.surfaceCounter}`,
+      mimeType: payload.mimeType,
+      size: payload.dataBase64.length,
+      updatedAt: Date.now(),
+    }
+    this.surfaces.set(participantId, surface)
+    return surface
+  }
+
+  clearSurface(participantId: string): void {
+    this.surfaces.delete(participantId)
+  }
+
+  readSurface(participantId: string, snapshotId: string) {
+    const surface = this.surfaces.get(participantId)
+    if (!surface || surface.snapshotId !== snapshotId)
+      throw new Error(surface ? "surface_changed" : "surface_not_found")
+    return surface
+  }
+
   join(participantId: string, name: string, capabilities?: string[]): number {
     this.participants.set(participantId, {
       name,
@@ -579,6 +615,19 @@ class FakeRoomServer {
       kind: info.kind,
       ...(info.capabilities && info.capabilities.length > 0
         ? { advertised: info.capabilities }
+        : {}),
+      ...(info.kind === "agent" && this.surfaces.has(id)
+        ? {
+            surface: (() => {
+              const s = this.surfaces.get(id)!
+              return {
+                snapshotId: s.snapshotId,
+                mimeType: s.mimeType,
+                size: s.size,
+                updatedAt: s.updatedAt,
+              }
+            })(),
+          }
         : {}),
     }))
   }
@@ -820,6 +869,19 @@ function clientFor(
     async uploadAttachment(_handle, file) {
       const uploaded = server.uploadAttachment(participantId, file)
       return { ...uploaded }
+    },
+    async publishSurface(_handle, payload) {
+      return { surface: server.publishSurface(participantId, payload) }
+    },
+    async clearSurface(_handle) {
+      void _handle
+      server.clearSurface(participantId)
+    },
+    async readSurface(_handle, sourceParticipantId, snapshotId) {
+      return {
+        surface: server.readSurface(sourceParticipantId, snapshotId),
+        data: "QUJD",
+      }
     },
     async leaveRoom() {},
     async close() {},
@@ -1121,3 +1183,77 @@ test("agent-created room flow: A creates -> B joins invite.roomId -> roster disc
   )
   assert.ok(bRequestTurn)
 })
+
+test("workspace surface: publish/clear/read round-trip with NO harness wake and roster metadata visible", async () => {
+  const server = new FakeRoomServer()
+  const turnsA: HarnessTurnInput[] = []
+  const runtimeA = new ResidentRoomRuntime({
+    instanceId: "inst-surface-a",
+    name: "Agent A",
+    client: clientFor(server, "agent-a"),
+    adapter: fakeAdapter(turnsA),
+    capabilities: ["code.edit"],
+  })
+  let bSurfaceView: HarnessTurnInput["room"]["participants"] | undefined
+  const runtimeB = new ResidentRoomRuntime({
+    instanceId: "inst-surface-b",
+    name: "Agent B",
+    client: clientFor(server, "agent-b"),
+    adapter: {
+      name: "hermes",
+      async ensureSession() {},
+      async runTurn(input) {
+        bSurfaceView = input.room.participants
+        return { text: "noted" }
+      },
+      async close() {},
+    },
+    capabilities: ["browser.control"],
+  })
+  try {
+    await runtimeB.start()
+    await settle(() => server.participants.has("agent-b"))
+    await runtimeB.stop()
+
+    await runtimeA.start()
+    const published = await runtimeA.publishSurface({
+      mimeType: "image/png",
+      dataBase64: "AAAA",
+    })
+    assert.match(published.surface.snapshotId, /^snap-\d+$/)
+
+    // No message/sequence/wake: A's wait loop must not deliver any event and
+    // no harness turn may run because of the publish.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    assert.equal(turnsA.length, 0)
+    assert.equal(server.messages.length, 0)
+    assert.equal(server.lastSequence, 0)
+
+    // Metadata reaches peers through the roster projection.
+    const roster = server.roster()
+    expectLike(
+      roster.find((p) => p.id === "agent-a")?.surface?.snapshotId,
+      /^snap-\d+$/
+    )
+
+    // Peer-style exact-bytes read with the pinned snapshotId; stale id fails.
+    const snapshotId = published.surface.snapshotId
+    await runtimeA.readSurface("agent-a", snapshotId)
+    await assert.rejects(
+      () =>
+        clientFor(server, "agent-a").readSurface("x", "agent-b", "stale-id"),
+      /surface_changed|surface_not_found/
+    )
+
+    // Clear removes everything; capacity slot released (implicit).
+    await runtimeA.clearSurface()
+    assert.equal(server.surfaces.has("agent-a"), false)
+    void bSurfaceView
+  } finally {
+    await runtimeA.stop()
+  }
+})
+
+function expectLike(value: unknown, pattern: RegExp): void {
+  assert.equal(typeof value === "string" && pattern.test(value), true)
+}

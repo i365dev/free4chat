@@ -6,6 +6,15 @@ import { runSpeechCommand } from "./speech/cli.js"
 import { redactSecrets } from "./speech/redaction.js"
 
 const MAX_ATTACHMENT_BYTES = 768 * 1024
+// #111: same image-only bounds as the server-side surface policy.
+const MAX_SURFACE_BYTES = 768 * 1024
+
+const SURFACE_MIME_BY_EXTENSION: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+}
 
 const MIME_BY_EXTENSION: Record<string, string> = {
   ".png": "image/png",
@@ -32,6 +41,9 @@ function usage(): never {
   free4chat-agent collab respond --request-id <id> --decision <accepted|declined> [--summary <text>] [--instance <id>]
   free4chat-agent collab result --request-id <id> --status <completed|failed> --summary <text> [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
   free4chat-agent attach --file <path> [--name <file-name>] [--instance <id>]
+  free4chat-agent surface publish --file <snapshot.jpeg|png|webp> [--instance <id>]
+  free4chat-agent surface clear [--instance <id>]
+  free4chat-agent surface read --participant <participant-id> [--instance <id>]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
   free4chat-agent speech status [--json]
@@ -117,6 +129,70 @@ async function main(): Promise<void> {
       )
     )
     return
+  }
+  if (command === "surface") {
+    const subcommand = args[0]
+    const rest = args.slice(1)
+    await ensureDaemon()
+    if (subcommand === "publish") {
+      const filePath = option(rest, "--file")
+      if (!filePath) usage()
+      const extension = filePath.slice(filePath.lastIndexOf(".")).toLowerCase()
+      const mimeType = SURFACE_MIME_BY_EXTENSION[extension]
+      if (!mimeType)
+        throw new Error(
+          "Surface snapshots must be a .png, .jpg/.jpeg, or .webp image"
+        )
+      const info = await stat(filePath)
+      if (!info.isFile() || info.size === 0 || info.size > MAX_SURFACE_BYTES)
+        throw new Error(
+          `Surface snapshot must be a non-empty file up to ${MAX_SURFACE_BYTES} bytes`
+        )
+      const bytes = await readFile(filePath)
+      console.log(
+        JSON.stringify(
+          await sendIpc({
+            op: "surface-publish",
+            instanceId: option(rest, "--instance"),
+            mimeType,
+            dataBase64: bytes.toString("base64"),
+          }),
+          null,
+          2
+        )
+      )
+      return
+    }
+    if (subcommand === "clear") {
+      console.log(
+        JSON.stringify(
+          await sendIpc({
+            op: "surface-clear",
+            instanceId: option(rest, "--instance"),
+          }),
+          null,
+          2
+        )
+      )
+      return
+    }
+    if (subcommand === "read") {
+      const participantId = option(rest, "--participant")
+      if (!participantId) usage()
+      console.log(
+        JSON.stringify(
+          await sendIpc({
+            op: "surface-read",
+            instanceId: option(rest, "--instance"),
+            sourceParticipantId: participantId,
+          }),
+          null,
+          2
+        )
+      )
+      return
+    }
+    usage()
   }
   if (command === "peers") {
     const room = option(args, "--room")

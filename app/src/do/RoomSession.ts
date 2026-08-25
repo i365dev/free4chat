@@ -24,6 +24,13 @@ import {
   removeConfirmedMids,
 } from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
+import {
+  SURFACE_CHUNK_SIZE,
+  SURFACE_KEY_PREFIX,
+  evaluateSurfacePublish,
+  sanitizeStoredSurface,
+  surfaceChunkKey,
+} from "./surface"
 import type {
   AgentCapabilities,
   AgentEvent,
@@ -38,6 +45,7 @@ import type {
   RoomRecord,
   RoomState,
   ParticipantKind,
+  RoomSurfaceV1,
 } from "../room/types"
 
 const RECONNECT_GRACE_MS = 30 * 1000
@@ -226,6 +234,21 @@ type ControlRequest =
       token: string
     }
   | {
+      action: "agent-clear-surface"
+      participantId: string
+      token: string
+    }
+  | {
+      // #111: reads the CURRENT workspace snapshot of another participant.
+      // Any authenticated current participant may read; a snapshotId that no
+      // longer matches returns surface_changed (never stale bytes).
+      action: "agent-read-surface"
+      participantId: string
+      token: string
+      sourceParticipantId: string
+      snapshotId: string
+    }
+  | {
       action: "agent-media-attach"
       participantId: string
       token: string
@@ -334,6 +357,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
         if (sanitized.changed) {
           participant.capabilities = sanitized.capabilities
+          changed = true
+        }
+        // #111 storage hygiene: a malformed persisted surface is dropped
+        // (never rejected) so room loading cannot wedge.
+        const sanitizedSurface = sanitizeStoredSurface(participant.surface)
+        if (sanitizedSurface.changed) {
+          if (sanitizedSurface.surface)
+            participant.surface = sanitizedSurface.surface
+          else delete participant.surface
           changed = true
         }
         for (const key of [
@@ -529,6 +561,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return `attachment:${id}:${index}`
   }
 
+  // #111: deletes every chunk of one snapshot. Best-effort by design —
+  // orphan chunks are swept unconditionally at room expiry.
+  private async deleteSurfaceChunks(
+    participantId: string,
+    surface: Pick<RoomSurfaceV1, "snapshotId" | "size">
+  ): Promise<void> {
+    const chunkCount = Math.ceil(surface.size / SURFACE_CHUNK_SIZE)
+    const keys: string[] = []
+    for (let index = 0; index < chunkCount; index += 1)
+      keys.push(surfaceChunkKey(participantId, surface.snapshotId, index))
+    await this.ctx.storage.delete(keys)
+  }
+
+  // #111: prefix sweep of ALL surface:* keys (including orphans from
+  // interrupted publishes). Room expiry is the unconditional backstop.
+  private async deleteAllSurfaceKeys(): Promise<void> {
+    const entries = await this.ctx.storage.list({
+      prefix: SURFACE_KEY_PREFIX,
+    })
+    if (entries.size > 0) await this.ctx.storage.delete([...entries.keys()])
+  }
+
   private async deleteAttachmentChunks(
     attachment: Pick<RoomAttachment, "id" | "chunkCount">
   ): Promise<void> {
@@ -687,6 +741,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.stageAgentMediaRevocation(room, room.meetingNotes.agentParticipantId)
       pendingClose = room.pendingMediaCleanup
     }
+    // #111: unconditional prefix sweep — metadata dies with the room record,
+    // chunk keys (including orphans from interrupted publishes) die here.
+    await this.deleteAllSurfaceKeys()
     for (const attachment of room.attachments)
       await this.deleteAttachmentChunks(attachment)
     await this.ctx.storage.delete("room")
@@ -1187,6 +1244,89 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })
     }
 
+    if (request.action === "agent-clear-surface") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      // Own-surface-only clear. No history: chunks die with the metadata
+      // swap, and no message/sequence/waiter interaction occurs.
+      const previous = participant.surface
+      delete participant.surface
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.broadcastState(room)
+      if (previous) await this.deleteSurfaceChunks(participant.id, previous)
+      return this.json({
+        ok: true,
+        cleared: Boolean(previous),
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-read-surface") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      // Any authenticated current participant may read; the snapshotId match
+      // closes the TOCTOU window — a replaced/cleared surface can never
+      // serve stale bytes.
+      const reader = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!reader) return this.json({ error: "unauthorized" }, 401)
+      const source = room.participants[request.sourceParticipantId]
+      if (
+        !source ||
+        source.kind !== "agent" ||
+        !source.surface ||
+        source.surface.snapshotId !== request.snapshotId
+      ) {
+        const exists = source?.kind === "agent" && Boolean(source.surface)
+        return this.json(
+          { error: exists ? "surface_changed" : "surface_not_found" },
+          exists ? 410 : 404
+        )
+      }
+      const surface = source.surface
+      const chunkCount = Math.ceil(surface.size / SURFACE_CHUNK_SIZE)
+      const chunks: Uint8Array[] = []
+      for (let index = 0; index < chunkCount; index += 1) {
+        const chunk = await this.ctx.storage.get<ArrayBuffer>(
+          surfaceChunkKey(source.id, surface.snapshotId, index)
+        )
+        if (!chunk) return this.json({ error: "surface_not_found" }, 404)
+        chunks.push(new Uint8Array(chunk))
+      }
+      let binary = ""
+      for (const chunk of chunks)
+        for (const byte of chunk) binary += String.fromCharCode(byte)
+      reader.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      // Observation bytes must never be cached anywhere downstream.
+      return new Response(
+        JSON.stringify({
+          surface,
+          data: btoa(binary),
+          expiresAt: room.expiresAt,
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          },
+        }
+      )
+    }
+
     if (request.action === "agent-send-collab") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
@@ -1530,6 +1670,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // afterward attempt the actual close against a fresh reload. See
       // stageAgentMediaRevocation/attemptCleanupNow's own comments.
       this.stageAgentMediaRevocation(room, participant.id)
+      const departingSurface = participant.surface
       delete room.participants[participant.id]
       room.meetingNotes = clearGrantIfParticipantDeparting(
         room.meetingNotes,
@@ -1537,6 +1678,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
+      // #111: no surface history survives departure — chunks die after the
+      // metadata removal is durable.
+      if (departingSurface)
+        await this.deleteSurfaceChunks(participant.id, departingSurface)
       const waiter = this.agentWaiters.get(participant.id)
       if (waiter) {
         this.finishWaiter(
@@ -1894,6 +2039,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const url = new URL(request.url)
     if (request.method === "POST" && url.pathname === "/attachment")
       return this.handleAttachmentUpload(request)
+    if (request.method === "POST" && url.pathname === "/surface")
+      return this.handleSurfaceUpload(request)
     if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
       if (request.method !== "GET")
         return this.json({ error: "method_not_allowed" }, 405)
@@ -1949,6 +2096,85 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       value === "application/json" ||
       value === "text/yaml"
     )
+  }
+
+  // #111 Observable Agent Workspace publish. Order matters: policy first
+  // (no storage touched on rejection), then new chunks, THEN the atomic
+  // metadata swap + broadcast, and only afterward best-effort old-chunk
+  // deletion — a failure at any point leaves the previous snapshot intact.
+  // Deliberately does NOT touch messages, sequence numbers, agent waiters,
+  // or attachments: a surface update is observation metadata, never a chat
+  // event or Harness wake.
+  private async handleSurfaceUpload(request: Request): Promise<Response> {
+    const room = await this.activeRoom()
+    if (!room) return this.json({ error: "room_expired" }, 410)
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    const mimeType = (request.headers.get("X-Surface-MimeType") ?? "")
+      .split(";", 1)[0]
+      .toLowerCase()
+    const participant = this.findParticipant(room, participantId, token)
+    if (!participant) return this.json({ error: "unauthorized" }, 401)
+    if (participant.kind !== "agent")
+      return this.json({ error: "surface_agent_only" }, 403)
+    const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
+    const bytes = new Uint8Array(await request.arrayBuffer())
+    const otherActiveSurfaces = Object.values(room.participants).filter(
+      (candidate) =>
+        candidate.kind === "agent" &&
+        candidate.id !== participantId &&
+        Boolean(candidate.surface)
+    ).length
+    const policy = evaluateSurfacePublish({
+      mimeType,
+      declaredSize,
+      byteLength: bytes.byteLength,
+      otherActiveSurfaces,
+      publisherHasSurface: Boolean(participant.surface),
+      publisherLastUpdatedAt: participant.surface?.updatedAt,
+      now: Date.now(),
+    })
+    if (policy.ok === false)
+      return this.json(
+        { error: policy.error },
+        policy.error === "surface_rate_limited"
+          ? 429
+          : policy.error === "surface_capacity_exceeded"
+          ? 503
+          : 400
+      )
+    const snapshotId = crypto.randomUUID()
+    try {
+      for (let index = 0; index < policy.chunkCount; index += 1) {
+        const start = index * SURFACE_CHUNK_SIZE
+        await this.ctx.storage.put(
+          surfaceChunkKey(participantId, snapshotId, index),
+          bytes.slice(start, start + SURFACE_CHUNK_SIZE)
+        )
+      }
+    } catch {
+      // Roll back partial NEW chunks; previous surface untouched.
+      const partialKeys: string[] = []
+      for (let index = 0; index < policy.chunkCount; index += 1)
+        partialKeys.push(surfaceChunkKey(participantId, snapshotId, index))
+      await this.ctx.storage.delete(partialKeys)
+      return this.json({ error: "surface_unavailable" }, 503)
+    }
+    const previous = participant.surface
+    participant.surface = {
+      kind: "workspace-snapshot",
+      snapshotId,
+      mimeType: mimeType as RoomSurfaceV1["mimeType"],
+      size: bytes.byteLength,
+      updatedAt: Date.now(),
+    }
+    await this.saveRoom(room)
+    await this.broadcastState(room)
+    if (previous) await this.deleteSurfaceChunks(participantId, previous)
+    return this.json({
+      surface: participant.surface,
+      expiresAt: room.expiresAt,
+    })
   }
 
   private async handleAttachmentUpload(request: Request): Promise<Response> {
@@ -2082,6 +2308,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     let changed = false
+    const expiredSurfaces: Array<{
+      participantId: string
+      surface: RoomSurfaceV1
+    }> = []
     for (const [id, participant] of Object.entries(room.participants)) {
       const expiredHuman =
         participant.kind === "human" &&
@@ -2094,6 +2324,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // Synchronous staging only here — no Cloudflare fetch is attempted
         // until after this whole sweep is persisted below (round 4).
         if (expiredAgent) this.stageAgentMediaRevocation(room, id)
+        // #111: lease-expired agents lose their surface with them; chunk
+        // deletion happens after the sweep is persisted (below).
+        if (participant.surface)
+          expiredSurfaces.push({
+            participantId: id,
+            surface: participant.surface,
+          })
         delete room.participants[id]
         room.meetingNotes = clearGrantIfParticipantDeparting(
           room.meetingNotes,
@@ -2121,6 +2358,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.saveRoom(room)
       await this.broadcastState(room)
     }
+    // #111: chunk deletion after persistence — no surface outlives its
+    // lease-expired owner.
+    for (const { participantId, surface } of expiredSurfaces)
+      await this.deleteSurfaceChunks(participantId, surface)
     await this.scheduleNextAlarm(room)
     // External I/O last, after every storage-only mutation above is
     // already durable (round 4): attemptCleanupNow takes a read-only

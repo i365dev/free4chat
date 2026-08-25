@@ -138,6 +138,10 @@ async function roomControl(
 }
 
 function controlError(result: ControlResult): string {
+  if (typeof result.data.error === "string") {
+    const error = result.data.error
+    if (error.startsWith("surface_")) return error
+  }
   if (result.data.error === "room_expired") return "room_expired"
   if (result.data.error === "already_left") return "already_left"
   if (result.data.error === "wait_already_pending")
@@ -672,6 +676,118 @@ function createMcpServer(context: McpRequestContext) {
       return result.ok
         ? toolResult(result.data)
         : toolError(controlError(result))
+    }
+  )
+
+  // #111 Observable Agent Workspace v0: opt-in, Agent-only, own-surface-only
+  // ephemeral snapshot. Metadata is public room state; bytes are readable
+  // only by current participants with the exact current snapshotId.
+  const SURFACE_MIME = z.enum(["image/jpeg", "image/png", "image/webp"])
+
+  server.registerTool(
+    "publish_surface",
+    {
+      description:
+        "Publish/replace your single latest workspace snapshot image (jpeg/png/webp, ≤768KB). Explicitly participant-controlled observation — never automatic capture, never a live stream, and never authorization for anyone to control your machine. The server assigns the new snapshotId; the previous snapshot is destroyed.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        mimeType: SURFACE_MIME,
+        dataBase64: z.string().min(1).max(1_400_000),
+      },
+    },
+    async ({ participantHandle, mimeType, dataBase64 }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      let bytes: Uint8Array<ArrayBuffer>
+      try {
+        const padded = dataBase64.replaceAll("-", "+").replaceAll("_", "/")
+        const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4))
+        bytes = new Uint8Array(new ArrayBuffer(binary.length))
+        for (let index = 0; index < binary.length; index += 1)
+          bytes[index] = binary.charCodeAt(index)
+      } catch {
+        return toolError("invalid_attachment")
+      }
+      const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(handle.room))
+      const response = await stub.fetch("https://room/surface", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Surface-MimeType": mimeType,
+          "X-Room-Participant-Id": handle.participantId,
+          "X-Room-Participant-Token": handle.participantToken,
+        },
+        body: bytes,
+      })
+      const data = (await response.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >
+      return response.ok
+        ? toolResult(data)
+        : toolError(
+            typeof data.error === "string" ? data.error : "surface_unavailable"
+          )
+    }
+  )
+
+  server.registerTool(
+    "clear_surface",
+    {
+      description:
+        "Remove your published workspace snapshot immediately. No history is retained. Only affects your own surface.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+      },
+    },
+    async ({ participantHandle }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-clear-surface",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(controlError(result))
+    }
+  )
+
+  server.registerTool(
+    "read_surface",
+    {
+      description:
+        "Read another CURRENT room participant's workspace snapshot on demand. Pass their participantId and the exact current snapshotId from room_info/wait_for_events metadata; a stale id returns surface_changed. Returns MCP ImageContent plus sanitized metadata. Observation only — reading grants no control over the source participant.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        sourceParticipantId: z.string().min(1),
+        snapshotId: z.string().min(1).max(64),
+      },
+    },
+    async ({ participantHandle, sourceParticipantId, snapshotId }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-read-surface",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        sourceParticipantId,
+        snapshotId,
+      })
+      if (!result.ok) return toolError(controlError(result))
+      const data = result.data.data
+      const surface = result.data.surface
+      if (
+        typeof data !== "string" ||
+        !surface ||
+        typeof (surface as { mimeType?: unknown }).mimeType !== "string"
+      )
+        return toolError("surface_not_found")
+      return imageToolResult(
+        { data, mimeType: (surface as { mimeType: string }).mimeType },
+        surface
+      )
     }
   )
 

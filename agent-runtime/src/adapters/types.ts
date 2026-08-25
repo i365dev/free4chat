@@ -59,9 +59,14 @@ export function renderUntrustedRoomTurn(input: HarnessTurnInput): string {
             participant.advertised && participant.advertised.length > 0
               ? ` — advertised: ${participant.advertised.join(", ")}`
               : ""
+          const surface = participant.surface
+            ? ` — workspace snapshot: available (updated ${new Date(
+                participant.surface.updatedAt
+              ).toISOString()}; read on demand via free4chat-agent surface read)`
+            : ""
           const self =
             participant.id === input.room.self?.participantId ? " (you)" : ""
-          return `- ${participant.name} [participantId=${participant.id}]${self} (${participant.kind})${capabilities}`
+          return `- ${participant.name} [participantId=${participant.id}]${self} (${participant.kind})${capabilities}${surface}`
         }),
         "Use participantId values as collaboration targets.",
       ]

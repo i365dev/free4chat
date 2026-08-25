@@ -9,6 +9,9 @@ import type {
   CollabRequestArgs,
   CollabResultArgs,
   CreateRoomResult,
+  RoomSurfaceMetadataV1,
+  SurfacePublishPayload,
+  SurfaceReadResult,
   Free4ChatClient,
   JoinResult,
   MeetingNotesInfo,
@@ -147,6 +150,9 @@ export class McpFree4ChatClient implements Free4ChatClient {
         "send_collab_response",
         "send_collab_result",
         "send_attachment",
+        "publish_surface",
+        "clear_surface",
+        "read_surface",
       ]
       if (
         required.some((name) => !tools.tools.some((tool) => tool.name === name))
@@ -446,7 +452,116 @@ export class McpFree4ChatClient implements Free4ChatClient {
     }
   }
 
+  async publishSurface(
+    participantHandle: string,
+    payload: SurfacePublishPayload
+  ): Promise<{ surface: RoomSurfaceMetadataV1 }> {
+    const result = asRecord(
+      await this.call("publish_surface", {
+        participantHandle,
+        mimeType: payload.mimeType,
+        dataBase64: payload.dataBase64,
+      })
+    )
+    return { surface: parseSurface(result.surface) }
+  }
+
+  async clearSurface(participantHandle: string): Promise<void> {
+    await this.call("clear_surface", { participantHandle })
+  }
+
+  async readSurface(
+    participantHandle: string,
+    sourceParticipantId: string,
+    snapshotId: string
+  ): Promise<SurfaceReadResult> {
+    let result: CallToolResult
+    try {
+      result = await this.client.callTool({
+        name: "read_surface",
+        arguments: { participantHandle, sourceParticipantId, snapshotId },
+      })
+    } catch (error) {
+      throw new Free4ChatClientError(
+        error instanceof Error ? error.message : "Unable to read surface",
+        "transient"
+      )
+    }
+    if (result.isError === true) decodeToolResult(result)
+    let data: string | undefined
+    let mimeType: string | undefined
+    for (const item of result.content) {
+      if (item.type === "image") {
+        data = item.data
+        mimeType = item.mimeType
+      }
+    }
+    if (!data || !mimeType)
+      throw new Free4ChatClientError(
+        "Free4Chat returned no image content for the surface",
+        "tool_error"
+      )
+    let metadata: Partial<RoomSurfaceMetadataV1> = {}
+    for (const item of result.content) {
+      if (item.type !== "text") continue
+      try {
+        const parsed = JSON.parse(item.text) as {
+          surface?: Record<string, unknown>
+        }
+        if (parsed.surface && typeof parsed.surface === "object")
+          metadata = parsed.surface as Partial<RoomSurfaceMetadataV1>
+      } catch {
+        // Metadata envelope optional; bytes authoritative.
+      }
+    }
+    if (
+      typeof metadata.snapshotId !== "string" ||
+      typeof metadata.size !== "number"
+    )
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid surface payload",
+        "tool_error"
+      )
+    return {
+      surface: {
+        snapshotId: metadata.snapshotId,
+        mimeType: metadata.mimeType ?? mimeType,
+        size: metadata.size,
+        updatedAt:
+          typeof metadata.updatedAt === "number" ? metadata.updatedAt : 0,
+      },
+      data,
+    }
+  }
+
   async close(): Promise<void> {
     await this.client.close()
+  }
+}
+
+function parseSurface(raw: unknown): RoomSurfaceMetadataV1 {
+  if (!raw || typeof raw !== "object")
+    throw new Free4ChatClientError(
+      "Free4Chat returned an invalid surface payload",
+      "tool_error"
+    )
+  const record = raw as Record<string, unknown>
+  if (
+    record.kind !== "workspace-snapshot" ||
+    typeof record.snapshotId !== "string" ||
+    !record.snapshotId ||
+    typeof record.mimeType !== "string" ||
+    typeof record.size !== "number" ||
+    typeof record.updatedAt !== "number"
+  )
+    throw new Free4ChatClientError(
+      "Free4Chat returned an invalid surface payload",
+      "tool_error"
+    )
+  return {
+    snapshotId: record.snapshotId,
+    mimeType: record.mimeType,
+    size: record.size,
+    updatedAt: record.updatedAt,
   }
 }

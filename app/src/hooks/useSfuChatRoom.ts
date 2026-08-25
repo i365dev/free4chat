@@ -295,6 +295,7 @@ export function useSfuChatRoom(
           participant.kind === "agent"
             ? participant.capabilities?.advertised
             : undefined,
+        surface: participant.kind === "agent" ? participant.surface : undefined,
         audioStream: remoteAudioStreamsRef.current.get(participant.id) ?? null,
         screenShareEnabled: hasScreenShare,
         screenShareStream:
@@ -1489,8 +1490,22 @@ export function useSfuChatRoom(
     void initialConnectRef.current?.()
   }, [])
 
+  // #111: credentials for the LOCAL participant, used to authenticate
+  // on-demand workspace-snapshot reads. Never leaves the client except in
+  // request headers to this room's own Worker/DO.
+  const getLocalRoomAuth = useCallback(() => {
+    const session = sessionRef.current
+    if (!session) return null
+    return {
+      roomId: session.room,
+      participantId: session.participantId,
+      token: session.participantToken,
+    }
+  }, [])
+
   return {
     participants,
+    getLocalRoomAuth,
     messages,
     sendTextMessage,
     sendFileMessage,

@@ -7,6 +7,9 @@ import type {
   CreateRoomResult,
   Free4ChatClient,
   ParticipantRosterEntry,
+  RoomSurfaceMetadataV1,
+  SurfacePublishPayload,
+  SurfaceReadResult,
   UploadedAttachment,
 } from "../types.js"
 import type { JoinResult, RoomInfo, WaitResult } from "../types.js"
@@ -37,6 +40,9 @@ const REQUIRED_TOOLS = [
   "send_collab_response",
   "send_collab_result",
   "send_attachment",
+  "publish_surface",
+  "clear_surface",
+  "read_surface",
 ] as const
 
 function envelopeMeta(): Record<string, unknown> {
@@ -80,6 +86,34 @@ function toToolErrorCode(error: string | undefined): Free4ChatErrorCode {
     return "invalid_participant_handle"
   if (error === "room_expired") return "room_expired"
   return "tool_error"
+}
+
+/** Strictly validates a server-provided surface metadata object (#111). */
+function parseSurfaceMetadata(raw: unknown): RoomSurfaceMetadataV1 {
+  if (!raw || typeof raw !== "object")
+    throw new Free4ChatClientError(
+      "Free4Chat returned an invalid surface payload",
+      "tool_error"
+    )
+  const record = raw as Record<string, unknown>
+  if (
+    record.kind !== "workspace-snapshot" ||
+    typeof record.snapshotId !== "string" ||
+    !record.snapshotId ||
+    typeof record.mimeType !== "string" ||
+    typeof record.size !== "number" ||
+    typeof record.updatedAt !== "number"
+  )
+    throw new Free4ChatClientError(
+      "Free4Chat returned an invalid surface payload",
+      "tool_error"
+    )
+  return {
+    snapshotId: record.snapshotId,
+    mimeType: record.mimeType,
+    size: record.size,
+    updatedAt: record.updatedAt,
+  }
 }
 
 /** Projects raw room-info participant records into the sanitized roster
@@ -563,6 +597,89 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
       mimeType: String(attachment.mimeType ?? file.mimeType),
       size: asNumber(attachment.size, "size"),
       sequence: asNumber(attachment.sequence, "sequence"),
+    }
+  }
+
+  async publishSurface(
+    participantHandle: string,
+    payload: SurfacePublishPayload
+  ): Promise<{ surface: RoomSurfaceMetadataV1 }> {
+    const result = asRecord(
+      await this.callTool("publish_surface", {
+        participantHandle,
+        mimeType: payload.mimeType,
+        dataBase64: payload.dataBase64,
+      })
+    )
+    return { surface: parseSurfaceMetadata(result.surface) }
+  }
+
+  async clearSurface(participantHandle: string): Promise<void> {
+    await this.callTool("clear_surface", { participantHandle })
+  }
+
+  async readSurface(
+    participantHandle: string,
+    sourceParticipantId: string,
+    snapshotId: string
+  ): Promise<SurfaceReadResult> {
+    const rawResult = await this.post(
+      this.envelope("tools/call", {
+        name: "read_surface",
+        arguments: { participantHandle, sourceParticipantId, snapshotId },
+      }),
+      { "Mcp-Method": "tools/call", "Mcp-Name": "read_surface" }
+    )
+    const result = asRecord(rawResult)
+    if (result.isError === true) decodeTextPayload(rawResult)
+    const content = Array.isArray(result.content) ? result.content : []
+    let data: string | undefined
+    let mimeType: string | undefined
+    for (const item of content) {
+      const block = asRecord(item)
+      if (block.type === "image") {
+        data = String(block.data ?? "")
+        mimeType = String(block.mimeType ?? "")
+      }
+    }
+    if (data === undefined || !mimeType)
+      throw new Free4ChatClientError(
+        "Free4Chat returned no image content for the surface",
+        "tool_error"
+      )
+    // Metadata rides the trailing text envelope; fall back to the image
+    // block's own MIME when absent.
+    let metadata: Partial<RoomSurfaceMetadataV1> = {}
+    for (const item of content) {
+      const block = asRecord(item)
+      if (block.type !== "text") continue
+      try {
+        const parsed = JSON.parse(String(block.text ?? "")) as {
+          surface?: Record<string, unknown>
+        }
+        if (parsed.surface && typeof parsed.surface === "object")
+          metadata = parsed.surface as Partial<RoomSurfaceMetadataV1>
+      } catch {
+        // Metadata envelope is optional; bytes are authoritative.
+      }
+    }
+    if (
+      typeof metadata.snapshotId !== "string" ||
+      typeof metadata.size !== "number"
+    )
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid surface payload",
+        "tool_error"
+      )
+    return {
+      surface: {
+        snapshotId: metadata.snapshotId,
+        mimeType: metadata.mimeType ?? mimeType,
+        size: metadata.size,
+        updatedAt:
+          typeof metadata.updatedAt === "number" ? metadata.updatedAt : 0,
+      },
+      data,
     }
   }
 

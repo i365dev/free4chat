@@ -371,3 +371,130 @@ test("collab tools forward boring explicit envelopes and surface server errors",
     globalThis.fetch = originalFetch
   }
 })
+
+test("surface tools forward bounded envelopes and validate payloads strictly", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ name?: string; args?: Record<string, unknown> }> = []
+  let serveSurfacePublish: Record<string, unknown> = {
+    surface: {
+      kind: "workspace-snapshot",
+      snapshotId: "snap-9",
+      mimeType: "image/png",
+      size: 4,
+      updatedAt: 77,
+    },
+  }
+  let serveRead: Record<string, unknown> | undefined
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      params?: { name?: string; arguments?: Record<string, unknown> }
+    }
+    calls.push({ name: body.params?.name, args: body.params?.arguments })
+    if (body.params?.name === "publish_surface") {
+      if (serveSurfacePublish.__invalid)
+        return Response.json({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [
+              { type: "text", text: JSON.stringify(serveSurfacePublish) },
+            ],
+          },
+        })
+      return Response.json({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [
+            { type: "text", text: JSON.stringify(serveSurfacePublish) },
+          ],
+        },
+      })
+    }
+    if (body.params?.name === "clear_surface")
+      return Response.json({
+        jsonrpc: "2.0",
+        id: 1,
+        result: { content: [{ type: "text", text: "{}" }] },
+      })
+    if (body.params?.name === "read_surface") {
+      if (!serveRead)
+        return Response.json({
+          jsonrpc: "2.0",
+          id: 1,
+          result: { content: [{ type: "text", text: "{}" }] },
+        })
+      return Response.json({ jsonrpc: "2.0", id: 1, result: serveRead })
+    }
+    return Response.json({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { content: [{ type: "text", text: "{}" }] },
+    })
+  }
+
+  try {
+    const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+
+    const published = await client.publishSurface("handle", {
+      mimeType: "image/png",
+      dataBase64: "AAAA",
+    })
+    assert.equal(published.surface.snapshotId, "snap-9")
+    assert.deepEqual(calls.find((c) => c.name === "publish_surface")?.args, {
+      participantHandle: "handle",
+      mimeType: "image/png",
+      dataBase64: "AAAA",
+    })
+
+    await client.clearSurface("handle")
+    assert.ok(calls.some((c) => c.name === "clear_surface"))
+
+    serveRead = {
+      content: [
+        { type: "image", data: "QUJD", mimeType: "image/png" },
+        {
+          type: "text",
+          text: JSON.stringify({
+            surface: {
+              kind: "workspace-snapshot",
+              snapshotId: "snap-8",
+              mimeType: "image/png",
+              size: 3,
+              updatedAt: 55,
+            },
+          }),
+        },
+      ],
+    }
+    const read = await client.readSurface("handle", "agent-b", "snap-8")
+    assert.deepEqual(read.surface, {
+      snapshotId: "snap-8",
+      mimeType: "image/png",
+      size: 3,
+      updatedAt: 55,
+    })
+    assert.equal(read.data, "QUJD")
+
+    // Malformed publish payload → typed client error.
+    serveSurfacePublish = { __invalid: true, surface: { kind: "other" } }
+    await assert.rejects(
+      () =>
+        client.publishSurface("handle", {
+          mimeType: "image/png",
+          dataBase64: "AA",
+        }),
+      (error: unknown) =>
+        error instanceof Free4ChatClientError && error.code === "tool_error"
+    )
+    // Missing image content in read → typed client error.
+    serveRead = { content: [{ type: "text", text: "{}" }] }
+    await assert.rejects(
+      () => client.readSurface("handle", "agent-b", "snap-8"),
+      (error: unknown) =>
+        error instanceof Free4ChatClientError && error.code === "tool_error"
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

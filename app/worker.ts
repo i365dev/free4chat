@@ -16,7 +16,7 @@ export default {
     if (pathname.startsWith("/api/sfu/")) {
       return handleSfuRequest(request, env)
     }
-    if (pathname === "/api/room/attachments") {
+    if (pathname === "/api/room/attachments" || pathname === "/api/room/surfaces/read") {
       return handleRoomRequest(request, env)
     }
     return handler.fetch(request, env, ctx)
