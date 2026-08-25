@@ -1578,3 +1578,85 @@ test("#113 Agent->Agent request preserves details and attachmentIds through the 
     await runtimeB.stop()
   }
 })
+
+test("#115 Human accept/decline for an Agent-originated request: canonical routing back to A, addressed follow-up turn, duplicate dedup, restart/rebuild", async () => {
+  const server = new FakeRoomServer()
+  const aTurns: HarnessTurnInput[] = []
+  let decisionSeen: RoomEvent["collab"] | undefined
+
+  // Original requester Agent A is resident so the addressed follow-up turn
+  // is proven end to end.
+  const runtimeA = new ResidentRoomRuntime({
+    instanceId: "inst-h115-a",
+    roomId: server.roomId,
+    name: "Agent A",
+    client: clientFor(server, "agent-a"),
+    adapter: {
+      name: "opencode",
+      async ensureSession() {},
+      async runTurn(input) {
+        aTurns.push(input)
+        const decision = input.events.find(
+          (event) =>
+            event.collab &&
+            (event.collab.kind === "accepted" ||
+              event.collab.kind === "declined")
+        )?.collab
+        if (decision) {
+          decisionSeen = decision
+          return { text: "understood; proceeding with option A" }
+        }
+        return { text: "standing by" }
+      },
+      async close() {},
+    },
+    capabilities: ["code.edit"],
+  })
+
+  try {
+    await runtimeA.start()
+
+    // Human H joins; Agent A sends the structured request TARGETING H.
+    server.join("human-h", "Hannah", undefined, "human")
+    const sent = await clientFor(server, "agent-a").sendCollabRequest("h", {
+      targetParticipantId: "human-h",
+      summary: "I found two fixes. Should I proceed with option A?",
+    })
+    assert.ok(sent.requestId)
+
+    // Canonical request message targets [human-h]; H is its addressed reader.
+    const requestMessage = server.messages.find(
+      (m) => m.collab?.requestId === sent.requestId
+    )!
+    assert.deepEqual(requestMessage.targets, ["human-h"])
+    assert.equal(requestMessage.collab.targetParticipantId, "human-h")
+
+    // Human H explicitly ACCEPTS through the same correlation rules.
+    server.respond("human-h", sent.requestId, "accepted", {})
+
+    // The original Agent requester receives the addressed follow-up turn.
+    await settle(() => Boolean(decisionSeen))
+    assert.ok(decisionSeen)
+    assert.equal(decisionSeen!.kind, "accepted")
+    assert.equal(decisionSeen!.fromParticipantId, "human-h")
+    assert.equal(decisionSeen!.targetParticipantId, "agent-a")
+
+    // Duplicate accept appends nothing more.
+    const before = server.messages.length
+    server.respond("human-h", sent.requestId, "accepted", {})
+    assert.equal(server.messages.length, before)
+
+    // DO eviction/restart: rebuilt correlation still lets H respond within
+    // the bounded horizon (declined not yet used).
+    server.restart()
+    assert.throws(
+      () => server.respond("human-h", sent.requestId, "declined", {}),
+      /unknown_request/
+    )
+    server.recoverCorrelationFromMessages()
+    const late = server.respond("human-h", sent.requestId, "declined", {})
+    assert.ok(late.sequence > before)
+  } finally {
+    await runtimeA.stop()
+  }
+})

@@ -6,6 +6,7 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
 
+import { isCollabRequestAnswered } from "./collabUi"
 import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
 
@@ -262,11 +263,7 @@ function ActionCard({
     // #115: lifecycle-derived answered state — the message log IS the
     // record. A later accepted/declined for the same requestId means the
     // decision is made; never keep authoritative state in React.
-    const answered = allMessages.some(
-      (m) =>
-        m.collab?.requestId === collab.requestId &&
-        (m.collab.kind === "accepted" || m.collab.kind === "declined")
-    )
+    const answered = isCollabRequestAnswered(allMessages, collab.requestId)
     // Response controls appear ONLY when THIS Human is the request target
     // and the request came from someone else (never on own outbound
     // requests, Agent-targeted requests, or already-answered ones).
@@ -319,21 +316,27 @@ function ActionCard({
           </p>
         )}
         {showRespond && (
-          <div className="mt-2 flex gap-1.5">
-            <button
-              type="button"
-              onClick={() => onCollabRespond?.(collab.requestId, "accepted")}
-              className="rounded-md bg-emerald-600/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-500"
-            >
-              Accept
-            </button>
-            <button
-              type="button"
-              onClick={() => onCollabRespond?.(collab.requestId, "declined")}
-              className="rounded-md border border-gray-600 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
-            >
-              Decline
-            </button>
+          <div className="mt-2 border-t border-white/10 pt-1.5">
+            <p className="text-[10px] leading-snug text-gray-400">
+              Your response is shared with the Agent and does not grant new
+              permissions.
+            </p>
+            <div className="mt-1.5 flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => onCollabRespond?.(collab.requestId, "accepted")}
+                className="rounded-md bg-emerald-600/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-500"
+              >
+                Accept
+              </button>
+              <button
+                type="button"
+                onClick={() => onCollabRespond?.(collab.requestId, "declined")}
+                className="rounded-md border border-gray-600 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
+              >
+                Decline
+              </button>
+            </div>
           </div>
         )}
       </div>
