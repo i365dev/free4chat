@@ -753,6 +753,9 @@ class FakeRoomServer {
   ): { requestId: string; sequence: number; duplicate?: boolean } {
     if (!this.participants.has(args.targetParticipantId))
       throw new Error("target_not_in_room")
+    // DO parity (#113 review): referenced attachments must exist at send time.
+    for (const id of args.attachmentIds ?? [])
+      if (!this.attachments.has(id)) throw new Error("unknown_attachment")
     const requestId = args.requestId ?? randomUUID()
     const existing = this.requests.get(requestId)
     if (existing)
@@ -1479,4 +1482,99 @@ test("#113 non-target agent receives no addressed work turn from a Human request
     bCollab.every((event) => event.addressed === true),
     true
   )
+})
+
+test("#113 Agent->Agent request preserves details and attachmentIds through the canonical message and addressed event; duplicate appends nothing; Human wire path has no such fields", async () => {
+  const server = new FakeRoomServer()
+  const bTurns: HarnessTurnInput[] = []
+  let seenByB: RoomEvent["collab"] | undefined
+
+  // Requester A must be a current participant before referencing artifacts.
+  server.join("agent-a", "Agent A", ["code.edit", "github"])
+
+  const runtimeB = new ResidentRoomRuntime({
+    instanceId: "inst-preserve-b",
+    roomId: server.roomId,
+    name: "Agent B",
+    client: clientFor(server, "agent-b"),
+    adapter: {
+      name: "hermes",
+      async ensureSession() {},
+      async runTurn(input) {
+        bTurns.push(input)
+        const request = input.events.find(
+          (event) => event.collab?.kind === "request"
+        )?.collab
+        if (request) {
+          seenByB = request
+          return { text: "on it" }
+        }
+        return { text: "idle" }
+      },
+      async close() {},
+    },
+  })
+  try {
+    await runtimeB.start()
+
+    // A uploads an artifact FIRST so the reference is valid at send time.
+    await clientFor(server, "agent-a").uploadAttachment("handle-a", {
+      fileName: "context.json",
+      mimeType: "application/json",
+      dataBase64: "e30=",
+    })
+
+    const sent = await clientFor(server, "agent-a").sendCollabRequest("h", {
+      targetParticipantId: "agent-b",
+      summary: "Check the production flow",
+      details: { environment: "production" },
+      attachmentIds: ["att-1"],
+    })
+    assert.ok(sent.requestId)
+
+    await settle(() => Boolean(seenByB))
+
+    // Canonical RoomMessage keeps BOTH optional fields verbatim.
+    const canonical = server.messages.find((m) => m.collab?.kind === "request")!
+    assert.equal(canonical.collab.details?.environment, "production")
+    assert.deepEqual(canonical.collab.attachmentIds, ["att-1"])
+
+    // B's ADDRESSED RoomEvent preserves BOTH (the #109 production regression).
+    assert.equal(seenByB!.details?.environment, "production")
+    assert.deepEqual(seenByB!.attachmentIds, ["att-1"])
+    assert.equal(seenByB!.fromParticipantId, "agent-a")
+
+    // Duplicate retry with identical payload appends zero additional messages.
+    const before = server.messages.length
+    await clientFor(server, "agent-a").sendCollabRequest("h", {
+      targetParticipantId: "agent-b",
+      summary: "Check the production flow",
+      requestId: sent.requestId,
+      details: { environment: "production" },
+      attachmentIds: ["att-1"],
+    })
+    assert.equal(server.messages.length, before)
+
+    // Human WS v0 path carries ONLY requestId/target/summary by construction —
+    // humanRequest() has no details/attachmentIds parameters, and the resulting
+    // collab envelope must not grow them.
+    server.join("human-a", "Alice", undefined, "human")
+    const humanSent = server.humanRequest(
+      "human-a",
+      "agent-b",
+      "please verify",
+      "req-human-flat"
+    )
+    assert.equal(humanSent.ok, true)
+    const humanEnvelope = JSON.parse(
+      JSON.stringify(
+        server.messages.find((m) => m.collab?.requestId === "req-human-flat")!
+          .collab
+      )
+    )
+    assert.equal("details" in humanEnvelope, false)
+    assert.equal("attachmentIds" in humanEnvelope, false)
+  } finally {
+    await runtimeB.stop()
+  }
 })

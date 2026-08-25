@@ -1369,6 +1369,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             requestId?: unknown
             targetParticipantId?: unknown
             summary?: unknown
+            details?: unknown
+            attachmentIds?: unknown
           }
         )
         if (ingest.status === "rejected")
@@ -1904,6 +1906,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       requestId?: unknown
       targetParticipantId?: unknown
       summary?: unknown
+      // Agent-originated requests may carry bounded details and references
+      // to existing room attachments; validateCollabEvent preserves both on
+      // the canonical event. The Human WS path never supplies them.
+      details?: unknown
+      attachmentIds?: unknown
     }
   ): Promise<
     | {
