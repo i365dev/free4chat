@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  deleteSurfaceChunksBestEffort,
   evaluateSurfacePublish,
   MAX_SURFACE_BYTES,
   sanitizeStoredSurface,
@@ -136,5 +137,23 @@ describe("sanitizeStoredSurface", () => {
 describe("surfaceChunkKey", () => {
   it("namespaces chunks under the sweepable surface: prefix", () => {
     expect(surfaceChunkKey("p1", "s1", 3)).toBe("surface:p1:s1:3")
+  })
+})
+
+describe("deleteSurfaceChunksBestEffort (#111 review)", () => {
+  it("resolves even when the underlying deletion throws", async () => {
+    await expect(
+      deleteSurfaceChunksBestEffort(async () => {
+        throw new Error("storage hiccup")
+      })
+    ).resolves.toBeUndefined()
+  })
+
+  it("awaits successful deletions", async () => {
+    let ran = false
+    await deleteSurfaceChunksBestEffort(async () => {
+      ran = true
+    })
+    expect(ran).toBe(true)
   })
 })

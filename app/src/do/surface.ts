@@ -92,6 +92,23 @@ export function surfaceChunkKey(
 
 export const SURFACE_KEY_PREFIX = "surface:"
 
+/** Runs one already-detached chunk deletion without ever failing its caller
+ * (#111 review): once metadata has been swapped/cleared/removed, a storage
+ * hiccup during cleanup must not fail the publish/clear, interrupt an
+ * agent-leave before broadcast/scheduling/Meeting-Notes media cleanup, or
+ * break the lease-expiry sweep. Orphans are swept unconditionally at room
+ * expiry, which remains the fail-hard backstop. */
+export async function deleteSurfaceChunksBestEffort(
+  run: () => Promise<void>
+): Promise<void> {
+  try {
+    await run()
+  } catch {
+    // Detached chunks are unreachable (metadata no longer references them)
+    // and are swept unconditionally by room expiry.
+  }
+}
+
 /** Storage-hygiene pass for persisted metadata: invalid records are dropped
  * rather than rejected so a bad row can never wedge room loading. Returns
  * undefined when absent/invalid; `changed` reports whether the caller must

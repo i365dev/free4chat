@@ -3,6 +3,7 @@ import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server"
 import { z } from "zod"
 
 import { buildRoomInvite } from "./invite"
+import { imageToolResult } from "./toolResults"
 import type { RoomSession } from "../do/RoomSession"
 
 const MAX_ROOM_LENGTH = 64
@@ -52,18 +53,6 @@ function toolResult(data: unknown, isError = false) {
 
 function toolError(error: string) {
   return toolResult({ error }, true)
-}
-
-function imageToolResult(
-  image: { data: string; mimeType: string },
-  metadata: unknown
-) {
-  return {
-    content: [
-      { type: "image" as const, data: image.data, mimeType: image.mimeType },
-      { type: "text" as const, text: JSON.stringify(metadata) },
-    ],
-  }
 }
 
 function encodeHandle(handle: AgentHandle): string {
@@ -786,7 +775,7 @@ function createMcpServer(context: McpRequestContext) {
         return toolError("surface_not_found")
       return imageToolResult(
         { data, mimeType: (surface as { mimeType: string }).mimeType },
-        surface
+        { surface }
       )
     }
   )

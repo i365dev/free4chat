@@ -1,4 +1,8 @@
-import { Free4ChatClientError } from "./client.js"
+import {
+  Free4ChatClientError,
+  normalizeRosterEntry,
+  parseSurfaceMetadataStrict,
+} from "./client.js"
 import type { Free4ChatErrorCode } from "./client.js"
 import type {
   AttachmentUpload,
@@ -88,59 +92,12 @@ function toToolErrorCode(error: string | undefined): Free4ChatErrorCode {
   return "tool_error"
 }
 
-/** Strictly validates a server-provided surface metadata object (#111). */
-function parseSurfaceMetadata(raw: unknown): RoomSurfaceMetadataV1 {
-  if (!raw || typeof raw !== "object")
-    throw new Free4ChatClientError(
-      "Free4Chat returned an invalid surface payload",
-      "tool_error"
-    )
-  const record = raw as Record<string, unknown>
-  if (
-    record.kind !== "workspace-snapshot" ||
-    typeof record.snapshotId !== "string" ||
-    !record.snapshotId ||
-    typeof record.mimeType !== "string" ||
-    typeof record.size !== "number" ||
-    typeof record.updatedAt !== "number"
-  )
-    throw new Free4ChatClientError(
-      "Free4Chat returned an invalid surface payload",
-      "tool_error"
-    )
-  return {
-    snapshotId: record.snapshotId,
-    mimeType: record.mimeType,
-    size: record.size,
-    updatedAt: record.updatedAt,
-  }
-}
-
 /** Projects raw room-info participant records into the sanitized roster
  * shape: identity, kind, and self-advertised capability tokens only. */
 function parseRoster(raw: unknown[]): ParticipantRosterEntry[] {
   return raw
-    .map((item) => (item !== null && typeof item === "object" ? item : {}))
-    .map((record) => {
-      const participant = record as Record<string, unknown>
-      const capabilities =
-        participant.capabilities && typeof participant.capabilities === "object"
-          ? (participant.capabilities as Record<string, unknown>)
-          : undefined
-      const advertised = Array.isArray(capabilities?.advertised)
-        ? capabilities.advertised.filter(
-            (token): token is string => typeof token === "string"
-          )
-        : undefined
-      return {
-        id: String(participant.id ?? ""),
-        name: String(participant.name ?? ""),
-        kind: (participant.kind === "agent" ? "agent" : "human") as
-          "agent" | "human",
-        ...(advertised && advertised.length > 0 ? { advertised } : {}),
-      }
-    })
-    .filter((entry) => entry.id.length > 0)
+    .map(normalizeRosterEntry)
+    .filter((entry): entry is ParticipantRosterEntry => entry !== null)
 }
 
 function decodeTextPayload(raw: unknown): unknown {
@@ -435,7 +392,11 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
       expiresAt: asNumber(result.expiresAt, "expiresAt"),
       ...(Array.isArray(result.participants)
         ? {
-            participants: result.participants as ParticipantRosterEntry[],
+            participants: result.participants
+              .map(normalizeRosterEntry)
+              .filter(
+                (entry): entry is ParticipantRosterEntry => entry !== null
+              ),
           }
         : {}),
     }
@@ -611,7 +572,13 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
         dataBase64: payload.dataBase64,
       })
     )
-    return { surface: parseSurfaceMetadata(result.surface) }
+    const surface = parseSurfaceMetadataStrict(result.surface)
+    if (!surface)
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid surface payload",
+        "tool_error"
+      )
+    return { surface }
   }
 
   async clearSurface(participantHandle: string): Promise<void> {
@@ -663,24 +630,31 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
         // Metadata envelope is optional; bytes are authoritative.
       }
     }
-    if (
-      typeof metadata.snapshotId !== "string" ||
-      typeof metadata.size !== "number"
-    )
+    const strict = parseSurfaceMetadataStrict({
+      kind: "workspace-snapshot",
+      snapshotId: metadata.snapshotId,
+      mimeType: metadata.mimeType ?? mimeType,
+      size: metadata.size,
+      updatedAt: metadata.updatedAt,
+    })
+    if (!strict)
       throw new Free4ChatClientError(
         "Free4Chat returned an invalid surface payload",
         "tool_error"
       )
-    return {
-      surface: {
-        snapshotId: metadata.snapshotId,
-        mimeType: metadata.mimeType ?? mimeType,
-        size: metadata.size,
-        updatedAt:
-          typeof metadata.updatedAt === "number" ? metadata.updatedAt : 0,
-      },
-      data,
-    }
+    // Cross-checks (#111 review): bytes must belong to the EXACT requested
+    // snapshot and match the ImageContent MIME — never near-miss bytes.
+    if (strict.snapshotId !== snapshotId)
+      throw new Free4ChatClientError(
+        "Free4Chat returned a different snapshot than requested",
+        "tool_error"
+      )
+    if (strict.mimeType !== mimeType)
+      throw new Free4ChatClientError(
+        "Free4Chat returned mismatched surface content type",
+        "tool_error"
+      )
+    return { surface: strict, data }
   }
 
   async close(): Promise<void> {

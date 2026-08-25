@@ -378,7 +378,7 @@ test("surface tools forward bounded envelopes and validate payloads strictly", a
   let serveSurfacePublish: Record<string, unknown> = {
     surface: {
       kind: "workspace-snapshot",
-      snapshotId: "snap-9",
+      snapshotId: "123e4567-e89b-42d3-a456-426614174000",
       mimeType: "image/png",
       size: 4,
       updatedAt: 77,
@@ -440,7 +440,10 @@ test("surface tools forward bounded envelopes and validate payloads strictly", a
       mimeType: "image/png",
       dataBase64: "AAAA",
     })
-    assert.equal(published.surface.snapshotId, "snap-9")
+    assert.equal(
+      published.surface.snapshotId,
+      "123e4567-e89b-42d3-a456-426614174000"
+    )
     assert.deepEqual(calls.find((c) => c.name === "publish_surface")?.args, {
       participantHandle: "handle",
       mimeType: "image/png",
@@ -458,7 +461,7 @@ test("surface tools forward bounded envelopes and validate payloads strictly", a
           text: JSON.stringify({
             surface: {
               kind: "workspace-snapshot",
-              snapshotId: "snap-8",
+              snapshotId: "123e4567-e89b-42d3-a456-426614174000",
               mimeType: "image/png",
               size: 3,
               updatedAt: 55,
@@ -467,9 +470,13 @@ test("surface tools forward bounded envelopes and validate payloads strictly", a
         },
       ],
     }
-    const read = await client.readSurface("handle", "agent-b", "snap-8")
+    const read = await client.readSurface(
+      "handle",
+      "agent-b",
+      "123e4567-e89b-42d3-a456-426614174000"
+    )
     assert.deepEqual(read.surface, {
-      snapshotId: "snap-8",
+      snapshotId: "123e4567-e89b-42d3-a456-426614174000",
       mimeType: "image/png",
       size: 3,
       updatedAt: 55,
@@ -498,3 +505,215 @@ test("surface tools forward bounded envelopes and validate payloads strictly", a
     globalThis.fetch = originalFetch
   }
 })
+
+// Server-shaped read_surface envelope, mirroring app imageToolResult exactly:
+// [ImageContent block, text block JSON.stringify({ surface })].
+function surfaceReadEnvelope(
+  snapshotId: string,
+  mimeType: string,
+  size: number,
+  updatedAt: number,
+  data = "QUJD"
+): Record<string, unknown> {
+  return {
+    content: [
+      { type: "image", data, mimeType },
+      {
+        type: "text",
+        text: JSON.stringify({
+          surface: {
+            kind: "workspace-snapshot",
+            snapshotId,
+            mimeType,
+            size,
+            updatedAt,
+          },
+        }),
+      },
+    ],
+  }
+}
+
+const VALID_SURFACE = {
+  kind: "workspace-snapshot",
+  snapshotId: "123e4567-e89b-42d3-a456-426614174000",
+  mimeType: "image/png" as const,
+  size: 2048,
+  updatedAt: 42,
+}
+
+test("roster discovery validates surfaces: valid kept via room_info and wait_for_events; malformed omitted", async () => {
+  const originalFetch = globalThis.fetch
+  let mode: "room_info" | "wait_for_events" = "room_info"
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      params?: { name?: string; arguments?: Record<string, unknown> }
+    }
+    if (body.params?.name === mode) {
+      return mcpEnvelope({
+        ...(mode === "room_info"
+          ? { exists: true }
+          : { events: [], cursor: 1, expiresAt: 9 }),
+        participants: [
+          {
+            id: "agent-good",
+            name: "Good",
+            kind: "agent",
+            surface: VALID_SURFACE,
+          },
+          {
+            id: "agent-bad",
+            name: "Bad",
+            kind: "agent",
+            surface: { ...VALID_SURFACE, snapshotId: "not-a-uuid" },
+          },
+          { id: "human-1", name: "Human", kind: "human" },
+        ],
+      })
+    }
+    return mcpEnvelope({})
+  }
+
+  try {
+    const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+    const info = await client.roomInfo("room")
+    // Entries stay (ids are usable); only the MALFORMED surface is omitted.
+    assert.equal(info.participants?.length, 3)
+    assert.equal(
+      info.participants?.find((p) => p.id === "agent-good")?.surface
+        ?.snapshotId,
+      VALID_SURFACE.snapshotId
+    )
+    assert.equal(
+      info.participants?.find((p) => p.id === "agent-bad")?.surface,
+      undefined
+    )
+
+    mode = "wait_for_events"
+    const wait = await client.waitForEvents("handle", 0, 0)
+    assert.equal(wait.participants?.length, 3)
+    assert.equal(
+      wait.participants?.find((p) => p.id === "agent-good")?.surface
+        ?.snapshotId,
+      VALID_SURFACE.snapshotId
+    )
+    assert.equal(
+      wait.participants?.find((p) => p.id === "agent-bad")?.surface,
+      undefined
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("publish_surface enforces the strict metadata contract", async () => {
+  const originalFetch = globalThis.fetch
+  let serve: unknown = {
+    surface: VALID_SURFACE,
+  }
+  globalThis.fetch = async () =>
+    Response.json({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { content: [{ type: "text", text: JSON.stringify(serve) }] },
+    })
+
+  try {
+    const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+    const ok = await client.publishSurface("handle", {
+      mimeType: "image/webp",
+      dataBase64: "AA",
+    })
+    assert.equal(ok.surface.snapshotId, VALID_SURFACE.snapshotId)
+
+    for (const broken of [
+      { ...VALID_SURFACE, snapshotId: "nope" },
+      { ...VALID_SURFACE, mimeType: "image/gif" },
+      { ...VALID_SURFACE, size: 768 * 1024 + 1 },
+      { ...VALID_SURFACE, updatedAt: 0 },
+      undefined,
+    ]) {
+      serve = broken === undefined ? {} : { surface: broken }
+      await assert.rejects(
+        () =>
+          client.publishSurface("handle", {
+            mimeType: "image/png",
+            dataBase64: "AA",
+          }),
+        (error: unknown) =>
+          error instanceof Free4ChatClientError && error.code === "tool_error"
+      )
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("read_surface parses the real server envelope and rejects mismatches", async () => {
+  const originalFetch = globalThis.fetch
+  let serve: unknown = surfaceReadEnvelope(
+    "123e4567-e89b-42d3-a456-426614174000",
+    "image/png",
+    3,
+    77
+  )
+  globalThis.fetch = async () =>
+    Response.json({ jsonrpc: "2.0", id: 1, result: serve })
+
+  try {
+    const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+    const requestedId = "123e4567-e89b-42d3-a456-426614174000"
+    const read = await client.readSurface("handle", "agent-b", requestedId)
+    assert.equal(read.surface.snapshotId, requestedId)
+    assert.equal(read.data, "QUJD")
+
+    // Different snapshot than requested → typed error (never near-miss bytes).
+    serve = surfaceReadEnvelope(
+      "aaaaaaaa-bbbb-4ccc-addd-eeeeeeeeeeee",
+      "image/png",
+      3,
+      78
+    )
+    await assert.rejects(
+      () => client.readSurface("handle", "agent-b", requestedId),
+      /different snapshot/
+    )
+
+    // MIME mismatch between metadata and ImageContent → typed error.
+    serve = {
+      content: [
+        { type: "image", data: "QUJD", mimeType: "image/png" },
+        {
+          type: "text",
+          text: JSON.stringify({
+            surface: { ...VALID_SURFACE, mimeType: "image/jpeg" },
+          }),
+        },
+      ],
+    }
+    await assert.rejects(
+      () => client.readSurface("handle", "agent-b", requestedId),
+      /mismatched surface content type/
+    )
+
+    // Malformed metadata (bad uuid/size/mime) inside the envelope → typed error.
+    for (const broken of [
+      surfaceReadEnvelope("bad-id", "image/png", 3, 80),
+      surfaceReadEnvelope(requestedId, "image/gif", 3, 81),
+      surfaceReadEnvelope(requestedId, "image/png", -1, 82),
+    ]) {
+      serve = broken
+      await assert.rejects(
+        () => client.readSurface("handle", "agent-b", requestedId),
+        (error: unknown) =>
+          error instanceof Free4ChatClientError && error.code === "tool_error"
+      )
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+function expectLike(condition: unknown): void {
+  assert.equal(Boolean(condition), true)
+}

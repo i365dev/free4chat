@@ -27,6 +27,7 @@ import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
   SURFACE_CHUNK_SIZE,
   SURFACE_KEY_PREFIX,
+  deleteSurfaceChunksBestEffort,
   evaluateSurfacePublish,
   sanitizeStoredSurface,
   surfaceChunkKey,
@@ -1261,8 +1262,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       delete participant.surface
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
+      // Clear succeeds even if chunk deletion hiccups (best-effort, #111).
+      await deleteSurfaceChunksBestEffort(() =>
+        previous
+          ? this.deleteSurfaceChunks(participant.id, previous)
+          : Promise.resolve()
+      )
       await this.broadcastState(room)
-      if (previous) await this.deleteSurfaceChunks(participant.id, previous)
       return this.json({
         ok: true,
         cleared: Boolean(previous),
@@ -1679,9 +1685,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       // #111: no surface history survives departure — chunks die after the
-      // metadata removal is durable.
+      // metadata removal is durable, best-effort so departure always
+      // continues to broadcast/scheduling/Meeting-Notes media cleanup.
       if (departingSurface)
-        await this.deleteSurfaceChunks(participant.id, departingSurface)
+        await deleteSurfaceChunksBestEffort(() =>
+          this.deleteSurfaceChunks(participant.id, departingSurface)
+        )
       const waiter = this.agentWaiters.get(participant.id)
       if (waiter) {
         this.finishWaiter(
@@ -2359,9 +2368,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.broadcastState(room)
     }
     // #111: chunk deletion after persistence — no surface outlives its
-    // lease-expired owner.
+    // lease-expired owner. Best-effort: the sweep must continue to
+    // scheduleNextAlarm regardless of individual deletion failures.
     for (const { participantId, surface } of expiredSurfaces)
-      await this.deleteSurfaceChunks(participantId, surface)
+      await deleteSurfaceChunksBestEffort(() =>
+        this.deleteSurfaceChunks(participantId, surface)
+      )
     await this.scheduleNextAlarm(room)
     // External I/O last, after every storage-only mutation above is
     // already durable (round 4): attemptCleanupNow takes a read-only

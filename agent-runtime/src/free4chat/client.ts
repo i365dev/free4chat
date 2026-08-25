@@ -94,28 +94,6 @@ function asNumber(value: unknown, field: string): number {
   return value
 }
 
-function parseRosterEntry(value: unknown): ParticipantRosterEntry | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null
-  const record = value as Record<string, unknown>
-  const id = typeof record.id === "string" ? record.id : ""
-  if (!id) return null
-  const capabilities =
-    record.capabilities && typeof record.capabilities === "object"
-      ? (record.capabilities as Record<string, unknown>)
-      : undefined
-  const advertised = Array.isArray(capabilities?.advertised)
-    ? capabilities.advertised.filter(
-        (token): token is string => typeof token === "string"
-      )
-    : undefined
-  return {
-    id,
-    name: typeof record.name === "string" ? record.name : "",
-    kind: (record.kind === "agent" ? "agent" : "human") as "agent" | "human",
-    ...(advertised && advertised.length > 0 ? { advertised } : {}),
-  }
-}
-
 export class McpFree4ChatClient implements Free4ChatClient {
   private readonly client = new Client(
     {
@@ -211,7 +189,7 @@ export class McpFree4ChatClient implements Free4ChatClient {
       ...(Array.isArray(result.participants)
         ? {
             participants: result.participants
-              .map(parseRosterEntry)
+              .map(normalizeRosterEntry)
               .filter(
                 (entry): entry is NonNullable<typeof entry> => entry !== null
               ),
@@ -323,7 +301,13 @@ export class McpFree4ChatClient implements Free4ChatClient {
       cursor: asNumber(result.cursor, "cursor"),
       expiresAt: asNumber(result.expiresAt, "expiresAt"),
       ...(Array.isArray(result.participants)
-        ? { participants: result.participants as ParticipantRosterEntry[] }
+        ? {
+            participants: result.participants
+              .map(normalizeRosterEntry)
+              .filter(
+                (entry): entry is NonNullable<typeof entry> => entry !== null
+              ),
+          }
         : {}),
     }
   }
@@ -463,7 +447,13 @@ export class McpFree4ChatClient implements Free4ChatClient {
         dataBase64: payload.dataBase64,
       })
     )
-    return { surface: parseSurface(result.surface) }
+    const surface = parseSurfaceMetadataStrict(result.surface)
+    if (!surface)
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid surface payload",
+        "tool_error"
+      )
+    return { surface }
   }
 
   async clearSurface(participantHandle: string): Promise<void> {
@@ -514,24 +504,31 @@ export class McpFree4ChatClient implements Free4ChatClient {
         // Metadata envelope optional; bytes authoritative.
       }
     }
-    if (
-      typeof metadata.snapshotId !== "string" ||
-      typeof metadata.size !== "number"
-    )
+    const strict = parseSurfaceMetadataStrict({
+      kind: "workspace-snapshot",
+      snapshotId: metadata.snapshotId,
+      mimeType: metadata.mimeType ?? mimeType,
+      size: metadata.size,
+      updatedAt: metadata.updatedAt,
+    })
+    if (!strict)
       throw new Free4ChatClientError(
         "Free4Chat returned an invalid surface payload",
         "tool_error"
       )
-    return {
-      surface: {
-        snapshotId: metadata.snapshotId,
-        mimeType: metadata.mimeType ?? mimeType,
-        size: metadata.size,
-        updatedAt:
-          typeof metadata.updatedAt === "number" ? metadata.updatedAt : 0,
-      },
-      data,
-    }
+    // Cross-checks (#111 review): bytes must belong to the EXACT requested
+    // snapshot and match the ImageContent MIME — never near-miss bytes.
+    if (strict.snapshotId !== snapshotId)
+      throw new Free4ChatClientError(
+        "Free4Chat returned a different snapshot than requested",
+        "tool_error"
+      )
+    if (strict.mimeType !== mimeType)
+      throw new Free4ChatClientError(
+        "Free4Chat returned mismatched surface content type",
+        "tool_error"
+      )
+    return { surface: strict, data }
   }
 
   async close(): Promise<void> {
@@ -539,29 +536,76 @@ export class McpFree4ChatClient implements Free4ChatClient {
   }
 }
 
-function parseSurface(raw: unknown): RoomSurfaceMetadataV1 {
-  if (!raw || typeof raw !== "object")
-    throw new Free4ChatClientError(
-      "Free4Chat returned an invalid surface payload",
-      "tool_error"
-    )
+// #111 review: shared STRICT surface-metadata contract. Direct publish/read
+// responses must satisfy every rule (violations become typed errors);
+// roster projections use the same parser but OMIT malformed entries instead.
+
+const SURFACE_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function parseSurfaceMetadataStrict(
+  raw: unknown
+): RoomSurfaceMetadataV1 | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
   const record = raw as Record<string, unknown>
   if (
     record.kind !== "workspace-snapshot" ||
     typeof record.snapshotId !== "string" ||
-    !record.snapshotId ||
-    typeof record.mimeType !== "string" ||
+    !SURFACE_UUID_PATTERN.test(record.snapshotId) ||
+    (record.mimeType !== "image/jpeg" &&
+      record.mimeType !== "image/png" &&
+      record.mimeType !== "image/webp") ||
     typeof record.size !== "number" ||
-    typeof record.updatedAt !== "number"
+    !Number.isSafeInteger(record.size) ||
+    record.size <= 0 ||
+    record.size > 768 * 1024 ||
+    typeof record.updatedAt !== "number" ||
+    !Number.isFinite(record.updatedAt) ||
+    record.updatedAt <= 0
   )
-    throw new Free4ChatClientError(
-      "Free4Chat returned an invalid surface payload",
-      "tool_error"
-    )
+    return null
   return {
     snapshotId: record.snapshotId,
     mimeType: record.mimeType,
     size: record.size,
     updatedAt: record.updatedAt,
+  }
+}
+
+/** Validates one raw roster participant and projects it to the sanitized
+ * Runtime shape. Returns null for entries without a usable id; malformed
+ * surface metadata is omitted rather than rejected (roster tolerance). */
+export function normalizeRosterEntry(
+  raw: unknown
+): ParticipantRosterEntry | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const id = typeof record.id === "string" ? record.id : ""
+  if (!id) return null
+  const capabilities =
+    record.capabilities && typeof record.capabilities === "object"
+      ? (record.capabilities as Record<string, unknown>)
+      : undefined
+  // Two server projections exist (#111 review): room_info nests tokens under
+  // capabilities.advertised; the compact wait-roster flattens them to a
+  // top-level advertised array. Accept both.
+  const source =
+    record.advertised !== undefined
+      ? record.advertised
+      : Array.isArray(capabilities?.advertised)
+        ? capabilities.advertised
+        : undefined
+  const advertised = Array.isArray(source)
+    ? source.filter((token): token is string => typeof token === "string")
+    : undefined
+  return {
+    id,
+    name: typeof record.name === "string" ? record.name : "",
+    kind: record.kind === "agent" ? "agent" : "human",
+    ...(advertised && advertised.length > 0 ? { advertised } : {}),
+    ...(() => {
+      const surface = parseSurfaceMetadataStrict(record.surface)
+      return surface ? { surface } : {}
+    })(),
   }
 }

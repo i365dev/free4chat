@@ -23,6 +23,14 @@ interface ResidentInstance {
   runtime: ResidentRoomRuntime
 }
 
+// Fixed MIME→extension map (#111 review): local file extensions are never
+// derived from remote-controlled MIME strings.
+const SURFACE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+}
+
 function optionalMilliseconds(name: string): number | undefined {
   const raw = process.env[name]
   if (raw === undefined || raw.trim() === "") return undefined
@@ -338,7 +346,22 @@ export class AgentDaemon {
       )
       if (read.surface.snapshotId !== current.snapshotId)
         throw new Error("snapshot changed during read; retry")
-      const extension = read.surface.mimeType.split("/")[1] ?? "bin"
+      // Fixed MIME→extension map: never derive a local path component from
+      // remote data. Decoded bytes must be non-empty, within the surface
+      // bound, and EXACTLY metadata.size — otherwise nothing is written.
+      const extension =
+        SURFACE_EXTENSION_BY_MIME[read.surface.mimeType] ?? undefined
+      if (!extension)
+        throw new Error(`Unsupported surface MIME ${read.surface.mimeType}`)
+      const decoded = Buffer.from(read.data, "base64")
+      if (
+        decoded.length === 0 ||
+        decoded.length > 768 * 1024 ||
+        decoded.length !== read.surface.size
+      )
+        throw new Error(
+          "Surface payload failed size validation; no file was written"
+        )
       const workspace =
         instanceIdResolved !== undefined
           ? this.workspaces.get(instanceIdResolved)
