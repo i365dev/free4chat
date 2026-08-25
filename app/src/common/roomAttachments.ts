@@ -1,5 +1,6 @@
 import {
   ROOM_ATTACHMENT_MIME_TYPES,
+  type AgentAttachmentMimeType,
   type RoomAttachmentRead,
 } from "../room/types"
 
@@ -9,6 +10,54 @@ import {
 // closed BEFORE an object URL or preview can exist.
 
 export const MAX_ROOM_ATTACHMENT_BYTES = 768 * 1024
+
+const MAX_UPLOADED_ATTACHMENT_ID_CHARS = 64
+const MAX_UPLOADED_FILE_NAME_CHARS = 256
+
+export interface UploadedRoomAttachment {
+  id: string
+  fileName: string
+  mimeType: AgentAttachmentMimeType
+  size: number
+}
+
+/** #123: strict browser-boundary validation for one upload-response
+ * attachment payload (POST /api/room/attachments). Same fail-closed rules
+ * as artifact reads, minus the base64 bytes. Returns null on ANY violation. */
+export function validateUploadedRoomAttachment(
+  payload: unknown
+): UploadedRoomAttachment | null {
+  if (!payload || typeof payload !== "object") return null
+  const record = payload as Record<string, unknown>
+  const attachment =
+    record.attachment && typeof record.attachment === "object"
+      ? (record.attachment as Record<string, unknown>)
+      : undefined
+  if (
+    !attachment ||
+    typeof attachment.id !== "string" ||
+    attachment.id.length === 0 ||
+    attachment.id.length > MAX_UPLOADED_ATTACHMENT_ID_CHARS ||
+    typeof attachment.fileName !== "string" ||
+    attachment.fileName.length === 0 ||
+    attachment.fileName.length > MAX_UPLOADED_FILE_NAME_CHARS ||
+    !ROOM_ATTACHMENT_MIME_TYPES.includes(attachment.mimeType as never)
+  )
+    return null
+  if (
+    typeof attachment.size !== "number" ||
+    !Number.isSafeInteger(attachment.size) ||
+    attachment.size <= 0 ||
+    attachment.size > MAX_ROOM_ATTACHMENT_BYTES
+  )
+    return null
+  return {
+    id: attachment.id,
+    fileName: attachment.fileName,
+    mimeType: attachment.mimeType as AgentAttachmentMimeType,
+    size: attachment.size,
+  }
+}
 
 function decodeBase64(data: string): Uint8Array | null {
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return null

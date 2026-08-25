@@ -133,6 +133,7 @@ export default function RoomContent({
     sendFileMessage,
     sendActionMessage,
     sendCollabRequest,
+    uploadRoomAttachment,
     sendCollabResponse,
     readRoomAttachment,
     sendCollabResult,
@@ -788,9 +789,24 @@ export default function RoomContent({
           capabilities={workRequestTarget.capabilities}
           maxLength={MAX_COLLAB_SUMMARY_LENGTH}
           onCancel={() => setWorkRequestTarget(null)}
-          onSubmit={(summary) => {
-            sendCollabRequest(workRequestTarget.peerId, summary)
+          onSubmit={async (summary, files) => {
+            // Sequential upload of each artifact through the existing
+            // authenticated Room attachment endpoint.
+            const attachmentIds: string[] = []
+            for (const file of files) {
+              const meta = await uploadRoomAttachment(file)
+              attachmentIds.push(meta.id)
+            }
+            // sendCollabRequest returns "" when the WS is closed or local
+            // validation fails; propagate that so the composer stays open.
+            const requestId = sendCollabRequest(
+              workRequestTarget.peerId,
+              summary,
+              attachmentIds.length > 0 ? attachmentIds : undefined
+            )
+            if (!requestId) return false
             setWorkRequestTarget(null)
+            return true
           }}
         />
       )}

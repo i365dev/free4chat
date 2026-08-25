@@ -2,9 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
-import { validateRoomAttachmentRead } from "@common/roomAttachments"
+import {
+  validateRoomAttachmentRead,
+  validateUploadedRoomAttachment,
+} from "@common/roomAttachments"
 import { ActionType, Message, UserInfo } from "@common/types"
 import {
+  MAX_COLLAB_ATTACHMENT_REFS,
   MAX_COLLAB_SUMMARY_LENGTH,
   validateAdvertisedCapabilities,
 } from "@do/collab"
@@ -1496,7 +1500,11 @@ export function useSfuChatRoom(
   // The canonical RoomMessage arrives via the ordinary broadcast — no
   // optimistic echo here.
   const sendCollabRequest = useCallback(
-    (targetParticipantId: string, summary: string): string => {
+    (
+      targetParticipantId: string,
+      summary: string,
+      attachmentIds?: string[]
+    ): string => {
       const trimmed = summary.trim()
       if (
         !targetParticipantId ||
@@ -1504,6 +1512,18 @@ export function useSfuChatRoom(
         trimmed.length > MAX_COLLAB_SUMMARY_LENGTH
       )
         return ""
+      // Local guard: attachmentIds must be absent or a non-empty array of at
+      // most MAX_COLLAB_ATTACHMENT_REFS non-empty bounded strings with no
+      // duplicates. The server remains authoritative.
+      if (attachmentIds !== undefined) {
+        const ids = attachmentIds
+        if (!Array.isArray(ids)) return ""
+        for (const id of ids)
+          if (typeof id !== "string" || id.length === 0 || id.length > 64)
+            return ""
+        if (new Set(ids).size !== ids.length) return ""
+        if (ids.length > MAX_COLLAB_ATTACHMENT_REFS) return ""
+      }
       if (websocketRef.current?.readyState !== WebSocket.OPEN) return ""
       const requestId = crypto.randomUUID()
       sendSocketMessage({
@@ -1511,10 +1531,58 @@ export function useSfuChatRoom(
         requestId,
         targetParticipantId,
         summary: trimmed,
+        ...(attachmentIds && attachmentIds.length > 0 ? { attachmentIds } : {}),
       })
       return requestId
     },
     [sendSocketMessage]
+  )
+
+  // #123: upload one file as an ephemeral Room artifact for collab context.
+  // Returns safe public metadata including the attachmentId needed to
+  // reference it in a collab request.
+  const uploadRoomAttachment = useCallback(
+    async (
+      file: File
+    ): Promise<{
+      id: string
+      fileName: string
+      mimeType: string
+      size: number
+    }> => {
+      const session = sessionRef.current
+      if (!session) throw new Error("Not connected to the room")
+      const response = await fetch("/api/room/attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            agentTextMime(file) ?? (file.type || "application/octet-stream"),
+          "X-Room-Id": session.room,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+          "X-File-Name": encodeURIComponent(file.name),
+        },
+        body: file,
+      })
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as {
+          error?: unknown
+        }
+        throw new Error(
+          typeof payload.error === "string"
+            ? payload.error
+            : `attachment_upload_failed_${response.status}`
+        )
+      }
+      // Upload responses are UNTRUSTED here too: metadata is re-checked
+      // against the shared limits before its id may be referenced.
+      const uploaded = validateUploadedRoomAttachment(
+        await response.json().catch(() => null)
+      )
+      if (!uploaded) throw new Error("invalid_attachment_payload")
+      return uploaded
+    },
+    []
   )
 
   const startMeetingNotes = useCallback(
@@ -1651,6 +1719,7 @@ export function useSfuChatRoom(
     sendFileMessage,
     sendActionMessage,
     sendCollabRequest,
+    uploadRoomAttachment,
     sendCollabResponse,
     sendCollabResult,
     updateHumanCapabilities,

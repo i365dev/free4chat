@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import {
   agentCapabilitiesFrom,
@@ -840,5 +840,62 @@ describe("rosterProjection Human advertised (#119)", () => {
     )
     expect(serialized.includes("token")).toBe(false)
     expect(serialized.includes("nonce")).toBe(false)
+  })
+})
+
+describe("#123 attachment refs against CURRENT attachments", () => {
+  it("preserves a CURRENT attachment ref through validation and registry append", () => {
+    const result = validateCollabEvent(
+      {
+        kind: "request",
+        requestId: "req-cur",
+        targetParticipantId: "agent-b",
+        summary: "Inspect",
+        attachmentIds: ["att-1"],
+      },
+      collabContext()
+    )
+    expect(result.ok).toBe(true)
+    const registry = new CollabRegistry()
+    if (!result.ok) return
+    expect(registry.recordRequest(result.event, 31)).toEqual({
+      action: "recorded",
+      sequence: 31,
+    })
+  })
+
+  it("rejects unknown refs before any registry append or waiter wake", () => {
+    const registry = new CollabRegistry()
+    const wake = vi.fn()
+    const rejected = validateCollabEvent(
+      {
+        kind: "request",
+        requestId: "req-unk",
+        targetParticipantId: "agent-b",
+        summary: "Inspect",
+        attachmentIds: ["att-ghost"],
+      },
+      collabContext()
+    )
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: "unknown_attachment",
+    })
+    expect(registry.find("req-unk")).toBeUndefined()
+    expect(wake).not.toHaveBeenCalled()
+  })
+
+  it("rejects mixed valid and unknown refs without partial preservation", () => {
+    const mixed = validateCollabEvent(
+      {
+        kind: "request",
+        requestId: "req-mix",
+        targetParticipantId: "agent-b",
+        summary: "Inspect",
+        attachmentIds: ["att-1", "att-ghost"],
+      },
+      collabContext()
+    )
+    expect(mixed.ok).toBe(false)
   })
 })
