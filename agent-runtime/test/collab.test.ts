@@ -595,13 +595,59 @@ class FakeRoomServer {
     return surface
   }
 
-  join(participantId: string, name: string, capabilities?: string[]): number {
+  join(
+    participantId: string,
+    name: string,
+    capabilities?: string[],
+    kind: "human" | "agent" = "agent"
+  ): number {
     this.participants.set(participantId, {
       name,
-      kind: "agent",
-      ...(capabilities ? { capabilities } : {}),
+      kind,
+      ...(kind === "agent" && capabilities ? { capabilities } : {}),
     })
     return this.sequence
+  }
+
+  /** #113: mirrors the DO's Human-originated request ingestion. */
+  humanRequest(
+    fromHumanId: string,
+    targetParticipantId: string,
+    summary: string,
+    requestId?: string
+  ): { ok: boolean; error?: string; requestId?: string; sequence?: number } {
+    const sender = this.participants.get(fromHumanId)
+    if (!sender || sender.kind !== "human")
+      return { ok: false, error: "collab_sender_not_human" }
+    const target = this.participants.get(targetParticipantId)
+    if (!target || target.kind !== "agent")
+      return { ok: false, error: "collab_target_not_agent" }
+    const trimmed = summary.trim()
+    if (!trimmed) return { ok: false, error: "summary_required" }
+    const id = requestId ?? `human-req-${++this.surfaceCounter}`
+    const existing = this.requests.get(id)
+    if (existing) return { ok: true, requestId: id }
+    const sequence = this.append({
+      peerId: fromHumanId,
+      kind: "human",
+      name: sender.name,
+      type: "action",
+      actionType: "collab",
+      collab: {
+        requestId: id,
+        kind: "request",
+        fromParticipantId: fromHumanId,
+        targetParticipantId,
+        summary: trimmed,
+      },
+      targets: [targetParticipantId],
+    })
+    this.requests.set(id, {
+      from: fromHumanId,
+      target: targetParticipantId,
+      seen: new Map([["request", sequence]]),
+    })
+    return { ok: true, requestId: id, sequence }
   }
 
   /** Mirrors the DO's create-only gate: any pre-existing state fails closed. */
@@ -1283,3 +1329,154 @@ test("workspace surface: publish/clear/read round-trip with NO harness wake and 
 function expectLike(value: unknown, pattern: RegExp): void {
   assert.equal(typeof value === "string" && pattern.test(value), true)
 }
+
+test("#113 Human -> Agent structured request: addressed wake, accept/completed correlation, dedup, wrong-agent rejection, rebuild", async () => {
+  const server = new FakeRoomServer()
+  const bTurns: HarnessTurnInput[] = []
+  let humanRequestSeen: RoomEvent["collab"] | undefined
+
+  // Agent B resident; Human Alice and a bystander Agent C in the same room.
+  const runtimeB = new ResidentRoomRuntime({
+    instanceId: "inst-h113-b",
+    roomId: server.roomId,
+    name: "Agent B",
+    client: clientFor(server, "agent-b"),
+    adapter: {
+      name: "hermes",
+      async ensureSession() {},
+      async runTurn(input) {
+        bTurns.push(input)
+        const request = input.events.find(
+          (event) => event.collab?.kind === "request"
+        )?.collab
+        if (request) {
+          humanRequestSeen = request
+          await runtimeBRef!.collabResponse(request.requestId, "accepted")
+          const uploaded = await runtimeBRef!.uploadAttachment({
+            fileName: "dashboard.png",
+            mimeType: "image/png",
+            dataBase64: "QUJD",
+          })
+          await runtimeBRef!.collabResult({
+            requestId: request.requestId,
+            status: "completed",
+            summary: "Dashboard loads; console clean.",
+            attachmentIds: [uploaded.id],
+          })
+          return { text: "done" }
+        }
+        return { text: "idle" }
+      },
+      async close() {},
+    },
+    capabilities: ["browser.control", "browser.authenticated"],
+  })
+  let runtimeBRef: ResidentRoomRuntime | null = null
+  runtimeBRef = runtimeB
+
+  server.join("human-a", "Alice", undefined, "human")
+  server.join("agent-c", "Agent C", ["shell"])
+  await runtimeB.start()
+
+  // Human-originated structured request (sender = authenticated human).
+  const sent = server.humanRequest(
+    "human-a",
+    "agent-b",
+    "Open production and verify the signed-in dashboard loads without console errors.",
+    "req-human-1"
+  )
+  assert.equal(sent.ok, true)
+
+  await settle(() => humanRequestSeen !== undefined)
+  // The accepted/completed lifecycle routes back toward the HUMAN requester;
+  // observe it from the canonical message log.
+  await settle(() =>
+    server.messages.some(
+      (m) =>
+        m.collab?.requestId === "req-human-1" && m.collab.kind === "completed"
+    )
+  )
+  await runtimeB.stop()
+
+  // Addressed work turn identifies the HUMAN sender.
+  assert.ok(humanRequestSeen)
+  assert.equal(humanRequestSeen.fromParticipantId, "human-a")
+
+  const completedMessage = server.messages.find(
+    (m) =>
+      m.collab?.kind === "completed" && m.collab.requestId === "req-human-1"
+  )!
+  assert.equal(completedMessage.collab.targetParticipantId, "human-a")
+  assert.deepEqual(completedMessage.collab.attachmentIds, ["att-1"])
+  assert.equal(completedMessage.targets[0], "human-a")
+
+  // Exactly ONE message appended for the request; sequence advanced once by it.
+  const requestMessages = server.messages.filter(
+    (message) =>
+      message.type === "action" &&
+      message.collab?.requestId === "req-human-1" &&
+      message.collab.kind === "request"
+  )
+  assert.equal(requestMessages.length, 1)
+  assert.equal(requestMessages[0].peerId, "human-a")
+  assert.equal(requestMessages[0].kind, "human")
+  assert.deepEqual(requestMessages[0].targets, ["agent-b"])
+
+  // Duplicate requestId creates no second message.
+  const before = server.messages.length
+  const retry = server.humanRequest(
+    "human-a",
+    "agent-b",
+    "Open production and verify the signed-in dashboard loads without console errors.",
+    "req-human-1"
+  )
+  assert.equal(retry.ok, true)
+  assert.equal(server.messages.length, before)
+
+  // Wrong agent cannot respond to the Human's request.
+  const impostor = clientFor(server, "agent-c").sendCollabResponse as never
+  void impostor
+  const respond = () => server.respond("agent-c", "req-human-1", "declined", {})
+  assert.throws(respond, /not_request_target/)
+
+  // Rebuild from bounded room.messages restores Human -> Agent routing.
+  server.restart()
+  assert.throws(
+    () => server.respond("agent-b", "req-human-1", "failed", {}),
+    /unknown_request/
+  )
+  server.recoverCorrelationFromMessages()
+  const late = server.respond("agent-b", "req-human-1", "failed", {})
+  assert.ok(late.sequence > before)
+})
+
+test("#113 non-target agent receives no addressed work turn from a Human request", async () => {
+  const server = new FakeRoomServer()
+  server.join("human-a", "Alice", undefined, "human")
+  server.join("agent-b", "Agent B")
+  server.join("agent-c", "Agent C")
+
+  const sent = server.humanRequest(
+    "human-a",
+    "agent-b",
+    "please check the page",
+    "req-solo-1"
+  )
+  assert.equal(sent.ok, true)
+
+  const cView = server.deliver("agent-c", 0)
+  const cCollab = cView.events.filter((event) => event.collab)
+  assert.equal(cCollab.length > 0, true)
+  assert.equal(
+    cCollab.every((event) => event.addressed === false),
+    true
+  )
+
+  const bView = server.deliver("agent-b", 0)
+  const bCollab = bView.events.filter((event) => event.collab)
+  assert.equal(bCollab.length > 0, true)
+  assert.equal(
+    bCollab.every((event) => event.addressed === true),
+    true
+  )
+})

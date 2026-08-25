@@ -3,11 +3,14 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/router"
 
 import { LOCAL_PEER_ID } from "@common/consts"
+import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
+import AgentWorkRequestComposer from "./AgentWorkRequestComposer"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
+import type { UserInfo } from "../common/types"
 import {
   umamiEvent,
   trackAnalyticsEvent,
@@ -124,6 +127,7 @@ export default function RoomContent({
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,
+    sendCollabRequest,
     muteSelf,
     toggleScreenShare,
     retryVerification,
@@ -139,6 +143,16 @@ export default function RoomContent({
   })
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
+
+  // #113: Human → Agent structured work request entry point. The callback is
+  // passed ONLY for remote connected Agents; Humans and self never get it.
+  const [workRequestTarget, setWorkRequestTarget] = useState<UserInfo | null>(
+    null
+  )
+  const requestWorkFor = (p: UserInfo) =>
+    setWorkRequestTarget(
+      p.kind === "agent" && p.peerId !== LOCAL_PEER_ID ? p : null
+    )
 
   const roomAgents = participants.filter((p) => p.kind === "agent")
   const meetingNotesAgentName = meetingNotes.active
@@ -661,6 +675,7 @@ export default function RoomContent({
                         onMuteSelf={muteSelf}
                         onToggleScreenShare={wrappedToggleScreenShare}
                         screenshareAllowed={screenshareAllowed}
+                        onRequestWork={() => requestWorkFor(p)}
                         className="w-20"
                         compact
                       />
@@ -686,6 +701,7 @@ export default function RoomContent({
                       screenShareEnabled={p.screenShareEnabled}
                       onMuteSelf={muteSelf}
                       onToggleScreenShare={wrappedToggleScreenShare}
+                      onRequestWork={() => requestWorkFor(p)}
                       screenshareAllowed={screenshareAllowed}
                       className="w-40 flex-none"
                     />
@@ -741,6 +757,19 @@ export default function RoomContent({
           />
         </div>
       </div>
+
+      {workRequestTarget && (
+        <AgentWorkRequestComposer
+          agentName={workRequestTarget.name}
+          capabilities={workRequestTarget.capabilities}
+          maxLength={MAX_COLLAB_SUMMARY_LENGTH}
+          onCancel={() => setWorkRequestTarget(null)}
+          onSubmit={(summary) => {
+            sendCollabRequest(workRequestTarget.peerId, summary)
+            setWorkRequestTarget(null)
+          }}
+        />
+      )}
     </main>
   )
 }
