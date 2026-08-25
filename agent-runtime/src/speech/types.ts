@@ -30,6 +30,46 @@ export interface StreamingSttProvider {
   createSession(options?: SttSessionOptions): Promise<StreamingSttSession>
 }
 
+/** One synthesized audio block, ordered within a synthesis round. Raw PCM
+ * keeps the Runtime free of codec dependencies; providers that only emit
+ * compressed audio must decode before crossing this boundary. */
+export interface TtsAudioChunk {
+  codec: "pcm_s16le"
+  sampleRateHz: number
+  channels: number
+  data: Uint8Array
+}
+
+export interface TtsError {
+  code: string
+  message: string
+  retryable?: boolean
+}
+
+export interface TtsSynthesisOptions {
+  /** Provider-defined session options; no room or participant capabilities. */
+  [key: string]: unknown
+}
+
+/**
+ * One speakable unit for a resident Agent's outbound voice (#83 vertical
+ * slice). A session serves sequential synthesis rounds: each `synthesize`
+ * call receives one coherent text chunk and its iterable must fully drain
+ * (or be abandoned via close) before the next round starts. Implementations
+ * signal failure by throwing; the message must never contain credentials.
+ */
+export interface StreamingTtsSession {
+  synthesize(
+    text: string,
+    options?: TtsSynthesisOptions
+  ): AsyncIterable<TtsAudioChunk>
+  close(): Promise<void>
+}
+
+export interface StreamingTtsProvider {
+  createSession(options?: TtsSynthesisOptions): Promise<StreamingTtsSession>
+}
+
 export interface SpeechSetupField {
   key: string
   label: string
@@ -56,6 +96,7 @@ export interface SpeechProviderDescriptor {
   validate(values: Record<string, string>): Promise<ProviderValidation>
   diagnose(values: Record<string, string>): Promise<ProviderDiagnostic>
   createSttProvider?: (values: Record<string, string>) => StreamingSttProvider
+  createTtsProvider?: (values: Record<string, string>) => StreamingTtsProvider
 }
 
 export interface SpeechProviderRegistry {

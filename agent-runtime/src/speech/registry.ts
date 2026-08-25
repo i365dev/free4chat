@@ -3,6 +3,7 @@ import type {
   SpeechProviderRegistry,
 } from "./types.js"
 import { doubaoSpeechProvider } from "./providers/doubao/descriptor.js"
+import { openAiCompatibleSpeechProvider } from "../voice/providers/openaiCompatibleDescriptor.js"
 
 export class MutableSpeechProviderRegistry implements SpeechProviderRegistry {
   private readonly providers = new Map<string, SpeechProviderDescriptor>()
@@ -27,5 +28,6 @@ export class MutableSpeechProviderRegistry implements SpeechProviderRegistry {
 export function productionSpeechRegistry(): SpeechProviderRegistry {
   const registry = new MutableSpeechProviderRegistry()
   registry.register(doubaoSpeechProvider)
+  registry.register(openAiCompatibleSpeechProvider)
   return registry
 }

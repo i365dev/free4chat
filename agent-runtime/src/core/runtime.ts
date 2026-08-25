@@ -33,6 +33,7 @@ import type {
   SurfaceReadResult,
   UploadedAttachment,
 } from "../types.js"
+import type { VoiceOutput } from "../voice/speaker.js"
 
 const WAIT_SECONDS = 20
 const MAX_PENDING_TURNS = 8
@@ -115,6 +116,11 @@ export interface ResidentRuntimeOptions {
   transcriptStore?: MeetingTranscriptStore
   /** Called after a natural room expiry has released Runtime resources. */
   onRoomExpired?: () => Promise<void> | void
+  /** Outbound voice capability (#83 vertical slice): when provided, each
+   * Harness response is spoken through it after the text message is sent,
+   * and a new addressed turn cancels stale speech first. Return null to
+   * run a text-only Agent; a throwing factory degrades to null. */
+  createVoiceOutput?: () => VoiceOutput | null
   /** Injectable for tests. */
   createMeetingNotesController?: (
     handle: ReturnType<typeof decodeParticipantHandle>
@@ -127,6 +133,23 @@ function defaultLog(
 ): void {
   if (details) console.error(`[free4chat-agent] ${event}`, details)
   else console.error(`[free4chat-agent] ${event}`)
+}
+
+// Voice is strictly additive (#83): a broken factory must degrade to a
+// text-only Agent instead of failing construction.
+function createVoiceOutputSafely(
+  options: ResidentRuntimeOptions,
+  log: (event: string, details?: Record<string, string | number>) => void
+): VoiceOutput | null {
+  if (!options.createVoiceOutput) return null
+  try {
+    return options.createVoiceOutput()
+  } catch (error) {
+    log("voice_output_init_failed", {
+      error: error instanceof Error ? error.message : "unknown error",
+    })
+    return null
+  }
 }
 
 export function buildHarnessTurn(
@@ -212,6 +235,7 @@ export class ResidentRoomRuntime {
   ) => void
   private meetingNotes: MeetingNotesController | null = null
   private transcriber: SpeechTranscriber | null = null
+  private readonly voiceOutput: VoiceOutput | null
   private readonly transcript?: MeetingTranscriptStore
   private cleanupPromise?: Promise<void>
   private roomExpiryHandled = false
@@ -224,6 +248,7 @@ export class ResidentRoomRuntime {
         ? new MeetingTranscriptStore(options.transcriptPath)
         : undefined)
     this.log = options.log ?? defaultLog
+    this.voiceOutput = createVoiceOutputSafely(options, this.log)
     options.adapter.onFailure?.((error) => {
       if (this.stopped) return
       this.harnessFailed = true
@@ -524,6 +549,9 @@ export class ResidentRoomRuntime {
           })
         )
         this.state = "turn"
+        // A newly addressed turn wins the speaker (#83): stale audio from
+        // the previous response must never keep playing over the new one.
+        this.voiceOutput?.cancel()
         const result = await this.options.adapter.runTurn(input)
         this.harnessFailed = false
         const text = result.text?.trim()
@@ -533,6 +561,7 @@ export class ResidentRoomRuntime {
             text
           )
           this.log("message_persisted", { sequence: sent.sequence })
+          this.voiceOutput?.speak(text)
         }
       }
     } catch (error) {
@@ -721,6 +750,9 @@ export class ResidentRoomRuntime {
       if (this.transcriber) {
         await this.transcriber.close().catch(() => undefined)
         this.transcriber = null
+      }
+      if (this.voiceOutput) {
+        await this.voiceOutput.close().catch(() => undefined)
       }
       await this.transcript?.dispose()
       try {
