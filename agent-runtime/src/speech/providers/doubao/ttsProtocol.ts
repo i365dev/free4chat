@@ -57,7 +57,7 @@ export type TtsStreamObject =
   | { kind: "audio"; base64: string }
   | { kind: "end" }
   | { kind: "error"; code: number; message: string }
-  | { kind: "unparsable" }
+  | { kind: "invalid" }
 
 export function classifyTtsStreamObject(raw: string): TtsStreamObject {
   let parsed: {
@@ -69,10 +69,10 @@ export function classifyTtsStreamObject(raw: string): TtsStreamObject {
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return { kind: "unparsable" }
+    return { kind: "invalid" }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    return { kind: "unparsable" }
+    return { kind: "invalid" }
   const code = Number(parsed.code ?? parsed.header?.code ?? 0)
   if (Number.isFinite(code) && code !== 0 && code !== DOUBAO_TTS_END_CODE)
     return {
@@ -88,7 +88,9 @@ export function classifyTtsStreamObject(raw: string): TtsStreamObject {
   if (code === DOUBAO_TTS_END_CODE) return { kind: "end" }
   return typeof parsed.data === "string" && parsed.data.length > 0
     ? { kind: "audio", base64: parsed.data }
-    : { kind: "end" }
+    : // A code-0 object without an audio payload is malformed, never a
+      // completion: treating it as one would silently truncate answers.
+      { kind: "invalid" }
 }
 
 /**

@@ -299,6 +299,57 @@ test("serializing the resolved provider or session never exposes the credential"
   }
 })
 
+test("a balanced but malformed object fails as a protocol error, not completion", async () => {
+  const fetchImpl = (async () =>
+    streamResponse([
+      `${JSON.stringify({ event: "unexpected", note: "not part of the contract" })}\n`,
+    ])) as unknown as typeof fetch
+  const provider = new DoubaoTtsProvider(API_KEY, { fetchImpl })
+  await assert.rejects(
+    () => collect(provider, "Hello"),
+    (error: unknown) =>
+      error instanceof DoubaoProviderError &&
+      error.code === "tts_invalid_stream_object"
+  )
+})
+
+test("a code-0 object without audio data fails instead of completing", async () => {
+  const fetchImpl = (async () =>
+    streamResponse([
+      `${JSON.stringify({ code: 0, data: "" })}\n`,
+    ])) as unknown as typeof fetch
+  const provider = new DoubaoTtsProvider(API_KEY, { fetchImpl })
+  await assert.rejects(
+    () => collect(provider, "Hello"),
+    (error: unknown) =>
+      error instanceof DoubaoProviderError &&
+      error.code === "tts_invalid_stream_object"
+  )
+})
+
+test("only the official terminator code completes a stream", async () => {
+  const fetchImpl = (async () =>
+    streamResponse([END_LINE])) as unknown as typeof fetch
+  const provider = new DoubaoTtsProvider(API_KEY, { fetchImpl })
+  const chunks = await collect(provider, "Hello")
+  assert.deepEqual(chunks, [])
+})
+
+test("classifier maps every stream object shape deterministically", () => {
+  assert.equal(classifyTtsStreamObject("not json at all").kind, "invalid")
+  assert.equal(classifyTtsStreamObject("[1,2]").kind, "invalid")
+  assert.equal(classifyTtsStreamObject('{"code":0}').kind, "invalid")
+  assert.equal(classifyTtsStreamObject('{"code":0,"data":"AAA"}').kind, "audio")
+  assert.deepEqual(classifyTtsStreamObject('{"code":20000000}'), {
+    kind: "end",
+  })
+  const businessError = classifyTtsStreamObject(
+    '{"code":55000000,"message":"mismatch"}'
+  )
+  assert.equal(businessError.kind, "error")
+  assert.ok(businessError.kind === "error" && businessError.code === 55000000)
+})
+
 test("wav wrapping emits a canonical 44-byte PCM header", () => {
   const header = pcmSilenceWavHeader(48000)
   assert.equal(header.byteLength, 44)

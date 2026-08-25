@@ -172,11 +172,8 @@ class DoubaoTtsSession implements StreamingTtsSession {
           const outcome = this.consumeObject(raw)
           if (outcome.kind === "audio") {
             yield outcome.chunk
-          } else if (outcome.kind === "error") {
-            throw new DoubaoProviderError(
-              `doubao_tts_error_${outcome.code}`,
-              describe({ message: outcome.message }, this.apiKey)
-            )
+          } else if (outcome.kind === "failure") {
+            throw outcome.error
           } else if (outcome.kind === "end") {
             sawEnd = true
             break stream
@@ -187,11 +184,7 @@ class DoubaoTtsSession implements StreamingTtsSession {
         for (const raw of scanner.flush()) {
           const outcome = this.consumeObject(raw)
           if (outcome.kind === "audio") yield outcome.chunk
-          else if (outcome.kind === "error")
-            throw new DoubaoProviderError(
-              `doubao_tts_error_${outcome.code}`,
-              describe({ message: outcome.message }, this.apiKey)
-            )
+          else if (outcome.kind === "failure") throw outcome.error
           else if (outcome.kind === "end") sawEnd = true
         }
       }
@@ -223,7 +216,7 @@ class DoubaoTtsSession implements StreamingTtsSession {
   ):
     | { kind: "audio"; chunk: TtsAudioChunk }
     | { kind: "end" }
-    | { kind: "error"; code: number; message: string } {
+    | { kind: "failure"; error: DoubaoProviderError } {
     const object = classifyTtsStreamObject(raw)
     if (object.kind === "audio")
       return {
@@ -236,8 +229,20 @@ class DoubaoTtsSession implements StreamingTtsSession {
         },
       }
     if (object.kind === "error")
-      return { kind: "error", code: object.code, message: object.message }
-    return { kind: "end" }
+      return {
+        kind: "failure",
+        error: new DoubaoProviderError(
+          `doubao_tts_error_${object.code}`,
+          describe({ message: object.message }, this.apiKey)
+        ),
+      }
+    if (object.kind === "end") return { kind: "end" }
+    // Malformed JSON or an unexpected object shape must never be read as a
+    // normal completion — that would silently truncate spoken answers.
+    return {
+      kind: "failure",
+      error: new DoubaoProviderError("tts_invalid_stream_object", ""),
+    }
   }
 }
 
