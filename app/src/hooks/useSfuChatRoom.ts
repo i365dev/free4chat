@@ -1447,6 +1447,32 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #121: Human terminal result (completed | failed) for an
+  // Agent-originated request this Human accepted. Returns false when the
+  // socket is closed or inputs are invalid — never claims success without
+  // sending. Canonical state arrives via the ordinary broadcast.
+  const sendCollabResult = useCallback(
+    (
+      requestId: string,
+      status: "completed" | "failed",
+      summary: string
+    ): boolean => {
+      if (!requestId) return false
+      if (status !== "completed" && status !== "failed") return false
+      const trimmed = summary.trim()
+      if (!trimmed || trimmed.length > MAX_COLLAB_SUMMARY_LENGTH) return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      sendSocketMessage({
+        type: "collab-result",
+        requestId,
+        status,
+        summary: trimmed,
+      })
+      return true
+    },
+    [sendSocketMessage]
+  )
+
   // #119: replace THIS Human's advertised capability list (discovery
   // metadata only). Local guard uses the same shared validator as the
   // server; the authoritative list comes back via Room state broadcast.
@@ -1626,6 +1652,7 @@ export function useSfuChatRoom(
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
+    sendCollabResult,
     updateHumanCapabilities,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,

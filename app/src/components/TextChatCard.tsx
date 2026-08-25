@@ -5,9 +5,15 @@ import Avatar from "boring-avatars"
 import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
+import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import CollabArtifactViewer from "./CollabArtifactViewer"
-import { isCollabRequestAnswered } from "./collabUi"
+import {
+  hasCollabTerminalResult,
+  isCollabRequestAccepted,
+  isCollabRequestAnswered,
+} from "./collabUi"
+import HumanCollabResultComposer from "./HumanCollabResultComposer"
 import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
 import type { RoomAttachmentRead } from "../room/types"
@@ -43,6 +49,12 @@ interface TextChatCardProps {
   ) => void
   /** #117: authenticated on-demand read of one room collaboration artifact. */
   onReadArtifact?: (attachmentId: string) => Promise<RoomAttachmentRead>
+  /** #121: submit a Human terminal result for a request this Human accepted. */
+  onCollabResult?: (
+    requestId: string,
+    status: "completed" | "failed",
+    summary: string
+  ) => void
 }
 
 const GAMES = [
@@ -249,6 +261,8 @@ function ActionCard({
   localParticipantId,
   onCollabRespond,
   onViewArtifact,
+  onCollabResult,
+  onOpenResultComposer,
 }: {
   msg: Message
   isSelf: boolean
@@ -261,6 +275,15 @@ function ActionCard({
     decision: "accepted" | "declined"
   ) => void
   onViewArtifact?: (attachmentId: string) => void
+  onCollabResult?: (
+    requestId: string,
+    status: "completed" | "failed",
+    summary: string
+  ) => void
+  onOpenResultComposer?: (target: {
+    requestId: string
+    status: "completed" | "failed"
+  }) => void
 }) {
   if (msg.actionType === "reaction") return null
 
@@ -270,6 +293,24 @@ function ActionCard({
     // record. A later accepted/declined for the same requestId means the
     // decision is made; never keep authoritative state in React.
     const answered = isCollabRequestAnswered(allMessages, collab.requestId)
+    const accepted = isCollabRequestAccepted(allMessages, collab.requestId)
+    const terminal = hasCollabTerminalResult(allMessages, collab.requestId)
+    const declinedPresent = allMessages.some(
+      (m) =>
+        m.collab?.requestId === collab.requestId && m.collab.kind === "declined"
+    )
+    // #121: terminal controls appear ONLY when THIS Human is the target,
+    // the request came from someone else, it was ACCEPTED, and no terminal
+    // result exists yet — lifecycle derived from canonical messages.
+    const showResultControls =
+      collab.kind === "request" &&
+      Boolean(onCollabResult) &&
+      Boolean(localParticipantId) &&
+      collab.targetParticipantId === localParticipantId &&
+      collab.fromParticipantId !== localParticipantId &&
+      accepted &&
+      !terminal &&
+      !declinedPresent
     // Response controls appear ONLY when THIS Human is the request target
     // and the request came from someone else (never on own outbound
     // requests, Agent-targeted requests, or already-answered ones).
@@ -350,6 +391,40 @@ function ActionCard({
                 className="rounded-md border border-gray-600 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
               >
                 Decline
+              </button>
+            </div>
+          </div>
+        )}
+        {!showRespond && showResultControls && (
+          <div className="mt-2 border-t border-white/10 pt-1.5">
+            <p className="text-[10px] leading-snug text-gray-400">
+              Your result is shared with the Agent and does not grant tools or
+              permissions.
+            </p>
+            <div className="mt-1.5 flex gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenResultComposer({
+                    requestId: collab.requestId,
+                    status: "completed",
+                  })
+                }
+                className="rounded-md bg-emerald-600/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-500"
+              >
+                Mark complete
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenResultComposer({
+                    requestId: collab.requestId,
+                    status: "failed",
+                  })
+                }
+                className="rounded-md border border-gray-600 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
+              >
+                Mark failed
               </button>
             </div>
           </div>
@@ -588,12 +663,18 @@ export default function TextChatCard({
   localParticipantId,
   onCollabRespond,
   onReadArtifact,
+  onCollabResult,
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
   const [submenu, setSubmenu] = useState<"games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const [pickerIndex, setPickerIndex] = useState(0)
   const [artifactId, setArtifactId] = useState<string | null>(null)
+  // #121: pending Human terminal result ({requestId,status} | null).
+  const [resultTarget, setResultTarget] = useState<{
+    requestId: string
+    status: "completed" | "failed"
+  } | null>(null)
   const [selectedAgents, setSelectedAgents] = useState<
     Array<{ id: string; name: string }>
   >([])
@@ -875,6 +956,8 @@ export default function TextChatCard({
                       onViewArtifact={(attachmentId) =>
                         setArtifactId(attachmentId)
                       }
+                      onCollabResult={onCollabResult}
+                      onOpenResultComposer={(target) => setResultTarget(target)}
                     />
                   ) : (
                     <FileMessageBubble msg={p} isSelf={isSelf} />
@@ -1135,6 +1218,23 @@ export default function TextChatCard({
           attachmentId={artifactId}
           read={onReadArtifact}
           onClose={() => setArtifactId(null)}
+        />
+      )}
+
+      {resultTarget && onCollabResult && (
+        <HumanCollabResultComposer
+          requestId={resultTarget.requestId}
+          status={resultTarget.status}
+          maxLength={MAX_COLLAB_SUMMARY_LENGTH}
+          onCancel={() => setResultTarget(null)}
+          onSubmit={(summary) => {
+            onCollabResult?.(
+              resultTarget.requestId,
+              resultTarget.status,
+              summary
+            )
+            setResultTarget(null)
+          }}
         />
       )}
     </>

@@ -134,6 +134,8 @@ export default function RoomContent({
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
+    readRoomAttachment,
+    sendCollabResult,
     updateHumanCapabilities,
     muteSelf,
     toggleScreenShare,
@@ -771,6 +773,10 @@ export default function RoomContent({
             localParticipantId={getLocalRoomAuth()?.participantId}
             onCollabRespond={(requestId, decision) => {
               sendCollabResponse(requestId, decision)
+            }}
+            onReadArtifact={(attachmentId) => readRoomAttachment(attachmentId)}
+            onCollabResult={(requestId, status, summary) => {
+              sendCollabResult(requestId, status, summary)
             }}
           />
         </div>
