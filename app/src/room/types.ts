@@ -108,7 +108,30 @@ export type AgentTextMimeType =
   | "text/markdown"
   | "text/csv"
   | "application/json"
+  | "text/yaml"
 export type AgentAttachmentMimeType = AgentImageMimeType | AgentTextMimeType
+
+// #117: every MIME the bounded room attachment store can legitimately hold
+// (mirrors the DO/server allow-lists). Browser-safe: used for strict
+// client-side validation of artifact read payloads.
+export const ROOM_ATTACHMENT_MIME_TYPES: readonly AgentAttachmentMimeType[] = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+  "text/yaml",
+]
+
+/** #117: payload returned by the authenticated Human attachment read route.
+ * Metadata is the safe public subset; `data` is base64 bytes validated
+ * strictly against this metadata before any rendering. */
+export interface RoomAttachmentRead {
+  attachment: Pick<RoomAttachment, "id" | "fileName" | "mimeType" | "size">
+  data: string
+}
 
 export interface RoomAttachment {
   id: string

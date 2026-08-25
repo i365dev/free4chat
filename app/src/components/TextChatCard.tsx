@@ -6,9 +6,11 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
 
+import CollabArtifactViewer from "./CollabArtifactViewer"
 import { isCollabRequestAnswered } from "./collabUi"
 import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
+import type { RoomAttachmentRead } from "../room/types"
 
 interface PendingFile {
   id: string
@@ -39,6 +41,8 @@ interface TextChatCardProps {
     requestId: string,
     decision: "accepted" | "declined"
   ) => void
+  /** #117: authenticated on-demand read of one room collaboration artifact. */
+  onReadArtifact?: (attachmentId: string) => Promise<RoomAttachmentRead>
 }
 
 const GAMES = [
@@ -244,6 +248,7 @@ function ActionCard({
   onVote,
   localParticipantId,
   onCollabRespond,
+  onViewArtifact,
 }: {
   msg: Message
   isSelf: boolean
@@ -255,6 +260,7 @@ function ActionCard({
     requestId: string,
     decision: "accepted" | "declined"
   ) => void
+  onViewArtifact?: (attachmentId: string) => void
 }) {
   if (msg.actionType === "reaction") return null
 
@@ -309,11 +315,20 @@ function ActionCard({
                 {key}: {value}
               </p>
             ))}
-        {collab.attachmentIds && collab.attachmentIds.length > 0 && (
-          <p className="mt-1 text-[11px] text-blue-300">
-            📎 {collab.attachmentIds.length} attachment
-            {collab.attachmentIds.length > 1 ? "s" : ""}
-          </p>
+        {(collab.attachmentIds ?? []).length > 0 && onViewArtifact && (
+          <div className="mt-1 flex flex-col gap-0.5">
+            {collab.attachmentIds!.map((attachmentId, index) => (
+              <button
+                key={attachmentId}
+                type="button"
+                onClick={() => onViewArtifact(attachmentId)}
+                className="w-full truncate rounded-md bg-blue-600/20 px-2 py-1 text-left text-[11px] text-blue-200 hover:bg-blue-600/40"
+              >
+                📎 View artifact{" "}
+                {collab.attachmentIds!.length > 1 ? index + 1 : ""}
+              </button>
+            ))}
+          </div>
         )}
         {showRespond && (
           <div className="mt-2 border-t border-white/10 pt-1.5">
@@ -572,11 +587,13 @@ export default function TextChatCard({
   onSendAction,
   localParticipantId,
   onCollabRespond,
+  onReadArtifact,
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
   const [submenu, setSubmenu] = useState<"games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const [pickerIndex, setPickerIndex] = useState(0)
+  const [artifactId, setArtifactId] = useState<string | null>(null)
   const [selectedAgents, setSelectedAgents] = useState<
     Array<{ id: string; name: string }>
   >([])
@@ -855,6 +872,9 @@ export default function TextChatCard({
                       onVote={handleVote}
                       localParticipantId={localParticipantId}
                       onCollabRespond={onCollabRespond}
+                      onViewArtifact={(attachmentId) =>
+                        setArtifactId(attachmentId)
+                      }
                     />
                   ) : (
                     <FileMessageBubble msg={p} isSelf={isSelf} />
@@ -1109,6 +1129,14 @@ export default function TextChatCard({
           />
         </div>
       </div>
+
+      {artifactId && onReadArtifact && (
+        <CollabArtifactViewer
+          attachmentId={artifactId}
+          read={onReadArtifact}
+          onClose={() => setArtifactId(null)}
+        />
+      )}
     </>
   )
 }

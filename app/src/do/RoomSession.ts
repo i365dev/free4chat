@@ -232,6 +232,15 @@ type ControlRequest =
       attachmentId: string
     }
   | {
+      // #117: authenticated CURRENT Human browser reads an existing room
+      // attachment (observation only — no message, no wake, no collab
+      // state change). Membership is the authorization.
+      action: "human-read-attachment"
+      participantId: string
+      token: string
+      attachmentId: string
+    }
+  | {
       action: "agent-leave"
       participantId: string
       token: string
@@ -1613,36 +1622,74 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
-      const attachment = room.attachments.find(
-        (candidate) => candidate.id === request.attachmentId
+      // #117: reconstruction shared with the Human browser read path;
+      // authorization stays here at the ingress boundary.
+      const payload = await this.readAttachmentPayload(
+        room,
+        request.attachmentId
       )
-      if (!attachment)
-        return this.json({ error: "attachment_unavailable" }, 404)
-
-      const chunks: Uint8Array[] = []
-      for (let index = 0; index < attachment.chunkCount; index += 1) {
-        const chunk = await this.ctx.storage.get<ArrayBuffer>(
-          this.attachmentChunkKey(attachment.id, index)
-        )
-        if (!chunk) return this.json({ error: "attachment_unavailable" }, 404)
-        chunks.push(new Uint8Array(chunk))
-      }
-      let binary = ""
-      for (const chunk of chunks)
-        for (const byte of chunk) binary += String.fromCharCode(byte)
+      if ("error" in payload) return this.json({ error: payload.error }, 404)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       return this.json({
         attachment: {
-          id: attachment.id,
-          fileName: attachment.fileName,
-          mimeType: attachment.mimeType,
-          size: attachment.size,
+          id: payload.attachment.id,
+          fileName: payload.attachment.fileName,
+          mimeType: payload.attachment.mimeType,
+          size: payload.attachment.size,
         },
-        data: btoa(binary),
+        data: payload.data,
         expiresAt: room.expiresAt,
       })
+    }
+
+    // #117: authenticated CURRENT HUMAN reads an existing room attachment
+    // through the browser (#111 surfaces/read precedent). Observation only:
+    // never touches messages, sequence numbers, waiters, or collab state.
+    // Membership is the authorization — attachments are Room-scoped
+    // collaboration artifacts, not per-file ACL'd blobs — and attachmentId
+    // alone grants nothing.
+    if (request.action === "human-read-attachment") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "human")
+        return this.json({ error: "human_only" }, 403)
+      // Current room.attachments metadata gates the read (TOCTOU rule):
+      // evicted/unknown ids fail closed even if detached chunks linger.
+      const payload = await this.readAttachmentPayload(
+        room,
+        request.attachmentId
+      )
+      if ("error" in payload) return this.json({ error: payload.error }, 404)
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      return new Response(
+        JSON.stringify({
+          attachment: {
+            id: payload.attachment.id,
+            fileName: payload.attachment.fileName,
+            mimeType: payload.attachment.mimeType,
+            size: payload.attachment.size,
+          },
+          data: payload.data,
+          expiresAt: room.expiresAt,
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            // Observation bytes must never be cached downstream.
+            "Cache-Control": "no-store",
+          },
+        }
+      )
     }
 
     if (request.action === "agent-leave") {
@@ -2031,6 +2078,36 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       sequence: roomMessage.sequence,
       event: validated.event,
     }
+  }
+
+  // #117: smallest shared attachment reconstruction — metadata lookup
+  // against CURRENT room.attachments (the TOCTOU gate: evicted ids fail
+  // closed even if detached chunk keys linger) plus bounded chunk
+  // reassembly. Authorization lives at the ingress boundaries (Agent MCP
+  // path / Human browser path), never here.
+  private async readAttachmentPayload(
+    room: RoomRecord,
+    attachmentId: string
+  ): Promise<
+    | { attachment: RoomAttachment; data: string }
+    | { error: "attachment_unavailable" }
+  > {
+    const attachment = room.attachments.find(
+      (candidate) => candidate.id === attachmentId
+    )
+    if (!attachment) return { error: "attachment_unavailable" }
+    const chunks: Uint8Array[] = []
+    for (let index = 0; index < attachment.chunkCount; index += 1) {
+      const chunk = await this.ctx.storage.get<ArrayBuffer>(
+        this.attachmentChunkKey(attachment.id, index)
+      )
+      if (!chunk) return { error: "attachment_unavailable" }
+      chunks.push(new Uint8Array(chunk))
+    }
+    let binary = ""
+    for (const chunk of chunks)
+      for (const byte of chunk) binary += String.fromCharCode(byte)
+    return { attachment, data: btoa(binary) }
   }
 
   private async handleClientMessage(
