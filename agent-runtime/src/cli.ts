@@ -24,6 +24,8 @@ function usage(): never {
   console.error(`Usage:
   free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
   free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
+  free4chat-agent create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
+  free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
   free4chat-agent peers --room <room-id>
   free4chat-agent collab request --target <participant-id> --summary <text> [--request-id <id>] [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
@@ -235,6 +237,31 @@ async function main(): Promise<void> {
             filePath.slice(filePath.lastIndexOf("/") + 1),
           mimeType,
           dataBase64: bytes.toString("base64"),
+        }),
+        null,
+        2
+      )
+    )
+    return
+  }
+  if (command === "create") {
+    const name = option(args, "--name")
+    const agent = option(args, "--agent")
+    const agentCommand = option(args, "--agent-command")
+    // Create-only command shape: no --room exists here by design — the room
+    // id is generated server-side and returned inside the public invite.
+    if (!name || (!agent && !agentCommand) || (agent && agentCommand)) usage()
+    if (option(args, "--room")) usage()
+    await ensureDaemon()
+    console.log(
+      JSON.stringify(
+        await sendIpc({
+          op: "create",
+          name,
+          agent,
+          agentCommand,
+          agentArgs: repeatedOption(args, "--agent-arg"),
+          capabilities: repeatedOption(args, "--capability"),
         }),
         null,
         2

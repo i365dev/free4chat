@@ -8,6 +8,7 @@ import type {
   AttachmentUpload,
   CollabRequestArgs,
   CollabResultArgs,
+  CreateRoomResult,
   Free4ChatClient,
   JoinResult,
   MeetingNotesInfo,
@@ -136,6 +137,7 @@ export class McpFree4ChatClient implements Free4ChatClient {
       const required = [
         "room_info",
         "join_room",
+        "create_room",
         "wait_for_events",
         "send_text",
         "read_attachment",
@@ -243,6 +245,56 @@ export class McpFree4ChatClient implements Free4ChatClient {
       participantHandle: result.participantHandle,
       cursor: asNumber(result.cursor, "cursor"),
       expiresAt: asNumber(result.expiresAt, "expiresAt"),
+    }
+  }
+
+  async createRoom(
+    name: string,
+    capabilities?: string[]
+  ): Promise<CreateRoomResult> {
+    const result = asRecord(
+      await this.call("create_room", {
+        name,
+        ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
+      })
+    )
+    const invite =
+      result.invite && typeof result.invite === "object"
+        ? (result.invite as Record<string, unknown>)
+        : undefined
+    if (
+      !invite ||
+      invite.kind !== "free4chat.room-invite" ||
+      invite.version !== 1 ||
+      typeof invite.roomId !== "string" ||
+      !invite.roomId ||
+      typeof invite.roomUrl !== "string" ||
+      !invite.roomUrl.startsWith("https://www.free4.chat/room?id=")
+    )
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid room invite",
+        "tool_error"
+      )
+    const participant = asRecord(result.participant)
+    if (
+      typeof result.participantHandle !== "string" ||
+      typeof participant.id !== "string"
+    )
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid create result",
+        "tool_error"
+      )
+    return {
+      participantId: participant.id,
+      participantHandle: result.participantHandle,
+      cursor: asNumber(result.cursor, "cursor"),
+      expiresAt: asNumber(result.expiresAt, "expiresAt"),
+      invite: {
+        kind: "free4chat.room-invite",
+        version: 1,
+        roomId: invite.roomId,
+        roomUrl: invite.roomUrl,
+      },
     }
   }
 

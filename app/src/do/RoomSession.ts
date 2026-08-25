@@ -175,6 +175,15 @@ type ControlRequest =
       participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
     }
   | {
+      // #51: atomic CREATE-ONLY room creation. The DO refuses when any room
+      // state already exists under this id (even expired-but-unswept state,
+      // which is expired first and still rejected for this attempt) — the
+      // MCP layer owns bounded retry with fresh ids. Never falls back to
+      // joining an existing room.
+      action: "agent-create-room"
+      participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
+    }
+  | {
       action: "agent-wait"
       participantId: string
       token: string
@@ -1061,6 +1070,58 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       return this.json({
         state: this.stateFor(room),
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-create-room") {
+      // Create-only gate (#51): ANY pre-existing room state under this id —
+      // active or expired-but-unswept — fails this attempt closed. Expired
+      // state is expired first (frees the storage key for a bounded retry
+      // with a fresh id) but never joined and never mutated by the caller.
+      const existing = await this.loadRoom()
+      if (existing) {
+        if (this.isExpired(existing)) await this.expireRoom(existing)
+        return this.json({ error: "room_already_exists" }, 409)
+      }
+      if (request.participant.kind !== "agent")
+        return this.json({ error: "invalid_participant_kind" }, 400)
+      const validated = validateAdvertisedCapabilities(
+        request.participant.capabilities?.advertised ?? []
+      )
+      if (validated.ok === false)
+        return this.json(
+          { error: validated.error, reason: validated.reason },
+          400
+        )
+      const now = Date.now()
+      // The creator is merely participant #1 of an ordinary room: no owner,
+      // admin, or orchestrator role exists anywhere in the model.
+      const room: RoomRecord = {
+        createdAt: now,
+        expiresAt: NO_EXPIRY,
+        participants: {},
+        messages: [],
+        attachments: [],
+        nextMessageSequence: 0,
+        meetingNotes: NO_MEETING_NOTES,
+        pendingMediaCleanup: [],
+      }
+      const participant: RoomParticipant = {
+        ...request.participant,
+        connected: true,
+        lastSeenAt: now,
+        capabilities: agentCapabilitiesFrom(validated.capabilities),
+        media: undefined,
+      }
+      room.participants[participant.id] = participant
+      this.applyEmptyRoomExpiry(room, now)
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      return this.json({
+        participant: this.participantForInfo(participant),
+        cursor: room.nextMessageSequence,
         expiresAt: room.expiresAt,
       })
     }

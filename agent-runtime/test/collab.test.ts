@@ -505,6 +505,7 @@ type FakeMessage = {
 }
 
 class FakeRoomServer {
+  readonly roomId = "11111111-2222-3333-4444-555555555555"
   messages: FakeMessage[] = []
   attachments = new Map<
     string,
@@ -539,6 +540,32 @@ class FakeRoomServer {
       ...(capabilities ? { capabilities } : {}),
     })
     return this.sequence
+  }
+
+  /** Mirrors the DO's create-only gate: any pre-existing state fails closed. */
+  createRoom(
+    participantId: string,
+    name: string,
+    capabilities?: string[]
+  ): {
+    kind: "free4chat.room-invite"
+    version: 1
+    roomId: string
+    roomUrl: string
+  } {
+    if (this.participants.size > 0 || this.messages.length > 0)
+      throw new Error("room_already_exists")
+    this.participants.set(participantId, {
+      name,
+      kind: "agent",
+      ...(capabilities ? { capabilities } : {}),
+    })
+    return {
+      kind: "free4chat.room-invite",
+      version: 1,
+      roomId: this.roomId,
+      roomUrl: `https://www.free4.chat/room?id=${encodeURIComponent(this.roomId)}`,
+    }
   }
 
   get lastSequence(): number {
@@ -747,6 +774,17 @@ function clientFor(
         participantHandle: `handle-${participantId}`,
         cursor,
         expiresAt: Date.now() + 90_000,
+      }
+    },
+    async createRoom(name, capabilities) {
+      const invite = server.createRoom(participantId, name, capabilities)
+      cursor = server.lastSequence
+      return {
+        participantId,
+        participantHandle: `handle-${participantId}`,
+        cursor,
+        expiresAt: Date.now() + 90_000,
+        invite,
       }
     },
     async waitForEvents(_handle, waitCursor) {
@@ -983,4 +1021,103 @@ test("full chain: discover peer -> auto-id request -> accept -> artifact upload 
     "accepted"
   )
   assert.ok(recovered.sequence > 0)
+})
+
+test("agent-created room flow: A creates -> B joins invite.roomId -> roster discovery -> A targets B", async () => {
+  const server = new FakeRoomServer()
+  const aTurns: HarnessTurnInput[] = []
+  const bTurns: HarnessTurnInput[] = []
+  let aRequested = false
+  let bSawRequest: RoomEvent["collab"] | undefined
+
+  const adapterA: HarnessAdapter = {
+    name: "opencode",
+    async ensureSession() {},
+    async runTurn(input) {
+      aTurns.push(input)
+      const peer = input.room.participants?.find(
+        (participant) =>
+          participant.advertised?.includes("browser.authenticated") === true
+      )
+      if (peer && !aRequested) {
+        aRequested = true
+        await runtimeARef!.collabRequest({
+          targetParticipantId: peer.id,
+          summary: "Check the deployed page in your browser",
+        })
+        return { text: "requested a UI check" }
+      }
+      return { text: "standing by" }
+    },
+    async close() {},
+  }
+
+  let runtimeARef: ResidentRoomRuntime | null = null
+  const runtimeA = new ResidentRoomRuntime({
+    instanceId: "inst-create-a",
+    name: "Agent A",
+    client: clientFor(server, "agent-a"),
+    adapter: adapterA,
+    capabilities: ["code.edit", "github"],
+  })
+  runtimeARef = runtimeA
+  let runtimeB: ResidentRoomRuntime | null = null
+
+  try {
+    // Creator becomes participant #1 of an ordinary room; the public invite
+    // carries only room identity.
+    const created = await runtimeA.startByCreate()
+    assert.equal(created.invite.kind, "free4chat.room-invite")
+    assert.equal(created.invite.version, 1)
+    assert.equal(created.invite.roomId, server.roomId)
+    assert.match(
+      created.invite.roomUrl,
+      /^https:\/\/www\.free4\.chat\/room\?id=/
+    )
+    // The public invite must never carry the private capability; the full
+    // create result may (it stays inside the runtime), the descriptor may not.
+    assert.equal(JSON.stringify(created.invite).includes("handle-"), false)
+
+    // B joins through the normal bootstrap path using the invite's roomId.
+    runtimeB = new ResidentRoomRuntime({
+      instanceId: "inst-create-b",
+      roomId: created.invite.roomId,
+      name: "Agent B",
+      client: clientFor(server, "agent-b"),
+      adapter: {
+        name: "hermes",
+        async ensureSession() {},
+        async runTurn(input) {
+          bTurns.push(input)
+          const request = input.events.find(
+            (event) => event.collab?.kind === "request"
+          )?.collab
+          if (request) {
+            bSawRequest = request
+            return { text: "accepted" }
+          }
+          return { text: "hello from B" }
+        },
+        async close() {},
+      },
+      capabilities: ["browser.control", "browser.authenticated"],
+    })
+    await runtimeB.start()
+
+    // Ordinary addressed chat wakes A; its harness discovers B and targets it.
+    server.seedText("agent-b", ["agent-a"], "ready")
+    await settle(() => bSawRequest !== undefined)
+  } finally {
+    await runtimeA.stop()
+    if (runtimeB) await runtimeB.stop()
+  }
+
+  assert.ok(aRequested)
+  assert.ok(bSawRequest)
+  assert.equal(bSawRequest.targetParticipantId, "agent-b")
+  assert.equal(bSawRequest.fromParticipantId, "agent-a")
+  const bRequestTurn = bTurns.find((turn) =>
+    turn.events.some((event) => event.collab?.kind === "request")
+  )
+  assert.ok(bRequestTurn)
 })

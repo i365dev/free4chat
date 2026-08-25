@@ -59,3 +59,27 @@ test("speech status does not trigger a reload-speech side effect", async () => {
   assert.ok(speechBlock.includes('"reload-speech"'))
   assert.match(speechBlock, /subcommand === "setup"/)
 })
+
+test("create command rejects room flag and missing launcher instead of silently proceeding", () => {
+  const dir = mkdtempSync(join(tmpdir(), "free4chat-cli-create-"))
+  try {
+    // --room is deliberately unsupported on create (#51): the room id is
+    // generated server-side. Missing launcher/name are usage errors too.
+    for (const args of [
+      ["create", "--room", "some-room", "--agent", "opencode", "--name", "A"],
+      ["create", "--name", "A"],
+      ["create", "--agent", "opencode"],
+      ["create", "--agent", "opencode", "--agent-command", "x", "--name", "A"],
+    ]) {
+      const result = runCli(args, dir)
+      assert.equal(
+        result.status,
+        2,
+        `create ${args.join(" ")} should usage()-exit`
+      )
+      assert.match(result.stderr, /free4chat-agent create/)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

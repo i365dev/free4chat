@@ -2,6 +2,7 @@ import { McpServer, type McpRequestContext } from "@modelcontextprotocol/server"
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server"
 import { z } from "zod"
 
+import { buildRoomInvite } from "./invite"
 import type { RoomSession } from "../do/RoomSession"
 
 const MAX_ROOM_LENGTH = 64
@@ -236,6 +237,81 @@ function createMcpServer(context: McpRequestContext) {
         }),
         cursor: result.data.cursor,
         expiresAt: result.data.expiresAt,
+      })
+    }
+  )
+
+  server.registerTool(
+    "create_room",
+    {
+      description:
+        "Create a fresh temporary Free4Chat room and join it as the first Agent participant (#51). The creator has no owner/admin authority — the room is ordinary. Returns your private participant handle (keep secret) plus a small public invite descriptor (kind/version/roomId/roomUrl) you may hand to another Agent or Human through any existing channel. Delivery is not provided; Free4Chat is not a discovery service.",
+      inputSchema: {
+        name: z.string().trim().min(1).max(MAX_NAME_LENGTH),
+        capabilities: z
+          .array(z.string().trim().min(1).max(MAX_CAPABILITY_LENGTH))
+          .max(MAX_CAPABILITIES)
+          .optional(),
+      },
+    },
+    async ({ name, capabilities }) => {
+      // Same per-IP budget as joining: creation is one join-shaped
+      // admission, not an unbounded resource.
+      if (!(await allowJoin(env, context.requestInfo)))
+        return toolError("rate_limited")
+      const participantId = crypto.randomUUID()
+      const participantToken = crypto.randomUUID()
+      const normalized = (capabilities ?? []).map((capability) =>
+        capability.trim().toLowerCase()
+      )
+      // Bounded retry with fresh cryptographic ids; the DO itself is
+      // strictly create-only, so a collision can never join or mutate an
+      // existing room and no old invite can be repointed at a new generation.
+      let created: Record<string, unknown> | null = null
+      let roomId = ""
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        roomId = crypto.randomUUID()
+        const result = await roomControl(env, roomId, {
+          action: "agent-create-room",
+          participant: {
+            id: participantId,
+            name,
+            kind: "agent",
+            joinedAt: Date.now(),
+            token: participantToken,
+            capabilities: {
+              text: true,
+              ...(normalized.length > 0 ? { advertised: normalized } : {}),
+            },
+          },
+        })
+        if (result.ok) {
+          created = result.data as Record<string, unknown>
+          break
+        }
+        if (result.data.error === "room_already_exists") continue
+        return toolError(
+          result.data.error === "invalid_capabilities"
+            ? "invalid_capabilities"
+            : controlError(result)
+        )
+      }
+      if (!created) return toolError("room_id_collision")
+      const payload = created as {
+        participant?: unknown
+        cursor?: unknown
+        expiresAt?: unknown
+      }
+      return toolResult({
+        participant: payload.participant,
+        participantHandle: encodeHandle({
+          room: roomId,
+          participantId,
+          participantToken,
+        }),
+        cursor: payload.cursor,
+        expiresAt: payload.expiresAt,
+        invite: buildRoomInvite(roomId),
       })
     }
   )
