@@ -4,6 +4,7 @@ import {
   agentCapabilitiesFrom,
   CollabRegistry,
   COLLAB_ACTION_TYPE,
+  MAX_COLLAB_SUMMARY_LENGTH,
   rosterProjection,
   sanitizeStoredAdvertisedList,
   sanitizeStoredAgentCapabilities,
@@ -315,6 +316,16 @@ type ClientMessage =
       requestId: string
       decision: "accepted" | "declined"
       summary?: string
+    }
+  | {
+      // #121: Human terminal result (completed | failed) for an
+      // Agent-originated request this Human previously accepted. Identity
+      // and routing derive from the attachment + CollabRegistry; v0 payload
+      // carries no details/attachmentIds.
+      type: "collab-result"
+      requestId: string
+      status: "completed" | "failed"
+      summary: string
     }
   | {
       // #119: Human self-advertised capability list replacement (discovery
@@ -2351,6 +2362,45 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.saveRoom(room)
       // Presence/discovery broadcast only — deliberately no waiter wake.
       await this.broadcastState(room)
+      return
+    }
+
+    // #121: Human terminal result (completed | failed) for an
+    // Agent-originated request this Human previously accepted. Same shared
+    // response ingestion as every other lifecycle event: warm → validate →
+    // precheck-dedup BEFORE any append/wake → registry routing → ONE
+    // canonical message targeted back at the original requester.
+    if (message.type === "collab-result") {
+      const reject = (error: string) =>
+        socket.send(JSON.stringify({ type: "error", error }))
+      if (participant.kind !== "human") {
+        reject("collab_responder_not_human")
+        return
+      }
+      if (message.status !== "completed" && message.status !== "failed") {
+        reject("invalid_collab_kind")
+        return
+      }
+      const summary = message.summary?.trim() ?? ""
+      if (!summary) {
+        reject("summary_required")
+        return
+      }
+      if (summary.length > MAX_COLLAB_SUMMARY_LENGTH) {
+        reject("summary_too_long")
+        return
+      }
+      const ingest = await this.ingestCollabResponse(room, participant, {
+        requestId: message.requestId,
+        kind: message.status,
+        summary,
+      })
+      if (ingest.status === "rejected") {
+        reject(ingest.error)
+        return
+      }
+      // Canonical message already broadcast; duplicates append nothing and
+      // wake nothing by construction.
       return
     }
 

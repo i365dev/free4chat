@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import type { Message } from "@common/types"
 
-import { isCollabRequestAnswered } from "./collabUi"
+import { hasCollabTerminalResult, isCollabRequestAnswered } from "./collabUi"
 function collab(
   requestId: string,
   kind: "request" | "accepted" | "declined" | "completed" | "failed"
@@ -46,5 +46,34 @@ describe("isCollabRequestAnswered (#115)", () => {
   it("ignores decisions for other requests", () => {
     const log = [collab("r1", "request"), collab("r2", "accepted")]
     expect(isCollabRequestAnswered(log, "r1")).toBe(false)
+  })
+})
+
+describe("terminal-result lifecycle helpers (#121)", () => {
+  it("accepted marks the request accepted but not terminal", () => {
+    const log = [collab("r1", "request"), collab("r1", "accepted")]
+    expect(isCollabRequestAnswered(log, "r1")).toBe(true)
+    expect(hasCollabTerminalResult(log, "r1")).toBe(false)
+  })
+
+  it("completed/failed are terminal", () => {
+    for (const kind of ["completed", "failed"] as const) {
+      const log = [collab("r1", "request"), collab("r1", kind)]
+      expect(isCollabRequestAnswered(log, "r1")).toBe(false)
+      expect(hasCollabTerminalResult(log, "r1")).toBe(true)
+    }
+  })
+
+  it("declined is answered AND terminal (no Human result controls after decline)", () => {
+    const log = [collab("r1", "request"), collab("r1", "declined")]
+    expect(isCollabRequestAnswered(log, "r1")).toBe(true)
+    expect(hasCollabTerminalResult(log, "r1")).toBe(false)
+  })
+
+  it("decisions for other requestIds never leak into this lifecycle", () => {
+    const log = [collab("r2", "accepted"), collab("r2", "completed")]
+    expect(
+      isCollabRequestAnswered(log, "r1") || hasCollabTerminalResult(log, "r1")
+    ).toBe(false)
   })
 })
