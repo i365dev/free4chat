@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { LOCAL_PEER_ID } from "@common/consts"
 import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
 import { ActionType, Message, UserInfo } from "@common/types"
+import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import type {
   SfuMeetingNotesState,
@@ -1377,6 +1378,32 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #113: Human-originated structured work request to a connected Agent.
+  // Returns the generated requestId (empty string when rejected locally).
+  // The canonical RoomMessage arrives via the ordinary broadcast — no
+  // optimistic echo here.
+  const sendCollabRequest = useCallback(
+    (targetParticipantId: string, summary: string): string => {
+      const trimmed = summary.trim()
+      if (
+        !targetParticipantId ||
+        !trimmed ||
+        trimmed.length > MAX_COLLAB_SUMMARY_LENGTH
+      )
+        return ""
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return ""
+      const requestId = crypto.randomUUID()
+      sendSocketMessage({
+        type: "collab-request",
+        requestId,
+        targetParticipantId,
+        summary: trimmed,
+      })
+      return requestId
+    },
+    [sendSocketMessage]
+  )
+
   const startMeetingNotes = useCallback(
     (agentParticipantId: string) => {
       sendSocketMessage({
@@ -1510,6 +1537,7 @@ export function useSfuChatRoom(
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,
+    sendCollabRequest,
     muteSelf,
     toggleScreenShare,
     retryVerification,

@@ -48,6 +48,7 @@ import type {
   RoomState,
   ParticipantKind,
   RoomSurfaceV1,
+  CollabEvent,
 } from "../room/types"
 
 const RECONNECT_GRACE_MS = 30 * 1000
@@ -286,6 +287,15 @@ type ClientMessage =
       type: "action"
       actionType: string
       actionPayload?: Record<string, string>
+    }
+  | {
+      // #113: Human-originated structured work request. Sender identity is
+      // derived from the authenticated WebSocket attachment, never the
+      // payload. Same CollabEvent/CollabRegistry path as Agent→Agent.
+      type: "collab-request"
+      requestId: string
+      targetParticipantId: string
+      summary: string
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
@@ -1346,12 +1356,39 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
       participant.lastSeenAt = Date.now()
+      const eventInput = request.event ?? {}
+      const eventKind = (eventInput as { kind?: unknown }).kind
+
+      // #113: REQUESTS share one ingestion path with Human-originated
+      // requests (validate → registry dedup → append → broadcast → waiters).
+      if (eventKind === "request") {
+        const ingest = await this.ingestCollabWorkRequest(
+          room,
+          participant,
+          eventInput as {
+            requestId?: unknown
+            targetParticipantId?: unknown
+            summary?: unknown
+            details?: unknown
+            attachmentIds?: unknown
+          }
+        )
+        if (ingest.status === "rejected")
+          return this.json({ error: ingest.error }, 400)
+        return this.json({
+          requestId: ingest.event.requestId,
+          sequence: ingest.sequence,
+          ...(ingest.status === "duplicate" ? { duplicate: true } : {}),
+          expiresAt: room.expiresAt,
+        })
+      }
+
       // Restore correlation state from the durable log first (no-op after
       // the first call in this DO instance's lifetime) so late responses and
       // retried sends stay correct even after an eviction/restart.
       this.warmCollabRegistry(room)
       const validated = validateCollabEvent(
-        request.event ?? {},
+        eventInput,
         {
           senderParticipantId: participant.id,
           participants: room.participants,
@@ -1363,48 +1400,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: validated.error }, 400)
 
       let event = validated.event
-      if (event.kind === "request") {
-        const outcome = this.collabRegistry.recordRequest(
-          event,
-          room.nextMessageSequence + 1
-        )
-        // Retried send (same requestId): report the original append instead
-        // of creating a second, double-execution-inducing event.
-        if (outcome.action === "duplicate")
-          return this.json({
-            requestId: event.requestId,
-            duplicate: true,
-            sequence: outcome.sequence,
-            expiresAt: room.expiresAt,
-          })
-      } else {
-        // Idempotency is decided BEFORE any append/wake: a retried identical
-        // response/result returns the original sequence without producing a
-        // second event.
-        const precheck = this.collabRegistry.precheckResponse(
-          event.requestId,
-          event.kind,
-          participant.id
-        )
-        if (precheck.action === "rejected")
-          return this.json({ error: precheck.error }, 403)
-        if (precheck.action === "duplicate")
-          return this.json({
-            requestId: event.requestId,
-            duplicate: true,
-            sequence: precheck.sequence,
-            expiresAt: room.expiresAt,
-          })
-        const routing = this.collabRegistry.routingFor(
-          event.requestId,
-          participant.id
-        )
-        if (!routing) return this.json({ error: "unknown_request" }, 403)
-        event = {
-          ...event,
-          fromParticipantId: routing.fromParticipantId,
-          targetParticipantId: routing.targetParticipantId,
-        }
+      // Idempotency is decided BEFORE any append/wake: a retried identical
+      // response/result returns the original sequence without producing a
+      // second event.
+      const precheck = this.collabRegistry.precheckResponse(
+        event.requestId,
+        event.kind,
+        participant.id
+      )
+      if (precheck.action === "rejected")
+        return this.json({ error: precheck.error }, 403)
+      if (precheck.action === "duplicate")
+        return this.json({
+          requestId: event.requestId,
+          duplicate: true,
+          sequence: precheck.sequence,
+          expiresAt: room.expiresAt,
+        })
+      const routing = this.collabRegistry.routingFor(
+        event.requestId,
+        participant.id
+      )
+      if (!routing) return this.json({ error: "unknown_request" }, 403)
+      event = {
+        ...event,
+        fromParticipantId: routing.fromParticipantId,
+        targetParticipantId: routing.targetParticipantId,
       }
 
       const roomMessage = this.appendMessage(room, {
@@ -1421,12 +1442,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             : undefined,
         createdAt: Date.now(),
       })
-      if (event.kind !== "request")
-        this.collabRegistry.commitResponse(
-          event.requestId,
-          event.kind,
-          roomMessage.sequence
-        )
+      this.collabRegistry.commitResponse(
+        event.requestId,
+        event.kind,
+        roomMessage.sequence
+      )
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcast({ type: "message", message: roomMessage })
@@ -1873,6 +1893,84 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return this.json({ ok: true })
   }
 
+  // #113 shared request ingestion: Agent→Agent and Human→Agent work
+  // requests take the identical validate → registry dedup (BEFORE any
+  // append) → append → persist → broadcast → waiter-delivery path. The
+  // sender is whichever authenticated participant the caller resolved; the
+  // registry records fromParticipantId from that sender so Agent responses
+  // correlate back to Human requesters exactly as they do for Agents.
+  private async ingestCollabWorkRequest(
+    room: RoomRecord,
+    sender: RoomParticipant,
+    input: {
+      requestId?: unknown
+      targetParticipantId?: unknown
+      summary?: unknown
+      // Agent-originated requests may carry bounded details and references
+      // to existing room attachments; validateCollabEvent preserves both on
+      // the canonical event. The Human WS path never supplies them.
+      details?: unknown
+      attachmentIds?: unknown
+    }
+  ): Promise<
+    | {
+        status: "recorded" | "duplicate"
+        sequence: number
+        event: CollabEvent
+      }
+    | { status: "rejected"; error: string }
+  > {
+    this.warmCollabRegistry(room)
+    const validated = validateCollabEvent(
+      { kind: "request", ...input },
+      {
+        senderParticipantId: sender.id,
+        participants: room.participants,
+        attachments: room.attachments,
+      },
+      { generateRequestId: () => crypto.randomUUID() }
+    )
+    if (validated.ok === false)
+      return { status: "rejected", error: validated.error }
+    const outcome = this.collabRegistry.recordRequest(
+      validated.event,
+      room.nextMessageSequence + 1
+    )
+    // Retried send (same requestId): report the original append instead of
+    // creating a second, double-execution-inducing event.
+    if (outcome.action === "duplicate")
+      return {
+        status: "duplicate",
+        sequence: outcome.sequence,
+        event: validated.event,
+      }
+    const roomMessage = this.appendMessage(room, {
+      id: crypto.randomUUID(),
+      peerId: sender.id,
+      name: sender.name,
+      kind: sender.kind,
+      type: "action",
+      actionType: COLLAB_ACTION_TYPE,
+      collab: validated.event,
+      targets:
+        validated.event.targetParticipantId !== sender.id
+          ? [validated.event.targetParticipantId]
+          : undefined,
+      createdAt: Date.now(),
+    })
+    await this.saveRoom(room)
+    await this.scheduleNextAlarm(room)
+    await this.broadcast({ type: "message", message: roomMessage })
+    // Addressed-event semantics unchanged: only the targeted resident
+    // Runtime wakes; other Agents see a non-addressed context event.
+    this.resolveAgentWaiters(room)
+    return {
+      status: "recorded",
+      sequence: roomMessage.sequence,
+      event: validated.event,
+    }
+  }
+
   private async handleClientMessage(
     socket: WebSocket,
     attachment: ConnectionAttachment,
@@ -1999,6 +2097,42 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
       await this.attemptCleanupNow(room.pendingMediaCleanup)
+      return
+    }
+
+    // #113: Human-originated structured work request. The sender is the
+    // authenticated WebSocket attachment — payload never carries identity.
+    if (message.type === "collab-request") {
+      const reject = (error: string) =>
+        socket.send(JSON.stringify({ type: "error", error }))
+      if (participant.kind !== "human") {
+        reject("collab_sender_not_human")
+        return
+      }
+      const target = room.participants[message.targetParticipantId] ?? null
+      if (!target || !target.connected) {
+        reject("collab_target_not_in_room")
+        return
+      }
+      if (target.kind !== "agent") {
+        reject("collab_target_not_agent")
+        return
+      }
+      const ingest = await this.ingestCollabWorkRequest(room, participant, {
+        requestId: message.requestId,
+        targetParticipantId: message.targetParticipantId,
+        summary: message.summary,
+      })
+      if (ingest.status === "rejected") {
+        reject(ingest.error)
+        return
+      }
+      if (ingest.status === "duplicate") {
+        reject("collab_duplicate_request_id")
+        return
+      }
+      // The canonical RoomMessage was already broadcast; the Human UI learns
+      // of it through the ordinary message path (no optimistic echo here).
       return
     }
 

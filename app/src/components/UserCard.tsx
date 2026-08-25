@@ -13,6 +13,9 @@ interface UserCardProps extends UserInfo {
   onToggleScreenShare?: () => void
   screenshareAllowed?: boolean
   compact?: boolean
+  /** #113: present only for REMOTE connected Agents — enables the Human
+   * "Request work" entry point. Never rendered for Humans or self. */
+  onRequestWork?: () => void
 }
 
 export default function UserCard(user: UserCardProps) {
@@ -92,6 +95,15 @@ export default function UserCard(user: UserCardProps) {
             <span className="mt-1 rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
               🤖 Agent
             </span>
+          )}
+          {user.kind === "agent" && user.onRequestWork && !isSelf && (
+            <button
+              type="button"
+              onClick={user.onRequestWork}
+              className="mt-1 rounded-full bg-blue-600/80 px-2 py-0.5 text-[9px] text-white hover:bg-blue-500"
+            >
+              Request work
+            </button>
           )}
           {isSelf && (
             <div className="mt-1 flex gap-1">
@@ -245,6 +257,15 @@ export default function UserCard(user: UserCardProps) {
             <span className="rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/70">
               +{(user.capabilities?.length ?? 0) - 3}
             </span>
+          )}
+          {user.kind === "agent" && user.onRequestWork && !isSelf && (
+            <button
+              type="button"
+              onClick={user.onRequestWork}
+              className="rounded-full bg-blue-600/80 px-2 py-0.5 text-[10px] text-white hover:bg-blue-500"
+            >
+              Request work
+            </button>
           )}
         </div>
 
