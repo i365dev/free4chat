@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -11,7 +11,10 @@ import {
   type SpeechStore,
 } from "../src/speech/storage.js"
 import { resolveSpeechProviderState } from "../src/speech/providerState.js"
-import { productionSpeechRegistry } from "../src/speech/registry.js"
+import {
+  MutableSpeechProviderRegistry,
+  productionSpeechRegistry,
+} from "../src/speech/registry.js"
 import { runSpeechCommand } from "../src/speech/cli.js"
 import type {
   SpeechProviderDescriptor,
@@ -48,7 +51,10 @@ interface FactoryCall {
   values: Record<string, string>
 }
 
-function ttsDescriptor(id: string): {
+function ttsDescriptor(
+  id: string,
+  capabilities: SpeechProviderDescriptor["capabilities"]
+): {
   descriptor: SpeechProviderDescriptor
   factories: FactoryCall[]
 } {
@@ -56,7 +62,7 @@ function ttsDescriptor(id: string): {
   const descriptor: SpeechProviderDescriptor = {
     id,
     name: id,
-    capabilities: ["stt", "tts"],
+    capabilities,
     setupFields: [
       {
         key: "apiKey",
@@ -96,7 +102,7 @@ const STT_ONLY: SpeechProviderDescriptor = {
 }
 
 test("returns nothing when nothing is configured", async () => {
-  const { descriptor, factories } = ttsDescriptor("dual")
+  const { descriptor, factories } = ttsDescriptor("dual", ["stt", "tts"])
   const state = await resolveConfiguredTtsProvider({
     registry: registryWith([descriptor]),
     store: new FakeStore(),
@@ -108,7 +114,7 @@ test("returns nothing when nothing is configured", async () => {
 })
 
 test("a stored tts-slot selection without tts capability yields no factory", async () => {
-  const { descriptor, factories } = ttsDescriptor("dual")
+  const { descriptor, factories } = ttsDescriptor("dual", ["stt", "tts"])
   const state = await resolveConfiguredTtsProvider({
     registry: registryWith([descriptor, STT_ONLY]),
     store: new FakeStore({
@@ -122,7 +128,7 @@ test("a stored tts-slot selection without tts capability yields no factory", asy
 })
 
 test("environment override wins over a non-tts stored tts-slot selection", async () => {
-  const { descriptor, factories } = ttsDescriptor("dual")
+  const { descriptor, factories } = ttsDescriptor("dual", ["stt", "tts"])
   const state = await resolveConfiguredTtsProvider({
     registry: registryWith([descriptor]),
     store: new FakeStore({
@@ -139,7 +145,7 @@ test("environment override wins over a non-tts stored tts-slot selection", async
 })
 
 test("explicit override naming a non-tts provider stays disabled", async () => {
-  const { descriptor } = ttsDescriptor("dual")
+  const { descriptor } = ttsDescriptor("dual", ["stt", "tts"])
   const state = await resolveConfiguredTtsProvider({
     registry: registryWith([descriptor, STT_ONLY]),
     store: new FakeStore(
@@ -153,7 +159,7 @@ test("explicit override naming a non-tts provider stays disabled", async () => {
 })
 
 test("stored tts-slot credentials reach the factory; secrets stay inside values", async () => {
-  const { descriptor, factories } = ttsDescriptor("dual")
+  const { descriptor, factories } = ttsDescriptor("dual", ["stt", "tts"])
   const state = await resolveConfiguredTtsProvider({
     registry: registryWith([descriptor]),
     store: new FakeStore(
@@ -170,7 +176,7 @@ test("stored tts-slot credentials reach the factory; secrets stay inside values"
 })
 
 test("missing required values disable voice without touching other capabilities", async () => {
-  const { descriptor, factories } = ttsDescriptor("dual")
+  const { descriptor, factories } = ttsDescriptor("dual", ["stt", "tts"])
   const state = await resolveConfiguredTtsProvider({
     registry: registryWith([descriptor]),
     store: new FakeStore({ speech: { tts: { provider: "dual" } } }),
@@ -182,7 +188,7 @@ test("missing required values disable voice without touching other capabilities"
 })
 
 test("the stt slot alone never activates tts resolution", async () => {
-  const { descriptor, factories } = ttsDescriptor("dual")
+  const { descriptor, factories } = ttsDescriptor("dual", ["stt", "tts"])
   const state = await resolveConfiguredTtsProvider({
     registry: registryWith([descriptor]),
     store: new FakeStore({ speech: { stt: { provider: "dual" } } }),
@@ -192,22 +198,20 @@ test("the stt slot alone never activates tts resolution", async () => {
   assert.equal(factories.length, 0)
 })
 
-test("doubao STT and openai-compatible TTS stay independently selected and resolvable", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "free4chat-tts-both-"))
+test("one DOUBAO_API_KEY resolves Doubao STT and Doubao TTS side by side", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "free4chat-doubao-both-"))
   try {
     await mkdir(directory, { recursive: true })
     const store = new LocalSpeechStore(directory)
-    // Default save keeps activating through the historical stt slot...
-    await store.saveProvider("doubao", { apiKey: "sk-stt-key" })
-    // ...while the tts slot is written explicitly alongside it.
+    // One credential entry; two independent activation slots.
     await store.saveProvider(
-      "openai-compatible",
-      { apiKey: "sk-tts-key" },
-      { slot: "tts" }
+      "doubao",
+      { apiKey: "sk-one-key" },
+      { slots: ["stt", "tts"] }
     )
     const config = await store.readConfig()
     assert.equal(config.speech?.stt?.provider, "doubao")
-    assert.equal(config.speech?.tts?.provider, "openai-compatible")
+    assert.equal(config.speech?.tts?.provider, "doubao")
 
     const registry = productionSpeechRegistry()
     const sttState = await resolveSpeechProviderState(registry, store, {})
@@ -219,58 +223,34 @@ test("doubao STT and openai-compatible TTS stay independently selected and resol
       store,
       environment: {},
     })
-    assert.equal(ttsState.providerId, "openai-compatible")
+    assert.equal(ttsState.providerId, "doubao")
     assert.ok(ttsState.tts)
 
     // The TTS resolution result never carries credential material (the
     // STT state intentionally exposes values to its factory callers).
     const serialized = JSON.stringify(ttsState)
-    assert.ok(!serialized.includes("sk-tts-key"))
+    assert.ok(!serialized.includes("sk-one-key"))
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
 })
 
-test("tts-only setup routes into the tts slot and leaves an existing stt selection untouched", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "free4chat-tts-setup-"))
+test("activating only the tts slot leaves an existing stt selection untouched", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "free4chat-tts-only-"))
   try {
     await mkdir(directory, { recursive: true })
     const store = new LocalSpeechStore(directory)
     await store.saveProvider("doubao", { apiKey: "sk-existing-stt" })
 
-    const promptedFields: string[] = []
-    await runSpeechCommand(["setup", "openai-compatible"], {
-      registry: productionSpeechRegistry(),
-      store,
-      input: {
-        async read(field) {
-          promptedFields.push(field.key)
-          return field.key === "apiKey" ? "sk-fresh-tts" : ""
-        },
-      },
-      environment: {},
-      stdout: () => undefined,
-    })
+    // A hypothetical tts-only selection path must not touch the stt slot.
+    await store.saveProvider("doubao", { apiKey: "sk-tts" }, { slots: ["tts"] })
 
     const config = await store.readConfig()
     assert.equal(config.speech?.stt?.provider, "doubao")
-    assert.equal(config.speech?.tts?.provider, "openai-compatible")
+    assert.equal(config.speech?.tts?.provider, "doubao")
     const credentials = await store.readCredentials()
-    assert.equal(credentials.providers?.doubao?.apiKey, "sk-existing-stt")
-    assert.equal(
-      credentials.providers?.["openai-compatible"]?.apiKey,
-      "sk-fresh-tts"
-    )
-    assert.deepEqual([...new Set(promptedFields)].sort(), [
-      "apiKey",
-      "baseUrl",
-      "model",
-      "voice",
-    ])
-    const apiKeyPrompts = promptedFields.filter((key) => key === "apiKey")
-    assert.equal(apiKeyPrompts.length, 1)
+    assert.equal(credentials.providers?.doubao?.apiKey, "sk-tts")
 
-    // Both capabilities still resolve exactly as before the TTS-only setup.
     const registry = productionSpeechRegistry()
     const sttState = await resolveSpeechProviderState(registry, store, {})
     assert.equal(sttState.providerId, "doubao")
@@ -280,9 +260,142 @@ test("tts-only setup routes into the tts slot and leaves an existing stt selecti
       store,
       environment: {},
     })
-    assert.equal(ttsState.providerId, "openai-compatible")
+    assert.equal(ttsState.providerId, "doubao")
     assert.ok(ttsState.tts)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test("speech setup doubao activates both slots and both capabilities resolve", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "free4chat-setup-both-"))
+  try {
+    await mkdir(directory, { recursive: true })
+    const store = new LocalSpeechStore(directory)
+    const promptedFields: string[] = []
+    let validated = 0
+    const registry = new MutableSpeechProviderRegistry()
+    const delegate = productionSpeechRegistry().get("doubao")!
+    registry.register({
+      ...delegate,
+      // Offline stub: the real validate performs a live Doubao handshake.
+      async validate() {
+        validated += 1
+        return { valid: true }
+      },
+    })
+
+    await runSpeechCommand(["setup", "doubao"], {
+      registry,
+      store,
+      input: {
+        async read(field) {
+          promptedFields.push(field.key)
+          if (field.key === "apiKey") return "sk-fresh-key"
+          return ""
+        },
+      },
+      environment: {},
+      stdout: () => undefined,
+    })
+    assert.ok(validated >= 1)
+
+    const config = await store.readConfig()
+    assert.equal(config.speech?.stt?.provider, "doubao")
+    assert.equal(config.speech?.tts?.provider, "doubao")
+    const credentials = await store.readCredentials()
+    assert.equal(credentials.providers?.doubao?.apiKey, "sk-fresh-key")
+
+    const resolvedRegistry = productionSpeechRegistry()
+    const sttState = await resolveSpeechProviderState(
+      resolvedRegistry,
+      store,
+      {}
+    )
+    assert.equal(sttState.providerId, "doubao")
+    assert.equal(typeof sttState.provider?.createSttProvider, "function")
+    const ttsState = await resolveConfiguredTtsProvider({
+      registry: resolvedRegistry,
+      store,
+      environment: {},
+    })
+    assert.equal(ttsState.providerId, "doubao")
+    assert.ok(ttsState.tts)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("speak-tts writes the synthesized PCM stream to the output file without leaking the key", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "free4chat-speak-tts-"))
+  try {
+    const outPath = join(directory, "probe.pcm")
+    const scripted: SpeechProviderDescriptor = {
+      id: "scripted",
+      name: "Scripted TTS",
+      capabilities: ["tts"],
+      setupFields: [],
+      async validate() {
+        return { valid: true }
+      },
+      async diagnose() {
+        return { ready: true }
+      },
+      createTtsProvider() {
+        return {
+          async createSession() {
+            return {
+              async *synthesize(text: string) {
+                for (const piece of text.split(/\s+/).filter(Boolean)) {
+                  yield {
+                    codec: "pcm_s16le",
+                    sampleRateHz: 24_000,
+                    channels: 1,
+                    data: Buffer.from(`pcm:${piece}`, "utf8"),
+                  }
+                }
+              },
+              async close() {},
+            }
+          },
+        }
+      },
+    }
+    const output: string[] = []
+    await runSpeechCommand(
+      ["speak-tts", "--text", "one two", "--out", outPath],
+      {
+        registry: registryWith([scripted]),
+        store: new FakeStore(
+          { speech: { tts: { provider: "scripted" } } },
+          {
+            providers: { scripted: { apiKey: "sk-probe-secret" } },
+          }
+        ),
+        environment: {},
+        stdout: (line) => output.push(line),
+      }
+    )
+    const written = await readFile(outPath)
+    assert.equal(written.toString("utf8"), "pcm:onepcm:two")
+    const printed = output.join("\n")
+    assert.match(printed, /24000 Hz mono s16le/)
+    assert.ok(printed.includes(outPath))
+    assert.ok(!printed.includes("sk-probe-secret"))
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("speak-tts fails with setup guidance when no tts provider is configured", async () => {
+  await assert.rejects(
+    () =>
+      runSpeechCommand(["speak-tts", "--text", "hi"], {
+        registry: registryWith([]),
+        store: new FakeStore(),
+        environment: {},
+        stdout: () => undefined,
+      }),
+    /no text-to-speech provider is configured/
+  )
 })

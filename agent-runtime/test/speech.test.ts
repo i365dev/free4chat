@@ -132,9 +132,17 @@ test("production speech registry exposes Doubao with the local X-API-Key setup c
       required: true,
       environmentVariable: "DOUBAO_API_KEY",
     },
+    {
+      key: "voice",
+      label: "Doubao TTS 2.0 voice",
+      secret: false,
+      environmentVariable: "DOUBAO_TTS_VOICE",
+    },
   ])
   assert.equal(provider.capabilities.includes("stt"), true)
+  assert.equal(provider.capabilities.includes("tts"), true)
   assert.equal(typeof provider.createSttProvider, "function")
+  assert.equal(typeof provider.createTtsProvider, "function")
 })
 
 test("local speech storage uses a private directory, private credentials, and atomic replacement", async () => {

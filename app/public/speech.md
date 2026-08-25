@@ -18,8 +18,25 @@ recordings.
    provider account and credentials.
 7. Raw audio is not intended to be persisted by Free4Chat.
 
-Doubao Streaming ASR 2.0 is supported by the local Runtime. Configure it with
+Doubao Speech 2.0 is supported by the local Runtime for both capabilities:
+
+- **Streaming ASR 2.0** — Meeting Notes media ingress (subscribe-only).
+- **Speech Synthesis 2.0 (TTS)** — outbound voice through the official V3
+  output-unidirectional interface (`X-Api-Key`, resource id `seed-tts-2.0`,
+  raw PCM s16le / 24 kHz / mono). The speaker is a 2.0 voice
+  (`zh_female_shuangkuaisisi_uranus_bigtts` by default) and can be
+  overridden locally with `DOUBAO_TTS_VOICE`.
+
+One console credential powers both: configure it with
 `free4chat-agent speech setup doubao`; the setup command performs a live
 authenticated readiness check before saving the local API key. The required
 environment override is `DOUBAO_API_KEY`, and the provider uses the current
-X-API-Key protocol rather than legacy AppId/AccessToken credentials.
+X-API-Key protocol rather than legacy AppId/AccessToken credentials. STT and
+TTS selections live in separate config slots
+(`speech.stt.provider` / `speech.tts.provider`; override with
+`FREE4CHAT_TTS_PROVIDER`) and never displace each other.
+
+Room-audible Agent voice over the Cloudflare SFU is not wired yet (#83):
+synthesized audio currently reaches only the local test entry point
+(`free4chat-agent speech speak-tts --text "..." --out out.pcm [--wav]`),
+which writes real provider audio to a file without ever printing the key.

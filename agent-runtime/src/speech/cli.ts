@@ -1,3 +1,5 @@
+import { writeFile } from "node:fs/promises"
+
 import { redactSecrets, safeErrorMessage } from "./redaction.js"
 import { TerminalSetupInput, type SetupInput } from "./secretInput.js"
 import { productionSpeechRegistry } from "./registry.js"
@@ -6,6 +8,11 @@ import {
   hasRequiredValues,
   resolveSpeechProviderState,
 } from "./providerState.js"
+import { resolveConfiguredTtsProvider } from "../voice/ttsProvider.js"
+import {
+  pcmSilenceWavHeader,
+  DOUBAO_TTS_SAMPLE_RATE_HZ,
+} from "./providers/doubao/ttsProtocol.js"
 import { LocalSpeechStore, type SpeechStore } from "./storage.js"
 
 export interface SpeechCliDependencies {
@@ -172,23 +179,104 @@ export async function runSpeechCommand(
           secrets
         )
       )
-    // Selection slot follows capability (#83 review): an stt-capable
-    // provider keeps activating through the historical speech.stt slot,
-    // while a TTS-only provider activates through speech.tts so configuring
-    // it can never displace an existing STT selection.
-    const slot = provider.capabilities.includes("stt")
-      ? "stt"
-      : provider.capabilities.includes("tts")
-        ? "tts"
-        : undefined
-    if (!slot)
+    // Selection slots follow capability (#83 review): each capability the
+    // provider supports is activated in its own slot, so a dual-capability
+    // provider like doubao powers both while a TTS-only provider can never
+    // displace an existing STT selection.
+    const slots: ("stt" | "tts")[] = []
+    if (provider.capabilities.includes("stt")) slots.push("stt")
+    if (provider.capabilities.includes("tts")) slots.push("tts")
+    if (slots.length === 0)
       throw new Error(
         `speech provider ${provider.id} has no configurable speech capability`
       )
-    await store.saveProvider(provider.id, values, { slot })
+    await store.saveProvider(provider.id, values, { slots })
     stdout(`Speech provider ${provider.id} configured.`)
     return
   }
 
-  throw new Error("usage: free4chat-agent speech <status|doctor|setup>")
+  if (subcommand === "speak-tts") {
+    const flags = parseSpeakTtsFlags(rest)
+    // Same resolution as the resident Runtime's voice wiring: config tts
+    // slot or FREE4CHAT_TTS_PROVIDER override over the shared credential
+    // store. This is the local real-audio entry point; room-audible SFU
+    // playback is a separate, not-yet-wired capability (#83).
+    const resolved = await resolveConfiguredTtsProvider({
+      registry,
+      store,
+      environment,
+    })
+    if (!resolved.tts)
+      throw new Error(
+        "no text-to-speech provider is configured locally; run " +
+          "`free4chat-agent speech setup doubao` (or set " +
+          "FREE4CHAT_TTS_PROVIDER) first"
+      )
+    const session = await resolved.tts.createSession()
+    const parts: Buffer[] = []
+    let bytes = 0
+    try {
+      for await (const chunk of session.synthesize(flags.text)) {
+        const piece = Buffer.from(chunk.data)
+        bytes += piece.byteLength
+        parts.push(piece)
+      }
+    } catch (error) {
+      throw new Error(
+        redactSecrets(safeErrorMessage(error), [
+          environment.DOUBAO_API_KEY ?? "",
+        ])
+      )
+    }
+    if (bytes === 0) throw new Error("the provider returned no audio")
+    const payload =
+      flags.wav && bytes > 0
+        ? Buffer.concat([pcmSilenceWavHeader(bytes), ...parts])
+        : Buffer.concat(parts)
+    await writeFile(flags.out, payload, { mode: 0o600 })
+    stdout(
+      `Wrote ${bytes} PCM bytes (${DOUBAO_TTS_SAMPLE_RATE_HZ} Hz mono s16le` +
+        `${flags.wav ? ", wav-wrapped" : ""}) to ${flags.out}`
+    )
+    return
+  }
+
+  throw new Error(
+    "usage: free4chat-agent speech <status|doctor|setup|speak-tts>"
+  )
+}
+
+interface SpeakTtsFlags {
+  text: string
+  out: string
+  wav: boolean
+}
+
+function parseSpeakTtsFlags(rest: string[]): SpeakTtsFlags {
+  let text: string | undefined
+  let out: string | undefined
+  let wav = false
+  for (let i = 0; i < rest.length; i += 1) {
+    const flag = rest[i]
+    if (flag === "--text") {
+      text = rest[i + 1]
+      i += 1
+    } else if (flag === "--out") {
+      out = rest[i + 1]
+      i += 1
+    } else if (flag === "--wav") {
+      wav = true
+    } else {
+      throw new Error(`unknown speak-tts flag: ${flag}`)
+    }
+  }
+  if (!text || !text.trim())
+    throw new Error(
+      "usage: free4chat-agent speech speak-tts --text <text> [--out file] [--wav]"
+    )
+  return {
+    text,
+    out: out ?? `free4chat-tts-probe.${wav ? "wav" : "pcm"}`,
+    wav,
+  }
 }
