@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   MAX_ROOM_ATTACHMENT_BYTES,
   validateRoomAttachmentRead,
+  validateUploadedRoomAttachment,
 } from "./roomAttachments"
 
 const REQUESTED_ID = "11111111-2222-4333-8444-555555555555"
@@ -122,5 +123,74 @@ describe("validateRoomAttachmentRead (#117)", () => {
   it("rejects non-object payloads", () => {
     expect(validateRoomAttachmentRead(undefined, REQUESTED_ID).ok).toBe(false)
     expect(validateRoomAttachmentRead("nope", REQUESTED_ID).ok).toBe(false)
+  })
+})
+
+const UPLOAD_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+function uploadedPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    attachment: {
+      id: UPLOAD_ID,
+      fileName: "notes.md",
+      mimeType: "text/markdown",
+      size: 10,
+    },
+    ...overrides,
+  }
+}
+
+function uploadWith(patch: Record<string, unknown>) {
+  return validateUploadedRoomAttachment({
+    attachment: { ...uploadedPayload().attachment, ...patch },
+  })
+}
+
+describe("validateUploadedRoomAttachment (#123)", () => {
+  it("accepts well-formed metadata within every bound", () => {
+    const uploaded = validateUploadedRoomAttachment(uploadedPayload())
+    expect(uploaded).not.toBeNull()
+    expect(uploaded?.id).toBe(UPLOAD_ID)
+    expect(uploaded?.fileName).toBe("notes.md")
+    expect(uploaded?.mimeType).toBe("text/markdown")
+    expect(uploaded?.size).toBe(10)
+  })
+
+  it("rejects malformed payloads and attachment shapes", () => {
+    for (const bad of [undefined, null, "nope", {}, { attachment: "nope" }])
+      expect(validateUploadedRoomAttachment(bad)).toBeNull()
+  })
+
+  it("bounds ids between 1 and 64 chars", () => {
+    expect(uploadWith({ id: "" })).toBeNull()
+    expect(uploadWith({ id: "a".repeat(65) })).toBeNull()
+    expect(uploadWith({ id: "a".repeat(64) })).not.toBeNull()
+  })
+
+  it("bounds file names between 1 and 256 chars", () => {
+    expect(uploadWith({ fileName: "" })).toBeNull()
+    expect(uploadWith({ fileName: "f".repeat(257) })).toBeNull()
+    expect(uploadWith({ fileName: "f".repeat(256) })).not.toBeNull()
+  })
+
+  it("enforces the shared MIME allow-list", () => {
+    expect(uploadWith({ mimeType: "application/octet-stream" })).toBeNull()
+    expect(uploadWith({ mimeType: "text/html" })).toBeNull()
+    expect(uploadWith({ mimeType: "image/png" })).not.toBeNull()
+    expect(uploadWith({ mimeType: "text/yaml" })).not.toBeNull()
+  })
+
+  it("rejects invalid sizes and accepts the exact byte ceiling", () => {
+    for (const size of [
+      0,
+      -3,
+      10.5,
+      NaN,
+      Infinity,
+      MAX_ROOM_ATTACHMENT_BYTES + 1,
+    ])
+      expect(uploadWith({ size })).toBeNull()
+    expect(uploadWith({ size: MAX_ROOM_ATTACHMENT_BYTES })).not.toBeNull()
+    expect(uploadWith({ size: 1 })).not.toBeNull()
   })
 })

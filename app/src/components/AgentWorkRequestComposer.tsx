@@ -1,16 +1,34 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
+
+import { MAX_ROOM_ATTACHMENT_BYTES } from "@common/roomAttachments"
 
 interface AgentWorkRequestComposerProps {
   agentName: string
   capabilities?: string[]
   maxLength: number
   onCancel: () => void
-  onSubmit: (summary: string) => void
+  onSubmit: (summary: string, files: File[]) => Promise<boolean>
 }
 
+const MAX_ARTIFACTS = 3
+const ALLOWED_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".txt",
+  ".md",
+  ".csv",
+  ".json",
+  ".log",
+  ".yaml",
+  ".yml",
+])
+
 /**
- * #113: Human → Agent structured work request composer. Deliberately tiny:
- * one bounded summary field. The Agent may accept or decline; submitting
+ * #113/#123: Human → Agent structured work request composer. One bounded
+ * summary field plus optional file attachments (up to 3, existing Room
+ * attachment MIME/size limits). The Agent may accept or decline; submitting
  * grants no new permissions and never invokes the Agent's tools directly.
  */
 export default function AgentWorkRequestComposer({
@@ -21,8 +39,63 @@ export default function AgentWorkRequestComposer({
   onSubmit,
 }: AgentWorkRequestComposerProps) {
   const [summary, setSummary] = useState("")
+  const [files, setFiles] = useState<File[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const trimmed = summary.trim()
-  const canSend = trimmed.length > 0
+  const canSend = trimmed.length > 0 && !submitting
+
+  const selectFiles = (selected: FileList | null) => {
+    if (!selected) return
+    setError(null)
+    const next = [...files]
+    for (const file of Array.from(selected)) {
+      if (next.length >= MAX_ARTIFACTS) {
+        setError("Maximum 3 artifacts per request.")
+        break
+      }
+      const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase()
+      if (!ALLOWED_EXTENSIONS.has(ext)) {
+        setError(`Unsupported file type: ${file.name}`)
+        continue
+      }
+      if (file.size === 0) {
+        setError(`Empty file: ${file.name}`)
+        continue
+      }
+      if (file.size > MAX_ROOM_ATTACHMENT_BYTES) {
+        setError(
+          `File exceeds ${Math.floor(MAX_ROOM_ATTACHMENT_BYTES / 1024)} KiB: ${
+            file.name
+          }`
+        )
+        continue
+      }
+      next.push(file)
+    }
+    setFiles(next)
+  }
+
+  const removeFile = (index: number) => {
+    setFiles((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const handleSubmit = async () => {
+    if (!canSend || submitting) return
+    setError(null)
+    setSubmitting(true)
+    try {
+      const sent = await onSubmit(trimmed, files)
+      // Only an explicit true lets the parent close this composer; any
+      // other outcome leaves it open with actionable feedback.
+      if (!sent) setError("Could not send request. Try again.")
+    } catch {
+      setError("Upload failed. Try again.")
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -54,6 +127,48 @@ export default function AgentWorkRequestComposer({
         <p className="mt-1 text-right text-[10px] text-gray-500">
           {summary.length}/{maxLength}
         </p>
+        <div className="mt-2">
+          <label className="text-[11px] font-medium text-gray-400">
+            Attach context (optional, max 3)
+          </label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".png,.jpg,.jpeg,.webp,.txt,.md,.csv,.json,.log,.yaml,.yml"
+            onChange={(event) => selectFiles(event.target.files)}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={files.length >= 3 || submitting}
+            className="mt-1 w-full rounded-lg border border-gray-600 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800 disabled:opacity-40"
+          >
+            Choose files…
+          </button>
+          {files.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {files.map((file, i) => (
+                <li
+                  key={i}
+                  className="flex items-center justify-between text-[10px] text-gray-400"
+                >
+                  <span className="truncate">{file.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(i)}
+                    aria-label={`Remove ${file.name}`}
+                    className="text-gray-500 hover:text-white"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        {error && <p className="mt-1 text-[11px] text-red-300">{error}</p>}
         <p className="mt-2 text-[11px] leading-snug text-gray-400">
           The Agent may accept or decline. This request does not grant new
           permissions.
@@ -68,15 +183,16 @@ export default function AgentWorkRequestComposer({
           </button>
           <button
             type="button"
-            disabled={!canSend}
-            onClick={() => canSend && onSubmit(trimmed)}
+            data-testid="send-collab-request"
+            disabled={!canSend || submitting}
+            onClick={handleSubmit}
             className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-              canSend
+              canSend && !submitting
                 ? "bg-blue-600 text-white hover:bg-blue-500"
                 : "cursor-not-allowed bg-gray-700 text-gray-400"
             }`}
           >
-            Send request
+            {submitting ? "Sending…" : "Send request"}
           </button>
         </div>
       </div>

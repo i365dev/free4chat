@@ -307,6 +307,7 @@ type ClientMessage =
       requestId: string
       targetParticipantId: string
       summary: string
+      attachmentIds?: string[]
     }
   | {
       // #115: Human accepted/declined for an Agent-originated request whose
@@ -2299,6 +2300,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         requestId: message.requestId,
         targetParticipantId: message.targetParticipantId,
         summary: message.summary,
+        attachmentIds: message.attachmentIds,
       })
       if (ingest.status === "rejected") {
         reject(ingest.error)

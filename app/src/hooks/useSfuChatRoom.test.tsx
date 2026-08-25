@@ -243,3 +243,185 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     unmount()
   })
 })
+
+describe("useSfuChatRoom room attachments (#123)", () => {
+  class RecordingWebSocket {
+    static OPEN = 1
+    static instances: RecordingWebSocket[] = []
+    readyState = 1
+    onopen: (() => void) | null = null
+    onmessage: ((event: { data: string }) => void) | null = null
+    onerror: (() => void) | null = null
+    onclose: (() => void) | null = null
+    sent: string[] = []
+    constructor(public url: string) {
+      RecordingWebSocket.instances.push(this)
+    }
+    send(data: string) {
+      this.sent.push(data)
+    }
+    close() {}
+  }
+
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
+      FakePeerConnection
+    class FakeMediaStream {
+      private tracks: FakeTrack[]
+      constructor(tracks: FakeTrack[] = []) {
+        this.tracks = tracks
+      }
+      getAudioTracks() {
+        return this.tracks
+      }
+      getTracks() {
+        return this.tracks
+      }
+    }
+    ;(global as unknown as { MediaStream: unknown }).MediaStream =
+      FakeMediaStream
+    RecordingWebSocket.instances.length = 0
+    ;(global as unknown as { WebSocket: unknown }).WebSocket =
+      RecordingWebSocket
+
+    const getUserMedia = vi.fn().mockResolvedValue({
+      getAudioTracks: () => [new FakeTrack()],
+    })
+    Object.defineProperty(global.navigator, "mediaDevices", {
+      value: { getUserMedia },
+      configurable: true,
+    })
+
+    fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/sfu/session")) {
+        return jsonResponse({
+          participantId: "participant-1",
+          participantToken: "participant-token",
+          sessionId: "session-1",
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+      }
+      if (url.endsWith("/api/sfu/datachannels/establish")) {
+        return jsonResponse({})
+      }
+      if (url.endsWith("/api/sfu/datachannels/new")) {
+        return jsonResponse({ dataChannels: [{ id: 1 }] })
+      }
+      if (url.endsWith("/api/sfu/tracks")) {
+        return jsonResponse({})
+      }
+      if (url.endsWith("/api/room/attachments")) {
+        return jsonResponse({
+          attachment: {
+            id: "att-123",
+            fileName: "app.log",
+            mimeType: "text/plain",
+            size: 5,
+          },
+        })
+      }
+      return jsonResponse({})
+    })
+    global.fetch = fetchMock as unknown as typeof fetch
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  async function connect(room: string) {
+    const rendered = renderHook(() =>
+      useSfuChatRoom(room, "uploader", "audio", {})
+    )
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/sfu/session")
+        )
+      ).toBe(true)
+    )
+    return rendered
+  }
+
+  function makeLogFile() {
+    return new File(["line"], "app.log", { type: "" })
+  }
+
+  it("uploads .log text artifacts with the authoritative MIME from agentTextMime", async () => {
+    const { result, unmount } = await connect("room-attach-a")
+    const uploaded = await waitFor(() =>
+      result.current.uploadRoomAttachment(makeLogFile())
+    )
+    expect(uploaded.id).toBe("att-123")
+    const attachCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/room/attachments")
+    )
+    const headers = attachCall![1].headers as Record<string, string>
+    expect(headers["Content-Type"]).toBe("text/plain")
+    unmount()
+  })
+
+  it("wires upload metadata id into sendCollabRequest attachmentIds over an open socket", async () => {
+    const { result, unmount } = await connect("room-attach-b")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const uploaded = await waitFor(() =>
+      result.current.uploadRoomAttachment(makeLogFile())
+    )
+    const requestId = result.current.sendCollabRequest(
+      "agent-b",
+      "Check the logs",
+      [uploaded.id]
+    )
+    expect(requestId).not.toBe("")
+    const ws = RecordingWebSocket.instances.at(-1)!
+    const envelopes = ws.sent.map(
+      (raw) => JSON.parse(raw) as Record<string, unknown>
+    )
+    const envelope = envelopes.find((m) => m.type === "collab-request")
+    expect(envelope).toBeTruthy()
+    expect(envelope?.["attachmentIds"]).toEqual([uploaded.id])
+    expect(envelope?.["targetParticipantId"]).toBe("agent-b")
+    unmount()
+  })
+
+  it("sends nothing when the WebSocket is not open", async () => {
+    class ClosedSocket extends RecordingWebSocket {
+      readyState = 3
+    }
+    ;(global as unknown as { WebSocket: unknown }).WebSocket = ClosedSocket
+    RecordingWebSocket.instances.length = 0
+    const { result, unmount } = await connect("room-attach-c")
+    expect(result.current.sendCollabRequest("agent-b", "hi")).toBe("")
+    const ws = RecordingWebSocket.instances.at(-1)!
+    expect(ws.sent).toEqual([])
+    unmount()
+  })
+
+  it("surfaces upload failures from the shared response path", async () => {
+    const { result, unmount } = await connect("room-attach-d")
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/room/attachments")) {
+        return jsonResponse({ error: "unsupported_attachment_type" }, 415)
+      }
+      if (url.endsWith("/api/sfu/session")) {
+        return jsonResponse({
+          participantId: "participant-1",
+          participantToken: "participant-token",
+          sessionId: "session-1",
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+      }
+      return jsonResponse({})
+    })
+    await expect(
+      result.current.uploadRoomAttachment(makeLogFile())
+    ).rejects.toThrow("unsupported_attachment_type")
+    unmount()
+  })
+})
