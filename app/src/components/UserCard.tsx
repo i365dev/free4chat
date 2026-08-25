@@ -16,6 +16,9 @@ interface UserCardProps extends UserInfo {
   /** #113: present only for REMOTE connected Agents — enables the Human
    * "Request work" entry point. Never rendered for Humans or self. */
   onRequestWork?: () => void
+  /** #119: present ONLY for the LOCAL Human self — opens the capability
+   * editor. Never rendered on remote Humans or Agent cards. */
+  onEditCapabilities?: () => void
 }
 
 export default function UserCard(user: UserCardProps) {
@@ -103,6 +106,24 @@ export default function UserCard(user: UserCardProps) {
               className="mt-1 rounded-full bg-blue-600/80 px-2 py-0.5 text-[9px] text-white hover:bg-blue-500"
             >
               Request work
+            </button>
+          )}
+          {(user.capabilities ?? []).slice(0, 2).map((capability) => (
+            <span
+              key={capability}
+              title={capability}
+              className="mt-1 max-w-[64px] truncate rounded-full bg-black/30 px-1.5 py-0.5 text-[8px] text-white/70"
+            >
+              {capability}
+            </span>
+          ))}
+          {user.kind === "human" && isSelf && user.onEditCapabilities && (
+            <button
+              type="button"
+              onClick={user.onEditCapabilities}
+              className="mt-1 rounded-full border border-gray-500 px-1.5 py-0.5 text-[8px] text-gray-300 hover:bg-gray-800"
+            >
+              Capabilities
             </button>
           )}
           {isSelf && (
@@ -265,6 +286,15 @@ export default function UserCard(user: UserCardProps) {
               className="rounded-full bg-blue-600/80 px-2 py-0.5 text-[10px] text-white hover:bg-blue-500"
             >
               Request work
+            </button>
+          )}
+          {isSelf && user.kind === "human" && user.onEditCapabilities && (
+            <button
+              type="button"
+              onClick={user.onEditCapabilities}
+              className="rounded-full border border-gray-500 px-2 py-0.5 text-[9px] text-gray-300 hover:bg-gray-800"
+            >
+              Capabilities
             </button>
           )}
         </div>

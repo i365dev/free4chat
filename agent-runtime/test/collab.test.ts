@@ -1755,3 +1755,20 @@ test("#113/#115 Agent completed result preserves details and attachmentIds throu
     await runtimeA.stop()
   }
 })
+
+test("#119 Runtime compatibility: existing normalizeRosterEntry parses Human advertised tokens with zero production changes", async () => {
+  const { normalizeRosterEntry } = await import("../src/free4chat/client.js")
+  const entry = normalizeRosterEntry({
+    id: "human-h",
+    name: "Hannah",
+    kind: "human",
+    advertised: ["review.code", "judgment.product"],
+  })
+  assert.ok(entry)
+  assert.deepEqual(entry, {
+    id: "human-h",
+    name: "Hannah",
+    kind: "human",
+    advertised: ["review.code", "judgment.product"],
+  })
+})

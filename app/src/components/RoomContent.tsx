@@ -3,9 +3,14 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/router"
 
 import { LOCAL_PEER_ID } from "@common/consts"
-import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
+import {
+  MAX_ADVERTISED_CAPABILITIES,
+  MAX_COLLAB_SUMMARY_LENGTH,
+  MAX_CAPABILITY_LENGTH,
+} from "@do/collab"
 
 import AgentWorkRequestComposer from "./AgentWorkRequestComposer"
+import HumanCapabilitiesEditor from "./HumanCapabilitiesEditor"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
@@ -129,6 +134,7 @@ export default function RoomContent({
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
+    updateHumanCapabilities,
     muteSelf,
     toggleScreenShare,
     retryVerification,
@@ -150,6 +156,8 @@ export default function RoomContent({
   const [workRequestTarget, setWorkRequestTarget] = useState<UserInfo | null>(
     null
   )
+  // #119: local-Human capability editor target (self only).
+  const [capabilitiesEditorOpen, setCapabilitiesEditorOpen] = useState(false)
   const requestWorkFor = (p: UserInfo) =>
     setWorkRequestTarget(
       p.kind === "agent" && p.peerId !== LOCAL_PEER_ID ? p : null
@@ -704,6 +712,11 @@ export default function RoomContent({
                       onToggleScreenShare={wrappedToggleScreenShare}
                       onRequestWork={() => requestWorkFor(p)}
                       screenshareAllowed={screenshareAllowed}
+                      onEditCapabilities={
+                        p.kind === "human" && p.peerId === LOCAL_PEER_ID
+                          ? () => setCapabilitiesEditorOpen(true)
+                          : undefined
+                      }
                       className="w-40 flex-none"
                     />
                     {p.peerId === LOCAL_PEER_ID && (
@@ -772,6 +785,22 @@ export default function RoomContent({
           onSubmit={(summary) => {
             sendCollabRequest(workRequestTarget.peerId, summary)
             setWorkRequestTarget(null)
+          }}
+        />
+      )}
+
+      {capabilitiesEditorOpen && (
+        <HumanCapabilitiesEditor
+          initialCapabilities={(
+            participants.find((p) => p.peerId === LOCAL_PEER_ID)
+              ?.capabilities ?? []
+          ).filter((token): token is string => typeof token === "string")}
+          maxLength={MAX_CAPABILITY_LENGTH}
+          maxTokens={MAX_ADVERTISED_CAPABILITIES}
+          onCancel={() => setCapabilitiesEditorOpen(false)}
+          onSave={(capabilities) => {
+            updateHumanCapabilities(capabilities)
+            setCapabilitiesEditorOpen(false)
           }}
         />
       )}

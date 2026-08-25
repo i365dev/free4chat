@@ -4,7 +4,10 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
 import { ActionType, Message, UserInfo } from "@common/types"
-import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
+import {
+  MAX_COLLAB_SUMMARY_LENGTH,
+  validateAdvertisedCapabilities,
+} from "@do/collab"
 
 import type { RoomAttachmentRead } from "../room/types"
 import type {
@@ -297,7 +300,7 @@ export function useSfuChatRoom(
         capabilities:
           participant.kind === "agent"
             ? participant.capabilities?.advertised
-            : undefined,
+            : participant.advertised,
         surface: participant.kind === "agent" ? participant.surface : undefined,
         audioStream: remoteAudioStreamsRef.current.get(participant.id) ?? null,
         screenShareEnabled: hasScreenShare,
@@ -1444,6 +1447,24 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #119: replace THIS Human's advertised capability list (discovery
+  // metadata only). Local guard uses the same shared validator as the
+  // server; the authoritative list comes back via Room state broadcast.
+  // Returns true when the envelope was sent.
+  const updateHumanCapabilities = useCallback(
+    (capabilities: string[]): boolean => {
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      const validated = validateAdvertisedCapabilities(capabilities)
+      if (!validated.ok) return false
+      sendSocketMessage({
+        type: "human-update-capabilities",
+        capabilities: validated.capabilities,
+      })
+      return true
+    },
+    [sendSocketMessage]
+  )
+
   // #113: Human-originated structured work request to a connected Agent.
   // Returns the generated requestId (empty string when rejected locally).
   // The canonical RoomMessage arrives via the ordinary broadcast — no
@@ -1605,6 +1626,7 @@ export function useSfuChatRoom(
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
+    updateHumanCapabilities,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
     muteSelf,

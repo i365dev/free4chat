@@ -64,6 +64,10 @@ export interface RoomParticipant {
   connectionNonce?: string
   token: string
   capabilities?: AgentCapabilities
+  // #119: Human self-advertised capability tokens (discovery metadata only —
+  // never authorization). Top-level field for Humans; Agents keep the nested
+  // `capabilities.advertised` representation for backward compatibility.
+  advertised?: string[]
   // #111 Observable Agent Workspace v0: metadata for this Agent's single
   // latest explicitly-published workspace snapshot. Metadata only — bytes
   // live in bounded DO chunk storage under surface:* keys and are readable
