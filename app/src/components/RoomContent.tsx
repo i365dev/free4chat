@@ -6,6 +6,7 @@ import { LOCAL_PEER_ID } from "@common/consts"
 
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
+import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   umamiEvent,
@@ -118,6 +119,7 @@ export default function RoomContent({
 
   const {
     participants,
+    getLocalRoomAuth,
     messages,
     sendTextMessage,
     sendFileMessage,
@@ -607,6 +609,12 @@ export default function RoomContent({
           className="flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
           style={isMd ? { width: `${splitRatio}%` } : undefined}
         >
+          {/* #111: Agent workspace snapshots — observation only, available in
+              every room type; Human screen share is untouched below. */}
+          <WorkspaceSnapshots
+            participants={participants}
+            getLocalRoomAuth={getLocalRoomAuth}
+          />
           <div className="relative flex flex-1 flex-col overflow-hidden">
             {activeScreenShares.length > 0 ? (
               <>

@@ -1,4 +1,4 @@
-import type { CollabEvent } from "../room/types"
+import type { CollabEvent, RoomSurfaceV1 } from "../room/types"
 
 export interface UserInfo {
   name: string
@@ -11,6 +11,7 @@ export interface UserInfo {
   peerId: string
   muteState?: boolean | false
   capabilities?: string[]
+  surface?: RoomSurfaceV1
 }
 
 export type MessageType = "text" | "image" | "file" | "action"

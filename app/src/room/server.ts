@@ -30,6 +30,46 @@ export async function handleRoomRequest(
 ): Promise<Response> {
   if (!isAllowedOrigin(request.headers.get("Origin")))
     return json({ error: "forbidden_origin" }, 403)
+
+  // #111: Human-browser read path for Observable Agent Workspace snapshots.
+  // POST-only with participant credentials in headers (never query strings);
+  // the DO enforces membership and exact snapshotId match.
+  const pathname = new URL(request.url).pathname
+  if (pathname === "/api/room/surfaces/read") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    let body: { sourceParticipantId?: unknown; snapshotId?: unknown }
+    try {
+      body = (await request.json()) as typeof body
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (
+      typeof body.sourceParticipantId !== "string" ||
+      typeof body.snapshotId !== "string" ||
+      !body.sourceParticipantId ||
+      !body.snapshotId
+    )
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "agent-read-surface",
+        participantId,
+        token,
+        sourceParticipantId: body.sourceParticipantId.slice(0, 64),
+        snapshotId: body.snapshotId.slice(0, 64),
+      }),
+    })
+  }
+
   if (request.method !== "POST")
     return json({ error: "method_not_allowed" }, 405)
 

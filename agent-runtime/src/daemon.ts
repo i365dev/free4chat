@@ -1,4 +1,4 @@
-import { chmod, mkdir, readdir, rm } from "node:fs/promises"
+import { chmod, mkdir, readdir, rm, writeFile } from "node:fs/promises"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
@@ -23,6 +23,14 @@ interface ResidentInstance {
   runtime: ResidentRoomRuntime
 }
 
+// Fixed MIME→extension map (#111 review): local file extensions are never
+// derived from remote-controlled MIME strings.
+const SURFACE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+}
+
 function optionalMilliseconds(name: string): number | undefined {
   const raw = process.env[name]
   if (raw === undefined || raw.trim() === "") return undefined
@@ -45,6 +53,9 @@ export interface IpcRequest {
     | "collab-response"
     | "collab-result"
     | "attach"
+    | "surface-publish"
+    | "surface-clear"
+    | "surface-read"
   room?: string
   name?: string
   agent?: string
@@ -62,6 +73,7 @@ export interface IpcRequest {
   fileName?: string
   mimeType?: string
   dataBase64?: string
+  sourceParticipantId?: string
 }
 
 export class AgentDaemon {
@@ -296,6 +308,76 @@ export class AgentDaemon {
       }
       return { ok: true, reloaded }
     }
+    // #111 Observable Agent Workspace: publish/clear own surface; read a
+    // peer's CURRENT snapshot (exact snapshotId from roster) into the
+    // instance's Runtime-owned workspace. Handles never cross here.
+    if (
+      request.op === "surface-publish" ||
+      request.op === "surface-clear" ||
+      request.op === "surface-read"
+    ) {
+      const instanceIdResolved = request.instanceId ?? this.singleInstanceId()
+      const runtime = this.resolveRuntime(instanceIdResolved)
+      if (request.op === "surface-publish") {
+        if (!request.mimeType || !request.dataBase64)
+          throw new Error("surface publish requires mimeType and data")
+        return runtime.publishSurface({
+          mimeType: request.mimeType,
+          dataBase64: request.dataBase64,
+        })
+      }
+      if (request.op === "surface-clear") {
+        await runtime.clearSurface()
+        return { ok: true, cleared: true }
+      }
+      const sourceParticipantId = request.sourceParticipantId
+      if (!sourceParticipantId)
+        throw new Error("surface read requires --participant")
+      // Pin the CURRENT snapshotId from roster metadata before bytes move;
+      // a replace between metadata and read fails closed on mismatch.
+      const current = runtime.peerSurface(sourceParticipantId)
+      if (!current)
+        throw new Error(
+          "No workspace snapshot is currently published by that participant"
+        )
+      const read = await runtime.readSurface(
+        sourceParticipantId,
+        current.snapshotId
+      )
+      if (read.surface.snapshotId !== current.snapshotId)
+        throw new Error("snapshot changed during read; retry")
+      // Fixed MIME→extension map: never derive a local path component from
+      // remote data. Decoded bytes must be non-empty, within the surface
+      // bound, and EXACTLY metadata.size — otherwise nothing is written.
+      const extension =
+        SURFACE_EXTENSION_BY_MIME[read.surface.mimeType] ?? undefined
+      if (!extension)
+        throw new Error(`Unsupported surface MIME ${read.surface.mimeType}`)
+      const decoded = Buffer.from(read.data, "base64")
+      if (
+        decoded.length === 0 ||
+        decoded.length > 768 * 1024 ||
+        decoded.length !== read.surface.size
+      )
+        throw new Error(
+          "Surface payload failed size validation; no file was written"
+        )
+      const workspace =
+        instanceIdResolved !== undefined
+          ? this.workspaces.get(instanceIdResolved)
+          : undefined
+      if (!workspace) throw new Error("instance workspace unavailable")
+      const surfacesDir = join(workspace, "surfaces")
+      await mkdir(surfacesDir, { recursive: true, mode: 0o700 })
+      const localPath = join(
+        surfacesDir,
+        `${read.surface.snapshotId}.${extension}`
+      )
+      await writeFile(localPath, Buffer.from(read.data, "base64"), {
+        mode: 0o600,
+      })
+      return { surface: read.surface, localPath }
+    }
     if (request.op === "leave") {
       if (!request.instanceId) throw new Error("leave requires instanceId")
       const instance = this.instances.get(request.instanceId)
@@ -317,6 +399,11 @@ export class AgentDaemon {
       return { state: "stopped" }
     }
     throw new Error("unknown daemon operation")
+  }
+
+  private singleInstanceId(): string | undefined {
+    const all = this.instances.values()
+    return all.length === 1 ? all[0].instanceId : undefined
   }
 
   private resolveRuntime(instanceId?: string): ResidentRoomRuntime {

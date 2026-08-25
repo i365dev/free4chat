@@ -28,6 +28,9 @@ import type {
   JoinResult,
   ParticipantRosterEntry,
   RoomEvent,
+  RoomSurfaceMetadataV1,
+  SurfacePublishPayload,
+  SurfaceReadResult,
   UploadedAttachment,
 } from "../types.js"
 
@@ -655,6 +658,36 @@ export class ResidentRoomRuntime {
    * references via --attach, so it must reach the caller. */
   async uploadAttachment(file: AttachmentUpload): Promise<UploadedAttachment> {
     return this.options.client.uploadAttachment(this.requireHandle(), file)
+  }
+
+  // #111 Observable Agent Workspace: thin passthroughs. The participant
+  // handle stays inside the runtime; no capture scheduling exists here.
+  publishSurface(payload: SurfacePublishPayload): Promise<{
+    surface: RoomSurfaceMetadataV1
+  }> {
+    return this.options.client.publishSurface(this.requireHandle(), payload)
+  }
+
+  clearSurface(): Promise<void> {
+    return this.options.client.clearSurface(this.requireHandle())
+  }
+
+  readSurface(
+    sourceParticipantId: string,
+    snapshotId: string
+  ): Promise<SurfaceReadResult> {
+    return this.options.client.readSurface(
+      this.requireHandle(),
+      sourceParticipantId,
+      snapshotId
+    )
+  }
+
+  /** Current sanitized metadata for a peer, used by CLI `surface read` to
+   * pin the exact snapshotId before any bytes move. */
+  peerSurface(sourceParticipantId: string): RoomSurfaceMetadataV1 | null {
+    const entry = this.roster.find((p) => p.id === sourceParticipantId)
+    return entry?.surface ?? null
   }
 
   async stop(): Promise<void> {

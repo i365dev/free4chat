@@ -1,5 +1,6 @@
 import type {
   AgentCapabilities,
+  RoomSurfaceV1,
   CollabEvent,
   CollabEventKind,
   RoomParticipant,
@@ -116,6 +117,9 @@ export interface ParticipantRosterEntry {
   name: string
   kind: RoomParticipant["kind"]
   advertised?: string[]
+  /** #111 sanitized workspace-snapshot metadata (no bytes, no source info).
+   * Present only while the agent holds a published surface. */
+  surface?: RoomSurfaceV1
 }
 
 /** Compact connected-participant/capability projection for Harness context.
@@ -132,6 +136,9 @@ export function rosterProjection(
       kind: participant.kind,
       ...(participant.kind === "agent" && participant.capabilities?.advertised
         ? { advertised: participant.capabilities.advertised }
+        : {}),
+      ...(participant.kind === "agent" && participant.surface
+        ? { surface: participant.surface }
         : {}),
     }))
 }

@@ -1,4 +1,8 @@
-import { Free4ChatClientError } from "./client.js"
+import {
+  Free4ChatClientError,
+  normalizeRosterEntry,
+  parseSurfaceMetadataStrict,
+} from "./client.js"
 import type { Free4ChatErrorCode } from "./client.js"
 import type {
   AttachmentUpload,
@@ -7,6 +11,9 @@ import type {
   CreateRoomResult,
   Free4ChatClient,
   ParticipantRosterEntry,
+  RoomSurfaceMetadataV1,
+  SurfacePublishPayload,
+  SurfaceReadResult,
   UploadedAttachment,
 } from "../types.js"
 import type { JoinResult, RoomInfo, WaitResult } from "../types.js"
@@ -37,6 +44,9 @@ const REQUIRED_TOOLS = [
   "send_collab_response",
   "send_collab_result",
   "send_attachment",
+  "publish_surface",
+  "clear_surface",
+  "read_surface",
 ] as const
 
 function envelopeMeta(): Record<string, unknown> {
@@ -86,27 +96,8 @@ function toToolErrorCode(error: string | undefined): Free4ChatErrorCode {
  * shape: identity, kind, and self-advertised capability tokens only. */
 function parseRoster(raw: unknown[]): ParticipantRosterEntry[] {
   return raw
-    .map((item) => (item !== null && typeof item === "object" ? item : {}))
-    .map((record) => {
-      const participant = record as Record<string, unknown>
-      const capabilities =
-        participant.capabilities && typeof participant.capabilities === "object"
-          ? (participant.capabilities as Record<string, unknown>)
-          : undefined
-      const advertised = Array.isArray(capabilities?.advertised)
-        ? capabilities.advertised.filter(
-            (token): token is string => typeof token === "string"
-          )
-        : undefined
-      return {
-        id: String(participant.id ?? ""),
-        name: String(participant.name ?? ""),
-        kind: (participant.kind === "agent" ? "agent" : "human") as
-          "agent" | "human",
-        ...(advertised && advertised.length > 0 ? { advertised } : {}),
-      }
-    })
-    .filter((entry) => entry.id.length > 0)
+    .map(normalizeRosterEntry)
+    .filter((entry): entry is ParticipantRosterEntry => entry !== null)
 }
 
 function decodeTextPayload(raw: unknown): unknown {
@@ -401,7 +392,11 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
       expiresAt: asNumber(result.expiresAt, "expiresAt"),
       ...(Array.isArray(result.participants)
         ? {
-            participants: result.participants as ParticipantRosterEntry[],
+            participants: result.participants
+              .map(normalizeRosterEntry)
+              .filter(
+                (entry): entry is ParticipantRosterEntry => entry !== null
+              ),
           }
         : {}),
     }
@@ -564,6 +559,102 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
       size: asNumber(attachment.size, "size"),
       sequence: asNumber(attachment.sequence, "sequence"),
     }
+  }
+
+  async publishSurface(
+    participantHandle: string,
+    payload: SurfacePublishPayload
+  ): Promise<{ surface: RoomSurfaceMetadataV1 }> {
+    const result = asRecord(
+      await this.callTool("publish_surface", {
+        participantHandle,
+        mimeType: payload.mimeType,
+        dataBase64: payload.dataBase64,
+      })
+    )
+    const surface = parseSurfaceMetadataStrict(result.surface)
+    if (!surface)
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid surface payload",
+        "tool_error"
+      )
+    return { surface }
+  }
+
+  async clearSurface(participantHandle: string): Promise<void> {
+    await this.callTool("clear_surface", { participantHandle })
+  }
+
+  async readSurface(
+    participantHandle: string,
+    sourceParticipantId: string,
+    snapshotId: string
+  ): Promise<SurfaceReadResult> {
+    const rawResult = await this.post(
+      this.envelope("tools/call", {
+        name: "read_surface",
+        arguments: { participantHandle, sourceParticipantId, snapshotId },
+      }),
+      { "Mcp-Method": "tools/call", "Mcp-Name": "read_surface" }
+    )
+    const result = asRecord(rawResult)
+    if (result.isError === true) decodeTextPayload(rawResult)
+    const content = Array.isArray(result.content) ? result.content : []
+    let data: string | undefined
+    let mimeType: string | undefined
+    for (const item of content) {
+      const block = asRecord(item)
+      if (block.type === "image") {
+        data = String(block.data ?? "")
+        mimeType = String(block.mimeType ?? "")
+      }
+    }
+    if (data === undefined || !mimeType)
+      throw new Free4ChatClientError(
+        "Free4Chat returned no image content for the surface",
+        "tool_error"
+      )
+    // Metadata rides the trailing text envelope; fall back to the image
+    // block's own MIME when absent.
+    let metadata: Partial<RoomSurfaceMetadataV1> = {}
+    for (const item of content) {
+      const block = asRecord(item)
+      if (block.type !== "text") continue
+      try {
+        const parsed = JSON.parse(String(block.text ?? "")) as {
+          surface?: Record<string, unknown>
+        }
+        if (parsed.surface && typeof parsed.surface === "object")
+          metadata = parsed.surface as Partial<RoomSurfaceMetadataV1>
+      } catch {
+        // Metadata envelope is optional; bytes are authoritative.
+      }
+    }
+    const strict = parseSurfaceMetadataStrict({
+      kind: "workspace-snapshot",
+      snapshotId: metadata.snapshotId,
+      mimeType: metadata.mimeType ?? mimeType,
+      size: metadata.size,
+      updatedAt: metadata.updatedAt,
+    })
+    if (!strict)
+      throw new Free4ChatClientError(
+        "Free4Chat returned an invalid surface payload",
+        "tool_error"
+      )
+    // Cross-checks (#111 review): bytes must belong to the EXACT requested
+    // snapshot and match the ImageContent MIME — never near-miss bytes.
+    if (strict.snapshotId !== snapshotId)
+      throw new Free4ChatClientError(
+        "Free4Chat returned a different snapshot than requested",
+        "tool_error"
+      )
+    if (strict.mimeType !== mimeType)
+      throw new Free4ChatClientError(
+        "Free4Chat returned mismatched surface content type",
+        "tool_error"
+      )
+    return { surface: strict, data }
   }
 
   async close(): Promise<void> {

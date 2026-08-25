@@ -71,6 +71,17 @@ export interface ParticipantRosterEntry {
   name: string
   kind: "human" | "agent"
   advertised?: string[]
+  /** #111 sanitized workspace-snapshot metadata for this agent, when one is
+   * currently published. Metadata only — never bytes or capture sources. */
+  surface?: RoomSurfaceMetadataV1
+}
+
+/** #111 v1 workspace-snapshot metadata (sanitized projection). */
+export interface RoomSurfaceMetadataV1 {
+  snapshotId: string
+  mimeType: string
+  size: number
+  updatedAt: number
 }
 
 export interface RoomSelfContext {
@@ -212,6 +223,17 @@ export interface AttachmentUpload {
 
 export type UploadedAttachment = RoomAttachmentMetadata & { sequence: number }
 
+export interface SurfacePublishPayload {
+  mimeType: string
+  dataBase64: string
+}
+
+export interface SurfaceReadResult {
+  surface: RoomSurfaceMetadataV1
+  /** Base64 image bytes, valid only for the exact requested snapshotId. */
+  data: string
+}
+
 export interface Free4ChatClient {
   connect(): Promise<void>
   listTools(): Promise<string[]>
@@ -259,6 +281,17 @@ export interface Free4ChatClient {
     participantHandle: string,
     file: AttachmentUpload
   ): Promise<UploadedAttachment>
+  /** #111: publish/replace this Agent's single workspace snapshot. */
+  publishSurface(
+    participantHandle: string,
+    payload: SurfacePublishPayload
+  ): Promise<{ surface: RoomSurfaceMetadataV1 }>
+  clearSurface(participantHandle: string): Promise<void>
+  readSurface(
+    participantHandle: string,
+    sourceParticipantId: string,
+    snapshotId: string
+  ): Promise<SurfaceReadResult>
   leaveRoom(participantHandle: string): Promise<void>
   close(): Promise<void>
 }

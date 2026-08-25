@@ -661,3 +661,30 @@ describe("CollabRegistry rebuild fail-closed when the request itself is evicted"
     ).toEqual({ action: "record" })
   })
 })
+
+describe("rosterProjection surface metadata (#111)", () => {
+  it("exposes agent snapshot metadata only, never for humans", () => {
+    const roster = rosterProjection({
+      "agent-a": participant({
+        id: "agent-a",
+        name: "Agent A",
+        surface: {
+          kind: "workspace-snapshot",
+          snapshotId: "snap-1",
+          mimeType: "image/png",
+          size: 2048,
+          updatedAt: 42,
+        },
+      }),
+      "human-1": participant({ id: "human-1", name: "Human", kind: "human" }),
+    })
+    expect(roster[0].surface).toEqual({
+      kind: "workspace-snapshot",
+      snapshotId: "snap-1",
+      mimeType: "image/png",
+      size: 2048,
+      updatedAt: 42,
+    })
+    expect(roster[1].surface).toBeUndefined()
+  })
+})

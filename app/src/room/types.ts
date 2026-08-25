@@ -64,7 +64,24 @@ export interface RoomParticipant {
   connectionNonce?: string
   token: string
   capabilities?: AgentCapabilities
+  // #111 Observable Agent Workspace v0: metadata for this Agent's single
+  // latest explicitly-published workspace snapshot. Metadata only — bytes
+  // live in bounded DO chunk storage under surface:* keys and are readable
+  // solely by current participants with a matching snapshotId. Opt-in,
+  // Agent-only, own-surface-only; never authorization and never history.
+  surface?: RoomSurfaceV1
   media?: RoomMediaState
+}
+
+// #111 v1 snapshot descriptor. kind is fixed; snapshotId is server-generated
+// per successful publish; mimeType is one of the three supported image
+// formats; size is byte count; updatedAt is the publish epoch ms.
+export interface RoomSurfaceV1 {
+  kind: "workspace-snapshot"
+  snapshotId: string
+  mimeType: AgentImageMimeType
+  size: number
+  updatedAt: number
 }
 
 export interface RoomMessage {
