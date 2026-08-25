@@ -688,3 +688,62 @@ describe("rosterProjection surface metadata (#111)", () => {
     expect(roster[1].surface).toBeUndefined()
   })
 })
+
+describe("CollabRegistry Human-targeted requests (#115)", () => {
+  const humanRequest = {
+    requestId: "req-h",
+    kind: "request" as const,
+    fromParticipantId: "agent-a",
+    targetParticipantId: "human-h",
+    summary: "Please review option A",
+  }
+
+  it("records Agent A -> Human H correlation so H's accept routes back to A", () => {
+    const registry = new CollabRegistry()
+    registry.recordRequest(humanRequest, 5)
+    expect(registry.routingFor("req-h", "human-h")).toEqual({
+      fromParticipantId: "human-h",
+      targetParticipantId: "agent-a",
+    })
+    expect(registry.precheckResponse("req-h", "accepted", "human-h")).toEqual({
+      action: "record",
+    })
+    registry.commitResponse("req-h", "accepted", 6)
+    expect(registry.precheckResponse("req-h", "accepted", "human-h")).toEqual({
+      action: "duplicate",
+      sequence: 6,
+    })
+  })
+
+  it("rejects a different Human intercepting H's targeted request", () => {
+    const registry = new CollabRegistry()
+    registry.recordRequest(humanRequest, 5)
+    expect(
+      registry.precheckResponse("req-h", "declined", "human-other")
+    ).toEqual({ action: "rejected", error: "not_request_target" })
+  })
+
+  it("rebuild restores Agent -> Human routing from bounded messages", () => {
+    const fresh = new CollabRegistry()
+    fresh.rebuild([
+      { event: humanRequest, sequence: 20 },
+      {
+        event: {
+          requestId: "req-h",
+          kind: "declined",
+          fromParticipantId: "human-h",
+          targetParticipantId: "agent-a",
+        },
+        sequence: 21,
+      },
+    ])
+    expect(fresh.routingFor("req-h", "human-h")).toEqual({
+      fromParticipantId: "human-h",
+      targetParticipantId: "agent-a",
+    })
+    expect(fresh.precheckResponse("req-h", "declined", "human-h")).toEqual({
+      action: "duplicate",
+      sequence: 21,
+    })
+  })
+})

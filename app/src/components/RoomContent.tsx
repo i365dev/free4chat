@@ -128,6 +128,7 @@ export default function RoomContent({
     sendFileMessage,
     sendActionMessage,
     sendCollabRequest,
+    sendCollabResponse,
     muteSelf,
     toggleScreenShare,
     retryVerification,
@@ -754,6 +755,10 @@ export default function RoomContent({
             onSendText={wrappedSendText}
             onSendFile={wrappedSendFile}
             onSendAction={sendActionMessage}
+            localParticipantId={getLocalRoomAuth()?.participantId}
+            onCollabRespond={(requestId, decision) => {
+              sendCollabResponse(requestId, decision)
+            }}
           />
         </div>
       </div>

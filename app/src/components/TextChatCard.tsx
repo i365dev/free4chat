@@ -6,6 +6,7 @@ import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
 
+import { isCollabRequestAnswered } from "./collabUi"
 import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
 
@@ -28,6 +29,15 @@ interface TextChatCardProps {
   onSendAction: (
     actionType: ActionType,
     actionPayload: Record<string, string>
+  ) => void
+  /** #115: real authenticated Room participant id of THIS browser — used to
+   * decide whether an incoming collab request targets this Human. Public
+   * room identity, not a credential. */
+  localParticipantId?: string
+  /** #115: submit accepted/declined for a request addressed to this Human. */
+  onCollabRespond?: (
+    requestId: string,
+    decision: "accepted" | "declined"
   ) => void
 }
 
@@ -232,17 +242,38 @@ function ActionCard({
   allMessages,
   myPeerId,
   onVote,
+  localParticipantId,
+  onCollabRespond,
 }: {
   msg: Message
   isSelf: boolean
   allMessages: Message[]
   myPeerId: string
   onVote: (pollId: string, option: string) => void
+  localParticipantId?: string
+  onCollabRespond?: (
+    requestId: string,
+    decision: "accepted" | "declined"
+  ) => void
 }) {
   if (msg.actionType === "reaction") return null
 
   if (msg.actionType === "collab" && msg.collab) {
     const collab = msg.collab
+    // #115: lifecycle-derived answered state — the message log IS the
+    // record. A later accepted/declined for the same requestId means the
+    // decision is made; never keep authoritative state in React.
+    const answered = isCollabRequestAnswered(allMessages, collab.requestId)
+    // Response controls appear ONLY when THIS Human is the request target
+    // and the request came from someone else (never on own outbound
+    // requests, Agent-targeted requests, or already-answered ones).
+    const showRespond =
+      collab.kind === "request" &&
+      Boolean(onCollabRespond) &&
+      Boolean(localParticipantId) &&
+      collab.targetParticipantId === localParticipantId &&
+      collab.fromParticipantId !== localParticipantId &&
+      !answered
     const icons: Record<string, string> = {
       request: "🤝",
       accepted: "✅",
@@ -283,6 +314,30 @@ function ActionCard({
             📎 {collab.attachmentIds.length} attachment
             {collab.attachmentIds.length > 1 ? "s" : ""}
           </p>
+        )}
+        {showRespond && (
+          <div className="mt-2 border-t border-white/10 pt-1.5">
+            <p className="text-[10px] leading-snug text-gray-400">
+              Your response is shared with the Agent and does not grant new
+              permissions.
+            </p>
+            <div className="mt-1.5 flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => onCollabRespond?.(collab.requestId, "accepted")}
+                className="rounded-md bg-emerald-600/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-500"
+              >
+                Accept
+              </button>
+              <button
+                type="button"
+                onClick={() => onCollabRespond?.(collab.requestId, "declined")}
+                className="rounded-md border border-gray-600 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
+              >
+                Decline
+              </button>
+            </div>
+          </div>
         )}
       </div>
     )
@@ -515,6 +570,8 @@ export default function TextChatCard({
   onSendText,
   onSendFile,
   onSendAction,
+  localParticipantId,
+  onCollabRespond,
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
   const [submenu, setSubmenu] = useState<"games" | null>(null)
@@ -796,6 +853,8 @@ export default function TextChatCard({
                       allMessages={messages}
                       myPeerId={LOCAL_PEER_ID}
                       onVote={handleVote}
+                      localParticipantId={localParticipantId}
+                      onCollabRespond={onCollabRespond}
                     />
                   ) : (
                     <FileMessageBubble msg={p} isSelf={isSelf} />

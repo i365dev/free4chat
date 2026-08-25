@@ -1378,6 +1378,32 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #115: Human accepted/declined for an Agent-originated request addressed
+  // to this participant. Returns false when the socket is closed or inputs
+  // are invalid — never claims success without sending. The canonical state
+  // arrives via the ordinary broadcast (no optimistic echo).
+  const sendCollabResponse = useCallback(
+    (
+      requestId: string,
+      decision: "accepted" | "declined",
+      summary?: string
+    ): boolean => {
+      if (!requestId) return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      const trimmed = summary?.trim()
+      sendSocketMessage({
+        type: "collab-response",
+        requestId,
+        decision,
+        ...(trimmed
+          ? { summary: trimmed.slice(0, MAX_COLLAB_SUMMARY_LENGTH) }
+          : {}),
+      })
+      return true
+    },
+    [sendSocketMessage]
+  )
+
   // #113: Human-originated structured work request to a connected Agent.
   // Returns the generated requestId (empty string when rejected locally).
   // The canonical RoomMessage arrives via the ordinary broadcast — no
@@ -1538,6 +1564,8 @@ export function useSfuChatRoom(
     sendFileMessage,
     sendActionMessage,
     sendCollabRequest,
+    sendCollabResponse,
+    localParticipantId: sessionRef.current?.participantId,
     muteSelf,
     toggleScreenShare,
     retryVerification,

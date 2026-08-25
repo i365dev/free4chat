@@ -297,6 +297,15 @@ type ClientMessage =
       targetParticipantId: string
       summary: string
     }
+  | {
+      // #115: Human accepted/declined for an Agent-originated request whose
+      // target was THIS Human. Responder identity/routing derive from the
+      // authenticated attachment + CollabRegistry correlation.
+      type: "collab-response"
+      requestId: string
+      decision: "accepted" | "declined"
+      summary?: string
+    }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
   | { type: "datachannel-ready" }
@@ -1383,77 +1392,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         })
       }
 
-      // Restore correlation state from the durable log first (no-op after
-      // the first call in this DO instance's lifetime) so late responses and
-      // retried sends stay correct even after an eviction/restart.
-      this.warmCollabRegistry(room)
-      const validated = validateCollabEvent(
-        eventInput,
-        {
-          senderParticipantId: participant.id,
-          participants: room.participants,
-          attachments: room.attachments,
-        },
-        { generateRequestId: () => crypto.randomUUID() }
+      // #113/#115: RESPONSES share one ingestion path with Human
+      // accepted/declined (warm → validate → precheck-dedup → routing →
+      // append → commit → persist → broadcast → waiters).
+      const ingest = await this.ingestCollabResponse(
+        room,
+        participant,
+        eventInput as {
+          requestId?: unknown
+          kind?: unknown
+          summary?: unknown
+          details?: unknown
+          attachmentIds?: unknown
+        }
       )
-      if (validated.ok === false)
-        return this.json({ error: validated.error }, 400)
-
-      let event = validated.event
-      // Idempotency is decided BEFORE any append/wake: a retried identical
-      // response/result returns the original sequence without producing a
-      // second event.
-      const precheck = this.collabRegistry.precheckResponse(
-        event.requestId,
-        event.kind,
-        participant.id
-      )
-      if (precheck.action === "rejected")
-        return this.json({ error: precheck.error }, 403)
-      if (precheck.action === "duplicate")
-        return this.json({
-          requestId: event.requestId,
-          duplicate: true,
-          sequence: precheck.sequence,
-          expiresAt: room.expiresAt,
-        })
-      const routing = this.collabRegistry.routingFor(
-        event.requestId,
-        participant.id
-      )
-      if (!routing) return this.json({ error: "unknown_request" }, 403)
-      event = {
-        ...event,
-        fromParticipantId: routing.fromParticipantId,
-        targetParticipantId: routing.targetParticipantId,
-      }
-
-      const roomMessage = this.appendMessage(room, {
-        id: crypto.randomUUID(),
-        peerId: participant.id,
-        name: participant.name,
-        kind: participant.kind,
-        type: "action",
-        actionType: COLLAB_ACTION_TYPE,
-        collab: event,
-        targets:
-          event.targetParticipantId !== participant.id
-            ? [event.targetParticipantId]
-            : undefined,
-        createdAt: Date.now(),
-      })
-      this.collabRegistry.commitResponse(
-        event.requestId,
-        event.kind,
-        roomMessage.sequence
-      )
-      await this.saveRoom(room)
-      await this.scheduleNextAlarm(room)
-      await this.broadcast({ type: "message", message: roomMessage })
-      this.resolveAgentWaiters(room)
+      if (ingest.status === "rejected")
+        return this.json(
+          { error: ingest.error },
+          ingest.error === "unknown_request" ||
+            ingest.error === "not_request_target"
+            ? 403
+            : 400
+        )
       return this.json({
-        requestId: event.requestId,
-        sequence: roomMessage.sequence,
+        requestId: ingest.event.requestId,
+        sequence: ingest.sequence,
+        ...(ingest.status === "duplicate" ? { duplicate: true } : {}),
         expiresAt: room.expiresAt,
       })
     }
@@ -1899,6 +1863,104 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // sender is whichever authenticated participant the caller resolved; the
   // registry records fromParticipantId from that sender so Agent responses
   // correlate back to Human requesters exactly as they do for Agents.
+  // #115 shared response ingestion: Agent accepted/declined/completed/failed
+  // and Human accepted/declined take the identical warm → validate →
+  // precheck-dedup (BEFORE any append/wake) → routing → append → commit →
+  // persist → broadcast → waiter-delivery path. Routing always comes from
+  // CollabRegistry correlation — the responder never self-reports the
+  // destination, so a Human response reaches the original requester exactly
+  // as an Agent response does.
+  private async ingestCollabResponse(
+    room: RoomRecord,
+    responder: RoomParticipant,
+    input: {
+      requestId?: unknown
+      kind?: unknown
+      summary?: unknown
+      // Agent completed/failed results may carry bounded details and
+      // references to existing attachments (#109); validateCollabEvent
+      // preserves both on the canonical event. The Human WS path never
+      // supplies them (v0: accepted/declined only).
+      details?: unknown
+      attachmentIds?: unknown
+    }
+  ): Promise<
+    | {
+        status: "recorded" | "duplicate"
+        sequence: number
+        event: CollabEvent
+      }
+    | { status: "rejected"; error: string }
+  > {
+    this.warmCollabRegistry(room)
+    const validated = validateCollabEvent(
+      input,
+      {
+        senderParticipantId: responder.id,
+        participants: room.participants,
+        attachments: room.attachments,
+      },
+      { generateRequestId: () => crypto.randomUUID() }
+    )
+    if (validated.ok === false)
+      return { status: "rejected", error: validated.error }
+    let event = validated.event
+    // Idempotency is decided BEFORE any append/wake: a retried identical
+    // decision returns the original sequence without producing a second
+    // event or a second addressed Harness turn.
+    const precheck = this.collabRegistry.precheckResponse(
+      event.requestId,
+      event.kind,
+      responder.id
+    )
+    if (precheck.action === "rejected")
+      return { status: "rejected", error: precheck.error }
+    if (precheck.action === "duplicate")
+      return {
+        status: "duplicate",
+        sequence: precheck.sequence,
+        event,
+      }
+    const routing = this.collabRegistry.routingFor(
+      event.requestId,
+      responder.id
+    )
+    if (!routing) return { status: "rejected", error: "unknown_request" }
+    event = {
+      ...event,
+      fromParticipantId: routing.fromParticipantId,
+      targetParticipantId: routing.targetParticipantId,
+    }
+    const roomMessage = this.appendMessage(room, {
+      id: crypto.randomUUID(),
+      peerId: responder.id,
+      name: responder.name,
+      kind: responder.kind,
+      type: "action",
+      actionType: COLLAB_ACTION_TYPE,
+      collab: event,
+      targets:
+        event.targetParticipantId !== responder.id
+          ? [event.targetParticipantId]
+          : undefined,
+      createdAt: Date.now(),
+    })
+    this.collabRegistry.commitResponse(
+      event.requestId,
+      event.kind,
+      roomMessage.sequence
+    )
+    await this.saveRoom(room)
+    await this.scheduleNextAlarm(room)
+    await this.broadcast({ type: "message", message: roomMessage })
+    this.resolveAgentWaiters(room)
+    return {
+      status: "recorded",
+      sequence: roomMessage.sequence,
+      event,
+    }
+  }
+
   private async ingestCollabWorkRequest(
     room: RoomRecord,
     sender: RoomParticipant,
@@ -2133,6 +2195,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       // The canonical RoomMessage was already broadcast; the Human UI learns
       // of it through the ordinary message path (no optimistic echo here).
+      return
+    }
+
+    // #115: Human accepted/declined for an Agent-originated request. The
+    // responder is the authenticated Human attachment; routing comes from
+    // CollabRegistry correlation. v0 permits ONLY accepted/declined —
+    // completed/failed remain Agent-submitted.
+    if (message.type === "collab-response") {
+      const reject = (error: string) =>
+        socket.send(JSON.stringify({ type: "error", error }))
+      if (participant.kind !== "human") {
+        reject("collab_responder_not_human")
+        return
+      }
+      if (message.decision !== "accepted" && message.decision !== "declined") {
+        reject("invalid_collab_kind")
+        return
+      }
+      const ingest = await this.ingestCollabResponse(room, participant, {
+        requestId: message.requestId,
+        kind: message.decision,
+        summary: message.summary,
+      })
+      if (ingest.status === "rejected") {
+        reject(ingest.error)
+        return
+      }
+      // Canonical RoomMessage already broadcast (duplicate retries append
+      // nothing and wake nothing); the UI learns state via the ordinary path.
       return
     }
 
