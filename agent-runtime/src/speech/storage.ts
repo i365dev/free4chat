@@ -5,11 +5,21 @@ import { join } from "node:path"
 import { runtimeDirectory } from "../core/paths.js"
 
 export interface SpeechConfig {
-  speech?: { stt?: { provider?: string } }
+  speech?: {
+    stt?: { provider?: string }
+    tts?: { provider?: string }
+  }
 }
 
 export interface SpeechCredentials {
   providers?: Record<string, Record<string, string>>
+}
+
+/** Which capability slot a saved provider selection activates. Defaults to
+ * "stt" so every pre-existing caller and config file behaves exactly as
+ * before (#83 review: TTS selections must live in their own slot). */
+export interface SpeechSaveOptions {
+  slot?: "stt" | "tts"
 }
 
 export interface SpeechStore {
@@ -17,7 +27,8 @@ export interface SpeechStore {
   readCredentials(): Promise<SpeechCredentials>
   saveProvider(
     providerId: string,
-    values: Record<string, string>
+    values: Record<string, string>,
+    options?: SpeechSaveOptions
   ): Promise<void>
 }
 
@@ -108,8 +119,10 @@ export class LocalSpeechStore implements SpeechStore {
 
   async saveProvider(
     providerId: string,
-    values: Record<string, string>
+    values: Record<string, string>,
+    options?: SpeechSaveOptions
   ): Promise<void> {
+    const slot = options?.slot ?? "stt"
     const config = await this.readConfig()
     const credentials = await this.readCredentials()
     const providers = { ...(credentials.providers ?? {}) }
@@ -117,12 +130,16 @@ export class LocalSpeechStore implements SpeechStore {
     // Credentials are supporting data; the config provider selection is the
     // activation pointer and must be committed last.
     await this.writeJson(this.directory, "credentials.json", { providers })
+    const speech: NonNullable<SpeechConfig["speech"]> = {
+      ...(config.speech ?? {}),
+    }
+    const previous = slot === "tts" ? speech.tts : speech.stt
+    const next = { ...(previous ?? {}), provider: providerId }
+    if (slot === "tts") speech.tts = next
+    else speech.stt = next
     await this.writeJson(this.directory, "config.json", {
       ...config,
-      speech: {
-        ...(config.speech ?? {}),
-        stt: { ...(config.speech?.stt ?? {}), provider: providerId },
-      },
+      speech,
     })
   }
 }

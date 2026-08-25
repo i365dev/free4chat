@@ -170,6 +170,19 @@ test("descriptor advertises tts capability with an offline validation contract",
   assert.equal(diagnosis.ready, false)
 })
 
+test("serializing the resolved provider or session never exposes the credential", async () => {
+  const { fetchImpl } = fetchCapturing(new ArrayBuffer(8))
+  const provider = new OpenAiCompatibleTtsProvider(
+    { apiKey: API_KEY },
+    { fetchImpl }
+  )
+  const session = await provider.createSession()
+  for (const value of [provider, session]) {
+    const serialized = JSON.stringify(value)
+    assert.ok(!serialized.includes(API_KEY))
+  }
+})
+
 test("the production registry resolves both speech capabilities", () => {
   const registry = productionSpeechRegistry()
   assert.equal(registry.get("doubao")?.capabilities.includes("stt"), true)

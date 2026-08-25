@@ -57,6 +57,18 @@ export class OpenAiCompatibleTtsProvider implements StreamingTtsProvider {
       this.frameBytes
     )
   }
+
+  // TypeScript private fields stay runtime-enumerable; without this guard
+  // any accidental JSON.stringify of a resolved provider would emit the
+  // API key into logs or diagnostics.
+  toJSON(): Record<string, string> {
+    return {
+      provider: "openai-compatible",
+      baseUrl: this.config.baseUrl,
+      model: this.config.model,
+      voice: this.config.voice,
+    }
+  }
 }
 
 class OpenAiCompatibleTtsSession implements StreamingTtsSession {
@@ -65,6 +77,10 @@ class OpenAiCompatibleTtsSession implements StreamingTtsSession {
     private readonly fetchImpl: typeof fetch,
     private readonly frameBytes: number
   ) {}
+
+  toJSON(): Record<string, string> {
+    return { session: "openai-compatible-tts" }
+  }
 
   async *synthesize(text: string): AsyncIterable<TtsAudioChunk> {
     const trimmed = text.trim()

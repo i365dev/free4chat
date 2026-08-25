@@ -172,7 +172,20 @@ export async function runSpeechCommand(
           secrets
         )
       )
-    await store.saveProvider(provider.id, values)
+    // Selection slot follows capability (#83 review): an stt-capable
+    // provider keeps activating through the historical speech.stt slot,
+    // while a TTS-only provider activates through speech.tts so configuring
+    // it can never displace an existing STT selection.
+    const slot = provider.capabilities.includes("stt")
+      ? "stt"
+      : provider.capabilities.includes("tts")
+        ? "tts"
+        : undefined
+    if (!slot)
+      throw new Error(
+        `speech provider ${provider.id} has no configurable speech capability`
+      )
+    await store.saveProvider(provider.id, values, { slot })
     stdout(`Speech provider ${provider.id} configured.`)
     return
   }

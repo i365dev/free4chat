@@ -15,13 +15,15 @@ export interface ResolvedTtsProviderState {
 }
 
 /**
- * Resolves the locally-configured BYOK TTS provider from the exact same
- * credential storage as STT (#88/#105). Selection order:
- * FREE4CHAT_TTS_PROVIDER override, then the stored provider selection.
- * A selection only yields a factory when its descriptor advertises the
- * "tts" capability and all required values are present. Secrets live
- * solely in the values handed to the provider constructor — never
- * returned, logged, or persisted anywhere else.
+ * Resolves the locally-configured BYOK TTS provider from the same local
+ * credential storage as STT (#88/#105), with its own selection slot:
+ * FREE4CHAT_TTS_PROVIDER override, then config `speech.tts.provider`. The
+ * slots are independent by design (#83 review) — a TTS selection must
+ * never displace or depend on `speech.stt.provider`. A selection only
+ * yields a factory when its descriptor advertises the "tts" capability
+ * and all required values are present. Secrets live solely in the values
+ * handed to the provider constructor — never returned, logged, or
+ * persisted anywhere else.
  */
 export async function resolveConfiguredTtsProvider(options: {
   registry: SpeechProviderRegistry
@@ -51,6 +53,6 @@ function selectedTtsProviderId(
 ): string | undefined {
   const overridden = environment.FREE4CHAT_TTS_PROVIDER?.trim()
   if (overridden) return overridden
-  const configured = config.speech?.stt?.provider
+  const configured = config.speech?.tts?.provider
   return typeof configured === "string" ? configured : undefined
 }
