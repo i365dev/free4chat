@@ -266,6 +266,11 @@ export class ResidentRoomRuntime {
     )
     this.resolvedRoomId = created.invite.roomId
     this.adoptJoin(created)
+    // Identical adoption semantics to join(): the Meeting Notes controller
+    // must exist for THIS participant from the start, so a Human joining via
+    // the invite and granting Meeting Notes is picked up immediately — not
+    // only after some later lease-expiry rejoin.
+    await this.restartMeetingNotesController()
     this.loopPromise = this.waitLoop()
     return created
   }

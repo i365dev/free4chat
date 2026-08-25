@@ -65,9 +65,13 @@ function baseClient(overrides: Partial<Free4ChatClient> = {}): Free4ChatClient {
     async createRoom(name, capabilities): Promise<CreateRoomResult> {
       void name
       void capabilities
-      return JSON.parse(
-        JSON.stringify(VALID_CREATE_PAYLOAD)
-      ) as CreateRoomResult
+      return {
+        participantId: "creator-1",
+        participantHandle: "secret-create-handle",
+        cursor: 0,
+        expiresAt: 123456,
+        invite: { ...VALID_CREATE_PAYLOAD.invite },
+      }
     },
     async waitForEvents(_handle, cursor): Promise<WaitResult> {
       await new Promise((resolve) => setTimeout(resolve, 5))
@@ -306,4 +310,97 @@ test("legacy client implements createRoom over the same envelope", async () => {
   }
   const created = await legacy.createRoom("Agent C", ["shell"])
   assert.equal(created.invite.roomId, "room-new")
+})
+
+test("create adoption initializes Meeting Notes for the created participant; rejoin rebuilds it without re-creating", async () => {
+  const turns: HarnessTurnInput[] = []
+  const controllers: Array<{ started: number; stopped: number }> = []
+  let joins = 0
+  let creates = 0
+  let waits = 0
+  const waitCursors: number[] = []
+  // A structurally valid handle (base64url JSON, mirroring MCP encodeHandle)
+  // so restartMeetingNotesController can decode the created participant.
+  const handle = Buffer.from(
+    JSON.stringify({
+      room: "room-new",
+      participantId: "creator-1",
+      participantToken: "tok",
+    })
+  )
+    .toString("base64")
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "")
+  const client = baseClient({
+    async joinRoom(): Promise<JoinResult> {
+      joins += 1
+      return {
+        participantId: "creator-1",
+        participantHandle: handle,
+        cursor: 900,
+        expiresAt: Date.now() + 90_000,
+      }
+    },
+    async createRoom(): Promise<CreateRoomResult> {
+      creates += 1
+      return {
+        participantId: "creator-1",
+        participantHandle: handle,
+        cursor: 0,
+        expiresAt: 123456,
+        invite: { ...VALID_CREATE_PAYLOAD.invite },
+      }
+    },
+    async waitForEvents(_handle, cursor): Promise<WaitResult> {
+      waits += 1
+      waitCursors.push(cursor)
+      if (waits === 3)
+        throw new Free4ChatClientError(
+          "invalid participant handle",
+          "invalid_participant_handle"
+        )
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      return { events: [], cursor, expiresAt: Date.now() + 90_000 }
+    },
+  })
+  const { MeetingNotesController } =
+    await import("../src/media/meetingNotesController.js")
+  const runtime = new ResidentRoomRuntime({
+    instanceId: "inst-create-mn",
+    name: "Agent C",
+    client,
+    adapter: fakeAdapter(turns),
+    capabilities: ["shell"],
+    createMeetingNotesController: () => {
+      const spy = { started: 0, stopped: 0 }
+      controllers.push(spy)
+      return {
+        start: async () => {
+          spy.started += 1
+        },
+        stop: async () => {
+          spy.stopped += 1
+        },
+      } as unknown as MeetingNotesController
+    },
+  })
+  try {
+    const created = await runtime.startByCreate()
+    assert.equal(creates, 1)
+    assert.equal(joins, 0)
+    assert.equal(runtime.getStatus().roomId, created.invite.roomId)
+    await settle(() => controllers[0]?.started === 1)
+
+    // Lease-expiry style rejoin: normal joinRoom exactly once, old controller
+    // stopped, new controller initialized and started; still only one create.
+    await settle(() => joins === 1 && (controllers[1]?.started ?? 0) === 1)
+    assert.equal(creates, 1, "rejoin must never re-create the room")
+    assert.ok(controllers[0].stopped >= 1, "old controller must be stopped")
+    assert.equal(controllers.length, 2)
+    // Post-rejoin polling resumes from the joined cursor.
+    await settle(() => waitCursors[waitCursors.length - 1] === 900)
+  } finally {
+    await runtime.stop()
+  }
 })
