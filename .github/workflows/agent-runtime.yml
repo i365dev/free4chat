@@ -18,6 +18,9 @@ jobs:
   agent-runtime:
     name: Agent Runtime
     runs-on: ubuntu-latest
+    outputs:
+      runtime_version: ${{ steps.release_metadata.outputs.runtime_version }}
+      source_sha: ${{ steps.release_metadata.outputs.source_sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,6 +29,26 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: agent-runtime/package-lock.json
+
+      - name: Resolve release metadata
+        id: release_metadata
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./agent-runtime/package.json').version")"
+          if [[ "$GITHUB_REF" == refs/tags/agent-runtime-v* ]]; then
+            tag_version="${TAG_NAME#agent-runtime-v}"
+            if [ "$tag_version" != "$package_version" ]; then
+              echo "Tag $TAG_NAME does not match package.json version $package_version" >&2
+              exit 1
+            fi
+            echo "runtime_version=$package_version" >> "$GITHUB_OUTPUT"
+            echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "runtime_version=$package_version" >> "$GITHUB_OUTPUT"
+            echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install dependencies
         run: npm ci
@@ -55,10 +78,21 @@ jobs:
         run: npm run pack:check
         working-directory: agent-runtime
 
+  pion-release:
+    name: Build and verify matching Pion release
+    if: startsWith(github.ref, 'refs/tags/agent-runtime-v')
+    needs: agent-runtime
+    uses: ./.github/workflows/pion-binaries.yml
+    with:
+      version: ${{ needs.agent-runtime.outputs.runtime_version }}
+      source_sha: ${{ needs.agent-runtime.outputs.source_sha }}
+    permissions:
+      contents: write
+
   publish:
     name: Publish Agent Runtime
     if: startsWith(github.ref, 'refs/tags/agent-runtime-v')
-    needs: agent-runtime
+    needs: [agent-runtime, pion-release]
     runs-on: ubuntu-latest
     permissions:
       contents: read

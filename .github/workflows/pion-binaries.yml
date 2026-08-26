@@ -1,21 +1,84 @@
 name: Pion Binaries
 
-# Builds and publishes the version-matched Pion media-engine binaries used
-# by @i365dev/free4chat-agent's lazy provisioning (#105). Push a tag
-# `pion-v<runtime version>` (e.g. pion-v0.2.0) to build and attach:
-#   pion-<version>-<os>-<arch>  (raw executable, one per supported platform)
-#   SHA256SUMS                  (sha256sum-format manifest)
-
+# Version-matched Pion media engine release. Runtime releases call this
+# workflow with the exact tagged source SHA; the tag trigger remains a repair
+# path for an already tagged version.
 on:
   push:
     tags:
       - "pion-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Runtime/Pion version
+        required: true
+        type: string
+      source_sha:
+        description: Exact source commit to build
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: Runtime/Pion version
+        required: true
+        type: string
+      source_sha:
+        description: Exact source commit to build
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+env:
+  REQUESTED_VERSION: ${{ inputs.version || '' }}
+  REQUESTED_SOURCE_SHA: ${{ inputs.source_sha || '' }}
+
 jobs:
+  metadata:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate version and source
+        id: metadata
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$REQUESTED_VERSION"
+          if [ -z "$version" ]; then version="${TAG_NAME#pion-v}"; fi
+          source_sha="$REQUESTED_SOURCE_SHA"
+          if [ -z "$source_sha" ]; then source_sha="$GITHUB_SHA"; fi
+          package_version="$(node -p "require('./agent-runtime/package.json').version")"
+          if [ "$version" != "$package_version" ]; then
+            echo "Pion version $version does not match agent-runtime/package.json $package_version" >&2
+            exit 1
+          fi
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [ "$checked_out_sha" != "$source_sha" ]; then
+            echo "Checked out $checked_out_sha, expected source SHA $source_sha" >&2
+            exit 1
+          fi
+          case "$version" in
+            *[!0-9A-Za-z.+-]*|"") echo "Invalid release version: $version" >&2; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: metadata
     strategy:
       fail-fast: false
       matrix:
@@ -27,25 +90,24 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          ref: ${{ needs.metadata.outputs.source_sha }}
+          fetch-depth: 1
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-
       - name: Build
         working-directory: experiments/pion-cloudflare
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        # GOARCH uses Go's amd64 naming; the asset filename uses Node's x64
-        # so the runtime resolver (process.arch) matches exactly.
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p ../../dist
-          VERSION="${GITHUB_REF_NAME#pion-v}"
           go build -trimpath -ldflags "-s -w" \
             -o "../../dist/pion-${VERSION}-${{ matrix.goos }}-${{ matrix.nodearch }}" .
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -54,21 +116,84 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [metadata, build]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.source_sha }}
+          fetch-depth: 1
+      - name: Check existing tag does not point elsewhere
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          tag="pion-v${VERSION}"
+          direct_sha="$(git ls-remote --refs origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
+          peeled_sha="$(git ls-remote origin "refs/tags/${tag}^{}" | awk 'NR==1 {print $1}')"
+          if [ -n "$direct_sha" ]; then
+            existing_sha="${peeled_sha:-$direct_sha}"
+            if [ "$existing_sha" != "$SOURCE_SHA" ]; then
+              echo "$tag already points to $existing_sha, expected $SOURCE_SHA" >&2
+              exit 1
+            fi
+          fi
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
           path: release-assets
-
-      - name: Generate SHA256SUMS
+      - name: Verify all assets and generate SHA256SUMS
         working-directory: release-assets
-        run: sha256sum pion-* > SHA256SUMS
-
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          for asset in "pion-${VERSION}-darwin-arm64" "pion-${VERSION}-darwin-x64" "pion-${VERSION}-linux-arm64" "pion-${VERSION}-linux-x64"; do
+            test -s "$asset"
+          done
+          sha256sum pion-* > SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 4
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: pion-v${{ needs.metadata.outputs.version }}
+          target_commitish: ${{ needs.metadata.outputs.source_sha }}
+          fail_on_unmatched_files: true
           files: |
             release-assets/pion-*
             release-assets/SHA256SUMS
+
+  smoke:
+    needs: [metadata, release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, goos: darwin, goarch: arm64 }
+          - { os: macos-15-intel, goos: darwin, goarch: x64 }
+          - { os: ubuntu-22.04, goos: linux, goarch: x64 }
+          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.source_sha }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent-runtime/package-lock.json
+      - name: Install Runtime dependencies
+        run: npm ci
+        working-directory: agent-runtime
+      - name: Build Runtime
+        run: npm run build
+        working-directory: agent-runtime
+      - name: Smoke-test public release download and cache reuse
+        env:
+          PION_SMOKE_VERSION: ${{ needs.metadata.outputs.version }}
+          PION_SMOKE_OS: ${{ matrix.goos }}
+          PION_SMOKE_ARCH: ${{ matrix.goarch }}
+        run: node agent-runtime/scripts/smoke-pion-release.mjs
