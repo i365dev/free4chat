@@ -1225,6 +1225,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           attachments: [],
           nextMessageSequence: 0,
           meetingNotes: NO_MEETING_NOTES,
+          voiceReply: { active: false },
           pendingMediaCleanup: [],
         }
       }
@@ -1310,6 +1311,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachments: [],
         nextMessageSequence: 0,
         meetingNotes: NO_MEETING_NOTES,
+        voiceReply: { active: false },
         pendingMediaCleanup: [],
       }
       const participant: RoomParticipant = {
