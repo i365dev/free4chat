@@ -8,7 +8,7 @@
  * Runtime clients can parse `result.surface` uniformly across tools. */
 export function imageToolResult(
   image: { data: string; mimeType: string },
-  metadataWrapper: object
+  metadataWrapper: object,
 ) {
   return {
     content: [

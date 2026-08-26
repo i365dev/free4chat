@@ -92,7 +92,7 @@ handleAttachmentUpload, MCP branch). PDFs should be extracted runtime-side
   defaults to ModernMcpFree4ChatClient; `FREE4CHAT_MCP_LEGACY=1` reverts.
 - Prod `/api/sfu/agent-session` uses the native initial-offer contract
   (offer rides on session creation); the bridge falls back to blank-session
-  + datachannels/establish when that 400s.
+  - datachannels/establish when that 400s.
 - The daemon persists across CLI invocations and inherits env at FIRST
   spawn: kill it (or `cli.js stop`) before changing env like
   FREE4CHAT_STT_PROVIDER / DOUBAO_API_KEY / FREE4CHAT_MEDIA_ENGINE.

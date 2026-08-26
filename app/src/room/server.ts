@@ -26,7 +26,7 @@ function json(data: unknown, status = 200): Response {
 
 export async function handleRoomRequest(
   request: Request,
-  env: RoomProtocolEnv
+  env: RoomProtocolEnv,
 ): Promise<Response> {
   if (!isAllowedOrigin(request.headers.get("Origin")))
     return json({ error: "forbidden_origin" }, 403)

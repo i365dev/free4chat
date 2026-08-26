@@ -23,7 +23,12 @@ jobs:
           - { os: macos-14, goos: darwin, goarch: arm64, nodearch: arm64 }
           - { os: macos-15-intel, goos: darwin, goarch: amd64, nodearch: x64 }
           - { os: ubuntu-22.04, goos: linux, goarch: amd64, nodearch: x64 }
-          - { os: ubuntu-22.04-arm, goos: linux, goarch: arm64, nodearch: arm64 }
+          - {
+              os: ubuntu-22.04-arm,
+              goos: linux,
+              goarch: arm64,
+              nodearch: arm64,
+            }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

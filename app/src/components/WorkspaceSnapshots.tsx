@@ -31,7 +31,7 @@ export default function WorkspaceSnapshots({
 
   useEffect(() => {
     const valid = new Set(
-      surfaces.map((p) => `${p.peerId}:${p.surface!.snapshotId}`)
+      surfaces.map((p) => `${p.peerId}:${p.surface!.snapshotId}`),
     )
     // Revoke URLs whose snapshot was replaced/removed.
     let revoked = false

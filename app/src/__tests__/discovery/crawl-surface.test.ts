@@ -24,7 +24,7 @@ describe("robots.txt", () => {
 
   it("points to the sitemap", () => {
     expect(robots).toMatch(
-      /Sitemap:\s*https:\/\/www\.free4\.chat\/sitemap\.xml/
+      /Sitemap:\s*https:\/\/www\.free4\.chat\/sitemap\.xml/,
     )
   })
 })
@@ -47,7 +47,7 @@ describe("sitemap.xml", () => {
         "https://www.free4.chat/ai-agent-room",
         "https://www.free4.chat/privacy",
         "https://www.free4.chat/developers/mcp",
-      ])
+      ]),
     )
   })
 

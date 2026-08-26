@@ -25,7 +25,7 @@ function installMockTurnstile() {
       lastOptions = options as unknown as RenderOptions
       widgetCounter += 1
       return `widget-${widgetCounter}`
-    }
+    },
   )
   const execute = vi.fn()
   const reset = vi.fn()
@@ -90,7 +90,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     })
 
     const { rerender, container, queryByText } = render(
-      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />,
     )
 
     // The pre-connect screen mounts the bounded Turnstile container.
@@ -137,7 +137,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       ],
     })
     rerender(
-      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />,
     )
 
     expect(queryByText(/verifying/i)).not.toBeInTheDocument()

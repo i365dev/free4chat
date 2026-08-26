@@ -21,7 +21,7 @@ function installMockTurnstile() {
       lastOptions = options as unknown as RenderOptions
       widgetCounter += 1
       return `widget-${widgetCounter}`
-    }
+    },
   )
   const execute = vi.fn()
   const reset = vi.fn()
@@ -261,7 +261,7 @@ describe("useTurnstile — script load retry", () => {
     })
 
     await waitFor(() =>
-      expect(document.querySelectorAll(SCRIPT_SELECTOR).length).toBe(1)
+      expect(document.querySelectorAll(SCRIPT_SELECTOR).length).toBe(1),
     )
     const firstScript =
       document.querySelector<HTMLScriptElement>(SCRIPT_SELECTOR)
@@ -283,7 +283,7 @@ describe("useTurnstile — script load retry", () => {
     })
 
     await waitFor(() =>
-      expect(document.querySelectorAll(SCRIPT_SELECTOR).length).toBe(1)
+      expect(document.querySelectorAll(SCRIPT_SELECTOR).length).toBe(1),
     )
     const secondScript =
       document.querySelector<HTMLScriptElement>(SCRIPT_SELECTOR)

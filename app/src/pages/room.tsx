@@ -44,7 +44,7 @@ export default function Room() {
     if (typeof window !== "undefined") {
       try {
         const rooms: { roomName: string; nickName: string }[] = JSON.parse(
-          localStorage.getItem("rooms") || "[]"
+          localStorage.getItem("rooms") || "[]",
         )
         const room = rooms.find((r) => r.roomName === roomId)
         if (room) {

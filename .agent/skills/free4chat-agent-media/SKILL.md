@@ -73,13 +73,13 @@ Never assume client-side soft-stop.
 
 ## High-frequency environment traps
 
-| Symptom | Root cause |
-| --- | --- |
-| Daemon ignores changed env | The daemon process persists env from first spawn → kill it, join again |
-| Every MCP call -32022 | Hit the modern-only deployed stack: `_meta` envelope + `Mcp-Method/Mcp-Name` headers required, no initialize handshake (use ModernMcpFree4ChatClient) |
-| @tag gets no reply | addressed=false: targets are injected by the browser UI; curl/agent-sent text cannot address anyone (by design) |
-| Image unreadable, model claims "500" | Check attachment-errors log first; models embellish unavailable-image notes with plausible status codes |
-| Browser cannot join under wrangler dev | Origin allow-list only has localhost:3000; Turnstile via build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1` |
+| Symptom                                | Root cause                                                                                                                                            |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daemon ignores changed env             | The daemon process persists env from first spawn → kill it, join again                                                                                |
+| Every MCP call -32022                  | Hit the modern-only deployed stack: `_meta` envelope + `Mcp-Method/Mcp-Name` headers required, no initialize handshake (use ModernMcpFree4ChatClient) |
+| @tag gets no reply                     | addressed=false: targets are injected by the browser UI; curl/agent-sent text cannot address anyone (by design)                                       |
+| Image unreadable, model claims "500"   | Check attachment-errors log first; models embellish unavailable-image notes with plausible status codes                                               |
+| Browser cannot join under wrangler dev | Origin allow-list only has localhost:3000; Turnstile via build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1`                                                |
 
 ## Test/build commands (two systems — do not mix)
 

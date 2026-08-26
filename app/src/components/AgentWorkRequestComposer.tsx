@@ -68,7 +68,7 @@ export default function AgentWorkRequestComposer({
         setError(
           `File exceeds ${Math.floor(MAX_ROOM_ATTACHMENT_BYTES / 1024)} KiB: ${
             file.name
-          }`
+          }`,
         )
         continue
       }

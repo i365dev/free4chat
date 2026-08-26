@@ -17,14 +17,14 @@ describe("AgentWorkRequestComposer (#113)", () => {
         {...base}
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
     expect(screen.getByText(/Request work from Agent B/)).toBeTruthy()
     expect(screen.getByText("browser.control")).toBeTruthy()
     expect(
       screen.getByText(
-        /The Agent may accept or decline\. This request does not grant new permissions\./
-      )
+        /The Agent may accept or decline\. This request does not grant new permissions\./,
+      ),
     ).toBeTruthy()
   })
 
@@ -35,7 +35,7 @@ describe("AgentWorkRequestComposer (#113)", () => {
         {...base}
         onCancel={vi.fn()}
         onSubmit={onSubmit}
-      />
+      />,
     )
     const send = screen.getByText("Send request") as HTMLButtonElement
     expect(send.disabled).toBe(true)
@@ -43,16 +43,16 @@ describe("AgentWorkRequestComposer (#113)", () => {
       screen.getByPlaceholderText("What would you like this Agent to do?"),
       {
         target: { value: "   " },
-      }
+      },
     )
     expect(
-      (screen.getByText("Send request") as HTMLButtonElement).disabled
+      (screen.getByText("Send request") as HTMLButtonElement).disabled,
     ).toBe(true)
     fireEvent.change(
       screen.getByPlaceholderText("What would you like this Agent to do?"),
       {
         target: { value: "Verify the dashboard" },
-      }
+      },
     )
     const enabled = screen.getByText("Send request") as HTMLButtonElement
     expect(enabled.disabled).toBe(false)
@@ -67,10 +67,10 @@ describe("AgentWorkRequestComposer (#113)", () => {
         maxLength={10}
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
     const field = screen.getByPlaceholderText(
-      "What would you like this Agent to do?"
+      "What would you like this Agent to do?",
     ) as HTMLTextAreaElement
     fireEvent.change(field, { target: { value: "a".repeat(50) } })
     expect(field.value.length).toBe(10)
@@ -85,7 +85,7 @@ describe("AgentWorkRequestComposer (#113)", () => {
         {...base}
         onCancel={onCancel}
         onSubmit={onSubmit}
-      />
+      />,
     )
     fireEvent.click(screen.getByText("Cancel"))
     expect(onCancel).toHaveBeenCalledTimes(1)
@@ -108,20 +108,20 @@ function chooseFiles(files: File[]) {
 
 describe("AgentWorkRequestComposer submit result handling (#123)", () => {
   async function fillSummaryAndSubmit(
-    onSubmit: (summary: string, files: File[]) => Promise<boolean>
+    onSubmit: (summary: string, files: File[]) => Promise<boolean>,
   ) {
     render(
       <AgentWorkRequestComposer
         {...base}
         onCancel={vi.fn()}
         onSubmit={onSubmit}
-      />
+      />,
     )
     fireEvent.change(
       screen.getByPlaceholderText("What would you like this Agent to do?"),
       {
         target: { value: "Verify the dashboard" },
-      }
+      },
     )
     fireEvent.click(screen.getByTestId("send-collab-request"))
   }
@@ -130,11 +130,11 @@ describe("AgentWorkRequestComposer submit result handling (#123)", () => {
     const onSubmit = vi.fn().mockResolvedValue(false)
     await fillSummaryAndSubmit(onSubmit)
     expect(
-      await screen.findByText("Could not send request. Try again.")
+      await screen.findByText("Could not send request. Try again."),
     ).toBeTruthy()
     expect(screen.getByTestId("send-collab-request")).toBeTruthy()
     expect(
-      (screen.getByTestId("send-collab-request") as HTMLButtonElement).disabled
+      (screen.getByTestId("send-collab-request") as HTMLButtonElement).disabled,
     ).toBe(false)
     expect(onSubmit).toHaveBeenCalledTimes(1)
   })
@@ -152,8 +152,8 @@ describe("AgentWorkRequestComposer submit result handling (#123)", () => {
     await waitFor(() =>
       expect(
         (screen.getByTestId("send-collab-request") as HTMLButtonElement)
-          .disabled
-      ).toBe(false)
+          .disabled,
+      ).toBe(false),
     )
     expect(screen.queryByText(/Try again\./)).toBeNull()
   })
@@ -166,7 +166,7 @@ describe("AgentWorkRequestComposer artifact selection (#123)", () => {
         {...base}
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
   }
 
@@ -184,7 +184,7 @@ describe("AgentWorkRequestComposer artifact selection (#123)", () => {
     expect(screen.getByText("Maximum 3 artifacts per request.")).toBeTruthy()
     expect(screen.queryByText("d.txt")).toBeNull()
     expect(
-      container.querySelectorAll('button[aria-label^="Remove"]').length
+      container.querySelectorAll('button[aria-label^="Remove"]').length,
     ).toBe(3)
   })
 
@@ -211,9 +211,9 @@ describe("AgentWorkRequestComposer artifact selection (#123)", () => {
     expect(
       screen.getByText(
         `File exceeds ${Math.floor(
-          MAX_ROOM_ATTACHMENT_BYTES / 1024
-        )} KiB: big.txt`
-      )
+          MAX_ROOM_ATTACHMENT_BYTES / 1024,
+        )} KiB: big.txt`,
+      ),
     ).toBeTruthy()
     expect(screen.getByText("ok.txt")).toBeTruthy()
   })
@@ -234,7 +234,7 @@ describe("AgentWorkRequestComposer artifact selection (#123 follow-ups)", () => 
         {...base}
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
     chooseFiles([makeFile("app.log")])
     expect(screen.getByText("app.log")).toBeTruthy()
@@ -248,33 +248,33 @@ describe("AgentWorkRequestComposer submitting state (#123)", () => {
       () =>
         new Promise<boolean>((resolve) => {
           resolveSubmit = resolve
-        })
+        }),
     )
     render(
       <AgentWorkRequestComposer
         {...base}
         onCancel={vi.fn()}
         onSubmit={onSubmit}
-      />
+      />,
     )
     fireEvent.change(
       screen.getByPlaceholderText("What would you like this Agent to do?"),
-      { target: { value: "Verify the dashboard" } }
+      { target: { value: "Verify the dashboard" } },
     )
     const sendButton = screen.getByTestId(
-      "send-collab-request"
+      "send-collab-request",
     ) as HTMLButtonElement
     expect(sendButton.disabled).toBe(false)
     fireEvent.click(sendButton)
     expect(
-      (screen.getByTestId("send-collab-request") as HTMLButtonElement).disabled
+      (screen.getByTestId("send-collab-request") as HTMLButtonElement).disabled,
     ).toBe(true)
     resolveSubmit(true)
     await waitFor(() =>
       expect(
         (screen.getByTestId("send-collab-request") as HTMLButtonElement)
-          .disabled
-      ).toBe(false)
+          .disabled,
+      ).toBe(false),
     )
   })
 })

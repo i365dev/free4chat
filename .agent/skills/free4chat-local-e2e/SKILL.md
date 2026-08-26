@@ -35,10 +35,10 @@ Three hard rules (each one cost a debugging cycle):
 
 ## Turnstile switches (local bypass)
 
-| Layer | Mechanism |
-| --- | --- |
-| Server | `--var TURNSTILE_SECRET_KEY:` (empty ⇒ `verify()` returns true immediately, see sfu/server.ts) |
-| Client | build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1` ⇒ useTurnstile loads no widget, requestToken resolves instantly |
+| Layer               | Mechanism                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Server              | `--var TURNSTILE_SECRET_KEY:` (empty ⇒ `verify()` returns true immediately, see sfu/server.ts)                                    |
+| Client              | build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1` ⇒ useTurnstile loads no widget, requestToken resolves instantly                     |
 | Browser widget kept | sitekey must be `1x00000000000000000000` (20 chars); variants with an `AA` suffix are invalid keys and fail with Turnstile 400020 |
 
 Production builds set none of these ⇒ behavior identical to production.

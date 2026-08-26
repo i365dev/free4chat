@@ -8,10 +8,10 @@
   "placement": { "mode": "smart" },
   "assets": {
     "directory": ".open-next/assets",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
   },
   "services": [
-    { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" }
+    { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" },
   ],
   "observability": { "enabled": true },
   // Explicitly empty: clears a stale Cron Trigger left over from the removed
@@ -22,34 +22,34 @@
   "triggers": { "crons": [] },
   "vars": {
     // The production App ID is injected by GitHub Actions at deploy time.
-    "SFU_APP_ID": "set-during-deployment"
+    "SFU_APP_ID": "set-during-deployment",
   },
   "kv_namespaces": [
     {
       "binding": "ROOMS_KV",
-      "id": "10ee56aaa9dd45eda179dfe709e1014a"
-    }
+      "id": "10ee56aaa9dd45eda179dfe709e1014a",
+    },
   ],
   "durable_objects": {
     "bindings": [
       {
         "name": "SFU_ROOM",
-        "class_name": "RoomSession"
-      }
-    ]
+        "class_name": "RoomSession",
+      },
+    ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": ["BotSession"]
+      "new_classes": ["BotSession"],
     },
     {
       "tag": "v2",
-      "new_classes": ["RoomSession"]
+      "new_classes": ["RoomSession"],
     },
     {
       "tag": "v3",
-      "deleted_classes": ["BotSession"]
-    }
-  ]
+      "deleted_classes": ["BotSession"],
+    },
+  ],
 }

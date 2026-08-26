@@ -23,7 +23,7 @@ describe("Discovery pages — CTA", () => {
       const cta = screen.getByRole("link", { name: "Open a room" })
       expect(cta).toHaveAttribute("href", "/")
       unmount()
-    }
+    },
   )
 })
 
@@ -49,6 +49,6 @@ describe("Discovery pages — CTA analytics", () => {
       expect(Object.keys(eventData as object)).toEqual(["page"])
       expect(typeof (eventData as { page: unknown }).page).toBe("string")
       unmount()
-    }
+    },
   )
 })

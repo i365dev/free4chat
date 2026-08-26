@@ -12,12 +12,12 @@ const base = {
 describe("HumanCapabilitiesEditor (#119)", () => {
   it("shows helper text stating capabilities do not grant permissions", () => {
     render(
-      <HumanCapabilitiesEditor {...base} onSave={vi.fn()} onCancel={vi.fn()} />
+      <HumanCapabilitiesEditor {...base} onSave={vi.fn()} onCancel={vi.fn()} />,
     )
     expect(
       screen.getByText(
-        /Capabilities help Agents discover what they may ask you to do\. They do not grant permissions\./
-      )
+        /Capabilities help Agents discover what they may ask you to do\. They do not grant permissions\./,
+      ),
     ).toBeTruthy()
   })
 
@@ -29,7 +29,7 @@ describe("HumanCapabilitiesEditor (#119)", () => {
         initialCapabilities={["review.code"]}
         onSave={onSave}
         onCancel={vi.fn()}
-      />
+      />,
     )
     const input = screen.getByPlaceholderText("Add capability…")
     fireEvent.change(input, { target: { value: "judgment.product" } })
@@ -50,7 +50,7 @@ describe("HumanCapabilitiesEditor (#119)", () => {
         initialCapabilities={initial}
         onSave={vi.fn()}
         onCancel={vi.fn()}
-      />
+      />,
     )
     const input = screen.getByPlaceholderText("Add capability…")
     fireEvent.change(input, { target: { value: "cap.extra" } })
@@ -61,7 +61,7 @@ describe("HumanCapabilitiesEditor (#119)", () => {
   it("rejects invalid tokens and cannot save them into the list", () => {
     const onSave = vi.fn()
     render(
-      <HumanCapabilitiesEditor {...base} onSave={onSave} onCancel={vi.fn()} />
+      <HumanCapabilitiesEditor {...base} onSave={onSave} onCancel={vi.fn()} />,
     )
     const input = screen.getByPlaceholderText("Add capability…")
     fireEvent.change(input, { target: { value: "Review Code!" } })
@@ -75,7 +75,7 @@ describe("HumanCapabilitiesEditor (#119)", () => {
   it("empty list may be saved (advertise nothing)", () => {
     const onSave = vi.fn()
     render(
-      <HumanCapabilitiesEditor {...base} onSave={onSave} onCancel={vi.fn()} />
+      <HumanCapabilitiesEditor {...base} onSave={onSave} onCancel={vi.fn()} />,
     )
     fireEvent.click(screen.getByTestId("save-capabilities"))
     expect(onSave).toHaveBeenCalledWith([])
@@ -90,7 +90,7 @@ describe("HumanCapabilitiesEditor (#119)", () => {
         initialCapabilities={["review.code"]}
         onSave={onSave}
         onCancel={onCancel}
-      />
+      />,
     )
     fireEvent.click(screen.getByText("Cancel"))
     expect(onCancel).toHaveBeenCalledTimes(1)

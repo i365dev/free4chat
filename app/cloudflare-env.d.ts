@@ -19,13 +19,12 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
     : string
 }
 declare namespace NodeJS {
-  interface ProcessEnv
-    extends StringifyValues<
-      Pick<
-        Cloudflare.Env,
-        "TURNSTILE_SECRET_KEY" | "SFU_APP_ID" | "SFU_APP_SECRET"
-      >
-    > {}
+  interface ProcessEnv extends StringifyValues<
+    Pick<
+      Cloudflare.Env,
+      "TURNSTILE_SECRET_KEY" | "SFU_APP_ID" | "SFU_APP_SECRET"
+    >
+  > {}
 }
 
 // Begin runtime types
@@ -116,7 +115,7 @@ declare abstract class WorkerGlobalScope extends EventTarget<WorkerGlobalScopeEv
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/console)
  */
 interface Console {
-  "assert"(condition?: boolean, ...data: any[]): void
+  assert(condition?: boolean, ...data: any[]): void
   /**
    * The **`console.clear()`** static method clears the console if possible.
    *
@@ -249,13 +248,7 @@ declare namespace WebAssembly {
     constructor(message?: string)
   }
   type ValueType =
-    | "anyfunc"
-    | "externref"
-    | "f32"
-    | "f64"
-    | "i32"
-    | "i64"
-    | "v128"
+    "anyfunc" | "externref" | "f32" | "f64" | "i32" | "i64" | "v128"
   interface GlobalDescriptor {
     value: ValueType
     mutable?: boolean
@@ -345,7 +338,7 @@ interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
   reportError(error: any): void
   fetch(
     input: RequestInfo | URL,
-    init?: RequestInit<RequestInitCfProperties>
+    init?: RequestInit<RequestInitCfProperties>,
   ): Promise<Response>
   self: ServiceWorkerGlobalScope
   crypto: Crypto
@@ -414,14 +407,14 @@ interface ServiceWorkerGlobalScope extends WorkerGlobalScope {
 declare function addEventListener<Type extends keyof WorkerGlobalScopeEventMap>(
   type: Type,
   handler: EventListenerOrEventListenerObject<WorkerGlobalScopeEventMap[Type]>,
-  options?: EventTargetAddEventListenerOptions | boolean
+  options?: EventTargetAddEventListenerOptions | boolean,
 ): void
 declare function removeEventListener<
-  Type extends keyof WorkerGlobalScopeEventMap
+  Type extends keyof WorkerGlobalScopeEventMap,
 >(
   type: Type,
   handler: EventListenerOrEventListenerObject<WorkerGlobalScopeEventMap[Type]>,
-  options?: EventTargetEventListenerOptions | boolean
+  options?: EventTargetEventListenerOptions | boolean,
 ): void
 /**
  * The **`dispatchEvent()`** method of the EventTarget sends an Event to the object, (synchronously) invoking the affected event listeners in the appropriate order.
@@ -429,7 +422,7 @@ declare function removeEventListener<
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget/dispatchEvent)
  */
 declare function dispatchEvent(
-  event: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap]
+  event: WorkerGlobalScopeEventMap[keyof WorkerGlobalScopeEventMap],
 ): boolean
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/btoa) */
 declare function btoa(data: string): string
@@ -438,7 +431,7 @@ declare function atob(data: string): string
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setTimeout) */
 declare function setTimeout(
   callback: (...args: any[]) => void,
-  msDelay?: number
+  msDelay?: number,
 ): number
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setTimeout) */
 declare function setTimeout<Args extends any[]>(
@@ -451,7 +444,7 @@ declare function clearTimeout(timeoutId: number | null): void
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setInterval) */
 declare function setInterval(
   callback: (...args: any[]) => void,
-  msDelay?: number
+  msDelay?: number,
 ): number
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/setInterval) */
 declare function setInterval<Args extends any[]>(
@@ -466,14 +459,14 @@ declare function queueMicrotask(task: Function): void
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/structuredClone) */
 declare function structuredClone<T>(
   value: T,
-  options?: StructuredSerializeOptions
+  options?: StructuredSerializeOptions,
 ): T
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/reportError) */
 declare function reportError(error: any): void
 /* [MDN Reference](https://developer.mozilla.org/docs/Web/API/Window/fetch) */
 declare function fetch(
   input: RequestInfo | URL,
-  init?: RequestInit<RequestInitCfProperties>
+  init?: RequestInit<RequestInitCfProperties>,
 ): Promise<Response>
 declare const self: ServiceWorkerGlobalScope
 /**
@@ -513,56 +506,56 @@ interface ExecutionContext<Props = unknown> {
 type ExportedHandlerFetchHandler<
   Env = unknown,
   CfHostMetadata = unknown,
-  Props = unknown
+  Props = unknown,
 > = (
   request: Request<CfHostMetadata, IncomingRequestCfProperties<CfHostMetadata>>,
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => Response | Promise<Response>
 type ExportedHandlerConnectHandler<Env = unknown, Props = unknown> = (
   socket: Socket,
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => void | Promise<void>
 type ExportedHandlerTailHandler<Env = unknown, Props = unknown> = (
   events: TraceItem[],
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => void | Promise<void>
 type ExportedHandlerTraceHandler<Env = unknown, Props = unknown> = (
   traces: TraceItem[],
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => void | Promise<void>
 type ExportedHandlerTailStreamHandler<Env = unknown, Props = unknown> = (
   event: TailStream.TailEvent<TailStream.Onset>,
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => TailStream.TailEventHandlerType | Promise<TailStream.TailEventHandlerType>
 type ExportedHandlerScheduledHandler<Env = unknown, Props = unknown> = (
   controller: ScheduledController,
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => void | Promise<void>
 type ExportedHandlerQueueHandler<
   Env = unknown,
   Message = unknown,
-  Props = unknown
+  Props = unknown,
 > = (
   batch: MessageBatch<Message>,
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => void | Promise<void>
 type ExportedHandlerTestHandler<Env = unknown, Props = unknown> = (
   controller: TestController,
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => void | Promise<void>
 interface ExportedHandler<
   Env = unknown,
   QueueHandlerMessage = unknown,
   CfHostMetadata = unknown,
-  Props = unknown
+  Props = unknown,
 > {
   fetch?: ExportedHandlerFetchHandler<Env, CfHostMetadata, Props>
   connect?: ExportedHandlerConnectHandler<Env, Props>
@@ -616,18 +609,18 @@ interface DurableObject {
   alarm?(alarmInfo?: AlarmInvocationInfo): void | Promise<void>
   webSocketMessage?(
     ws: WebSocket,
-    message: string | ArrayBuffer
+    message: string | ArrayBuffer,
   ): void | Promise<void>
   webSocketClose?(
     ws: WebSocket,
     code: number,
     reason: string,
-    wasClean: boolean
+    wasClean: boolean,
   ): void | Promise<void>
   webSocketError?(ws: WebSocket, error: unknown): void | Promise<void>
 }
 type DurableObjectStub<
-  T extends Rpc.DurableObjectBranded | undefined = undefined
+  T extends Rpc.DurableObjectBranded | undefined = undefined,
 > = Fetcher<
   T,
   "alarm" | "connect" | "webSocketMessage" | "webSocketClose" | "webSocketError"
@@ -642,23 +635,23 @@ interface DurableObjectId {
   readonly jurisdiction?: string
 }
 declare abstract class DurableObjectNamespace<
-  T extends Rpc.DurableObjectBranded | undefined = undefined
+  T extends Rpc.DurableObjectBranded | undefined = undefined,
 > {
   newUniqueId(
-    options?: DurableObjectNamespaceNewUniqueIdOptions
+    options?: DurableObjectNamespaceNewUniqueIdOptions,
   ): DurableObjectId
   idFromName(name: string): DurableObjectId
   idFromString(id: string): DurableObjectId
   get(
     id: DurableObjectId,
-    options?: DurableObjectNamespaceGetDurableObjectOptions
+    options?: DurableObjectNamespaceGetDurableObjectOptions,
   ): DurableObjectStub<T>
   getByName(
     name: string,
-    options?: DurableObjectNamespaceGetDurableObjectOptions
+    options?: DurableObjectNamespaceGetDurableObjectOptions,
   ): DurableObjectStub<T>
   jurisdiction(
-    jurisdiction: DurableObjectJurisdiction
+    jurisdiction: DurableObjectJurisdiction,
   ): DurableObjectNamespace<T>
 }
 type DurableObjectJurisdiction = "eu" | "fedramp" | "fedramp-high"
@@ -666,22 +659,14 @@ interface DurableObjectNamespaceNewUniqueIdOptions {
   jurisdiction?: DurableObjectJurisdiction
 }
 type DurableObjectLocationHint =
-  | "wnam"
-  | "enam"
-  | "sam"
-  | "weur"
-  | "eeur"
-  | "apac"
-  | "oc"
-  | "afr"
-  | "me"
+  "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc" | "afr" | "me"
 type DurableObjectRoutingMode = "primary-only"
 interface DurableObjectNamespaceGetDurableObjectOptions {
   locationHint?: DurableObjectLocationHint
   routingMode?: DurableObjectRoutingMode
 }
 interface DurableObjectClass<
-  _T extends Rpc.DurableObjectBranded | undefined = undefined
+  _T extends Rpc.DurableObjectBranded | undefined = undefined,
 > {}
 interface DurableObjectState<Props = unknown> {
   waitUntil(promise: Promise<any>): void
@@ -704,21 +689,21 @@ interface DurableObjectState<Props = unknown> {
 interface DurableObjectTransaction {
   get<T = unknown>(
     key: string,
-    options?: DurableObjectGetOptions
+    options?: DurableObjectGetOptions,
   ): Promise<T | undefined>
   get<T = unknown>(
     keys: string[],
-    options?: DurableObjectGetOptions
+    options?: DurableObjectGetOptions,
   ): Promise<Map<string, T>>
   list<T = unknown>(options?: DurableObjectListOptions): Promise<Map<string, T>>
   put<T>(
     key: string,
     value: T,
-    options?: DurableObjectPutOptions
+    options?: DurableObjectPutOptions,
   ): Promise<void>
   put<T>(
     entries: Record<string, T>,
-    options?: DurableObjectPutOptions
+    options?: DurableObjectPutOptions,
   ): Promise<void>
   delete(key: string, options?: DurableObjectPutOptions): Promise<boolean>
   delete(keys: string[], options?: DurableObjectPutOptions): Promise<number>
@@ -726,39 +711,39 @@ interface DurableObjectTransaction {
   getAlarm(options?: DurableObjectGetAlarmOptions): Promise<number | null>
   setAlarm(
     scheduledTime: number | Date,
-    options?: DurableObjectSetAlarmOptions
+    options?: DurableObjectSetAlarmOptions,
   ): Promise<void>
   deleteAlarm(options?: DurableObjectSetAlarmOptions): Promise<void>
 }
 interface DurableObjectStorage {
   get<T = unknown>(
     key: string,
-    options?: DurableObjectGetOptions
+    options?: DurableObjectGetOptions,
   ): Promise<T | undefined>
   get<T = unknown>(
     keys: string[],
-    options?: DurableObjectGetOptions
+    options?: DurableObjectGetOptions,
   ): Promise<Map<string, T>>
   list<T = unknown>(options?: DurableObjectListOptions): Promise<Map<string, T>>
   put<T>(
     key: string,
     value: T,
-    options?: DurableObjectPutOptions
+    options?: DurableObjectPutOptions,
   ): Promise<void>
   put<T>(
     entries: Record<string, T>,
-    options?: DurableObjectPutOptions
+    options?: DurableObjectPutOptions,
   ): Promise<void>
   delete(key: string, options?: DurableObjectPutOptions): Promise<boolean>
   delete(keys: string[], options?: DurableObjectPutOptions): Promise<number>
   deleteAll(options?: DurableObjectPutOptions): Promise<void>
   transaction<T>(
-    closure: (txn: DurableObjectTransaction) => Promise<T>
+    closure: (txn: DurableObjectTransaction) => Promise<T>,
   ): Promise<T>
   getAlarm(options?: DurableObjectGetAlarmOptions): Promise<number | null>
   setAlarm(
     scheduledTime: number | Date,
-    options?: DurableObjectSetAlarmOptions
+    options?: DurableObjectSetAlarmOptions,
   ): Promise<void>
   deleteAlarm(options?: DurableObjectSetAlarmOptions): Promise<void>
   sync(): Promise<void>
@@ -804,14 +789,13 @@ interface DurableObjectFacets {
   get<T extends Rpc.DurableObjectBranded | undefined = undefined>(
     name: string,
     getStartupOptions: () =>
-      | FacetStartupOptions<T>
-      | Promise<FacetStartupOptions<T>>
+      FacetStartupOptions<T> | Promise<FacetStartupOptions<T>>,
   ): Fetcher<T>
   abort(name: string, reason: any): void
   delete(name: string): void
 }
 interface FacetStartupOptions<
-  T extends Rpc.DurableObjectBranded | undefined = undefined
+  T extends Rpc.DurableObjectBranded | undefined = undefined,
 > {
   id?: DurableObjectId | string
   class: DurableObjectClass<T>
@@ -958,15 +942,14 @@ interface EventListenerObject<EventType extends Event = Event> {
   handleEvent(event: EventType): void
 }
 type EventListenerOrEventListenerObject<EventType extends Event = Event> =
-  | EventListener<EventType>
-  | EventListenerObject<EventType>
+  EventListener<EventType> | EventListenerObject<EventType>
 /**
  * The **`EventTarget`** interface is implemented by objects that can receive events and may have listeners for them.
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/EventTarget)
  */
 declare class EventTarget<
-  EventMap extends Record<string, Event> = Record<string, Event>
+  EventMap extends Record<string, Event> = Record<string, Event>,
 > {
   constructor()
   /**
@@ -977,7 +960,7 @@ declare class EventTarget<
   addEventListener<Type extends keyof EventMap>(
     type: Type,
     handler: EventListenerOrEventListenerObject<EventMap[Type]>,
-    options?: EventTargetAddEventListenerOptions | boolean
+    options?: EventTargetAddEventListenerOptions | boolean,
   ): void
   /**
    * The **`removeEventListener()`** method of the EventTarget interface removes an event listener previously registered with EventTarget.addEventListener() from the target.
@@ -987,7 +970,7 @@ declare class EventTarget<
   removeEventListener<Type extends keyof EventMap>(
     type: Type,
     handler: EventListenerOrEventListenerObject<EventMap[Type]>,
-    options?: EventTargetEventListenerOptions | boolean
+    options?: EventTargetEventListenerOptions | boolean,
   ): void
   /**
    * The **`dispatchEvent()`** method of the EventTarget sends an Event to the object, (synchronously) invoking the affected event listeners in the appropriate order.
@@ -1122,7 +1105,7 @@ interface CustomEventCustomEventInit {
 declare class Blob {
   constructor(
     bits?: ((ArrayBuffer | ArrayBufferView) | string | Blob)[],
-    options?: BlobOptions
+    options?: BlobOptions,
   )
   /**
    * The **`size`** read-only property of the Blob interface returns the size of the Blob or File in bytes.
@@ -1179,7 +1162,7 @@ declare class File extends Blob {
   constructor(
     bits: ((ArrayBuffer | ArrayBufferView) | string | Blob)[] | undefined,
     name: string,
-    options?: FileOptions
+    options?: FileOptions,
   )
   /**
    * The **`name`** read-only property of the File interface returns the name of the file represented by a File object.
@@ -1221,12 +1204,12 @@ declare abstract class Cache {
   /* [Cloudflare Docs Reference](https://developers.cloudflare.com/workers/runtime-apis/cache/#delete) */
   delete(
     request: RequestInfo | URL,
-    options?: CacheQueryOptions
+    options?: CacheQueryOptions,
   ): Promise<boolean>
   /* [Cloudflare Docs Reference](https://developers.cloudflare.com/workers/runtime-apis/cache/#match) */
   match(
     request: RequestInfo | URL,
-    options?: CacheQueryOptions
+    options?: CacheQueryOptions,
   ): Promise<Response | undefined>
   /* [Cloudflare Docs Reference](https://developers.cloudflare.com/workers/runtime-apis/cache/#put) */
   put(request: RequestInfo | URL, response: Response): Promise<void>
@@ -1264,7 +1247,7 @@ declare abstract class Crypto {
       | Int32Array
       | Uint32Array
       | BigInt64Array
-      | BigUint64Array
+      | BigUint64Array,
   >(buffer: T): T
   /**
    * The **`randomUUID()`** method of the Crypto interface is used to generate a v4 UUID using a cryptographically secure random number generator.
@@ -1290,7 +1273,7 @@ declare abstract class SubtleCrypto {
   encrypt(
     algorithm: string | SubtleCryptoEncryptAlgorithm,
     key: CryptoKey,
-    plainText: ArrayBuffer | ArrayBufferView
+    plainText: ArrayBuffer | ArrayBufferView,
   ): Promise<ArrayBuffer>
   /**
    * The **`decrypt()`** method of the SubtleCrypto interface decrypts some encrypted data.
@@ -1300,7 +1283,7 @@ declare abstract class SubtleCrypto {
   decrypt(
     algorithm: string | SubtleCryptoEncryptAlgorithm,
     key: CryptoKey,
-    cipherText: ArrayBuffer | ArrayBufferView
+    cipherText: ArrayBuffer | ArrayBufferView,
   ): Promise<ArrayBuffer>
   /**
    * The **`sign()`** method of the SubtleCrypto interface generates a digital signature.
@@ -1310,7 +1293,7 @@ declare abstract class SubtleCrypto {
   sign(
     algorithm: string | SubtleCryptoSignAlgorithm,
     key: CryptoKey,
-    data: ArrayBuffer | ArrayBufferView
+    data: ArrayBuffer | ArrayBufferView,
   ): Promise<ArrayBuffer>
   /**
    * The **`verify()`** method of the SubtleCrypto interface verifies a digital signature.
@@ -1321,7 +1304,7 @@ declare abstract class SubtleCrypto {
     algorithm: string | SubtleCryptoSignAlgorithm,
     key: CryptoKey,
     signature: ArrayBuffer | ArrayBufferView,
-    data: ArrayBuffer | ArrayBufferView
+    data: ArrayBuffer | ArrayBufferView,
   ): Promise<boolean>
   /**
    * The **`digest()`** method of the SubtleCrypto interface generates a _digest_ of the given data, using the specified hash function.
@@ -1330,7 +1313,7 @@ declare abstract class SubtleCrypto {
    */
   digest(
     algorithm: string | SubtleCryptoHashAlgorithm,
-    data: ArrayBuffer | ArrayBufferView
+    data: ArrayBuffer | ArrayBufferView,
   ): Promise<ArrayBuffer>
   /**
    * The **`generateKey()`** method of the SubtleCrypto interface is used to generate a new key (for symmetric algorithms) or key pair (for public-key algorithms).
@@ -1340,7 +1323,7 @@ declare abstract class SubtleCrypto {
   generateKey(
     algorithm: string | SubtleCryptoGenerateKeyAlgorithm,
     extractable: boolean,
-    keyUsages: string[]
+    keyUsages: string[],
   ): Promise<CryptoKey | CryptoKeyPair>
   /**
    * The **`deriveKey()`** method of the SubtleCrypto interface can be used to derive a secret key from a master key.
@@ -1352,7 +1335,7 @@ declare abstract class SubtleCrypto {
     baseKey: CryptoKey,
     derivedKeyAlgorithm: string | SubtleCryptoImportKeyAlgorithm,
     extractable: boolean,
-    keyUsages: string[]
+    keyUsages: string[],
   ): Promise<CryptoKey>
   /**
    * The **`deriveBits()`** method of the key.
@@ -1362,7 +1345,7 @@ declare abstract class SubtleCrypto {
   deriveBits(
     algorithm: string | SubtleCryptoDeriveKeyAlgorithm,
     baseKey: CryptoKey,
-    length?: number | null
+    length?: number | null,
   ): Promise<ArrayBuffer>
   /**
    * The **`importKey()`** method of the SubtleCrypto interface imports a key: that is, it takes as input a key in an external, portable format and gives you a CryptoKey object that you can use in the Web Crypto API.
@@ -1374,7 +1357,7 @@ declare abstract class SubtleCrypto {
     keyData: (ArrayBuffer | ArrayBufferView) | JsonWebKey,
     algorithm: string | SubtleCryptoImportKeyAlgorithm,
     extractable: boolean,
-    keyUsages: string[]
+    keyUsages: string[],
   ): Promise<CryptoKey>
   /**
    * The **`exportKey()`** method of the SubtleCrypto interface exports a key: that is, it takes as input a CryptoKey object and gives you the key in an external, portable format.
@@ -1391,7 +1374,7 @@ declare abstract class SubtleCrypto {
     format: string,
     key: CryptoKey,
     wrappingKey: CryptoKey,
-    wrapAlgorithm: string | SubtleCryptoEncryptAlgorithm
+    wrapAlgorithm: string | SubtleCryptoEncryptAlgorithm,
   ): Promise<ArrayBuffer>
   /**
    * The **`unwrapKey()`** method of the SubtleCrypto interface 'unwraps' a key.
@@ -1405,11 +1388,11 @@ declare abstract class SubtleCrypto {
     unwrapAlgorithm: string | SubtleCryptoEncryptAlgorithm,
     unwrappedKeyAlgorithm: string | SubtleCryptoImportKeyAlgorithm,
     extractable: boolean,
-    keyUsages: string[]
+    keyUsages: string[],
   ): Promise<CryptoKey>
   timingSafeEqual(
     a: ArrayBuffer | ArrayBufferView,
-    b: ArrayBuffer | ArrayBufferView
+    b: ArrayBuffer | ArrayBufferView,
   ): boolean
 }
 /**
@@ -1569,7 +1552,7 @@ declare class TextDecoder {
    */
   decode(
     input?: ArrayBuffer | ArrayBufferView,
-    options?: TextDecoderDecodeOptions
+    options?: TextDecoderDecodeOptions,
   ): string
   get encoding(): string
   get fatal(): boolean
@@ -1790,9 +1773,9 @@ declare class FormData {
       this: This,
       value: File | string,
       key: string,
-      parent: FormData
+      parent: FormData,
     ) => void,
-    thisArg?: This
+    thisArg?: This,
   ): void
   [Symbol.iterator](): IterableIterator<[key: string, value: File | string]>
 }
@@ -1803,7 +1786,7 @@ declare class HTMLRewriter {
   constructor()
   on(
     selector: string,
-    handlers: HTMLRewriterElementContentHandlers
+    handlers: HTMLRewriterElementContentHandlers,
   ): HTMLRewriter
   onDocument(handlers: HTMLRewriterDocumentContentHandlers): HTMLRewriter
   transform(response: Response): Response
@@ -1835,29 +1818,29 @@ interface Element {
   removeAttribute(name: string): Element
   before(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Element
   after(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Element
   prepend(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Element
   append(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Element
   replace(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Element
   remove(): Element
   removeAndKeepContent(): Element
   setInnerContent(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Element
   onEndTag(handler: (tag: EndTag) => void | Promise<void>): void
 }
@@ -1865,11 +1848,11 @@ interface EndTag {
   name: string
   before(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): EndTag
   after(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): EndTag
   remove(): EndTag
 }
@@ -1887,15 +1870,15 @@ interface Text {
   readonly removed: boolean
   before(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Text
   after(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Text
   replace(
     content: string | ReadableStream | Response,
-    options?: ContentOptions
+    options?: ContentOptions,
   ): Text
   remove(): Text
 }
@@ -1969,7 +1952,7 @@ declare class Headers {
   delete(name: string): void
   forEach<This = unknown>(
     callback: (this: This, value: string, key: string, parent: Headers) => void,
-    thisArg?: This
+    thisArg?: This,
   ): void
   /* Returns an iterator allowing to go through all key/value pairs contained in this object. */
   entries(): IterableIterator<[key: string, value: string]>
@@ -2083,8 +2066,7 @@ interface ResponseInit {
   encodeBody?: "automatic" | "manual"
 }
 type RequestInfo<CfHostMetadata = unknown, Cf = CfProperties<CfHostMetadata>> =
-  | Request<CfHostMetadata, Cf>
-  | string
+  Request<CfHostMetadata, Cf> | string
 /**
  * The **`Request`** interface of the Fetch API represents a resource request.
  *
@@ -2094,7 +2076,7 @@ declare var Request: {
   prototype: Request
   new <CfHostMetadata = unknown, Cf = CfProperties<CfHostMetadata>>(
     input: RequestInfo<CfProperties> | URL,
-    init?: RequestInit<Cf>
+    init?: RequestInit<Cf>,
   ): Request<CfHostMetadata, Cf>
 }
 /**
@@ -2102,8 +2084,10 @@ declare var Request: {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/Request)
  */
-interface Request<CfHostMetadata = unknown, Cf = CfProperties<CfHostMetadata>>
-  extends Body {
+interface Request<
+  CfHostMetadata = unknown,
+  Cf = CfProperties<CfHostMetadata>,
+> extends Body {
   /**
    * The **`clone()`** method of the Request interface creates a copy of the current `Request` object.
    *
@@ -2185,17 +2169,17 @@ type Service<
     | (new (...args: any[]) => Rpc.WorkerEntrypointBranded)
     | Rpc.WorkerEntrypointBranded
     | ExportedHandler<any, any, any>
-    | undefined = undefined
+    | undefined = undefined,
 > = T extends new (...args: any[]) => Rpc.WorkerEntrypointBranded
   ? Fetcher<InstanceType<T>>
   : T extends Rpc.WorkerEntrypointBranded
-  ? Fetcher<T>
-  : T extends Exclude<Rpc.EntrypointBranded, Rpc.WorkerEntrypointBranded>
-  ? never
-  : Fetcher<undefined>
+    ? Fetcher<T>
+    : T extends Exclude<Rpc.EntrypointBranded, Rpc.WorkerEntrypointBranded>
+      ? never
+      : Fetcher<undefined>
 type Fetcher<
   T extends Rpc.EntrypointBranded | undefined = undefined,
-  Reserved extends string = never
+  Reserved extends string = never,
 > = (T extends Rpc.EntrypointBranded
   ? Rpc.Provider<T, Reserved | "fetch" | "connect">
   : unknown) & {
@@ -2222,110 +2206,110 @@ type KVNamespaceListResult<Metadata, Key extends string = string> =
 interface KVNamespace<Key extends string = string> {
   get(
     key: Key,
-    options?: Partial<KVNamespaceGetOptions<undefined>>
+    options?: Partial<KVNamespaceGetOptions<undefined>>,
   ): Promise<string | null>
   get(key: Key, type: "text"): Promise<string | null>
   get<ExpectedValue = unknown>(
     key: Key,
-    type: "json"
+    type: "json",
   ): Promise<ExpectedValue | null>
   get(key: Key, type: "arrayBuffer"): Promise<ArrayBuffer | null>
   get(key: Key, type: "stream"): Promise<ReadableStream | null>
   get(key: Key, options?: KVNamespaceGetOptions<"text">): Promise<string | null>
   get<ExpectedValue = unknown>(
     key: Key,
-    options?: KVNamespaceGetOptions<"json">
+    options?: KVNamespaceGetOptions<"json">,
   ): Promise<ExpectedValue | null>
   get(
     key: Key,
-    options?: KVNamespaceGetOptions<"arrayBuffer">
+    options?: KVNamespaceGetOptions<"arrayBuffer">,
   ): Promise<ArrayBuffer | null>
   get(
     key: Key,
-    options?: KVNamespaceGetOptions<"stream">
+    options?: KVNamespaceGetOptions<"stream">,
   ): Promise<ReadableStream | null>
   get(key: Array<Key>, type: "text"): Promise<Map<string, string | null>>
   get<ExpectedValue = unknown>(
     key: Array<Key>,
-    type: "json"
+    type: "json",
   ): Promise<Map<string, ExpectedValue | null>>
   get(
     key: Array<Key>,
-    options?: Partial<KVNamespaceGetOptions<undefined>>
+    options?: Partial<KVNamespaceGetOptions<undefined>>,
   ): Promise<Map<string, string | null>>
   get(
     key: Array<Key>,
-    options?: KVNamespaceGetOptions<"text">
+    options?: KVNamespaceGetOptions<"text">,
   ): Promise<Map<string, string | null>>
   get<ExpectedValue = unknown>(
     key: Array<Key>,
-    options?: KVNamespaceGetOptions<"json">
+    options?: KVNamespaceGetOptions<"json">,
   ): Promise<Map<string, ExpectedValue | null>>
   list<Metadata = unknown>(
-    options?: KVNamespaceListOptions
+    options?: KVNamespaceListOptions,
   ): Promise<KVNamespaceListResult<Metadata, Key>>
   put(
     key: Key,
     value: string | ArrayBuffer | ArrayBufferView | ReadableStream,
-    options?: KVNamespacePutOptions
+    options?: KVNamespacePutOptions,
   ): Promise<void>
   getWithMetadata<Metadata = unknown>(
     key: Key,
-    options?: Partial<KVNamespaceGetOptions<undefined>>
+    options?: Partial<KVNamespaceGetOptions<undefined>>,
   ): Promise<KVNamespaceGetWithMetadataResult<string, Metadata>>
   getWithMetadata<Metadata = unknown>(
     key: Key,
-    type: "text"
+    type: "text",
   ): Promise<KVNamespaceGetWithMetadataResult<string, Metadata>>
   getWithMetadata<ExpectedValue = unknown, Metadata = unknown>(
     key: Key,
-    type: "json"
+    type: "json",
   ): Promise<KVNamespaceGetWithMetadataResult<ExpectedValue, Metadata>>
   getWithMetadata<Metadata = unknown>(
     key: Key,
-    type: "arrayBuffer"
+    type: "arrayBuffer",
   ): Promise<KVNamespaceGetWithMetadataResult<ArrayBuffer, Metadata>>
   getWithMetadata<Metadata = unknown>(
     key: Key,
-    type: "stream"
+    type: "stream",
   ): Promise<KVNamespaceGetWithMetadataResult<ReadableStream, Metadata>>
   getWithMetadata<Metadata = unknown>(
     key: Key,
-    options: KVNamespaceGetOptions<"text">
+    options: KVNamespaceGetOptions<"text">,
   ): Promise<KVNamespaceGetWithMetadataResult<string, Metadata>>
   getWithMetadata<ExpectedValue = unknown, Metadata = unknown>(
     key: Key,
-    options: KVNamespaceGetOptions<"json">
+    options: KVNamespaceGetOptions<"json">,
   ): Promise<KVNamespaceGetWithMetadataResult<ExpectedValue, Metadata>>
   getWithMetadata<Metadata = unknown>(
     key: Key,
-    options: KVNamespaceGetOptions<"arrayBuffer">
+    options: KVNamespaceGetOptions<"arrayBuffer">,
   ): Promise<KVNamespaceGetWithMetadataResult<ArrayBuffer, Metadata>>
   getWithMetadata<Metadata = unknown>(
     key: Key,
-    options: KVNamespaceGetOptions<"stream">
+    options: KVNamespaceGetOptions<"stream">,
   ): Promise<KVNamespaceGetWithMetadataResult<ReadableStream, Metadata>>
   getWithMetadata<Metadata = unknown>(
     key: Array<Key>,
-    type: "text"
+    type: "text",
   ): Promise<Map<string, KVNamespaceGetWithMetadataResult<string, Metadata>>>
   getWithMetadata<ExpectedValue = unknown, Metadata = unknown>(
     key: Array<Key>,
-    type: "json"
+    type: "json",
   ): Promise<
     Map<string, KVNamespaceGetWithMetadataResult<ExpectedValue, Metadata>>
   >
   getWithMetadata<Metadata = unknown>(
     key: Array<Key>,
-    options?: Partial<KVNamespaceGetOptions<undefined>>
+    options?: Partial<KVNamespaceGetOptions<undefined>>,
   ): Promise<Map<string, KVNamespaceGetWithMetadataResult<string, Metadata>>>
   getWithMetadata<Metadata = unknown>(
     key: Array<Key>,
-    options?: KVNamespaceGetOptions<"text">
+    options?: KVNamespaceGetOptions<"text">,
   ): Promise<Map<string, KVNamespaceGetWithMetadataResult<string, Metadata>>>
   getWithMetadata<ExpectedValue = unknown, Metadata = unknown>(
     key: Array<Key>,
-    options?: KVNamespaceGetOptions<"json">
+    options?: KVNamespaceGetOptions<"json">,
   ): Promise<
     Map<string, KVNamespaceGetWithMetadataResult<ExpectedValue, Metadata>>
   >
@@ -2356,7 +2340,7 @@ interface Queue<Body = unknown> {
   send(message: Body, options?: QueueSendOptions): Promise<QueueSendResponse>
   sendBatch(
     messages: Iterable<MessageSendRequest<Body>>,
-    options?: QueueSendBatchOptions
+    options?: QueueSendBatchOptions,
   ): Promise<QueueSendBatchResponse>
 }
 interface QueueSendMetrics {
@@ -2452,36 +2436,26 @@ interface R2Bucket {
     key: string,
     options: R2GetOptions & {
       onlyIf: R2Conditional | Headers
-    }
+    },
   ): Promise<R2ObjectBody | R2Object | null>
   get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | null>
   put(
     key: string,
     value:
-      | ReadableStream
-      | ArrayBuffer
-      | ArrayBufferView
-      | string
-      | null
-      | Blob,
+      ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
     options?: R2PutOptions & {
       onlyIf: R2Conditional | Headers
-    }
+    },
   ): Promise<R2Object | null>
   put(
     key: string,
     value:
-      | ReadableStream
-      | ArrayBuffer
-      | ArrayBufferView
-      | string
-      | null
-      | Blob,
-    options?: R2PutOptions
+      ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+    options?: R2PutOptions,
   ): Promise<R2Object>
   createMultipartUpload(
     key: string,
-    options?: R2MultipartOptions
+    options?: R2MultipartOptions,
   ): Promise<R2MultipartUpload>
   resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload
   delete(keys: string | string[]): Promise<void>
@@ -2493,7 +2467,7 @@ interface R2MultipartUpload {
   uploadPart(
     partNumber: number,
     value: ReadableStream | (ArrayBuffer | ArrayBufferView) | string | Blob,
-    options?: R2UploadPartOptions
+    options?: R2UploadPartOptions,
   ): Promise<R2UploadedPart>
   abort(): Promise<void>
   complete(uploadedParts: R2UploadedPart[]): Promise<R2Object>
@@ -2625,7 +2599,7 @@ interface UnderlyingSink<W = any> {
   start?: (controller: WritableStreamDefaultController) => void | Promise<void>
   write?: (
     chunk: W,
-    controller: WritableStreamDefaultController
+    controller: WritableStreamDefaultController,
   ) => void | Promise<void>
   abort?: (reason: any) => void | Promise<void>
   close?: () => void | Promise<void>
@@ -2640,10 +2614,10 @@ interface UnderlyingByteSource {
 interface UnderlyingSource<R = any> {
   type?: "" | undefined
   start?: (
-    controller: ReadableStreamDefaultController<R>
+    controller: ReadableStreamDefaultController<R>,
   ) => void | Promise<void>
   pull?: (
-    controller: ReadableStreamDefaultController<R>
+    controller: ReadableStreamDefaultController<R>,
   ) => void | Promise<void>
   cancel?: (reason: any) => void | Promise<void>
   expectedLength?: number | bigint
@@ -2652,14 +2626,14 @@ interface Transformer<I = any, O = any> {
   readableType?: string
   writableType?: string
   start?: (
-    controller: TransformStreamDefaultController<O>
+    controller: TransformStreamDefaultController<O>,
   ) => void | Promise<void>
   transform?: (
     chunk: I,
-    controller: TransformStreamDefaultController<O>
+    controller: TransformStreamDefaultController<O>,
   ) => void | Promise<void>
   flush?: (
-    controller: TransformStreamDefaultController<O>
+    controller: TransformStreamDefaultController<O>,
   ) => void | Promise<void>
   cancel?: (reason: any) => void | Promise<void>
   expectedLength?: number
@@ -2733,7 +2707,7 @@ interface ReadableStream<R = any> {
    */
   pipeThrough<T>(
     transform: ReadableWritablePair<T, R>,
-    options?: StreamPipeOptions
+    options?: StreamPipeOptions,
   ): ReadableStream<T>
   /**
    * The **`pipeTo()`** method of the ReadableStream interface pipes the current `ReadableStream` to a given WritableStream and returns a Promise that fulfills when the piping process completes successfully, or rejects if any errors were encountered.
@@ -2742,7 +2716,7 @@ interface ReadableStream<R = any> {
    */
   pipeTo(
     destination: WritableStream<R>,
-    options?: StreamPipeOptions
+    options?: StreamPipeOptions,
   ): Promise<void>
   /**
    * The **`tee()`** method of the two-element array containing the two resulting branches as new ReadableStream instances.
@@ -2752,7 +2726,7 @@ interface ReadableStream<R = any> {
   tee(): [ReadableStream<R>, ReadableStream<R>]
   values(options?: ReadableStreamValuesOptions): AsyncIterableIterator<R>
   [Symbol.asyncIterator](
-    options?: ReadableStreamValuesOptions
+    options?: ReadableStreamValuesOptions,
   ): AsyncIterableIterator<R>
 }
 /**
@@ -2764,11 +2738,11 @@ declare const ReadableStream: {
   prototype: ReadableStream
   new (
     underlyingSource: UnderlyingByteSource,
-    strategy?: QueuingStrategy<Uint8Array>
+    strategy?: QueuingStrategy<Uint8Array>,
   ): ReadableStream<Uint8Array>
   new <R = any>(
     underlyingSource?: UnderlyingSource<R>,
-    strategy?: QueuingStrategy<R>
+    strategy?: QueuingStrategy<R>,
   ): ReadableStream<R>
 }
 /**
@@ -2816,7 +2790,7 @@ declare class ReadableStreamBYOBReader {
   releaseLock(): void
   readAtLeast<T extends ArrayBufferView>(
     minElements: number,
-    view: T
+    view: T,
   ): Promise<ReadableStreamReadResult<T>>
 }
 interface ReadableStreamBYOBReaderReadableStreamBYOBReaderReadOptions {
@@ -2991,7 +2965,7 @@ interface ReadableWritablePair<R = any, W = any> {
 declare class WritableStream<W = any> {
   constructor(
     underlyingSink?: UnderlyingSink,
-    queuingStrategy?: QueuingStrategy
+    queuingStrategy?: QueuingStrategy,
   )
   /**
    * The **`locked`** read-only property of the WritableStream interface returns a boolean indicating whether the `WritableStream` is locked to a writer.
@@ -3077,7 +3051,7 @@ declare class TransformStream<I = any, O = any> {
   constructor(
     transformer?: Transformer<I, O>,
     writableStrategy?: QueuingStrategy<I>,
-    readableStrategy?: QueuingStrategy<O>
+    readableStrategy?: QueuingStrategy<O>,
   )
   /**
    * The **`readable`** read-only property of the TransformStream interface returns the ReadableStream instance controlled by this `TransformStream`.
@@ -3095,7 +3069,7 @@ declare class TransformStream<I = any, O = any> {
 declare class FixedLengthStream extends IdentityTransformStream {
   constructor(
     expectedLength: number | bigint,
-    queuingStrategy?: IdentityTransformStreamQueuingStrategy
+    queuingStrategy?: IdentityTransformStreamQueuingStrategy,
   )
 }
 declare class IdentityTransformStream extends TransformStream<
@@ -3164,9 +3138,7 @@ interface TextDecoderStreamTextDecoderStreamInit {
  *
  * [MDN Reference](https://developer.mozilla.org/docs/Web/API/ByteLengthQueuingStrategy)
  */
-declare class ByteLengthQueuingStrategy
-  implements QueuingStrategy<ArrayBufferView>
-{
+declare class ByteLengthQueuingStrategy implements QueuingStrategy<ArrayBufferView> {
   constructor(init: QueuingStrategyInit)
   /**
    * The read-only **`ByteLengthQueuingStrategy.highWaterMark`** property returns the total number of bytes that can be contained in the internal queue before backpressure is applied.
@@ -3508,7 +3480,7 @@ declare class URL {
  */
 declare class URLSearchParams {
   constructor(
-    init?: Iterable<Iterable<string>> | Record<string, string> | string
+    init?: Iterable<Iterable<string>> | Record<string, string> | string,
   )
   /**
    * The **`size`** read-only property of the URLSearchParams interface indicates the total number of search parameter entries.
@@ -3569,9 +3541,9 @@ declare class URLSearchParams {
       this: This,
       value: string,
       key: string,
-      parent: URLSearchParams
+      parent: URLSearchParams,
     ) => void,
-    thisArg?: This
+    thisArg?: This,
   ): void
   /*function toString() { [native code] }*/
   toString(): string
@@ -3581,7 +3553,7 @@ declare class URLPattern {
   constructor(
     input?: string | URLPatternInit,
     baseURL?: string | URLPatternOptions,
-    patternOptions?: URLPatternOptions
+    patternOptions?: URLPatternOptions,
   )
   get protocol(): string
   get username(): string
@@ -3595,7 +3567,7 @@ declare class URLPattern {
   test(input?: string | URLPatternInit, baseURL?: string): boolean
   exec(
     input?: string | URLPatternInit,
-    baseURL?: string
+    baseURL?: string,
   ): URLPatternResult | null
 }
 interface URLPatternInit {
@@ -3761,7 +3733,7 @@ interface SqlStorage {
 declare abstract class SqlStorageStatement {}
 type SqlStorageValue = ArrayBuffer | string | number | null
 declare abstract class SqlStorageCursor<
-  T extends Record<string, SqlStorageValue>
+  T extends Record<string, SqlStorageValue>,
 > {
   next():
     | {
@@ -3869,10 +3841,10 @@ interface Container {
   interceptOutboundHttp(addr: string, binding: Fetcher): Promise<void>
   interceptAllOutboundHttp(binding: Fetcher): Promise<void>
   snapshotDirectory(
-    options: ContainerDirectorySnapshotOptions
+    options: ContainerDirectorySnapshotOptions,
   ): Promise<ContainerDirectorySnapshot>
   snapshotContainer(
-    options: ContainerSnapshotOptions
+    options: ContainerSnapshotOptions,
   ): Promise<ContainerSnapshot>
   interceptOutboundHttps(addr: string, binding: Fetcher): Promise<void>
 }
@@ -3940,22 +3912,22 @@ type LoopbackForExport<
   T extends
     | (new (...args: any[]) => Rpc.EntrypointBranded)
     | ExportedHandler<any, any, any>
-    | undefined = undefined
+    | undefined = undefined,
 > = T extends new (...args: any[]) => Rpc.WorkerEntrypointBranded
   ? LoopbackServiceStub<InstanceType<T>>
   : T extends new (...args: any[]) => Rpc.DurableObjectBranded
-  ? LoopbackDurableObjectClass<InstanceType<T>>
-  : T extends ExportedHandler<any, any, any>
-  ? LoopbackServiceStub<undefined>
-  : undefined
+    ? LoopbackDurableObjectClass<InstanceType<T>>
+    : T extends ExportedHandler<any, any, any>
+      ? LoopbackServiceStub<undefined>
+      : undefined
 type LoopbackServiceStub<
-  T extends Rpc.WorkerEntrypointBranded | undefined = undefined
+  T extends Rpc.WorkerEntrypointBranded | undefined = undefined,
 > = Fetcher<T> &
   (T extends CloudflareWorkersModule.WorkerEntrypoint<any, infer Props>
     ? (opts: { props?: Props }) => Fetcher<T>
     : (opts: { props?: any }) => Fetcher<T>)
 type LoopbackDurableObjectClass<
-  T extends Rpc.DurableObjectBranded | undefined = undefined
+  T extends Rpc.DurableObjectBranded | undefined = undefined,
 > = DurableObjectClass<T> &
   (T extends CloudflareWorkersModule.DurableObject<any, infer Props>
     ? (opts: { props?: Props }) => DurableObjectClass<T>
@@ -3979,11 +3951,11 @@ interface SyncKvListOptions {
 interface WorkerStub {
   getEntrypoint<T extends Rpc.WorkerEntrypointBranded | undefined>(
     name?: string,
-    options?: WorkerStubEntrypointOptions
+    options?: WorkerStubEntrypointOptions,
   ): Fetcher<T>
   getDurableObjectClass<T extends Rpc.DurableObjectBranded | undefined>(
     name?: string,
-    options?: WorkerStubEntrypointOptions
+    options?: WorkerStubEntrypointOptions,
   ): DurableObjectClass<T>
 }
 interface WorkerStubEntrypointOptions {
@@ -3993,7 +3965,7 @@ interface WorkerStubEntrypointOptions {
 interface WorkerLoader {
   get(
     name: string | null,
-    getCode: () => WorkerLoaderWorkerCode | Promise<WorkerLoaderWorkerCode>
+    getCode: () => WorkerLoaderWorkerCode | Promise<WorkerLoaderWorkerCode>,
   ): WorkerStub
   load(code: WorkerLoaderWorkerCode): WorkerStub
 }
@@ -4307,10 +4279,7 @@ type AiSearchInstanceInfo = {
   max_num_results?: number
   cache?: boolean
   cache_threshold?:
-    | "super_strict_match"
-    | "close_enough"
-    | "flexible_friend"
-    | "anything_goes"
+    "super_strict_match" | "close_enough" | "flexible_friend" | "anything_goes"
   custom_metadata?: Array<{
     field_name: string
     data_type: "text" | "number" | "boolean" | "datetime"
@@ -4388,10 +4357,7 @@ type AiSearchConfig = {
   cache?: boolean
   /** Similarity threshold for cache hits. Stricter = fewer cache hits but higher relevance. */
   cache_threshold?:
-    | "super_strict_match"
-    | "close_enough"
-    | "flexible_friend"
-    | "anything_goes"
+    "super_strict_match" | "close_enough" | "flexible_friend" | "anything_goes"
   custom_metadata?: Array<{
     field_name: string
     data_type: "text" | "number" | "boolean" | "datetime"
@@ -4600,7 +4566,7 @@ declare abstract class AiSearchItems {
   upload(
     name: string,
     content: ReadableStream | Blob | string,
-    options?: AiSearchUploadItemOptions
+    options?: AiSearchUploadItemOptions,
   ): Promise<AiSearchItemInfo>
   /**
    * Upload a file and poll until processing completes.
@@ -4619,7 +4585,7 @@ declare abstract class AiSearchItems {
       pollIntervalMs?: number
       /** Maximum time to wait in milliseconds (default 30000). */
       timeoutMs?: number
-    }
+    },
   ): Promise<AiSearchItemInfo>
   /**
    * Get an item by ID.
@@ -4708,7 +4674,7 @@ declare abstract class AiSearchInstance {
   chatCompletions(
     params: AiSearchChatCompletionsRequest & {
       stream: true
-    }
+    },
   ): Promise<ReadableStream>
   /**
    * Generate chat completions with AI Search context.
@@ -4716,7 +4682,7 @@ declare abstract class AiSearchInstance {
    * @returns Chat completion response with choices and RAG chunks.
    */
   chatCompletions(
-    params: AiSearchChatCompletionsRequest
+    params: AiSearchChatCompletionsRequest,
   ): Promise<AiSearchChatCompletionsResponse>
   /**
    * Update the instance configuration.
@@ -4812,7 +4778,7 @@ declare abstract class AiSearchNamespace {
    * @returns Search response with chunks tagged by instance_id and optional partial-failure errors.
    */
   search(
-    params: AiSearchMultiSearchRequest
+    params: AiSearchMultiSearchRequest,
   ): Promise<AiSearchMultiSearchResponse>
   /**
    * Generate chat completions across multiple instances within the bound namespace (streaming).
@@ -4823,7 +4789,7 @@ declare abstract class AiSearchNamespace {
   chatCompletions(
     params: AiSearchMultiChatCompletionsRequest & {
       stream: true
-    }
+    },
   ): Promise<ReadableStream>
   /**
    * Generate chat completions across multiple instances within the bound namespace.
@@ -4832,7 +4798,7 @@ declare abstract class AiSearchNamespace {
    * @returns Chat completion response with choices, chunks tagged by instance_id, and optional partial-failure errors.
    */
   chatCompletions(
-    params: AiSearchMultiChatCompletionsRequest
+    params: AiSearchMultiChatCompletionsRequest,
   ): Promise<AiSearchMultiChatCompletionsResponse>
 }
 type AiImageClassificationInput = {
@@ -4972,11 +4938,7 @@ declare abstract class BaseAiTextEmbeddings {
 }
 type RoleScopedChatInput = {
   role:
-    | "user"
-    | "assistant"
-    | "system"
-    | "tool"
-    | (string & NonNullable<unknown>)
+    "user" | "assistant" | "system" | "tool" | (string & NonNullable<unknown>)
   content: string
   name?: string
 }
@@ -5170,8 +5132,7 @@ type ChatCompletionCustomToolTextFormat = {
   type: "text"
 }
 type ChatCompletionCustomToolFormat =
-  | ChatCompletionCustomToolTextFormat
-  | ChatCompletionCustomToolGrammarFormat
+  ChatCompletionCustomToolTextFormat | ChatCompletionCustomToolGrammarFormat
 type ChatCompletionCustomTool = {
   type: "custom"
   custom: {
@@ -5199,8 +5160,7 @@ type ChatCompletionMessageCustomToolCall = {
   }
 }
 type ChatCompletionMessageToolCall =
-  | ChatCompletionMessageFunctionToolCall
-  | ChatCompletionMessageCustomToolCall
+  ChatCompletionMessageFunctionToolCall | ChatCompletionMessageCustomToolCall
 type ChatCompletionToolChoiceFunction = {
   type: "function"
   function: {
@@ -5479,11 +5439,7 @@ type ChatCompletionChoice = {
   index: number
   message: ChatCompletionResponseMessage
   finish_reason:
-    | "stop"
-    | "length"
-    | "tool_calls"
-    | "content_filter"
-    | "function_call"
+    "stop" | "length" | "tool_calls" | "content_filter" | "function_call"
   logprobs: ChatCompletionLogprobs | null
 }
 type ChatCompletionsPromptInput = {
@@ -5681,8 +5637,7 @@ type ResponseFunctionCallArgumentsDoneEvent = {
   type: "response.function_call_arguments.done"
 }
 type ResponseFunctionCallOutputItem =
-  | ResponseInputTextContent
-  | ResponseInputImageContent
+  ResponseInputTextContent | ResponseInputImageContent
 type ResponseFunctionCallOutputItemList = Array<ResponseFunctionCallOutputItem>
 type ResponseFunctionToolCall = {
   arguments: string
@@ -5703,8 +5658,7 @@ type ResponseFunctionToolCallOutputItem = {
   status?: "in_progress" | "completed" | "incomplete"
 }
 type ResponseIncludable =
-  | "message.input_image.image_url"
-  | "message.output_text.logprobs"
+  "message.input_image.image_url" | "message.output_text.logprobs"
 type ResponseIncompleteEvent = {
   response: Response
   sequence_number: number
@@ -5770,9 +5724,7 @@ type ResponseItem =
   | ResponseFunctionToolCallItem
   | ResponseFunctionToolCallOutputItem
 type ResponseOutputItem =
-  | ResponseOutputMessage
-  | ResponseFunctionToolCall
-  | ResponseReasoningItem
+  ResponseOutputMessage | ResponseFunctionToolCall | ResponseReasoningItem
 type ResponseOutputItemAddedEvent = {
   item: ResponseOutputItem
   output_index: number
@@ -5850,12 +5802,7 @@ type ResponseRefusalDoneEvent = {
   type: "response.refusal.done"
 }
 type ResponseStatus =
-  | "completed"
-  | "failed"
-  | "in_progress"
-  | "cancelled"
-  | "queued"
-  | "incomplete"
+  "completed" | "failed" | "in_progress" | "cancelled" | "queued" | "incomplete"
 type ResponseStreamEvent =
   | ResponseCompletedEvent
   | ResponseCreatedEvent
@@ -7406,8 +7353,7 @@ declare abstract class Base_Ai_Cf_Qwen_Qwen2_5_Coder_32B_Instruct {
   postProcessedOutputs: Ai_Cf_Qwen_Qwen2_5_Coder_32B_Instruct_Output
 }
 type Ai_Cf_Qwen_Qwq_32B_Input =
-  | Ai_Cf_Qwen_Qwq_32B_Prompt
-  | Ai_Cf_Qwen_Qwq_32B_Messages
+  Ai_Cf_Qwen_Qwq_32B_Prompt | Ai_Cf_Qwen_Qwq_32B_Messages
 interface Ai_Cf_Qwen_Qwq_32B_Prompt {
   /**
    * The input text prompt for the model to generate a response.
@@ -7954,8 +7900,7 @@ declare abstract class Base_Ai_Cf_Mistralai_Mistral_Small_3_1_24B_Instruct {
   postProcessedOutputs: Ai_Cf_Mistralai_Mistral_Small_3_1_24B_Instruct_Output
 }
 type Ai_Cf_Google_Gemma_3_12B_It_Input =
-  | Ai_Cf_Google_Gemma_3_12B_It_Prompt
-  | Ai_Cf_Google_Gemma_3_12B_It_Messages
+  Ai_Cf_Google_Gemma_3_12B_It_Prompt | Ai_Cf_Google_Gemma_3_12B_It_Messages
 interface Ai_Cf_Google_Gemma_3_12B_It_Prompt {
   /**
    * The input text prompt for the model to generate a response.
@@ -10494,11 +10439,7 @@ interface Ai_Cf_Deepgram_Flux_Output {
    * The type of event being reported.
    */
   event?:
-    | "Update"
-    | "StartOfTurn"
-    | "EagerEndOfTurn"
-    | "TurnResumed"
-    | "EndOfTurn"
+    "Update" | "StartOfTurn" | "EagerEndOfTurn" | "TurnResumed" | "EndOfTurn"
   /**
    * The index of the current turn
    */
@@ -10901,7 +10842,7 @@ declare abstract class Ai<AiModelList extends AiModelListType = AiModels> {
     },
     options: AiOptions & {
       queueRequest: true
-    }
+    },
   ): Promise<AiAsyncBatchResponse>
   // Raw response
   run<Name extends keyof AiModelList>(
@@ -10909,7 +10850,7 @@ declare abstract class Ai<AiModelList extends AiModelListType = AiModels> {
     inputs: AiModelList[Name]["inputs"],
     options: AiOptions & {
       returnRawResponse: true
-    }
+    },
   ): Promise<Response>
   // WebSocket
   run<Name extends keyof AiModelList>(
@@ -10917,7 +10858,7 @@ declare abstract class Ai<AiModelList extends AiModelListType = AiModels> {
     inputs: AiModelList[Name]["inputs"],
     options: AiOptions & {
       websocket: true
-    }
+    },
   ): Promise<Response>
   // Streaming
   run<Name extends keyof AiModelList>(
@@ -10925,29 +10866,29 @@ declare abstract class Ai<AiModelList extends AiModelListType = AiModels> {
     inputs: AiModelList[Name]["inputs"] & {
       stream: true
     },
-    options?: AiOptions
+    options?: AiOptions,
   ): Promise<ReadableStream>
   // Normal (default) - known model
   run<Name extends keyof AiModelList>(
     model: Name,
     inputs: AiModelList[Name]["inputs"],
-    options?: AiOptions
+    options?: AiOptions,
   ): Promise<AiModelList[Name]["postProcessedOutputs"]>
   // Unknown model (gateway fallback)
   run(
     model: string & {},
     inputs: Record<string, unknown>,
-    options?: AiOptions
+    options?: AiOptions,
   ): Promise<Record<string, unknown>>
   models(params?: AiModelsSearchParams): Promise<AiModelsSearchObject[]>
   toMarkdown(): ToMarkdownService
   toMarkdown(
     files: MarkdownDocument[],
-    options?: ConversionRequestOptions
+    options?: ConversionRequestOptions,
   ): Promise<ConversionResponse[]>
   toMarkdown(
     files: MarkdownDocument,
-    options?: ConversionRequestOptions
+    options?: ConversionRequestOptions,
   ): Promise<ConversionResponse>
 }
 type GatewayRetries = {
@@ -11027,8 +10968,7 @@ type AIGatewayProviders =
   | "adobe-firefly"
 type AIGatewayHeaders = {
   "cf-aig-metadata":
-    | Record<string, number | string | boolean | null | bigint>
-    | string
+    Record<string, number | string | boolean | null | bigint> | string
   "cf-aig-custom-cost":
     | {
         per_token_in?: number
@@ -11068,7 +11008,7 @@ declare abstract class AiGateway {
       gateway?: UniversalGatewayOptions
       extraHeaders?: object
       signal?: AbortSignal
-    }
+    },
   ): Promise<Response>
   getUrl(provider?: AIGatewayProviders | string): Promise<string> // eslint-disable-line
 }
@@ -11170,7 +11110,7 @@ interface ArtifactsRepo extends ArtifactsRepoInfo {
    */
   createToken(
     scope?: "write" | "read",
-    ttl?: number
+    ttl?: number,
   ): Promise<ArtifactsCreateTokenResult>
   /** List tokens for this repo (metadata only, no plaintext). */
   listTokens(): Promise<ArtifactsTokenListResult>
@@ -11192,7 +11132,7 @@ interface ArtifactsRepo extends ArtifactsRepoInfo {
       description?: string
       readOnly?: boolean
       defaultBranchOnly?: boolean
-    }
+    },
   ): Promise<ArtifactsCreateRepoResult>
 }
 /** Artifacts binding — namespace-level operations. */
@@ -11209,7 +11149,7 @@ interface Artifacts {
       readOnly?: boolean
       description?: string
       setDefaultBranch?: string
-    }
+    },
   ): Promise<ArtifactsCreateRepoResult>
   /**
    * Get a handle to an existing repository.
@@ -11386,7 +11326,7 @@ declare abstract class AutoRAG {
    * See https://developers.cloudflare.com/ai-search/usage/workers-binding/
    */
   aiSearch(
-    params: AutoRagAiSearchRequest
+    params: AutoRagAiSearchRequest,
   ): Promise<AutoRagAiSearchResponse | Response>
 }
 interface BasicImageTransformations {
@@ -11904,8 +11844,7 @@ interface IncomingRequestCfPropertiesBotManagement {
    */
   clientTrustScore: number
 }
-interface IncomingRequestCfPropertiesBotManagementEnterprise
-  extends IncomingRequestCfPropertiesBotManagement {
+interface IncomingRequestCfPropertiesBotManagementEnterprise extends IncomingRequestCfPropertiesBotManagement {
   /**
    * Results of Cloudflare's Bot Management analysis
    */
@@ -12446,8 +12385,7 @@ declare type Iso3166Alpha2Code =
 /** The 2-letter continent codes Cloudflare uses */
 declare type ContinentCode = "AF" | "AN" | "AS" | "EU" | "NA" | "OC" | "SA"
 type CfProperties<HostMetadata = unknown> =
-  | IncomingRequestCfProperties<HostMetadata>
-  | RequestInitCfProperties
+  IncomingRequestCfProperties<HostMetadata> | RequestInitCfProperties
 interface D1Meta {
   duration: number
   size_after: number
@@ -12514,7 +12452,7 @@ declare abstract class D1Database {
    * @param constraintOrBookmark Either the session constraint or the explicit bookmark to anchor the created session.
    */
   withSession(
-    constraintOrBookmark?: D1SessionBookmark | D1SessionConstraint
+    constraintOrBookmark?: D1SessionBookmark | D1SessionConstraint,
   ): D1DatabaseSession
   /**
    * @deprecated dump() will be removed soon, only applies to deprecated alpha v1 databases.
@@ -12651,7 +12589,7 @@ declare abstract class EmailEvent extends ExtendableEvent {
 declare type EmailExportedHandler<Env = unknown, Props = unknown> = (
   message: ForwardableEmailMessage,
   env: Env,
-  ctx: ExecutionContext<Props>
+  ctx: ExecutionContext<Props>,
 ) => void | Promise<void>
 declare module "cloudflare:email" {
   let _EmailMessage: {
@@ -12703,7 +12641,7 @@ declare abstract class Flagship {
   get(
     flagKey: string,
     defaultValue?: unknown,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<unknown>
   /**
    * Get a boolean flag value.
@@ -12714,7 +12652,7 @@ declare abstract class Flagship {
   getBooleanValue(
     flagKey: string,
     defaultValue: boolean,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<boolean>
   /**
    * Get a string flag value.
@@ -12725,7 +12663,7 @@ declare abstract class Flagship {
   getStringValue(
     flagKey: string,
     defaultValue: string,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<string>
   /**
    * Get a number flag value.
@@ -12736,7 +12674,7 @@ declare abstract class Flagship {
   getNumberValue(
     flagKey: string,
     defaultValue: number,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<number>
   /**
    * Get an object flag value.
@@ -12747,7 +12685,7 @@ declare abstract class Flagship {
   getObjectValue<T extends object>(
     flagKey: string,
     defaultValue: T,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<T>
   /**
    * Get a boolean flag value with full evaluation details.
@@ -12758,7 +12696,7 @@ declare abstract class Flagship {
   getBooleanDetails(
     flagKey: string,
     defaultValue: boolean,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<FlagshipEvaluationDetails<boolean>>
   /**
    * Get a string flag value with full evaluation details.
@@ -12769,7 +12707,7 @@ declare abstract class Flagship {
   getStringDetails(
     flagKey: string,
     defaultValue: string,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<FlagshipEvaluationDetails<string>>
   /**
    * Get a number flag value with full evaluation details.
@@ -12780,7 +12718,7 @@ declare abstract class Flagship {
   getNumberDetails(
     flagKey: string,
     defaultValue: number,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<FlagshipEvaluationDetails<number>>
   /**
    * Get an object flag value with full evaluation details.
@@ -12791,7 +12729,7 @@ declare abstract class Flagship {
   getObjectDetails<T extends object>(
     flagKey: string,
     defaultValue: T,
-    context?: FlagshipEvaluationContext
+    context?: FlagshipEvaluationContext,
   ): Promise<FlagshipEvaluationDetails<T>>
 }
 /**
@@ -13025,7 +12963,7 @@ interface HostedImagesBinding {
    */
   upload(
     image: ReadableStream<Uint8Array> | ArrayBuffer,
-    options?: ImageUploadOptions
+    options?: ImageUploadOptions,
   ): Promise<ImageMetadata>
   /**
    * List hosted images with pagination
@@ -13043,7 +12981,7 @@ interface ImagesBinding {
    */
   info(
     stream: ReadableStream<Uint8Array>,
-    options?: ImageInputOptions
+    options?: ImageInputOptions,
   ): Promise<ImageInfoResponse>
   /**
    * Begin applying a series of transformations to an image
@@ -13052,7 +12990,7 @@ interface ImagesBinding {
    */
   input(
     stream: ReadableStream<Uint8Array>,
-    options?: ImageInputOptions
+    options?: ImageInputOptions,
   ): ImageTransformer
   /**
    * Access hosted images CRUD operations
@@ -13074,7 +13012,7 @@ interface ImageTransformer {
    */
   draw(
     image: ReadableStream<Uint8Array> | ImageTransformer,
-    options?: ImageDrawOptions
+    options?: ImageDrawOptions,
   ): ImageTransformer
   /**
    * Retrieve the image that results from applying the transforms to the
@@ -13128,7 +13066,7 @@ interface MediaTransformer {
    * @returns A generator for producing the transformed media output
    */
   transform(
-    transform?: MediaTransformationInputOptions
+    transform?: MediaTransformationInputOptions,
   ): MediaTransformationGenerator
   /**
    * Generates the final media output with specified options.
@@ -13248,7 +13186,7 @@ type EventContext<Env, P extends string, Data> = {
 type PagesFunction<
   Env = unknown,
   Params extends string = any,
-  Data extends Record<string, unknown> = Record<string, unknown>
+  Data extends Record<string, unknown> = Record<string, unknown>,
 > = (context: EventContext<Env, Params, Data>) => Response | Promise<Response>
 type EventPluginContext<Env, P extends string, Data, PluginArgs> = {
   request: Request<unknown, IncomingRequestCfProperties<unknown>>
@@ -13269,9 +13207,9 @@ type PagesPluginFunction<
   Env = unknown,
   Params extends string = any,
   Data extends Record<string, unknown> = Record<string, unknown>,
-  PluginArgs = unknown
+  PluginArgs = unknown,
 > = (
-  context: EventPluginContext<Env, Params, Data, PluginArgs>
+  context: EventPluginContext<Env, Params, Data, PluginArgs>,
 ) => Response | Promise<Response>
 declare module "assets:*" {
   export const onRequest: PagesFunction
@@ -13283,7 +13221,7 @@ declare module "cloudflare:pipelines" {
   export abstract class PipelineTransformationEntrypoint<
     Env = unknown,
     I extends PipelineRecord = PipelineRecord,
-    O extends PipelineRecord = PipelineRecord
+    O extends PipelineRecord = PipelineRecord,
   > {
     protected env: Env
     protected ctx: ExecutionContext
@@ -13385,9 +13323,7 @@ declare namespace Rpc {
     [__WORKFLOW_ENTRYPOINT_BRAND]: never
   }
   export type EntrypointBranded =
-    | WorkerEntrypointBranded
-    | DurableObjectBranded
-    | WorkflowEntrypointBranded
+    WorkerEntrypointBranded | DurableObjectBranded | WorkflowEntrypointBranded
   // Types that can be used through `Stub`s
   export type Stubable = RpcTargetBranded | ((...args: any[]) => any)
   // Types that can be passed over RPC
@@ -13488,7 +13424,7 @@ declare namespace Rpc {
   // `Reserved` names (e.g. stub method names like `dup()`) and symbols can't be accessed over RPC.
   export type Provider<
     T extends object,
-    Reserved extends string = never
+    Reserved extends string = never,
   > = MaybeCallableProvider<T> &
     Pick<
       {
@@ -13569,10 +13505,9 @@ declare namespace CloudflareWorkersModule {
     scheduled?(controller: ScheduledController): void | Promise<void>
     tail?(events: TraceItem[]): void | Promise<void>
     tailStream?(
-      event: TailStream.TailEvent<TailStream.Onset>
+      event: TailStream.TailEvent<TailStream.Onset>,
     ):
-      | TailStream.TailEventHandlerType
-      | Promise<TailStream.TailEventHandlerType>
+      TailStream.TailEventHandlerType | Promise<TailStream.TailEventHandlerType>
     test?(controller: TestController): void | Promise<void>
     trace?(traces: TraceItem[]): void | Promise<void>
   }
@@ -13588,27 +13523,20 @@ declare namespace CloudflareWorkersModule {
     connect?(socket: Socket): void | Promise<void>
     webSocketMessage?(
       ws: WebSocket,
-      message: string | ArrayBuffer
+      message: string | ArrayBuffer,
     ): void | Promise<void>
     webSocketClose?(
       ws: WebSocket,
       code: number,
       reason: string,
-      wasClean: boolean
+      wasClean: boolean,
     ): void | Promise<void>
     webSocketError?(ws: WebSocket, error: unknown): void | Promise<void>
   }
   export type WorkflowDurationLabel =
-    | "second"
-    | "minute"
-    | "hour"
-    | "day"
-    | "week"
-    | "month"
-    | "year"
+    "second" | "minute" | "hour" | "day" | "week" | "month" | "year"
   export type WorkflowSleepDuration =
-    | `${number} ${WorkflowDurationLabel}${"s" | ""}`
-    | number
+    `${number} ${WorkflowDurationLabel}${"s" | ""}` | number
   export type WorkflowDelayDuration = WorkflowSleepDuration
   export type WorkflowTimeoutDuration = WorkflowSleepDuration
   export type WorkflowRetentionDuration = WorkflowSleepDuration
@@ -13642,12 +13570,12 @@ declare namespace CloudflareWorkersModule {
   export abstract class WorkflowStep {
     do<T extends Rpc.Serializable<T>>(
       name: string,
-      callback: (ctx: WorkflowStepContext) => Promise<T>
+      callback: (ctx: WorkflowStepContext) => Promise<T>,
     ): Promise<T>
     do<T extends Rpc.Serializable<T>>(
       name: string,
       config: WorkflowStepConfig,
-      callback: (ctx: WorkflowStepContext) => Promise<T>
+      callback: (ctx: WorkflowStepContext) => Promise<T>,
     ): Promise<T>
     sleep: (name: string, duration: WorkflowSleepDuration) => Promise<void>
     sleepUntil: (name: string, timestamp: Date | number) => Promise<void>
@@ -13656,7 +13584,7 @@ declare namespace CloudflareWorkersModule {
       options: {
         type: string
         timeout?: WorkflowTimeoutDuration | number
-      }
+      },
     ): Promise<WorkflowStepEvent<T>>
   }
   export type WorkflowInstanceStatus =
@@ -13671,8 +13599,9 @@ declare namespace CloudflareWorkersModule {
     | "unknown"
   export abstract class WorkflowEntrypoint<
     Env = unknown,
-    T extends Rpc.Serializable<T> | unknown = unknown
-  > implements Rpc.WorkflowEntrypointBranded
+    T extends Rpc.Serializable<T> | unknown = unknown,
+  >
+    implements Rpc.WorkflowEntrypointBranded
   {
     [Rpc.__WORKFLOW_ENTRYPOINT_BRAND]: never
     protected ctx: ExecutionContext
@@ -13686,7 +13615,7 @@ declare namespace CloudflareWorkersModule {
   export function withEnvAndExports(
     newEnv: unknown,
     newExports: unknown,
-    fn: () => unknown
+    fn: () => unknown,
   ): unknown
   export const env: Cloudflare.Env
   export const exports: Cloudflare.Exports
@@ -13706,7 +13635,7 @@ interface SecretsStoreSecret {
 declare module "cloudflare:sockets" {
   function _connect(
     address: string | SocketAddress,
-    options?: SocketOptions
+    options?: SocketOptions,
   ): Socket
   export { _connect as connect }
 }
@@ -13761,7 +13690,7 @@ interface StreamBinding {
    * @throws {InternalError} if an unexpected error occurs
    */
   createDirectUpload(
-    params: StreamDirectUploadCreateParams
+    params: StreamDirectUploadCreateParams,
   ): Promise<StreamDirectUpload>
   videos: StreamVideos
   watermarks: StreamWatermarks
@@ -14126,7 +14055,7 @@ interface StreamScopedDownloads {
    * @throws {InternalError} if an unexpected error occurs
    */
   generate(
-    downloadType?: StreamDownloadType
+    downloadType?: StreamDownloadType,
   ): Promise<StreamDownloadGetResponse>
   /**
    * Lists the downloads created for a video.
@@ -14167,7 +14096,7 @@ interface StreamWatermarks {
    */
   generate(
     input: ReadableStream,
-    params: StreamWatermarkCreateParams
+    params: StreamWatermarkCreateParams,
   ): Promise<StreamWatermark>
   /**
    * Generate a new watermark profile
@@ -14181,7 +14110,7 @@ interface StreamWatermarks {
    */
   generate(
     url: string,
-    params: StreamWatermarkCreateParams
+    params: StreamWatermarkCreateParams,
   ): Promise<StreamWatermark>
   /**
    * Lists all watermark profiles for an account.
@@ -14300,11 +14229,7 @@ type StreamDownloadGetResponse = {
   default?: StreamDownload
 }
 type StreamWatermarkPosition =
-  | "upperRight"
-  | "upperLeft"
-  | "lowerLeft"
-  | "lowerRight"
-  | "center"
+  "upperRight" | "upperLeft" | "lowerLeft" | "lowerRight" | "center"
 type StreamWatermark = {
   /**
    * The unique identifier for a watermark profile.
@@ -14513,11 +14438,11 @@ type SupportedFileFormat = {
 declare abstract class ToMarkdownService {
   transform(
     files: MarkdownDocument[],
-    options?: ConversionRequestOptions
+    options?: ConversionRequestOptions,
   ): Promise<ConversionResponse[]>
   transform(
     files: MarkdownDocument,
-    options?: ConversionRequestOptions
+    options?: ConversionRequestOptions,
   ): Promise<ConversionResponse>
   supported(): Promise<SupportedFileFormat[]>
 }
@@ -14739,7 +14664,7 @@ declare namespace TailStream {
     readonly event: Event
   }
   type TailEventHandler<Event extends EventType = EventType> = (
-    event: TailEvent<Event>
+    event: TailEvent<Event>,
   ) => void | Promise<void>
   type TailEventHandlerObject = {
     outcome?: TailEventHandler<Outcome>
@@ -14764,8 +14689,7 @@ type VectorizeVectorMetadataValue = string | number | boolean | string[]
  * Additional information to associate with a vector.
  */
 type VectorizeVectorMetadata =
-  | VectorizeVectorMetadataValue
-  | Record<string, VectorizeVectorMetadataValue>
+  VectorizeVectorMetadataValue | Record<string, VectorizeVectorMetadataValue>
 type VectorFloatArray = Float32Array | Float64Array
 interface VectorizeError {
   code?: number
@@ -14777,12 +14701,7 @@ interface VectorizeError {
  * This list is expected to grow as support for more operations are released.
  */
 type VectorizeVectorMetadataFilterOp =
-  | "$eq"
-  | "$ne"
-  | "$lt"
-  | "$lte"
-  | "$gt"
-  | "$gte"
+  "$eq" | "$ne" | "$lt" | "$lte" | "$gt" | "$gte"
 type VectorizeVectorMetadataFilterCollectionOp = "$in" | "$nin"
 /**
  * Filter criteria for vector metadata used to limit the retrieved query result set.
@@ -14937,7 +14856,7 @@ declare abstract class VectorizeIndex {
    */
   public query(
     vector: VectorFloatArray | number[],
-    options?: VectorizeQueryOptions
+    options?: VectorizeQueryOptions,
   ): Promise<VectorizeMatches>
   /**
    * Insert a list of vectors into the index dataset. If a provided id exists, an error will be thrown.
@@ -14983,7 +14902,7 @@ declare abstract class Vectorize {
    */
   public query(
     vector: VectorFloatArray | number[],
-    options?: VectorizeQueryOptions
+    options?: VectorizeQueryOptions,
   ): Promise<VectorizeMatches>
   /**
    * Use the provided vector-id to perform a similarity search across the index.
@@ -14993,7 +14912,7 @@ declare abstract class Vectorize {
    */
   public queryById(
     vectorId: string,
-    options?: VectorizeQueryOptions
+    options?: VectorizeQueryOptions,
   ): Promise<VectorizeMatches>
   /**
    * Insert a list of vectors into the index dataset. If a provided id exists, an error will be thrown.
@@ -15067,7 +14986,7 @@ interface DispatchNamespace {
     args?: {
       [key: string]: any
     },
-    options?: DynamicDispatchOptions
+    options?: DynamicDispatchOptions,
   ): Fetcher
 }
 declare module "cloudflare:workflows" {
@@ -15092,7 +15011,7 @@ declare abstract class Workflow<PARAMS = unknown> {
    * @returns A promise that resolves with a handle for the Instance
    */
   public create(
-    options?: WorkflowInstanceCreateOptions<PARAMS>
+    options?: WorkflowInstanceCreateOptions<PARAMS>,
   ): Promise<WorkflowInstance>
   /**
    * Create a batch of instances and return handle for all of them. If a provided id exists, an error will be thrown.
@@ -15101,20 +15020,13 @@ declare abstract class Workflow<PARAMS = unknown> {
    * @returns A promise that resolves with a list of handles for the created instances.
    */
   public createBatch(
-    batch: WorkflowInstanceCreateOptions<PARAMS>[]
+    batch: WorkflowInstanceCreateOptions<PARAMS>[],
   ): Promise<WorkflowInstance[]>
 }
 type WorkflowDurationLabel =
-  | "second"
-  | "minute"
-  | "hour"
-  | "day"
-  | "week"
-  | "month"
-  | "year"
+  "second" | "minute" | "hour" | "day" | "week" | "month" | "year"
 type WorkflowSleepDuration =
-  | `${number} ${WorkflowDurationLabel}${"s" | ""}`
-  | number
+  `${number} ${WorkflowDurationLabel}${"s" | ""}` | number
 type WorkflowRetentionDuration = WorkflowSleepDuration
 interface WorkflowInstanceCreateOptions<PARAMS = unknown> {
   /**

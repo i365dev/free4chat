@@ -143,7 +143,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
 
     const { result, unmount } = renderHook(() =>
-      useSfuChatRoom("room-a", "alice", "audio", { getTurnstileToken })
+      useSfuChatRoom("room-a", "alice", "audio", { getTurnstileToken }),
     )
 
     await waitFor(() => expect(getTurnstileToken).toHaveBeenCalledTimes(1))
@@ -157,7 +157,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     await waitFor(
       () => {
         const sessionCall = fetchMock.mock.calls.find(([input]) =>
-          String(input).endsWith("/api/sfu/session")
+          String(input).endsWith("/api/sfu/session"),
         )
         if (!sessionCall) {
           throw new Error(
@@ -165,14 +165,14 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
               result.current.connectionStatus
             } error=${result.current.error} fetchCalls=${fetchMock.mock.calls
               .map(([i]) => String(i))
-              .join(",")}`
+              .join(",")}`,
           )
         }
         const body = JSON.parse(sessionCall[1].body as string)
         expect(body.turnstileToken).toBe("fresh-token")
         expect(body.reconnect).toBeUndefined()
       },
-      { timeout: 3000 }
+      { timeout: 3000 },
     )
 
     expect(result.current.connectionStatus).not.toBe("verification_failed")
@@ -185,17 +185,17 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       .mockRejectedValue(new Error("turnstile_error"))
 
     const { result, unmount } = renderHook(() =>
-      useSfuChatRoom("room-b", "bob", "audio", { getTurnstileToken })
+      useSfuChatRoom("room-b", "bob", "audio", { getTurnstileToken }),
     )
 
     await waitFor(() =>
-      expect(result.current.connectionStatus).toBe("verification_failed")
+      expect(result.current.connectionStatus).toBe("verification_failed"),
     )
     expect(getUserMedia).not.toHaveBeenCalled()
     expect(
       fetchMock.mock.calls.some(([input]) =>
-        String(input).endsWith("/api/sfu/session")
-      )
+        String(input).endsWith("/api/sfu/session"),
+      ),
     ).toBe(false)
 
     unmount()
@@ -204,16 +204,16 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   it("never persists a Turnstile token to sessionStorage or localStorage", async () => {
     const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
     const { unmount } = renderHook(() =>
-      useSfuChatRoom("room-c", "carol", "audio", { getTurnstileToken })
+      useSfuChatRoom("room-c", "carol", "audio", { getTurnstileToken }),
     )
 
     await waitFor(() => expect(getTurnstileToken).toHaveBeenCalledTimes(1))
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([input]) =>
-          String(input).endsWith("/api/sfu/session")
-        )
-      ).toBe(true)
+          String(input).endsWith("/api/sfu/session"),
+        ),
+      ).toBe(true),
     )
 
     expect(sessionStorage.getItem("ts_token")).toBeNull()
@@ -224,18 +224,18 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
 
   it("does not request a Turnstile token at all when the caller provides no getTurnstileToken", async () => {
     const { unmount } = renderHook(() =>
-      useSfuChatRoom("room-d", "dave", "audio", {})
+      useSfuChatRoom("room-d", "dave", "audio", {}),
     )
 
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([input]) =>
-          String(input).endsWith("/api/sfu/session")
-        )
-      ).toBe(true)
+          String(input).endsWith("/api/sfu/session"),
+        ),
+      ).toBe(true),
     )
     const sessionCall = fetchMock.mock.calls.find(([input]) =>
-      String(input).endsWith("/api/sfu/session")
+      String(input).endsWith("/api/sfu/session"),
     )
     const body = JSON.parse(sessionCall![1].body as string)
     expect(body.turnstileToken).toBeUndefined()
@@ -334,14 +334,14 @@ describe("useSfuChatRoom room attachments (#123)", () => {
 
   async function connect(room: string) {
     const rendered = renderHook(() =>
-      useSfuChatRoom(room, "uploader", "audio", {})
+      useSfuChatRoom(room, "uploader", "audio", {}),
     )
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([input]) =>
-          String(input).endsWith("/api/sfu/session")
-        )
-      ).toBe(true)
+          String(input).endsWith("/api/sfu/session"),
+        ),
+      ).toBe(true),
     )
     return rendered
   }
@@ -353,11 +353,11 @@ describe("useSfuChatRoom room attachments (#123)", () => {
   it("uploads .log text artifacts with the authoritative MIME from agentTextMime", async () => {
     const { result, unmount } = await connect("room-attach-a")
     const uploaded = await waitFor(() =>
-      result.current.uploadRoomAttachment(makeLogFile())
+      result.current.uploadRoomAttachment(makeLogFile()),
     )
     expect(uploaded.id).toBe("att-123")
     const attachCall = fetchMock.mock.calls.find(([input]) =>
-      String(input).endsWith("/api/room/attachments")
+      String(input).endsWith("/api/room/attachments"),
     )
     const headers = attachCall![1].headers as Record<string, string>
     expect(headers["Content-Type"]).toBe("text/plain")
@@ -367,20 +367,20 @@ describe("useSfuChatRoom room attachments (#123)", () => {
   it("wires upload metadata id into sendCollabRequest attachmentIds over an open socket", async () => {
     const { result, unmount } = await connect("room-attach-b")
     await waitFor(() =>
-      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0),
     )
     const uploaded = await waitFor(() =>
-      result.current.uploadRoomAttachment(makeLogFile())
+      result.current.uploadRoomAttachment(makeLogFile()),
     )
     const requestId = result.current.sendCollabRequest(
       "agent-b",
       "Check the logs",
-      [uploaded.id]
+      [uploaded.id],
     )
     expect(requestId).not.toBe("")
     const ws = RecordingWebSocket.instances.at(-1)!
     const envelopes = ws.sent.map(
-      (raw) => JSON.parse(raw) as Record<string, unknown>
+      (raw) => JSON.parse(raw) as Record<string, unknown>,
     )
     const envelope = envelopes.find((m) => m.type === "collab-request")
     expect(envelope).toBeTruthy()
@@ -420,7 +420,7 @@ describe("useSfuChatRoom room attachments (#123)", () => {
       return jsonResponse({})
     })
     await expect(
-      result.current.uploadRoomAttachment(makeLogFile())
+      result.current.uploadRoomAttachment(makeLogFile()),
     ).rejects.toThrow("unsupported_attachment_type")
     unmount()
   })

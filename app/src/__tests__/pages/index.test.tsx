@@ -12,7 +12,7 @@ describe("Home page", () => {
     render(<Home />)
 
     expect(
-      screen.getByRole("heading", { name: /open a room\. talk instantly\./i })
+      screen.getByRole("heading", { name: /open a room\. talk instantly\./i }),
     ).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /join/i })).toBeInTheDocument()
     expect(screen.getByPlaceholderText("Room Name")).toBeInTheDocument()
@@ -20,7 +20,7 @@ describe("Home page", () => {
 
     // The old global gate rendered this instead of the page. It must be gone.
     expect(
-      screen.queryByText(/verifying you.re human/i)
+      screen.queryByText(/verifying you.re human/i),
     ).not.toBeInTheDocument()
   })
 })

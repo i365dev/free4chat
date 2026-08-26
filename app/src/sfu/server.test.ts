@@ -49,7 +49,7 @@ function doResponderForKind(kind: "human" | "agent"): DoResponder {
 
 function makeEnv(
   overrides: Partial<SfuEnv> = {},
-  respond: DoResponder = okDoResponder
+  respond: DoResponder = okDoResponder,
 ): SfuEnv {
   return {
     SFU_ROOM: fakeSfuRoom(respond),
@@ -62,7 +62,7 @@ function makeEnv(
 
 function req(
   route: string,
-  init: RequestInit & { origin?: string | null } = {}
+  init: RequestInit & { origin?: string | null } = {},
 ): Request {
   const { origin, ...rest } = init
   const headers = new Headers(rest.headers)
@@ -89,7 +89,7 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
     const env = makeEnv()
     const res = await handleSfuRequest(
       req("agent-session", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("agent_media_disabled")
@@ -99,7 +99,7 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "false" })
     const res = await handleSfuRequest(
       req("agent-session", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("agent_media_disabled")
@@ -109,7 +109,7 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
     const env = makeEnv()
     const res = await handleSfuRequest(
       req("agent-room-media", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("agent_media_disabled")
@@ -125,12 +125,12 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, okDoResponder)
     const res = await handleSfuRequest(
       req("agent-session", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
     expect((await json(res)).sessionId).toBe("cf-session-1")
     expect(requestedUrl).toBe(
-      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/new"
+      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/new",
     )
     vi.unstubAllGlobals()
   })
@@ -142,7 +142,7 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
     }))
     const res = await handleSfuRequest(
       req("agent-room-media", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
     expect((await json(res)).participants).toEqual([])
@@ -155,7 +155,7 @@ describe("AGENT_MEDIA_ENABLED gate", () => {
     }))
     const res = await handleSfuRequest(
       req("agent-room-media", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(401)
     expect((await json(res)).error).toBe("unauthorized")
@@ -169,7 +169,7 @@ describe("Origin policy is route-scoped, not global", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ sessionId: "stub-session" }))
+      vi.fn(async () => Response.json({ sessionId: "stub-session" })),
     )
   })
   afterEach(() => {
@@ -190,7 +190,7 @@ describe("Origin policy is route-scoped, not global", () => {
       const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" })
       const res = await handleSfuRequest(
         req(route, { body: JSON.stringify(agentBody) }),
-        env
+        env,
       )
       // May still fail validation for unrelated reasons (missing fields,
       // no SDP, etc.) — the only thing this asserts is that it was never
@@ -206,7 +206,7 @@ describe("Origin policy is route-scoped, not global", () => {
       const env = makeEnv()
       const res = await handleSfuRequest(
         req(route, { body: JSON.stringify({ room: "r", name: "n" }) }),
-        env
+        env,
       )
       expect(res.status).toBe(403)
       expect((await json(res)).error).toBe("forbidden_origin")
@@ -218,9 +218,9 @@ describe("Origin policy is route-scoped, not global", () => {
     const res = await handleSfuRequest(
       new Request(
         "https://example.com/api/sfu/ws?room=r&participantId=p&token=t",
-        { method: "GET", headers: { Upgrade: "websocket" } }
+        { method: "GET", headers: { Upgrade: "websocket" } },
       ),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("forbidden_origin")
@@ -233,7 +233,7 @@ describe("Origin policy is route-scoped, not global", () => {
         body: JSON.stringify(agentBody),
         origin: "https://evil.example.com",
       }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("forbidden_origin")
@@ -246,7 +246,7 @@ describe("Origin policy is route-scoped, not global", () => {
         body: JSON.stringify({ room: "r", name: "n" }),
         origin: "https://www.free4.chat",
       }),
-      env
+      env,
     )
     // Rejected for other reasons (no Turnstile secret configured -> passes
     // verifyTurnstile trivially, so this should actually reach the SFU
@@ -259,7 +259,7 @@ describe("agent-session rate limiting", () => {
   beforeEach(() => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ sessionId: "cf-session" }))
+      vi.fn(async () => Response.json({ sessionId: "cf-session" })),
     )
   })
   afterEach(() => {
@@ -277,7 +277,7 @@ describe("agent-session rate limiting", () => {
           body: JSON.stringify(agentBody),
           headers: { "CF-Connecting-IP": "203.0.113.9" },
         }),
-        env
+        env,
       )
       statuses.push(res.status)
     }
@@ -294,7 +294,7 @@ describe("agent-session rate limiting", () => {
           body: JSON.stringify(agentBody),
           headers: { "CF-Connecting-IP": "203.0.113.10" },
         }),
-        env
+        env,
       )
     }
     const agentRes = await handleSfuRequest(
@@ -302,7 +302,7 @@ describe("agent-session rate limiting", () => {
         body: JSON.stringify(agentBody),
         headers: { "CF-Connecting-IP": "203.0.113.10" },
       }),
-      env
+      env,
     )
     expect(agentRes.status).toBe(429)
 
@@ -312,7 +312,7 @@ describe("agent-session rate limiting", () => {
         origin: "https://www.free4.chat",
         headers: { "CF-Connecting-IP": "203.0.113.10" },
       }),
-      env
+      env,
     )
     expect(humanRes.status).not.toBe(429)
   })
@@ -330,7 +330,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
       Response.json({
         sessionDescription: { type: "answer", sdp: "sdp" },
         tracks: [{ mid: "0" }],
-      })
+      }),
     )
     vi.stubGlobal("fetch", fetchMock)
   })
@@ -366,10 +366,10 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
             trackName: "audio-1",
             kind: "audio",
             mid: "0",
-          })
+          }),
         ),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -385,10 +385,10 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
             trackName: "video-1",
             kind: "video",
             mid: "1",
-          })
+          }),
         ),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -397,7 +397,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
   it("Agent + remote Human audio track => allowed (subscribing is the whole point of Phase 0)", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
     const res = await handleSfuRequest(
       req("tracks", {
@@ -406,10 +406,10 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
             location: "remote",
             sessionId: "human-sess-1",
             trackName: "audio-human",
-          })
+          }),
         ),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -418,7 +418,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
   it("Agent + local audio track => 403 before any Cloudflare upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
     const res = await handleSfuRequest(
       req("tracks", {
@@ -428,10 +428,10 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
             trackName: "audio-1",
             kind: "audio",
             mid: "0",
-          })
+          }),
         ),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("agent_publish_not_allowed")
@@ -441,7 +441,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
   it("Agent + local video track => 403 before any Cloudflare upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
     const res = await handleSfuRequest(
       req("tracks", {
@@ -451,10 +451,10 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
             trackName: "video-1",
             kind: "video",
             mid: "1",
-          })
+          }),
         ),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("agent_publish_not_allowed")
@@ -464,7 +464,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
   it("Agent + a mix of one remote and one local track => still 403, nothing forwarded upstream", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
     const res = await handleSfuRequest(
       req("tracks", {
@@ -489,7 +489,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("agent_publish_not_allowed")
@@ -499,7 +499,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
   it("does not affect renegotiate (no tracks array, route-scoped check)", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
     const res = await handleSfuRequest(
       req("renegotiate", {
@@ -512,7 +512,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
           sessionDescription: { type: "answer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
   })
@@ -544,7 +544,7 @@ describe("Meeting Notes room grant is a real authorization boundary, not just to
     }))
     const res = await handleSfuRequest(
       req("agent-room-media", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("meeting_notes_not_authorized")
@@ -557,7 +557,7 @@ describe("Meeting Notes room grant is a real authorization boundary, not just to
     }))
     const res = await handleSfuRequest(
       req("agent-session", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("meeting_notes_not_authorized")
@@ -586,7 +586,7 @@ describe("Meeting Notes revocation blocks every subsequent Agent media operation
     vi.stubGlobal("fetch", fetchMock)
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      revokedAuthorizeResponder
+      revokedAuthorizeResponder,
     )
     const res = await handleSfuRequest(
       req("tracks", {
@@ -605,7 +605,7 @@ describe("Meeting Notes revocation blocks every subsequent Agent media operation
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("meeting_notes_not_authorized")
@@ -615,12 +615,12 @@ describe("Meeting Notes revocation blocks every subsequent Agent media operation
 
   it("/renegotiate rejects a revoked agent even with a previously-valid sessionId", async () => {
     const fetchMock = vi.fn(async () =>
-      Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } })
+      Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } }),
     )
     vi.stubGlobal("fetch", fetchMock)
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      revokedAuthorizeResponder
+      revokedAuthorizeResponder,
     )
     const res = await handleSfuRequest(
       req("renegotiate", {
@@ -633,7 +633,7 @@ describe("Meeting Notes revocation blocks every subsequent Agent media operation
           sessionDescription: { type: "answer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("meeting_notes_not_authorized")
@@ -648,12 +648,12 @@ describe("Meeting Notes revocation blocks every subsequent Agent media operation
     // RoomSession's single isAgentAuthorizedForMedia check would actually
     // answer each at that point in time.
     const fetchMock = vi.fn(async () =>
-      Response.json({ tracks: [{ mid: "0" }] })
+      Response.json({ tracks: [{ mid: "0" }] }),
     )
     vi.stubGlobal("fetch", fetchMock)
     const deniedEnv = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      revokedAuthorizeResponder
+      revokedAuthorizeResponder,
     )
     const deniedRes = await handleSfuRequest(
       req("tracks", {
@@ -672,13 +672,13 @@ describe("Meeting Notes revocation blocks every subsequent Agent media operation
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      deniedEnv
+      deniedEnv,
     )
     expect(deniedRes.status).toBe(403)
 
     const allowedEnv = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
     const allowedRes = await handleSfuRequest(
       req("tracks", {
@@ -697,7 +697,7 @@ describe("Meeting Notes revocation blocks every subsequent Agent media operation
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      allowedEnv
+      allowedEnv,
     )
     expect(allowedRes.status).toBe(200)
     vi.unstubAllGlobals()
@@ -754,7 +754,7 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
 
     const res = await handleSfuRequest(
       req("tracks", { body: JSON.stringify(agentRemoteBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(403)
@@ -768,8 +768,8 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
     // itself rejected), and it was actively closed upstream.
     expect(
       seenActions.some(
-        (action) => action.action === "agent-media-cleanup-pending"
-      )
+        (action) => action.action === "agent-media-cleanup-pending",
+      ),
     ).toBe(false)
   })
 
@@ -792,12 +792,12 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
 
     const res = await handleSfuRequest(
       req("tracks", { body: JSON.stringify(agentRemoteBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(403)
     const pendingCall = seenActions.find(
-      (action) => action.action === "agent-media-cleanup-pending"
+      (action) => action.action === "agent-media-cleanup-pending",
     )
     expect(pendingCall).toBeDefined()
     expect(pendingCall?.mids).toEqual(["7"])
@@ -807,16 +807,16 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
   it("fails closed when the upstream response for an agent's remote track carries no usable mid", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ tracks: [{}] }))
+      vi.fn(async () => Response.json({ tracks: [{}] })),
     )
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
 
     const res = await handleSfuRequest(
       req("tracks", { body: JSON.stringify(agentRemoteBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(502)
@@ -826,16 +826,16 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
   it("fails closed when the upstream response is missing the tracks array entirely", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({}))
+      vi.fn(async () => Response.json({})),
     )
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
-      doResponderForKind("agent")
+      doResponderForKind("agent"),
     )
 
     const res = await handleSfuRequest(
       req("tracks", { body: JSON.stringify(agentRemoteBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(502)
@@ -879,7 +879,7 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
 
     const res = await handleSfuRequest(
       req("tracks", { body: JSON.stringify(agentRemoteBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(403)
@@ -891,8 +891,8 @@ describe("TOCTOU: the grant can be revoked between authorize() and subscription 
     expect(closeCalls[0]).toMatchObject({ tracks: [{ mid: "9" }] })
     expect(
       seenActions.some(
-        (action) => action.action === "agent-media-cleanup-pending"
-      )
+        (action) => action.action === "agent-media-cleanup-pending",
+      ),
     ).toBe(false)
   })
 })
@@ -912,7 +912,7 @@ describe("Agent remote-track subscriptions register their assigned mids for late
   it("records the upstream-assigned mid for an agent's remote subscription", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ tracks: [{ mid: "5" }] }))
+      vi.fn(async () => Response.json({ tracks: [{ mid: "5" }] })),
     )
     const seenActions: Array<Record<string, unknown>> = []
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
@@ -938,11 +938,11 @@ describe("Agent remote-track subscriptions register their assigned mids for late
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
     const registerCall = seenActions.find(
-      (action) => action.action === "agent-track-subscribed"
+      (action) => action.action === "agent-track-subscribed",
     )
     expect(registerCall).toBeDefined()
     expect(registerCall?.mids).toEqual(["5"])
@@ -953,7 +953,7 @@ describe("Agent remote-track subscriptions register their assigned mids for late
   it("does not register anything for a Human's own remote subscription", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ tracks: [{ mid: "5" }] }))
+      vi.fn(async () => Response.json({ tracks: [{ mid: "5" }] })),
     )
     const seenActions: Array<Record<string, unknown>> = []
     const env = makeEnv({}, (body) => {
@@ -979,11 +979,11 @@ describe("Agent remote-track subscriptions register their assigned mids for late
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
     expect(res.status).toBe(200)
     expect(
-      seenActions.some((action) => action.action === "agent-track-subscribed")
+      seenActions.some((action) => action.action === "agent-track-subscribed"),
     ).toBe(false)
   })
 })
@@ -1018,7 +1018,7 @@ describe("agent-session rejects when the grant is no longer valid by the time at
   it("propagates agent-media-attach's rejection instead of returning the orphaned sessionId", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ sessionId: "cf-session-1" }))
+      vi.fn(async () => Response.json({ sessionId: "cf-session-1" })),
     )
     const seenActions: Array<Record<string, unknown>> = []
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
@@ -1034,13 +1034,13 @@ describe("agent-session rejects when the grant is no longer valid by the time at
 
     const res = await handleSfuRequest(
       req("agent-session", { body: JSON.stringify(agentBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(403)
     expect((await json(res)).error).toBe("meeting_notes_not_authorized")
     expect(seenActions.some((a) => a.action === "agent-media-attach")).toBe(
-      true
+      true,
     )
   })
 })
@@ -1074,7 +1074,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
 
   it("rejects before calling Cloudflare when the DO's preflight reports capacity exhausted", async () => {
     const fetchMock = vi.fn(async () =>
-      Response.json({ tracks: [{ mid: "1" }] })
+      Response.json({ tracks: [{ mid: "1" }] }),
     )
     vi.stubGlobal("fetch", fetchMock)
     const seenActions: Array<Record<string, unknown>> = []
@@ -1087,7 +1087,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
 
     const res = await handleSfuRequest(
       req("tracks", { body: JSON.stringify(agentRemoteBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(503)
@@ -1103,7 +1103,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
 
   it("rejects before calling Cloudflare when the preflight reports active-mid capacity exhausted", async () => {
     const fetchMock = vi.fn(async () =>
-      Response.json({ tracks: [{ mid: "1" }] })
+      Response.json({ tracks: [{ mid: "1" }] }),
     )
     vi.stubGlobal("fetch", fetchMock)
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
@@ -1114,7 +1114,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
 
     const res = await handleSfuRequest(
       req("tracks", { body: JSON.stringify(agentRemoteBody) }),
-      env
+      env,
     )
 
     expect(res.status).toBe(503)
@@ -1125,7 +1125,9 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
   it("passes remoteTrackCount for a multi-track request and 0 for a Human's own request", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ tracks: [{ mid: "1" }, { mid: "2" }] }))
+      vi.fn(async () =>
+        Response.json({ tracks: [{ mid: "1" }, { mid: "2" }] }),
+      ),
     )
     const seenActions: Array<Record<string, unknown>> = []
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
@@ -1157,7 +1159,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
 
     const authorizeCall = seenActions.find((a) => a.action === "authorize")
@@ -1167,7 +1169,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
     seenActions.length = 0
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ tracks: [{ mid: "1" }] }))
+      vi.fn(async () => Response.json({ tracks: [{ mid: "1" }] })),
     )
     const humanEnv = makeEnv({}, (body) => {
       seenActions.push(body)
@@ -1192,7 +1194,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
           sessionDescription: { type: "offer", sdp: "sdp" },
         }),
       }),
-      humanEnv
+      humanEnv,
     )
     const humanAuthorizeCall = seenActions.find((a) => a.action === "authorize")
     expect(humanAuthorizeCall?.remoteTrackCount).toBe(1) // sent regardless of kind — the DO only *acts* on it for agent-kind callers
@@ -1202,8 +1204,8 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } })
-      )
+        Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } }),
+      ),
     )
     const seenActions: Array<Record<string, unknown>> = []
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
@@ -1224,7 +1226,7 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
           sessionDescription: { type: "answer", sdp: "sdp" },
         }),
       }),
-      env
+      env,
     )
 
     const authorizeCall = seenActions.find((a) => a.action === "authorize")
