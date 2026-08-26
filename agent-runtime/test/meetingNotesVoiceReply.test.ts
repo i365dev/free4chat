@@ -192,9 +192,147 @@ test("epoch change tears down and rebuilds the speaker", async () => {
     makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 200 }),
     () => Promise.resolve(providerFor([{ text: "second" }]))
   )
-  await waitFor(() => current(c) !== first)
-  assert.notEqual(current(c), first)
+  // Strengthened regression: the old speaker must be replaced by a REAL
+  // rebuilt one, not merely end up "not first" (null would also pass that).
+  await waitFor(() => {
+    const now = current(c)
+    return now !== null && now !== first
+  })
   assert.ok(bridge.deactivated >= 1)
+})
+
+test("voice-only grant (MN off, VR on) holds exactly one shared session", async () => {
+  const bridge = new FakeBridge()
+  let created = 0
+  const c = new MeetingNotesController({
+    client: fakeClient(makeRoomInfo({ mnActive: false, vrActive: false })),
+    roomId: "room-1",
+    participantId: "agent-1",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: handle(),
+    onEvent: () => undefined,
+    createBridge: () => {
+      created += 1
+      return bridge as never
+    },
+    createPeerConnection: (() => ({ close() {} })) as never,
+    restClient: {} as never,
+    log: () => undefined,
+    voiceReply: {
+      createTtsProvider: () =>
+        Promise.resolve(providerFor([{ text: "a" }])),
+    },
+  })
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: false, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  await waitFor(() => current(c) !== null)
+  current(c)!.speak("Solo.")
+  await waitFor(() => bridge.written.length >= 1)
+  // A steady-state re-poll with unchanged grants must never rebuild.
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: false, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  assert.equal(created, 1)
+  assert.equal(Buffer.from(bridge.written[0]!).toString("utf8"), "pcm:Solo.#0")
+})
+
+test("meeting-notes-only grant (MN on, VR off) runs subscribe-only without voice", async () => {
+  const bridge = new FakeBridge()
+  let ttsCalls = 0
+  const c = new MeetingNotesController({
+    client: fakeClient(makeRoomInfo({ mnActive: false, vrActive: false })),
+    roomId: "room-1",
+    participantId: "agent-1",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: handle(),
+    onEvent: () => undefined,
+    createBridge: () => bridge as never,
+    createPeerConnection: (() => ({ close() {} })) as never,
+    restClient: {} as never,
+    log: () => undefined,
+    voiceReply: {
+      createTtsProvider: () => {
+        ttsCalls += 1
+        return Promise.reject(new Error("tts must not be built"))
+      },
+    },
+  })
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: false }),
+    () => Promise.reject(new Error("unreachable"))
+  )
+  assert.equal(bridge.started, true)
+  assert.equal(current(c), null)
+  assert.equal(ttsCalls, 0)
+})
+
+test("both grants active across repeated polls keep exactly ONE media session", async () => {
+  const bridge = new FakeBridge()
+  let created = 0
+  const c = new MeetingNotesController({
+    client: fakeClient(makeRoomInfo({ mnActive: false, vrActive: false })),
+    roomId: "room-1",
+    participantId: "agent-1",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: handle(),
+    onEvent: () => undefined,
+    createBridge: () => {
+      created += 1
+      return bridge as never
+    },
+    createPeerConnection: (() => ({ close() {} })) as never,
+    restClient: {} as never,
+    log: () => undefined,
+    voiceReply: {
+      createTtsProvider: () =>
+        Promise.resolve(providerFor([{ text: "a" }])),
+    },
+  })
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  await waitFor(() => current(c) !== null)
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  assert.equal(created, 1)
+  assert.ok(bridge.started)
+  assert.equal(bridge.stopped, false)
+})
+
+test("with both grants gone there is no bridge left running", async () => {
+  const bridge = new FakeBridge()
+  const c = controller(bridge, () =>
+    Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor([{ text: "x" }]))
+  )
+  await waitFor(() => current(c) !== null)
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: false, vrActive: false }),
+    () => Promise.reject(new Error("unreachable"))
+  )
+  assert.equal(bridge.stopped, true)
+  assert.equal(current(c), null)
 })
 
 test("revocation stops voice output", async () => {

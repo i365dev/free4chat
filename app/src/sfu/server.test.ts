@@ -415,7 +415,28 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it("Agent + local audio track => 403 before any Cloudflare upstream call", async () => {
+  const voiceReplyTracksBody = (
+    tracks: Array<Record<string, unknown>>,
+    overrides: Record<string, unknown> = {}
+  ) => ({
+    room: "room-1",
+    participantId: "agent-1",
+    token: "tok-1",
+    sessionId: "sess-1",
+    purpose: "voice-reply",
+    tracks,
+    sessionDescription: { type: "offer", sdp: "sdp" },
+    ...overrides,
+  })
+
+  const localAudio = {
+    location: "local",
+    trackName: "agent-voice",
+    kind: "audio",
+    mid: "7",
+  }
+
+  it("Agent + local audio WITHOUT purpose => 403 agent_media_purpose_required before any upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
       doResponderForKind("agent")
@@ -423,22 +444,17 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     const res = await handleSfuRequest(
       req("tracks", {
         body: JSON.stringify(
-          agentTracksBody({
-            location: "local",
-            trackName: "audio-1",
-            kind: "audio",
-            mid: "0",
-          })
+          voiceReplyTracksBody([localAudio], { purpose: undefined })
         ),
       }),
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect((await json(res)).error).toBe("agent_media_purpose_required")
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("Agent + local video track => 403 before any Cloudflare upstream call", async () => {
+  it("Agent + local audio + wrong purpose meeting-notes => 403 agent_media_direction_forbidden before any upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
       doResponderForKind("agent")
@@ -446,54 +462,144 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     const res = await handleSfuRequest(
       req("tracks", {
         body: JSON.stringify(
-          agentTracksBody({
-            location: "local",
-            trackName: "video-1",
-            kind: "video",
-            mid: "1",
-          })
+          voiceReplyTracksBody([localAudio], { purpose: "meeting-notes" })
         ),
       }),
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect((await json(res)).error).toBe("agent_media_direction_forbidden")
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("Agent + a mix of one remote and one local track => still 403, nothing forwarded upstream", async () => {
+  it("Agent + local VIDEO track => 403 agent_video_forbidden before any upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
       doResponderForKind("agent")
     )
     const res = await handleSfuRequest(
       req("tracks", {
-        body: JSON.stringify({
-          room: "room-1",
-          participantId: "agent-1",
-          token: "tok-1",
-          sessionId: "sess-1",
-          tracks: [
+        body: JSON.stringify(
+          voiceReplyTracksBody([
+            {
+              location: "local",
+              trackName: "video-1",
+              kind: "video",
+              mid: "1",
+            },
+          ])
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_video_forbidden")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + TWO local audio tracks => 403 agent_publish_invalid_track_count before any upstream call", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          voiceReplyTracksBody([
+            localAudio,
+            { ...localAudio, trackName: "agent-voice-2", mid: "8" },
+          ])
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_publish_invalid_track_count")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + mixed local+remote tracks => 403 agent_media_direction_forbidden before any upstream call", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          voiceReplyTracksBody([
+            localAudio,
             {
               location: "remote",
               sessionId: "human-sess-1",
               trackName: "audio-human",
             },
-            {
-              location: "local",
-              trackName: "audio-1",
-              kind: "audio",
-              mid: "0",
-            },
-          ],
-          sessionDescription: { type: "offer", sdp: "sdp" },
-        }),
+          ])
+        ),
       }),
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect((await json(res)).error).toBe("agent_media_direction_forbidden")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + local audio while AGENT_MEDIA_ENABLED is off => 403 agent_media_disabled before any upstream call", async () => {
+    const env = makeEnv(undefined, doResponderForKind("agent"))
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_media_disabled")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + local audio without the voiceReply grant => DO rejection surfaced before any upstream call", async () => {
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize")
+        return { status: 403, body: { error: "voice_reply_not_authorized" } }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("voice_reply_not_authorized")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Granted Agent + exactly one local audio track with purpose voice-reply => forwarded upstream once and booked via agent-track-published", async () => {
+    const roomActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      roomActions.push(body)
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const upstreamUrl = String(fetchMock.mock.calls[0]![0])
+    expect(upstreamUrl.endsWith("/sessions/sess-1/tracks/new")).toBe(true)
+    expect(roomActions.map((action) => action.action)).toEqual([
+      "agent-track-published",
+    ])
+    expect(roomActions[0]).toMatchObject({
+      participantId: "agent-1",
+      sessionId: "sess-1",
+      mid: "0",
+      trackName: "agent-voice",
+    })
   })
 
   it("does not affect renegotiate (no tracks array, route-scoped check)", async () => {

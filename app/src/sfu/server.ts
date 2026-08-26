@@ -1,5 +1,6 @@
 import type { SfuSessionResponse, SfuTrack } from "./types"
 import { isAllowedOrigin } from "../common/origin"
+import { resolveAgentPurposePermission } from "../do/meetingNotesAuth"
 import { closeRealtimeTracks } from "../do/realtimeMedia"
 import type { RoomSession } from "../do/RoomSession"
 
@@ -419,9 +420,7 @@ export async function handleSfuRequest(
       undefined,
       remoteTrackCount,
       typeof body.purpose === "string" ? body.purpose : undefined,
-      (request.headers.get("origin") ?? "") !== ""
-        ? body.wantsVoicePublish === true
-        : body.wantsVoicePublish === true,
+      body.wantsVoicePublish === true,
       localTracks.length
     )
     if (!auth.ok) return auth
@@ -437,12 +436,34 @@ export async function handleSfuRequest(
     // Realtime — rejecting only RoomSession's later `publish` bookkeeping
     // would be too late, since the upstream SFU publication could already
     // have succeeded by then. Human publishing is completely unaffected.
-    if (route === "tracks") {
-      const hasLocalTrack = requestedTracks.some(
-        (track) => track.location === "local"
-      )
-      if (participantKind === "agent" && hasLocalTrack)
-        return json({ error: "agent_publish_not_allowed" }, 403)
+
+    // #83 security gate: admit an Agent local publication only when
+    // AGENT_MEDIA_ENABLED is on AND purpose is "voice-reply" AND the
+    // voiceReply grant names THIS participant (the DO "authorize" above owns
+    // that room-state check) AND the request carries exactly one local audio
+    // track and no remote tracks. Everything fails closed BEFORE any
+    // Cloudflare tracks/new call.
+    if (
+      route === "tracks" &&
+      participantKind === "agent" &&
+      localTracks.length > 0
+    ) {
+      if (!agentMediaEnabled(env))
+        return json({ error: "agent_media_disabled" }, 403)
+      // From ACTUAL requested kinds, never a client-declared flag; unknown
+      // kinds fail closed like video.
+      const involvesVideo = localTracks.some((track) => track.kind !== "audio")
+      const direction = resolveAgentPurposePermission({
+        purpose: body.purpose,
+        wantsLocalPublish: true,
+        wantsRemoteSubscribe: remoteTrackCount > 0,
+        involvesVideo,
+      })
+      if (direction.ok === false) {
+        return json({ error: direction.error }, 403)
+      }
+      if (localTracks.length !== 1)
+        return json({ error: "agent_publish_invalid_track_count" }, 403)
     }
     for (const remoteTrack of requestedTracks.filter(
       (track) => track.location === "remote"
@@ -481,24 +502,14 @@ export async function handleSfuRequest(
     if (!upstream.ok)
       return new Response(responseBody, { status: upstream.status })
 
-    // #83: agent publication shape gates BEFORE Cloudflare — single audio
-    // track only, explicit voice-reply purpose, video/screen denied.
-    if (
-      route === "tracks" &&
-      participantKind === "agent" &&
-      localTracks.length > 0
-    ) {
-      if (!body.sessionDescription)
-        return json({ error: "agent_publish_invalid_track" }, 403)
-      if (localTracks.length > 1)
-        return json({ error: "agent_publish_invalid_track_count" }, 403)
-      if (localTracks.some((track) => track.kind === "video"))
-        return json({ error: "agent_publish_audio_only" }, 403)
-    }
     if (route === "tracks" && Array.isArray(body.tracks)) {
       for (const track of body.tracks as Array<Record<string, unknown>>) {
         if (track.location !== "local" || typeof track.trackName !== "string")
           continue
+        // #83: an Agent's publication is booked through the grant-rechecking
+        // "agent-track-published" action below — never this Human track-list
+        // action, which rejects agents outright.
+        if (participantKind === "agent") continue
         const trackKind: SfuTrack["kind"] =
           track.kind === "video" ? "video" : "audio"
         await roomControl(env, room, {
