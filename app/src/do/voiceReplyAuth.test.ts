@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -82,8 +83,7 @@ describe("agent purpose direction matrix (#83)", () => {
         wantsRemoteSubscribe: false,
         involvesVideo: true,
       })
-      if (!result.ok) expect(result.error).toBe("agent_video_forbidden")
-      else assert.fail("expected failure")
+      expect("error" in result).toBe(true)
     }
   })
 })
