@@ -1896,8 +1896,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             Boolean(request.trackSessionId || request.dataChannelSessionId),
           involvesVideo: false,
         })
-        if (!decision.ok)
-          return this.json({ error: decision.error }, 403)
+        if (!decision.ok) return this.json({ error: decision.error }, 403)
         void decision
         if (
           request.wantsVoicePublish === true &&
