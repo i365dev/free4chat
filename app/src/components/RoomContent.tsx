@@ -173,7 +173,7 @@ export default function RoomContent({
   const roomAgents = participants.filter((p) => p.kind === "agent")
   // Defensive defaults keep partial hook mocks in tests valid.
   const voiceReply = voiceReplyState ?? { active: false }
-  const connectedAgentForVoice = roomAgents.find((p) => p.connected)
+  const connectedAgentForVoice = roomAgents[0]
   const handleStartVoiceReply = () => {
     if (!connectedAgentForVoice) return
     startVoiceReply(connectedAgentForVoice.peerId)

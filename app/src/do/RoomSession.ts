@@ -14,6 +14,7 @@ import {
 } from "./collab"
 import {
   agentMediaPermissions,
+  type VoiceReplyState,
   clearGrantIfParticipantDeparting,
   clearVoiceReplyIfParticipantDeparting,
   isAgentAuthorizedForMedia,
@@ -128,6 +129,7 @@ interface StoredRoom
     | "attachments"
     | "nextMessageSequence"
     | "meetingNotes"
+    | "voiceReply"
     | "pendingMediaCleanup"
   > {
   participants: Record<string, StoredParticipant>
@@ -165,6 +167,7 @@ type ControlRequest =
       // any Cloudflare tracks/new call is made. Ignored for Human callers.
       remoteTrackCount?: number
       purpose?: unknown
+      localTrackCount?: number
     }
   | {
       action: "agent-track-published"
