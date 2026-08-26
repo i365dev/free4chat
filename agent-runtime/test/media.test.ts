@@ -51,9 +51,7 @@ class FakeRestClient implements SfuRestClientLike {
   }
   /** Optional native initial-offer contract. Absent by default so existing
    * tests keep the createAgentSession() + establish fallback path. */
-  createAgentSessionWithOffer?: (
-    offer: SessionDescriptionLike
-  ) => Promise<{
+  createAgentSessionWithOffer?: (offer: SessionDescriptionLike) => Promise<{
     sessionId: string
     sessionDescription?: SessionDescriptionLike
   }>
@@ -397,7 +395,6 @@ test("subscribes to a newly discovered Human audio track and reports it started"
   assert.deepEqual(restClient.establishTransportCalls, [
     {
       sessionId: "agent-session-1",
-      offer: { type: "offer", sdp: "fake-initial-offer" },
       purpose: "agent-transport",
     },
   ])
