@@ -15,18 +15,21 @@ status response, Harness prompt, room message, analytics, or external logs.
 An Agent can bootstrap the published package without a repository checkout:
 
 ```bash
-npx -y @i365dev/free4chat-agent@0.1.1 join \
+npx -y @i365dev/free4chat-agent@latest join \
   --room <room-id> \
   --agent <hermes|opencode|codex|claude|pi|deepseek-harness> \
   --name <name>
 ```
 
-If the command is already installed, the equivalent `free4chat-agent join`
+`@latest` follows the npm registry dist-tag, so bootstrap keeps working while
+the repository source is being prepared for a newer release. If the command
+is already installed, the equivalent `free4chat-agent join`
 command avoids the package lookup. The calling Harness is responsible for
 selecting its explicit launcher; there is intentionally no unreliable
 `--agent auto` heuristic. `free4chat-agent doctor` reports Node compatibility,
 launcher readiness, maturity, and the trusted-room security classification
-without printing credentials or capability values.
+without printing credentials or capability values; the npx fallback is
+`npx -y @i365dev/free4chat-agent@latest doctor`.
 
 ## Local development
 
@@ -43,20 +46,42 @@ node dist/cli.js stop
 
 The daemon uses a restrictive Unix socket under `~/.free4chat-agent/` (or `FREE4CHAT_AGENT_DIR`). It is intentionally not a launchd/systemd service yet; no reboot persistence is provided by this MVP.
 
-Version `0.1.0` was published manually as `@i365dev/free4chat-agent@0.1.0`.
-Future releases use npm Trusted Publishing from the Agent Runtime workflow;
-the workflow does not use an `NPM_TOKEN` or publish on ordinary branch pushes
-or pull requests. Package versions are immutable, so version changes must be
-explicit source changes reviewed before release.
+Release history: version `0.1.0` was published manually before release
+automation existed; every release since then goes through the
+tag-triggered workflow described below.
+
+## Release model
+
+- **Source of truth for the next artifact:** `agent-runtime/package.json`
+  (and `package-lock.json`). The source tree may be ahead of npm between a
+  merged change and its release; that gap is expected and is why public
+  bootstrap instructions use `@latest` instead of a pinned source version.
+- **Published artifact:** the npm registry — the registry's
+  `dist-tags.latest` is what users and Agents can actually install.
+- **Release trigger:** pushing a tag named
+  `agent-runtime-v<package-version>` (for example `agent-runtime-v0.4.0`
+  for `version: "0.4.0"`). The workflow fails closed when the tag does not
+  match `package.json`.
+- **Publish mechanism:** npm Trusted Publishing through GitHub OIDC
+  (`id-token: write`, no `NPM_TOKEN`). Ordinary branch pushes and pull
+  requests only validate (install, format, lint, type-check, build, test,
+  pack) and can never publish.
 
 Maintainer release flow:
 
-1. Bump `agent-runtime/package.json` and update `package-lock.json` consistently.
-2. Merge the reviewed change.
-3. Create a matching tag, for example `agent-runtime-v0.1.1`.
-4. Push the tag.
-5. The Agent Runtime workflow validates the tag and package version, then
-   publishes through GitHub OIDC/npm Trusted Publishing.
+1. Ensure `cf-sfu` contains the reviewed `agent-runtime/package.json`
+   version intended for release, with `package-lock.json` consistent.
+2. Create and push the matching tag, for example `agent-runtime-v0.4.0`.
+3. The Agent Runtime workflow verifies tag == package version, confirms the
+   version is not already published, rebuilds, re-tests, and re-runs the
+   package check before publishing through GitHub OIDC/npm Trusted
+   Publishing.
+4. Read-only verification afterwards:
+   `npm view @i365dev/free4chat-agent dist-tags --json` shows the new
+   `latest`, and `npx -y @i365dev/free4chat-agent@latest doctor` runs it.
+
+Tagging and publishing are maintainer actions performed after review; this
+documentation change itself performs neither.
 
 The npm Trusted Publisher is bound to `.github/workflows/agent-runtime.yml`.
 Do not republish an existing version or add an npm write token.

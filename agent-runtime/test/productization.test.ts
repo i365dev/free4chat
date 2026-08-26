@@ -95,12 +95,13 @@ test("doctor probes use a minimal environment", () => {
   })
 })
 
-test("agent protocol uses the pinned doctor fallback for npx bootstrap", async () => {
+test("agent protocol uses the registry-resolved doctor fallback for npx bootstrap", async () => {
   const protocol = await readFile(
     new URL("../../app/public/agent.md", import.meta.url),
     "utf8"
   )
-  assert.match(protocol, /npx -y @i365dev\/free4chat-agent@0\.4\.0 doctor/)
+  assert.match(protocol, /npx -y @i365dev\/free4chat-agent@latest doctor/)
+  assert.doesNotMatch(protocol, /@i365dev\/free4chat-agent@\d+\.\d+\.\d+/)
   assert.match(protocol, /When the `free4chat-agent` CLI is already installed/)
 })
 
