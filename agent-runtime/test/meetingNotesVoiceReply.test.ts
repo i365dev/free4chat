@@ -219,8 +219,7 @@ test("voice-only grant (MN off, VR on) holds exactly one shared session", async 
     restClient: {} as never,
     log: () => undefined,
     voiceReply: {
-      createTtsProvider: () =>
-        Promise.resolve(providerFor([{ text: "a" }])),
+      createTtsProvider: () => Promise.resolve(providerFor([{ text: "a" }])),
     },
   })
   await drive(
@@ -262,10 +261,8 @@ test("meeting-notes-only grant (MN on, VR off) runs subscribe-only without voice
       },
     },
   })
-  await drive(
-    c,
-    makeRoomInfo({ mnActive: true, vrActive: false }),
-    () => Promise.reject(new Error("unreachable"))
+  await drive(c, makeRoomInfo({ mnActive: true, vrActive: false }), () =>
+    Promise.reject(new Error("unreachable"))
   )
   assert.equal(bridge.started, true)
   assert.equal(current(c), null)
@@ -290,8 +287,7 @@ test("both grants active across repeated polls keep exactly ONE media session", 
     restClient: {} as never,
     log: () => undefined,
     voiceReply: {
-      createTtsProvider: () =>
-        Promise.resolve(providerFor([{ text: "a" }])),
+      createTtsProvider: () => Promise.resolve(providerFor([{ text: "a" }])),
     },
   })
   await drive(
@@ -326,10 +322,8 @@ test("with both grants gone there is no bridge left running", async () => {
     () => Promise.resolve(providerFor([{ text: "x" }]))
   )
   await waitFor(() => current(c) !== null)
-  await drive(
-    c,
-    makeRoomInfo({ mnActive: false, vrActive: false }),
-    () => Promise.reject(new Error("unreachable"))
+  await drive(c, makeRoomInfo({ mnActive: false, vrActive: false }), () =>
+    Promise.reject(new Error("unreachable"))
   )
   assert.equal(bridge.stopped, true)
   assert.equal(current(c), null)
