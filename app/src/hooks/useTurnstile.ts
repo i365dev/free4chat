@@ -5,11 +5,11 @@ declare global {
     turnstile?: {
       render: (
         container: string | HTMLElement,
-        options: Record<string, unknown>
+        options: Record<string, unknown>,
       ) => string
       execute: (
         container: string | HTMLElement,
-        options?: Record<string, unknown>
+        options?: Record<string, unknown>,
       ) => void
       reset: (widgetId?: string) => void
       remove: (widgetId?: string) => void
@@ -123,7 +123,7 @@ export function useTurnstile() {
         settlement.resolve(token as string)
       }
     },
-    [removeWidget]
+    [removeWidget],
   )
 
   useEffect(() => {
@@ -184,7 +184,7 @@ export function useTurnstile() {
         } catch (err) {
           settlementRef.current = null
           reject(
-            err instanceof Error ? err : new Error("turnstile_execute_failed")
+            err instanceof Error ? err : new Error("turnstile_execute_failed"),
           )
         }
       })

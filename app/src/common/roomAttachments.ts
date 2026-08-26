@@ -25,7 +25,7 @@ export interface UploadedRoomAttachment {
  * attachment payload (POST /api/room/attachments). Same fail-closed rules
  * as artifact reads, minus the base64 bytes. Returns null on ANY violation. */
 export function validateUploadedRoomAttachment(
-  payload: unknown
+  payload: unknown,
 ): UploadedRoomAttachment | null {
   if (!payload || typeof payload !== "object") return null
   const record = payload as Record<string, unknown>
@@ -77,7 +77,7 @@ function decodeBase64(data: string): Uint8Array | null {
  * actionable message. On success the decoded bytes ride along once. */
 export function validateRoomAttachmentRead(
   payload: unknown,
-  requestedAttachmentId: string
+  requestedAttachmentId: string,
 ):
   | { ok: true; read: RoomAttachmentRead; bytes: Uint8Array }
   | { ok: false; error: string } {

@@ -19,7 +19,7 @@ describe("Human capability display + self-only editor entry (#119)", () => {
       <UserCard
         {...base()}
         capabilities={["review.code", "judgment.product"]}
-      />
+      />,
     )
     expect(getByText("review.code")).toBeTruthy()
     expect(getByText("judgment.product")).toBeTruthy()
@@ -27,7 +27,7 @@ describe("Human capability display + self-only editor entry (#119)", () => {
 
   it("compact layout also displays Human capability chips without breaking layout", () => {
     const { getByText } = render(
-      <UserCard {...base({ compact: true })} capabilities={["review.code"]} />
+      <UserCard {...base({ compact: true })} capabilities={["review.code"]} />,
     )
     expect(getByText("review.code")).toBeTruthy()
   })
@@ -39,7 +39,7 @@ describe("Human capability display + self-only editor entry (#119)", () => {
       <UserCard
         {...base({ peerId: "local-peer" })}
         onEditCapabilities={onEditCapabilities}
-      />
+      />,
     )
     expect(selfView.getByText("Capabilities")).toBeTruthy()
     fireEvent.click(selfView.getByText("Capabilities"))
@@ -48,7 +48,7 @@ describe("Human capability display + self-only editor entry (#119)", () => {
 
     // Remote Human never gets the editor entry.
     const remote = render(
-      <UserCard {...base()} onEditCapabilities={onEditCapabilities} />
+      <UserCard {...base()} onEditCapabilities={onEditCapabilities} />,
     )
     expect(remote.queryByText("Capabilities")).toBeNull()
     remote.unmount()
@@ -58,7 +58,7 @@ describe("Human capability display + self-only editor entry (#119)", () => {
       <UserCard
         {...base({ name: "Agent B", kind: "agent" })}
         onEditCapabilities={onEditCapabilities}
-      />
+      />,
     )
     expect(agent.queryByText("Capabilities")).toBeNull()
     agent.unmount()

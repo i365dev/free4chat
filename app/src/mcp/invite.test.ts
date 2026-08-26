@@ -17,7 +17,7 @@ describe("buildRoomInvite", () => {
 
   it("carries only public data — never handles, tokens, or credentials", () => {
     const serialized = JSON.stringify(
-      buildRoomInvite("11111111-2222-3333-4444-555555555555")
+      buildRoomInvite("11111111-2222-3333-4444-555555555555"),
     )
     expect(serialized).not.toMatch(/participantHandle|participantToken|token/i)
     expect(Object.keys(JSON.parse(serialized))).toEqual([

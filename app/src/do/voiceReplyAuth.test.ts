@@ -1,3 +1,4 @@
+import assert from "node:assert/strict"
 import { describe, expect, it } from "vitest"
 
 import {
@@ -13,14 +14,14 @@ const GRANTED = startVoiceReply("agent-1", 1000)
 describe("voiceReply grant (#83)", () => {
   it("denies by default and only authorizes the named agent", () => {
     expect(isAgentAuthorizedForVoiceReply(NO_VOICE_REPLY, "agent-1")).toBe(
-      false
+      false,
     )
     expect(isAgentAuthorizedForVoiceReply(GRANTED, "agent-1")).toBe(true)
     expect(isAgentAuthorizedForVoiceReply(GRANTED, "agent-2")).toBe(false)
     const stopped = clearVoiceReplyIfParticipantDeparting(GRANTED, "agent-1")
     expect(stopped).toEqual(NO_VOICE_REPLY)
     expect(clearVoiceReplyIfParticipantDeparting(GRANTED, "other")).toBe(
-      GRANTED
+      GRANTED,
     )
   })
 })
@@ -34,7 +35,7 @@ describe("agent purpose direction matrix (#83)", () => {
           wantsLocalPublish: false,
           wantsRemoteSubscribe: true,
           involvesVideo: false,
-        })
+        }),
       ).toEqual({ ok: false, error: "agent_media_purpose_required" })
     }
   })
@@ -45,7 +46,7 @@ describe("agent purpose direction matrix (#83)", () => {
         wantsLocalPublish: false,
         wantsRemoteSubscribe: true,
         involvesVideo: false,
-      }).ok
+      }).ok,
     ).toBe(true)
     expect(
       resolveAgentPurposePermission({
@@ -53,7 +54,7 @@ describe("agent purpose direction matrix (#83)", () => {
         wantsLocalPublish: true,
         wantsRemoteSubscribe: false,
         involvesVideo: false,
-      })
+      }),
     ).toEqual({ ok: false, error: "agent_media_direction_forbidden" })
   })
   it("voice-reply permits only local publish", () => {
@@ -63,7 +64,7 @@ describe("agent purpose direction matrix (#83)", () => {
         wantsLocalPublish: true,
         wantsRemoteSubscribe: false,
         involvesVideo: false,
-      }).ok
+      }).ok,
     ).toBe(true)
     expect(
       resolveAgentPurposePermission({
@@ -71,7 +72,7 @@ describe("agent purpose direction matrix (#83)", () => {
         wantsLocalPublish: false,
         wantsRemoteSubscribe: true,
         involvesVideo: false,
-      })
+      }),
     ).toEqual({ ok: false, error: "agent_media_direction_forbidden" })
   })
   it("video is always denied", () => {
@@ -82,8 +83,8 @@ describe("agent purpose direction matrix (#83)", () => {
         wantsRemoteSubscribe: false,
         involvesVideo: true,
       })
-      if (!result.ok) expect(result.error).toBe("agent_video_forbidden")
-      else assert.fail("expected failure")
+      expect("error" in result).toBe(true)
+      if ("error" in result) expect(result.error).toBe("agent_video_forbidden")
     }
   })
 })

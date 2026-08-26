@@ -23,14 +23,14 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
     vi.stubGlobal("fetch", fetchMock)
     await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(true)
     expect(requestedUrl).toBe(
-      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/sess-1/tracks/close"
+      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/sess-1/tracks/close",
     )
   })
 
   it("a 401 response is not treated as success", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("", { status: 401 }))
+      vi.fn(async () => new Response("", { status: 401 })),
     )
     await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
   })
@@ -38,7 +38,7 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
   it("a 429 response is not treated as success", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("", { status: 429 }))
+      vi.fn(async () => new Response("", { status: 429 })),
     )
     await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
   })
@@ -46,7 +46,7 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
   it("a 500 response is not treated as success", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("", { status: 500 }))
+      vi.fn(async () => new Response("", { status: 500 })),
     )
     await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
   })
@@ -56,7 +56,7 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
       "fetch",
       vi.fn(async () => {
         throw new Error("network down")
-      })
+      }),
     )
     await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
   })
@@ -163,7 +163,7 @@ describe("removeConfirmedMids — the narrow, merge-only-the-result half of the 
   it("tracks/close 2xx (success) removes exactly the confirmed mids", () => {
     const entries = [{ sessionId: "sess-1", mids: ["1"] }]
     expect(
-      removeConfirmedMids(entries, [{ sessionId: "sess-1", mids: ["1"] }])
+      removeConfirmedMids(entries, [{ sessionId: "sess-1", mids: ["1"] }]),
     ).toEqual([])
   })
 

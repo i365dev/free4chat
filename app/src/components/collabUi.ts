@@ -6,22 +6,22 @@ import type { Message } from "../common/types"
  * disappear (page reload / resync included). Never React-local state. */
 export function isCollabRequestAnswered(
   messages: Message[],
-  requestId: string
+  requestId: string,
 ): boolean {
   return messages.some(
     (m) =>
       m.collab?.requestId === requestId &&
-      (m.collab.kind === "accepted" || m.collab.kind === "declined")
+      (m.collab.kind === "accepted" || m.collab.kind === "declined"),
   )
 }
 
 /** #115: an accepted envelope exists for this requestId. */
 export function isCollabRequestAccepted(
   messages: Message[],
-  requestId: string
+  requestId: string,
 ): boolean {
   return messages.some(
-    (m) => m.collab?.requestId === requestId && m.collab.kind === "accepted"
+    (m) => m.collab?.requestId === requestId && m.collab.kind === "accepted",
   )
 }
 
@@ -29,11 +29,11 @@ export function isCollabRequestAccepted(
  * Declined is its own end and does not count here. */
 export function hasCollabTerminalResult(
   messages: Message[],
-  requestId: string
+  requestId: string,
 ): boolean {
   return messages.some(
     (m) =>
       m.collab?.requestId === requestId &&
-      (m.collab.kind === "completed" || m.collab.kind === "failed")
+      (m.collab.kind === "completed" || m.collab.kind === "failed"),
   )
 }

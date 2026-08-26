@@ -129,7 +129,7 @@ async function createAgentVisionCopy(file: File): Promise<Blob> {
 
     let scale = Math.min(
       1,
-      AGENT_IMAGE_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight)
+      AGENT_IMAGE_MAX_DIMENSION / Math.max(sourceWidth, sourceHeight),
     )
     for (let attempt = 0; attempt < 6; attempt += 1) {
       const canvas = document.createElement("canvas")
@@ -140,7 +140,7 @@ async function createAgentVisionCopy(file: File): Promise<Blob> {
       context.drawImage(image, 0, 0, canvas.width, canvas.height)
       for (const quality of [0.82, 0.68, 0.52, 0.38]) {
         const blob = await new Promise<Blob | null>((resolve) =>
-          canvas.toBlob(resolve, "image/jpeg", quality)
+          canvas.toBlob(resolve, "image/jpeg", quality),
         )
         if (blob && blob.size <= MAX_AGENT_ATTACHMENT_BYTES) return blob
       }
@@ -177,7 +177,7 @@ interface SfuServerMessage {
 
 const roomMessageToMessage = (
   message: SfuMessage,
-  localParticipantId?: string
+  localParticipantId?: string,
 ): Message => {
   return {
     peerId:
@@ -208,7 +208,7 @@ export function useSfuChatRoom(
   roomName: string,
   nickName: string,
   roomType: "audio" | "screenshare",
-  options: UseSfuChatRoomOptions = {}
+  options: UseSfuChatRoomOptions = {},
 ) {
   const { enabled = true, getTurnstileToken } = options
   const [participants, setParticipants] = useState<UserInfo[]>([])
@@ -252,7 +252,7 @@ export function useSfuChatRoom(
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
   const mediaReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
+    null,
   )
   const mediaReconnectAttemptsRef = useRef(0)
   const mediaReconnectPromiseRef = useRef<Promise<void> | null>(null)
@@ -299,7 +299,7 @@ export function useSfuChatRoom(
     for (const participant of state?.participants ?? []) {
       if (participant.id === localId) continue
       const hasScreenShare = (participant.media?.tracks ?? []).some(
-        (track) => track.kind === "video"
+        (track) => track.kind === "video",
       )
       list.push({
         name: participant.name,
@@ -332,11 +332,11 @@ export function useSfuChatRoom(
       const next = negotiationQueueRef.current.then(operation, operation)
       negotiationQueueRef.current = next.then(
         () => undefined,
-        () => undefined
+        () => undefined,
       )
       return next
     },
-    []
+    [],
   )
 
   const apiRequest = useCallback(async (path: string, body: object) => {
@@ -377,7 +377,7 @@ export function useSfuChatRoom(
         remoteFileChannelIdsRef.current.clear()
       }
     },
-    [apiRequest, roomName]
+    [apiRequest, roomName],
   )
 
   const waitForDataChannelOpen = useCallback(
@@ -411,7 +411,7 @@ export function useSfuChatRoom(
         channel.addEventListener("error", onError)
       })
     },
-    []
+    [],
   )
 
   const waitForSendCapacity = useCallback(
@@ -447,7 +447,7 @@ export function useSfuChatRoom(
         channel.addEventListener("error", onError)
       })
     },
-    []
+    [],
   )
 
   const replaceRoomMessages = useCallback((nextMessages: Message[]) => {
@@ -455,8 +455,8 @@ export function useSfuChatRoom(
     setMessages(
       mergeRoomAndEphemeralMessages(
         roomMessagesRef.current,
-        ephemeralMessagesRef.current
-      )
+        ephemeralMessagesRef.current,
+      ),
     )
   }, [])
 
@@ -465,8 +465,8 @@ export function useSfuChatRoom(
     setMessages(
       mergeRoomAndEphemeralMessages(
         roomMessagesRef.current,
-        ephemeralMessagesRef.current
-      )
+        ephemeralMessagesRef.current,
+      ),
     )
   }, [])
 
@@ -474,7 +474,7 @@ export function useSfuChatRoom(
     if (
       message.messageId &&
       ephemeralMessagesRef.current.some(
-        (existing) => existing.messageId === message.messageId
+        (existing) => existing.messageId === message.messageId,
       )
     )
       return
@@ -485,8 +485,8 @@ export function useSfuChatRoom(
     setMessages(
       mergeRoomAndEphemeralMessages(
         roomMessagesRef.current,
-        ephemeralMessagesRef.current
-      )
+        ephemeralMessagesRef.current,
+      ),
     )
   }, [])
 
@@ -495,7 +495,7 @@ export function useSfuChatRoom(
       peerId: string,
       name: string,
       file: Pick<IncomingFileTransfer, "id" | "name" | "mime" | "size">,
-      chunks: ArrayBuffer[]
+      chunks: ArrayBuffer[],
     ) => {
       const blob = new Blob(chunks, { type: file.mime })
       const fileLink = URL.createObjectURL(blob)
@@ -511,7 +511,7 @@ export function useSfuChatRoom(
         fileSize: file.size,
       })
     },
-    [appendEphemeralMessage]
+    [appendEphemeralMessage],
   )
 
   const resetRemoteParticipant = useCallback((participantId: string) => {
@@ -605,7 +605,7 @@ export function useSfuChatRoom(
         void event.data.arrayBuffer().then(consumeChunk)
       }
     },
-    [addReceivedFileMessage]
+    [addReceivedFileMessage],
   )
 
   const establishDataChannelTransport = useCallback(async () => {
@@ -725,22 +725,22 @@ export function useSfuChatRoom(
           channelKey,
           participant.id,
           participant.name,
-          event
-        )
+          event,
+        ),
       )
       remoteFileChannelsRef.current.set(channelKey, channel)
       remoteFileChannelIdsRef.current.set(channelKey, channelId)
       await waitForDataChannelOpen(channel)
       channel.send("ack")
     },
-    [apiRequest, handleFileChannelMessage, roomName, waitForDataChannelOpen]
+    [apiRequest, handleFileChannelMessage, roomName, waitForDataChannelOpen],
   )
 
   const publishTrack = useCallback(
     async (
       track: MediaStreamTrack,
       kind: "audio" | "video",
-      trackName: string
+      trackName: string,
     ) => {
       const pc = peerConnectionRef.current
       const session = sessionRef.current
@@ -771,7 +771,7 @@ export function useSfuChatRoom(
         localTrackMidsRef.current.set(trackName, transceiver.mid)
       })
     },
-    [apiRequest, enqueueNegotiation, roomName]
+    [apiRequest, enqueueNegotiation, roomName],
   )
 
   const closePublishedTrack = useCallback(
@@ -805,7 +805,7 @@ export function useSfuChatRoom(
         localTrackMidsRef.current.delete(trackName)
       }
     },
-    [apiRequest, enqueueNegotiation, roomName]
+    [apiRequest, enqueueNegotiation, roomName],
   )
 
   const subscribeTrack = useCallback(
@@ -861,7 +861,7 @@ export function useSfuChatRoom(
         subscribedTracksRef.current.delete(key)
       })
     },
-    [apiRequest, enqueueNegotiation, roomName]
+    [apiRequest, enqueueNegotiation, roomName],
   )
 
   const applyRoomState = useCallback(
@@ -884,13 +884,13 @@ export function useSfuChatRoom(
         state.participants.map((participant) => [
           participant.id,
           { ...participant, token: "" } as SfuParticipant,
-        ])
+        ]),
       )
       const localParticipantId = sessionRef.current?.participantId
       replaceRoomMessages(
         state.messages.map((message) =>
-          roomMessageToMessage(message, localParticipantId)
-        )
+          roomMessageToMessage(message, localParticipantId),
+        ),
       )
       rebuildParticipants()
       const localId = sessionRef.current?.participantId
@@ -911,7 +911,7 @@ export function useSfuChatRoom(
       replaceRoomMessages,
       subscribeFileChannel,
       subscribeTrack,
-    ]
+    ],
   )
 
   const createPeerConnection = useCallback(() => {
@@ -999,7 +999,7 @@ export function useSfuChatRoom(
           current.media.tracks = [
             ...current.media.tracks.filter(
               (track) =>
-                track.trackName !== message.participant!.track!.trackName
+                track.trackName !== message.participant!.track!.trackName,
             ),
             message.participant.track,
           ]
@@ -1029,7 +1029,7 @@ export function useSfuChatRoom(
         message.participant?.id
       ) {
         const participant = participantMapRef.current.get(
-          message.participant.id
+          message.participant.id,
         )
         if (
           participant?.media &&
@@ -1049,11 +1049,11 @@ export function useSfuChatRoom(
       } else if (message.type === "message" && message.message) {
         const localParticipantId = sessionRef.current?.participantId
         appendRoomMessage(
-          roomMessageToMessage(message.message, localParticipantId)
+          roomMessageToMessage(message.message, localParticipantId),
         )
       } else if (message.type === "expired") {
         setError(
-          "This room has closed after being empty for a while. Please open a new room."
+          "This room has closed after being empty for a while. Please open a new room.",
         )
         setConnectionStatus("failed")
       } else if (message.type === "error") {
@@ -1073,7 +1073,7 @@ export function useSfuChatRoom(
       }
       reconnectTimerRef.current = setTimeout(
         connectWebSocket,
-        Math.min(1000 * 2 ** attempt, 8000)
+        Math.min(1000 * 2 ** attempt, 8000),
       )
     }
   }, [
@@ -1131,7 +1131,7 @@ export function useSfuChatRoom(
           turnstileToken = await getTurnstileToken()
         } catch (err) {
           throw new TurnstileVerificationError(
-            err instanceof Error ? err.message : "Verification failed"
+            err instanceof Error ? err.message : "Verification failed",
           )
         }
       }
@@ -1179,7 +1179,7 @@ export function useSfuChatRoom(
         }
         if (!reconnecting && response.status === 403) {
           throw new TurnstileVerificationError(
-            data.error || "Verification failed"
+            data.error || "Verification failed",
           )
         }
         throw new Error(data.error || "Unable to create SFU session")
@@ -1192,7 +1192,7 @@ export function useSfuChatRoom(
         await publishTrack(
           screenTrack,
           "video",
-          localScreenTrackNameRef.current
+          localScreenTrackNameRef.current,
         )
       }
       connectWebSocket()
@@ -1207,7 +1207,7 @@ export function useSfuChatRoom(
       publishTrack,
       rebuildParticipants,
       roomName,
-    ]
+    ],
   )
 
   const reconnectMedia = useCallback(async () => {
@@ -1229,14 +1229,17 @@ export function useSfuChatRoom(
           setError(
             err instanceof Error
               ? err.message
-              : "Unable to reconnect to SFU media"
+              : "Unable to reconnect to SFU media",
           )
           setConnectionStatus("failed")
           return
         }
-        mediaReconnectTimerRef.current = setTimeout(() => {
-          void mediaReconnectRef.current?.()
-        }, Math.min(1000 * 2 ** attempt, 8000))
+        mediaReconnectTimerRef.current = setTimeout(
+          () => {
+            void mediaReconnectRef.current?.()
+          },
+          Math.min(1000 * 2 ** attempt, 8000),
+        )
       }
     })()
     mediaReconnectPromiseRef.current = promise
@@ -1260,7 +1263,7 @@ export function useSfuChatRoom(
           return
         }
         setError(
-          err instanceof Error ? err.message : "Unable to connect to SFU"
+          err instanceof Error ? err.message : "Unable to connect to SFU",
         )
         setConnectionStatus("failed")
       }
@@ -1371,7 +1374,7 @@ export function useSfuChatRoom(
       await publishTrack(track, "video", localScreenTrackNameRef.current)
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Screen sharing was not started"
+        err instanceof Error ? err.message : "Screen sharing was not started",
       )
     }
   }, [
@@ -1385,14 +1388,14 @@ export function useSfuChatRoom(
     (text: string, targets: string[] = []) => {
       sendSocketMessage({ type: "chat", text, targets })
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   const sendActionMessage = useCallback(
     (actionType: ActionType, actionPayload: Record<string, string>) => {
       sendSocketMessage({ type: "action", actionType, actionPayload })
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   // #117: authenticated Human on-demand read of one existing room
@@ -1421,7 +1424,7 @@ export function useSfuChatRoom(
         throw new Error(
           typeof payload.error === "string"
             ? payload.error
-            : `attachment_read_failed_${response.status}`
+            : `attachment_read_failed_${response.status}`,
         )
       }
       const payload = (await response.json().catch(() => null)) as unknown
@@ -1430,7 +1433,7 @@ export function useSfuChatRoom(
         throw new Error(`invalid_attachment_payload: ${validated.error}`)
       return validated.read
     },
-    []
+    [],
   )
 
   // #115: Human accepted/declined for an Agent-originated request addressed
@@ -1441,7 +1444,7 @@ export function useSfuChatRoom(
     (
       requestId: string,
       decision: "accepted" | "declined",
-      summary?: string
+      summary?: string,
     ): boolean => {
       if (!requestId) return false
       if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
@@ -1456,7 +1459,7 @@ export function useSfuChatRoom(
       })
       return true
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   // #121: Human terminal result (completed | failed) for an
@@ -1467,7 +1470,7 @@ export function useSfuChatRoom(
     (
       requestId: string,
       status: "completed" | "failed",
-      summary: string
+      summary: string,
     ): boolean => {
       if (!requestId) return false
       if (status !== "completed" && status !== "failed") return false
@@ -1482,7 +1485,7 @@ export function useSfuChatRoom(
       })
       return true
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   // #119: replace THIS Human's advertised capability list (discovery
@@ -1500,7 +1503,7 @@ export function useSfuChatRoom(
       })
       return true
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   // #113: Human-originated structured work request to a connected Agent.
@@ -1511,7 +1514,7 @@ export function useSfuChatRoom(
     (
       targetParticipantId: string,
       summary: string,
-      attachmentIds?: string[]
+      attachmentIds?: string[],
     ): string => {
       const trimmed = summary.trim()
       if (
@@ -1543,7 +1546,7 @@ export function useSfuChatRoom(
       })
       return requestId
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   // #123: upload one file as an ephemeral Room artifact for collab context.
@@ -1551,7 +1554,7 @@ export function useSfuChatRoom(
   // reference it in a collab request.
   const uploadRoomAttachment = useCallback(
     async (
-      file: File
+      file: File,
     ): Promise<{
       id: string
       fileName: string
@@ -1579,18 +1582,18 @@ export function useSfuChatRoom(
         throw new Error(
           typeof payload.error === "string"
             ? payload.error
-            : `attachment_upload_failed_${response.status}`
+            : `attachment_upload_failed_${response.status}`,
         )
       }
       // Upload responses are UNTRUSTED here too: metadata is re-checked
       // against the shared limits before its id may be referenced.
       const uploaded = validateUploadedRoomAttachment(
-        await response.json().catch(() => null)
+        await response.json().catch(() => null),
       )
       if (!uploaded) throw new Error("invalid_attachment_payload")
       return uploaded
     },
-    []
+    [],
   )
 
   const startMeetingNotes = useCallback(
@@ -1600,7 +1603,7 @@ export function useSfuChatRoom(
         agentParticipantId,
       })
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   const stopMeetingNotes = useCallback(() => {
@@ -1616,7 +1619,7 @@ export function useSfuChatRoom(
         agentParticipantId,
       })
     },
-    [sendSocketMessage]
+    [sendSocketMessage],
   )
 
   const stopVoiceReply = useCallback(() => {
@@ -1640,7 +1643,7 @@ export function useSfuChatRoom(
             name: file.name,
             mime,
             size: file.size,
-          })
+          }),
         )
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
           await waitForSendCapacity(channel)
@@ -1665,7 +1668,8 @@ export function useSfuChatRoom(
         })
         const session = sessionRef.current
         const hasConnectedAgent = [...participantMapRef.current.values()].some(
-          (participant) => participant.kind === "agent" && participant.connected
+          (participant) =>
+            participant.kind === "agent" && participant.connected,
         )
         if (
           session &&
@@ -1703,7 +1707,7 @@ export function useSfuChatRoom(
       const next = fileSendQueueRef.current.then(send, send)
       fileSendQueueRef.current = next.then(
         () => undefined,
-        () => undefined
+        () => undefined,
       )
       return next
     },
@@ -1713,7 +1717,7 @@ export function useSfuChatRoom(
       roomName,
       waitForDataChannelOpen,
       waitForSendCapacity,
-    ]
+    ],
   )
 
   const retryVerification = useCallback(() => {

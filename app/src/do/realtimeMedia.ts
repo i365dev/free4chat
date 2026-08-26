@@ -15,7 +15,7 @@ export const MAX_PENDING_CLEANUP_ENTRIES = 16
 export const MAX_PENDING_CLEANUP_MIDS_PER_ENTRY = 64
 
 function getRealtimeCredentials(
-  env: RealtimeEnv
+  env: RealtimeEnv,
 ): { appId: string; appSecret: string } | null {
   const appId = env.SFU_APP_ID
   const appSecret = env.SFU_APP_SECRET
@@ -52,7 +52,7 @@ function getRealtimeCredentials(
 export async function closeRealtimeTracks(
   env: RealtimeEnv,
   sessionId: string,
-  mids: string[]
+  mids: string[],
 ): Promise<boolean> {
   if (mids.length === 0) return true
   const credentials = getRealtimeCredentials(env)
@@ -60,7 +60,7 @@ export async function closeRealtimeTracks(
   try {
     const response = await fetch(
       `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(
-        credentials.appId
+        credentials.appId,
       )}/sessions/${encodeURIComponent(sessionId)}/tracks/close`,
       {
         method: "PUT",
@@ -72,7 +72,7 @@ export async function closeRealtimeTracks(
           tracks: mids.map((mid) => ({ mid })),
           force: true,
         }),
-      }
+      },
     )
     // Deliberately never reads/logs the response body — it's Cloudflare's
     // upstream API response and may carry details not meant for our logs.
@@ -93,11 +93,11 @@ export async function closeRealtimeTracks(
 export function queuePendingCleanup(
   existing: PendingMediaCleanup[],
   sessionId: string,
-  mids: string[]
+  mids: string[],
 ): PendingMediaCleanup[] {
   if (mids.length === 0) return existing
   const matchIndex = existing.findIndex(
-    (entry) => entry.sessionId === sessionId
+    (entry) => entry.sessionId === sessionId,
   )
   if (matchIndex < 0) {
     return [...existing, { sessionId, mids: [...new Set(mids)] }]
@@ -116,7 +116,7 @@ export function queuePendingCleanup(
 export function pendingCleanupHasCapacity(
   entries: PendingMediaCleanup[],
   sessionId: string,
-  additionalMidCount = 0
+  additionalMidCount = 0,
 ): boolean {
   const existing = entries.find((entry) => entry.sessionId === sessionId)
   if (existing) {
@@ -139,7 +139,7 @@ export function pendingCleanupHasCapacity(
 // it calls closeRealtimeTracks.
 export function removeConfirmedMids(
   entries: PendingMediaCleanup[],
-  confirmed: PendingMediaCleanup[]
+  confirmed: PendingMediaCleanup[],
 ): PendingMediaCleanup[] {
   let result = entries
   for (const { sessionId, mids } of confirmed) {
@@ -151,7 +151,7 @@ export function removeConfirmedMids(
               sessionId,
               mids: entry.mids.filter((mid) => !confirmedSet.has(mid)),
             }
-          : entry
+          : entry,
       )
       .filter((entry) => entry.mids.length > 0)
   }

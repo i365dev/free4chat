@@ -16,13 +16,13 @@ describe("HumanCollabResultComposer (#121)", () => {
         status="completed"
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
     expect(screen.getByText(/Completed — request/)).toBeTruthy()
     expect(
       screen.getByText(
-        /Your result is shared with the Agent\. It does not grant tools or permissions\./
-      )
+        /Your result is shared with the Agent\. It does not grant tools or permissions\./,
+      ),
     ).toBeTruthy()
   })
 
@@ -33,7 +33,7 @@ describe("HumanCollabResultComposer (#121)", () => {
         status="failed"
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
     expect(screen.getByText(/Failed — request/)).toBeTruthy()
   })
@@ -46,10 +46,10 @@ describe("HumanCollabResultComposer (#121)", () => {
         status="completed"
         onCancel={vi.fn()}
         onSubmit={onSubmit}
-      />
+      />,
     )
     const send = screen.getByTestId(
-      "send-collab-result-completed"
+      "send-collab-result-completed",
     ) as HTMLButtonElement
     expect(send.disabled).toBe(true)
     fireEvent.change(screen.getByPlaceholderText("What was the outcome?"), {
@@ -57,7 +57,7 @@ describe("HumanCollabResultComposer (#121)", () => {
     })
     expect(
       (screen.getByTestId("send-collab-result-completed") as HTMLButtonElement)
-        .disabled
+        .disabled,
     ).toBe(true)
   })
 
@@ -70,7 +70,7 @@ describe("HumanCollabResultComposer (#121)", () => {
         status="completed"
         onCancel={onCancel}
         onSubmit={onSubmit}
-      />
+      />,
     )
     const field = screen.getByPlaceholderText("What was the outcome?")
     fireEvent.change(field, {
@@ -90,10 +90,10 @@ describe("HumanCollabResultComposer (#121)", () => {
         maxLength={10}
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
     const field = screen.getByPlaceholderText(
-      "What was the outcome?"
+      "What was the outcome?",
     ) as HTMLTextAreaElement
     fireEvent.change(field, { target: { value: "a".repeat(50) } })
     expect(field.value.length).toBe(10)
@@ -108,7 +108,7 @@ describe("HumanCollabResultComposer (#121)", () => {
         status="failed"
         onCancel={onCancel}
         onSubmit={onSubmit}
-      />
+      />,
     )
     fireEvent.click(screen.getByText("Cancel"))
     expect(onCancel).toHaveBeenCalledTimes(1)
@@ -122,7 +122,7 @@ describe("HumanCollabResultComposer (#121)", () => {
         status="completed"
         onCancel={vi.fn()}
         onSubmit={vi.fn()}
-      />
+      />,
     )
     expect(screen.queryByText(/attachment/i)).toBeNull()
     expect(screen.queryByLabelText(/details/i)).toBeNull()

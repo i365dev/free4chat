@@ -25,7 +25,7 @@ function base(overrides: Record<string, unknown> = {}) {
 describe("evaluateSurfacePublish", () => {
   it("accepts a supported image and derives the chunk count", () => {
     const result = evaluateSurfacePublish(
-      base({ byteLength: SURFACE_CHUNK_SIZE * 5 + 1 })
+      base({ byteLength: SURFACE_CHUNK_SIZE * 5 + 1 }),
     )
     expect(result).toEqual({ ok: true, chunkCount: 6 })
   })
@@ -34,7 +34,7 @@ describe("evaluateSurfacePublish", () => {
     for (const bad of ["text/plain", "application/json", "image/gif", 42])
       expect(evaluateSurfacePublish(base({ mimeType: bad })).ok).toBe(false)
     expect(
-      evaluateSurfacePublish(base({ mimeType: "text/plain" }))
+      evaluateSurfacePublish(base({ mimeType: "text/plain" })),
     ).toMatchObject({ ok: false, error: "surface_mime_unsupported" })
   })
 
@@ -44,12 +44,12 @@ describe("evaluateSurfacePublish", () => {
       error: "surface_empty",
     })
     expect(
-      evaluateSurfacePublish(base({ byteLength: MAX_SURFACE_BYTES + 1 }))
+      evaluateSurfacePublish(base({ byteLength: MAX_SURFACE_BYTES + 1 })),
     ).toMatchObject({ ok: false, error: "surface_too_large" })
     expect(
       evaluateSurfacePublish(
-        base({ declaredSize: 100, byteLength: MAX_SURFACE_BYTES })
-      )
+        base({ declaredSize: 100, byteLength: MAX_SURFACE_BYTES }),
+      ),
     ).toMatchObject({ ok: false, error: "surface_size_mismatch" })
   })
 
@@ -59,8 +59,8 @@ describe("evaluateSurfacePublish", () => {
         base({
           publisherHasSurface: true,
           publisherLastUpdatedAt: 9_000,
-        })
-      )
+        }),
+      ),
     ).toMatchObject({ ok: false, error: "surface_rate_limited" })
     // Exactly at the boundary is allowed.
     expect(
@@ -68,20 +68,20 @@ describe("evaluateSurfacePublish", () => {
         base({
           publisherHasSurface: true,
           publisherLastUpdatedAt: 8_000,
-        })
-      ).ok
+        }),
+      ).ok,
     ).toBe(true)
     expect(
       evaluateSurfacePublish(
-        base({ otherActiveSurfaces: 0, publisherLastUpdatedAt: undefined })
-      ).ok
+        base({ otherActiveSurfaces: 0, publisherLastUpdatedAt: undefined }),
+      ).ok,
     ).toBe(true)
   })
 
   it("caps distinct publishers at three while letting existing publishers replace at capacity", () => {
     for (const active of [0, 1, 2])
       expect(
-        evaluateSurfacePublish(base({ otherActiveSurfaces: active })).ok
+        evaluateSurfacePublish(base({ otherActiveSurfaces: active })).ok,
       ).toBe(true)
     const blocked = evaluateSurfacePublish(base({ otherActiveSurfaces: 3 }))
     expect(blocked).toEqual({
@@ -90,8 +90,8 @@ describe("evaluateSurfacePublish", () => {
     })
     expect(
       evaluateSurfacePublish(
-        base({ otherActiveSurfaces: 3, publisherHasSurface: true })
-      ).ok
+        base({ otherActiveSurfaces: 3, publisherHasSurface: true }),
+      ).ok,
     ).toBe(true)
   })
 })
@@ -146,7 +146,7 @@ describe("deleteSurfaceChunksBestEffort (#111 review)", () => {
     await expect(
       deleteSurfaceChunksBestEffort(async () => {
         throw new Error("storage hiccup")
-      })
+      }),
     ).resolves.toBeUndefined()
   })
 

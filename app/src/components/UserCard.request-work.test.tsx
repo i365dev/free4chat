@@ -24,14 +24,14 @@ describe("UserCard Request work entry (#113)", () => {
     const { queryByText } = render(
       <UserCard
         {...base({ name: "Alice", kind: "human", peerId: "human-1" })}
-      />
+      />,
     )
     expect(queryByText("Request work")).toBeNull()
   })
 
   it("never shows Request work for the local self card", () => {
     const { queryByText } = render(
-      <UserCard {...base({ peerId: "local-peer" })} />
+      <UserCard {...base({ peerId: "local-peer" })} />,
     )
     expect(queryByText("Request work")).toBeNull()
   })
@@ -39,7 +39,7 @@ describe("UserCard Request work entry (#113)", () => {
   it("compact layout still provides the action for remote Agents", () => {
     const onRequestWork = vi.fn()
     const { getByText } = render(
-      <UserCard {...base({ compact: true })} onRequestWork={onRequestWork} />
+      <UserCard {...base({ compact: true })} onRequestWork={onRequestWork} />,
     )
     fireEvent.click(getByText("Request work"))
     expect(onRequestWork).toHaveBeenCalledTimes(1)

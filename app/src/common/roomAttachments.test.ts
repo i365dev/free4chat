@@ -44,7 +44,7 @@ describe("validateRoomAttachmentRead (#117)", () => {
           size: 2,
         },
       }),
-      REQUESTED_ID
+      REQUESTED_ID,
     )
     expect(result.ok).toBe(false)
   })
@@ -59,7 +59,7 @@ describe("validateRoomAttachmentRead (#117)", () => {
           size: 2,
         },
       }),
-      REQUESTED_ID
+      REQUESTED_ID,
     )
     expect(result.ok).toBe(false)
   })
@@ -75,8 +75,8 @@ describe("validateRoomAttachmentRead (#117)", () => {
             size: MAX_ROOM_ATTACHMENT_BYTES + 1,
           },
         }),
-        REQUESTED_ID
-      ).ok
+        REQUESTED_ID,
+      ).ok,
     ).toBe(false)
     // Decoded length exceeds declared size (base64 of 3 bytes vs size=2).
     expect(
@@ -90,8 +90,8 @@ describe("validateRoomAttachmentRead (#117)", () => {
           },
           data: btoa("abc"),
         }),
-        REQUESTED_ID
-      ).ok
+        REQUESTED_ID,
+      ).ok,
     ).toBe(false)
   })
 
@@ -108,15 +108,16 @@ describe("validateRoomAttachmentRead (#117)", () => {
               size,
             },
           }),
-          REQUESTED_ID
-        ).ok
+          REQUESTED_ID,
+        ).ok,
       ).toBe(false)
   })
 
   it("rejects malformed base64 and empty payloads", () => {
     for (const bad of ["not!!base64", ""])
       expect(
-        validateRoomAttachmentRead(validPayload({ data: bad }), REQUESTED_ID).ok
+        validateRoomAttachmentRead(validPayload({ data: bad }), REQUESTED_ID)
+          .ok,
       ).toBe(false)
   })
 

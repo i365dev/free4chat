@@ -21,7 +21,7 @@ describe("computeExpiresAt", () => {
 
   it("starts a fresh EMPTY_ROOM_TIMEOUT_MS deadline the moment a room becomes empty", () => {
     expect(computeExpiresAt(0, NO_EXPIRY, NOW)).toBe(
-      NOW + EMPTY_ROOM_TIMEOUT_MS
+      NOW + EMPTY_ROOM_TIMEOUT_MS,
     )
   })
 
