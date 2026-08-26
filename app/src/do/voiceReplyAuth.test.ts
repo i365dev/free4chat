@@ -77,11 +77,11 @@ describe("agent purpose direction matrix (#83)", () => {
   it("video is always denied", () => {
     for (const purpose of ["meeting-notes", "voice-reply"]) {
       const result = resolveAgentPurposePermission({
-          purpose,
-          wantsLocalPublish: false,
-          wantsRemoteSubscribe: false,
-          involvesVideo: true,
-        })
+        purpose,
+        wantsLocalPublish: false,
+        wantsRemoteSubscribe: false,
+        involvesVideo: true,
+      })
       if (!result.ok) expect(result.error).toBe("agent_video_forbidden")
       else assert.fail("expected failure")
     }
