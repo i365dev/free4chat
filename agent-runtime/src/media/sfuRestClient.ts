@@ -89,12 +89,18 @@ export interface SfuRestClientLike {
     mySessionId: string,
     args: { trackName: string; mid: string; offer: SessionDescriptionLike }
   ): Promise<{ sessionDescription?: SessionDescriptionLike }>
+  /** Confirms Cloudflare has observed the publication as active after a PCM
+   * write; the Worker exposes it to Humans only on a positive result. */
+  confirmPublishedAudioTrackActive?(
+    mySessionId: string,
+    trackName: string
+  ): Promise<boolean>
 }
 
 /**
  * Thin REST client for the app's /api/sfu/* endpoints — the same ones the
  * browser client (useSfuChatRoom.ts) already uses for tracks/renegotiate,
- * plus the two agent-only endpoints added alongside this PR
+ * plus the Agent-only endpoints added alongside this PR
  * (agent-session, agent-room-media). No SFU/Cloudflare credentials ever
  * live here — only the participant token this Agent already holds from
  * its normal room join.
@@ -267,6 +273,18 @@ export class SfuRestClient implements SfuRestClientLike {
     const description = data.sessionDescription as
       SessionDescriptionLike | undefined
     return description ? { sessionDescription: description } : {}
+  }
+
+  async confirmPublishedAudioTrackActive(
+    mySessionId: string,
+    trackName: string
+  ): Promise<boolean> {
+    const data = await this.request("agent-track-active", "POST", {
+      ...this.base(),
+      sessionId: mySessionId,
+      trackName,
+    })
+    return data.active === true
   }
 
   async renegotiate(

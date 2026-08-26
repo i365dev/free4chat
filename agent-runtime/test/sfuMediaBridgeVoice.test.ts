@@ -68,8 +68,7 @@ function scriptedPc(ops: Op[]) {
       return "pub-mid-9"
     },
     writePcmChunk: async (chunk: Uint8Array) => {
-      void chunk
-      ops.push("write")
+      ops.push(chunk.length === 960 ? "silence" : "write")
     },
   }
   return pc as unknown as PeerConnectionLike & {
@@ -104,6 +103,7 @@ describe("SfuMediaBridge voiceReply publication (#83 live-silence fix)", () => {
       sessionId: string
       args: { trackName: string; mid: string; offer: SessionDescriptionLike }
     }> = []
+    const confirmCalls: Array<{ sessionId: string; trackName: string }> = []
 
     const bridge = new SfuMediaBridge({
       mcpUrl: "https://www.free4.chat/mcp",
@@ -123,12 +123,18 @@ describe("SfuMediaBridge voiceReply publication (#83 live-silence fix)", () => {
             sessionDescription: { type: "answer", sdp: "pub-answer" },
           } satisfies SessionDescriptionLike
         },
+        confirmPublishedAudioTrackActive: async (sessionId, trackName) => {
+          ops.push("confirm")
+          confirmCalls.push({ sessionId, trackName })
+          return true
+        },
       },
     })
 
     await bridge.start()
     assert.equal(bridge.voicePublishCapable, true)
     await bridge.activateVoicePublish()
+    assert.deepEqual(confirmCalls, [])
 
     // Bootstrap receive-only offer first; publication arms BEFORE its own
     // offer so the send m-line actually exists.
@@ -150,6 +156,95 @@ describe("SfuMediaBridge voiceReply publication (#83 live-silence fix)", () => {
     assert.equal(publishCalls[0]!.args.mid, "pub-mid-9")
     assert.equal(publishCalls[0]!.args.offer.sdp, "offer-sdp")
 
+    await bridge.writeVoicePcm(new Uint8Array([1, 2]))
+    await bridge.writeVoicePcm(new Uint8Array([3, 4]))
+    assert.deepEqual(confirmCalls, [
+      { sessionId: "sess-agent", trackName: "agent-voice" },
+    ])
+    assert.deepEqual(ops.slice(-4), ["silence", "confirm", "write", "write"])
+
+    await bridge.stop()
+  })
+
+  it("retries inactive or failed readiness checks on later writes and final flush without failing audio", async () => {
+    const ops: Op[] = []
+    let confirmations = 0
+    const bridge = new SfuMediaBridge({
+      mcpUrl: "https://www.free4.chat/mcp",
+      handle,
+      onEvent: () => undefined,
+      createPeerConnection: () =>
+        scriptedPc(ops) as unknown as PeerConnectionLike,
+      pollIntervalMs: 1_000_000,
+      publish: { trackName: "agent-voice" },
+      restClient: {
+        ...bootstrapRest,
+        publishAudioTrack: async () => ({}),
+        confirmPublishedAudioTrackActive: async () => {
+          ops.push("confirm")
+          confirmations += 1
+          if (confirmations === 1) return false
+          if (confirmations === 2) throw new Error("temporary_lookup_failure")
+          return true
+        },
+      },
+    })
+
+    await bridge.start()
+    await bridge.activateVoicePublish()
+    await assert.doesNotReject(() => bridge.writeVoicePcm(new Uint8Array([1])))
+    await assert.doesNotReject(() => bridge.writeVoicePcm(new Uint8Array([2])))
+    await bridge.flushVoice()
+    await bridge.writeVoicePcm(new Uint8Array([3]))
+    assert.equal(confirmations, 3)
+    assert.deepEqual(ops.slice(-8), [
+      "silence",
+      "confirm",
+      "confirm",
+      "confirm",
+      "write",
+      "write",
+      "flush",
+      "write",
+    ])
+    await bridge.stop()
+  })
+
+  it("flushes again when its final readiness check activates and drains pending audio", async () => {
+    const ops: Op[] = []
+    let confirmations = 0
+    const bridge = new SfuMediaBridge({
+      mcpUrl: "https://www.free4.chat/mcp",
+      handle,
+      onEvent: () => undefined,
+      createPeerConnection: () =>
+        scriptedPc(ops) as unknown as PeerConnectionLike,
+      pollIntervalMs: 1_000_000,
+      publish: { trackName: "agent-voice" },
+      restClient: {
+        ...bootstrapRest,
+        publishAudioTrack: async () => ({}),
+        confirmPublishedAudioTrackActive: async () => {
+          ops.push("confirm")
+          confirmations += 1
+          return confirmations > 2
+        },
+      },
+    })
+
+    await bridge.start()
+    await bridge.activateVoicePublish()
+    await bridge.writeVoicePcm(new Uint8Array([7]))
+    await bridge.flushVoice()
+    assert.deepEqual(ops.slice(-7), [
+      "silence",
+      "confirm",
+      "confirm",
+      "flush",
+      "confirm",
+      "write",
+      "flush",
+    ])
     await bridge.stop()
   })
 

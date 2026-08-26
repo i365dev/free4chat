@@ -775,6 +775,74 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     })
   })
 
+  it("confirms an already-booked Agent publication only after Cloudflare reports it active", async () => {
+    const roomActions: Array<Record<string, unknown>> = []
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        tracks: [{ trackName: "agent-voice", mid: "0", status: "active" }],
+      })
+    )
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      roomActions.push(body)
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("agent-track-active", {
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-1",
+          trackName: "agent-voice",
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(roomActions).toEqual([
+      {
+        action: "authorize",
+        participantId: "agent-1",
+        token: "tok-1",
+        sessionId: "sess-1",
+        purpose: "voice-reply",
+        wantsVoicePublish: true,
+      },
+      {
+        action: "agent-track-active",
+        participantId: "agent-1",
+        token: "tok-1",
+        sessionId: "sess-1",
+        trackName: "agent-voice",
+      },
+    ])
+  })
+
+  it("does not announce an Agent publication while Cloudflare still reports it inactive", async () => {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        tracks: [{ trackName: "agent-voice", mid: "0", status: "inactive" }],
+      })
+    )
+    const roomActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      roomActions.push(body)
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("agent-track-active", {
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-1",
+          trackName: "agent-voice",
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect((await json(res)).active).toBe(false)
+    expect(roomActions.map((action) => action.action)).toEqual(["authorize"])
+  })
+
   it("does not affect renegotiate (no tracks array, route-scoped check)", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },

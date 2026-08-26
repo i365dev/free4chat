@@ -25,6 +25,7 @@ function captureBody(): {
     // Generic-envelope response that satisfies every signaling method's
     // response parsing (subscribe/publish need an SDP description).
     return Response.json({
+      active: true,
       sessionDescription: { type: "answer", sdp: "v=0\r\n" },
       tracks: [],
     })
@@ -147,6 +148,42 @@ test("every signaling method carries its typed purpose on the wire (#83 review)"
     } finally {
       capture.restore()
     }
+  }
+})
+
+test("confirms the published PCM track through the Agent-only endpoint", async () => {
+  const capture = captureBody()
+  try {
+    const client = new SfuRestClient("https://example.test", handle())
+    await assert.doesNotReject(async () => {
+      assert.equal(
+        await client.confirmPublishedAudioTrackActive!("s", "agent-voice"),
+        true
+      )
+    })
+    assert.deepEqual(capture.body, {
+      room: "room",
+      participantId: "participant",
+      token: "token",
+      sessionId: "s",
+      trackName: "agent-voice",
+    })
+  } finally {
+    capture.restore()
+  }
+})
+
+test("treats an inactive publication confirmation as false", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => Response.json({ active: false })
+  try {
+    const client = new SfuRestClient("https://example.test", handle())
+    assert.equal(
+      await client.confirmPublishedAudioTrackActive!("s", "agent-voice"),
+      false
+    )
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 

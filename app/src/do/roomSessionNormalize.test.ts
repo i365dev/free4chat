@@ -50,6 +50,22 @@ describe("normalizeAgentParticipantMedia (#83 live silence fix)", () => {
     expect(result.media?.agentPublishedMid).toBeUndefined()
   })
 
+  it("preserves a booked publication privately until its first PCM write", () => {
+    const pending = media({
+      tracks: [],
+      agentPublishedTrackName: "agent-voice",
+    })
+    const result = normalizeAgentParticipantMedia(
+      pending,
+      grantedVoice(),
+      AGENT_ID
+    )
+    expect(result.changed).toBe(false)
+    expect(result.media?.tracks).toEqual([])
+    expect(result.media?.agentPublishedMid).toBe(MID)
+    expect(result.media?.agentPublishedTrackName).toBe("agent-voice")
+  })
+
   it("strips tracks when the grant names a different agent", () => {
     const other = { ...grantedVoice(), agentParticipantId: "agent-other" }
     const result = normalizeAgentParticipantMedia(media(), other, AGENT_ID)

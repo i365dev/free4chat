@@ -43,6 +43,7 @@ function badRequest(message: string): Response {
 const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
   "agent-session",
   "agent-room-media",
+  "agent-track-active",
   "tracks",
   "renegotiate",
   // The resident, subscribe-only Meeting Notes Runtime has no browser Origin
@@ -552,6 +553,52 @@ export async function handleSfuRequest(
       participantId,
       token,
     })
+  }
+
+  if (route === "agent-track-active") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    if (!agentMediaEnabled(env))
+      return json({ error: "agent_media_disabled" }, 403)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
+    const trackName = typeof body.trackName === "string" ? body.trackName : ""
+    if (!room || !participantId || !token || !sessionId || !trackName)
+      return badRequest("missing_track")
+    const authResponse = await authorize(
+      env,
+      room,
+      participantId,
+      token,
+      sessionId,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "voice-reply",
+      true
+    )
+    if (!authResponse.ok) return authResponse
+    const publisher = await diagnosePublisherSession(env, sessionId, trackName)
+    const active =
+      publisher.matchingTrackFound &&
+      publisher.matchingTrackStatus === "active" &&
+      publisher.matchingTrackHasMid
+    if (!active) return json({ active: false })
+    const activation = await roomControl(env, room, {
+      action: "agent-track-active",
+      participantId,
+      token,
+      sessionId,
+      trackName,
+    })
+    if (!activation.ok) return activation
+    return json({ active: true })
   }
 
   if (route === "tracks" || route === "renegotiate") {
