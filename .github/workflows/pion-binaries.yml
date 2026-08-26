@@ -123,21 +123,50 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.source_sha }}
           fetch-depth: 1
-      - name: Check existing tag does not point elsewhere
+      - name: Ensure and verify exact source tag
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
           SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
         run: |
           set -euo pipefail
           tag="pion-v${VERSION}"
-          direct_sha="$(git ls-remote --refs origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
-          peeled_sha="$(git ls-remote origin "refs/tags/${tag}^{}" | awk 'NR==1 {print $1}')"
-          if [ -n "$direct_sha" ]; then
-            existing_sha="${peeled_sha:-$direct_sha}"
+          resolve_tag_commit() {
+            local direct_sha peeled_sha
+            direct_sha="$(git ls-remote --refs origin "refs/tags/${tag}" | awk 'NR==1 {print $1}')"
+            peeled_sha="$(git ls-remote origin "refs/tags/${tag}^{}" | awk 'NR==1 {print $1}')"
+            if [ -n "$direct_sha" ]; then
+              printf '%s\n' "${peeled_sha:-$direct_sha}"
+            fi
+          }
+
+          existing_sha="$(resolve_tag_commit)"
+          if [ -n "$existing_sha" ]; then
             if [ "$existing_sha" != "$SOURCE_SHA" ]; then
               echo "$tag already points to $existing_sha, expected $SOURCE_SHA" >&2
               exit 1
             fi
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" "$SOURCE_SHA" \
+              -m "Release Pion binaries for Agent Runtime ${VERSION}"
+            if ! git push origin "refs/tags/${tag}"; then
+              # Another run may have created the tag after our initial check.
+              # Accept that race only when the remote tag resolves exactly to
+              # this source; never force-update or overwrite a tag.
+              git tag -d "$tag" >/dev/null 2>&1 || true
+              existing_sha="$(resolve_tag_commit)"
+              if [ "$existing_sha" != "$SOURCE_SHA" ]; then
+                echo "Could not create $tag at $SOURCE_SHA; remote resolves to ${existing_sha:-nothing}" >&2
+                exit 1
+              fi
+            fi
+          fi
+
+          resolved_sha="$(resolve_tag_commit)"
+          if [ "$resolved_sha" != "$SOURCE_SHA" ]; then
+            echo "$tag resolves to ${resolved_sha:-nothing}, expected $SOURCE_SHA" >&2
+            exit 1
           fi
       - uses: actions/download-artifact@v4
         with:
@@ -155,10 +184,9 @@ jobs:
           sha256sum pion-* > SHA256SUMS
           test "$(wc -l < SHA256SUMS)" -eq 4
       - name: Attach to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: pion-v${{ needs.metadata.outputs.version }}
-          target_commitish: ${{ needs.metadata.outputs.source_sha }}
           fail_on_unmatched_files: true
           files: |
             release-assets/pion-*
