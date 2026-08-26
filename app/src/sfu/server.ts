@@ -189,6 +189,164 @@ async function realtimeRequest(
   )
 }
 
+const MAX_DIAGNOSTIC_TRACK_COUNT = 100
+const MAX_DIAGNOSTIC_ERROR_CODE_LENGTH = 64
+const DIAGNOSTIC_LOOKUP_TIMEOUT_MS = 3000
+
+function boundedDiagnosticErrorCode(value: unknown): string | undefined {
+  return typeof value === "string"
+    ? value.slice(0, MAX_DIAGNOSTIC_ERROR_CODE_LENGTH)
+    : undefined
+}
+
+function parsedObject(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function summarizeRemoteTrackResponse(
+  status: number,
+  responseBody: string
+): {
+  upstreamStatus: number
+  requiresImmediateRenegotiation: boolean
+  hasSessionDescription: boolean
+  sessionDescriptionType: string | null
+  trackResultCount: number
+  trackHasMid: boolean
+  topLevelErrorCode?: string
+  trackErrorCodes: string[]
+} {
+  const response = parsedObject(responseBody)
+  const sessionDescription =
+    response?.sessionDescription &&
+    typeof response.sessionDescription === "object"
+      ? (response.sessionDescription as Record<string, unknown>)
+      : undefined
+  const tracks = Array.isArray(response?.tracks)
+    ? response.tracks.slice(0, MAX_DIAGNOSTIC_TRACK_COUNT)
+    : []
+  const trackErrorCodes = tracks
+    .map((track) =>
+      track && typeof track === "object"
+        ? boundedDiagnosticErrorCode(
+            (track as Record<string, unknown>).errorCode
+          )
+        : undefined
+    )
+    .filter((code): code is string => Boolean(code))
+    .filter((code, index, all) => all.indexOf(code) === index)
+    .slice(0, 4)
+  return {
+    upstreamStatus: status,
+    requiresImmediateRenegotiation:
+      response?.requiresImmediateRenegotiation === true,
+    hasSessionDescription: Boolean(sessionDescription),
+    sessionDescriptionType:
+      sessionDescription?.type === "offer" ||
+      sessionDescription?.type === "answer"
+        ? sessionDescription.type
+        : null,
+    trackResultCount: tracks.length,
+    trackHasMid: tracks.some(
+      (track) =>
+        track &&
+        typeof track === "object" &&
+        typeof (track as Record<string, unknown>).mid === "string" &&
+        ((track as Record<string, unknown>).mid as string).length > 0
+    ),
+    ...(boundedDiagnosticErrorCode(response?.errorCode)
+      ? { topLevelErrorCode: boundedDiagnosticErrorCode(response?.errorCode) }
+      : {}),
+    trackErrorCodes,
+  }
+}
+
+function usableSessionDescription(responseBody: string): boolean {
+  const response = parsedObject(responseBody)
+  const description =
+    response?.sessionDescription &&
+    typeof response.sessionDescription === "object"
+      ? (response.sessionDescription as Record<string, unknown>)
+      : undefined
+  return typeof description?.sdp === "string" && description.sdp.length > 0
+}
+
+type PublisherTrackStatus = "active" | "inactive" | "waiting" | "unknown"
+
+function publisherTrackStatus(value: unknown): PublisherTrackStatus {
+  return value === "active" || value === "inactive" || value === "waiting"
+    ? value
+    : "unknown"
+}
+
+async function diagnosePublisherSession(
+  env: SfuEnv,
+  publisherSessionId: string,
+  requestedTrackName: string
+): Promise<{
+  publisherSessionLookupOk: boolean
+  publisherTrackCount: number
+  matchingTrackFound: boolean
+  matchingTrackStatus: PublisherTrackStatus
+  matchingTrackHasMid: boolean
+}> {
+  const failed = {
+    publisherSessionLookupOk: false,
+    publisherTrackCount: 0,
+    matchingTrackFound: false,
+    matchingTrackStatus: "unknown" as const,
+    matchingTrackHasMid: false,
+  }
+  const controller = new AbortController()
+  const timeout = setTimeout(
+    () => controller.abort(),
+    DIAGNOSTIC_LOOKUP_TIMEOUT_MS
+  )
+  try {
+    const response = await realtimeRequest(
+      env,
+      `/sessions/${encodeURIComponent(publisherSessionId)}`,
+      { method: "GET", signal: controller.signal }
+    )
+    const body = await response.text()
+    if (!response.ok) return failed
+    const parsed = parsedObject(body)
+    const tracks = Array.isArray(parsed?.tracks)
+      ? parsed.tracks.slice(0, MAX_DIAGNOSTIC_TRACK_COUNT)
+      : []
+    const matching = tracks.find(
+      (track) =>
+        track &&
+        typeof track === "object" &&
+        (track as Record<string, unknown>).trackName === requestedTrackName
+    )
+    const matchingRecord =
+      matching && typeof matching === "object"
+        ? (matching as Record<string, unknown>)
+        : undefined
+    return {
+      publisherSessionLookupOk: true,
+      publisherTrackCount: tracks.length,
+      matchingTrackFound: Boolean(matchingRecord),
+      matchingTrackStatus: publisherTrackStatus(matchingRecord?.status),
+      matchingTrackHasMid:
+        typeof matchingRecord?.mid === "string" &&
+        matchingRecord.mid.length > 0,
+    }
+  } catch {
+    return failed
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 async function readBody(
   request: Request
 ): Promise<Record<string, unknown> | null> {
@@ -521,6 +679,36 @@ export async function handleSfuRequest(
     const responseBody = await upstream.text()
     if (!upstream.ok)
       return new Response(responseBody, { status: upstream.status })
+
+    // Production-only diagnostic for the Human remote-subscribe path. A
+    // successful tracks/new response should carry an SFU-generated offer;
+    // when it does not, inspect the publisher session without changing the
+    // response returned to the browser. Never log the publisher session ID,
+    // requested track name, credentials, raw body, SDP, or descriptions.
+    const firstHumanRemoteTrack =
+      route === "tracks" && participantKind === "human"
+        ? requestedTracks.find((track) => track.location === "remote")
+        : undefined
+    if (
+      firstHumanRemoteTrack &&
+      !usableSessionDescription(responseBody) &&
+      typeof firstHumanRemoteTrack.sessionId === "string" &&
+      typeof firstHumanRemoteTrack.trackName === "string"
+    ) {
+      const responseSummary = summarizeRemoteTrackResponse(
+        upstream.status,
+        responseBody
+      )
+      const publisherSummary = await diagnosePublisherSession(
+        env,
+        firstHumanRemoteTrack.sessionId,
+        firstHumanRemoteTrack.trackName
+      )
+      console.warn("sfu_remote_subscribe_diagnostic", {
+        ...responseSummary,
+        ...publisherSummary,
+      })
+    }
 
     if (route === "tracks" && Array.isArray(body.tracks)) {
       for (const track of body.tracks as Array<Record<string, unknown>>) {
