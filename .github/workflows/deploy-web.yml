@@ -1,6 +1,7 @@
 name: CI / Deploy
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - "app/**"
@@ -44,7 +45,9 @@ jobs:
   deploy:
     name: Build & Deploy
     needs: lint
-    if: github.ref == 'refs/heads/cf-sfu' && github.event_name == 'push'
+    if: >-
+      github.ref == 'refs/heads/cf-sfu' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     concurrency:
       group: cf-sfu-deploy
