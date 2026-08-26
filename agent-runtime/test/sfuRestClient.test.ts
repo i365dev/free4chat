@@ -216,3 +216,27 @@ test("subscribeTrack keeps the remote-track payload shape and carries the mid ba
     globalThis.fetch = originalFetch
   }
 })
+
+test("reports an SFU route and error code without echoing the response body", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () =>
+    Response.json(
+      {
+        errorCode: "decoding_error",
+        errorDescription: "untrusted upstream detail",
+      },
+      { status: 400 }
+    )
+
+  try {
+    const client = new SfuRestClient("https://example.test", handle())
+    await assert.rejects(
+      client.establishDataChannelTransport("s", undefined, "agent-transport"),
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message === "sfu_datachannels_establish_decoding_error"
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

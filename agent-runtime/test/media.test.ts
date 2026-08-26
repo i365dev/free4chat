@@ -49,6 +49,18 @@ class FakeRestClient implements SfuRestClientLike {
     if (this.createAgentSessionError) throw this.createAgentSessionError
     return "agent-session-1"
   }
+  /** Optional native initial-offer contract. Absent by default so existing
+   * tests keep the createAgentSession() + establish fallback path. */
+  createAgentSessionWithOffer?: (offer: SessionDescriptionLike) => Promise<{
+    sessionId: string
+    sessionDescription?: SessionDescriptionLike
+  }>
+  /** What establishDataChannelTransport returns; set to a server offer to
+   * exercise the server-offer answer/renegotiate bootstrap. */
+  establishSessionDescription: SessionDescriptionLike = {
+    type: "answer",
+    sdp: "fake-transport-answer",
+  }
   async establishDataChannelTransport(
     mySessionId: string,
     offer: SessionDescriptionLike | undefined,
@@ -60,9 +72,7 @@ class FakeRestClient implements SfuRestClientLike {
       purpose,
     })
     if (this.establishTransportError) throw this.establishTransportError
-    return {
-      sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
-    }
+    return { sessionDescription: this.establishSessionDescription }
   }
   async roomMedia(): Promise<RoomMediaParticipant[]> {
     if (this.roomMediaError) throw this.roomMediaError
@@ -122,6 +132,8 @@ class FakePeerConnection implements PeerConnectionLike {
   lastRtpCallback: RtpCallback | undefined
   localPublishMidResult: string | undefined
   activatePublishCalls = 0
+  /** Call order for the server-offer bootstrap assertions. */
+  calls: string[] = []
   private trackHandlers: Array<(track: MediaTrackLike) => void> = []
   onTrack = {
     subscribe: (callback: (track: MediaTrackLike) => void) => {
@@ -138,12 +150,16 @@ class FakePeerConnection implements PeerConnectionLike {
   writePcmChunk = async () => undefined
 
   async createOffer(): Promise<SessionDescriptionLike> {
+    this.calls.push("createOffer")
     return { type: "offer", sdp: "fake-initial-offer" }
   }
 
   async setRemoteDescription(
     description: SessionDescriptionLike
   ): Promise<void> {
+    this.calls.push(
+      `setRemoteDescription:${description.type}:${description.sdp ?? ""}`
+    )
     // The initial server-offer DataChannel transport does not add a media
     // track. Only a later /tracks subscription offer should fire onTrack.
     if (description.sdp !== "fake-sdp") return
@@ -159,11 +175,13 @@ class FakePeerConnection implements PeerConnectionLike {
     for (const handler of this.trackHandlers) handler(track)
   }
   async createAnswer(): Promise<SessionDescriptionLike> {
+    this.calls.push("createAnswer")
     return { type: "answer", sdp: "fake-answer" }
   }
   async setLocalDescription(
     description: SessionDescriptionLike
   ): Promise<void> {
+    this.calls.push(`setLocalDescription:${description.sdp}`)
     this.localDescriptions.push(description)
   }
   close(): void {
@@ -377,7 +395,6 @@ test("subscribes to a newly discovered Human audio track and reports it started"
   assert.deepEqual(restClient.establishTransportCalls, [
     {
       sessionId: "agent-session-1",
-      offer: { type: "offer", sdp: "fake-initial-offer" },
       purpose: "agent-transport",
     },
   ])
@@ -808,4 +825,86 @@ test("start() is a no-op while already running (does not create a second session
   await bridge.start()
   assert.equal(restClient.createAgentSessionCalls, 1)
   bridge.stop()
+})
+
+test("server-offer bootstrap: a session without a description establishes the transport with the offer omitted, answers the server offer, then renegotiates, in order", async () => {
+  const restClient = new FakeRestClient()
+  restClient.createAgentSessionWithOffer = async () => ({
+    sessionId: "agent-session-1",
+  })
+  restClient.establishSessionDescription = {
+    type: "offer",
+    sdp: "fake-server-offer",
+  }
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc)
+
+  await bridge.start()
+
+  assert.deepEqual(restClient.establishTransportCalls, [
+    { sessionId: "agent-session-1", purpose: "agent-transport" },
+  ])
+  assert.equal(restClient.renegotiateCalls, 1)
+  assert.deepEqual(restClient.renegotiatePurposes, ["agent-transport"])
+  assert.deepEqual(pc.localDescriptions, [
+    { type: "offer", sdp: "fake-initial-offer" },
+    { type: "answer", sdp: "fake-answer" },
+  ])
+  assert.deepEqual(pc.calls, [
+    "createOffer",
+    "setLocalDescription:fake-initial-offer",
+    "setRemoteDescription:offer:fake-server-offer",
+    "createAnswer",
+    "setLocalDescription:fake-answer",
+  ])
+  bridge.stop()
+})
+
+test("native-answer bootstrap is unchanged: a returned answer is applied directly with no establish or renegotiate", async () => {
+  const restClient = new FakeRestClient()
+  restClient.createAgentSessionWithOffer = async () => ({
+    sessionId: "agent-session-1",
+    sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
+  })
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc)
+
+  await bridge.start()
+
+  assert.equal(restClient.establishTransportCalls.length, 0)
+  assert.equal(restClient.renegotiateCalls, 0)
+  assert.deepEqual(pc.localDescriptions, [
+    { type: "offer", sdp: "fake-initial-offer" },
+  ])
+  bridge.stop()
+})
+
+test("server-offer bootstrap failure surfaces only the bounded error classification and is retryable", async () => {
+  const restClient = new FakeRestClient()
+  restClient.createAgentSessionWithOffer = async () => ({
+    sessionId: "agent-session-1",
+  })
+  restClient.establishTransportError = new Error(
+    "sfu_datachannels_establish_decoding_error"
+  )
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc)
+
+  await assert.rejects(
+    () => bridge.start(),
+    /sfu_datachannels_establish_decoding_error/
+  )
+  assert.equal(pc.closed, true)
+
+  restClient.establishTransportError = undefined
+  restClient.establishSessionDescription = {
+    type: "offer",
+    sdp: "fake-server-offer",
+  }
+  const pc2 = new FakePeerConnection()
+  const { bridge: bridge2 } = makeBridge(restClient, pc2)
+  await bridge2.start()
+  assert.equal(restClient.establishTransportCalls.length, 2)
+  assert.equal(bridge2.voicePublishCapable, false)
+  bridge2.stop()
 })
