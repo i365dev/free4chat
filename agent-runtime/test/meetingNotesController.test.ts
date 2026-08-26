@@ -13,7 +13,6 @@ import type {
   RoomMediaParticipant,
   SessionDescriptionLike,
   SfuRestClientLike,
-  SfuSignalPurpose,
 } from "../src/media/sfuRestClient.js"
 import type { MediaBridgeEvent } from "../src/media/types.js"
 import type {
@@ -42,11 +41,7 @@ class FakeRestClient implements SfuRestClientLike {
     if (this.createAgentSessionError) throw this.createAgentSessionError
     return "agent-session-1"
   }
-  async establishDataChannelTransport(
-    _mySessionId: string,
-    _offer: SessionDescriptionLike | undefined,
-    _purpose: SfuSignalPurpose
-  ) {
+  async establishDataChannelTransport() {
     return {
       sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
     }
@@ -54,19 +49,10 @@ class FakeRestClient implements SfuRestClientLike {
   async roomMedia(): Promise<RoomMediaParticipant[]> {
     return this.participants
   }
-  async subscribeTrack(
-    _mySessionId: string,
-    _remoteSessionId: string,
-    _trackName: string,
-    _purpose: SfuSignalPurpose
-  ): Promise<SessionDescriptionLike> {
+  async subscribeTrack(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-offer" }
   }
-  async renegotiate(
-    _mySessionId: string,
-    _answer: SessionDescriptionLike,
-    _purpose: SfuSignalPurpose
-  ): Promise<void> {}
+  async renegotiate(): Promise<void> {}
 }
 
 class FakePeerConnection implements PeerConnectionLike {
