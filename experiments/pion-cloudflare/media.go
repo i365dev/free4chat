@@ -18,6 +18,14 @@ const (
 	connectTimeout    = 30 * time.Second
 	answerGatherGrace = 2 * time.Second
 	onTrackTimeout    = 15 * time.Second
+
+	// Outbound voice pacing (#83 review): Opus frames are 20 ms apart on the
+	// wire; the writer must emit them at wall-clock pace instead of bursting
+	// whatever PCM arrived in one chunk. After a stall longer than
+	// paceResyncAfter the schedule rebaselines rather than bursting to catch
+	// up.
+	frameDuration   = 20 * time.Millisecond
+	paceResyncAfter = 250 * time.Millisecond
 )
 
 // MediaSpike owns the single Pion PeerConnection under test. It is a pure
@@ -38,6 +46,52 @@ type MediaSpike struct {
 	publishOn   bool
 	encoder     *opus.Encoder
 	pcmCarry    []byte
+	// Outbound wall-clock pacing (#83 review): injectable for deterministic
+	// tests; production uses time.Now/time.Sleep.
+	nowFn   func() time.Time
+	sleepFn func(time.Duration)
+	pacer   *framePacer
+}
+
+// framePacer spaces outbound Opus frames one frame-duration apart in
+// wall-clock time so an arbitrarily fast PCM burst streams at speaking pace.
+// The first frame of a schedule goes out immediately; later frames wait for
+// their slot; a stall longer than paceResyncAfter rebaselines instead of
+// bursting catch-up frames. Clock/sleeper injection keeps tests deterministic.
+type framePacer struct {
+	mu    sync.Mutex
+	now   func() time.Time
+	sleep func(time.Duration)
+	next  time.Time // zero until the first paced frame
+}
+
+func newFramePacer(
+	now func() time.Time,
+	sleep func(time.Duration),
+) *framePacer {
+	return &framePacer{now: now, sleep: sleep}
+}
+
+func (p *framePacer) pace() {
+	p.mu.Lock()
+	now := p.now()
+	if p.next.IsZero() || now.Sub(p.next) >= paceResyncAfter {
+		p.next = now.Add(frameDuration)
+		p.mu.Unlock()
+		return
+	}
+	wait := p.next.Sub(now)
+	p.mu.Unlock()
+	if wait > 0 {
+		p.sleep(wait)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if after := p.next.Add(frameDuration); after.After(now) {
+		p.next = after
+	} else {
+		p.next = now.Add(frameDuration)
+	}
 }
 
 func NewMediaSpike(tracer *Tracer, emitEvent func(map[string]any)) (*MediaSpike, error) {
@@ -46,7 +100,10 @@ func NewMediaSpike(tracer *Tracer, emitEvent func(map[string]any)) (*MediaSpike,
 		emitEvent: emitEvent,
 		dcOpen:    make(chan struct{}),
 		rtpCounts: make(map[string]uint64),
+		nowFn:     time.Now,
+		sleepFn:   time.Sleep,
 	}
+	s.pacer = newFramePacer(s.nowFn, s.sleepFn)
 	return s, nil
 }
 
@@ -485,7 +542,8 @@ func (s *MediaSpike) LocalPublishMid() string {
 
 // ActivatePublish starts accepting PCM after a grant-authorised publish;
 // DeactivatePublish discards any buffered frame immediately (revocation /
-// turn cancellation must never emit stale audio).
+// turn cancellation must never emit stale audio). Activation also restarts
+// the frame pacer so a fresh utterance never inherits a stale schedule.
 func (s *MediaSpike) ActivatePublish() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -501,6 +559,7 @@ func (s *MediaSpike) ActivatePublish() error {
 	}
 	s.publishOn = true
 	s.pcmCarry = nil
+	s.pacer = newFramePacer(s.nowFn, s.sleepFn)
 	return nil
 }
 
@@ -511,12 +570,25 @@ func (s *MediaSpike) DeactivatePublish() {
 	s.mu.Unlock()
 }
 
+// CancelTurn discards buffered partial-frame bytes WITHOUT deactivating
+// publication: a cancelled utterance must never leak stale audio into a
+// later turn, but the grant stays live and later turns keep flowing.
+// (DeactivatePublish remains the full cooperative-revocation path.)
+func (s *MediaSpike) CancelTurn() {
+	s.mu.Lock()
+	s.pcmCarry = nil
+	s.mu.Unlock()
+}
+
 // WritePCM accepts arbitrary-size S16LE 24 kHz mono chunks (odd trailing
 // bytes are carried), frames at 20 ms (960 B), resamples x2 to 48 kHz mono
-// and writes one real Opus packet per frame.
+// and writes one real Opus packet per frame at wall-clock pace (#83 review
+// blocker 3): the first frame goes out immediately, later frames are spaced
+// one frame-duration apart via the injectable pacer.
 func (s *MediaSpike) WritePCM(chunk []byte) error {
 	s.mu.Lock()
 	track, enc := s.outbound, s.encoder
+	pacer := s.pacer
 	active := s.publishOn
 	s.mu.Unlock()
 	if !active || track == nil || enc == nil {
@@ -527,6 +599,12 @@ func (s *MediaSpike) WritePCM(chunk []byte) error {
 	frames := len(data) / frame24kBytes
 	s.setCarry(data[frames*frame24kBytes:])
 	for f := 0; f < frames; f++ {
+		pacer.pace()
+		// Re-check after any paced wait: a concurrent DeactivatePublish
+		// must stop the burst instead of emitting stale frames.
+		if !s.publishActive() {
+			return errPublishNotActive
+		}
 		frame := data[f*frame24kBytes : (f+1)*frame24kBytes]
 		up := Resample24To48(frame)
 		out := make([]byte, 2000)
@@ -534,14 +612,15 @@ func (s *MediaSpike) WritePCM(chunk []byte) error {
 		if err != nil {
 			return err
 		}
-		if err := track.WriteSample(media.Sample{Data: out[:n], Duration: 20 * time.Millisecond}); err != nil {
+		if err := track.WriteSample(media.Sample{Data: out[:n], Duration: frameDuration}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// FlushAudio zero-pads a final partial frame (normal completion only).
+// FlushAudio zero-pads a final partial frame (normal completion only) and
+// emits it in its own paced slot so the utterance tail keeps RTP cadence.
 func (s *MediaSpike) FlushAudio() error {
 	carry := s.takeCarryAll()
 	if len(carry) == 0 {
@@ -549,6 +628,10 @@ func (s *MediaSpike) FlushAudio() error {
 	}
 	if len(carry)%2 == 1 {
 		carry = append(carry, 0)
+	}
+	s.pacer.pace()
+	if !s.publishActive() {
+		return errPublishNotActive
 	}
 	padded := make([]byte, 960)
 	copy(padded, carry)
@@ -559,6 +642,12 @@ func (s *MediaSpike) FlushAudio() error {
 		return err
 	}
 	return s.writeSample(out[:n])
+}
+
+func (s *MediaSpike) publishActive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.publishOn
 }
 
 func (s *MediaSpike) takeCarry() []byte {

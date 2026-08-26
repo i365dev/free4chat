@@ -171,6 +171,10 @@ func handleCmd(spike *MediaSpike, tracer *Tracer, c cmd) resp {
 		spike.DeactivatePublish()
 		return resp{OK: true}
 
+	case "cancel-turn":
+		spike.CancelTurn()
+		return resp{OK: true}
+
 	case "write-pcm":
 		if c.Payload == "" {
 			return resp{OK: false, Error: "write-pcm requires payload"}
