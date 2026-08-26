@@ -82,9 +82,8 @@ describe("agent purpose direction matrix (#83)", () => {
           wantsRemoteSubscribe: false,
           involvesVideo: true,
         })
-        if (!result.ok) expect(result.error).toBe("agent_video_forbidden")
-        else assert.fail("expected failure")
-      ).toBe("agent_video_forbidden")
+      if (!result.ok) expect(result.error).toBe("agent_video_forbidden")
+      else assert.fail("expected failure")
     }
   })
 })
