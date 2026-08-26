@@ -1190,8 +1190,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         meetingNotes: room?.meetingNotes ?? NO_MEETING_NOTES,
         meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
         voiceReply: room?.voiceReply ?? NO_VOICE_REPLY,
-        voiceReplyMediaAvailable:
-          this.env.AGENT_MEDIA_ENABLED === "true",
+        voiceReplyMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
         mediaPermissions: room
           ? agentMediaPermissions(
               room.meetingNotes,
@@ -1886,15 +1885,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // audio publish; video always denied. Humans are unaffected.
         const decision = resolveAgentPurposePermission({
           purpose: request.purpose,
-          wantsLocalPublish:
-            (request.localTrackCount ?? 0) > 0,
+          wantsLocalPublish: (request.localTrackCount ?? 0) > 0,
           wantsRemoteSubscribe:
             (request.remoteTrackCount ?? 0) > 0 ||
             Boolean(request.trackSessionId || request.dataChannelSessionId),
           involvesVideo: false,
         })
-        if (!decision.ok)
-          return this.json({ error: decision.error }, 403)
+        if (!decision.ok) return this.json({ error: decision.error }, 403)
         if (
           request.wantsVoicePublish === true &&
           !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
@@ -2457,15 +2454,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       // Idempotent replay: same speaker must not bump the epoch (the runtime
       // treats an epoch change as "server tore down the publication").
-      if (
-        isAgentAuthorizedForVoiceReply(room.voiceReply, agent.id)
-      ) {
-        socket.send(JSON.stringify({ type: "state", state: this.stateFor(room) }))
+      if (isAgentAuthorizedForVoiceReply(room.voiceReply, agent.id)) {
+        socket.send(
+          JSON.stringify({ type: "state", state: this.stateFor(room) })
+        )
         return
       }
       if (room.pendingMediaCleanup.length >= MAX_PENDING_CLEANUP_ENTRIES) {
         socket.send(
-          JSON.stringify({ type: "error", error: "agent_media_cleanup_backlog" })
+          JSON.stringify({
+            type: "error",
+            error: "agent_media_cleanup_backlog",
+          })
         )
         return
       }

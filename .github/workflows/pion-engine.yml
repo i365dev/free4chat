@@ -20,6 +20,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: experiments/pion-cloudflare/go.mod
+      - name: Gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+        working-directory: experiments/pion-cloudflare
       - name: Vet
         run: go vet ./...
         working-directory: experiments/pion-cloudflare

@@ -215,9 +215,21 @@ export class MeetingNotesController {
       this.options.voiceReply &&
       this.bridgeState === "running"
     ) {
-      if (!vrAuthorized || (vrEpoch !== null && vrEpoch !== this.voiceEpoch))
+      if (!vrAuthorized) {
         await this.teardownVoice()
-      else await this.ensureVoice()
+      } else {
+        // Fresh activation or rotation: remember the epoch, discard any old
+        // speaker, then rebuild through ensureVoice.
+        if (this.voiceEpoch !== vrEpoch) {
+          const old = this.voiceSpeaker
+          this.voiceSpeaker = null
+          this.voiceEpoch = vrEpoch
+          old?.cancel()
+          await old?.close().catch(() => undefined)
+          await this.bridge?.deactivateVoicePublish()
+        }
+        if (!this.voiceSpeaker && !this.voiceStarting) await this.ensureVoice()
+      }
     } else if (!vrAuthorized) await this.teardownVoice()
   }
 
@@ -238,7 +250,6 @@ export class MeetingNotesController {
       this.voiceSpeaker
     )
       return
-    if (this.voiceEpoch === null) return
     this.voiceStarting = true
     try {
       const provider = await options.createTtsProvider()

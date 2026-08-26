@@ -35,14 +35,14 @@ type cmd struct {
 }
 
 type resp struct {
-	ID          int64               `json:"id"`
-	OK          bool                `json:"ok"`
-	Error       string              `json:"error,omitempty"`
-	Offer       *sdpLike            `json:"offer,omitempty"`
-	Answer      *sdpLike            `json:"answer,omitempty"`
-	AppliedType string              `json:"appliedType,omitempty"`
-	State       string              `json:"state,omitempty"`
-	Counts      map[string]uint64   `json:"counts,omitempty"`
+	ID          int64             `json:"id"`
+	OK          bool              `json:"ok"`
+	Error       string            `json:"error,omitempty"`
+	Offer       *sdpLike          `json:"offer,omitempty"`
+	Answer      *sdpLike          `json:"answer,omitempty"`
+	AppliedType string            `json:"appliedType,omitempty"`
+	State       string            `json:"state,omitempty"`
+	Counts      map[string]uint64 `json:"counts,omitempty"`
 
 	Track map[string]any `json:"track,omitempty"`
 }

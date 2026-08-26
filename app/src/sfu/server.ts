@@ -419,7 +419,9 @@ export async function handleSfuRequest(
       undefined,
       remoteTrackCount,
       typeof body.purpose === "string" ? body.purpose : undefined,
-      (request.headers.get("origin") ?? "") !== "" ? body.wantsVoicePublish === true : body.wantsVoicePublish === true,
+      (request.headers.get("origin") ?? "") !== ""
+        ? body.wantsVoicePublish === true
+        : body.wantsVoicePublish === true,
       localTracks.length
     )
     if (!auth.ok) return auth

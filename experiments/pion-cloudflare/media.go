@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/pion/opus"
-	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media"
 )
 
 const (
@@ -23,11 +23,11 @@ const (
 // MediaSpike owns the single Pion PeerConnection under test. It is a pure
 // media engine: SDP in/out via the stdio protocol, zero HTTP, zero secrets.
 type MediaSpike struct {
-	pc         *webrtc.PeerConnection
-	tracer     *Tracer
-	emitEvent  func(map[string]any)
-	dcOpen     chan struct{}
-	dcState    string
+	pc          *webrtc.PeerConnection
+	tracer      *Tracer
+	emitEvent   func(map[string]any)
+	dcOpen      chan struct{}
+	dcState     string
 	expectedMid string
 
 	mu          sync.Mutex
@@ -44,8 +44,8 @@ func NewMediaSpike(tracer *Tracer, emitEvent func(map[string]any)) (*MediaSpike,
 	s := &MediaSpike{
 		tracer:    tracer,
 		emitEvent: emitEvent,
-		dcOpen:     make(chan struct{}),
-		rtpCounts:  make(map[string]uint64),
+		dcOpen:    make(chan struct{}),
+		rtpCounts: make(map[string]uint64),
 	}
 	return s, nil
 }
@@ -178,8 +178,9 @@ func (s *MediaSpike) GatherCompleteOffer() (*sdpLike, error) {
 //
 // answer -> SetRemoteDescription; applied="answer", no answer returned.
 // offer  -> SetRemoteDescription (assert have-remote-offer), CreateAnswer,
-//           SetLocalDescription; applied="offer" + local answer SDP returned
-//           for Node to submit via PUT /api/sfu/renegotiate.
+//
+//	SetLocalDescription; applied="offer" + local answer SDP returned
+//	for Node to submit via PUT /api/sfu/renegotiate.
 func (s *MediaSpike) ApplyRemote(remote sdpLike, dumpBase string) (applied string, answer *sdpLike, err error) {
 	if remote.SDP == "" || remote.Type == "" {
 		return "", nil, fmt.Errorf("empty remote session description")
@@ -377,15 +378,15 @@ func (s *MediaSpike) forwardRtp(mid string, track *webrtc.TrackRemote) {
 		}
 		if s.emitEvent != nil {
 			s.emitEvent(map[string]any{
-				"event":   "rtp",
-				"mid":     mid,
-				"seq":     pkt.SequenceNumber,
-				"ts":      pkt.Timestamp,
-				"pt":      int(pkt.PayloadType),
-				"ssrc":    uint32(track.SSRC()),
-				"marker":  pkt.Marker,
-				"payload": base64.StdEncoding.EncodeToString(pkt.Payload),
-				"mime":    codec.MimeType,
+				"event":     "rtp",
+				"mid":       mid,
+				"seq":       pkt.SequenceNumber,
+				"ts":        pkt.Timestamp,
+				"pt":        int(pkt.PayloadType),
+				"ssrc":      uint32(track.SSRC()),
+				"marker":    pkt.Marker,
+				"payload":   base64.StdEncoding.EncodeToString(pkt.Payload),
+				"mime":      codec.MimeType,
 				"clockRate": int(codec.ClockRate),
 				"channels":  int(codec.Channels),
 			})
@@ -436,7 +437,7 @@ func (s *MediaSpike) Close() {
 	if s.pc != nil {
 		_ = s.pc.Close()
 	}
-}// ---------- #83 outbound voice publication ----------
+}                            // ---------- #83 outbound voice publication ----------
 const opusFrameSamples = 960 // 20 ms @ 48 kHz mono
 var errAlreadyOffered = fmt.Errorf("publish arming is only allowed before the first offer")
 var errPublishNotActive = fmt.Errorf("voice publish is not activated")
@@ -560,18 +561,34 @@ func (s *MediaSpike) FlushAudio() error {
 	return s.writeSample(out[:n])
 }
 
-func (s *MediaSpike) takeCarry() []byte { s.mu.Lock(); defer s.mu.Unlock(); c := s.pcmCarry; s.pcmCarry = nil; return c }
+func (s *MediaSpike) takeCarry() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.pcmCarry
+	s.pcmCarry = nil
+	return c
+}
 func (s *MediaSpike) takeCarryAll() []byte { return s.takeCarry() }
 
 // PCMCarry exposes buffered unframed bytes for tests.
-func (s *MediaSpike) PCMCarry() []byte { s.mu.Lock(); defer s.mu.Unlock(); return append([]byte(nil), s.pcmCarry...) }
+func (s *MediaSpike) PCMCarry() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.pcmCarry...)
+}
 func (s *MediaSpike) setCarry(c []byte) { s.mu.Lock(); s.pcmCarry = c; s.mu.Unlock() }
 func (s *MediaSpike) encodeWith(in, out []byte) (int, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.encoder.Encode(in, out)
 }
 func (s *MediaSpike) writeSample(b []byte) error {
-	s.mu.Lock(); t := s.outbound; active := s.publishOn; s.mu.Unlock()
-	if !active || t == nil { return errPublishNotActive }
+	s.mu.Lock()
+	t := s.outbound
+	active := s.publishOn
+	s.mu.Unlock()
+	if !active || t == nil {
+		return errPublishNotActive
+	}
 	return t.WriteSample(media.Sample{Data: b, Duration: 20 * time.Millisecond})
 }
