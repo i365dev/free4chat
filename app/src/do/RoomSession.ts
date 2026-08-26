@@ -14,7 +14,6 @@ import {
 } from "./collab"
 import {
   agentMediaPermissions,
-  type VoiceReplyState,
   clearGrantIfParticipantDeparting,
   clearVoiceReplyIfParticipantDeparting,
   isAgentAuthorizedForMedia,
@@ -49,12 +48,14 @@ import type {
   RoomAttachment,
   MeetingNotesState,
   PendingMediaCleanup,
+  VoiceReplyState,
   RoomMediaTrack,
   AgentAttachmentMimeType,
   RoomMessage,
   RoomParticipant,
   RoomRecord,
   RoomState,
+  VoiceReplyState,
   ParticipantKind,
   RoomSurfaceV1,
   CollabEvent,
@@ -167,6 +168,7 @@ type ControlRequest =
       // any Cloudflare tracks/new call is made. Ignored for Human callers.
       remoteTrackCount?: number
       purpose?: unknown
+      wantsVoicePublish?: boolean
       localTrackCount?: number
     }
   | {
@@ -1894,7 +1896,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             Boolean(request.trackSessionId || request.dataChannelSessionId),
           involvesVideo: false,
         })
-        if (!decision.ok) return this.json({ error: decision.error }, 403)
+        if (!decision.ok)
+          return this.json({ error: decision.error }, 403)
+        void decision
         if (
           request.wantsVoicePublish === true &&
           !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
