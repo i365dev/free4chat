@@ -29,6 +29,12 @@ class FakeSink implements OutboundVoiceSink {
   written: TtsAudioChunk[] = []
   closed = false
   writeCalls = 0
+  endedTurns = 0
+  cancelledTurns = 0
+  /** Ordered record of sink operations, for boundary-ordering assertions. */
+  ops: string[] = []
+  /** When true, endTurn rejects (simulating a flush failure). */
+  failEndTurn = false
   private readonly heldPromises: Promise<void>[] = []
   private readonly releases: Array<() => void> = []
 
@@ -56,7 +62,19 @@ class FakeSink implements OutboundVoiceSink {
       this.written.length >= this.failAfterWrite
     )
       throw new Error("track_write_failed")
+    this.ops.push(`write:${chunkTag(audio)}`)
     this.written.push(audio)
+  }
+
+  async endTurn(): Promise<void> {
+    this.ops.push("endTurn")
+    this.endedTurns += 1
+    if (this.failEndTurn) throw new Error("flush_failed")
+  }
+
+  async cancelTurn(): Promise<void> {
+    this.ops.push("cancelTurn")
+    this.cancelledTurns += 1
   }
 
   async close(): Promise<void> {
@@ -284,4 +302,96 @@ test("speak after close is ignored; close closes the sink exactly once", async (
   assert.equal(provider.createCalls, 1)
   assert.equal(sink.closed, true)
   assert.equal(sink.writeCalls, 1)
+})
+
+test("normal completion ends the turn exactly once, after the final write and before close", async () => {
+  const provider = new ScriptedTtsProvider()
+  const sink = new FakeSink()
+  const { events } = speakerEvents()
+  const speaker = new VoiceSpeaker({
+    provider,
+    createSink: () => sink,
+    onEvent: (event) => events.push(event),
+  })
+  speaker.speak("One. Two. Three.")
+  await waitFor(() => events.some((event) => event.type === "turnFinished"))
+  await speaker.close()
+  assert.equal(sink.endedTurns, 1)
+  assert.equal(sink.cancelledTurns, 0)
+  // The flush must land strictly after the last PCM write — the tail of the
+  // utterance is audible before finish is reported.
+  assert.deepEqual(sink.ops.slice(-2), ["write:audio:Three.", "endTurn"])
+})
+
+test("cancel discards partial carry via cancelTurn and never calls endTurn", async () => {
+  const provider = new ScriptedTtsProvider()
+  const sink = new FakeSink()
+  const speaker = new VoiceSpeaker({ provider, createSink: () => sink })
+  sink.hold()
+  sink.hold()
+  speaker.speak("Alpha. Beta. Gamma.")
+  await waitFor(() => sink.writeCalls >= 1)
+  sink.releaseNext()
+  await waitFor(() => sink.writeCalls >= 2)
+  speaker.cancel()
+  assert.equal(sink.cancelledTurns, 1)
+  sink.releaseNext()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.deepEqual(sink.written.map(chunkTag), ["audio:Alpha.", "audio:Beta."])
+  assert.equal(sink.endedTurns, 0)
+  await speaker.close()
+})
+
+test("a newer turn cancels the previous turn's tail once, then ends its own exactly once", async () => {
+  const provider = new ScriptedTtsProvider()
+  const sink = new FakeSink()
+  const speaker = new VoiceSpeaker({ provider, createSink: () => sink })
+  sink.hold()
+  speaker.speak("Old answer. Still old.")
+  await waitFor(() => sink.writeCalls >= 1)
+  speaker.speak("New answer.")
+  assert.equal(sink.cancelledTurns, 1)
+  sink.releaseNext()
+  await waitFor(() => sink.written.map(chunkTag).includes("audio:New answer."))
+  await waitFor(() => sink.endedTurns === 1)
+  assert.ok(!sink.written.map(chunkTag).includes("audio:Still old."))
+  assert.equal(sink.cancelledTurns, 1)
+  assert.deepEqual(sink.ops.slice(-2), ["write:audio:New answer.", "endTurn"])
+  await speaker.close()
+})
+
+test("an endTurn flush failure fails the turn; the next turn gets a fresh sink", async () => {
+  const provider = new ScriptedTtsProvider()
+  const sinks = [new FakeSink(), new FakeSink()]
+  sinks[0]!.failEndTurn = true
+  let index = 0
+  const { events } = speakerEvents()
+  const speaker = new VoiceSpeaker({
+    provider,
+    createSink: () => sinks[index++]!,
+    onEvent: (event) => events.push(event),
+  })
+  speaker.speak("First try.")
+  await waitFor(() =>
+    events.some(
+      (event) =>
+        event.type === "turnFailed" && event.code.includes("flush_failed")
+    )
+  )
+  assert.equal(sinks[0]!.endedTurns, 1)
+  speaker.speak("Second try.")
+  await waitFor(() => events.some((event) => event.type === "turnFinished"))
+  assert.equal(sinks[1]!.written.length >= 1, true)
+  assert.equal(sinks[1]!.endedTurns, 1)
+  await speaker.close()
+})
+
+test("cancel on an idle speaker is a no-op that never touches the sink", async () => {
+  const provider = new ScriptedTtsProvider()
+  const sink = new FakeSink()
+  const speaker = new VoiceSpeaker({ provider, createSink: () => sink })
+  speaker.cancel()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(sink.cancelledTurns, 0)
+  assert.equal(sink.endedTurns, 0)
 })

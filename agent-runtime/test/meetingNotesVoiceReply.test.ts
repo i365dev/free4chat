@@ -18,6 +18,8 @@ class FakeBridge {
   deactivated = 0
   stopped = false
   written: Uint8Array[] = []
+  flushed = 0
+  discarded = 0
   voicePublishCapable = true
   async start() {
     this.started = true
@@ -34,7 +36,12 @@ class FakeBridge {
   async writeVoicePcm(chunk: Uint8Array) {
     this.written.push(chunk)
   }
-  async flushVoice() {}
+  async flushVoice() {
+    this.flushed += 1
+  }
+  async cancelVoiceTurn() {
+    this.discarded += 1
+  }
 }
 
 function makeRoomInfo(opts: {
@@ -344,6 +351,72 @@ test("revocation stops voice output", async () => {
     Promise.reject(new Error("no tts"))
   )
   assert.equal(current(c), null)
+})
+
+test("utterance boundaries wire through the real sink path: completion flushes via flushVoice", async () => {
+  const bridge = new FakeBridge()
+  const c = controller(bridge, () =>
+    Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor([{ text: "a" }]))
+  )
+  await waitFor(() => current(c) !== null)
+  current(c)!.speak("Hello.")
+  await waitFor(() => bridge.flushed >= 1)
+  assert.equal(bridge.written.length >= 1, true)
+  assert.equal(bridge.discarded, 0)
+})
+
+test("a cancelled utterance discards partial carry via cancelVoiceTurn instead of flushing", async () => {
+  const bridge = new FakeBridge()
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let sessionIndex = 0
+  const gated = {
+    async createSession() {
+      const index = sessionIndex++
+      return {
+        async *synthesize(text: string) {
+          // First turn emits one frame, then pins MID-utterance so real
+          // partial carry exists in the outbound path when cancel hits.
+          yield pcm(`${text}#${index}a`)
+          if (index === 0) await gate
+          yield pcm(`${text}#${index}b`)
+        },
+        async close() {},
+      } satisfies StreamingTtsSession
+    },
+  } satisfies StreamingTtsProvider
+  const c = controller(bridge, () => Promise.resolve(gated))
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(gated)
+  )
+  await waitFor(() => current(c) !== null)
+  current(c)!.speak("Held.")
+  await waitFor(() => bridge.written.length >= 1)
+  current(c)!.cancel()
+  // The discard routes through the shared bridge, not a flush.
+  await waitFor(() => bridge.discarded >= 1)
+  release()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  // The cancelled tail never reaches the sink and never flushes.
+  assert.equal(bridge.written.length, 1)
+  assert.equal(bridge.flushed, 0)
+  // A later turn still works end-to-end and flushes normally.
+  current(c)!.speak("After.")
+  await waitFor(() => bridge.flushed >= 1)
+  assert.ok(
+    bridge.written.some((chunk) =>
+      Buffer.from(chunk).toString("utf8").startsWith("pcm:After.")
+    )
+  )
 })
 
 function current(c: MeetingNotesController) {

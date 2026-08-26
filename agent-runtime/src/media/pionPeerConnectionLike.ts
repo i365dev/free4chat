@@ -280,6 +280,9 @@ export async function createPionPeerConnection(
     deactivatePublish: async () => {
       send({ op: "deactivate-publish" }).catch(() => undefined)
     },
+    cancelTurnAudio: async () => {
+      await send({ op: "cancel-turn" })
+    },
     flushAudio: async () => {
       await send({ op: "flush-audio" }, 30_000)
     },

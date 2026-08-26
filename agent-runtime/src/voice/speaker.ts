@@ -9,9 +9,19 @@ import type {
  * Destination for synthesized Agent audio (#83 vertical slice). Production
  * backs this with the outbound Pion/TrackLocal writer; tests inject fakes.
  * Awaiting writeAudio is the pipeline's backpressure boundary.
+ *
+ * The two optional methods are the utterance boundaries (#83 review): a
+ * normally-completed turn must endTurn() (flush buffered tail audio) before
+ * turnFinished is reported, and a cancelled turn must cancelTurn() (discard
+ * any partially-buffered audio) so stale PCM can never leak into later
+ * turns.
  */
 export interface OutboundVoiceSink {
   writeAudio(chunk: TtsAudioChunk): Promise<void>
+  /** Normal completion boundary: flush buffered tail audio. */
+  endTurn?(): Promise<void>
+  /** Cancelled-turn boundary: discard partial buffered audio immediately. */
+  cancelTurn?(): Promise<void>
   close(): Promise<void>
 }
 
@@ -109,12 +119,19 @@ export class VoiceSpeaker implements VoiceOutput {
     void this.startDrain()
   }
 
-  /** Stops current and queued audio immediately. Safe to call repeatedly;
-   * safe when idle. */
+  /** Stops current and queued audio immediately and discards any partial
+   * sink carry via cancelTurn(). Safe to call repeatedly; safe when idle
+   * (a no-op cancel never touches the sink). */
   cancel(): void {
     if (this.pending.length === 0 && !this.draining) return
     this.epoch += 1
     this.pending.length = 0
+    // Fire the discard before anything else can write again: speak() runs
+    // this synchronously and the next turn's first write can only happen
+    // after an await, so over the bridge's FIFO op channel this cancel-turn
+    // always lands before later audio.
+    const sink = this.sink
+    if (sink?.cancelTurn) void sink.cancelTurn().catch(() => undefined)
     if (this.lastStartedTurn !== null)
       this.onEvent({
         type: "turnCancelled",
@@ -172,13 +189,20 @@ export class VoiceSpeaker implements VoiceOutput {
         }
         chunks += 1
       }
-      if (!this.stopped && myEpoch === this.epoch)
+      if (!this.stopped && myEpoch === this.epoch) {
+        // Utterance boundary (#83 review): a normally completing turn
+        // flushes the sink's buffered tail BEFORE finish is reported. A
+        // flush failure is a sink failure like any other and flows to the
+        // catch below (sink marked broken, turnFailed reported).
+        const sink = this.sink
+        if (sink && frames > 0) await sink.endTurn?.()
         this.onEvent({
           type: "turnFinished",
           turn: this.lastStartedTurn ?? 0,
           chunks,
           frames,
         })
+      }
     } catch (error) {
       if (this.stopped || myEpoch !== this.epoch) return
       this.sinkBroken = true

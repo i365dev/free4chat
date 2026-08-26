@@ -267,12 +267,17 @@ export class MeetingNotesController {
       if (this.bridgeState !== "running") return
       this.voiceSpeaker = new VoiceSpeaker({
         provider,
+        // Real sink path (#83): writeAudio feeds the shared bridge's PCM
+        // writer; endTurn flushes the buffered tail on normal completion;
+        // cancelTurn discards partial carry without dropping the grant.
         createSink: () => ({
           writeAudio: async (chunk) => {
             if (chunk.codec !== "pcm_s16le")
               throw new Error("unsupported_chunk")
             await bridge.writeVoicePcm(chunk.data)
           },
+          endTurn: () => bridge.flushVoice(),
+          cancelTurn: () => bridge.cancelVoiceTurn(),
           close: async () => {},
         }),
         chunkerOptions: { maxChars: 220 },

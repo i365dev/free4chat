@@ -242,6 +242,19 @@ export class SfuMediaBridge {
     await this.pc?.flushAudio?.()
   }
 
+  /** Cancelled-utterance boundary (#83): discards any buffered partial
+   * outbound frame WITHOUT deactivating the publication — a cancelled turn
+   * must never leak stale audio into later turns, but the grant stays live.
+   * Best-effort cooperative discard; server-side revocation remains
+   * authoritative. */
+  async cancelVoiceTurn(): Promise<void> {
+    try {
+      await this.pc?.cancelTurnAudio?.()
+    } catch {
+      // Never fail a cancellation on the discard itself.
+    }
+  }
+
   private resetToStoppedState(emitEndedEvents: boolean): void {
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
