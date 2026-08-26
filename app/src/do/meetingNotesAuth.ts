@@ -49,6 +49,25 @@ export function startMeetingNotes(
 
 export const NO_VOICE_REPLY: VoiceReplyState = { active: false }
 
+/** #83 single-source structural validation for a PERSISTED voiceReply
+ * grant. RoomSession.validVoiceReply() delegates here so storage hygiene
+ * and media normalization can never drift apart on what counts as a valid
+ * active grant (active:false needs nothing further; active:true requires a
+ * non-empty agentParticipantId AND a numeric startedAt). */
+export function isValidVoiceReplyState(
+  value: unknown
+): value is VoiceReplyState {
+  if (!value || typeof value !== "object") return false
+  const candidate = value as Partial<VoiceReplyState>
+  if (typeof candidate.active !== "boolean") return false
+  if (!candidate.active) return true
+  return (
+    typeof candidate.agentParticipantId === "string" &&
+    candidate.agentParticipantId.length > 0 &&
+    typeof candidate.startedAt === "number"
+  )
+}
+
 /** #83: may this connected resident Agent publish its single voice track? */
 export function isAgentAuthorizedForVoiceReply(
   voiceReply: VoiceReplyState,
