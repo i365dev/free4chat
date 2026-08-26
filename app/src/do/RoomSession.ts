@@ -2452,10 +2452,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "voice-reply-start") {
       if (this.env.AGENT_MEDIA_ENABLED !== "true") {
         socket.send(
-          JSON.stringify({
-            type: "error",
-            error: "voice_reply_media_disabled",
-          })
+          JSON.stringify({ type: "error", error: "voice_reply_media_disabled" })
         )
         return
       }

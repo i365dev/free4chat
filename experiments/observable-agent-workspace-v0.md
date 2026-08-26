@@ -8,8 +8,8 @@ here.
 
 ## Roles
 
-|         | Machine A (publisher)                                                           | Machine B (observer)                                  |
-| ------- | ------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| | Machine A (publisher) | Machine B (observer) |
+| --- | --- | --- |
 | Harness | any supported Agent with a local screen/screenshot capability (its own tooling) | Human browser, or a second Agent using `surface read` |
 
 Capability isolation: the observer never receives capture credentials; the
