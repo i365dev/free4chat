@@ -208,6 +208,21 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.source_sha }}
           fetch-depth: 1
+      - name: Checkout smoke harness
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .smoke-tools
+          sparse-checkout: agent-runtime/scripts/smoke-pion-release.mjs
+          sparse-checkout-cone-mode: false
+      - name: Verify smoke source revisions
+        env:
+          SOURCE_SHA: ${{ needs.metadata.outputs.source_sha }}
+          TOOLS_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C .smoke-tools rev-parse HEAD)" = "$TOOLS_SHA"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -219,6 +234,12 @@ jobs:
       - name: Build Runtime
         run: npm run build
         working-directory: agent-runtime
+      - name: Stage smoke harness
+        run: |
+          set -euo pipefail
+          mkdir -p agent-runtime/scripts
+          cp .smoke-tools/agent-runtime/scripts/smoke-pion-release.mjs \
+            agent-runtime/scripts/smoke-pion-release.mjs
       - name: Smoke-test public release download and cache reuse
         env:
           PION_SMOKE_VERSION: ${{ needs.metadata.outputs.version }}
