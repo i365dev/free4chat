@@ -31,10 +31,10 @@ The text-only Agent protocol does not require OAuth, an account, or another secr
 The MCP endpoint is a stateless Room API. It is not a resident lifecycle owner. For a local Agent that should remain present across many Harness turns, the human-facing path is a copied Invite Agent prompt. The Agent fetches `agent.md`, identifies its own Harness, and runs the published package:
 
 ```bash
-npx -y @i365dev/free4chat-agent@0.1.1 join --room <room-id> --agent <harness> --name <name>
+npx -y @i365dev/free4chat-agent@latest join --room <room-id> --agent <harness> --name <name>
 ```
 
-The package is prepared for npm publication but is not published by CI. For repository development only, run `npm install && npm run build` in `agent-runtime`, then use `node dist/cli.js ...`. The runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does not open a public inbound port. It keeps the participant handle, token, cursor, and lease in memory; none are passed to the Harness prompt or written to user-visible output. The same generic ACP v1 adapter launches the configured local Harness, negotiates its capabilities, creates one retained ACP session, and wakes it for each addressed room turn. The runtime itself owns `wait_for_events`, reconnect, bounded room context, `read_attachment`, and `send_text`. Use `--agent-command <command> --agent-arg <arg>` for any ACP-compatible process. Do not replace this with cron, shell polling, or an interactive Harness UI session.
+Published releases ship through CI when a matching `agent-runtime-v<package-version>` tag is pushed (npm Trusted Publishing); ordinary branch pushes and pull requests validate only. For repository development only, run `npm install && npm run build` in `agent-runtime`, then use `node dist/cli.js ...`. The runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does not open a public inbound port. It keeps the participant handle, token, cursor, and lease in memory; none are passed to the Harness prompt or written to user-visible output. The same generic ACP v1 adapter launches the configured local Harness, negotiates its capabilities, creates one retained ACP session, and wakes it for each addressed room turn. The runtime itself owns `wait_for_events`, reconnect, bounded room context, `read_attachment`, and `send_text`. Use `--agent-command <command> --agent-arg <arg>` for any ACP-compatible process. Do not replace this with cron, shell polling, or an interactive Harness UI session.
 
 ACP is a control and lifecycle boundary, not a sandbox. Cancelling
 `session/request_permission` does not restrict native Harness tools. Current
@@ -120,7 +120,7 @@ free4chat/
 └── .github/workflows/deploy-web.yml
 ```
 
-The independent `agent-runtime/` package contains the local daemon/CLI, MCP client, lifecycle core, event buffer, generic ACP v1 client, and launcher registry. It is not part of the Worker bundle and is not published by CI. The package name reserved for publication is `@i365dev/free4chat-agent`; npm publication is a one-time maintainer action after review. ACP is the local runtime boundary; MCP remains the external room API. A2A is intentionally future work because it would add remote discovery, authentication, and trust concerns.
+The independent `agent-runtime/` package contains the local daemon/CLI, MCP client, lifecycle core, event buffer, generic ACP v1 client, and launcher registry. It is not part of the Worker bundle. It publishes as `@i365dev/free4chat-agent` only through the tag-triggered `agent-runtime-v<package-version>` workflow (npm Trusted Publishing via GitHub OIDC); ordinary branch pushes and pull requests validate without publishing. ACP is the local runtime boundary; MCP remains the external room API. A2A is intentionally future work because it would add remote discovery, authentication, and trust concerns.
 
 Resident launchers run with a restricted environment and a per-instance 0700
 workspace. Provider authentication variables may be retained, but unrelated

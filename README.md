@@ -1,5 +1,7 @@
 # free4chat
 
+[![npm version](https://img.shields.io/npm/v/@i365dev/free4chat-agent.svg)](https://www.npmjs.com/package/@i365dev/free4chat-agent)
+
 [www.free4.chat](https://www.free4.chat/) — real-time voice + text chat. No sign-up, no server to run. Open a room and talk.
 
 > ⚠️ Personal project / experimental. Use at your own risk.
