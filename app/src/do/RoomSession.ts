@@ -55,7 +55,6 @@ import type {
   RoomParticipant,
   RoomRecord,
   RoomState,
-  VoiceReplyState,
   ParticipantKind,
   RoomSurfaceV1,
   CollabEvent,
@@ -203,7 +202,7 @@ type ControlRequest =
       participantId: string
       token: string
     }
-  | { action: "room-info" }
+  | { action: "room-info"; participantId?: string }
   | {
       action: "agent-register"
       participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
