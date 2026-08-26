@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react"
+import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSfuChatRoom } from "./useSfuChatRoom"
@@ -422,6 +422,136 @@ describe("useSfuChatRoom room attachments (#123)", () => {
     await expect(
       result.current.uploadRoomAttachment(makeLogFile())
     ).rejects.toThrow("unsupported_attachment_type")
+    unmount()
+  })
+
+  it("includes the authoritative media kind in remote Agent subscriptions", async () => {
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/sfu/session"))
+        return jsonResponse({
+          participantId: "participant-1",
+          participantToken: "participant-token",
+          sessionId: "session-1",
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+      if (url.endsWith("/api/sfu/datachannels/new"))
+        return jsonResponse({ dataChannels: [{ id: 1 }] })
+      if (url.endsWith("/api/sfu/tracks"))
+        return jsonResponse({
+          requiresImmediateRenegotiation: true,
+          sessionDescription: { type: "offer", sdp: "fake-sfu-offer" },
+          tracks: [{ mid: "7", trackName: "agent-voice" }],
+        })
+      return jsonResponse({})
+    })
+
+    const { unmount } = await connect("room-remote-kind")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "trackPublished",
+          participant: {
+            id: "agent-b",
+            name: "Agent B",
+            kind: "agent",
+            sessionId: "agent-session",
+            track: { trackName: "agent-voice", kind: "audio" },
+          },
+        }),
+      })
+    })
+
+    let trackCall: [RequestInfo | URL, RequestInit] | undefined
+    await waitFor(() => {
+      trackCall = fetchMock.mock.calls.find(([input, init]) => {
+        if (!String(input).endsWith("/api/sfu/tracks")) return false
+        const body = JSON.parse(init.body as string) as {
+          tracks?: Array<{ location?: string }>
+        }
+        return body.tracks?.[0]?.location === "remote"
+      }) as [RequestInfo | URL, RequestInit] | undefined
+      expect(trackCall).toBeDefined()
+    })
+    const trackBody = JSON.parse(trackCall![1].body as string)
+    expect(trackBody.tracks).toEqual([
+      {
+        location: "remote",
+        sessionId: "agent-session",
+        trackName: "agent-voice",
+        kind: "audio",
+      },
+    ])
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/sfu/renegotiate")
+        )
+      ).toBe(true)
+    )
+    unmount()
+  })
+
+  it("fails closed and leaves an errored remote subscription retryable", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    let trackAttempts = 0
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/sfu/session"))
+        return jsonResponse({
+          participantId: "participant-1",
+          participantToken: "participant-token",
+          sessionId: "session-1",
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+      if (url.endsWith("/api/sfu/datachannels/new"))
+        return jsonResponse({ dataChannels: [{ id: 1 }] })
+      if (url.endsWith("/api/sfu/tracks")) {
+        trackAttempts += 1
+        return jsonResponse({
+          requiresImmediateRenegotiation: false,
+          tracks: [{ errorCode: "track_not_found" }],
+        })
+      }
+      return jsonResponse({})
+    })
+
+    const { unmount } = await connect("room-remote-error")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+    const publish = () =>
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "trackPublished",
+            participant: {
+              id: "agent-b",
+              name: "Agent B",
+              kind: "agent",
+              sessionId: "agent-session",
+              track: { trackName: "agent-voice", kind: "audio" },
+            },
+          }),
+        })
+      })
+
+    publish()
+    await waitFor(() => expect(trackAttempts).toBe(1))
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).endsWith("/api/sfu/renegotiate")
+      )
+    ).toBe(false)
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("agent-session")
+
+    publish()
+    await waitFor(() => expect(trackAttempts).toBe(2))
     unmount()
   })
 })

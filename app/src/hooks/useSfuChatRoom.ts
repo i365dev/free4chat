@@ -93,9 +93,41 @@ interface IncomingFileTransfer {
 
 interface SfuApiResponse {
   dataChannels?: Array<{ id?: number }>
+  errorCode?: string
   requiresImmediateRenegotiation?: boolean
   sessionDescription?: RTCSessionDescriptionInit
-  tracks?: Array<{ trackName?: string }>
+  tracks?: Array<{
+    errorCode?: string
+    errorDescription?: string
+    mid?: string
+    trackName?: string
+  }>
+}
+
+function summarizeRemoteTrackResponse(response: SfuApiResponse) {
+  const tracks = Array.isArray(response.tracks) ? response.tracks : []
+  return {
+    requiresImmediateRenegotiation:
+      response.requiresImmediateRenegotiation === true,
+    hasSessionDescription: Boolean(response.sessionDescription),
+    sessionDescriptionType: response.sessionDescription?.type ?? null,
+    trackResultCount: tracks.length,
+    trackHasMid: tracks.some(
+      (track) => typeof track.mid === "string" && track.mid.length > 0
+    ),
+    topLevelErrorCode:
+      typeof response.errorCode === "string"
+        ? response.errorCode.slice(0, 64)
+        : undefined,
+    trackErrorCodes: tracks
+      .map((track) =>
+        typeof track.errorCode === "string"
+          ? track.errorCode.slice(0, 64)
+          : undefined
+      )
+      .filter((code): code is string => Boolean(code))
+      .slice(0, 4),
+  }
 }
 
 function isAgentImage(file: File): boolean {
@@ -843,12 +875,16 @@ export function useSfuChatRoom(
               location: "remote",
               sessionId: media.sessionId,
               trackName: track.trackName,
+              kind: track.kind,
             },
           ],
         })
         if (!response.sessionDescription) {
           subscribedTracksRef.current.delete(key)
-          console.warn("sfu_remote_subscribe_missing_description", key)
+          console.warn(
+            "sfu_remote_subscribe_missing_description",
+            summarizeRemoteTrackResponse(response)
+          )
           return
         }
         await pc.setRemoteDescription(response.sessionDescription)
@@ -863,7 +899,9 @@ export function useSfuChatRoom(
         })
       }).catch((error) => {
         subscribedTracksRef.current.delete(key)
-        console.warn("sfu_remote_subscribe_failed", key, error)
+        console.warn("sfu_remote_subscribe_failed", {
+          errorType: error instanceof Error ? error.name : typeof error,
+        })
       })
     },
     [apiRequest, enqueueNegotiation, roomName]
