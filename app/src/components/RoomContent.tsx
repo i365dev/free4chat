@@ -148,6 +148,10 @@ export default function RoomContent({
     meetingNotesMediaAvailable,
     startMeetingNotes,
     stopMeetingNotes,
+    voiceReply: voiceReplyState,
+    voiceReplyMediaAvailable,
+    startVoiceReply,
+    stopVoiceReply,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
@@ -167,6 +171,18 @@ export default function RoomContent({
     )
 
   const roomAgents = participants.filter((p) => p.kind === "agent")
+  // Defensive defaults keep partial hook mocks in tests valid.
+  const voiceReply = voiceReplyState ?? { active: false }
+  const connectedAgentForVoice = roomAgents.find((p) => p.connected)
+  const handleStartVoiceReply = () => {
+    if (!connectedAgentForVoice) return
+    startVoiceReply(connectedAgentForVoice.peerId)
+    trackAnalyticsEvent("AgentVoiceStarted", { roomType: resolvedRoomType })
+  }
+  const handleStopVoiceReply = () => {
+    stopVoiceReply()
+    trackAnalyticsEvent("AgentVoiceStopped", { roomType: resolvedRoomType })
+  }
   const meetingNotesAgentName = meetingNotes.active
     ? roomAgents.find((p) => p.peerId === meetingNotes.agentParticipantId)
         ?.name ?? "an Agent"
@@ -513,6 +529,28 @@ export default function RoomContent({
           >
             {agentInviteCopied ? "Copied!" : "Invite Agent"}
           </button>
+          {voiceReply.active ? (
+            <button
+              type="button"
+              onClick={handleStopVoiceReply}
+              className="rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-1 text-xs text-rose-200 hover:bg-rose-800/50"
+              title="Stop Agent voice replies"
+            >
+              🔊 Stop voice
+            </button>
+          ) : (
+            voiceReplyMediaAvailable &&
+            connectedAgentForVoice && (
+              <button
+                type="button"
+                onClick={handleStartVoiceReply}
+                className="rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-800/50"
+                title={`Enable voice replies from ${connectedAgentForVoice.name}`}
+              >
+                🔊 Voice replies
+              </button>
+            )
+          )}
           {meetingNotes.active ? (
             <button
               type="button"

@@ -13,10 +13,16 @@ import {
   type CollabEventInput,
 } from "./collab"
 import {
+  agentMediaPermissions,
   clearGrantIfParticipantDeparting,
+  clearVoiceReplyIfParticipantDeparting,
   isAgentAuthorizedForMedia,
+  isAgentAuthorizedForVoiceReply,
   NO_MEETING_NOTES,
+  NO_VOICE_REPLY,
+  resolveAgentPurposePermission,
   startMeetingNotes,
+  startVoiceReply,
 } from "./meetingNotesAuth"
 import {
   closeRealtimeTracks,
@@ -129,6 +135,7 @@ interface StoredRoom
   attachments?: RoomAttachment[]
   nextMessageSequence?: number
   meetingNotes?: MeetingNotesState
+  voiceReply?: VoiceReplyState
   pendingMediaCleanup?: PendingMediaCleanup[]
 }
 
@@ -157,6 +164,15 @@ type ControlRequest =
       // checked for pending-cleanup and active-mid capacity here — before
       // any Cloudflare tracks/new call is made. Ignored for Human callers.
       remoteTrackCount?: number
+      purpose?: unknown
+    }
+  | {
+      action: "agent-track-published"
+      participantId: string
+      token: string
+      sessionId: string
+      mid: string
+      trackName: string
     }
   | {
       action: "reconnect"
@@ -342,6 +358,8 @@ type ClientMessage =
   | { type: "leave" }
   | { type: "meeting-notes-start"; agentParticipantId: string }
   | { type: "meeting-notes-stop" }
+  | { type: "voice-reply-start"; agentParticipantId: string }
+  | { type: "voice-reply-stop" }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
@@ -541,6 +559,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       changed = true
     }
 
+    let voiceReply: VoiceReplyState
+    if (this.validVoiceReply(stored.voiceReply)) {
+      voiceReply = stored.voiceReply
+    } else {
+      voiceReply = NO_VOICE_REPLY
+      changed = true
+    }
+    if (
+      voiceReply.active &&
+      (!voiceReply.agentParticipantId ||
+        participants[voiceReply.agentParticipantId]?.kind !== "agent")
+    ) {
+      // Stale grant (departed/never-agent) must not keep authorizing.
+      voiceReply = NO_VOICE_REPLY
+      changed = true
+    }
+
     let pendingMediaCleanup: PendingMediaCleanup[]
     if (this.validPendingMediaCleanup(stored.pendingMediaCleanup)) {
       pendingMediaCleanup = stored.pendingMediaCleanup
@@ -558,6 +593,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachments,
         nextMessageSequence,
         meetingNotes,
+        voiceReply,
         pendingMediaCleanup,
       },
       changed,
@@ -567,6 +603,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private validMeetingNotes(value: unknown): value is MeetingNotesState {
     if (!value || typeof value !== "object") return false
     const candidate = value as Partial<MeetingNotesState>
+    if (typeof candidate.active !== "boolean") return false
+    if (!candidate.active) return true
+    return (
+      typeof candidate.agentParticipantId === "string" &&
+      candidate.agentParticipantId.length > 0 &&
+      typeof candidate.startedAt === "number"
+    )
+  }
+
+  private validVoiceReply(value: unknown): value is VoiceReplyState {
+    if (!value || typeof value !== "object") return false
+    const candidate = value as Partial<VoiceReplyState>
     if (typeof candidate.active !== "boolean") return false
     if (!candidate.active) return true
     return (
@@ -671,13 +719,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           // agentSubscribedMids is Cloudflare session bookkeeping used only
           // for server-side revocation (see realtimeMedia.ts) — never
           // participant-visible state.
-          if (!participant.media?.agentSubscribedMids) return participant
-          const { agentSubscribedMids: _mids, ...media } = participant.media
+          if (
+            !participant.media?.agentSubscribedMids &&
+            !participant.media?.agentPublishedMid
+          )
+            return participant
+          const {
+            agentSubscribedMids: _mids,
+            agentPublishedMid: _publishedMid,
+            ...media
+          } = participant.media
           return { ...participant, media }
         }),
       messages: room.messages,
       meetingNotes: room.meetingNotes,
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+      voiceReply: room.voiceReply,
+      voiceReplyMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     }
   }
 
@@ -742,14 +800,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const participant = room.participants[agentParticipantId]
     if (!participant || participant.kind !== "agent" || !participant.media)
       return
-    const mids = participant.media.agentSubscribedMids
-    if (!mids || mids.length === 0) return
+    const mids = participant.media.agentSubscribedMids ?? []
+    const publishedMid = participant.media.agentPublishedMid
+    if (mids.length === 0 && !publishedMid) return
     const sessionId = participant.media.sessionId
-    participant.media = { ...participant.media, agentSubscribedMids: [] }
+    participant.media = {
+      ...participant.media,
+      agentSubscribedMids: [],
+      agentPublishedMid: undefined,
+    }
     room.pendingMediaCleanup = queuePendingCleanup(
       room.pendingMediaCleanup,
       sessionId,
-      mids
+      publishedMid && !mids.includes(publishedMid)
+        ? [...mids, publishedMid]
+        : mids
     )
   }
 
@@ -1124,6 +1189,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // agentParticipantId is already visible in `participants` above.
         meetingNotes: room?.meetingNotes ?? NO_MEETING_NOTES,
         meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+        voiceReply: room?.voiceReply ?? NO_VOICE_REPLY,
+        voiceReplyMediaAvailable:
+          this.env.AGENT_MEDIA_ENABLED === "true",
+        mediaPermissions: room
+          ? agentMediaPermissions(
+              room.meetingNotes,
+              room.voiceReply,
+              request.participantId
+            )
+          : { canSubscribeHumanAudio: false, canPublishVoice: false },
       })
     }
 
@@ -1753,6 +1828,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room.meetingNotes,
         participant.id
       )
+      room.voiceReply = clearVoiceReplyIfParticipantDeparting(
+        room.voiceReply,
+        participant.id
+      )
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       // #111: no surface history survives departure — chunks die after the
@@ -1800,11 +1879,43 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // sessionId and a Human's sessionId/trackName cannot keep creating
       // subscriptions via cached identifiers after Stop/reassignment. Human
       // authorization is completely unaffected.
-      if (
-        participant.kind === "agent" &&
-        !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
-      )
-        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (participant.kind === "agent") {
+        // #83 fail-closed direction matrix: every agent media request must
+        // carry an explicit narrow purpose; meeting-notes unlocks ONLY
+        // remote Human-audio subscribe, voice-reply ONLY local single
+        // audio publish; video always denied. Humans are unaffected.
+        const decision = resolveAgentPurposePermission({
+          purpose: request.purpose,
+          wantsLocalPublish:
+            (request.localTrackCount ?? 0) > 0,
+          wantsRemoteSubscribe:
+            (request.remoteTrackCount ?? 0) > 0 ||
+            Boolean(request.trackSessionId || request.dataChannelSessionId),
+          involvesVideo: false,
+        })
+        if (!decision.ok)
+          return this.json({ error: decision.error }, 403)
+        if (
+          request.wantsVoicePublish === true &&
+          !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
+        )
+          return this.json({ error: "voice_reply_not_authorized" }, 403)
+        if (
+          request.purpose === "meeting-notes" &&
+          !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
+        )
+          return this.json({ error: "meeting_notes_not_authorized" }, 403)
+        if (
+          request.purpose === "voice-reply" &&
+          !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
+        )
+          return this.json({ error: "voice_reply_not_authorized" }, 403)
+        if (
+          participant.media?.agentPublishedMid &&
+          (request.localTrackCount ?? 0) > 0
+        )
+          return this.json({ error: "agent_publish_capacity_exceeded" }, 503)
+      }
       // Round 5 (P2): preflight capacity check *before* the Worker ever
       // calls Cloudflare's tracks/new for these remote subscriptions —
       // catching an already-backpressured room here means it never creates
@@ -1920,6 +2031,55 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ ok: true })
     }
 
+    if (request.action === "agent-track-published") {
+      // TOCTOU re-check with the CURRENT grant + exact authenticated session;
+      // caller actively closes what Cloudflare just created when this fails.
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token,
+        request.sessionId
+      )
+      if (!participant || participant.kind !== "agent")
+        return this.json({ error: "unauthorized" }, 401)
+      if (
+        !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id) ||
+        typeof request.mid !== "string" ||
+        request.mid.length === 0
+      )
+        return this.json({ error: "voice_reply_not_authorized" }, 403)
+      if (!participant.media)
+        return this.json({ error: "media_unavailable" }, 400)
+      if (
+        participant.media.agentPublishedMid &&
+        participant.media.agentPublishedMid !== request.mid
+      )
+        return this.json({ error: "agent_publish_capacity_exceeded" }, 503)
+      participant.media = {
+        ...participant.media,
+        agentPublishedMid: request.mid,
+        tracks: [
+          ...participant.media.tracks.filter(
+            (track) => track.trackName !== request.trackName
+          ),
+          { trackName: request.trackName, kind: "audio" },
+        ],
+      }
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.broadcast({
+        type: "trackPublished",
+        participant: {
+          id: participant.id,
+          name: participant.name,
+          kind: participant.kind,
+          sessionId: participant.media.sessionId,
+          track: { trackName: request.trackName, kind: "audio" },
+        },
+      })
+      return this.json({ ok: true })
+    }
+
     if (request.action === "unpublish") {
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
@@ -1934,6 +2094,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     delete room.participants[participant.id]
     room.meetingNotes = clearGrantIfParticipantDeparting(
       room.meetingNotes,
+      participant.id
+    )
+    room.voiceReply = clearVoiceReplyIfParticipantDeparting(
+      room.voiceReply,
       participant.id
     )
     this.applyEmptyRoomExpiry(room, Date.now())
@@ -2270,6 +2434,56 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "meeting-notes-stop") {
       const previousAgentId = room.meetingNotes.agentParticipantId
       room.meetingNotes = NO_MEETING_NOTES
+      if (previousAgentId) this.stageAgentMediaRevocation(room, previousAgentId)
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
+      return
+    }
+    if (message.type === "voice-reply-start") {
+      if (this.env.AGENT_MEDIA_ENABLED !== "true") {
+        socket.send(
+          JSON.stringify({ type: "error", error: "voice_reply_media_disabled" })
+        )
+        return
+      }
+      const agent = room.participants[message.agentParticipantId]
+      if (!agent || agent.kind !== "agent" || !agent.connected) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "agent_not_in_room" })
+        )
+        return
+      }
+      // Idempotent replay: same speaker must not bump the epoch (the runtime
+      // treats an epoch change as "server tore down the publication").
+      if (
+        isAgentAuthorizedForVoiceReply(room.voiceReply, agent.id)
+      ) {
+        socket.send(JSON.stringify({ type: "state", state: this.stateFor(room) }))
+        return
+      }
+      if (room.pendingMediaCleanup.length >= MAX_PENDING_CLEANUP_ENTRIES) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "agent_media_cleanup_backlog" })
+        )
+        return
+      }
+      const previousAgentId = room.voiceReply.agentParticipantId
+      room.voiceReply = startVoiceReply(agent.id, Date.now())
+      // Reassignment (A -> B): stage A's established publication durably
+      // before any Cloudflare fetch is attempted.
+      if (previousAgentId && previousAgentId !== agent.id)
+        this.stageAgentMediaRevocation(room, previousAgentId)
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
+      return
+    }
+    if (message.type === "voice-reply-stop") {
+      const previousAgentId = room.voiceReply.agentParticipantId
+      room.voiceReply = NO_VOICE_REPLY
       if (previousAgentId) this.stageAgentMediaRevocation(room, previousAgentId)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -2757,6 +2971,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         delete room.participants[id]
         room.meetingNotes = clearGrantIfParticipantDeparting(
           room.meetingNotes,
+          id
+        )
+        room.voiceReply = clearVoiceReplyIfParticipantDeparting(
+          room.voiceReply,
           id
         )
         changed = true

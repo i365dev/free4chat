@@ -69,6 +69,12 @@ export interface SfuRestClientLike {
     mySessionId: string,
     answer: SessionDescriptionLike
   ): Promise<void>
+  /** #83 voiceReply: activates this agent's single outbound audio track
+   * (already negotiated into the initial offer) on the upstream SFU. */
+  publishAudioTrack?(
+    mySessionId: string,
+    args: { trackName: string; mid: string; offer: SessionDescriptionLike }
+  ): Promise<{ sessionDescription?: SessionDescriptionLike }>
 }
 
 /**
@@ -220,6 +226,29 @@ export class SfuRestClient implements SfuRestClientLike {
         ? (tracks[0] as { mid: string }).mid
         : undefined
     return mid ? { ...description, mid } : description
+  }
+
+  async publishAudioTrack(
+    mySessionId: string,
+    args: { trackName: string; mid: string; offer: SessionDescriptionLike }
+  ): Promise<{ sessionDescription?: SessionDescriptionLike }> {
+    const data = await this.request("tracks", "POST", {
+      ...this.base(),
+      sessionId: mySessionId,
+      purpose: "voice-reply",
+      tracks: [
+        {
+          location: "local",
+          trackName: args.trackName,
+          kind: "audio",
+          mid: args.mid,
+        },
+      ],
+      sessionDescription: sessionDescriptionPayload(args.offer),
+    })
+    const description = data.sessionDescription as
+      SessionDescriptionLike | undefined
+    return description ? { sessionDescription: description } : {}
   }
 
   async renegotiate(

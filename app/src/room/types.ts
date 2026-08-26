@@ -22,6 +22,10 @@ export interface RoomMediaState {
   // every human-facing broadcast (see RoomSession.stateFor) — it is
   // Cloudflare session bookkeeping, not participant-visible state.
   agentSubscribedMids?: string[]
+  // Cloudflare-assigned mid of the agent's single published voice audio
+  // track (#83) — the revocation handle for server-side close; never
+  // broadcast to clients.
+  agentPublishedMid?: string
 }
 
 export interface AgentCapabilities {
@@ -160,6 +164,22 @@ export interface MeetingNotesState {
   startedAt?: number
 }
 
+// Room-scoped voiceReply grant (#83): authorizes exactly one connected
+// resident Agent to publish its single outbound audio track. Same shape as
+// MeetingNotesState so "never granted" and "stopped" look identical.
+export interface VoiceReplyState {
+  active: boolean
+  agentParticipantId?: string
+  startedAt?: number
+}
+
+// Directional media permissions for an Agent media session (#83) — booleans
+// only, never secrets or media identifiers.
+export interface AgentMediaPermissions {
+  canSubscribeHumanAudio: boolean
+  canPublishVoice: boolean
+}
+
 export interface RoomState {
   createdAt: number
   expiresAt: number
@@ -173,6 +193,8 @@ export interface RoomState {
   // false: every actual Runtime media request would 403 regardless of the
   // room-visible grant.
   meetingNotesMediaAvailable: boolean
+  voiceReply: VoiceReplyState
+  voiceReplyMediaAvailable: boolean
 }
 
 // A Cloudflare Realtime track-close attempt that hasn't been confirmed
@@ -193,6 +215,7 @@ export interface RoomRecord {
   attachments: RoomAttachment[]
   nextMessageSequence: number
   meetingNotes: MeetingNotesState
+  voiceReply: VoiceReplyState
   pendingMediaCleanup: PendingMediaCleanup[]
 }
 

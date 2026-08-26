@@ -16,6 +16,7 @@ import {
 import type { RoomAttachmentRead } from "../room/types"
 import type {
   SfuMeetingNotesState,
+  SfuVoiceReplyState,
   SfuMessage,
   SfuParticipant,
   SfuRoomState,
@@ -224,6 +225,11 @@ export function useSfuChatRoom(
   // Start control stays hidden/disabled until the first real room state
   // arrives, rather than defaulting to an optimistic "available".
   const [meetingNotesMediaAvailable, setMeetingNotesMediaAvailable] =
+    useState(false)
+  const [voiceReply, setVoiceReply] = useState<SfuVoiceReplyState>({
+    active: false,
+  })
+  const [voiceReplyMediaAvailable, setVoiceReplyMediaAvailable] =
     useState(false)
 
   const sessionRef = useRef<SfuSession | null>(null)
@@ -863,6 +869,8 @@ export function useSfuChatRoom(
       roomStateRef.current = state
       setMeetingNotes(state.meetingNotes)
       setMeetingNotesMediaAvailable(state.meetingNotesMediaAvailable)
+      setVoiceReply(state.voiceReply)
+      setVoiceReplyMediaAvailable(state.voiceReplyMediaAvailable)
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
         if (
@@ -1599,6 +1607,22 @@ export function useSfuChatRoom(
     sendSocketMessage({ type: "meeting-notes-stop" })
   }, [sendSocketMessage])
 
+  // #83: Human grant for exactly one connected resident Agent's outbound
+  // voice; server re-checks sender/target on every control message.
+  const startVoiceReply = useCallback(
+    (agentParticipantId: string) => {
+      sendSocketMessage({
+        type: "voice-reply-start",
+        agentParticipantId,
+      })
+    },
+    [sendSocketMessage]
+  )
+
+  const stopVoiceReply = useCallback(() => {
+    sendSocketMessage({ type: "voice-reply-stop" })
+  }, [sendSocketMessage])
+
   const sendFileMessage = useCallback(
     async (file: File) => {
       const send = async () => {
@@ -1735,5 +1759,9 @@ export function useSfuChatRoom(
     meetingNotesMediaAvailable,
     startMeetingNotes,
     stopMeetingNotes,
+    voiceReply,
+    voiceReplyMediaAvailable,
+    startVoiceReply,
+    stopVoiceReply,
   }
 }

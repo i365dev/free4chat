@@ -10,6 +10,8 @@ import type { DecodedParticipantHandle } from "./participantHandle.js"
 import { SfuMediaBridge } from "./sfuMediaBridge.js"
 import type { SfuRestClientLike } from "./sfuRestClient.js"
 import type { AudioFrameHandler, MediaBridgeEventHandler } from "./types.js"
+import type { StreamingTtsProvider } from "../speech/types.js"
+import { VoiceSpeaker, type VoiceOutput } from "../voice/speaker.js"
 import type { Free4ChatClient } from "../types.js"
 
 /** Default production factory (#105): lazily provisions the version-matched
@@ -54,6 +56,15 @@ export interface MeetingNotesControllerOptions {
   createPeerConnection?: PeerConnectionFactory
   restClient?: SfuRestClientLike
   log?: (event: string, details?: Record<string, string | number>) => void
+  /** #83 voiceReply: when provided, the SAME shared SfuMediaBridge also
+   * publishes this agent's outbound voice whenever room_info reports an
+   * active voiceReply grant for THIS participant. Harness response text is
+   * spoken through the configured Doubao TTS provider; failures never
+   * affect text or Meeting Notes ingress. */
+  voiceReply?: {
+    createTtsProvider: () => Promise<StreamingTtsProvider | null>
+    pollIntervalMs?: number
+  }
 }
 
 /**
@@ -90,6 +101,10 @@ export class MeetingNotesController {
   // now stale. Comparing the epoch instead of just the id catches that.
   private grantEpoch: number | null = null
   private stopped = true
+  // #83 voiceReply state (same shared bridge; never a second session).
+  private voiceEpoch: number | null = null
+  private voiceSpeaker: VoiceSpeaker | null = null
+  private voiceStarting = false
   private readonly log: (
     event: string,
     details?: Record<string, string | number>
@@ -150,8 +165,17 @@ export class MeetingNotesController {
     if (this.stopped) return
     let authorized = false
     let epoch: number | null = null
+    let vrAuthorized = false
+    let vrEpoch: number | null = null
     try {
       const info = await this.options.client.roomInfo(this.options.roomId)
+      if (this.options.voiceReply) {
+        vrAuthorized =
+          info.voiceReplyMediaAvailable === true &&
+          info.voiceReply.active === true &&
+          info.voiceReply.agentParticipantId === this.options.participantId
+        vrEpoch = info.voiceReply.startedAt ?? null
+      }
       // The master switch is checked on every poll, not just at grant
       // start: if it flips off while a session is already active, this
       // cooperative Runtime must stop within one poll cycle rather than
@@ -186,6 +210,72 @@ export class MeetingNotesController {
       this.grantEpoch = null
       await this.teardownBridge()
     }
+    if (
+      !this.stopped &&
+      this.options.voiceReply &&
+      this.bridgeState === "running"
+    ) {
+      if (!vrAuthorized || (vrEpoch !== null && vrEpoch !== this.voiceEpoch))
+        await this.teardownVoice()
+      else await this.ensureVoice()
+    } else if (!vrAuthorized) await this.teardownVoice()
+  }
+
+  /** Current speakable output while a voiceReply grant is active (#83);
+   * null when inactive/starting — callers stay text-only. */
+  currentVoiceOutput(): VoiceOutput | null {
+    return this.voiceSpeaker
+  }
+
+  private async ensureVoice(): Promise<void> {
+    const options = this.options.voiceReply
+    const bridge = this.bridge
+    if (
+      !options ||
+      !bridge ||
+      !bridge.voicePublishCapable ||
+      this.voiceStarting ||
+      this.voiceSpeaker
+    )
+      return
+    if (this.voiceEpoch === null) return
+    this.voiceStarting = true
+    try {
+      const provider = await options.createTtsProvider()
+      if (!provider || this.bridgeState !== "running") return
+      await bridge.activateVoicePublish()
+      if (this.bridgeState !== "running") return
+      this.voiceSpeaker = new VoiceSpeaker({
+        provider,
+        createSink: () => ({
+          writeAudio: async (chunk) => {
+            if (chunk.codec !== "pcm_s16le")
+              throw new Error("unsupported_chunk")
+            await bridge.writeVoicePcm(chunk.data)
+          },
+          close: async () => {},
+        }),
+        chunkerOptions: { maxChars: 220 },
+      })
+      this.log("voice_reply_started")
+    } catch (error) {
+      this.log("voice_reply_start_failed", {
+        error: error instanceof Error ? error.message : "unknown",
+      })
+    } finally {
+      this.voiceStarting = false
+    }
+  }
+
+  private async teardownVoice(): Promise<void> {
+    if (!this.voiceSpeaker && this.voiceEpoch === null) return
+    const speaker = this.voiceSpeaker
+    this.voiceSpeaker = null
+    this.voiceEpoch = null
+    speaker?.cancel()
+    await speaker?.close().catch(() => undefined)
+    await this.bridge?.deactivateVoicePublish()
+    this.log("voice_reply_stopped")
   }
 
   // Serialized start: the synchronous "already starting/running -> return"

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pion/opus"
+	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -31,6 +33,11 @@ type MediaSpike struct {
 	mu          sync.Mutex
 	onTrackInfo map[string]any
 	rtpCounts   map[string]uint64
+	offered     bool
+	outbound    *webrtc.TrackLocalStaticSample
+	publishOn   bool
+	encoder     *opus.Encoder
+	pcmCarry    []byte
 }
 
 func NewMediaSpike(tracer *Tracer, emitEvent func(map[string]any)) (*MediaSpike, error) {
@@ -53,6 +60,12 @@ func (s *MediaSpike) Create() error {
 		return err
 	}
 	s.pc = pc
+	// #83: ONE shared agent session serves Meeting Notes ingress AND
+	// voiceReply publication, so the single outbound Opus track is armed
+	// before any offer. No RTP flows until an authorised activation.
+	if err := s.ArmPublish(); err != nil {
+		return err
+	}
 
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
@@ -423,4 +436,142 @@ func (s *MediaSpike) Close() {
 	if s.pc != nil {
 		_ = s.pc.Close()
 	}
+}// ---------- #83 outbound voice publication ----------
+const opusFrameSamples = 960 // 20 ms @ 48 kHz mono
+var errAlreadyOffered = fmt.Errorf("publish arming is only allowed before the first offer")
+var errPublishNotActive = fmt.Errorf("voice publish is not activated")
+
+func (s *MediaSpike) markOffered() {
+	s.mu.Lock()
+	s.offered = true
+	s.mu.Unlock()
+}
+
+// ArmPublish adds the single outbound Opus TrackLocal before the first offer
+// so every agent media session carries one send m-line (#83 shared session).
+func (s *MediaSpike) ArmPublish() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.outbound != nil {
+		return nil
+	}
+	if s.offered {
+		return errAlreadyOffered
+	}
+	track, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: "audio/opus", ClockRate: 48000, Channels: 2},
+		"agent-voice", "free4chat-agent")
+	if err != nil {
+		return err
+	}
+	if _, err := s.pc.AddTrack(track); err != nil {
+		return err
+	}
+	s.outbound = track
+	return nil
+}
+
+func (s *MediaSpike) LocalPublishMid() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.pc.GetTransceivers() {
+		if t.Sender() != nil && t.Sender().Track() != nil {
+			return t.Mid()
+		}
+	}
+	return ""
+}
+
+// ActivatePublish starts accepting PCM after a grant-authorised publish;
+// DeactivatePublish discards any buffered frame immediately (revocation /
+// turn cancellation must never emit stale audio).
+func (s *MediaSpike) ActivatePublish() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.outbound == nil {
+		return errPublishNotActive
+	}
+	if s.encoder == nil {
+		enc, err := opus.NewEncoder(opus.WithSampleRate(48000), opus.WithChannels(1))
+		if err != nil {
+			return err
+		}
+		s.encoder = enc
+	}
+	s.publishOn = true
+	s.pcmCarry = nil
+	return nil
+}
+
+func (s *MediaSpike) DeactivatePublish() {
+	s.mu.Lock()
+	s.publishOn = false
+	s.pcmCarry = nil
+	s.mu.Unlock()
+}
+
+// WritePCM accepts arbitrary-size S16LE 24 kHz mono chunks (odd trailing
+// bytes are carried), frames at 20 ms (960 B), resamples x2 to 48 kHz mono
+// and writes one real Opus packet per frame.
+func (s *MediaSpike) WritePCM(chunk []byte) error {
+	s.mu.Lock()
+	track, enc := s.outbound, s.encoder
+	active := s.publishOn
+	s.mu.Unlock()
+	if !active || track == nil || enc == nil {
+		return errPublishNotActive
+	}
+	data := append(s.takeCarry(), chunk...)
+	const frame24kBytes = 960
+	frames := len(data) / frame24kBytes
+	s.setCarry(data[frames*frame24kBytes:])
+	for f := 0; f < frames; f++ {
+		frame := data[f*frame24kBytes : (f+1)*frame24kBytes]
+		up := Resample24To48(frame)
+		out := make([]byte, 2000)
+		n, err := enc.Encode(up, out)
+		if err != nil {
+			return err
+		}
+		if err := track.WriteSample(media.Sample{Data: out[:n], Duration: 20 * time.Millisecond}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FlushAudio zero-pads a final partial frame (normal completion only).
+func (s *MediaSpike) FlushAudio() error {
+	carry := s.takeCarryAll()
+	if len(carry) == 0 {
+		return nil
+	}
+	if len(carry)%2 == 1 {
+		carry = append(carry, 0)
+	}
+	padded := make([]byte, 960)
+	copy(padded, carry)
+	up := Resample24To48(padded)
+	out := make([]byte, 2000)
+	n, err := s.encodeWith(up, out)
+	if err != nil {
+		return err
+	}
+	return s.writeSample(out[:n])
+}
+
+func (s *MediaSpike) takeCarry() []byte { s.mu.Lock(); defer s.mu.Unlock(); c := s.pcmCarry; s.pcmCarry = nil; return c }
+func (s *MediaSpike) takeCarryAll() []byte { return s.takeCarry() }
+
+// PCMCarry exposes buffered unframed bytes for tests.
+func (s *MediaSpike) PCMCarry() []byte { s.mu.Lock(); defer s.mu.Unlock(); return append([]byte(nil), s.pcmCarry...) }
+func (s *MediaSpike) setCarry(c []byte) { s.mu.Lock(); s.pcmCarry = c; s.mu.Unlock() }
+func (s *MediaSpike) encodeWith(in, out []byte) (int, error) {
+	s.mu.Lock(); defer s.mu.Unlock()
+	return s.encoder.Encode(in, out)
+}
+func (s *MediaSpike) writeSample(b []byte) error {
+	s.mu.Lock(); t := s.outbound; active := s.publishOn; s.mu.Unlock()
+	if !active || t == nil { return errPublishNotActive }
+	return t.WriteSample(media.Sample{Data: b, Duration: 20 * time.Millisecond})
 }

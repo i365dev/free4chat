@@ -30,6 +30,9 @@ export interface SfuMediaBridgeOptions {
   onAudioFrame?: AudioFrameHandler
   pollIntervalMs?: number
   restClient?: SfuRestClientLike
+  /** #83 voiceReply publication config; requires a PeerConnection factory
+   * that implements the optional outbound surface (Pion engine only). */
+  publish?: { trackName: string }
   createPeerConnection?: PeerConnectionFactory
   /** Injectable for tests; defaults to Date.now. */
   now?: () => number
@@ -70,6 +73,7 @@ export class SfuMediaBridge {
   private readonly onEvent: MediaBridgeEventHandler
   private readonly onAudioFrame?: AudioFrameHandler
   private readonly pollIntervalMs: number
+  private readonly publish?: { trackName: string }
   private readonly now: () => number
 
   private pc: PeerConnectionLike | null = null
@@ -98,6 +102,7 @@ export class SfuMediaBridge {
     this.onEvent = options.onEvent
     this.onAudioFrame = options.onAudioFrame
     this.now = options.now ?? Date.now
+    this.publish = options.publish
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.restClient =
       options.restClient ??
@@ -171,6 +176,70 @@ export class SfuMediaBridge {
   stop(): void {
     if (this.stopped) return
     this.resetToStoppedState(true)
+  }
+
+  // ---- #83 voiceReply outbound publication ----
+  get voicePublishCapable(): boolean {
+    return Boolean(this.publish && this.pc?.writePcmChunk)
+  }
+
+  /** Activates publication on the CURRENT grant: fresh offer (send m-line
+   * was armed pre-offer) -> /tracks(local) -> optional answer applied. */
+  async activateVoicePublish(): Promise<void> {
+    if (this.stopped || !this.pc || !this.mySessionId)
+      throw new Error("bridge_not_running")
+    if (!this.pc.writePcmChunk || !this.pc.localPublishMid)
+      throw new Error("media_engine_publish_unsupported")
+    if (!this.restClient.publishAudioTrack)
+      throw new Error("rest_client_publish_unsupported")
+    await this.negotiationQueue.then(
+      () => undefined,
+      () => undefined
+    )
+    const run = (async () => {
+      if (this.stopped || !this.pc || !this.mySessionId) return
+      const offer = await this.pc.createOffer()
+      await this.pc.setLocalDescription(offer)
+      const mid = (await this.pc.localPublishMid?.()) ?? ""
+      if (!mid) throw new Error("publish_mid_unavailable")
+      const result = await this.restClient.publishAudioTrack!(
+        this.mySessionId,
+        { trackName: this.publish!.trackName, mid, offer }
+      )
+      if (result.sessionDescription) {
+        if (result.sessionDescription.type === "offer") {
+          await this.pc.setRemoteDescription(result.sessionDescription)
+          const answer = await this.pc.createAnswer()
+          await this.pc.setLocalDescription(answer)
+          await this.restClient.renegotiate(this.mySessionId, answer)
+        } else {
+          await this.pc.setRemoteDescription(result.sessionDescription)
+        }
+      }
+      await this.pc.activatePublish?.()
+    })()
+    this.negotiationQueue = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  async deactivateVoicePublish(): Promise<void> {
+    try {
+      await this.pc?.deactivatePublish?.()
+    } catch {
+      // Best effort cooperative stop; server-side close is authoritative.
+    }
+  }
+
+  async writeVoicePcm(chunk: Uint8Array): Promise<void> {
+    if (this.stopped) throw new Error("bridge_stopped")
+    await this.pc?.writePcmChunk?.(chunk)
+  }
+
+  async flushVoice(): Promise<void> {
+    await this.pc?.flushAudio?.()
   }
 
   private resetToStoppedState(emitEndedEvents: boolean): void {

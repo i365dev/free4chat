@@ -139,7 +139,10 @@ async function authorize(
   // any Cloudflare tracks/new call is made — never sent for a Human caller
   // or for renegotiate (which creates no new tracks). See the "tracks"
   // route below.
-  remoteTrackCount?: number
+  remoteTrackCount?: number,
+  purpose?: unknown,
+  wantsVoicePublish?: boolean,
+  localTrackCount?: number
 ): Promise<Response> {
   return roomControl(env, roomName, {
     action: "authorize",
@@ -150,6 +153,9 @@ async function authorize(
     trackName,
     dataChannelSessionId,
     remoteTrackCount,
+    purpose,
+    wantsVoicePublish,
+    localTrackCount,
   })
 }
 
@@ -399,6 +405,9 @@ export async function handleSfuRequest(
     const remoteTrackCount = requestedTracks.filter(
       (track) => track.location === "remote"
     ).length
+    const localTracks = requestedTracks.filter(
+      (track) => track.location === "local"
+    )
     const auth = await authorize(
       env,
       room,
@@ -408,7 +417,10 @@ export async function handleSfuRequest(
       undefined,
       undefined,
       undefined,
-      remoteTrackCount
+      remoteTrackCount,
+      typeof body.purpose === "string" ? body.purpose : undefined,
+      (request.headers.get("origin") ?? "") !== "" ? body.wantsVoicePublish === true : body.wantsVoicePublish === true,
+      localTracks.length
     )
     if (!auth.ok) return auth
     // The DO's "authorize" action now also re-checks the current Meeting
@@ -467,6 +479,20 @@ export async function handleSfuRequest(
     if (!upstream.ok)
       return new Response(responseBody, { status: upstream.status })
 
+    // #83: agent publication shape gates BEFORE Cloudflare — single audio
+    // track only, explicit voice-reply purpose, video/screen denied.
+    if (
+      route === "tracks" &&
+      participantKind === "agent" &&
+      localTracks.length > 0
+    ) {
+      if (!body.sessionDescription)
+        return json({ error: "agent_publish_invalid_track" }, 403)
+      if (localTracks.length > 1)
+        return json({ error: "agent_publish_invalid_track_count" }, 403)
+      if (localTracks.some((track) => track.kind === "video"))
+        return json({ error: "agent_publish_audio_only" }, 403)
+    }
     if (route === "tracks" && Array.isArray(body.tracks)) {
       for (const track of body.tracks as Array<Record<string, unknown>>) {
         if (track.location !== "local" || typeof track.trackName !== "string")
@@ -489,6 +515,50 @@ export async function handleSfuRequest(
       const hasRemoteTrack = requestedTracks.some(
         (track) => track.location === "remote"
       )
+      // #83: capture the published mid for the voiceReply-granted agent so
+      // Stop/reassignment can actively close it; TOCTOU failure closes the
+      // just-created publication and hands unresolved mids to pending
+      // cleanup instead of reporting stale success.
+      if (participantKind === "agent" && localTracks.length > 0) {
+        let upstreamJson: { tracks?: Array<{ mid?: unknown }> } = {}
+        try {
+          upstreamJson = JSON.parse(responseBody)
+        } catch {
+          // Empty-mid fail-closed check below handles parse failure.
+        }
+        const publishedMid = (upstreamJson.tracks ?? [])
+          .map((track) => track.mid)
+          .find(
+            (mid): mid is string => typeof mid === "string" && mid.length > 0
+          )
+        const publishTrackName =
+          typeof localTracks[0]!.trackName === "string"
+            ? localTracks[0]!.trackName
+            : "agent-voice"
+        if (!publishedMid)
+          return json({ error: "agent_publication_unverifiable" }, 502)
+        const registered = await roomControl(env, room, {
+          action: "agent-track-published",
+          participantId,
+          token,
+          sessionId,
+          mid: publishedMid,
+          trackName: publishTrackName,
+        })
+        if (!registered.ok) {
+          const closed = await closeRealtimeTracks(env, sessionId, [
+            publishedMid,
+          ])
+          if (!closed) {
+            await roomControl(env, room, {
+              action: "agent-media-cleanup-pending",
+              sessionId,
+              mids: [publishedMid],
+            })
+          }
+          return registered
+        }
+      }
       if (participantKind === "agent" && hasRemoteTrack) {
         let upstreamJson: { tracks?: Array<{ mid?: unknown }> } = {}
         try {
