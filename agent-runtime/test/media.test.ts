@@ -730,6 +730,34 @@ test("failed start() (peer connection creation) leaves the bridge stopped and re
   bridge.stop()
 })
 
+test("#83 review: VR-only bootstrap succeeds without Human-media discovery; a later MN grant reuses the same session", async () => {
+  const restClient = new FakeRestClient()
+  // The DO denies agent-room-media for an agent with no Meeting Notes grant.
+  restClient.roomMediaError = new Error("meeting_notes_not_authorized")
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc, undefined, undefined, {
+    pollIntervalMs: 3_600_000,
+  })
+
+  await bridge.start()
+  assert.equal(restClient.createAgentSessionCalls, 1)
+  assert.deepEqual(
+    restClient.establishTransportCalls.map((call) => call.purpose),
+    ["agent-transport"]
+  )
+  assert.equal(restClient.subscribeCalls.length, 0)
+  assert.equal(pc.closed, false)
+
+  // Meeting Notes granted afterwards: the SAME session starts pulling the
+  // newly visible Human audio on the next poll tick.
+  restClient.roomMediaError = undefined
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  await bridge.poll()
+  assert.equal(restClient.subscribeCalls.length, 1)
+  assert.equal(restClient.subscribeCalls[0].purpose, "meeting-notes")
+  bridge.stop()
+})
+
 test("failed start() (initial poll) leaves the bridge stopped, closes the peer connection, and is retryable", async () => {
   const restClient = new FakeRestClient()
   restClient.roomMediaError = new Error("boom: room-media unreachable")

@@ -1507,3 +1507,112 @@ describe("#83 review: purpose reaches every DO authorize along the real path", (
     expect(authorizations[0].purpose).toBe("voice-reply")
   })
 })
+
+describe("#83 review: Agent datachannel access is bootstrap-only over the shared session", () => {
+  function agentDataChannelEnv() {
+    const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+      Response.json({ ok: true })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const seenActions: string[] = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      seenActions.push(String(body.action))
+      return { status: 200, body: { ok: true } }
+    })
+    return { fetchMock, env }
+  }
+
+  const baseBody = {
+    ...agentBody,
+    sessionId: "sess-a",
+    purpose: "agent-transport",
+  }
+  const origin = { origin: "https://www.free4.chat" }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("datachannels/new is forbidden for an Agent before any Cloudflare call", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/new", {
+        ...origin,
+        body: JSON.stringify({
+          ...baseBody,
+          dataChannels: [{ location: "remote", dataChannelName: "anything" }],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_datachannel_forbidden")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("establish with anything but the exact server-events shape fails closed", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    for (const dataChannel of [
+      { location: "remote", dataChannelName: "other-channel" },
+      { location: "local", dataChannelName: "server-events" },
+      { location: "remote" },
+    ]) {
+      const res = await handleSfuRequest(
+        req("datachannels/establish", {
+          ...origin,
+          body: JSON.stringify({
+            ...baseBody,
+            dataChannel,
+            sessionDescription: { type: "offer", sdp: "v=0\r\n" },
+          }),
+        }),
+        env
+      )
+      expect(res.status).toBe(403)
+      expect((await json(res)).error).toBe("agent_datachannel_shape_forbidden")
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("the exact server-events establish still reaches Cloudflare", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/establish", {
+        ...origin,
+        body: JSON.stringify({
+          ...baseBody,
+          dataChannel: { location: "remote", dataChannelName: "server-events" },
+          sessionDescription: { type: "offer", sdp: "v=0\r\n" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/sess-a/datachannels/establish"
+    )
+  })
+
+  it("close stays available to Agents for cleaning up the established channel", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/close", {
+        ...origin,
+        method: "PUT",
+        body: JSON.stringify({
+          ...baseBody,
+          publisherSessionId: "human-sess",
+          dataChannels: [{ id: 1, sessionId: "human-sess" }],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/sess-a/datachannels/close"
+    )
+  })
+})

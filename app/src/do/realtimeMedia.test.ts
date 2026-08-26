@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   closeRealtimeTracks,
+  isHumanAudioTrackTarget,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
   removeConfirmedMids,
@@ -478,5 +479,65 @@ describe("stageAgentMediaRevocation — directional split (#83 review)", () => {
     }
     const existing = [{ sessionId: "sess-agent", mids: ["x"] }]
     expect(stageAgentMediaRevocation(textOnly, existing, "both")).toBe(existing)
+  })
+})
+
+describe("isHumanAudioTrackTarget (#83 review: agent subscribe targets are Human audio only)", () => {
+  function participant(
+    id: string,
+    kind: "human" | "agent",
+    sessionId: string,
+    tracks: Array<{ trackName: string; kind: "audio" | "video" }>,
+    extraMedia: Record<string, unknown> = {}
+  ): RoomParticipant {
+    return {
+      id,
+      name: id,
+      kind,
+      connected: true,
+      joinedAt: 1,
+      lastSeenAt: 1,
+      token: "t",
+      media: {
+        sessionId,
+        muted: false,
+        fileChannelReady: false,
+        tracks,
+        ...extraMedia,
+      },
+    }
+  }
+
+  const room = {
+    humanAudio: participant("h1", "human", "hsess", [
+      { trackName: "mic", kind: "audio" },
+    ]),
+    humanVideo: participant("h2", "human", "vsess", [
+      { trackName: "screen", kind: "video" },
+    ]),
+    agentVoice: participant(
+      "a1",
+      "agent",
+      "asess",
+      [{ trackName: "agent-voice", kind: "audio" }],
+      { agentPublishedMid: "pub-1" }
+    ),
+  }
+
+  it("admits a Human AUDIO track (the Meeting Notes ingress target)", () => {
+    expect(isHumanAudioTrackTarget(room, "hsess", "mic")).toBe(true)
+  })
+
+  it("rejects a Human VIDEO (screen share) track even with known identifiers", () => {
+    expect(isHumanAudioTrackTarget(room, "vsess", "screen")).toBe(false)
+  })
+
+  it("rejects another Agent's published voice track", () => {
+    expect(isHumanAudioTrackTarget(room, "asess", "agent-voice")).toBe(false)
+  })
+
+  it("fails identically for unknown sessions/names (no existence oracle)", () => {
+    expect(isHumanAudioTrackTarget(room, "nope", "mic")).toBe(false)
+    expect(isHumanAudioTrackTarget(room, "hsess", "screen")).toBe(false)
   })
 })

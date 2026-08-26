@@ -17,6 +17,17 @@ import type {
 import type { MediaTrackLike, RtpPacketLike } from "./peerConnectionLike.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
+
+// The DO's agent-room-media denial for an Agent whose room has no active
+// Meeting Notes grant. Expected (and tolerated at bootstrap) whenever the
+// shared session was admitted under voiceReply only.
+const HUMAN_MEDIA_DISCOVERY_DENIED = "meeting_notes_not_authorized"
+
+function isHumanMediaDiscoveryDenied(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === HUMAN_MEDIA_DISCOVERY_DENIED
+  )
+}
 /** Emit a bounded stats event at most this often per track, not per packet. */
 const STATS_FLUSH_INTERVAL_MS = 2000
 
@@ -168,7 +179,16 @@ export class SfuMediaBridge {
       } else {
         await this.pc.setRemoteDescription(description)
       }
-      await this.poll()
+      try {
+        await this.poll()
+      } catch (error) {
+        // #83 review: a voiceReply-only room has no Meeting Notes grant, so
+        // the initial Human-media discovery is denied — that denial must not
+        // fail the transactional bootstrap. The poll timer keeps retrying on
+        // this SAME session, so Human audio starts flowing the moment an MN
+        // grant appears; any other discovery failure stays fatal here.
+        if (!isHumanMediaDiscoveryDenied(error)) throw error
+      }
       this.pollTimer = setInterval(() => {
         void this.poll().catch(() => undefined)
       }, this.pollIntervalMs)

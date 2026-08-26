@@ -162,6 +162,28 @@ export function removeConfirmedMids(
   return result
 }
 
+// Pure decision logic (#83 review): whether an Agent's exact-track subscribe
+// target is admissible. An Agent holding a Meeting Notes grant may subscribe
+// ONLY to a HUMAN participant's AUDIO track — never Human video (screen
+// share) and never another Agent's published voice track, even when it
+// knows both identifiers. Matching against ROOM state (not client claims)
+// closes the spoofed-kind hole; unknown targets fail identically so the
+// check leaks no existence oracle either way.
+export function isHumanAudioTrackTarget(
+  participants: Record<string, RoomParticipant>,
+  trackSessionId: string,
+  trackName: string
+): boolean {
+  return Object.values(participants).some(
+    (candidate) =>
+      candidate.kind === "human" &&
+      candidate.media?.sessionId === trackSessionId &&
+      candidate.media.tracks.some(
+        (track) => track.trackName === trackName && track.kind === "audio"
+      )
+  )
+}
+
 // Which Agent media directions a revocation trigger covers (#83 review).
 // The Meeting Notes grant independently authorizes Human→Agent *subscribe*
 // media on the agent's session (tracked as agentSubscribedMids); the

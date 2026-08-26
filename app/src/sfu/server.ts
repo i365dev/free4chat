@@ -160,6 +160,17 @@ async function authorize(
   })
 }
 
+// The exact DataChannel shape the resident Agent's shared-session bootstrap
+// is allowed to establish (#83 review): the remote "server-events" channel
+// and nothing else.
+function isServerEventsDataChannel(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  const channel = value as Record<string, unknown>
+  return (
+    channel.location === "remote" && channel.dataChannelName === "server-events"
+  )
+}
+
 async function realtimeRequest(
   env: SfuEnv,
   path: string,
@@ -736,6 +747,23 @@ export async function handleSfuRequest(
       typeof body.purpose === "string" ? body.purpose : undefined
     )
     if (!auth.ok) return auth
+    // #83 review: an Agent's datachannel access over the shared session is
+    // exactly the bootstrap plumbing — establishing the single server-events
+    // channel — plus close for cleaning that channel up. datachannels/new is
+    // Human-only and any non-server-events establish shape fails closed,
+    // both BEFORE any Cloudflare call.
+    const { kind: dataChannelCallerKind } = (await auth.json()) as {
+      kind?: string
+    }
+    if (dataChannelCallerKind === "agent") {
+      if (route === "datachannels/new")
+        return json({ error: "agent_datachannel_forbidden" }, 403)
+      if (
+        route === "datachannels/establish" &&
+        !isServerEventsDataChannel(body.dataChannel)
+      )
+        return json({ error: "agent_datachannel_shape_forbidden" }, 403)
+    }
     if (route === "datachannels/close") {
       const dataChannels = Array.isArray(body.dataChannels)
         ? body.dataChannels.filter(

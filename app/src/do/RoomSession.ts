@@ -27,6 +27,7 @@ import {
 } from "./meetingNotesAuth"
 import {
   closeRealtimeTracks,
+  isHumanAudioTrackTarget,
   MAX_PENDING_CLEANUP_ENTRIES,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
@@ -1991,14 +1992,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return this.json({ error: "agent_media_cleanup_backlog" }, 503)
       }
       if (request.trackSessionId && request.trackName) {
-        const trackExists = Object.values(room.participants).some(
-          (candidate) =>
-            candidate.media?.sessionId === request.trackSessionId &&
-            candidate.media.tracks.some(
-              (track) => track.trackName === request.trackName
-            )
-        )
-        if (!trackExists) return this.json({ error: "track_not_found" }, 404)
+        // #83 review: an Agent's exact-track reauthorization must resolve to
+        // a HUMAN AUDIO track in room state — never Human video, never
+        // another Agent's published voice track — regardless of what
+        // identifiers it knows. Humans keep the plain existence check (they
+        // legitimately subscribe to screen-share video).
+        const trackAllowed =
+          participant.kind === "agent"
+            ? isHumanAudioTrackTarget(
+                room.participants,
+                request.trackSessionId,
+                request.trackName
+              )
+            : Object.values(room.participants).some(
+                (candidate) =>
+                  candidate.media?.sessionId === request.trackSessionId &&
+                  candidate.media.tracks.some(
+                    (track) => track.trackName === request.trackName
+                  )
+              )
+        if (!trackAllowed) return this.json({ error: "track_not_found" }, 404)
       }
       if (request.dataChannelSessionId) {
         const sessionExists = Object.values(room.participants).some(
