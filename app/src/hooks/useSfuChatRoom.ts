@@ -998,16 +998,34 @@ export function useSfuChatRoom(
               fileChannelReady: false,
               tracks: [message.participant.track],
             }
+          } else {
+            // Human resync missed the agent-media-attach state broadcast;
+            // bootstrap from the publication so subscribe can proceed.
+            current.media = {
+              sessionId: incomingSessionId,
+              muted: false,
+              fileChannelReady: false,
+              tracks: [message.participant.track],
+            }
           }
         } else if (current) {
-          if (!current.media) return
-          current.media.tracks = [
-            ...current.media.tracks.filter(
-              (track) =>
-                track.trackName !== message.participant!.track!.trackName
-            ),
-            message.participant.track,
-          ]
+          if (!current.media) {
+            if (!incomingSessionId) return
+            current.media = {
+              sessionId: incomingSessionId,
+              muted: false,
+              fileChannelReady: false,
+              tracks: [message.participant.track],
+            }
+          } else {
+            current.media.tracks = [
+              ...current.media.tracks.filter(
+                (track) =>
+                  track.trackName !== message.participant!.track!.trackName
+              ),
+              message.participant.track,
+            ]
+          }
         } else if (message.participant.name && incomingSessionId) {
           participantMapRef.current.set(participantId, {
             id: participantId,
