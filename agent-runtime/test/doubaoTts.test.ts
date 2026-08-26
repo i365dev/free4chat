@@ -339,6 +339,16 @@ test("classifier maps every stream object shape deterministically", () => {
   assert.equal(classifyTtsStreamObject("not json at all").kind, "invalid")
   assert.equal(classifyTtsStreamObject("[1,2]").kind, "invalid")
   assert.equal(classifyTtsStreamObject('{"code":0}').kind, "invalid")
+  assert.equal(
+    classifyTtsStreamObject('{"code":0,"data":null}').kind,
+    "invalid"
+  )
+  assert.equal(
+    classifyTtsStreamObject(
+      '{"code":0,"message":"","data":null,"sentence":{"phonemes":[],"text":"hi","words":[]}}'
+    ).kind,
+    "metadata"
+  )
   assert.equal(classifyTtsStreamObject('{"code":0,"data":"AAA"}').kind, "audio")
   assert.deepEqual(classifyTtsStreamObject('{"code":20000000}'), {
     kind: "end",
@@ -348,6 +358,49 @@ test("classifier maps every stream object shape deterministically", () => {
   )
   assert.equal(businessError.kind, "error")
   assert.ok(businessError.kind === "error" && businessError.code === 55000000)
+})
+
+test("real Doubao streams with code-0 sentence metadata frames complete cleanly", async () => {
+  // Reproduces the live V3 response shape: audio frames interleaved with a
+  // data:null sentence-metadata frame, then the terminator.
+  const audioA = new Uint8Array([1, 2, 3])
+  const audioB = new Uint8Array(1024).fill(5)
+  const metadataLine = `${JSON.stringify({
+    code: 0,
+    message: "",
+    data: null,
+    sentence: {
+      phonemes: [],
+      text: "你好，这是 Free4Chat 豆包语音合成 2.0 的本地测试。",
+      words: [],
+    },
+  })}\n`
+  const fetchImpl = (async () =>
+    streamResponse([
+      pcmLine(audioA),
+      metadataLine,
+      pcmLine(audioB),
+      END_LINE,
+    ])) as unknown as typeof fetch
+  const provider = new DoubaoTtsProvider(API_KEY, { fetchImpl })
+  const chunks = await collect(provider, "你好。")
+  assert.equal(chunks.length, 2)
+  assert.deepEqual([...chunks[0]!.data], [...audioA])
+  assert.deepEqual([...chunks[1]!.data], [...audioB])
+})
+
+test("code-0 frames without data and without sentence metadata still fail closed", async () => {
+  const fetchImpl = (async () =>
+    streamResponse([
+      `${JSON.stringify({ code: 0, message: "", data: null })}\n`,
+    ])) as unknown as typeof fetch
+  const provider = new DoubaoTtsProvider(API_KEY, { fetchImpl })
+  await assert.rejects(
+    () => collect(provider, "Hello"),
+    (error: unknown) =>
+      error instanceof DoubaoProviderError &&
+      error.code === "tts_invalid_stream_object"
+  )
 })
 
 test("wav wrapping emits a canonical 44-byte PCM header", () => {

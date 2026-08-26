@@ -215,6 +215,7 @@ class DoubaoTtsSession implements StreamingTtsSession {
     raw: string
   ):
     | { kind: "audio"; chunk: TtsAudioChunk }
+    | { kind: "ignore" }
     | { kind: "end" }
     | { kind: "failure"; error: DoubaoProviderError } {
     const object = classifyTtsStreamObject(raw)
@@ -236,6 +237,7 @@ class DoubaoTtsSession implements StreamingTtsSession {
           describe({ message: object.message }, this.apiKey)
         ),
       }
+    if (object.kind === "metadata") return { kind: "ignore" }
     if (object.kind === "end") return { kind: "end" }
     // Malformed JSON or an unexpected object shape must never be read as a
     // normal completion — that would silently truncate spoken answers.

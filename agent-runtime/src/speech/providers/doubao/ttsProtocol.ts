@@ -57,13 +57,19 @@ export type TtsStreamObject =
   | { kind: "audio"; base64: string }
   | { kind: "end" }
   | { kind: "error"; code: number; message: string }
+  | { kind: "metadata" }
   | { kind: "invalid" }
+
+function isPlainObject(value: unknown): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
 
 export function classifyTtsStreamObject(raw: string): TtsStreamObject {
   let parsed: {
     code?: unknown
     message?: unknown
     data?: unknown
+    sentence?: unknown
     header?: { code?: unknown; message?: unknown }
   }
   try {
@@ -86,11 +92,16 @@ export function classifyTtsStreamObject(raw: string): TtsStreamObject {
             : "",
     }
   if (code === DOUBAO_TTS_END_CODE) return { kind: "end" }
-  return typeof parsed.data === "string" && parsed.data.length > 0
-    ? { kind: "audio", base64: parsed.data }
-    : // A code-0 object without an audio payload is malformed, never a
-      // completion: treating it as one would silently truncate answers.
-      { kind: "invalid" }
+  if (typeof parsed.data === "string" && parsed.data.length > 0)
+    return { kind: "audio", base64: parsed.data }
+  // Official streams interleave code-0 sentence-metadata frames (data null,
+  // a sentence object with phonemes/text/words) between audio chunks. They
+  // carry no audio and are safely ignored while waiting for the terminator.
+  if (isPlainObject(parsed.sentence)) return { kind: "metadata" }
+  // A code-0 object without an audio payload and without sentence
+  // metadata is malformed, never a completion: treating it as one would
+  // silently truncate answers.
+  return { kind: "invalid" }
 }
 
 /**
