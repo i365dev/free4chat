@@ -13,17 +13,27 @@ import {
   type CollabEventInput,
 } from "./collab"
 import {
+  agentMediaPermissions,
   clearGrantIfParticipantDeparting,
+  clearVoiceReplyIfParticipantDeparting,
   isAgentAuthorizedForMedia,
+  isAgentAuthorizedForSharedMedia,
+  isAgentAuthorizedForVoiceReply,
   NO_MEETING_NOTES,
+  NO_VOICE_REPLY,
+  resolveAgentPurposePermission,
   startMeetingNotes,
+  startVoiceReply,
 } from "./meetingNotesAuth"
 import {
   closeRealtimeTracks,
+  isHumanAudioTrackTarget,
   MAX_PENDING_CLEANUP_ENTRIES,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
   removeConfirmedMids,
+  stageAgentMediaRevocation,
+  type AgentMediaRevocationDirection,
 } from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
@@ -42,6 +52,7 @@ import type {
   RoomAttachment,
   MeetingNotesState,
   PendingMediaCleanup,
+  VoiceReplyState,
   RoomMediaTrack,
   AgentAttachmentMimeType,
   RoomMessage,
@@ -122,6 +133,7 @@ interface StoredRoom
     | "attachments"
     | "nextMessageSequence"
     | "meetingNotes"
+    | "voiceReply"
     | "pendingMediaCleanup"
   > {
   participants: Record<string, StoredParticipant>
@@ -129,6 +141,7 @@ interface StoredRoom
   attachments?: RoomAttachment[]
   nextMessageSequence?: number
   meetingNotes?: MeetingNotesState
+  voiceReply?: VoiceReplyState
   pendingMediaCleanup?: PendingMediaCleanup[]
 }
 
@@ -157,6 +170,17 @@ type ControlRequest =
       // checked for pending-cleanup and active-mid capacity here — before
       // any Cloudflare tracks/new call is made. Ignored for Human callers.
       remoteTrackCount?: number
+      purpose?: unknown
+      wantsVoicePublish?: boolean
+      localTrackCount?: number
+    }
+  | {
+      action: "agent-track-published"
+      participantId: string
+      token: string
+      sessionId: string
+      mid: string
+      trackName: string
     }
   | {
       action: "reconnect"
@@ -182,7 +206,7 @@ type ControlRequest =
       participantId: string
       token: string
     }
-  | { action: "room-info" }
+  | { action: "room-info"; participantId?: string }
   | {
       action: "agent-register"
       participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
@@ -269,6 +293,14 @@ type ControlRequest =
       sessionId: string
     }
   | {
+      // #83 review: narrow admission probe for the ONE shared Agent SFU
+      // session (agent-session route). Admits on meetingNotes OR voiceReply;
+      // unlike agent-room-media it returns NO media state at all.
+      action: "agent-media-admit"
+      participantId: string
+      token: string
+    }
+  | {
       action: "agent-room-media"
       participantId: string
       token: string
@@ -342,6 +374,8 @@ type ClientMessage =
   | { type: "leave" }
   | { type: "meeting-notes-start"; agentParticipantId: string }
   | { type: "meeting-notes-stop" }
+  | { type: "voice-reply-start"; agentParticipantId: string }
+  | { type: "voice-reply-stop" }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
@@ -541,6 +575,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       changed = true
     }
 
+    let voiceReply: VoiceReplyState
+    if (this.validVoiceReply(stored.voiceReply)) {
+      voiceReply = stored.voiceReply
+    } else {
+      voiceReply = NO_VOICE_REPLY
+      changed = true
+    }
+    if (
+      voiceReply.active &&
+      (!voiceReply.agentParticipantId ||
+        participants[voiceReply.agentParticipantId]?.kind !== "agent")
+    ) {
+      // Stale grant (departed/never-agent) must not keep authorizing.
+      voiceReply = NO_VOICE_REPLY
+      changed = true
+    }
+
     let pendingMediaCleanup: PendingMediaCleanup[]
     if (this.validPendingMediaCleanup(stored.pendingMediaCleanup)) {
       pendingMediaCleanup = stored.pendingMediaCleanup
@@ -558,6 +609,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachments,
         nextMessageSequence,
         meetingNotes,
+        voiceReply,
         pendingMediaCleanup,
       },
       changed,
@@ -567,6 +619,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private validMeetingNotes(value: unknown): value is MeetingNotesState {
     if (!value || typeof value !== "object") return false
     const candidate = value as Partial<MeetingNotesState>
+    if (typeof candidate.active !== "boolean") return false
+    if (!candidate.active) return true
+    return (
+      typeof candidate.agentParticipantId === "string" &&
+      candidate.agentParticipantId.length > 0 &&
+      typeof candidate.startedAt === "number"
+    )
+  }
+
+  private validVoiceReply(value: unknown): value is VoiceReplyState {
+    if (!value || typeof value !== "object") return false
+    const candidate = value as Partial<VoiceReplyState>
     if (typeof candidate.active !== "boolean") return false
     if (!candidate.active) return true
     return (
@@ -671,13 +735,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           // agentSubscribedMids is Cloudflare session bookkeeping used only
           // for server-side revocation (see realtimeMedia.ts) — never
           // participant-visible state.
-          if (!participant.media?.agentSubscribedMids) return participant
-          const { agentSubscribedMids: _mids, ...media } = participant.media
+          if (
+            !participant.media?.agentSubscribedMids &&
+            !participant.media?.agentPublishedMid
+          )
+            return participant
+          const {
+            agentSubscribedMids: _mids,
+            agentPublishedMid: _publishedMid,
+            ...media
+          } = participant.media
           return { ...participant, media }
         }),
       messages: room.messages,
       meetingNotes: room.meetingNotes,
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+      voiceReply: room.voiceReply,
+      voiceReplyMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     }
   }
 
@@ -719,37 +793,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return room
   }
 
-  // Step 1-2 of the revocation sequence (round 4): SYNCHRONOUS, no I/O.
-  // Moves an agent's tracked subscription mids out of its participant
-  // record and into room.pendingMediaCleanup, in memory only — the caller
-  // is responsible for persisting `room` (saveRoom/scheduleNextAlarm/
-  // broadcastState) *before* ever attempting the actual Cloudflare close
-  // (see attemptCleanupNow). This split exists specifically so a Cloudflare
-  // fetch() is never awaited while an in-memory RoomRecord sits unsaved:
-  // Durable Objects can interleave handling of another incoming request
-  // during that await, and a stale RoomRecord saved afterward would
-  // silently clobber whatever that other request persisted in the
-  // meantime. Never truncates agentSubscribedMids or evicts an existing
-  // pendingMediaCleanup entry — queuePendingCleanup is purely additive; the
-  // bound is enforced elsewhere by refusing *new* Agent media work (see
-  // pendingCleanupHasCapacity), not by dropping data here. No-ops cheaply
-  // when there is nothing to move (ordinary text-only agents, or an agent
-  // that was granted but never actually subscribed to anything).
+  // Steps 1-2 of the revocation sequence (round 4), direction-aware: thin
+  // RoomRecord adapter over realtimeMedia.stageAgentMediaRevocation (pure +
+  // unit-tested there). Synchronous staging only, no I/O; the caller
+  // persists before attemptCleanupNow ever fetches. Meeting Notes triggers
+  // stage "subscribed", voiceReply triggers stage "published", and whole-
+  // participant teardown / full session rotation stages "both" so one
+  // grant's stop can never revoke the other independent grant's media.
   private stageAgentMediaRevocation(
     room: RoomRecord,
-    agentParticipantId: string
+    agentParticipantId: string,
+    direction: AgentMediaRevocationDirection = "both"
   ): void {
-    const participant = room.participants[agentParticipantId]
-    if (!participant || participant.kind !== "agent" || !participant.media)
-      return
-    const mids = participant.media.agentSubscribedMids
-    if (!mids || mids.length === 0) return
-    const sessionId = participant.media.sessionId
-    participant.media = { ...participant.media, agentSubscribedMids: [] }
-    room.pendingMediaCleanup = queuePendingCleanup(
+    room.pendingMediaCleanup = stageAgentMediaRevocation(
+      room.participants[agentParticipantId],
       room.pendingMediaCleanup,
-      sessionId,
-      mids
+      direction
     )
   }
 
@@ -1124,6 +1183,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // agentParticipantId is already visible in `participants` above.
         meetingNotes: room?.meetingNotes ?? NO_MEETING_NOTES,
         meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+        voiceReply: room?.voiceReply ?? NO_VOICE_REPLY,
+        voiceReplyMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+        mediaPermissions: room
+          ? agentMediaPermissions(
+              room.meetingNotes,
+              room.voiceReply,
+              request.participantId
+            )
+          : { canSubscribeHumanAudio: false, canPublishVoice: false },
       })
     }
 
@@ -1146,6 +1214,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           attachments: [],
           nextMessageSequence: 0,
           meetingNotes: NO_MEETING_NOTES,
+          voiceReply: { active: false },
           pendingMediaCleanup: [],
         }
       }
@@ -1231,6 +1300,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachments: [],
         nextMessageSequence: 0,
         meetingNotes: NO_MEETING_NOTES,
+        voiceReply: { active: false },
         pendingMediaCleanup: [],
       }
       const participant: RoomParticipant = {
@@ -1470,6 +1540,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })
     }
 
+    if (request.action === "agent-media-admit") {
+      // #83 review: admission probe for the ONE shared Agent SFU session.
+      // Authorizes on meetingNotes OR voiceReply naming THIS connected
+      // agent; deliberately returns no room/media state — Human media
+      // discovery stays agent-room-media-only (Meeting Notes grant).
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      if (
+        !isAgentAuthorizedForSharedMedia(
+          room.meetingNotes,
+          room.voiceReply,
+          participant.id
+        )
+      )
+        return this.json({ error: "agent_media_not_authorized" }, 403)
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      return this.json({ ok: true, expiresAt: room.expiresAt })
+    }
+
     if (request.action === "agent-media-attach") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
@@ -1487,8 +1586,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // external I/O, during which the Human could Stop or reassign
       // Meeting Notes. Re-check the CURRENT grant here and refuse to
       // attach — never mutate the participant into a new active media
-      // session — if it's no longer valid.
-      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+      // session — if it's no longer valid. #83 review: the shared session
+      // is admissible under EITHER independent grant (meetingNotes OR
+      // voiceReply) naming this agent; this check admits transport only.
+      if (
+        !isAgentAuthorizedForSharedMedia(
+          room.meetingNotes,
+          room.voiceReply,
+          participant.id
+        )
+      )
         return this.json({ error: "meeting_notes_not_authorized" }, 403)
       if (participant.media?.sessionId === request.sessionId) {
         // Idempotent: the same session re-attaching (e.g. a retried
@@ -1753,6 +1860,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room.meetingNotes,
         participant.id
       )
+      room.voiceReply = clearVoiceReplyIfParticipantDeparting(
+        room.voiceReply,
+        participant.id
+      )
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       // #111: no surface history survives departure — chunks die after the
@@ -1800,11 +1911,61 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // sessionId and a Human's sessionId/trackName cannot keep creating
       // subscriptions via cached identifiers after Stop/reassignment. Human
       // authorization is completely unaffected.
-      if (
-        participant.kind === "agent" &&
-        !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
-      )
-        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (participant.kind === "agent") {
+        // #83 fail-closed direction matrix: every agent media request must
+        // carry an explicit narrow purpose; meeting-notes unlocks ONLY
+        // remote Human-audio subscribe, voice-reply ONLY local single
+        // audio publish; agent-transport covers transport plumbing only;
+        // video always denied. Humans are unaffected. dataChannelSessionId
+        // is session CORRELATION (validated separately below), never a
+        // remote-subscribe direction — the real close/establish calls carry
+        // it and must pass under agent-transport's narrow semantics.
+        const decision = resolveAgentPurposePermission({
+          purpose: request.purpose,
+          wantsLocalPublish: (request.localTrackCount ?? 0) > 0,
+          wantsRemoteSubscribe:
+            (request.remoteTrackCount ?? 0) > 0 ||
+            Boolean(request.trackSessionId),
+          involvesVideo: false,
+        })
+        if (!decision.ok) {
+          const failure = decision as { ok: false; error: string }
+          return this.json({ error: failure.error }, 403)
+        }
+        if (
+          request.wantsVoicePublish === true &&
+          !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
+        )
+          return this.json({ error: "voice_reply_not_authorized" }, 403)
+        if (
+          request.purpose === "meeting-notes" &&
+          !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
+        )
+          return this.json({ error: "meeting_notes_not_authorized" }, 403)
+        if (
+          request.purpose === "voice-reply" &&
+          !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
+        )
+          return this.json({ error: "voice_reply_not_authorized" }, 403)
+        // #83 review: the shared transport/bootstrap purpose is authorized
+        // by EITHER independent grant — never by an Agent token alone. A
+        // room where neither grant names this agent has no media business
+        // left on its session at all.
+        if (
+          request.purpose === "agent-transport" &&
+          !isAgentAuthorizedForSharedMedia(
+            room.meetingNotes,
+            room.voiceReply,
+            participant.id
+          )
+        )
+          return this.json({ error: "agent_media_not_authorized" }, 403)
+        if (
+          participant.media?.agentPublishedMid &&
+          (request.localTrackCount ?? 0) > 0
+        )
+          return this.json({ error: "agent_publish_capacity_exceeded" }, 503)
+      }
       // Round 5 (P2): preflight capacity check *before* the Worker ever
       // calls Cloudflare's tracks/new for these remote subscriptions —
       // catching an already-backpressured room here means it never creates
@@ -1835,14 +1996,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return this.json({ error: "agent_media_cleanup_backlog" }, 503)
       }
       if (request.trackSessionId && request.trackName) {
-        const trackExists = Object.values(room.participants).some(
-          (candidate) =>
-            candidate.media?.sessionId === request.trackSessionId &&
-            candidate.media.tracks.some(
-              (track) => track.trackName === request.trackName
-            )
-        )
-        if (!trackExists) return this.json({ error: "track_not_found" }, 404)
+        // #83 review: an Agent's exact-track reauthorization must resolve to
+        // a HUMAN AUDIO track in room state — never Human video, never
+        // another Agent's published voice track — regardless of what
+        // identifiers it knows. Humans keep the plain existence check (they
+        // legitimately subscribe to screen-share video).
+        const trackAllowed =
+          participant.kind === "agent"
+            ? isHumanAudioTrackTarget(
+                room.participants,
+                request.trackSessionId,
+                request.trackName
+              )
+            : Object.values(room.participants).some(
+                (candidate) =>
+                  candidate.media?.sessionId === request.trackSessionId &&
+                  candidate.media.tracks.some(
+                    (track) => track.trackName === request.trackName
+                  )
+              )
+        if (!trackAllowed) return this.json({ error: "track_not_found" }, 404)
       }
       if (request.dataChannelSessionId) {
         const sessionExists = Object.values(room.participants).some(
@@ -1920,6 +2093,55 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ ok: true })
     }
 
+    if (request.action === "agent-track-published") {
+      // TOCTOU re-check with the CURRENT grant + exact authenticated session;
+      // caller actively closes what Cloudflare just created when this fails.
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token,
+        request.sessionId
+      )
+      if (!participant || participant.kind !== "agent")
+        return this.json({ error: "unauthorized" }, 401)
+      if (
+        !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id) ||
+        typeof request.mid !== "string" ||
+        request.mid.length === 0
+      )
+        return this.json({ error: "voice_reply_not_authorized" }, 403)
+      if (!participant.media)
+        return this.json({ error: "media_unavailable" }, 400)
+      if (
+        participant.media.agentPublishedMid &&
+        participant.media.agentPublishedMid !== request.mid
+      )
+        return this.json({ error: "agent_publish_capacity_exceeded" }, 503)
+      participant.media = {
+        ...participant.media,
+        agentPublishedMid: request.mid,
+        tracks: [
+          ...participant.media.tracks.filter(
+            (track) => track.trackName !== request.trackName
+          ),
+          { trackName: request.trackName, kind: "audio" },
+        ],
+      }
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.broadcast({
+        type: "trackPublished",
+        participant: {
+          id: participant.id,
+          name: participant.name,
+          kind: participant.kind,
+          sessionId: participant.media.sessionId,
+          track: { trackName: request.trackName, kind: "audio" },
+        },
+      })
+      return this.json({ ok: true })
+    }
+
     if (request.action === "unpublish") {
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
@@ -1934,6 +2156,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     delete room.participants[participant.id]
     room.meetingNotes = clearGrantIfParticipantDeparting(
       room.meetingNotes,
+      participant.id
+    )
+    room.voiceReply = clearVoiceReplyIfParticipantDeparting(
+      room.voiceReply,
       participant.id
     )
     this.applyEmptyRoomExpiry(room, Date.now())
@@ -2255,12 +2481,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       const previousAgentId = room.meetingNotes.agentParticipantId
       room.meetingNotes = startMeetingNotes(agent.id, Date.now())
-      // Reassignment (A -> B): A's already-established subscription must be
-      // torn down, not merely left to expire on its own lease. Revocation
-      // must be durable *before* any Cloudflare fetch is attempted — stage,
-      // persist, only then attempt the close against a fresh reload.
+      // Reassignment (A -> B): A's already-established Human->Agent
+      // subscriptions must be torn down, not merely left to expire on its
+      // own lease — but only those: A may still hold an independent active
+      // voiceReply grant whose publication must survive this trigger.
+      // Revocation must be durable *before* any Cloudflare fetch is
+      // attempted — stage, persist, only then attempt the close against a
+      // fresh reload.
       if (previousAgentId && previousAgentId !== agent.id)
-        this.stageAgentMediaRevocation(room, previousAgentId)
+        this.stageAgentMediaRevocation(room, previousAgentId, "subscribed")
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -2270,7 +2499,71 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "meeting-notes-stop") {
       const previousAgentId = room.meetingNotes.agentParticipantId
       room.meetingNotes = NO_MEETING_NOTES
-      if (previousAgentId) this.stageAgentMediaRevocation(room, previousAgentId)
+      // Directional revocation (#83): a Meeting Notes stop closes only the
+      // stopped grant's Human->Agent subscriptions — never an independent
+      // voiceReply publication the same agent may still hold.
+      if (previousAgentId)
+        this.stageAgentMediaRevocation(room, previousAgentId, "subscribed")
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
+      return
+    }
+    if (message.type === "voice-reply-start") {
+      if (this.env.AGENT_MEDIA_ENABLED !== "true") {
+        socket.send(
+          JSON.stringify({ type: "error", error: "voice_reply_media_disabled" })
+        )
+        return
+      }
+      const agent = room.participants[message.agentParticipantId]
+      if (!agent || agent.kind !== "agent" || !agent.connected) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "agent_not_in_room" })
+        )
+        return
+      }
+      // Idempotent replay: same speaker must not bump the epoch (the runtime
+      // treats an epoch change as "server tore down the publication").
+      if (isAgentAuthorizedForVoiceReply(room.voiceReply, agent.id)) {
+        socket.send(
+          JSON.stringify({ type: "state", state: this.stateFor(room) })
+        )
+        return
+      }
+      if (room.pendingMediaCleanup.length >= MAX_PENDING_CLEANUP_ENTRIES) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "agent_media_cleanup_backlog",
+          })
+        )
+        return
+      }
+      const previousAgentId = room.voiceReply.agentParticipantId
+      room.voiceReply = startVoiceReply(agent.id, Date.now())
+      // Reassignment (A -> B): stage A's established publication durably
+      // before any Cloudflare fetch is attempted — published direction
+      // only: A may still hold an independent active Meeting Notes grant
+      // whose Human->Agent subscriptions must survive this trigger.
+      if (previousAgentId && previousAgentId !== agent.id)
+        this.stageAgentMediaRevocation(room, previousAgentId, "published")
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
+      return
+    }
+    if (message.type === "voice-reply-stop") {
+      const previousAgentId = room.voiceReply.agentParticipantId
+      room.voiceReply = NO_VOICE_REPLY
+      // Directional revocation (#83): a voiceReply stop closes only the
+      // stopped grant's Agent->Human published mid and drops the
+      // room-visible Agent audio track — never independent Meeting Notes
+      // subscriptions the same agent may still hold.
+      if (previousAgentId)
+        this.stageAgentMediaRevocation(room, previousAgentId, "published")
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -2757,6 +3050,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         delete room.participants[id]
         room.meetingNotes = clearGrantIfParticipantDeparting(
           room.meetingNotes,
+          id
+        )
+        room.voiceReply = clearVoiceReplyIfParticipantDeparting(
+          room.voiceReply,
           id
         )
         changed = true

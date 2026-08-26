@@ -17,6 +17,17 @@ import type {
 import type { MediaTrackLike, RtpPacketLike } from "./peerConnectionLike.js"
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
+
+// The DO's agent-room-media denial for an Agent whose room has no active
+// Meeting Notes grant. Expected (and tolerated at bootstrap) whenever the
+// shared session was admitted under voiceReply only.
+const HUMAN_MEDIA_DISCOVERY_DENIED = "meeting_notes_not_authorized"
+
+function isHumanMediaDiscoveryDenied(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === HUMAN_MEDIA_DISCOVERY_DENIED
+  )
+}
 /** Emit a bounded stats event at most this often per track, not per packet. */
 const STATS_FLUSH_INTERVAL_MS = 2000
 
@@ -30,6 +41,9 @@ export interface SfuMediaBridgeOptions {
   onAudioFrame?: AudioFrameHandler
   pollIntervalMs?: number
   restClient?: SfuRestClientLike
+  /** #83 voiceReply publication config; requires a PeerConnection factory
+   * that implements the optional outbound surface (Pion engine only). */
+  publish?: { trackName: string }
   createPeerConnection?: PeerConnectionFactory
   /** Injectable for tests; defaults to Date.now. */
   now?: () => number
@@ -70,6 +84,7 @@ export class SfuMediaBridge {
   private readonly onEvent: MediaBridgeEventHandler
   private readonly onAudioFrame?: AudioFrameHandler
   private readonly pollIntervalMs: number
+  private readonly publish?: { trackName: string }
   private readonly now: () => number
 
   private pc: PeerConnectionLike | null = null
@@ -98,6 +113,7 @@ export class SfuMediaBridge {
     this.onEvent = options.onEvent
     this.onAudioFrame = options.onAudioFrame
     this.now = options.now ?? Date.now
+    this.publish = options.publish
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.restClient =
       options.restClient ??
@@ -144,7 +160,8 @@ export class SfuMediaBridge {
       if (!description) {
         const transport = await this.restClient.establishDataChannelTransport(
           this.mySessionId,
-          offer
+          offer,
+          "agent-transport"
         )
         description = transport.sessionDescription
       }
@@ -154,11 +171,24 @@ export class SfuMediaBridge {
         await this.pc.setRemoteDescription(description)
         const answer = await this.pc.createAnswer()
         await this.pc.setLocalDescription(answer)
-        await this.restClient.renegotiate(this.mySessionId, answer)
+        await this.restClient.renegotiate(
+          this.mySessionId,
+          answer,
+          "agent-transport"
+        )
       } else {
         await this.pc.setRemoteDescription(description)
       }
-      await this.poll()
+      try {
+        await this.poll()
+      } catch (error) {
+        // #83 review: a voiceReply-only room has no Meeting Notes grant, so
+        // the initial Human-media discovery is denied — that denial must not
+        // fail the transactional bootstrap. The poll timer keeps retrying on
+        // this SAME session, so Human audio starts flowing the moment an MN
+        // grant appears; any other discovery failure stays fatal here.
+        if (!isHumanMediaDiscoveryDenied(error)) throw error
+      }
       this.pollTimer = setInterval(() => {
         void this.poll().catch(() => undefined)
       }, this.pollIntervalMs)
@@ -171,6 +201,87 @@ export class SfuMediaBridge {
   stop(): void {
     if (this.stopped) return
     this.resetToStoppedState(true)
+  }
+
+  // ---- #83 voiceReply outbound publication ----
+  get voicePublishCapable(): boolean {
+    return Boolean(this.publish && this.pc?.writePcmChunk)
+  }
+
+  /** Activates publication on the CURRENT grant: fresh offer (send m-line
+   * was armed pre-offer) -> /tracks(local) -> optional answer applied. */
+  async activateVoicePublish(): Promise<void> {
+    if (this.stopped || !this.pc || !this.mySessionId)
+      throw new Error("bridge_not_running")
+    if (!this.pc.writePcmChunk || !this.pc.localPublishMid)
+      throw new Error("media_engine_publish_unsupported")
+    if (!this.restClient.publishAudioTrack)
+      throw new Error("rest_client_publish_unsupported")
+    await this.negotiationQueue.then(
+      () => undefined,
+      () => undefined
+    )
+    const run = (async () => {
+      if (this.stopped || !this.pc || !this.mySessionId) return
+      const offer = await this.pc.createOffer()
+      await this.pc.setLocalDescription(offer)
+      const mid = (await this.pc.localPublishMid?.()) ?? ""
+      if (!mid) throw new Error("publish_mid_unavailable")
+      const result = await this.restClient.publishAudioTrack!(
+        this.mySessionId,
+        { trackName: this.publish!.trackName, mid, offer }
+      )
+      if (result.sessionDescription) {
+        if (result.sessionDescription.type === "offer") {
+          await this.pc.setRemoteDescription(result.sessionDescription)
+          const answer = await this.pc.createAnswer()
+          await this.pc.setLocalDescription(answer)
+          await this.restClient.renegotiate(
+            this.mySessionId,
+            answer,
+            "voice-reply"
+          )
+        } else {
+          await this.pc.setRemoteDescription(result.sessionDescription)
+        }
+      }
+      await this.pc.activatePublish?.()
+    })()
+    this.negotiationQueue = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  async deactivateVoicePublish(): Promise<void> {
+    try {
+      await this.pc?.deactivatePublish?.()
+    } catch {
+      // Best effort cooperative stop; server-side close is authoritative.
+    }
+  }
+
+  async writeVoicePcm(chunk: Uint8Array): Promise<void> {
+    if (this.stopped) throw new Error("bridge_stopped")
+    await this.pc?.writePcmChunk?.(chunk)
+  }
+
+  async flushVoice(): Promise<void> {
+    await this.pc?.flushAudio?.()
+  }
+
+  /** Cancelled-utterance boundary (#83): discards any buffered partial
+   * outbound frame WITHOUT deactivating the publication — a cancelled turn
+   * must never leak stale audio into later turns, but the grant stays live.
+   * Best-effort cooperative discard; server-side revocation remains
+   * authoritative. */
+  async cancelVoiceTurn(): Promise<void> {
+    try {
+      await this.pc?.cancelTurnAudio?.()
+    } catch {
+      // Never fail a cancellation on the discard itself.
+    }
   }
 
   private resetToStoppedState(emitEndedEvents: boolean): void {
@@ -301,7 +412,8 @@ export class SfuMediaBridge {
         const offer = await this.restClient.subscribeTrack(
           this.mySessionId,
           participant.sessionId,
-          trackName
+          trackName,
+          "meeting-notes"
         )
         const pending = this.pendingTracks.get(key)
         if (pending) pending.expectedMid = offer.mid
@@ -313,7 +425,11 @@ export class SfuMediaBridge {
         // whenever the human actually sends packets — silent or muted
         // participants must never trigger resubscribe loops that burn the
         // subscribed-MID quota (#101 finding, Phase-2 review P1-4).
-        await this.restClient.renegotiate(this.mySessionId, answer)
+        await this.restClient.renegotiate(
+          this.mySessionId,
+          answer,
+          "meeting-notes"
+        )
       } catch (error) {
         const pending = this.pendingTracks.get(key)
         if (pending) {

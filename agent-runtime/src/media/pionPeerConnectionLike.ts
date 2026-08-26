@@ -30,6 +30,7 @@ interface GoResponse {
   error?: string
   offer?: SessionDescriptionLike
   answer?: SessionDescriptionLike
+  mid?: string
   appliedType?: string
 }
 
@@ -269,6 +270,31 @@ export async function createPionPeerConnection(
       subscribe: (callback) => {
         trackListener = callback
       },
+    },
+    armPublishAudio: async () => {
+      await send({ op: "arm-publish" })
+    },
+    activatePublish: async () => {
+      await send({ op: "activate-publish" })
+    },
+    deactivatePublish: async () => {
+      send({ op: "deactivate-publish" }).catch(() => undefined)
+    },
+    cancelTurnAudio: async () => {
+      await send({ op: "cancel-turn" })
+    },
+    flushAudio: async () => {
+      await send({ op: "flush-audio" }, 30_000)
+    },
+    localPublishMid: async () => {
+      const reply = await send({ op: "local-mid" })
+      return reply.mid || undefined
+    },
+    writePcmChunk: async (chunk) => {
+      await send(
+        { op: "write-pcm", payload: Buffer.from(chunk).toString("base64") },
+        30_000
+      )
     },
     close: () => {
       try {

@@ -453,6 +453,29 @@ export class ResidentRoomRuntime {
           onAudioFrame,
           onGrantActivated: () => void this.notifySpeechPrerequisite(),
           log: this.log,
+          voiceReply: {
+            createTtsProvider: async () => {
+              const { resolveConfiguredTtsProvider } =
+                await import("../voice/ttsProvider.js")
+              const state = await resolveConfiguredTtsProvider({
+                registry:
+                  this.options.speech?.registry ??
+                  (
+                    await import("../speech/registry.js")
+                  ).productionSpeechRegistry(),
+                store:
+                  (this.options.speech?.store ??
+                  (await import("../speech/storage.js")).LocalSpeechStore)
+                    ? (this.options.speech?.store ??
+                      new (
+                        await import("../speech/storage.js")
+                      ).LocalSpeechStore())
+                    : this.options.speech!.store!,
+                environment: this.options.speech?.environment ?? process.env,
+              })
+              return state.tts ?? null
+            },
+          },
         })
       this.meetingNotes = controller
       void controller.start()
@@ -551,7 +574,8 @@ export class ResidentRoomRuntime {
         this.state = "turn"
         // A newly addressed turn wins the speaker (#83): stale audio from
         // the previous response must never keep playing over the new one.
-        this.voiceOutput?.cancel()
+        const voiceOutput = this.resolveVoiceOutput()
+        voiceOutput?.cancel()
         const result = await this.options.adapter.runTurn(input)
         this.harnessFailed = false
         const text = result.text?.trim()
@@ -561,7 +585,7 @@ export class ResidentRoomRuntime {
             text
           )
           this.log("message_persisted", { sequence: sent.sequence })
-          this.voiceOutput?.speak(text)
+          voiceOutput?.speak(text)
         }
       }
     } catch (error) {
@@ -738,6 +762,13 @@ export class ResidentRoomRuntime {
     } catch {
       this.log("room_expiry_cleanup_failed")
     }
+  }
+
+  // #83: injected test hook takes precedence; production resolves through
+  // the shared Meeting Notes bridge only while a voiceReply grant is live.
+  private resolveVoiceOutput(): VoiceOutput | null {
+    if (this.options.createVoiceOutput) return this.options.createVoiceOutput()
+    return this.meetingNotes?.currentVoiceOutput() ?? null
   }
 
   private async cleanupResources(): Promise<void> {

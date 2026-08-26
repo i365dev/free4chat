@@ -185,6 +185,8 @@ export class McpFree4ChatClient implements Free4ChatClient {
         : {}),
     }
     return {
+      voiceReply: { active: false },
+      voiceReplyMediaAvailable: false,
       exists: result.exists === true,
       ...(Array.isArray(result.participants)
         ? {

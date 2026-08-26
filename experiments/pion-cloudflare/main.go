@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -32,17 +33,21 @@ type cmd struct {
 	Mid      string `json:"mid,omitempty"`
 	Seconds  int    `json:"seconds,omitempty"`
 	TimeoutS int    `json:"timeoutMs,omitempty"`
+	// Payload carries base64-encoded S16LE PCM for the write-pcm op.
+	Payload string `json:"payload,omitempty"`
 }
 
 type resp struct {
-	ID          int64               `json:"id"`
-	OK          bool                `json:"ok"`
-	Error       string              `json:"error,omitempty"`
-	Offer       *sdpLike            `json:"offer,omitempty"`
-	Answer      *sdpLike            `json:"answer,omitempty"`
-	AppliedType string              `json:"appliedType,omitempty"`
-	State       string              `json:"state,omitempty"`
-	Counts      map[string]uint64   `json:"counts,omitempty"`
+	ID          int64             `json:"id"`
+	OK          bool              `json:"ok"`
+	Error       string            `json:"error,omitempty"`
+	Offer       *sdpLike          `json:"offer,omitempty"`
+	Answer      *sdpLike          `json:"answer,omitempty"`
+	AppliedType string            `json:"appliedType,omitempty"`
+	State       string            `json:"state,omitempty"`
+	Counts      map[string]uint64 `json:"counts,omitempty"`
+	// Mid is the negotiated mid of the armed outbound track (local-mid op).
+	Mid string `json:"mid,omitempty"`
 
 	Track map[string]any `json:"track,omitempty"`
 }
@@ -145,6 +150,48 @@ func handleCmd(spike *MediaSpike, tracer *Tracer, c cmd) resp {
 
 	case "arm-track":
 		spike.OnTrackArm(c.Mid)
+		return resp{OK: true}
+
+	case "arm-publish":
+		if err := spike.ArmPublish(); err != nil {
+			return resp{OK: false, Error: err.Error()}
+		}
+		return resp{OK: true}
+
+	case "local-mid":
+		return resp{OK: true, Mid: spike.LocalPublishMid()}
+
+	case "activate-publish":
+		if err := spike.ActivatePublish(); err != nil {
+			return resp{OK: false, Error: err.Error()}
+		}
+		return resp{OK: true}
+
+	case "deactivate-publish":
+		spike.DeactivatePublish()
+		return resp{OK: true}
+
+	case "cancel-turn":
+		spike.CancelTurn()
+		return resp{OK: true}
+
+	case "write-pcm":
+		if c.Payload == "" {
+			return resp{OK: false, Error: "write-pcm requires payload"}
+		}
+		raw, err := base64.StdEncoding.DecodeString(c.Payload)
+		if err != nil {
+			return resp{OK: false, Error: "bad pcm base64: " + err.Error()}
+		}
+		if err := spike.WritePCM(raw); err != nil {
+			return resp{OK: false, Error: err.Error()}
+		}
+		return resp{OK: true}
+
+	case "flush-audio":
+		if err := spike.FlushAudio(); err != nil {
+			return resp{OK: false, Error: err.Error()}
+		}
 		return resp{OK: true}
 
 	case "wait-connected":

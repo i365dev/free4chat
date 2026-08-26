@@ -2,12 +2,61 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   closeRealtimeTracks,
+  isHumanAudioTrackTarget,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
   removeConfirmedMids,
+  stageAgentMediaRevocation,
 } from "./realtimeMedia"
+import type { RoomParticipant } from "../room/types"
 
 const env = { SFU_APP_ID: "app-id", SFU_APP_SECRET: "secret" }
+
+function agentWithMedia(media: {
+  agentSubscribedMids?: string[]
+  agentPublishedMid?: string
+  tracks?: Array<{ trackName: string; kind: "audio" | "video" }>
+}): RoomParticipant {
+  return {
+    id: "agent-1",
+    name: "Agent",
+    kind: "agent",
+    connected: true,
+    joinedAt: 1,
+    lastSeenAt: 1,
+    token: "t",
+    media: {
+      sessionId: "sess-agent",
+      muted: true,
+      fileChannelReady: false,
+      tracks: media.tracks ?? [],
+      ...(media.agentSubscribedMids !== undefined
+        ? { agentSubscribedMids: media.agentSubscribedMids }
+        : {}),
+      ...(media.agentPublishedMid !== undefined
+        ? { agentPublishedMid: media.agentPublishedMid }
+        : {}),
+    },
+  }
+}
+
+function human(): RoomParticipant {
+  return {
+    id: "human-1",
+    name: "Human",
+    kind: "human",
+    connected: true,
+    joinedAt: 1,
+    lastSeenAt: 1,
+    token: "t",
+    media: {
+      sessionId: "sess-human",
+      muted: false,
+      fileChannelReady: true,
+      tracks: [{ trackName: "mic", kind: "audio" }],
+    },
+  }
+}
 
 describe("closeRealtimeTracks — fail-closed contract", () => {
   afterEach(() => {
@@ -231,5 +280,264 @@ describe("removeConfirmedMids — the narrow, merge-only-the-result half of the 
     ]
     const merged = removeConfirmedMids(freshAfterInterleave, preFetchSnapshot)
     expect(merged).toEqual([{ sessionId: "sess-1", mids: ["mid-b"] }])
+  })
+})
+
+describe("stageAgentMediaRevocation — directional split (#83 review)", () => {
+  it('meeting-notes-stop ("subscribed") closes only Human→Agent mids; an active voiceReply publication survives untouched', () => {
+    const participant = agentWithMedia({
+      agentSubscribedMids: ["sub-1", "sub-2"],
+      agentPublishedMid: "pub-1",
+      tracks: [{ trackName: "agent-voice", kind: "audio" }],
+    })
+    const pending = stageAgentMediaRevocation(participant, [], "subscribed")
+    expect(pending).toEqual([
+      { sessionId: "sess-agent", mids: ["sub-1", "sub-2"] },
+    ])
+    expect(participant.media?.agentSubscribedMids).toEqual([])
+    // Independent voiceReply grant media must survive an MN stop exactly:
+    expect(participant.media?.agentPublishedMid).toBe("pub-1")
+    expect(participant.media?.tracks).toEqual([
+      { trackName: "agent-voice", kind: "audio" },
+    ])
+  })
+
+  it('voice-reply-stop ("published") closes only the Agent→Human mid, drops the room-visible audio track, and keeps Meeting Notes subscriptions alive', () => {
+    const participant = agentWithMedia({
+      agentSubscribedMids: ["sub-1"],
+      agentPublishedMid: "pub-1",
+      tracks: [{ trackName: "agent-voice", kind: "audio" }],
+    })
+    const pending = stageAgentMediaRevocation(participant, [], "published")
+    expect(pending).toEqual([{ sessionId: "sess-agent", mids: ["pub-1"] }])
+    expect(participant.media?.agentPublishedMid).toBeUndefined()
+    expect(participant.media?.tracks).toEqual([])
+    expect(participant.media?.agentSubscribedMids).toEqual(["sub-1"])
+  })
+
+  it('leave / lease expiry / session rotation ("both") tears down every direction and drops the room-visible track', () => {
+    const participant = agentWithMedia({
+      agentSubscribedMids: ["sub-1", "sub-2"],
+      agentPublishedMid: "pub-1",
+      tracks: [{ trackName: "agent-voice", kind: "audio" }],
+    })
+    const pending = stageAgentMediaRevocation(participant, [])
+    expect(pending).toEqual([
+      { sessionId: "sess-agent", mids: ["sub-1", "sub-2", "pub-1"] },
+    ])
+    expect(participant.media).toMatchObject({
+      agentSubscribedMids: [],
+      tracks: [],
+    })
+    expect(participant.media?.agentPublishedMid).toBeUndefined()
+  })
+
+  it("a published mid already tracked among subscribed mids is queued once, not duplicated", () => {
+    const participant = agentWithMedia({
+      agentSubscribedMids: ["shared-mid"],
+      agentPublishedMid: "shared-mid",
+    })
+    const pending = stageAgentMediaRevocation(participant, [])
+    expect(pending).toEqual([{ sessionId: "sess-agent", mids: ["shared-mid"] }])
+  })
+
+  it("merges additively into existing pending entries instead of evicting them", () => {
+    const participant = agentWithMedia({
+      agentSubscribedMids: ["sub-9"],
+      agentPublishedMid: "pub-9",
+    })
+    const existing = [{ sessionId: "sess-agent", mids: ["old"] }]
+    const pending = stageAgentMediaRevocation(participant, existing, "both")
+    expect(pending).toEqual([
+      { sessionId: "sess-agent", mids: ["old", "sub-9", "pub-9"] },
+    ])
+  })
+
+  it("no-ops with an unchanged queue for humans, missing media, and nothing-to-revoke agents", () => {
+    const existing = [{ sessionId: "sess-x", mids: ["x"] }]
+    expect(stageAgentMediaRevocation(human(), existing)).toBe(existing)
+    const noMedia = { ...agentWithMedia({}), media: undefined }
+    expect(stageAgentMediaRevocation(noMedia, existing)).toBe(existing)
+    const textOnly = agentWithMedia({})
+    expect(stageAgentMediaRevocation(textOnly, existing)).toBe(existing)
+    // Directional no-op too: nothing published yet for a "published" stop.
+    const subscribeOnly = agentWithMedia({ agentSubscribedMids: ["s"] })
+    expect(
+      stageAgentMediaRevocation(subscribeOnly, existing, "published")
+    ).toBe(existing)
+    expect(subscribeOnly.media?.agentSubscribedMids).toEqual(["s"])
+  })
+
+  it("staging is synchronous state mutation only — no fetch, no persistence assumptions", () => {
+    const participant = agentWithMedia({ agentSubscribedMids: ["s"] })
+    const before = participant.media
+    stageAgentMediaRevocation(participant, [], "subscribed")
+    // The participant's media object is replaced in place on the SAME
+    // record the caller holds — callers persist it before any Cloudflare
+    // fetch per the DO interleaving rules.
+    expect(participant.media).not.toBe(before)
+    expect(before.agentSubscribedMids).toEqual(["s"]) // old snapshot intact
+  })
+})
+
+describe("stageAgentMediaRevocation — directional split (#83 review)", () => {
+  const fullMedia = {
+    agentSubscribedMids: ["sub-1", "sub-2"],
+    agentPublishedMid: "pub-1",
+    tracks: [
+      { trackName: "agent-voice", kind: "audio" as const },
+      { trackName: "screen", kind: "video" as const },
+    ],
+  }
+
+  it('"subscribed" (meeting-notes-stop / reassignment) closes only Human→Agent mids', () => {
+    const agent = agentWithMedia(fullMedia)
+    const pending = stageAgentMediaRevocation(agent, [], "subscribed")
+    expect(agent.media?.agentSubscribedMids).toEqual([])
+    // The independent voiceReply grant survives untouched: published mid AND
+    // its room-visible audio track entry stay.
+    expect(agent.media?.agentPublishedMid).toBe("pub-1")
+    expect(agent.media?.tracks).toEqual([
+      { trackName: "agent-voice", kind: "audio" },
+      { trackName: "screen", kind: "video" },
+    ])
+    expect(pending).toEqual([
+      { sessionId: "sess-agent", mids: ["sub-1", "sub-2"] },
+    ])
+  })
+
+  it('"published" (voice-reply-stop / reassignment) closes only the Agent→Human mid and drops the room-visible voice track', () => {
+    const agent = agentWithMedia(fullMedia)
+    const pending = stageAgentMediaRevocation(agent, [], "published")
+    // Independent Meeting Notes subscriptions survive untouched.
+    expect(agent.media?.agentSubscribedMids).toEqual(["sub-1", "sub-2"])
+    expect(agent.media?.agentPublishedMid).toBeUndefined()
+    // Only the agent's own audio (its publication — agents can never use the
+    // ordinary publish path) leaves the room-visible broadcast.
+    expect(agent.media?.tracks).toEqual([
+      { trackName: "screen", kind: "video" },
+    ])
+    expect(pending).toEqual([{ sessionId: "sess-agent", mids: ["pub-1"] }])
+  })
+
+  it('"both" (leave / lease expiry / S1→S2 rotation) tears down everything', () => {
+    const agent = agentWithMedia(fullMedia)
+    const pending = stageAgentMediaRevocation(agent, [], "both")
+    expect(agent.media?.agentSubscribedMids).toEqual([])
+    expect(agent.media?.agentPublishedMid).toBeUndefined()
+    expect(agent.media?.tracks).toEqual([
+      { trackName: "screen", kind: "video" },
+    ])
+    expect(pending).toEqual([
+      { sessionId: "sess-agent", mids: ["sub-1", "sub-2", "pub-1"] },
+    ])
+  })
+
+  it("a published mid already among the subscribed mids is queued exactly once", () => {
+    const agent = agentWithMedia({
+      ...fullMedia,
+      agentPublishedMid: "sub-2",
+    })
+    const pending = stageAgentMediaRevocation(agent, [], "both")
+    expect(pending).toEqual([
+      { sessionId: "sess-agent", mids: ["sub-1", "sub-2"] },
+    ])
+  })
+
+  it("staging merges into existing pending entries instead of duplicating them", () => {
+    const agent = agentWithMedia({ agentSubscribedMids: ["sub-2"] })
+    const pending = stageAgentMediaRevocation(
+      agent,
+      [{ sessionId: "sess-agent", mids: ["sub-1"] }],
+      "subscribed"
+    )
+    expect(pending).toEqual([
+      { sessionId: "sess-agent", mids: ["sub-1", "sub-2"] },
+    ])
+  })
+
+  it("no-ops return the same queue reference when nothing matches the direction", () => {
+    const existing = [{ sessionId: "sess-agent", mids: ["x"] }]
+    expect(
+      stageAgentMediaRevocation(agentWithMedia({}), existing, "published")
+    ).toBe(existing)
+    expect(stageAgentMediaRevocation(human(), existing, "both")).toBe(existing)
+    expect(stageAgentMediaRevocation(undefined, existing, "both")).toBe(
+      existing
+    )
+  })
+
+  it("an agent with no media record is a cheap no-op (ordinary text-only agent)", () => {
+    const textOnly: RoomParticipant = {
+      id: "agent-2",
+      name: "Text",
+      kind: "agent",
+      connected: true,
+      joinedAt: 1,
+      lastSeenAt: 1,
+      token: "t",
+    }
+    const existing = [{ sessionId: "sess-agent", mids: ["x"] }]
+    expect(stageAgentMediaRevocation(textOnly, existing, "both")).toBe(existing)
+  })
+})
+
+describe("isHumanAudioTrackTarget (#83 review: agent subscribe targets are Human audio only)", () => {
+  function participant(
+    id: string,
+    kind: "human" | "agent",
+    sessionId: string,
+    tracks: Array<{ trackName: string; kind: "audio" | "video" }>,
+    extraMedia: Record<string, unknown> = {}
+  ): RoomParticipant {
+    return {
+      id,
+      name: id,
+      kind,
+      connected: true,
+      joinedAt: 1,
+      lastSeenAt: 1,
+      token: "t",
+      media: {
+        sessionId,
+        muted: false,
+        fileChannelReady: false,
+        tracks,
+        ...extraMedia,
+      },
+    }
+  }
+
+  const room = {
+    humanAudio: participant("h1", "human", "hsess", [
+      { trackName: "mic", kind: "audio" },
+    ]),
+    humanVideo: participant("h2", "human", "vsess", [
+      { trackName: "screen", kind: "video" },
+    ]),
+    agentVoice: participant(
+      "a1",
+      "agent",
+      "asess",
+      [{ trackName: "agent-voice", kind: "audio" }],
+      { agentPublishedMid: "pub-1" }
+    ),
+  }
+
+  it("admits a Human AUDIO track (the Meeting Notes ingress target)", () => {
+    expect(isHumanAudioTrackTarget(room, "hsess", "mic")).toBe(true)
+  })
+
+  it("rejects a Human VIDEO (screen share) track even with known identifiers", () => {
+    expect(isHumanAudioTrackTarget(room, "vsess", "screen")).toBe(false)
+  })
+
+  it("rejects another Agent's published voice track", () => {
+    expect(isHumanAudioTrackTarget(room, "asess", "agent-voice")).toBe(false)
+  })
+
+  it("fails identically for unknown sessions/names (no existence oracle)", () => {
+    expect(isHumanAudioTrackTarget(room, "nope", "mic")).toBe(false)
+    expect(isHumanAudioTrackTarget(room, "hsess", "screen")).toBe(false)
   })
 })

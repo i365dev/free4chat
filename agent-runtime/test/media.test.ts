@@ -10,6 +10,7 @@ import type {
   RoomMediaParticipant,
   SessionDescriptionLike,
   SfuRestClientLike,
+  SfuSignalPurpose,
 } from "../src/media/sfuRestClient.js"
 import { SfuMediaBridge } from "../src/media/sfuMediaBridge.js"
 import type { MediaBridgeEvent } from "../src/media/types.js"
@@ -26,14 +27,18 @@ class FakeRestClient implements SfuRestClientLike {
   subscribeCalls: Array<{
     sessionId: string
     trackName: string
+    purpose?: SfuSignalPurpose
   }> = []
   subscribeMids: string[] = []
   subscribeErrors = new Map<string, Error>()
   establishTransportCalls: Array<{
     sessionId: string
     offer?: SessionDescriptionLike
+    purpose?: SfuSignalPurpose
   }> = []
   renegotiateCalls = 0
+  renegotiatePurposes: SfuSignalPurpose[] = []
+  publishCalls: Array<{ trackName: string; mid: string }> = []
   createAgentSessionError: Error | undefined
   establishTransportError: Error | undefined
   roomMediaError: Error | undefined
@@ -46,11 +51,14 @@ class FakeRestClient implements SfuRestClientLike {
   }
   async establishDataChannelTransport(
     mySessionId: string,
-    offer?: SessionDescriptionLike
+    offer: SessionDescriptionLike | undefined,
+    purpose: SfuSignalPurpose
   ) {
-    this.establishTransportCalls.push(
-      offer ? { sessionId: mySessionId, offer } : { sessionId: mySessionId }
-    )
+    this.establishTransportCalls.push({
+      sessionId: mySessionId,
+      ...(offer ? { offer } : {}),
+      purpose,
+    })
     if (this.establishTransportError) throw this.establishTransportError
     return {
       sessionDescription: { type: "answer", sdp: "fake-transport-answer" },
@@ -63,17 +71,13 @@ class FakeRestClient implements SfuRestClientLike {
   async subscribeTrack(
     mySessionId: string,
     remoteSessionId: string,
-    trackName: string
+    trackName: string,
+    purpose: SfuSignalPurpose
   ): Promise<SessionDescriptionLike> {
-    const g = globalThis as Record<string, unknown>
-    console.error(
-      "[dbg-track]",
-      "sameInstance=" + ((g as { __probeRC?: unknown }).__probeRC === this),
-      "count=" + this.subscribeCalls.length
-    )
     this.subscribeCalls.push({
       sessionId: remoteSessionId,
       trackName,
+      purpose,
     })
     const error = this.subscribeErrors.get(trackName)
     if (error) throw error
@@ -82,12 +86,22 @@ class FakeRestClient implements SfuRestClientLike {
       ? { type: "offer", sdp: "fake-sdp", mid }
       : { type: "offer", sdp: "fake-sdp" }
   }
-  async renegotiate(): Promise<void> {
+  async renegotiate(
+    _mySessionId: string,
+    _answer: SessionDescriptionLike,
+    purpose: SfuSignalPurpose
+  ): Promise<void> {
     this.renegotiateCalls += 1
-    console.error(
-      "[dbg-renego]",
-      new Error().stack?.split("\n").slice(2, 4).join(" <- ")
-    )
+    this.renegotiatePurposes.push(purpose)
+  }
+  async publishAudioTrack(
+    _mySessionId: string,
+    args: { trackName: string; mid: string; offer: SessionDescriptionLike }
+  ): Promise<{ sessionDescription?: SessionDescriptionLike }> {
+    this.publishCalls.push({ trackName: args.trackName, mid: args.mid })
+    return {
+      sessionDescription: { type: "offer", sdp: "fake-publish-offer" },
+    }
   }
 }
 
@@ -106,12 +120,22 @@ class FakePeerConnection implements PeerConnectionLike {
   localDescriptions: SessionDescriptionLike[] = []
   codec: MediaCodecLike | undefined
   lastRtpCallback: RtpCallback | undefined
+  localPublishMidResult: string | undefined
+  activatePublishCalls = 0
   private trackHandlers: Array<(track: MediaTrackLike) => void> = []
   onTrack = {
     subscribe: (callback: (track: MediaTrackLike) => void) => {
       this.trackHandlers.push(callback)
     },
   }
+
+  async localPublishMid(): Promise<string | undefined> {
+    return this.localPublishMidResult
+  }
+  async activatePublish(): Promise<void> {
+    this.activatePublishCalls += 1
+  }
+  writePcmChunk = async () => undefined
 
   async createOffer(): Promise<SessionDescriptionLike> {
     return { type: "offer", sdp: "fake-initial-offer" }
@@ -348,17 +372,49 @@ test("subscribes to a newly discovered Human audio track and reports it started"
   assert.deepEqual(restClient.subscribeCalls[0], {
     sessionId: "sess-1",
     trackName: "audio-1",
+    purpose: "meeting-notes",
   })
   assert.deepEqual(restClient.establishTransportCalls, [
     {
       sessionId: "agent-session-1",
       offer: { type: "offer", sdp: "fake-initial-offer" },
+      purpose: "agent-transport",
     },
   ])
   assert.equal(restClient.renegotiateCalls, 1)
+  // The subscribe renegotiation must carry the Meeting Notes purpose.
+  assert.deepEqual(restClient.renegotiatePurposes, ["meeting-notes"])
   const started = events.find((e) => e.type === "audioTrackStarted")
   assert.ok(started)
   assert.equal(started.participantId, "human-1")
+  bridge.stop()
+})
+
+test("#83 review: publication negotiates and renegotiates under the voice-reply purpose only", async () => {
+  const restClient = new FakeRestClient()
+  const pc = new FakePeerConnection()
+  pc.localPublishMidResult = "mid-pub-1"
+  const events: MediaBridgeEvent[] = []
+  const bridge = new SfuMediaBridge({
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: fakeHandle(),
+    onEvent: (event) => events.push(event),
+    restClient,
+    createPeerConnection: () => pc,
+    publish: { trackName: "agent-voice" },
+  })
+
+  await bridge.start()
+  assert.equal(bridge.voicePublishCapable, true)
+  await bridge.activateVoicePublish()
+
+  assert.deepEqual(restClient.publishCalls, [
+    { trackName: "agent-voice", mid: "mid-pub-1" },
+  ])
+  // The publication's answer flow must be renegotiated under voice-reply,
+  // never meeting-notes or agent-transport.
+  assert.ok(restClient.renegotiatePurposes.includes("voice-reply"))
+  assert.equal(pc.activatePublishCalls, 1)
   bridge.stop()
 })
 
@@ -671,6 +727,34 @@ test("failed start() (peer connection creation) leaves the bridge stopped and re
   // Retry with a working factory — must succeed cleanly.
   await bridge.start()
   assert.equal(restClient.subscribeCalls.length, 1)
+  bridge.stop()
+})
+
+test("#83 review: VR-only bootstrap succeeds without Human-media discovery; a later MN grant reuses the same session", async () => {
+  const restClient = new FakeRestClient()
+  // The DO denies agent-room-media for an agent with no Meeting Notes grant.
+  restClient.roomMediaError = new Error("meeting_notes_not_authorized")
+  const pc = new FakePeerConnection()
+  const { bridge } = makeBridge(restClient, pc, undefined, undefined, {
+    pollIntervalMs: 3_600_000,
+  })
+
+  await bridge.start()
+  assert.equal(restClient.createAgentSessionCalls, 1)
+  assert.deepEqual(
+    restClient.establishTransportCalls.map((call) => call.purpose),
+    ["agent-transport"]
+  )
+  assert.equal(restClient.subscribeCalls.length, 0)
+  assert.equal(pc.closed, false)
+
+  // Meeting Notes granted afterwards: the SAME session starts pulling the
+  // newly visible Human audio on the next poll tick.
+  restClient.roomMediaError = undefined
+  restClient.participants = [humanTrack("human-1", "sess-1")]
+  await bridge.poll()
+  assert.equal(restClient.subscribeCalls.length, 1)
+  assert.equal(restClient.subscribeCalls[0].purpose, "meeting-notes")
   bridge.stop()
 })
 

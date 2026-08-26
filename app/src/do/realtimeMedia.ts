@@ -1,4 +1,8 @@
-import type { PendingMediaCleanup } from "../room/types"
+import type {
+  PendingMediaCleanup,
+  RoomMediaState,
+  RoomParticipant,
+} from "../room/types"
 
 export interface RealtimeEnv {
   SFU_APP_ID?: string
@@ -156,4 +160,96 @@ export function removeConfirmedMids(
       .filter((entry) => entry.mids.length > 0)
   }
   return result
+}
+
+// Pure decision logic (#83 review): whether an Agent's exact-track subscribe
+// target is admissible. An Agent holding a Meeting Notes grant may subscribe
+// ONLY to a HUMAN participant's AUDIO track — never Human video (screen
+// share) and never another Agent's published voice track, even when it
+// knows both identifiers. Matching against ROOM state (not client claims)
+// closes the spoofed-kind hole; unknown targets fail identically so the
+// check leaks no existence oracle either way.
+export function isHumanAudioTrackTarget(
+  participants: Record<string, RoomParticipant>,
+  trackSessionId: string,
+  trackName: string
+): boolean {
+  return Object.values(participants).some(
+    (candidate) =>
+      candidate.kind === "human" &&
+      candidate.media?.sessionId === trackSessionId &&
+      candidate.media.tracks.some(
+        (track) => track.trackName === trackName && track.kind === "audio"
+      )
+  )
+}
+
+// Which Agent media directions a revocation trigger covers (#83 review).
+// The Meeting Notes grant independently authorizes Human→Agent *subscribe*
+// media on the agent's session (tracked as agentSubscribedMids); the
+// voiceReply grant independently authorizes Agent→Human *published* media
+// (agentPublishedMid plus its room-visible audio track entry). Stopping or
+// reassigning ONE grant must never tear down the OTHER grant's
+// still-active media — so every trigger stages exactly its own direction:
+//
+// - "subscribed": meeting-notes-stop / note-taker reassignment only.
+// - "published": voice-reply-stop / speaker reassignment only.
+// - "both": participant leave, lease-expiry sweep, and full media-session
+//   rotation (S1→S2), which tear down everything by definition.
+export type AgentMediaRevocationDirection = "subscribed" | "published" | "both"
+
+// Steps 1-2 of the revocation sequence (round 4), now direction-aware:
+// SYNCHRONOUS, no I/O. Moves an agent's tracked mids for the requested
+// direction out of its participant record and into room.pendingMediaCleanup,
+// in memory only — the caller is responsible for persisting `room`
+// (saveRoom/scheduleNextAlarm/broadcastState) *before* ever attempting the
+// actual Cloudflare close (see attemptCleanupNow). This split exists
+// specifically so a Cloudflare fetch() is never awaited while an in-memory
+// RoomRecord sits unsaved: Durable Objects can interleave handling of
+// another incoming request during that await, and a stale RoomRecord saved
+// afterward would silently clobber whatever that other request persisted in
+// the meantime. Never truncates tracked mids or evicts an existing
+// pendingMediaCleanup entry — queuePendingCleanup is purely additive; the
+// bound is enforced elsewhere by refusing *new* Agent media work (see
+// pendingCleanupHasCapacity), not by dropping data here. No-ops cheaply
+// when there is nothing to move in the requested direction (ordinary
+// text-only agents, an agent granted but never subscribed, a Meeting Notes
+// stop for an agent with no voiceReply publication, etc.).
+export function stageAgentMediaRevocation(
+  participant: RoomParticipant | undefined,
+  pendingMediaCleanup: PendingMediaCleanup[],
+  direction: AgentMediaRevocationDirection = "both"
+): PendingMediaCleanup[] {
+  if (!participant || participant.kind !== "agent" || !participant.media)
+    return pendingMediaCleanup
+  const media = participant.media
+  const mids = direction === "published" ? [] : media.agentSubscribedMids ?? []
+  const publishedMid =
+    direction === "subscribed" ? undefined : media.agentPublishedMid
+  if (mids.length === 0 && !publishedMid) return pendingMediaCleanup
+
+  const nextMedia: RoomMediaState = { ...media }
+  // Subscribe revocation clears only the Human→Agent ingress mids; an
+  // active voiceReply publication belongs to the independent voiceReply
+  // grant and must survive a Meeting Notes stop/reassignment untouched.
+  if (direction !== "published") nextMedia.agentSubscribedMids = []
+  // Publish revocation closes only the Agent→Human published mid AND drops
+  // the room-visible Agent voice track so broadcasts stop advertising it
+  // (an Agent's tracks array can only ever contain its voice publication —
+  // the ordinary "publish" action rejects agents outright); active Meeting
+  // Notes subscriptions must survive it.
+  if (direction !== "subscribed") {
+    nextMedia.agentPublishedMid = undefined
+    nextMedia.tracks = nextMedia.tracks.filter(
+      (track) => track.kind !== "audio"
+    )
+  }
+  participant.media = nextMedia
+  return queuePendingCleanup(
+    pendingMediaCleanup,
+    media.sessionId,
+    publishedMid && !mids.includes(publishedMid)
+      ? [...mids, publishedMid]
+      : mids
+  )
 }

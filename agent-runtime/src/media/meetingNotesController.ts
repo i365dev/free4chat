@@ -10,6 +10,8 @@ import type { DecodedParticipantHandle } from "./participantHandle.js"
 import { SfuMediaBridge } from "./sfuMediaBridge.js"
 import type { SfuRestClientLike } from "./sfuRestClient.js"
 import type { AudioFrameHandler, MediaBridgeEventHandler } from "./types.js"
+import type { StreamingTtsProvider } from "../speech/types.js"
+import { VoiceSpeaker, type VoiceOutput } from "../voice/speaker.js"
 import type { Free4ChatClient } from "../types.js"
 
 /** Default production factory (#105): lazily provisions the version-matched
@@ -54,6 +56,17 @@ export interface MeetingNotesControllerOptions {
   createPeerConnection?: PeerConnectionFactory
   restClient?: SfuRestClientLike
   log?: (event: string, details?: Record<string, string | number>) => void
+  /** #83 voiceReply: when provided, the SAME shared SfuMediaBridge also
+   * publishes this agent's outbound voice whenever room_info reports an
+   * active voiceReply grant for THIS participant. Harness response text is
+   * spoken through the configured Doubao TTS provider; failures never
+   * affect text or Meeting Notes ingress. */
+  voiceReply?: {
+    createTtsProvider: () => Promise<StreamingTtsProvider | null>
+    /** Outbound track name announced to the SFU (default "agent-voice"). */
+    trackName?: string
+    pollIntervalMs?: number
+  }
 }
 
 /**
@@ -90,6 +103,13 @@ export class MeetingNotesController {
   // now stale. Comparing the epoch instead of just the id catches that.
   private grantEpoch: number | null = null
   private stopped = true
+  // #83 voiceReply state (same shared bridge; never a second session).
+  private voiceEpoch: number | null = null
+  private voiceSpeaker: VoiceSpeaker | null = null
+  private voiceStarting = false
+  // Outbound track name for the shared bridge's publish config; null when
+  // voiceReply is not configured.
+  private readonly voiceTrackName: string | null
   private readonly log: (
     event: string,
     details?: Record<string, string | number>
@@ -103,17 +123,15 @@ export class MeetingNotesController {
     // usable factory here rather than relying on every caller to remember
     // injection (see SfuMediaBridge's own throwing default, which exists
     // only to catch a *test* that forgot to inject one).
-    // Production wiring: the real, non-test ResidentRoomRuntime path never
-    // passes createPeerConnection explicitly, so it must resolve to a
-    // usable factory here rather than relying on every caller to remember
-    // injection (see SfuMediaBridge's own throwing default, which exists
-    // only to catch a *test* that forgot to inject one).
     // Pion is the selected media engine after #103/#105: Meeting Notes uses
     // it by default and provisions its binary lazily on first media need.
     // FREE4CHAT_MEDIA_ENGINE=werift remains an explicit developer fallback;
     // tests may still inject createPeerConnection directly.
     this.createPeerConnection =
       options.createPeerConnection ?? resolveDefaultCreatePeerConnection()
+    this.voiceTrackName = options.voiceReply
+      ? (options.voiceReply.trackName ?? "agent-voice")
+      : null
   }
 
   /** Exposed for tests: proves the real production wiring resolves to the
@@ -150,8 +168,17 @@ export class MeetingNotesController {
     if (this.stopped) return
     let authorized = false
     let epoch: number | null = null
+    let vrAuthorized = false
+    let vrEpoch: number | null = null
     try {
       const info = await this.options.client.roomInfo(this.options.roomId)
+      if (this.options.voiceReply) {
+        vrAuthorized =
+          info.voiceReplyMediaAvailable === true &&
+          info.voiceReply.active === true &&
+          info.voiceReply.agentParticipantId === this.options.participantId
+        vrEpoch = info.voiceReply.startedAt ?? null
+      }
       // The master switch is checked on every poll, not just at grant
       // start: if it flips off while a session is already active, this
       // cooperative Runtime must stop within one poll cycle rather than
@@ -166,26 +193,114 @@ export class MeetingNotesController {
         info.meetingNotes.agentParticipantId === this.options.participantId
       epoch = info.meetingNotes.startedAt ?? null
     } catch {
-      // A transient room_info failure fails closed: do not keep an
-      // already-running bridge alive on stale authorization, and do not
-      // start a new one on a guess. The next poll tries again.
+      // A transient room_info failure fails closed for BOTH grants: do not
+      // keep an already-running bridge alive on stale authorization, and do
+      // not start a new one on a guess. The next poll tries again.
       authorized = false
+      vrAuthorized = false
     }
     if (this.stopped) return
-    if (authorized) {
-      if (this.bridgeState !== "idle" && epoch !== this.grantEpoch) {
-        // Stop + Start for the same agent happened entirely between two
-        // polls — the server already closed the previous grant's SFU
-        // subscriptions, so this bridge (built for the old epoch) is stale
-        // and must be torn down before a fresh one is started.
-        await this.teardownBridge()
-      }
-      this.grantEpoch = epoch
-      await this.ensureRunning()
-    } else {
+
+    // One shared SfuMediaBridge serves both grants (#83): Meeting Notes
+    // controls Human-audio subscribe/input; voiceReply controls this
+    // Agent's local publish/output. Exactly one session exists whenever
+    // EITHER grant is live.
+    const anyGrantActive = authorized || vrAuthorized
+    if (!anyGrantActive) {
       this.grantEpoch = null
-      await this.teardownBridge()
+      await this.teardownBridge() // cascades voice teardown
+      return
     }
+
+    // An MN epoch change between polls means the server already closed the
+    // previous grant's SFU subscriptions: the whole shared session must be
+    // rebuilt, not just the publication.
+    const mnStale =
+      authorized && this.bridgeState !== "idle" && epoch !== this.grantEpoch
+    if (mnStale) await this.teardownBridge() // cascades voice teardown
+    if (authorized) this.grantEpoch = epoch
+
+    await this.ensureRunning()
+    if (this.stopped || this.bridgeState !== "running") return
+
+    if (!this.options.voiceReply || !vrAuthorized) {
+      await this.teardownVoice()
+      return
+    }
+
+    // VR epoch rotation (Stop→Start entirely between polls): the transport
+    // session is still valid, so only the publication restarts — discard
+    // the old speaker and rebuild under the new epoch.
+    if (this.voiceEpoch !== vrEpoch) {
+      const old = this.voiceSpeaker
+      this.voiceSpeaker = null
+      this.voiceEpoch = vrEpoch
+      old?.cancel()
+      await old?.close().catch(() => undefined)
+      await this.bridge?.deactivateVoicePublish()
+    }
+    if (!this.voiceSpeaker && !this.voiceStarting) await this.ensureVoice()
+  }
+
+  /** Current speakable output while a voiceReply grant is active (#83);
+   * null when inactive/starting — callers stay text-only. */
+  currentVoiceOutput(): VoiceOutput | null {
+    return this.voiceSpeaker
+  }
+
+  private async ensureVoice(): Promise<void> {
+    const options = this.options.voiceReply
+    const bridge = this.bridge
+    if (
+      !options ||
+      !bridge ||
+      !bridge.voicePublishCapable ||
+      this.voiceStarting ||
+      this.voiceSpeaker
+    )
+      return
+    this.voiceStarting = true
+    try {
+      const provider = await options.createTtsProvider()
+      if (!provider || this.bridgeState !== "running") return
+      await bridge.activateVoicePublish()
+      if (this.bridgeState !== "running") return
+      this.voiceSpeaker = new VoiceSpeaker({
+        provider,
+        // Real sink path (#83): writeAudio feeds the shared bridge's PCM
+        // writer; endTurn flushes the buffered tail on normal completion;
+        // cancelTurn discards partial carry without dropping the grant.
+        createSink: () => ({
+          writeAudio: async (chunk) => {
+            if (chunk.codec !== "pcm_s16le")
+              throw new Error("unsupported_chunk")
+            await bridge.writeVoicePcm(chunk.data)
+          },
+          endTurn: () => bridge.flushVoice(),
+          cancelTurn: () => bridge.cancelVoiceTurn(),
+          close: async () => {},
+        }),
+        chunkerOptions: { maxChars: 220 },
+      })
+      this.log("voice_reply_started")
+    } catch (error) {
+      this.log("voice_reply_start_failed", {
+        error: error instanceof Error ? error.message : "unknown",
+      })
+    } finally {
+      this.voiceStarting = false
+    }
+  }
+
+  private async teardownVoice(): Promise<void> {
+    if (!this.voiceSpeaker && this.voiceEpoch === null) return
+    const speaker = this.voiceSpeaker
+    this.voiceSpeaker = null
+    this.voiceEpoch = null
+    speaker?.cancel()
+    await speaker?.close().catch(() => undefined)
+    await this.bridge?.deactivateVoicePublish()
+    this.log("voice_reply_stopped")
   }
 
   // Serialized start: the synchronous "already starting/running -> return"
@@ -205,6 +320,12 @@ export class MeetingNotesController {
         onAudioFrame: this.options.onAudioFrame,
         createPeerConnection: this.createPeerConnection,
         restClient: this.options.restClient,
+        // #83: the ONE shared session carries the armed outbound voice
+        // track whenever voiceReply is configured; activation itself stays
+        // grant-gated.
+        ...(this.voiceTrackName
+          ? { publish: { trackName: this.voiceTrackName } }
+          : {}),
       })
     this.bridge = bridge
     try {
@@ -241,6 +362,8 @@ export class MeetingNotesController {
   }
 
   private async teardownBridge(): Promise<void> {
+    // Voice output rides the shared bridge — it never outlives it.
+    await this.teardownVoice()
     this.generation += 1 // invalidate any in-flight ensureRunning() start
     if (this.bridgeState === "idle") return
     const wasRunning = this.bridgeState === "running"

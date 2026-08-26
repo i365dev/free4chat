@@ -27,6 +27,17 @@ export interface DataChannelTransportLike {
   requiresImmediateRenegotiation?: boolean
 }
 
+/** #83 review: the narrow, typed purpose every Agent signaling request must
+ * carry. The Worker/DO re-checks the matching room grant per purpose and
+ * fails closed when it is missing or unknown — never Agent token alone:
+ *   agent-transport  initial shared transport bootstrap (meetingNotes OR
+ *                    voiceReply must name this agent)
+ *   meeting-notes    remote Human-audio subscribe (Meeting Notes grant)
+ *   voice-reply      local single-audio publish (voiceReply grant)
+ */
+export type SfuSignalPurpose =
+  "meeting-notes" | "voice-reply" | "agent-transport"
+
 /**
  * DOM and werift descriptions are class instances. Cross the REST boundary
  * with the browser's literal `{ type, sdp }` shape instead of relying on a
@@ -57,18 +68,27 @@ export interface SfuRestClientLike {
   }>
   establishDataChannelTransport(
     mySessionId: string,
-    offer?: SessionDescriptionLike
+    offer: SessionDescriptionLike | undefined,
+    purpose: SfuSignalPurpose
   ): Promise<DataChannelTransportLike>
   roomMedia(): Promise<RoomMediaParticipant[]>
   subscribeTrack(
     mySessionId: string,
     remoteSessionId: string,
-    trackName: string
+    trackName: string,
+    purpose: SfuSignalPurpose
   ): Promise<SessionDescriptionLike>
   renegotiate(
     mySessionId: string,
-    answer: SessionDescriptionLike
+    answer: SessionDescriptionLike,
+    purpose: SfuSignalPurpose
   ): Promise<void>
+  /** #83 voiceReply: activates this agent's single outbound audio track
+   * (already negotiated into the initial offer) on the upstream SFU. */
+  publishAudioTrack?(
+    mySessionId: string,
+    args: { trackName: string; mid: string; offer: SessionDescriptionLike }
+  ): Promise<{ sessionDescription?: SessionDescriptionLike }>
 }
 
 /**
@@ -155,11 +175,13 @@ export class SfuRestClient implements SfuRestClientLike {
    * no DataChannel payload is observed or forwarded by this Runtime. */
   async establishDataChannelTransport(
     mySessionId: string,
-    offer?: SessionDescriptionLike
+    offer: SessionDescriptionLike | undefined,
+    purpose: SfuSignalPurpose
   ): Promise<DataChannelTransportLike> {
     const data = await this.request("datachannels/establish", "POST", {
       ...this.base(),
       sessionId: mySessionId,
+      purpose,
       dataChannel: { location: "remote", dataChannelName: "server-events" },
       ...(offer
         ? { sessionDescription: sessionDescriptionPayload(offer) }
@@ -201,11 +223,13 @@ export class SfuRestClient implements SfuRestClientLike {
   async subscribeTrack(
     mySessionId: string,
     remoteSessionId: string,
-    trackName: string
+    trackName: string,
+    purpose: SfuSignalPurpose
   ): Promise<SessionDescriptionLike> {
     const data = await this.request("tracks", "POST", {
       ...this.base(),
       sessionId: mySessionId,
+      purpose,
       tracks: [{ location: "remote", sessionId: remoteSessionId, trackName }],
     })
     const description = data.sessionDescription as
@@ -222,13 +246,38 @@ export class SfuRestClient implements SfuRestClientLike {
     return mid ? { ...description, mid } : description
   }
 
+  async publishAudioTrack(
+    mySessionId: string,
+    args: { trackName: string; mid: string; offer: SessionDescriptionLike }
+  ): Promise<{ sessionDescription?: SessionDescriptionLike }> {
+    const data = await this.request("tracks", "POST", {
+      ...this.base(),
+      sessionId: mySessionId,
+      purpose: "voice-reply",
+      tracks: [
+        {
+          location: "local",
+          trackName: args.trackName,
+          kind: "audio",
+          mid: args.mid,
+        },
+      ],
+      sessionDescription: sessionDescriptionPayload(args.offer),
+    })
+    const description = data.sessionDescription as
+      SessionDescriptionLike | undefined
+    return description ? { sessionDescription: description } : {}
+  }
+
   async renegotiate(
     mySessionId: string,
-    answer: SessionDescriptionLike
+    answer: SessionDescriptionLike,
+    purpose: SfuSignalPurpose
   ): Promise<void> {
     await this.request("renegotiate", "PUT", {
       ...this.base(),
       sessionId: mySessionId,
+      purpose,
       sessionDescription: sessionDescriptionPayload(answer),
     })
   }

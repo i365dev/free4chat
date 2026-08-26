@@ -415,7 +415,28 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it("Agent + local audio track => 403 before any Cloudflare upstream call", async () => {
+  const voiceReplyTracksBody = (
+    tracks: Array<Record<string, unknown>>,
+    overrides: Record<string, unknown> = {}
+  ) => ({
+    room: "room-1",
+    participantId: "agent-1",
+    token: "tok-1",
+    sessionId: "sess-1",
+    purpose: "voice-reply",
+    tracks,
+    sessionDescription: { type: "offer", sdp: "sdp" },
+    ...overrides,
+  })
+
+  const localAudio = {
+    location: "local",
+    trackName: "agent-voice",
+    kind: "audio",
+    mid: "7",
+  }
+
+  it("Agent + local audio WITHOUT purpose => 403 agent_media_purpose_required before any upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
       doResponderForKind("agent")
@@ -423,22 +444,17 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     const res = await handleSfuRequest(
       req("tracks", {
         body: JSON.stringify(
-          agentTracksBody({
-            location: "local",
-            trackName: "audio-1",
-            kind: "audio",
-            mid: "0",
-          })
+          voiceReplyTracksBody([localAudio], { purpose: undefined })
         ),
       }),
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect((await json(res)).error).toBe("agent_media_purpose_required")
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("Agent + local video track => 403 before any Cloudflare upstream call", async () => {
+  it("Agent + local audio + wrong purpose meeting-notes => 403 agent_media_direction_forbidden before any upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
       doResponderForKind("agent")
@@ -446,54 +462,144 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     const res = await handleSfuRequest(
       req("tracks", {
         body: JSON.stringify(
-          agentTracksBody({
-            location: "local",
-            trackName: "video-1",
-            kind: "video",
-            mid: "1",
-          })
+          voiceReplyTracksBody([localAudio], { purpose: "meeting-notes" })
         ),
       }),
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect((await json(res)).error).toBe("agent_media_direction_forbidden")
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("Agent + a mix of one remote and one local track => still 403, nothing forwarded upstream", async () => {
+  it("Agent + local VIDEO track => 403 agent_video_forbidden before any upstream call", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
       doResponderForKind("agent")
     )
     const res = await handleSfuRequest(
       req("tracks", {
-        body: JSON.stringify({
-          room: "room-1",
-          participantId: "agent-1",
-          token: "tok-1",
-          sessionId: "sess-1",
-          tracks: [
+        body: JSON.stringify(
+          voiceReplyTracksBody([
+            {
+              location: "local",
+              trackName: "video-1",
+              kind: "video",
+              mid: "1",
+            },
+          ])
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_video_forbidden")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + TWO local audio tracks => 403 agent_publish_invalid_track_count before any upstream call", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          voiceReplyTracksBody([
+            localAudio,
+            { ...localAudio, trackName: "agent-voice-2", mid: "8" },
+          ])
+        ),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_publish_invalid_track_count")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + mixed local+remote tracks => 403 agent_media_direction_forbidden before any upstream call", async () => {
+    const env = makeEnv(
+      { AGENT_MEDIA_ENABLED: "true" },
+      doResponderForKind("agent")
+    )
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          voiceReplyTracksBody([
+            localAudio,
             {
               location: "remote",
               sessionId: "human-sess-1",
               trackName: "audio-human",
             },
-            {
-              location: "local",
-              trackName: "audio-1",
-              kind: "audio",
-              mid: "0",
-            },
-          ],
-          sessionDescription: { type: "offer", sdp: "sdp" },
-        }),
+          ])
+        ),
       }),
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("agent_publish_not_allowed")
+    expect((await json(res)).error).toBe("agent_media_direction_forbidden")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + local audio while AGENT_MEDIA_ENABLED is off => 403 agent_media_disabled before any upstream call", async () => {
+    const env = makeEnv(undefined, doResponderForKind("agent"))
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_media_disabled")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Agent + local audio without the voiceReply grant => DO rejection surfaced before any upstream call", async () => {
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize")
+        return { status: 403, body: { error: "voice_reply_not_authorized" } }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("voice_reply_not_authorized")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("Granted Agent + exactly one local audio track with purpose voice-reply => forwarded upstream once and booked via agent-track-published", async () => {
+    const roomActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      roomActions.push(body)
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const upstreamUrl = String(fetchMock.mock.calls[0]![0])
+    expect(upstreamUrl.endsWith("/sessions/sess-1/tracks/new")).toBe(true)
+    expect(roomActions.map((action) => action.action)).toEqual([
+      "agent-track-published",
+    ])
+    expect(roomActions[0]).toMatchObject({
+      participantId: "agent-1",
+      sessionId: "sess-1",
+      mid: "0",
+      trackName: "agent-voice",
+    })
   })
 
   it("does not affect renegotiate (no tracks array, route-scoped check)", async () => {
@@ -1229,5 +1335,333 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
 
     const authorizeCall = seenActions.find((a) => a.action === "authorize")
     expect(authorizeCall?.remoteTrackCount).toBe(0)
+  })
+})
+
+describe("#83 review: shared Agent session admission is MN OR VR (agent-media-admit)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("agent-session admits through agent-media-admit and never touches Human media discovery", async () => {
+    const seenActions: string[] = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(String(body.action))
+      return { status: 200, body: { ok: true, expiresAt: Date.now() } }
+    })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ sessionId: "cf-session-vr" }))
+    )
+    const res = await handleSfuRequest(
+      req("agent-session", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect((await json(res)).sessionId).toBe("cf-session-vr")
+    expect(seenActions).toContain("agent-media-admit")
+    expect(seenActions).toContain("agent-media-attach")
+    expect(seenActions).not.toContain("agent-room-media")
+  })
+
+  it("a room where neither grant names the agent fails closed before any Cloudflare spend", async () => {
+    let cloudflareCalled = false
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        cloudflareCalled = true
+        return Response.json({ sessionId: "should-not-happen" })
+      })
+    )
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) =>
+      body.action === "agent-media-admit"
+        ? { status: 403, body: { error: "agent_media_not_authorized" } }
+        : { status: 200, body: { ok: true } }
+    )
+    const res = await handleSfuRequest(
+      req("agent-session", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_media_not_authorized")
+    expect(cloudflareCalled).toBe(false)
+  })
+
+  it("agent-room-media keeps using the Meeting-Notes-only discovery action", async () => {
+    const seenActions: string[] = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(String(body.action))
+      return { status: 200, body: { participants: [] } }
+    })
+    const res = await handleSfuRequest(
+      req("agent-room-media", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(seenActions).toEqual(["agent-room-media"])
+  })
+})
+
+describe("#83 review: purpose reaches every DO authorize along the real path", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function recordingEnv() {
+    const authorizations: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize") {
+        authorizations.push(body)
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      }
+      return { status: 200, body: { ok: true } }
+    })
+    return { authorizations, env }
+  }
+
+  it("datachannels/establish forwards the typed transport purpose", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ sessionDescription: {} }))
+    )
+    const { authorizations, env } = recordingEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/establish", {
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "agent-transport",
+          dataChannel: { location: "remote", dataChannelName: "server-events" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(authorizations).toHaveLength(1)
+    expect(authorizations[0].purpose).toBe("agent-transport")
+  })
+
+  it("tracks re-authorizes EACH remote track with the request purpose (remote-track reauth)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          tracks: [{ mid: "mid-a" }, { mid: "mid-b" }],
+        })
+      )
+    )
+    const { authorizations, env } = recordingEnv()
+    const res = await handleSfuRequest(
+      req("tracks", {
+        method: "POST",
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "meeting-notes",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-1",
+              trackName: "mic",
+            },
+            {
+              location: "remote",
+              sessionId: "human-2",
+              trackName: "mic",
+            },
+          ],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    const reauths = authorizations.filter(
+      (auth) => auth.trackSessionId !== undefined
+    )
+    expect(reauths).toHaveLength(2)
+    expect(reauths[0].purpose).toBe("meeting-notes")
+    expect(reauths[1].purpose).toBe("meeting-notes")
+    expect(reauths[0].trackName).toBe("mic")
+  })
+
+  it("renegotiate forwards its purpose to the DO authorize", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({}))
+    )
+    const { authorizations, env } = recordingEnv()
+    const res = await handleSfuRequest(
+      req("renegotiate", {
+        method: "PUT",
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "voice-reply",
+          sessionDescription: { type: "answer", sdp: "v=0\r\n" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(authorizations).toHaveLength(1)
+    expect(authorizations[0].purpose).toBe("voice-reply")
+  })
+})
+
+describe("#83 review: Agent datachannel access is bootstrap-only over the shared session", () => {
+  function agentDataChannelEnv() {
+    const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+      Response.json({ ok: true })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const seenActions: string[] = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      seenActions.push(String(body.action))
+      return { status: 200, body: { ok: true } }
+    })
+    return { fetchMock, env }
+  }
+
+  const baseBody = {
+    ...agentBody,
+    sessionId: "sess-a",
+    purpose: "agent-transport",
+  }
+  const origin = { origin: "https://www.free4.chat" }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("datachannels/new is forbidden for an Agent before any Cloudflare call", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/new", {
+        ...origin,
+        body: JSON.stringify({
+          ...baseBody,
+          dataChannels: [{ location: "remote", dataChannelName: "anything" }],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_datachannel_forbidden")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("establish with anything but the exact server-events shape fails closed", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    for (const dataChannel of [
+      { location: "remote", dataChannelName: "other-channel" },
+      { location: "local", dataChannelName: "server-events" },
+      { location: "remote" },
+    ]) {
+      const res = await handleSfuRequest(
+        req("datachannels/establish", {
+          ...origin,
+          body: JSON.stringify({
+            ...baseBody,
+            dataChannel,
+            sessionDescription: { type: "offer", sdp: "v=0\r\n" },
+          }),
+        }),
+        env
+      )
+      expect(res.status).toBe(403)
+      expect((await json(res)).error).toBe("agent_datachannel_shape_forbidden")
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("the exact server-events establish still reaches Cloudflare", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/establish", {
+        ...origin,
+        body: JSON.stringify({
+          ...baseBody,
+          dataChannel: { location: "remote", dataChannelName: "server-events" },
+          sessionDescription: { type: "offer", sdp: "v=0\r\n" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/sess-a/datachannels/establish"
+    )
+  })
+
+  it("close stays available to Agents for cleaning up the established channel", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/close", {
+        ...origin,
+        method: "PUT",
+        body: JSON.stringify({
+          ...baseBody,
+          publisherSessionId: "human-sess",
+          dataChannels: [{ id: 1, sessionId: "human-sess" }],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/sess-a/datachannels/close"
+    )
+  })
+})
+
+describe("#83 review P1: datachannels/close authorize parameter mapping", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("the main and per-channel authorizes carry purpose AND the right dataChannelSessionId", async () => {
+    const authorizations: Array<Record<string, unknown>> = []
+    const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+      Response.json({ ok: true })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize") {
+        authorizations.push(body)
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("datachannels/close", {
+        origin: "https://www.free4.chat",
+        method: "PUT",
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "agent-transport",
+          publisherSessionId: "human-pub",
+          dataChannels: [
+            { id: 1, sessionId: "human-pub" },
+            { id: 2, sessionId: "human-other" },
+          ],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(authorizations.length).toBe(3)
+    // Main correlation = publisher session.
+    expect(authorizations[0].dataChannelSessionId).toBe("human-pub")
+    expect(authorizations[0].purpose).toBe("agent-transport")
+    // Each channel is re-correlated to ITS owning session, same purpose.
+    expect(authorizations[1].dataChannelSessionId).toBe("human-pub")
+    expect(authorizations[2].dataChannelSessionId).toBe("human-other")
+    expect(authorizations[1].purpose).toBe("agent-transport")
+    expect(authorizations[2].purpose).toBe("agent-transport")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

@@ -277,6 +277,8 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
         ? (result.meetingNotes as Record<string, unknown>)
         : {}
     return {
+      voiceReply: { active: false },
+      voiceReplyMediaAvailable: false,
       exists: result.exists === true,
       ...(Array.isArray(result.participants)
         ? { participants: parseRoster(result.participants) }

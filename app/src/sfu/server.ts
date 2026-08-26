@@ -1,5 +1,6 @@
 import type { SfuSessionResponse, SfuTrack } from "./types"
 import { isAllowedOrigin } from "../common/origin"
+import { resolveAgentPurposePermission } from "../do/meetingNotesAuth"
 import { closeRealtimeTracks } from "../do/realtimeMedia"
 import type { RoomSession } from "../do/RoomSession"
 
@@ -139,7 +140,10 @@ async function authorize(
   // any Cloudflare tracks/new call is made — never sent for a Human caller
   // or for renegotiate (which creates no new tracks). See the "tracks"
   // route below.
-  remoteTrackCount?: number
+  remoteTrackCount?: number,
+  purpose?: unknown,
+  wantsVoicePublish?: boolean,
+  localTrackCount?: number
 ): Promise<Response> {
   return roomControl(env, roomName, {
     action: "authorize",
@@ -150,7 +154,21 @@ async function authorize(
     trackName,
     dataChannelSessionId,
     remoteTrackCount,
+    purpose,
+    wantsVoicePublish,
+    localTrackCount,
   })
+}
+
+// The exact DataChannel shape the resident Agent's shared-session bootstrap
+// is allowed to establish (#83 review): the remote "server-events" channel
+// and nothing else.
+function isServerEventsDataChannel(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  const channel = value as Record<string, unknown>
+  return (
+    channel.location === "remote" && channel.dataChannelName === "server-events"
+  )
 }
 
 async function realtimeRequest(
@@ -332,8 +350,11 @@ export async function handleSfuRequest(
     // Confirms the caller is an existing, authorized *agent* participant
     // before spending a real Cloudflare Realtime session on it. Reuses the
     // same DO auth path as everything else — no separate credential system.
+    // #83 review: admission for the ONE shared Agent session is
+    // meetingNotes OR voiceReply (agent-media-admit) — never Human media
+    // discovery, which stays agent-room-media/Meeting-Notes-only.
     const authResponse = await roomControl(env, room, {
-      action: "agent-room-media",
+      action: "agent-media-admit",
       participantId,
       token,
     })
@@ -399,6 +420,9 @@ export async function handleSfuRequest(
     const remoteTrackCount = requestedTracks.filter(
       (track) => track.location === "remote"
     ).length
+    const localTracks = requestedTracks.filter(
+      (track) => track.location === "local"
+    )
     const auth = await authorize(
       env,
       room,
@@ -408,7 +432,10 @@ export async function handleSfuRequest(
       undefined,
       undefined,
       undefined,
-      remoteTrackCount
+      remoteTrackCount,
+      typeof body.purpose === "string" ? body.purpose : undefined,
+      body.wantsVoicePublish === true,
+      localTracks.length
     )
     if (!auth.ok) return auth
     // The DO's "authorize" action now also re-checks the current Meeting
@@ -423,12 +450,34 @@ export async function handleSfuRequest(
     // Realtime — rejecting only RoomSession's later `publish` bookkeeping
     // would be too late, since the upstream SFU publication could already
     // have succeeded by then. Human publishing is completely unaffected.
-    if (route === "tracks") {
-      const hasLocalTrack = requestedTracks.some(
-        (track) => track.location === "local"
-      )
-      if (participantKind === "agent" && hasLocalTrack)
-        return json({ error: "agent_publish_not_allowed" }, 403)
+
+    // #83 security gate: admit an Agent local publication only when
+    // AGENT_MEDIA_ENABLED is on AND purpose is "voice-reply" AND the
+    // voiceReply grant names THIS participant (the DO "authorize" above owns
+    // that room-state check) AND the request carries exactly one local audio
+    // track and no remote tracks. Everything fails closed BEFORE any
+    // Cloudflare tracks/new call.
+    if (
+      route === "tracks" &&
+      participantKind === "agent" &&
+      localTracks.length > 0
+    ) {
+      if (!agentMediaEnabled(env))
+        return json({ error: "agent_media_disabled" }, 403)
+      // From ACTUAL requested kinds, never a client-declared flag; unknown
+      // kinds fail closed like video.
+      const involvesVideo = localTracks.some((track) => track.kind !== "audio")
+      const direction = resolveAgentPurposePermission({
+        purpose: body.purpose,
+        wantsLocalPublish: true,
+        wantsRemoteSubscribe: remoteTrackCount > 0,
+        involvesVideo,
+      })
+      if (direction.ok === false) {
+        return json({ error: direction.error }, 403)
+      }
+      if (localTracks.length !== 1)
+        return json({ error: "agent_publish_invalid_track_count" }, 403)
     }
     for (const remoteTrack of requestedTracks.filter(
       (track) => track.location === "remote"
@@ -444,7 +493,13 @@ export async function handleSfuRequest(
           : undefined,
         typeof remoteTrack.trackName === "string"
           ? remoteTrack.trackName
-          : undefined
+          : undefined,
+        undefined,
+        undefined,
+        // #83 review: purpose must reach the DO's per-remote-track
+        // reauthorization too, so a Meeting Notes revocation between the
+        // first authorize and this one still fails the request closed.
+        typeof body.purpose === "string" ? body.purpose : undefined
       )
       if (!remoteAuth.ok) return remoteAuth
     }
@@ -471,6 +526,10 @@ export async function handleSfuRequest(
       for (const track of body.tracks as Array<Record<string, unknown>>) {
         if (track.location !== "local" || typeof track.trackName !== "string")
           continue
+        // #83: an Agent's publication is booked through the grant-rechecking
+        // "agent-track-published" action below — never this Human track-list
+        // action, which rejects agents outright.
+        if (participantKind === "agent") continue
         const trackKind: SfuTrack["kind"] =
           track.kind === "video" ? "video" : "audio"
         await roomControl(env, room, {
@@ -489,6 +548,50 @@ export async function handleSfuRequest(
       const hasRemoteTrack = requestedTracks.some(
         (track) => track.location === "remote"
       )
+      // #83: capture the published mid for the voiceReply-granted agent so
+      // Stop/reassignment can actively close it; TOCTOU failure closes the
+      // just-created publication and hands unresolved mids to pending
+      // cleanup instead of reporting stale success.
+      if (participantKind === "agent" && localTracks.length > 0) {
+        let upstreamJson: { tracks?: Array<{ mid?: unknown }> } = {}
+        try {
+          upstreamJson = JSON.parse(responseBody)
+        } catch {
+          // Empty-mid fail-closed check below handles parse failure.
+        }
+        const publishedMid = (upstreamJson.tracks ?? [])
+          .map((track) => track.mid)
+          .find(
+            (mid): mid is string => typeof mid === "string" && mid.length > 0
+          )
+        const publishTrackName =
+          typeof localTracks[0]!.trackName === "string"
+            ? localTracks[0]!.trackName
+            : "agent-voice"
+        if (!publishedMid)
+          return json({ error: "agent_publication_unverifiable" }, 502)
+        const registered = await roomControl(env, room, {
+          action: "agent-track-published",
+          participantId,
+          token,
+          sessionId,
+          mid: publishedMid,
+          trackName: publishTrackName,
+        })
+        if (!registered.ok) {
+          const closed = await closeRealtimeTracks(env, sessionId, [
+            publishedMid,
+          ])
+          if (!closed) {
+            await roomControl(env, room, {
+              action: "agent-media-cleanup-pending",
+              sessionId,
+              mids: [publishedMid],
+            })
+          }
+          return registered
+        }
+      }
       if (participantKind === "agent" && hasRemoteTrack) {
         let upstreamJson: { tracks?: Array<{ mid?: unknown }> } = {}
         try {
@@ -636,9 +739,31 @@ export async function handleSfuRequest(
       undefined,
       typeof body.publisherSessionId === "string"
         ? body.publisherSessionId
-        : undefined
+        : undefined,
+      undefined,
+      // #83 review: the shared initial transport is admitted only under an
+      // explicit narrow purpose ("agent-transport") that the DO checks
+      // against meetingNotes OR voiceReply — never Agent token alone.
+      typeof body.purpose === "string" ? body.purpose : undefined
     )
     if (!auth.ok) return auth
+    // #83 review: an Agent's datachannel access over the shared session is
+    // exactly the bootstrap plumbing — establishing the single server-events
+    // channel — plus close for cleaning that channel up. datachannels/new is
+    // Human-only and any non-server-events establish shape fails closed,
+    // both BEFORE any Cloudflare call.
+    const { kind: dataChannelCallerKind } = (await auth.json()) as {
+      kind?: string
+    }
+    if (dataChannelCallerKind === "agent") {
+      if (route === "datachannels/new")
+        return json({ error: "agent_datachannel_forbidden" }, 403)
+      if (
+        route === "datachannels/establish" &&
+        !isServerEventsDataChannel(body.dataChannel)
+      )
+        return json({ error: "agent_datachannel_shape_forbidden" }, 403)
+    }
     if (route === "datachannels/close") {
       const dataChannels = Array.isArray(body.dataChannels)
         ? body.dataChannels.filter(
@@ -666,7 +791,9 @@ export async function handleSfuRequest(
           sessionId,
           undefined,
           undefined,
-          channel.sessionId
+          channel.sessionId,
+          undefined,
+          typeof body.purpose === "string" ? body.purpose : undefined
         )
         if (!channelAuth.ok) return channelAuth
       }

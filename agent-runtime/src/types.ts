@@ -182,7 +182,9 @@ export interface RoomInfo {
    * discover peers and their advertised tokens even with no triggering room
    * event. Never contains tokens or media identifiers. */
   participants?: ParticipantRosterEntry[]
+
   meetingNotes: MeetingNotesInfo
+
   // Whether the server-side Meeting Notes media capability (the
   // AGENT_MEDIA_ENABLED master switch) is on at all in this environment —
   // independent of whether `meetingNotes` names this Agent. Required, not
@@ -190,6 +192,15 @@ export interface RoomInfo {
   // only when this is also true, so every caller must be explicit rather
   // than accidentally failing open on a missing field.
   meetingNotesMediaAvailable: boolean
+  // Room-visible voiceReply grant (#83) + environment master switch. The
+  // controller treats an active grant as authorized only when the switch is
+  // also true; booleans only — never secrets or media identifiers.
+  voiceReply: {
+    active: boolean
+    agentParticipantId?: string
+    startedAt?: number
+  }
+  voiceReplyMediaAvailable: boolean
 }
 
 export interface WaitResult {

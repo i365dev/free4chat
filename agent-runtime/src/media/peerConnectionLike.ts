@@ -34,6 +34,19 @@ export interface PeerConnectionLike {
   setLocalDescription(description: SessionDescriptionLike): Promise<void>
   onTrack: { subscribe(callback: (track: MediaTrackLike) => void): void }
   close(): void
+  // ---- #83 voiceReply outbound publication (optional: Pion engine only;
+  // werift stays ingress-only and voice activation fails closed).
+  armPublishAudio?(): Promise<void>
+  activatePublish?(): Promise<void>
+  deactivatePublish?(): Promise<void>
+  flushAudio?(): Promise<void>
+  /** Cancelled utterance: discards buffered partial outbound audio while
+   * keeping the publication active (Pion engine only). */
+  cancelTurnAudio?(): Promise<void>
+  /** Negotiated mid of the armed outbound track (post-offer). */
+  localPublishMid?(): Promise<string | undefined>
+  /** Feeds arbitrary S16LE 24 kHz mono PCM bytes into the outbound path. */
+  writePcmChunk?(chunk: Uint8Array): Promise<void>
 }
 
 export type PeerConnectionFactory = () =>

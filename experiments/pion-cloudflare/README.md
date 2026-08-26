@@ -9,7 +9,7 @@ Node driver used for staged live validation.
 
 | File | Role |
 | --- | --- |
-| `main.go` | stdio JSON command loop (`init` / `create-offer` / `apply-remote` / `arm-track` / `wait-connected` / `rtp-stats` / `close`) |
+| `main.go` | stdio JSON command loop (`init` / `create-offer` / `apply-remote` / `arm-track` / `wait-connected` / `rtp-stats` / `close`, plus #83 voiceReply publication ops `arm-publish` / `local-mid` / `activate-publish` / `write-pcm` (base64 S16LE PCM) / `flush-audio` / `cancel-turn` / `deactivate-publish`) |
 | `media.go` | pure media engine: PeerConnection, ICE gathering, type-inspecting apply, per-MID RTP forwarding, OnTrack metadata, nominated-pair stats |
 | `trace.go` | stderr stage tracer + dump dir (full SDP, ICE candidates, HTTP traces, per-mid RTP headers, raw Opus) |
 | `driver.mjs` | Node orchestrator for standalone live runs: MCP join/grant-wait/heartbeat + all `/api/sfu/*` calls + spawns the Go child; prints `RESULT PASS/FAIL last_stage=…` |
