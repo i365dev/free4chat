@@ -1616,3 +1616,52 @@ describe("#83 review: Agent datachannel access is bootstrap-only over the shared
     )
   })
 })
+
+describe("#83 review P1: datachannels/close authorize parameter mapping", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("the main and per-channel authorizes carry purpose AND the right dataChannelSessionId", async () => {
+    const authorizations: Array<Record<string, unknown>> = []
+    const fetchMock = vi.fn(async (_input: string | URL | Request) =>
+      Response.json({ ok: true })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize") {
+        authorizations.push(body)
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("datachannels/close", {
+        origin: "https://www.free4.chat",
+        method: "PUT",
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "agent-transport",
+          publisherSessionId: "human-pub",
+          dataChannels: [
+            { id: 1, sessionId: "human-pub" },
+            { id: 2, sessionId: "human-other" },
+          ],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(authorizations.length).toBe(3)
+    // Main correlation = publisher session.
+    expect(authorizations[0].dataChannelSessionId).toBe("human-pub")
+    expect(authorizations[0].purpose).toBe("agent-transport")
+    // Each channel is re-correlated to ITS owning session, same purpose.
+    expect(authorizations[1].dataChannelSessionId).toBe("human-pub")
+    expect(authorizations[2].dataChannelSessionId).toBe("human-other")
+    expect(authorizations[1].purpose).toBe("agent-transport")
+    expect(authorizations[2].purpose).toBe("agent-transport")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})

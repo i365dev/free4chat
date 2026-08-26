@@ -1915,13 +1915,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // #83 fail-closed direction matrix: every agent media request must
         // carry an explicit narrow purpose; meeting-notes unlocks ONLY
         // remote Human-audio subscribe, voice-reply ONLY local single
-        // audio publish; video always denied. Humans are unaffected.
+        // audio publish; agent-transport covers transport plumbing only;
+        // video always denied. Humans are unaffected. dataChannelSessionId
+        // is session CORRELATION (validated separately below), never a
+        // remote-subscribe direction — the real close/establish calls carry
+        // it and must pass under agent-transport's narrow semantics.
         const decision = resolveAgentPurposePermission({
           purpose: request.purpose,
           wantsLocalPublish: (request.localTrackCount ?? 0) > 0,
           wantsRemoteSubscribe:
             (request.remoteTrackCount ?? 0) > 0 ||
-            Boolean(request.trackSessionId || request.dataChannelSessionId),
+            Boolean(request.trackSessionId),
           involvesVideo: false,
         })
         if (!decision.ok) {
