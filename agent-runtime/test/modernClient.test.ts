@@ -713,3 +713,85 @@ test("read_surface parses the real server envelope and rejects mismatches", asyn
     globalThis.fetch = originalFetch
   }
 })
+
+test("roomInfo parses an active voiceReply grant round-trip", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      params?: { name?: string }
+    }
+    assert.equal(body.params?.name, "room_info")
+    return mcpEnvelope({
+      exists: true,
+      voiceReply: {
+        active: true,
+        agentParticipantId: "agent-9",
+        startedAt: 1712345678901,
+      },
+      voiceReplyMediaAvailable: true,
+    })
+  }
+
+  try {
+    const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+    const info = await client.roomInfo("room")
+    assert.deepEqual(info.voiceReply, {
+      active: true,
+      agentParticipantId: "agent-9",
+      startedAt: 1712345678901,
+    })
+    assert.equal(info.voiceReplyMediaAvailable, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("roomInfo fails closed on missing or malformed voiceReply fields", async () => {
+  const originalFetch = globalThis.fetch
+  const cases: Array<{
+    payload: Record<string, unknown>
+    expectedVoiceReply: Record<string, unknown>
+    expectedMediaAvailable: boolean
+  }> = [
+    {
+      payload: {},
+      expectedVoiceReply: { active: false },
+      expectedMediaAvailable: false,
+    },
+    {
+      payload: { voiceReply: "nope", voiceReplyMediaAvailable: "yes" },
+      expectedVoiceReply: { active: false },
+      expectedMediaAvailable: false,
+    },
+    {
+      // The grant itself stays room-truth even when the media switch is off.
+      payload: {
+        voiceReply: { active: true },
+        voiceReplyMediaAvailable: false,
+      },
+      expectedVoiceReply: { active: true },
+      expectedMediaAvailable: false,
+    },
+    {
+      // Malformed optional keys are dropped entirely; only explicit values
+      // survive.
+      payload: {
+        voiceReply: { active: true, agentParticipantId: 42, startedAt: "x" },
+        voiceReplyMediaAvailable: true,
+      },
+      expectedVoiceReply: { active: true },
+      expectedMediaAvailable: true,
+    },
+  ]
+  for (const { payload, expectedVoiceReply, expectedMediaAvailable } of cases) {
+    globalThis.fetch = async () => mcpEnvelope(payload)
+    try {
+      const client = new ModernMcpFree4ChatClient("https://example.test/mcp")
+      const info = await client.roomInfo("room")
+      assert.deepEqual(info.voiceReply, expectedVoiceReply)
+      assert.equal(info.voiceReplyMediaAvailable, expectedMediaAvailable)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
