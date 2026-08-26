@@ -73,6 +73,20 @@ test("the source package.json version never appears as a bootstrap pin in agent.
   )
 })
 
+test("DEVELOPMENT.md matches the actual tag-triggered publishing model", () => {
+  const development = read("DEVELOPMENT.md")
+  assert.ok(
+    !development.includes("not published by CI"),
+    "CI does publish: matching agent-runtime-v<package-version> tags trigger npm Trusted Publishing"
+  )
+  assert.ok(
+    !development.includes("one-time maintainer action"),
+    "publication is the routine tag-triggered workflow, not a one-time action"
+  )
+  assert.match(development, /agent-runtime-v<package-version>/)
+  assert.match(development, /npm Trusted Publishing/)
+})
+
 test("release workflow stays fail-closed: tag-triggered only, mismatch rejected, no NPM token", () => {
   const workflow = read(".github/workflows/agent-runtime.yml")
   assert.match(
