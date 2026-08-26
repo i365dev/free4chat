@@ -168,9 +168,15 @@ export class SfuMediaBridge {
         this.mySessionId = await this.restClient.createAgentSession()
       }
       if (!description) {
+        // Pion-engine SFU bootstrap: session creation carries no answer and
+        // the server initiates the SDP exchange through
+        // datachannels/establish. The gathered local offer must be omitted
+        // there — the server answers the DataChannel request with its own
+        // offer, and forwarding our already-set offer makes it reject with
+        // 400 decoding_error.
         const transport = await this.restClient.establishDataChannelTransport(
           this.mySessionId,
-          offer,
+          undefined,
           "agent-transport"
         )
         description = transport.sessionDescription
