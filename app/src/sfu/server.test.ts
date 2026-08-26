@@ -394,6 +394,179 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it("Human remote response with an offer does not perform publisher diagnostics", async () => {
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined)
+    try {
+      fetchMock = vi.fn(async () =>
+        Response.json({
+          sessionDescription: { type: "offer", sdp: "sdp" },
+          tracks: [{ mid: "0" }],
+        })
+      )
+      vi.stubGlobal("fetch", fetchMock)
+      const env = makeEnv({}, doResponderForKind("human"))
+      const res = await handleSfuRequest(
+        req("tracks", {
+          body: JSON.stringify(
+            humanTracksBody({
+              location: "remote",
+              sessionId: "publisher-sess-1",
+              trackName: "audio-human",
+            })
+          ),
+        }),
+        env
+      )
+      expect(res.status).toBe(200)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it("Human remote missing-description diagnostics preserve the original response and stay redacted", async () => {
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined)
+    fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith("/tracks/new"))
+        return Response.json({
+          requiresImmediateRenegotiation: true,
+          errorCode: "track_lookup_failed",
+          tracks: [{ errorCode: "track_not_found" }],
+        })
+      if (url.endsWith("/sessions/publisher-sess-1"))
+        return new Response("upstream unavailable", { status: 503 })
+      throw new Error("unexpected diagnostic request")
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    try {
+      const env = makeEnv({}, doResponderForKind("human"))
+      const res = await handleSfuRequest(
+        req("tracks", {
+          body: JSON.stringify(
+            humanTracksBody({
+              location: "remote",
+              sessionId: "publisher-sess-1",
+              trackName: "audio-human",
+            })
+          ),
+        }),
+        env
+      )
+      expect(res.status).toBe(200)
+      await expect(res.json()).resolves.toEqual({
+        requiresImmediateRenegotiation: true,
+        errorCode: "track_lookup_failed",
+        tracks: [{ errorCode: "track_not_found" }],
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(String(fetchMock.mock.calls[1]![0])).toContain(
+        "/sessions/publisher-sess-1"
+      )
+      const diagnosticCall = warnSpy.mock.calls.find(
+        (call) => call[0] === "sfu_remote_subscribe_diagnostic"
+      )
+      expect(diagnosticCall?.[1]).toMatchObject({
+        upstreamStatus: 200,
+        requiresImmediateRenegotiation: true,
+        hasSessionDescription: false,
+        trackResultCount: 1,
+        trackHasMid: false,
+        topLevelErrorCode: "track_lookup_failed",
+        trackErrorCodes: ["track_not_found"],
+        publisherSessionLookupOk: false,
+        publisherTrackCount: 0,
+        matchingTrackFound: false,
+        matchingTrackStatus: "unknown",
+        matchingTrackHasMid: false,
+      })
+      expect(JSON.stringify(diagnosticCall)).not.toContain("publisher-sess-1")
+      expect(JSON.stringify(diagnosticCall)).not.toContain("audio-human")
+      expect(JSON.stringify(diagnosticCall)).not.toContain(
+        "upstream unavailable"
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  it.each([
+    [
+      "active",
+      [{ trackName: "audio-human", status: "active", mid: "3" }],
+      "active",
+      true,
+    ],
+    [
+      "inactive",
+      [{ trackName: "audio-human", status: "inactive", mid: "3" }],
+      "inactive",
+      true,
+    ],
+    [
+      "waiting",
+      [{ trackName: "audio-human", status: "waiting", mid: "3" }],
+      "waiting",
+      true,
+    ],
+    [
+      "missing",
+      [{ trackName: "other-track", status: "active", mid: "3" }],
+      "unknown",
+      false,
+    ],
+  ])(
+    "summarizes publisher status when Human remote response lacks an offer (%s)",
+    async (_label, publisherTracks, expectedStatus, expectedFound) => {
+      const warnSpy = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined)
+      fetchMock = vi.fn(async (input: string | URL | Request) => {
+        const url = String(input)
+        if (url.endsWith("/tracks/new"))
+          return Response.json({ tracks: [{ errorCode: "track_not_found" }] })
+        if (url.endsWith("/sessions/publisher-sess-1"))
+          return Response.json({ tracks: publisherTracks })
+        throw new Error("unexpected diagnostic request")
+      })
+      vi.stubGlobal("fetch", fetchMock)
+      try {
+        const env = makeEnv({}, doResponderForKind("human"))
+        const res = await handleSfuRequest(
+          req("tracks", {
+            body: JSON.stringify(
+              humanTracksBody({
+                location: "remote",
+                sessionId: "publisher-sess-1",
+                trackName: "audio-human",
+              })
+            ),
+          }),
+          env
+        )
+        expect(res.status).toBe(200)
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+        const diagnosticCall = warnSpy.mock.calls.find(
+          (call) => call[0] === "sfu_remote_subscribe_diagnostic"
+        )
+        expect(diagnosticCall?.[1]).toMatchObject({
+          publisherSessionLookupOk: true,
+          publisherTrackCount: 1,
+          matchingTrackFound: expectedFound,
+          matchingTrackStatus: expectedStatus,
+          matchingTrackHasMid: expectedFound,
+        })
+      } finally {
+        warnSpy.mockRestore()
+      }
+    }
+  )
+
   it("Agent + remote Human audio track => allowed (subscribing is the whole point of Phase 0)", async () => {
     const env = makeEnv(
       { AGENT_MEDIA_ENABLED: "true" },
