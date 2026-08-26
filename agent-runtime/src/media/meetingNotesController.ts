@@ -281,6 +281,28 @@ export class MeetingNotesController {
           close: async () => {},
         }),
         chunkerOptions: { maxChars: 220 },
+        onEvent: (event) => {
+          if (event.type === "turnStarted")
+            this.log("voice_turn_started", { turn: event.turn })
+          else if (event.type === "turnFinished")
+            this.log("voice_turn_finished", {
+              turn: event.turn,
+              chunks: event.chunks,
+              frames: event.frames,
+            })
+          else if (event.type === "turnFailed")
+            this.log("voice_turn_failed", {
+              turn: event.turn,
+              code: event.code,
+            })
+          else if (event.type === "turnCancelled")
+            this.log("voice_turn_cancelled", { turn: event.turn })
+          else if (event.type === "turnTruncated")
+            this.log("voice_turn_truncated", {
+              turn: event.turn,
+              droppedChunks: event.droppedChunks,
+            })
+        },
       })
       this.log("voice_reply_started")
     } catch (error) {

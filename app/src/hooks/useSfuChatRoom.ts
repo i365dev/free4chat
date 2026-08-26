@@ -846,7 +846,11 @@ export function useSfuChatRoom(
             },
           ],
         })
-        if (!response.sessionDescription) return
+        if (!response.sessionDescription) {
+          subscribedTracksRef.current.delete(key)
+          console.warn("sfu_remote_subscribe_missing_description", key)
+          return
+        }
         await pc.setRemoteDescription(response.sessionDescription)
         const answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
@@ -857,8 +861,9 @@ export function useSfuChatRoom(
           sessionId: session.sessionId,
           sessionDescription: { type: answer.type, sdp: answer.sdp },
         })
-      }).catch(() => {
+      }).catch((error) => {
         subscribedTracksRef.current.delete(key)
+        console.warn("sfu_remote_subscribe_failed", key, error)
       })
     },
     [apiRequest, enqueueNegotiation, roomName]

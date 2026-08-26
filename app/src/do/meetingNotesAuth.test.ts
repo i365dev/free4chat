@@ -4,6 +4,7 @@ import {
   clearGrantIfParticipantDeparting,
   isAgentAuthorizedForMedia,
   isAgentAuthorizedForSharedMedia,
+  isValidVoiceReplyState,
   NO_MEETING_NOTES,
   NO_VOICE_REPLY,
   resolveAgentPurposePermission,
@@ -179,5 +180,56 @@ describe("resolveAgentPurposePermission — agent-transport purpose", () => {
         involvesVideo: false,
       })
     ).toEqual({ ok: false, error: "agent_media_direction_forbidden" })
+  })
+})
+
+describe("isValidVoiceReplyState (#130 P1)", () => {
+  it("accepts an inactive grant without further fields", () => {
+    expect(isValidVoiceReplyState({ active: false })).toBe(true)
+  })
+
+  it("accepts an active grant with non-empty agent id and numeric startedAt", () => {
+    expect(
+      isValidVoiceReplyState({
+        active: true,
+        agentParticipantId: "agent-1",
+        startedAt: 1000,
+      })
+    ).toBe(true)
+  })
+
+  it("rejects an active grant with a missing or invalid startedAt", () => {
+    expect(
+      isValidVoiceReplyState({ active: true, agentParticipantId: "a" })
+    ).toBe(false)
+    expect(
+      isValidVoiceReplyState({
+        active: true,
+        agentParticipantId: "a",
+        startedAt: "not-a-number",
+      })
+    ).toBe(false)
+  })
+
+  it("rejects an active grant with empty/non-string agent id", () => {
+    expect(
+      isValidVoiceReplyState({
+        active: true,
+        agentParticipantId: "",
+        startedAt: 1,
+      })
+    ).toBe(false)
+    expect(
+      isValidVoiceReplyState({
+        active: true,
+        agentParticipantId: 42,
+        startedAt: 1,
+      })
+    ).toBe(false)
+  })
+
+  it("rejects non-object values", () => {
+    for (const bad of [undefined, null, "nope", 42])
+      expect(isValidVoiceReplyState(bad)).toBe(false)
   })
 })

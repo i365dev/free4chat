@@ -424,3 +424,42 @@ function current(c: MeetingNotesController) {
     c as unknown as { currentVoiceOutput(): unknown }
   ).currentVoiceOutput()
 }
+
+test("voice speaker lifecycle surfaces through the runtime log for live triage", async () => {
+  const bridge = new FakeBridge()
+  const logs: Array<Record<string, unknown>> = []
+  const c = new MeetingNotesController({
+    client: fakeClient(makeRoomInfo({ mnActive: false, vrActive: false })),
+    roomId: "room-1",
+    participantId: "agent-1",
+    mcpUrl: "https://www.free4.chat/mcp",
+    handle: handle(),
+    onEvent: () => undefined,
+    createBridge: () => bridge as never,
+    createPeerConnection: (() => ({ close() {} })) as never,
+    restClient: {} as never,
+    log: (message, data) =>
+      logs.push({ message, ...(data as Record<string, unknown>) }),
+    voiceReply: {
+      createTtsProvider: () => Promise.resolve(providerFor(["Hello world."])),
+    },
+  })
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(providerFor(["Hello world."]))
+  )
+  await waitFor(() => current(c) !== null)
+  current(c)!.speak("Hello world.")
+  await waitFor(() =>
+    logs.some(
+      (entry) =>
+        entry.message === "voice_turn_finished" &&
+        typeof entry.frames === "number" &&
+        entry.frames > 0
+    )
+  )
+  const messages = logs.map((entry) => entry.message)
+  assert.ok(messages.includes("voice_reply_started"))
+  assert.ok(messages.includes("voice_turn_started"))
+})

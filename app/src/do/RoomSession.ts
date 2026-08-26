@@ -19,6 +19,7 @@ import {
   isAgentAuthorizedForMedia,
   isAgentAuthorizedForSharedMedia,
   isAgentAuthorizedForVoiceReply,
+  isValidVoiceReplyState,
   NO_MEETING_NOTES,
   NO_VOICE_REPLY,
   resolveAgentPurposePermission,
@@ -377,6 +378,41 @@ type ClientMessage =
   | { type: "voice-reply-start"; agentParticipantId: string }
   | { type: "voice-reply-stop" }
 
+/** #83 live-fix storage hygiene for one Agent participant's media block:
+ * an agent holding the ACTIVE voiceReply grant may keep its single published
+ * outbound audio track (and the registered mid Stop needs for revocation)
+ * across room loads. Every other shape — no grant, wrong agent, multiple
+ * tracks, video, or a mid without a matching track — is stripped exactly as
+ * the old subscribe-only rule did. This preserves an authorized publication
+ * across DO eviction/restart; it never loosens who may create one. */
+export function normalizeAgentParticipantMedia(
+  media: RoomParticipant["media"],
+  voiceReply: VoiceReplyState,
+  participantId: string
+): { media: RoomParticipant["media"]; changed: boolean } {
+  if (!media) return { media, changed: false }
+  const tracks = Array.isArray(media.tracks) ? media.tracks : []
+  const publishedMid =
+    typeof media.agentPublishedMid === "string" &&
+    media.agentPublishedMid.length > 0
+      ? media.agentPublishedMid
+      : undefined
+  // Callers pass the ALREADY-NORMALIZED grant (normalizeRoom hoists
+  // isValidVoiceReplyState above this decision); authorization reuses the
+  // exact production predicate so no second rule can drift.
+  const authorized =
+    isAgentAuthorizedForVoiceReply(voiceReply, participantId) &&
+    tracks.length === 1 &&
+    tracks[0]!.kind === "audio" &&
+    publishedMid !== undefined
+  if (authorized) return { media, changed: false }
+  if (tracks.length === 0 && publishedMid === undefined)
+    return { media, changed: false }
+  const next: RoomParticipant["media"] = { ...media, tracks: [] }
+  if (publishedMid !== undefined) delete next.agentPublishedMid
+  return { media: next, changed: true }
+}
+
 export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
   // short-lived reservation while the request refreshes its lease.
@@ -427,6 +463,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     changed: boolean
   } {
     let changed = false
+    // Normalize the voiceReply grant FIRST so agent media hygiene below
+    // sees the post-validation state — a persisted {active:true, matching
+    // agent} block with a missing/invalid startedAt must degrade to
+    // NO_VOICE_REPLY before the publication-preservation decision, never
+    // after (P1 fail-closed ordering).
+    const normalizedVoiceReply = isValidVoiceReplyState(stored.voiceReply)
+      ? stored.voiceReply
+      : NO_VOICE_REPLY
     const participants: Record<string, RoomParticipant> = {}
 
     for (const [id, rawParticipant] of Object.entries(stored.participants)) {
@@ -463,8 +507,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             changed = true
           }
         }
-        if (participant.media && participant.media.tracks.length > 0) {
-          participant.media = { ...participant.media, tracks: [] }
+        const normalizedAgentMedia = normalizeAgentParticipantMedia(
+          participant.media,
+          normalizedVoiceReply,
+          participant.id
+        )
+        if (normalizedAgentMedia.changed) {
+          participant.media = normalizedAgentMedia.media
           changed = true
         }
         if (participant.media?.agentSubscribedMids !== undefined) {
@@ -575,13 +624,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       changed = true
     }
 
-    let voiceReply: VoiceReplyState
-    if (this.validVoiceReply(stored.voiceReply)) {
-      voiceReply = stored.voiceReply
-    } else {
-      voiceReply = NO_VOICE_REPLY
-      changed = true
-    }
+    let voiceReply: VoiceReplyState = normalizedVoiceReply
     if (
       voiceReply.active &&
       (!voiceReply.agentParticipantId ||
@@ -629,15 +672,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private validVoiceReply(value: unknown): value is VoiceReplyState {
-    if (!value || typeof value !== "object") return false
-    const candidate = value as Partial<VoiceReplyState>
-    if (typeof candidate.active !== "boolean") return false
-    if (!candidate.active) return true
-    return (
-      typeof candidate.agentParticipantId === "string" &&
-      candidate.agentParticipantId.length > 0 &&
-      typeof candidate.startedAt === "number"
-    )
+    return isValidVoiceReplyState(value)
   }
 
   private validPendingMediaCleanup(
