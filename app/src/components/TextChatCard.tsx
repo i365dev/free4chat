@@ -36,7 +36,7 @@ interface TextChatCardProps {
   onSendFile: (file: File) => void
   onSendAction: (
     actionType: ActionType,
-    actionPayload: Record<string, string>,
+    actionPayload: Record<string, string>
   ) => void
   /** #115: real authenticated Room participant id of THIS browser — used to
    * decide whether an incoming collab request targets this Human. Public
@@ -45,7 +45,7 @@ interface TextChatCardProps {
   /** #115: submit accepted/declined for a request addressed to this Human. */
   onCollabRespond?: (
     requestId: string,
-    decision: "accepted" | "declined",
+    decision: "accepted" | "declined"
   ) => void
   /** #117: authenticated on-demand read of one room collaboration artifact. */
   onReadArtifact?: (attachmentId: string) => Promise<RoomAttachmentRead>
@@ -53,7 +53,7 @@ interface TextChatCardProps {
   onCollabResult?: (
     requestId: string,
     status: "completed" | "failed",
-    summary: string,
+    summary: string
   ) => void
 }
 
@@ -113,7 +113,7 @@ function TextWithLinks({ text }: { text: string }) {
           </a>
         ) : (
           part
-        ),
+        )
       )}
     </span>
   )
@@ -161,7 +161,7 @@ function PollCard({
     (m) =>
       m.type === "action" &&
       m.actionType === "vote" &&
-      m.actionPayload?.pollId === pollId,
+      m.actionPayload?.pollId === pollId
   )
   const myVote = votes.find((v) => v.peerId === myPeerId)?.actionPayload?.option
 
@@ -178,7 +178,7 @@ function PollCard({
       <div className="flex flex-col gap-1">
         {options.map((opt) => {
           const count = votes.filter(
-            (v) => v.actionPayload?.option === opt,
+            (v) => v.actionPayload?.option === opt
           ).length
           const total = votes.length
           const pct = total > 0 ? Math.round((count / total) * 100) : 0
@@ -272,13 +272,13 @@ function ActionCard({
   localParticipantId?: string
   onCollabRespond?: (
     requestId: string,
-    decision: "accepted" | "declined",
+    decision: "accepted" | "declined"
   ) => void
   onViewArtifact?: (attachmentId: string) => void
   onCollabResult?: (
     requestId: string,
     status: "completed" | "failed",
-    summary: string,
+    summary: string
   ) => void
   onOpenResultComposer?: (target: {
     requestId: string
@@ -297,8 +297,7 @@ function ActionCard({
     const terminal = hasCollabTerminalResult(allMessages, collab.requestId)
     const declinedPresent = allMessages.some(
       (m) =>
-        m.collab?.requestId === collab.requestId &&
-        m.collab.kind === "declined",
+        m.collab?.requestId === collab.requestId && m.collab.kind === "declined"
     )
     // #121: terminal controls appear ONLY when THIS Human is the target,
     // the request came from someone else, it was ACCEPTED, and no terminal
@@ -590,7 +589,7 @@ function PollCreator({
           onClick={() =>
             onSend(
               question.trim(),
-              options.filter((o) => o.trim()),
+              options.filter((o) => o.trim())
             )
           }
           className="flex-1 rounded-lg bg-rose-600 py-1.5 text-xs font-medium text-white hover:bg-rose-500 disabled:opacity-40"
@@ -711,7 +710,7 @@ export default function TextChatCard({
     if (message.trim() !== "") {
       onSendText(
         message.trim(),
-        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents),
+        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
       )
       setMessage("")
       setSelectedAgents([])
@@ -752,7 +751,7 @@ export default function TextChatCard({
     ) {
       onSendText(
         message.trim(),
-        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents),
+        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
       )
       setMessage("")
       setSelectedAgents([])
@@ -834,14 +833,14 @@ export default function TextChatCard({
     message === "/"
       ? slashCommands
       : message.startsWith("/") && !message.includes(" ")
-        ? slashCommands.filter((c) => c.label.startsWith(message.toLowerCase()))
-        : []
+      ? slashCommands.filter((c) => c.label.startsWith(message.toLowerCase()))
+      : []
 
   const showPicker = pickerItems.length > 0
 
   const connectedAgents = participants.filter(
     (participant) =>
-      participant.kind === "agent" && participant.peerId !== LOCAL_PEER_ID,
+      participant.kind === "agent" && participant.peerId !== LOCAL_PEER_ID
   )
   const caretPosition = inputRef.current?.selectionStart ?? message.length
   const mentionMatch = message
@@ -852,7 +851,7 @@ export default function TextChatCard({
     mentionQuery === null
       ? []
       : connectedAgents.filter((agent) =>
-          agent.name.toLowerCase().startsWith(mentionQuery.toLowerCase()),
+          agent.name.toLowerCase().startsWith(mentionQuery.toLowerCase())
         )
   const showAgentPicker = !pickerDismissed && mentionAgents.length > 0
 
@@ -870,7 +869,7 @@ export default function TextChatCard({
     setSelectedAgents((current) =>
       current.some((selected) => selected.id === agent.peerId)
         ? current
-        : [...current, { id: agent.peerId, name: agent.name }],
+        : [...current, { id: agent.peerId, name: agent.name }]
     )
     setPickerDismissed(false)
     setPickerIndex(0)
@@ -1131,7 +1130,7 @@ export default function TextChatCard({
                       </>
                     )}
                   </button>
-                ),
+                )
               )}
             </div>
           )}
@@ -1148,8 +1147,8 @@ export default function TextChatCard({
                 current.filter((agent) =>
                   resolveAgentTargetIds(nextMessage, connectedAgents, [
                     agent,
-                  ]).includes(agent.id),
-                ),
+                  ]).includes(agent.id)
+                )
               )
               setPickerDismissed(false)
               setPickerIndex(0)
@@ -1232,7 +1231,7 @@ export default function TextChatCard({
             onCollabResult?.(
               resultTarget.requestId,
               resultTarget.status,
-              summary,
+              summary
             )
             setResultTarget(null)
           }}

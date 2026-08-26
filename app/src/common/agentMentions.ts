@@ -20,11 +20,11 @@ function hasCompleteMention(text: string, name: string): boolean {
 export function resolveAgentTargetIds(
   text: string,
   connectedAgents: AgentMentionCandidate[],
-  selectedAgents: SelectedAgentMention[],
+  selectedAgents: SelectedAgentMention[]
 ): string[] {
   const targets = new Set<string>()
   const completeMentions = connectedAgents.filter((agent) =>
-    hasCompleteMention(text, agent.name),
+    hasCompleteMention(text, agent.name)
   )
 
   for (const selected of selectedAgents) {

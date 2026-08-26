@@ -70,10 +70,10 @@ function decodeHandle(value: string): AgentHandle | null {
     const padded = value.replaceAll("-", "+").replaceAll("_", "/")
     const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4))
     const bytes = Uint8Array.from(binary, (character) =>
-      character.charCodeAt(0),
+      character.charCodeAt(0)
     )
     const candidate = JSON.parse(
-      new TextDecoder().decode(bytes),
+      new TextDecoder().decode(bytes)
     ) as Partial<AgentHandle>
     if (
       typeof candidate.room !== "string" ||
@@ -111,7 +111,7 @@ function envFromAuthContext(): McpEnv {
 async function roomControl(
   env: McpEnv,
   room: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<ControlResult> {
   const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
   const response = await stub.fetch("https://room/control", {
@@ -144,7 +144,7 @@ function controlError(result: ControlResult): string {
 
 async function allowJoin(
   env: McpEnv,
-  request: Request | undefined,
+  request: Request | undefined
 ): Promise<boolean> {
   const ip = request?.headers.get("CF-Connecting-IP") || "unknown"
   const key = `mcp:join:rl:${ip}`
@@ -176,7 +176,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ roomId }) => {
       const result = await roomControl(env, roomId, { action: "room-info" })
       return result.ok ? toolResult(result.data) : toolError("room_unavailable")
-    },
+    }
   )
 
   server.registerTool(
@@ -199,7 +199,7 @@ function createMcpServer(context: McpRequestContext) {
       const participantId = crypto.randomUUID()
       const participantToken = crypto.randomUUID()
       const normalized = (capabilities ?? []).map((capability) =>
-        capability.trim().toLowerCase(),
+        capability.trim().toLowerCase()
       )
       const result = await roomControl(env, roomId, {
         action: "agent-register",
@@ -219,7 +219,7 @@ function createMcpServer(context: McpRequestContext) {
         return toolError(
           result.data.error === "invalid_capabilities"
             ? "invalid_capabilities"
-            : controlError(result),
+            : controlError(result)
         )
       return toolResult({
         participant: result.data.participant,
@@ -231,7 +231,7 @@ function createMcpServer(context: McpRequestContext) {
         cursor: result.data.cursor,
         expiresAt: result.data.expiresAt,
       })
-    },
+    }
   )
 
   server.registerTool(
@@ -255,7 +255,7 @@ function createMcpServer(context: McpRequestContext) {
       const participantId = crypto.randomUUID()
       const participantToken = crypto.randomUUID()
       const normalized = (capabilities ?? []).map((capability) =>
-        capability.trim().toLowerCase(),
+        capability.trim().toLowerCase()
       )
       // Bounded retry with fresh cryptographic ids; the DO itself is
       // strictly create-only, so a collision can never join or mutate an
@@ -286,7 +286,7 @@ function createMcpServer(context: McpRequestContext) {
         return toolError(
           result.data.error === "invalid_capabilities"
             ? "invalid_capabilities"
-            : controlError(result),
+            : controlError(result)
         )
       }
       if (!created) return toolError("room_id_collision")
@@ -306,7 +306,7 @@ function createMcpServer(context: McpRequestContext) {
         expiresAt: payload.expiresAt,
         invite: buildRoomInvite(roomId),
       })
-    },
+    }
   )
 
   server.registerTool(
@@ -329,7 +329,7 @@ function createMcpServer(context: McpRequestContext) {
         participantId: handle.participantId,
         token: handle.participantToken,
         capabilities: capabilities.map((capability) =>
-          capability.trim().toLowerCase(),
+          capability.trim().toLowerCase()
         ),
       })
       return result.ok
@@ -337,9 +337,9 @@ function createMcpServer(context: McpRequestContext) {
         : toolError(
             result.data.error === "invalid_capabilities"
               ? "invalid_capabilities"
-              : controlError(result),
+              : controlError(result)
           )
-    },
+    }
   )
 
   server.registerTool(
@@ -366,7 +366,7 @@ function createMcpServer(context: McpRequestContext) {
       return result.ok
         ? toolResult(result.data)
         : toolError(controlError(result))
-    },
+    }
   )
 
   server.registerTool(
@@ -390,7 +390,7 @@ function createMcpServer(context: McpRequestContext) {
       return result.ok
         ? toolResult(result.data)
         : toolError(controlError(result))
-    },
+    }
   )
 
   const collabDetailsSchema = z
@@ -447,9 +447,9 @@ function createMcpServer(context: McpRequestContext) {
         : toolError(
             typeof result.data.error === "string"
               ? result.data.error
-              : controlError(result),
+              : controlError(result)
           )
-    },
+    }
   )
 
   server.registerTool(
@@ -482,9 +482,9 @@ function createMcpServer(context: McpRequestContext) {
         : toolError(
             typeof result.data.error === "string"
               ? result.data.error
-              : controlError(result),
+              : controlError(result)
           )
-    },
+    }
   )
 
   server.registerTool(
@@ -528,9 +528,9 @@ function createMcpServer(context: McpRequestContext) {
         : toolError(
             typeof result.data.error === "string"
               ? result.data.error
-              : controlError(result),
+              : controlError(result)
           )
-    },
+    }
   )
 
   server.registerTool(
@@ -587,9 +587,9 @@ function createMcpServer(context: McpRequestContext) {
         : toolError(
             typeof data.error === "string"
               ? data.error
-              : "attachment_unavailable",
+              : "attachment_unavailable"
           )
-    },
+    }
   )
 
   server.registerTool(
@@ -642,7 +642,7 @@ function createMcpServer(context: McpRequestContext) {
         return toolResult({ attachment, data, text })
       }
       return imageToolResult({ data, mimeType }, attachment)
-    },
+    }
   )
 
   server.registerTool(
@@ -665,7 +665,7 @@ function createMcpServer(context: McpRequestContext) {
       return result.ok
         ? toolResult(result.data)
         : toolError(controlError(result))
-    },
+    }
   )
 
   // #111 Observable Agent Workspace v0: opt-in, Agent-only, own-surface-only
@@ -715,9 +715,9 @@ function createMcpServer(context: McpRequestContext) {
       return response.ok
         ? toolResult(data)
         : toolError(
-            typeof data.error === "string" ? data.error : "surface_unavailable",
+            typeof data.error === "string" ? data.error : "surface_unavailable"
           )
-    },
+    }
   )
 
   server.registerTool(
@@ -740,7 +740,7 @@ function createMcpServer(context: McpRequestContext) {
       return result.ok
         ? toolResult(result.data)
         : toolError(controlError(result))
-    },
+    }
   )
 
   server.registerTool(
@@ -775,9 +775,9 @@ function createMcpServer(context: McpRequestContext) {
         return toolError("surface_not_found")
       return imageToolResult(
         { data, mimeType: (surface as { mimeType: string }).mimeType },
-        { surface },
+        { surface }
       )
-    },
+    }
   )
 
   return server
@@ -786,7 +786,7 @@ function createMcpServer(context: McpRequestContext) {
 export function handleMcpRequest(
   request: Request,
   env: McpEnv,
-  ctx: ExecutionContext,
+  ctx: ExecutionContext
 ): Promise<Response> {
   const handler = createMcpHandler(createMcpServer, {
     route: "/mcp",

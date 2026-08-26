@@ -30,7 +30,7 @@ const LOCAL_HUMAN = "human-h"
 function collabMessage(
   requestId: string,
   kind: "request" | "accepted" | "declined" | "completed" | "failed",
-  from: string,
+  from: string
 ): Message {
   return {
     peerId: from,
@@ -52,7 +52,7 @@ function collabMessage(
 
 function hookReturn(
   messages: Message[],
-  sendCollabResult: ReturnType<typeof vi.fn>,
+  sendCollabResult: ReturnType<typeof vi.fn>
 ) {
   return {
     participants: [
@@ -129,7 +129,7 @@ describe("Human terminal result wiring (#121)", () => {
     expect(sendCollabResult).toHaveBeenCalledWith(
       "r1",
       "failed",
-      "Could not verify: login page broken.",
+      "Could not verify: login page broken."
     )
   })
 
@@ -157,7 +157,7 @@ describe("Human terminal result wiring (#121)", () => {
     cases.push([a2aRequest])
     for (const messages of cases) {
       const view = render(
-        <RoomContent roomName="room" nickName="Hannah" roomType="audio" />,
+        <RoomContent roomName="room" nickName="Hannah" roomType="audio" />
       )
       expect(screen.queryByText("Mark complete")).toBeNull()
       expect(screen.queryByText("Mark failed")).toBeNull()

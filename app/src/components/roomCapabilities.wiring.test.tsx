@@ -83,7 +83,7 @@ describe("Human capability advertisement wiring (#113/#115/#119)", () => {
     })
 
     render(
-      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />,
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
 
     // Self Human: Capabilities entry present; no Request work on own card.

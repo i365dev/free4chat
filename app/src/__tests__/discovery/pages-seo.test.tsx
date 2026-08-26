@@ -53,7 +53,7 @@ const PAGES: Array<{
 function renderStub(Component: () => ReactElement) {
   const { container, unmount } = render(<Component />)
   const stub = container.querySelector<HTMLElement>(
-    '[data-testid="layout-stub"]',
+    '[data-testid="layout-stub"]'
   )
   return { stub, unmount }
 }
@@ -71,11 +71,11 @@ describe("Discovery pages — SEO metadata authored per page", () => {
       expect(title, `${name} title`).not.toBe("")
       expect(description, `${name} description`).not.toBe("")
       expect(titles.has(title), `duplicate title on ${name}: ${title}`).toBe(
-        false,
+        false
       )
       expect(
         descriptions.has(description),
-        `duplicate description on ${name}`,
+        `duplicate description on ${name}`
       ).toBe(false)
       titles.add(title)
       descriptions.add(description)
@@ -90,7 +90,7 @@ describe("Discovery pages — SEO metadata authored per page", () => {
       const { stub, unmount } = renderStub(Component)
       expect(stub?.dataset.path).toBe(path)
       unmount()
-    },
+    }
   )
 
   it("every page has a distinct analytics ctaId", () => {

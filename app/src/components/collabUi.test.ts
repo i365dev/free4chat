@@ -5,7 +5,7 @@ import type { Message } from "@common/types"
 import { hasCollabTerminalResult, isCollabRequestAnswered } from "./collabUi"
 function collab(
   requestId: string,
-  kind: "request" | "accepted" | "declined" | "completed" | "failed",
+  kind: "request" | "accepted" | "declined" | "completed" | "failed"
 ): Message {
   return {
     peerId: "someone",
@@ -33,8 +33,8 @@ describe("isCollabRequestAnswered (#115)", () => {
     expect(
       isCollabRequestAnswered(
         [collab("r1", "request"), collab("r1", "accepted")],
-        "r1",
-      ),
+        "r1"
+      )
     ).toBe(true)
   })
 
@@ -73,7 +73,7 @@ describe("terminal-result lifecycle helpers (#121)", () => {
   it("decisions for other requestIds never leak into this lifecycle", () => {
     const log = [collab("r2", "accepted"), collab("r2", "completed")]
     expect(
-      isCollabRequestAnswered(log, "r1") || hasCollabTerminalResult(log, "r1"),
+      isCollabRequestAnswered(log, "r1") || hasCollabTerminalResult(log, "r1")
     ).toBe(false)
   })
 })

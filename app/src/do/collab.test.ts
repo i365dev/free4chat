@@ -14,7 +14,7 @@ import {
 import type { AgentCapabilities, RoomParticipant } from "../room/types"
 
 function participant(
-  overrides: Partial<RoomParticipant> = {},
+  overrides: Partial<RoomParticipant> = {}
 ): RoomParticipant {
   return {
     id: "agent-a",
@@ -30,7 +30,7 @@ function participant(
 }
 
 function collabContext(
-  overrides: Partial<CollabValidationContext> = {},
+  overrides: Partial<CollabValidationContext> = {}
 ): CollabValidationContext {
   return {
     senderParticipantId: "agent-a",
@@ -95,7 +95,7 @@ describe("validateAdvertisedCapabilities", () => {
   it("rejects more than the bounded maximum", () => {
     const tooMany = Array.from(
       { length: MAX_ADVERTISED_CAPABILITIES + 1 },
-      (_, i) => `cap${i}`,
+      (_, i) => `cap${i}`
     )
     const result = validateAdvertisedCapabilities(tooMany)
     expect(result.ok).toBe(false)
@@ -201,7 +201,7 @@ describe("validateCollabEvent", () => {
         details: { url: "https://www.free4.chat" },
         attachmentIds: ["att-1"],
       },
-      collabContext(),
+      collabContext()
     )
     expect(result.ok).toBe(true)
     if (result.ok)
@@ -225,8 +225,8 @@ describe("validateCollabEvent", () => {
     expect(
       validateCollabEvent(
         { ...base, targetParticipantId: "ghost" },
-        collabContext(),
-      ).ok,
+        collabContext()
+      ).ok
     ).toBe(false)
     expect(
       validateCollabEvent(
@@ -236,14 +236,14 @@ describe("validateCollabEvent", () => {
             "agent-a": participant(),
             "agent-off": participant({ id: "agent-off", connected: false }),
           },
-        }),
-      ).ok,
+        })
+      ).ok
     ).toBe(false)
     expect(
       validateCollabEvent(
         { ...base, targetParticipantId: "agent-a" },
-        collabContext(),
-      ).ok,
+        collabContext()
+      ).ok
     ).toBe(false)
   })
 
@@ -252,8 +252,8 @@ describe("validateCollabEvent", () => {
     expect(
       validateCollabEvent(
         { kind: "request", requestId: "req-1", targetParticipantId: "agent-b" },
-        context,
-      ).ok,
+        context
+      ).ok
     ).toBe(false)
     expect(
       validateCollabEvent(
@@ -263,11 +263,11 @@ describe("validateCollabEvent", () => {
           targetParticipantId: "agent-b",
           summary: "s",
           details: Object.fromEntries(
-            Array.from({ length: 17 }, (_, i) => [`k${i}`, "v"]),
+            Array.from({ length: 17 }, (_, i) => [`k${i}`, "v"])
           ),
         },
-        context,
-      ).ok,
+        context
+      ).ok
     ).toBe(false)
     expect(
       validateCollabEvent(
@@ -278,8 +278,8 @@ describe("validateCollabEvent", () => {
           summary: "s",
           attachmentIds: ["missing"],
         },
-        context,
-      ).ok,
+        context
+      ).ok
     ).toBe(false)
   })
 
@@ -293,8 +293,8 @@ describe("validateCollabEvent", () => {
             targetParticipantId: "agent-b",
             summary: "s",
           },
-          collabContext(),
-        ).ok,
+          collabContext()
+        ).ok
       ).toBe(false)
   })
 
@@ -306,7 +306,7 @@ describe("validateCollabEvent", () => {
         summary: "no manual id",
       },
       collabContext(),
-      { generateRequestId: () => "generated-id-1" },
+      { generateRequestId: () => "generated-id-1" }
     )
     expect(generated.ok).toBe(true)
     if (generated.ok) expect(generated.event.requestId).toBe("generated-id-1")
@@ -315,8 +315,8 @@ describe("validateCollabEvent", () => {
       validateCollabEvent(
         { kind: "accepted", requestId: "", targetParticipantId: "" },
         collabContext(),
-        { generateRequestId: () => "should-not-be-used" },
-      ).ok,
+        { generateRequestId: () => "should-not-be-used" }
+      ).ok
     ).toBe(false)
   })
 
@@ -325,12 +325,12 @@ describe("validateCollabEvent", () => {
       expect(
         validateCollabEvent(
           { kind, requestId: "req-1", summary: "on it" },
-          collabContext(),
-        ).ok,
+          collabContext()
+        ).ok
       ).toBe(true)
     const failed = validateCollabEvent(
       { kind: "failed", requestId: "req-1", summary: "no browser here" },
-      collabContext(),
+      collabContext()
     )
     expect(failed.ok).toBe(true)
   })
@@ -339,8 +339,8 @@ describe("validateCollabEvent", () => {
     expect(
       validateCollabEvent(
         { kind: "delegated", requestId: "req-1" },
-        collabContext(),
-      ).ok,
+        collabContext()
+      ).ok
     ).toBe(false)
   })
 })
@@ -378,15 +378,15 @@ describe("CollabRegistry", () => {
       registry.recordResponse(
         { ...requestEvent, kind: "accepted", summary: undefined },
         "agent-a",
-        9,
-      ),
+        9
+      )
     ).toEqual({ action: "rejected", error: "not_request_target" })
     expect(
       registry.recordResponse(
         { ...requestEvent, kind: "accepted" },
         "agent-b",
-        9,
-      ),
+        9
+      )
     ).toEqual({ action: "recorded", sequence: 9 })
   })
 
@@ -396,8 +396,8 @@ describe("CollabRegistry", () => {
       registry.recordResponse(
         { ...requestEvent, kind: "completed", summary: "done" },
         "agent-b",
-        3,
-      ),
+        3
+      )
     ).toEqual({ action: "rejected", error: "unknown_request" })
   })
 
@@ -409,15 +409,15 @@ describe("CollabRegistry", () => {
       registry.recordResponse(
         { ...requestEvent, kind: "accepted" },
         "agent-b",
-        10,
-      ),
+        10
+      )
     ).toEqual({ action: "duplicate", sequence: 9 })
     expect(
       registry.recordResponse(
         { ...requestEvent, kind: "completed", summary: "done" },
         "agent-b",
-        11,
-      ),
+        11
+      )
     ).toEqual({ action: "recorded", sequence: 11 })
   })
 
@@ -521,10 +521,10 @@ describe("CollabRegistry rebuild after DO eviction/restart", () => {
       targetParticipantId: "agent-a",
     })
     expect(
-      freshRegistry.precheckResponse("req-1", "accepted", "agent-b"),
+      freshRegistry.precheckResponse("req-1", "accepted", "agent-b")
     ).toEqual({ action: "duplicate", sequence: 11 })
     expect(
-      freshRegistry.precheckResponse("req-1", "failed", "agent-b"),
+      freshRegistry.precheckResponse("req-1", "failed", "agent-b")
     ).toEqual({ action: "record" })
   })
 
@@ -540,8 +540,8 @@ describe("CollabRegistry rebuild after DO eviction/restart", () => {
           targetParticipantId: "agent-b",
           summary: "check the page",
         },
-        999,
-      ),
+        999
+      )
     ).toEqual({ action: "duplicate", sequence: 10 })
   })
 
@@ -607,10 +607,10 @@ describe("CollabRegistry rebuild fail-closed when the request itself is evicted"
     expect(freshRegistry.routingFor("req-evicted", "agent-b")).toBeNull()
     // A must NOT be treated as the target of a phantom reversed request.
     expect(
-      freshRegistry.precheckResponse("req-evicted", "failed", "agent-a"),
+      freshRegistry.precheckResponse("req-evicted", "failed", "agent-a")
     ).toEqual({ action: "rejected", error: "unknown_request" })
     expect(
-      freshRegistry.precheckResponse("req-evicted", "failed", "agent-b"),
+      freshRegistry.precheckResponse("req-evicted", "failed", "agent-b")
     ).toEqual({ action: "rejected", error: "unknown_request" })
   })
 
@@ -655,10 +655,10 @@ describe("CollabRegistry rebuild fail-closed when the request itself is evicted"
       targetParticipantId: "agent-a",
     })
     expect(
-      freshRegistry.precheckResponse("req-kept", "accepted", "agent-b"),
+      freshRegistry.precheckResponse("req-kept", "accepted", "agent-b")
     ).toEqual({ action: "duplicate", sequence: 11 })
     expect(
-      freshRegistry.precheckResponse("req-kept", "failed", "agent-b"),
+      freshRegistry.precheckResponse("req-kept", "failed", "agent-b")
     ).toEqual({ action: "record" })
   })
 })
@@ -720,7 +720,7 @@ describe("CollabRegistry Human-targeted requests (#115)", () => {
     const registry = new CollabRegistry()
     registry.recordRequest(humanRequest, 5)
     expect(
-      registry.precheckResponse("req-h", "declined", "human-other"),
+      registry.precheckResponse("req-h", "declined", "human-other")
     ).toEqual({ action: "rejected", error: "not_request_target" })
   })
 
@@ -772,7 +772,7 @@ describe("sanitizeStoredAdvertisedList (#119)", () => {
 
   it("truncates to the existing bound", () => {
     const result = sanitizeStoredAdvertisedList(
-      Array.from({ length: 10 }, (_, i) => `cap${i}`),
+      Array.from({ length: 10 }, (_, i) => `cap${i}`)
     )
     expect(result.changed).toBe(true)
     expect(result.advertised?.length).toBe(8)
@@ -836,7 +836,7 @@ describe("rosterProjection Human advertised (#119)", () => {
     const serialized = JSON.stringify(
       rosterProjection({
         "human-on": participant({ id: "human-on", name: "On", kind: "human" }),
-      }),
+      })
     )
     expect(serialized.includes("token")).toBe(false)
     expect(serialized.includes("nonce")).toBe(false)
@@ -853,7 +853,7 @@ describe("#123 attachment refs against CURRENT attachments", () => {
         summary: "Inspect",
         attachmentIds: ["att-1"],
       },
-      collabContext(),
+      collabContext()
     )
     expect(result.ok).toBe(true)
     const registry = new CollabRegistry()
@@ -875,7 +875,7 @@ describe("#123 attachment refs against CURRENT attachments", () => {
         summary: "Inspect",
         attachmentIds: ["att-ghost"],
       },
-      collabContext(),
+      collabContext()
     )
     expect(rejected).toMatchObject({
       ok: false,
@@ -894,7 +894,7 @@ describe("#123 attachment refs against CURRENT attachments", () => {
         summary: "Inspect",
         attachmentIds: ["att-1", "att-ghost"],
       },
-      collabContext(),
+      collabContext()
     )
     expect(mixed.ok).toBe(false)
   })
