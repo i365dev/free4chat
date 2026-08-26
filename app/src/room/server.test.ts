@@ -13,7 +13,7 @@ const ORIGIN = "http://localhost:3000"
 type CapturedUpload = { contentType: string | null }
 
 function makeEnv(
-  doFetch: (upload: { contentType: string | null }) => Response,
+  doFetch: (upload: { contentType: string | null }) => Response
 ): RoomProtocolEnv {
   const namespace = {
     idFromName: (name: string) => ({ name }),
@@ -22,7 +22,7 @@ function makeEnv(
     get: () => ({
       fetch: (
         _url: string | URL,
-        init?: { headers?: { get: (name: string) => string | null } },
+        init?: { headers?: { get: (name: string) => string | null } }
       ) =>
         Promise.resolve(
           doFetch({
@@ -30,7 +30,7 @@ function makeEnv(
               init?.headers?.get("Content-Type") ??
               init?.headers?.get("content-type") ??
               null,
-          }),
+          })
         ),
     }),
   }
@@ -49,7 +49,7 @@ function envCapturing(uploads: CapturedUpload[]): RoomProtocolEnv {
 function uploadRequest(
   mimeType: string,
   body: string,
-  participant?: { id: string; token: string },
+  participant?: { id: string; token: string }
 ): Request {
   return new Request("https://www.free4.chat/api/room/attachments", {
     method: "POST",
@@ -83,7 +83,7 @@ describe("room attachment upload gate", () => {
         id: "human-1",
         token: "tok-1",
       }),
-      env,
+      env
     )
     expect(response.status).toBe(200)
     expect(uploads).toEqual([{ contentType: "text/markdown" }])
@@ -95,7 +95,7 @@ describe("room attachment upload gate", () => {
       const env = envCapturing(uploads)
       const response = await handleRoomRequest(
         uploadRequest(mime, "{}", { id: "h", token: "t" }),
-        env,
+        env
       )
       expect(response.status).toBe(200)
       expect(uploads[0]?.contentType).toBe(mime)
@@ -106,7 +106,7 @@ describe("room attachment upload gate", () => {
     const env = makeEnv(() => Response.json({ id: "att-3" }))
     const response = await handleRoomRequest(
       uploadRequest("image/jpeg", "jpeg-bytes", { id: "h", token: "t" }),
-      env,
+      env
     )
     expect(response.status).toBe(200)
   })
@@ -117,7 +117,7 @@ describe("room attachment upload gate", () => {
     })
     const response = await handleRoomRequest(
       uploadRequest("application/zip", "PK", { id: "h", token: "t" }),
-      env,
+      env
     )
     expect(response.status).toBe(415)
   })

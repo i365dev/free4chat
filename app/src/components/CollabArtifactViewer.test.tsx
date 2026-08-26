@@ -28,7 +28,7 @@ function makeObjectUrls() {
         const index = urls.indexOf(url)
         if (index >= 0) urls.splice(index, 1)
       }),
-    }),
+    })
   )
   return urls
 }
@@ -47,7 +47,7 @@ describe("CollabArtifactViewer (#117)", () => {
         attachmentId="att-1"
         read={read}
         onClose={onClose}
-      />,
+      />
     )
 
     // Exactly one on-demand read for the exact requested artifact.
@@ -79,7 +79,7 @@ describe("CollabArtifactViewer (#117)", () => {
         attachmentId="att-2"
         read={read}
         onClose={vi.fn()}
-      />,
+      />
     )
     await waitFor(() => expect(screen.getByText(/not html/)).toBeTruthy())
     // Literal text inside <pre>: the raw markup string is visible as text.
@@ -93,16 +93,10 @@ describe("CollabArtifactViewer (#117)", () => {
     makeObjectUrls()
     const read = vi.fn().mockRejectedValue(new Error("attachment_unavailable"))
     render(
-      <CollabArtifactViewer
-        attachmentId="gone"
-        read={read}
-        onClose={vi.fn()}
-      />,
+      <CollabArtifactViewer attachmentId="gone" read={read} onClose={vi.fn()} />
     )
     await waitFor(() =>
-      expect(
-        screen.getByText(/Artifact is no longer available\./),
-      ).toBeTruthy(),
+      expect(screen.getByText(/Artifact is no longer available\./)).toBeTruthy()
     )
     // No object URL was ever created for a failed read.
     expect(URL.createObjectURL).not.toHaveBeenCalled()

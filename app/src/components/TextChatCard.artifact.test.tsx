@@ -39,7 +39,7 @@ function collabResultMessage(): Message {
 
 function renderCard(
   messages: Message[],
-  onReadArtifact: (attachmentId: string) => Promise<RoomAttachmentRead>,
+  onReadArtifact: (attachmentId: string) => Promise<RoomAttachmentRead>
 ) {
   return render(
     <TextChatCard
@@ -52,7 +52,7 @@ function renderCard(
       onSendAction={vi.fn()}
       localParticipantId="human-h"
       onReadArtifact={onReadArtifact}
-    />,
+    />
   )
 }
 
@@ -80,7 +80,7 @@ describe("collab card artifact consumption (#117)", () => {
 
     // Text-like artifact renders literally inside <pre>.
     await waitFor(() =>
-      expect(screen.getByText("{}", { selector: "pre" })).toBeTruthy(),
+      expect(screen.getByText("{}", { selector: "pre" })).toBeTruthy()
     )
     // Viewer is open: closing hides it without touching the timeline.
     fireEvent.click(screen.getByText("Close"))

@@ -42,7 +42,11 @@ export interface AgentCapabilities {
 // Free4Chat transports these envelopes and correlates them by requestId; it
 // never decides, retries, or interprets them.
 export type CollabEventKind =
-  "request" | "accepted" | "declined" | "completed" | "failed"
+  | "request"
+  | "accepted"
+  | "declined"
+  | "completed"
+  | "failed"
 
 export interface CollabEvent {
   requestId: string
@@ -108,7 +112,11 @@ export interface RoomMessage {
 
 export type AgentImageMimeType = "image/jpeg" | "image/png" | "image/webp"
 export type AgentTextMimeType =
-  "text/plain" | "text/markdown" | "text/csv" | "application/json" | "text/yaml"
+  | "text/plain"
+  | "text/markdown"
+  | "text/csv"
+  | "application/json"
+  | "text/yaml"
 export type AgentAttachmentMimeType = AgentImageMimeType | AgentTextMimeType
 
 // #117: every MIME the bounded room attachment store can legitimately hold

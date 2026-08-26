@@ -64,7 +64,7 @@ function originAllowed(request: Request, route: string): boolean {
 }
 
 function getAppCredentials(
-  env: SfuEnv,
+  env: SfuEnv
 ): { appId: string; appSecret: string } | null {
   const appId = env.SFU_APP_ID
   const appSecret = env.SFU_APP_SECRET
@@ -82,7 +82,7 @@ function agentMediaEnabled(env: SfuEnv): boolean {
 async function checkRateLimit(
   request: Request,
   env: SfuEnv,
-  keyPrefix = "sfu:rl",
+  keyPrefix = "sfu:rl"
 ): Promise<boolean> {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown"
   const key = `${keyPrefix}:${ip}`
@@ -104,7 +104,7 @@ async function verifyTurnstile(token: unknown, env: SfuEnv): Promise<boolean> {
   })
   const response = await fetch(
     "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    { method: "POST", body: form },
+    { method: "POST", body: form }
   )
   if (!response.ok) return false
   const result = (await response.json()) as { success?: boolean }
@@ -114,7 +114,7 @@ async function verifyTurnstile(token: unknown, env: SfuEnv): Promise<boolean> {
 async function roomControl(
   env: SfuEnv,
   roomName: string,
-  body: unknown,
+  body: unknown
 ): Promise<Response> {
   const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(roomName))
   return stub.fetch("https://room/control", {
@@ -142,7 +142,7 @@ async function authorize(
   remoteTrackCount?: number,
   purpose?: unknown,
   wantsVoicePublish?: boolean,
-  localTrackCount?: number,
+  localTrackCount?: number
 ): Promise<Response> {
   return roomControl(env, roomName, {
     action: "authorize",
@@ -162,7 +162,7 @@ async function authorize(
 async function realtimeRequest(
   env: SfuEnv,
   path: string,
-  init: RequestInit = {},
+  init: RequestInit = {}
 ): Promise<Response> {
   const credentials = getAppCredentials(env)
   if (!credentials) return json({ error: "sfu_not_configured" }, 503)
@@ -171,14 +171,14 @@ async function realtimeRequest(
   headers.set("Content-Type", "application/json")
   return fetch(
     `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(
-      credentials.appId,
+      credentials.appId
     )}${path}`,
-    { ...init, headers },
+    { ...init, headers }
   )
 }
 
 async function readBody(
-  request: Request,
+  request: Request
 ): Promise<Record<string, unknown> | null> {
   try {
     const body = await request.json()
@@ -192,7 +192,7 @@ async function readBody(
 
 export async function handleSfuRequest(
   request: Request,
-  env: SfuEnv,
+  env: SfuEnv
 ): Promise<Response> {
   const url = new URL(request.url)
   const route = url.pathname.replace(/^\/api\/sfu\/?/, "")
@@ -250,7 +250,7 @@ export async function handleSfuRequest(
     const reconnectSessionId =
       typeof reconnect?.sessionId === "string" ? reconnect.sessionId : ""
     const isReconnect = Boolean(
-      reconnectParticipantId && reconnectToken && reconnectSessionId,
+      reconnectParticipantId && reconnectToken && reconnectSessionId
     )
     if (isReconnect) {
       const auth = await authorize(
@@ -258,7 +258,7 @@ export async function handleSfuRequest(
         room,
         reconnectParticipantId,
         reconnectToken,
-        reconnectSessionId,
+        reconnectSessionId
       )
       if (!auth.ok) return auth
     } else if (!(await verifyTurnstile(body.turnstileToken, env))) {
@@ -403,10 +403,10 @@ export async function handleSfuRequest(
     // (rather than only after, once Cloudflare has already created a
     // subscription that would immediately fail to register).
     const remoteTrackCount = requestedTracks.filter(
-      (track) => track.location === "remote",
+      (track) => track.location === "remote"
     ).length
     const localTracks = requestedTracks.filter(
-      (track) => track.location === "local",
+      (track) => track.location === "local"
     )
     const auth = await authorize(
       env,
@@ -422,7 +422,7 @@ export async function handleSfuRequest(
       (request.headers.get("origin") ?? "") !== ""
         ? body.wantsVoicePublish === true
         : body.wantsVoicePublish === true,
-      localTracks.length,
+      localTracks.length
     )
     if (!auth.ok) return auth
     // The DO's "authorize" action now also re-checks the current Meeting
@@ -439,13 +439,13 @@ export async function handleSfuRequest(
     // have succeeded by then. Human publishing is completely unaffected.
     if (route === "tracks") {
       const hasLocalTrack = requestedTracks.some(
-        (track) => track.location === "local",
+        (track) => track.location === "local"
       )
       if (participantKind === "agent" && hasLocalTrack)
         return json({ error: "agent_publish_not_allowed" }, 403)
     }
     for (const remoteTrack of requestedTracks.filter(
-      (track) => track.location === "remote",
+      (track) => track.location === "remote"
     )) {
       const remoteAuth = await authorize(
         env,
@@ -458,7 +458,7 @@ export async function handleSfuRequest(
           : undefined,
         typeof remoteTrack.trackName === "string"
           ? remoteTrack.trackName
-          : undefined,
+          : undefined
       )
       if (!remoteAuth.ok) return remoteAuth
     }
@@ -475,7 +475,7 @@ export async function handleSfuRequest(
       {
         method: route === "tracks" ? "POST" : "PUT",
         body: JSON.stringify(upstreamBody),
-      },
+      }
     )
     const responseBody = await upstream.text()
     if (!upstream.ok)
@@ -515,7 +515,7 @@ export async function handleSfuRequest(
       // subscriptions — only the granted Agent's Human-audio ingress needs
       // this bookkeeping.
       const hasRemoteTrack = requestedTracks.some(
-        (track) => track.location === "remote",
+        (track) => track.location === "remote"
       )
       // #83: capture the published mid for the voiceReply-granted agent so
       // Stop/reassignment can actively close it; TOCTOU failure closes the
@@ -531,7 +531,7 @@ export async function handleSfuRequest(
         const publishedMid = (upstreamJson.tracks ?? [])
           .map((track) => track.mid)
           .find(
-            (mid): mid is string => typeof mid === "string" && mid.length > 0,
+            (mid): mid is string => typeof mid === "string" && mid.length > 0
           )
         const publishTrackName =
           typeof localTracks[0]!.trackName === "string"
@@ -571,7 +571,7 @@ export async function handleSfuRequest(
         const remoteMids = (upstreamJson.tracks ?? [])
           .map((track) => track.mid)
           .filter(
-            (mid): mid is string => typeof mid === "string" && mid.length > 0,
+            (mid): mid is string => typeof mid === "string" && mid.length > 0
           )
         // An Agent remote subscription whose upstream response carries no
         // usable mid can never be revoked later — Cloudflare's tracks/close
@@ -613,7 +613,7 @@ export async function handleSfuRequest(
               console.error(
                 "meeting_notes_cleanup_handoff_failed",
                 room,
-                sessionId,
+                sessionId
               )
             }
           }
@@ -640,7 +640,7 @@ export async function handleSfuRequest(
     const tracks = Array.isArray(body.tracks)
       ? body.tracks.filter(
           (track): track is Record<string, unknown> =>
-            Boolean(track) && typeof track === "object",
+            Boolean(track) && typeof track === "object"
         )
       : []
     if (!room || !participantId || !token || !sessionId || !tracks.length)
@@ -659,7 +659,7 @@ export async function handleSfuRequest(
           sessionDescription: body.sessionDescription,
           force: body.force === true,
         }),
-      },
+      }
     )
     const responseBody = await upstream.text()
     if (!upstream.ok)
@@ -708,14 +708,14 @@ export async function handleSfuRequest(
       undefined,
       typeof body.publisherSessionId === "string"
         ? body.publisherSessionId
-        : undefined,
+        : undefined
     )
     if (!auth.ok) return auth
     if (route === "datachannels/close") {
       const dataChannels = Array.isArray(body.dataChannels)
         ? body.dataChannels.filter(
             (channel): channel is Record<string, unknown> =>
-              Boolean(channel) && typeof channel === "object",
+              Boolean(channel) && typeof channel === "object"
           )
         : []
       if (
@@ -724,7 +724,7 @@ export async function handleSfuRequest(
           (channel) =>
             typeof channel.id !== "number" ||
             (channel.sessionId !== undefined &&
-              typeof channel.sessionId !== "string"),
+              typeof channel.sessionId !== "string")
         )
       )
         return badRequest("invalid_data_channel")
@@ -738,7 +738,7 @@ export async function handleSfuRequest(
           sessionId,
           undefined,
           undefined,
-          channel.sessionId,
+          channel.sessionId
         )
         if (!channelAuth.ok) return channelAuth
       }
@@ -753,7 +753,7 @@ export async function handleSfuRequest(
               sessionId: channel.sessionId,
             })),
           }),
-        },
+        }
       )
       const responseBody = await upstream.text()
       return new Response(responseBody, {
@@ -777,7 +777,7 @@ export async function handleSfuRequest(
       {
         method: "POST",
         body: JSON.stringify(upstreamBody),
-      },
+      }
     )
     const responseBody = await upstream.text()
     return new Response(responseBody, {

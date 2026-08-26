@@ -18,7 +18,7 @@ describe("Privacy copy accuracy", () => {
     const noDatabaseClaim = source.match(/No database of[^.]*\./)?.[0]
     expect(
       noDatabaseClaim,
-      "expected a 'No database of...' sentence",
+      "expected a 'No database of...' sentence"
     ).toBeTruthy()
     expect(noDatabaseClaim!.toLowerCase()).toMatch(/human-to-human/)
   })
@@ -51,7 +51,7 @@ describe("Homepage and /temporary-chat-room copy accuracy", () => {
   it("scopes 'no history' claims to Free4Chat's servers, not an absolute guarantee", () => {
     expect(homepage).toMatch(/no permanent room history/i)
     expect(temporaryRoom).toMatch(
-      /no permanent (room )?history on our servers/i,
+      /no permanent (room )?history on our servers/i
     )
   })
 })

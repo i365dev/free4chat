@@ -53,7 +53,7 @@ export interface SurfacePublishContext {
  * existing publisher may always replace its own surface (even at capacity);
  * brand-new publishers beyond the cap get surface_capacity_exceeded. */
 export function evaluateSurfacePublish(
-  input: SurfacePublishContext,
+  input: SurfacePublishContext
 ): SurfacePolicyResult {
   if (!isSurfaceMimeType(input.mimeType))
     return { ok: false, error: "surface_mime_unsupported" }
@@ -85,7 +85,7 @@ export function evaluateSurfacePublish(
 export function surfaceChunkKey(
   participantId: string,
   snapshotId: string,
-  chunkIndex: number,
+  chunkIndex: number
 ): string {
   return `surface:${participantId}:${snapshotId}:${chunkIndex}`
 }
@@ -99,7 +99,7 @@ export const SURFACE_KEY_PREFIX = "surface:"
  * break the lease-expiry sweep. Orphans are swept unconditionally at room
  * expiry, which remains the fail-hard backstop. */
 export async function deleteSurfaceChunksBestEffort(
-  run: () => Promise<void>,
+  run: () => Promise<void>
 ): Promise<void> {
   try {
     await run()

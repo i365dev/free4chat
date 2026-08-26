@@ -38,7 +38,7 @@ export type CapabilityValidationResult =
  * wire. Invalid input is rejected (never silently repaired) so an Agent
  * advertising garbage fails loudly instead of shipping a wrong self-image. */
 export function validateAdvertisedCapabilities(
-  input: unknown,
+  input: unknown
 ): CapabilityValidationResult {
   if (!Array.isArray(input))
     return { ok: false, error: "invalid_capabilities", reason: "must_be_array" }
@@ -87,7 +87,7 @@ export function agentCapabilitiesFrom(validated: string[]): AgentCapabilities {
  * ingestion, invalid entries are dropped rather than rejected — a bad record
  * must never wedge room loading. Returns the same reference when clean. */
 export function sanitizeStoredAgentCapabilities(
-  capabilities: AgentCapabilities | undefined,
+  capabilities: AgentCapabilities | undefined
 ): { capabilities: AgentCapabilities; changed: boolean } {
   if (!capabilities || capabilities.text !== true)
     return { capabilities: { text: true }, changed: true }
@@ -98,7 +98,7 @@ export function sanitizeStoredAgentCapabilities(
       typeof token === "string" &&
       token.length > 0 &&
       token.length <= MAX_CAPABILITY_LENGTH &&
-      CAPABILITY_PATTERN.test(token),
+      CAPABILITY_PATTERN.test(token)
   )
   const deduped = [...new Set(cleaned)].slice(0, MAX_ADVERTISED_CAPABILITIES)
   if (
@@ -127,7 +127,7 @@ export function sanitizeStoredAdvertisedList(value: unknown): {
       typeof token === "string" &&
       token.length > 0 &&
       token.length <= MAX_CAPABILITY_LENGTH &&
-      CAPABILITY_PATTERN.test(token),
+      CAPABILITY_PATTERN.test(token)
   )
   const deduped = [...new Set(cleaned)].slice(0, MAX_ADVERTISED_CAPABILITIES)
   // An empty RESULT means "advertise nothing": represent as omitted so the
@@ -157,7 +157,7 @@ export interface ParticipantRosterEntry {
  * Answers "who here can potentially do X" without dumping full room state:
  * no tokens, no media session identifiers, no history. */
 export function rosterProjection(
-  participants: Record<string, RoomParticipant>,
+  participants: Record<string, RoomParticipant>
 ): ParticipantRosterEntry[] {
   return Object.values(participants)
     .filter((participant) => participant.connected)
@@ -196,7 +196,8 @@ export interface CollabValidationContext {
 }
 
 type CollabValidationResult =
-  { ok: true; event: CollabEvent } | { ok: false; error: string }
+  | { ok: true; event: CollabEvent }
+  | { ok: false; error: string }
 
 function validateCollabDetails(input: unknown): {
   ok: boolean
@@ -225,7 +226,7 @@ function validateCollabDetails(input: unknown): {
 
 function validateCollabAttachmentRefs(
   input: unknown,
-  context: CollabValidationContext,
+  context: CollabValidationContext
 ): { ok: boolean; error?: string; ids?: string[] } {
   if (input === undefined) return { ok: true }
   if (!Array.isArray(input) || input.some((id) => typeof id !== "string"))
@@ -265,7 +266,7 @@ const COLLAB_KINDS: CollabEventKind[] = [
 export function validateCollabEvent(
   input: CollabEventInput,
   context: CollabValidationContext,
-  options?: { generateRequestId?: () => string },
+  options?: { generateRequestId?: () => string }
 ): CollabValidationResult {
   const kind = input.kind
   if (
@@ -401,7 +402,7 @@ export class CollabRegistry {
   precheckResponse(
     requestId: string,
     kind: CollabEventKind,
-    responderParticipantId: string,
+    responderParticipantId: string
   ):
     | { action: "record" }
     | { action: "duplicate"; sequence: number }
@@ -423,7 +424,7 @@ export class CollabRegistry {
   commitResponse(
     requestId: string,
     kind: CollabEventKind,
-    sequence: number,
+    sequence: number
   ): void {
     const record = this.requests.get(requestId)
     if (!record) return
@@ -435,12 +436,12 @@ export class CollabRegistry {
   recordResponse(
     event: CollabEvent,
     responderParticipantId: string,
-    sequence: number,
+    sequence: number
   ): CollabRegistryOutcome {
     const precheck = this.precheckResponse(
       event.requestId,
       event.kind,
-      responderParticipantId,
+      responderParticipantId
     )
     if (precheck.action === "rejected")
       return { action: "rejected", error: precheck.error }
@@ -458,7 +459,7 @@ export class CollabRegistry {
    * to rejecting very late responses as unknown — never to double-execution.
    * */
   rebuild(
-    entries: ReadonlyArray<{ event: CollabEvent; sequence: number }>,
+    entries: ReadonlyArray<{ event: CollabEvent; sequence: number }>
   ): void {
     const grouped = new Map<
       string,
@@ -497,7 +498,7 @@ export class CollabRegistry {
    * request, so responders never self-report routing. */
   routingFor(
     requestId: string,
-    responderParticipantId: string,
+    responderParticipantId: string
   ): { fromParticipantId: string; targetParticipantId: string } | null {
     const record = this.requests.get(requestId)
     if (!record || responderParticipantId !== record.targetParticipantId)

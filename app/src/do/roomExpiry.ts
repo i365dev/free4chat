@@ -24,7 +24,7 @@ export const NO_EXPIRY = Date.UTC(2100, 0, 1)
 export function computeExpiresAt(
   participantCount: number,
   currentExpiresAt: number,
-  now: number,
+  now: number
 ): number {
   if (participantCount > 0) return NO_EXPIRY
   if (currentExpiresAt === NO_EXPIRY) return now + EMPTY_ROOM_TIMEOUT_MS

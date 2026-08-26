@@ -121,16 +121,17 @@ interface StoredParticipant extends RoomParticipant {
   tracks?: RoomMediaTrack[]
 }
 
-interface StoredRoom extends Omit<
-  RoomRecord,
-  | "participants"
-  | "messages"
-  | "attachments"
-  | "nextMessageSequence"
-  | "meetingNotes"
-  | "voiceReply"
-  | "pendingMediaCleanup"
-> {
+interface StoredRoom
+  extends Omit<
+    RoomRecord,
+    | "participants"
+    | "messages"
+    | "attachments"
+    | "nextMessageSequence"
+    | "meetingNotes"
+    | "voiceReply"
+    | "pendingMediaCleanup"
+  > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
   attachments?: RoomAttachment[]
@@ -391,8 +392,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (this.collabRebuilt) return
     const entries = room.messages
       .filter(
-        (message) =>
-          message.actionType === COLLAB_ACTION_TYPE && message.collab,
+        (message) => message.actionType === COLLAB_ACTION_TYPE && message.collab
       )
       .map((message) => ({
         event: message.collab!,
@@ -425,7 +425,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // it is never populated from tracks/muted/fileChannelReady legacy
         // fields, since an agent never publishes in the current protocol.
         const sanitized = sanitizeStoredAgentCapabilities(
-          participant.capabilities,
+          participant.capabilities
         )
         if (sanitized.changed) {
           participant.capabilities = sanitized.capabilities
@@ -488,7 +488,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // repaired/dropped (never rejected) so room loading cannot wedge.
       if (participant.kind === "human") {
         const sanitizedAdvertised = sanitizeStoredAdvertisedList(
-          participant.advertised,
+          participant.advertised
         )
         if (sanitizedAdvertised.changed) {
           if (sanitizedAdvertised.advertised)
@@ -525,7 +525,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const targets = Array.isArray(rawMessage.targets)
         ? [
             ...new Set(
-              rawMessage.targets.filter((id) => typeof id === "string"),
+              rawMessage.targets.filter((id) => typeof id === "string")
             ),
           ].slice(0, MAX_TARGETS)
         : undefined
@@ -539,7 +539,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (stored.nextMessageSequence !== nextMessageSequence) changed = true
     const attachments = Array.isArray(stored.attachments)
       ? stored.attachments.filter((attachment) =>
-          this.validAttachment(attachment),
+          this.validAttachment(attachment)
         )
       : []
     if (!Array.isArray(stored.attachments)) changed = true
@@ -629,7 +629,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private validPendingMediaCleanup(
-    value: unknown,
+    value: unknown
   ): value is PendingMediaCleanup[] {
     if (!Array.isArray(value)) return false
     return value.every((entry) => {
@@ -686,7 +686,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // orphan chunks are swept unconditionally at room expiry.
   private async deleteSurfaceChunks(
     participantId: string,
-    surface: Pick<RoomSurfaceV1, "snapshotId" | "size">,
+    surface: Pick<RoomSurfaceV1, "snapshotId" | "size">
   ): Promise<void> {
     const chunkCount = Math.ceil(surface.size / SURFACE_CHUNK_SIZE)
     const keys: string[] = []
@@ -705,11 +705,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private async deleteAttachmentChunks(
-    attachment: Pick<RoomAttachment, "id" | "chunkCount">,
+    attachment: Pick<RoomAttachment, "id" | "chunkCount">
   ): Promise<void> {
     for (let index = 0; index < attachment.chunkCount; index += 1)
       await this.ctx.storage.delete(
-        this.attachmentChunkKey(attachment.id, index),
+        this.attachmentChunkKey(attachment.id, index)
       )
   }
 
@@ -767,7 +767,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     room.expiresAt = computeExpiresAt(
       Object.keys(room.participants).length,
       room.expiresAt,
-      now,
+      now
     )
   }
 
@@ -799,7 +799,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // that was granted but never actually subscribed to anything).
   private stageAgentMediaRevocation(
     room: RoomRecord,
-    agentParticipantId: string,
+    agentParticipantId: string
   ): void {
     const participant = room.participants[agentParticipantId]
     if (!participant || participant.kind !== "agent" || !participant.media)
@@ -818,7 +818,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       sessionId,
       publishedMid && !mids.includes(publishedMid)
         ? [...mids, publishedMid]
-        : mids,
+        : mids
     )
   }
 
@@ -835,7 +835,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // Agent leave, lease expiry) and by alarm()'s periodic retry of whatever
   // is still outstanding.
   private async attemptCleanupNow(
-    entries: PendingMediaCleanup[],
+    entries: PendingMediaCleanup[]
   ): Promise<void> {
     if (entries.length === 0) return
     const confirmed: PendingMediaCleanup[] = []
@@ -843,7 +843,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const closed = await closeRealtimeTracks(
         this.env,
         entry.sessionId,
-        entry.mids,
+        entry.mids
       )
       if (closed) confirmed.push(entry)
     }
@@ -852,7 +852,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!fresh) return // room expired/deleted while these fetches were in flight
     fresh.pendingMediaCleanup = removeConfirmedMids(
       fresh.pendingMediaCleanup,
-      confirmed,
+      confirmed
     )
     await this.saveRoom(fresh)
     await this.scheduleNextAlarm(fresh)
@@ -897,7 +897,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           cursor: room.nextMessageSequence,
           expiresAt: room.expiresAt,
           expired: true,
-        }),
+        })
       )
     }
     this.agentWaiters.clear()
@@ -925,13 +925,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private async broadcastState(
     room?: RoomRecord,
-    except?: WebSocket,
+    except?: WebSocket
   ): Promise<void> {
     const current = room ?? (await this.activeRoom())
     if (current) {
       await this.broadcast(
         { type: "state", state: this.stateFor(current) },
-        except,
+        except
       )
     }
   }
@@ -958,7 +958,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     room: RoomRecord,
     participantId: string,
     token: string,
-    sessionId?: string,
+    sessionId?: string
   ): RoomParticipant | null {
     const participant = room.participants[participantId]
     if (!participant || participant.token !== token) return null
@@ -968,7 +968,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private appendMessage(
     room: RoomRecord,
-    message: Omit<RoomMessage, "sequence">,
+    message: Omit<RoomMessage, "sequence">
   ): RoomMessage {
     const roomMessage = {
       ...message,
@@ -981,7 +981,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private toAgentEvent(
     message: RoomMessage,
-    participantId: string,
+    participantId: string
   ): AgentEvent {
     return {
       sequence: message.sequence,
@@ -1006,7 +1006,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private toAttachmentEvent(
     attachment: RoomAttachment,
-    senderKind: ParticipantKind,
+    senderKind: ParticipantKind
   ): AgentEvent {
     return {
       sequence: attachment.sequence,
@@ -1030,7 +1030,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private agentEvents(
     room: RoomRecord,
     participantId: string,
-    cursor: number,
+    cursor: number
   ): {
     events: AgentEvent[]
     cursor: number
@@ -1049,7 +1049,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         sequence: attachment.sequence,
         event: this.toAttachmentEvent(
           attachment,
-          room.participants[attachment.senderId]?.kind ?? "human",
+          room.participants[attachment.senderId]?.kind ?? "human"
         ),
         peerId: attachment.senderId,
       })),
@@ -1062,7 +1062,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       events: events
         .filter(
           (entry) =>
-            entry.sequence > effectiveCursor && entry.peerId !== participantId,
+            entry.sequence > effectiveCursor && entry.peerId !== participantId
         )
         .map((entry) => entry.event),
       cursor: serverCursor,
@@ -1092,21 +1092,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.json({
             ...result,
             participants: rosterProjection(room.participants),
-          }),
+          })
         )
       }
     }
   }
 
   private async waitForAgent(
-    request: Extract<ControlRequest, { action: "agent-wait" }>,
+    request: Extract<ControlRequest, { action: "agent-wait" }>
   ): Promise<Response> {
     const room = await this.activeRoom()
     if (!room) return this.json({ error: "room_expired" }, 410)
     const participant = this.findParticipant(
       room,
       request.participantId,
-      request.token,
+      request.token
     )
     if (!participant) return this.json({ error: "unauthorized" }, 401)
     if (participant.kind !== "agent")
@@ -1156,7 +1156,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                     cursor: room.nextMessageSequence,
                     expiresAt: room.expiresAt,
                     expired: true,
-                  }),
+                  })
                 )
                 return
               }
@@ -1164,7 +1164,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                 this.json({
                   ...this.agentEvents(current, participant.id, request.cursor),
                   participants: rosterProjection(current.participants),
-                }),
+                })
               )
             })
           }, request.timeoutSeconds * 1000),
@@ -1199,7 +1199,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           ? agentMediaPermissions(
               room.meetingNotes,
               room.voiceReply,
-              request.participantId,
+              request.participantId
             )
           : { canSubscribeHumanAudio: false, canPublishVoice: false },
       })
@@ -1244,12 +1244,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       let registeredCapabilities: AgentCapabilities = { text: true }
       if (isAgent) {
         const validated = validateAdvertisedCapabilities(
-          request.participant.capabilities?.advertised ?? [],
+          request.participant.capabilities?.advertised ?? []
         )
         if (validated.ok === false)
           return this.json(
             { error: validated.error, reason: validated.reason },
-            400,
+            400
           )
         registeredCapabilities = agentCapabilitiesFrom(validated.capabilities)
       }
@@ -1292,12 +1292,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (request.participant.kind !== "agent")
         return this.json({ error: "invalid_participant_kind" }, 400)
       const validated = validateAdvertisedCapabilities(
-        request.participant.capabilities?.advertised ?? [],
+        request.participant.capabilities?.advertised ?? []
       )
       if (validated.ok === false)
         return this.json(
           { error: validated.error, reason: validated.reason },
-          400,
+          400
         )
       const now = Date.now()
       // The creator is merely participant #1 of an ordinary room: no owner,
@@ -1338,7 +1338,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1371,7 +1371,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1380,7 +1380,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (validated.ok === false)
         return this.json(
           { error: validated.error, reason: validated.reason },
-          400,
+          400
         )
       participant.capabilities = agentCapabilitiesFrom(validated.capabilities)
       participant.lastSeenAt = Date.now()
@@ -1399,7 +1399,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1414,7 +1414,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await deleteSurfaceChunksBestEffort(() =>
         previous
           ? this.deleteSurfaceChunks(participant.id, previous)
-          : Promise.resolve(),
+          : Promise.resolve()
       )
       await this.broadcastState(room)
       return this.json({
@@ -1433,7 +1433,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const reader = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!reader) return this.json({ error: "unauthorized" }, 401)
       const source = room.participants[request.sourceParticipantId]
@@ -1446,7 +1446,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         const exists = source?.kind === "agent" && Boolean(source.surface)
         return this.json(
           { error: exists ? "surface_changed" : "surface_not_found" },
-          exists ? 410 : 404,
+          exists ? 410 : 404
         )
       }
       const surface = source.surface
@@ -1454,7 +1454,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const chunks: Uint8Array[] = []
       for (let index = 0; index < chunkCount; index += 1) {
         const chunk = await this.ctx.storage.get<ArrayBuffer>(
-          surfaceChunkKey(source.id, surface.snapshotId, index),
+          surfaceChunkKey(source.id, surface.snapshotId, index)
         )
         if (!chunk) return this.json({ error: "surface_not_found" }, 404)
         chunks.push(new Uint8Array(chunk))
@@ -1477,7 +1477,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             "Content-Type": "application/json",
             "Cache-Control": "no-store",
           },
-        },
+        }
       )
     }
 
@@ -1487,7 +1487,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1508,7 +1508,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             summary?: unknown
             details?: unknown
             attachmentIds?: unknown
-          },
+          }
         )
         if (ingest.status === "rejected")
           return this.json({ error: ingest.error }, 400)
@@ -1532,7 +1532,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           summary?: unknown
           details?: unknown
           attachmentIds?: unknown
-        },
+        }
       )
       if (ingest.status === "rejected")
         return this.json(
@@ -1540,7 +1540,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           ingest.error === "unknown_request" ||
             ingest.error === "not_request_target"
             ? 403
-            : 400,
+            : 400
         )
       return this.json({
         requestId: ingest.event.requestId,
@@ -1556,7 +1556,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1608,7 +1608,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1634,13 +1634,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participants = Object.values(room.participants)
         .filter(
           (
-            candidate,
+            candidate
           ): candidate is RoomParticipant & {
             media: NonNullable<RoomParticipant["media"]>
           } =>
             candidate.kind === "human" &&
             candidate.connected &&
-            Boolean(candidate.media),
+            Boolean(candidate.media)
         )
         .map((candidate) => ({
           participantId: candidate.id,
@@ -1663,7 +1663,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room,
         request.participantId,
         request.token,
-        request.sessionId,
+        request.sessionId
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1673,7 +1673,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
       const mids = request.mids.filter(
-        (mid) => typeof mid === "string" && mid.length > 0,
+        (mid) => typeof mid === "string" && mid.length > 0
       )
       const merged = new Set([
         ...(participant.media.agentSubscribedMids ?? []),
@@ -1690,7 +1690,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (
         !pendingCleanupHasCapacity(
           room.pendingMediaCleanup,
-          participant.media.sessionId,
+          participant.media.sessionId
         )
       )
         return this.json({ error: "agent_media_cleanup_backlog" }, 503)
@@ -1716,14 +1716,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
       const mids = request.mids.filter(
-        (mid) => typeof mid === "string" && mid.length > 0,
+        (mid) => typeof mid === "string" && mid.length > 0
       )
       if (mids.length === 0 || !request.sessionId)
         return this.json({ error: "invalid_track" }, 400)
       room.pendingMediaCleanup = queuePendingCleanup(
         room.pendingMediaCleanup,
         request.sessionId,
-        mids,
+        mids
       )
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -1736,7 +1736,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
@@ -1745,7 +1745,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // authorization stays here at the ingress boundary.
       const payload = await this.readAttachmentPayload(
         room,
-        request.attachmentId,
+        request.attachmentId
       )
       if ("error" in payload) return this.json({ error: payload.error }, 404)
       participant.lastSeenAt = Date.now()
@@ -1775,7 +1775,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "human")
@@ -1784,7 +1784,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // evicted/unknown ids fail closed even if detached chunks linger.
       const payload = await this.readAttachmentPayload(
         room,
-        request.attachmentId,
+        request.attachmentId
       )
       if ("error" in payload) return this.json({ error: payload.error }, 404)
       participant.lastSeenAt = Date.now()
@@ -1807,7 +1807,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             // Observation bytes must never be cached downstream.
             "Cache-Control": "no-store",
           },
-        },
+        }
       )
     }
 
@@ -1817,7 +1817,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const participant = this.findParticipant(
         room,
         request.participantId,
-        request.token,
+        request.token
       )
       if (!participant) return this.json({ error: "already_left" }, 404)
       if (participant.kind !== "agent")
@@ -1831,11 +1831,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       delete room.participants[participant.id]
       room.meetingNotes = clearGrantIfParticipantDeparting(
         room.meetingNotes,
-        participant.id,
+        participant.id
       )
       room.voiceReply = clearVoiceReplyIfParticipantDeparting(
         room.voiceReply,
-        participant.id,
+        participant.id
       )
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
@@ -1844,7 +1844,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // continues to broadcast/scheduling/Meeting-Notes media cleanup.
       if (departingSurface)
         await deleteSurfaceChunksBestEffort(() =>
-          this.deleteSurfaceChunks(participant.id, departingSurface),
+          this.deleteSurfaceChunks(participant.id, departingSurface)
         )
       const waiter = this.agentWaiters.get(participant.id)
       if (waiter) {
@@ -1855,7 +1855,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             cursor: room.nextMessageSequence,
             expiresAt: room.expiresAt,
             left: true,
-          }),
+          })
         )
       } else {
         this.agentWaiters.delete(participant.id)
@@ -1874,7 +1874,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room,
         request.participantId,
         request.token,
-        request.sessionId,
+        request.sessionId
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       // Finding #2: the generic authorize() gate backs every subsequent
@@ -1948,7 +1948,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           !pendingCleanupHasCapacity(
             room.pendingMediaCleanup,
             sessionId,
-            request.remoteTrackCount,
+            request.remoteTrackCount
           )
         )
           return this.json({ error: "agent_media_cleanup_backlog" }, 503)
@@ -1958,8 +1958,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           (candidate) =>
             candidate.media?.sessionId === request.trackSessionId &&
             candidate.media.tracks.some(
-              (track) => track.trackName === request.trackName,
-            ),
+              (track) => track.trackName === request.trackName
+            )
         )
         if (!trackExists) return this.json({ error: "track_not_found" }, 404)
       }
@@ -1967,7 +1967,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         const sessionExists = Object.values(room.participants).some(
           (candidate) =>
             candidate.media?.sessionId === request.dataChannelSessionId &&
-            candidate.connected,
+            candidate.connected
         )
         if (!sessionExists)
           return this.json({ error: "datachannel_session_not_found" }, 404)
@@ -1983,7 +1983,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room,
         request.participantId,
         request.token,
-        request.sessionId,
+        request.sessionId
       )
       if (!participant || !participant.media)
         return this.json({ error: "unauthorized" }, 401)
@@ -2004,7 +2004,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const participant = this.findParticipant(
       room,
       request.participantId,
-      request.token,
+      request.token
     )
     if (!participant) return this.json({ error: "unauthorized" }, 401)
 
@@ -2020,7 +2020,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "media_unavailable" }, 400)
       participant.media.tracks = [
         ...participant.media.tracks.filter(
-          (track) => track.trackName !== request.track.trackName,
+          (track) => track.trackName !== request.track.trackName
         ),
         request.track,
       ]
@@ -2046,7 +2046,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room,
         request.participantId,
         request.token,
-        request.sessionId,
+        request.sessionId
       )
       if (!participant || participant.kind !== "agent")
         return this.json({ error: "unauthorized" }, 401)
@@ -2068,7 +2068,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         agentPublishedMid: request.mid,
         tracks: [
           ...participant.media.tracks.filter(
-            (track) => track.trackName !== request.trackName,
+            (track) => track.trackName !== request.trackName
           ),
           { trackName: request.trackName, kind: "audio" },
         ],
@@ -2092,7 +2092,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
       participant.media.tracks = participant.media.tracks.filter(
-        (track) => track.trackName !== request.trackName,
+        (track) => track.trackName !== request.trackName
       )
       await this.saveRoom(room)
       await this.broadcastState(room)
@@ -2102,11 +2102,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     delete room.participants[participant.id]
     room.meetingNotes = clearGrantIfParticipantDeparting(
       room.meetingNotes,
-      participant.id,
+      participant.id
     )
     room.voiceReply = clearVoiceReplyIfParticipantDeparting(
       room.voiceReply,
-      participant.id,
+      participant.id
     )
     this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
@@ -2141,7 +2141,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // supplies them (v0: accepted/declined only).
       details?: unknown
       attachmentIds?: unknown
-    },
+    }
   ): Promise<
     | {
         status: "recorded" | "duplicate"
@@ -2158,7 +2158,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participants: room.participants,
         attachments: room.attachments,
       },
-      { generateRequestId: () => crypto.randomUUID() },
+      { generateRequestId: () => crypto.randomUUID() }
     )
     if (validated.ok === false)
       return { status: "rejected", error: validated.error }
@@ -2169,7 +2169,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const precheck = this.collabRegistry.precheckResponse(
       event.requestId,
       event.kind,
-      responder.id,
+      responder.id
     )
     if (precheck.action === "rejected")
       return { status: "rejected", error: precheck.error }
@@ -2181,7 +2181,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
     const routing = this.collabRegistry.routingFor(
       event.requestId,
-      responder.id,
+      responder.id
     )
     if (!routing) return { status: "rejected", error: "unknown_request" }
     event = {
@@ -2206,7 +2206,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.collabRegistry.commitResponse(
       event.requestId,
       event.kind,
-      roomMessage.sequence,
+      roomMessage.sequence
     )
     await this.saveRoom(room)
     await this.scheduleNextAlarm(room)
@@ -2231,7 +2231,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // the canonical event. The Human WS path never supplies them.
       details?: unknown
       attachmentIds?: unknown
-    },
+    }
   ): Promise<
     | {
         status: "recorded" | "duplicate"
@@ -2248,13 +2248,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participants: room.participants,
         attachments: room.attachments,
       },
-      { generateRequestId: () => crypto.randomUUID() },
+      { generateRequestId: () => crypto.randomUUID() }
     )
     if (validated.ok === false)
       return { status: "rejected", error: validated.error }
     const outcome = this.collabRegistry.recordRequest(
       validated.event,
-      room.nextMessageSequence + 1,
+      room.nextMessageSequence + 1
     )
     // Retried send (same requestId): report the original append instead of
     // creating a second, double-execution-inducing event.
@@ -2298,19 +2298,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // path / Human browser path), never here.
   private async readAttachmentPayload(
     room: RoomRecord,
-    attachmentId: string,
+    attachmentId: string
   ): Promise<
     | { attachment: RoomAttachment; data: string }
     | { error: "attachment_unavailable" }
   > {
     const attachment = room.attachments.find(
-      (candidate) => candidate.id === attachmentId,
+      (candidate) => candidate.id === attachmentId
     )
     if (!attachment) return { error: "attachment_unavailable" }
     const chunks: Uint8Array[] = []
     for (let index = 0; index < attachment.chunkCount; index += 1) {
       const chunk = await this.ctx.storage.get<ArrayBuffer>(
-        this.attachmentChunkKey(attachment.id, index),
+        this.attachmentChunkKey(attachment.id, index)
       )
       if (!chunk) return { error: "attachment_unavailable" }
       chunks.push(new Uint8Array(chunk))
@@ -2324,7 +2324,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private async handleClientMessage(
     socket: WebSocket,
     attachment: ConnectionAttachment,
-    message: ClientMessage,
+    message: ClientMessage
   ): Promise<void> {
     const room = await this.activeRoom()
     if (!room) {
@@ -2335,7 +2335,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const participant = this.findParticipant(
       room,
       attachment.participantId,
-      attachment.token,
+      attachment.token
     )
     if (!participant || participant.kind !== "human" || !participant.media) {
       socket.close(4003, "Unauthorized")
@@ -2364,7 +2364,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "unpublish") {
       participant.media.tracks = participant.media.tracks.filter(
-        (track) => track.trackName !== message.trackName,
+        (track) => track.trackName !== message.trackName
       )
       await this.saveRoom(room)
       await this.broadcastState(room)
@@ -2386,14 +2386,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           JSON.stringify({
             type: "error",
             error: "meeting_notes_media_disabled",
-          }),
+          })
         )
         return
       }
       const agent = room.participants[message.agentParticipantId]
       if (!agent || agent.kind !== "agent" || !agent.connected) {
         socket.send(
-          JSON.stringify({ type: "error", error: "agent_not_in_room" }),
+          JSON.stringify({ type: "error", error: "agent_not_in_room" })
         )
         return
       }
@@ -2410,7 +2410,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // already the active grant holder" is the same question either way.
       if (isAgentAuthorizedForMedia(room.meetingNotes, agent.id)) {
         socket.send(
-          JSON.stringify({ type: "state", state: this.stateFor(room) }),
+          JSON.stringify({ type: "state", state: this.stateFor(room) })
         )
         return
       }
@@ -2421,7 +2421,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           JSON.stringify({
             type: "error",
             error: "agent_media_cleanup_backlog",
-          }),
+          })
         )
         return
       }
@@ -2455,14 +2455,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           JSON.stringify({
             type: "error",
             error: "voice_reply_media_disabled",
-          }),
+          })
         )
         return
       }
       const agent = room.participants[message.agentParticipantId]
       if (!agent || agent.kind !== "agent" || !agent.connected) {
         socket.send(
-          JSON.stringify({ type: "error", error: "agent_not_in_room" }),
+          JSON.stringify({ type: "error", error: "agent_not_in_room" })
         )
         return
       }
@@ -2470,7 +2470,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // treats an epoch change as "server tore down the publication").
       if (isAgentAuthorizedForVoiceReply(room.voiceReply, agent.id)) {
         socket.send(
-          JSON.stringify({ type: "state", state: this.stateFor(room) }),
+          JSON.stringify({ type: "state", state: this.stateFor(room) })
         )
         return
       }
@@ -2479,7 +2479,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           JSON.stringify({
             type: "error",
             error: "agent_media_cleanup_backlog",
-          }),
+          })
         )
         return
       }
@@ -2647,7 +2647,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             ...new Set(
               (Array.isArray(message.targets) ? message.targets : [])
                 .filter((id): id is string => typeof id === "string")
-                .filter((id) => room.participants[id]?.kind === "agent"),
+                .filter((id) => room.participants[id]?.kind === "agent")
             ),
           ].slice(0, MAX_TARGETS)
           return targets.length ? { targets } : {}
@@ -2726,7 +2726,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private isAgentAttachmentMimeType(
-    value: string,
+    value: string
   ): value is AgentAttachmentMimeType {
     return (
       value === "image/jpeg" ||
@@ -2765,7 +2765,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       (candidate) =>
         candidate.kind === "agent" &&
         candidate.id !== participantId &&
-        Boolean(candidate.surface),
+        Boolean(candidate.surface)
     ).length
     const policy = evaluateSurfacePublish({
       mimeType,
@@ -2782,8 +2782,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         policy.error === "surface_rate_limited"
           ? 429
           : policy.error === "surface_capacity_exceeded"
-            ? 503
-            : 400,
+          ? 503
+          : 400
       )
     const snapshotId = crypto.randomUUID()
     try {
@@ -2791,7 +2791,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         const start = index * SURFACE_CHUNK_SIZE
         await this.ctx.storage.put(
           surfaceChunkKey(participantId, snapshotId, index),
-          bytes.slice(start, start + SURFACE_CHUNK_SIZE),
+          bytes.slice(start, start + SURFACE_CHUNK_SIZE)
         )
       }
     } catch {
@@ -2880,14 +2880,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         const start = index * ATTACHMENT_CHUNK_SIZE
         await this.ctx.storage.put(
           this.attachmentChunkKey(id, index),
-          bytes.slice(start, start + ATTACHMENT_CHUNK_SIZE),
+          bytes.slice(start, start + ATTACHMENT_CHUNK_SIZE)
         )
       }
       room.nextMessageSequence = attachment.sequence
       room.attachments = [...room.attachments, attachment]
       const evicted = room.attachments.splice(
         0,
-        Math.max(0, room.attachments.length - MAX_AGENT_ATTACHMENTS),
+        Math.max(0, room.attachments.length - MAX_AGENT_ATTACHMENTS)
       )
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
@@ -2904,7 +2904,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   async webSocketMessage(
     socket: WebSocket,
-    raw: string | ArrayBuffer,
+    raw: string | ArrayBuffer
   ): Promise<void> {
     if (typeof raw !== "string") return
     const attachment =
@@ -2914,7 +2914,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.handleClientMessage(
         socket,
         attachment,
-        JSON.parse(raw) as ClientMessage,
+        JSON.parse(raw) as ClientMessage
       )
     } catch {
       socket.send(JSON.stringify({ type: "error", error: "invalid_message" }))
@@ -2925,7 +2925,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     socket: WebSocket,
     _code: number,
     _reason: string,
-    _wasClean: boolean,
+    _wasClean: boolean
   ): Promise<void> {
     const attachment =
       socket.deserializeAttachment() as ConnectionAttachment | null
@@ -2985,11 +2985,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         delete room.participants[id]
         room.meetingNotes = clearGrantIfParticipantDeparting(
           room.meetingNotes,
-          id,
+          id
         )
         room.voiceReply = clearVoiceReplyIfParticipantDeparting(
           room.voiceReply,
-          id,
+          id
         )
         changed = true
         const waiter = this.agentWaiters.get(id)
@@ -3001,7 +3001,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               cursor: room.nextMessageSequence,
               expiresAt: room.expiresAt,
               left: true,
-            }),
+            })
           )
         } else {
           this.agentWaiters.delete(id)
@@ -3018,7 +3018,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // scheduleNextAlarm regardless of individual deletion failures.
     for (const { participantId, surface } of expiredSurfaces)
       await deleteSurfaceChunksBestEffort(() =>
-        this.deleteSurfaceChunks(participantId, surface),
+        this.deleteSurfaceChunks(participantId, surface)
       )
     await this.scheduleNextAlarm(room)
     // External I/O last, after every storage-only mutation above is

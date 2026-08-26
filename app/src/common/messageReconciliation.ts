@@ -7,7 +7,7 @@ import type { Message } from "./types"
  */
 export function mergeRoomAndEphemeralMessages(
   roomMessages: Message[],
-  ephemeralMessages: Message[],
+  ephemeralMessages: Message[]
 ): Message[] {
   return [...roomMessages, ...ephemeralMessages]
     .map((message, index) => ({ message, index }))

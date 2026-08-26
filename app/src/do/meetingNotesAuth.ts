@@ -14,7 +14,7 @@ export const NO_MEETING_NOTES: MeetingNotesState = { active: false }
  */
 export function isAgentAuthorizedForMedia(
   meetingNotes: MeetingNotesState,
-  agentParticipantId: string,
+  agentParticipantId: string
 ): boolean {
   return (
     meetingNotes.active &&
@@ -32,7 +32,7 @@ export function isAgentAuthorizedForMedia(
  */
 export function clearGrantIfParticipantDeparting(
   meetingNotes: MeetingNotesState,
-  departingParticipantId: string,
+  departingParticipantId: string
 ): MeetingNotesState {
   if (meetingNotes.agentParticipantId !== departingParticipantId)
     return meetingNotes
@@ -42,7 +42,7 @@ export function clearGrantIfParticipantDeparting(
 /** Starts a fresh grant naming this agent as the note-taker. */
 export function startMeetingNotes(
   agentParticipantId: string,
-  now: number,
+  now: number
 ): MeetingNotesState {
   return { active: true, agentParticipantId, startedAt: now }
 }
@@ -52,7 +52,7 @@ export const NO_VOICE_REPLY: VoiceReplyState = { active: false }
 /** #83: may this connected resident Agent publish its single voice track? */
 export function isAgentAuthorizedForVoiceReply(
   voiceReply: VoiceReplyState,
-  agentParticipantId: string,
+  agentParticipantId: string
 ): boolean {
   return (
     voiceReply.active && voiceReply.agentParticipantId === agentParticipantId
@@ -61,7 +61,7 @@ export function isAgentAuthorizedForVoiceReply(
 
 export function startVoiceReply(
   agentParticipantId: string,
-  now: number,
+  now: number
 ): VoiceReplyState {
   return { active: true, agentParticipantId, startedAt: now }
 }
@@ -69,7 +69,7 @@ export function startVoiceReply(
 /** Departure/expiry staleness rule, mirroring Meeting Notes. */
 export function clearVoiceReplyIfParticipantDeparting(
   voiceReply: VoiceReplyState,
-  departingParticipantId: string,
+  departingParticipantId: string
 ): VoiceReplyState {
   if (voiceReply.agentParticipantId !== departingParticipantId)
     return voiceReply
@@ -104,16 +104,16 @@ export function resolveAgentPurposePermission(args: {
 export function agentMediaPermissions(
   meetingNotes: MeetingNotesState,
   voiceReply: VoiceReplyState,
-  agentParticipantId: string,
+  agentParticipantId: string
 ): AgentMediaPermissions {
   return {
     canSubscribeHumanAudio: isAgentAuthorizedForMedia(
       meetingNotes,
-      agentParticipantId,
+      agentParticipantId
     ),
     canPublishVoice: isAgentAuthorizedForVoiceReply(
       voiceReply,
-      agentParticipantId,
+      agentParticipantId
     ),
   }
 }

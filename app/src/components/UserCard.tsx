@@ -27,7 +27,7 @@ export default function UserCard(user: UserCardProps) {
   const [canScreenShare] = useState(() => {
     if (typeof navigator === "undefined") return false
     const isMobileDevice = /Mobi|Android|iPhone|iPad|iPod/i.test(
-      navigator.userAgent,
+      navigator.userAgent
     )
     if (isMobileDevice) return false
     return typeof navigator.mediaDevices?.getDisplayMedia === "function"

@@ -12,10 +12,10 @@ describe("Room page", () => {
   it("is noindex, nofollow so ephemeral room URLs are never crawled or indexed", () => {
     const source = readFileSync(
       join(process.cwd(), "src/pages/room.tsx"),
-      "utf-8",
+      "utf-8"
     )
     expect(source).toMatch(
-      /<meta\s+name="robots"\s+content="noindex,\s*nofollow"\s*\/>/,
+      /<meta\s+name="robots"\s+content="noindex,\s*nofollow"\s*\/>/
     )
   })
 })

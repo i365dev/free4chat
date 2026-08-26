@@ -16,7 +16,7 @@ describe("imageToolResult", () => {
     }
     const result = imageToolResult(
       { data: "QUJD", mimeType: "image/png" },
-      { surface },
+      { surface }
     )
     expect(result.content).toHaveLength(2)
     expect(result.content[0]).toEqual({
@@ -33,7 +33,7 @@ describe("imageToolResult", () => {
   it("serializes whatever wrapper is provided (attachment callers keep flat metadata)", () => {
     const result = imageToolResult(
       { data: "QQ", mimeType: "image/jpeg" },
-      { id: "att-1", fileName: "a.jpg" },
+      { id: "att-1", fileName: "a.jpg" }
     )
     expect(JSON.parse((result.content[1] as { text: string }).text)).toEqual({
       id: "att-1",

@@ -119,7 +119,7 @@ export default function RoomContent({
     setFloatingReactions((prev) => [...prev, { id, emoji, x }])
     setTimeout(
       () => setFloatingReactions((prev) => prev.filter((r) => r.id !== id)),
-      2500,
+      2500
     )
   }, [])
 
@@ -161,13 +161,13 @@ export default function RoomContent({
   // #113: Human → Agent structured work request entry point. The callback is
   // passed ONLY for remote connected Agents; Humans and self never get it.
   const [workRequestTarget, setWorkRequestTarget] = useState<UserInfo | null>(
-    null,
+    null
   )
   // #119: local-Human capability editor target (self only).
   const [capabilitiesEditorOpen, setCapabilitiesEditorOpen] = useState(false)
   const requestWorkFor = (p: UserInfo) =>
     setWorkRequestTarget(
-      p.kind === "agent" && p.peerId !== LOCAL_PEER_ID ? p : null,
+      p.kind === "agent" && p.peerId !== LOCAL_PEER_ID ? p : null
     )
 
   const roomAgents = participants.filter((p) => p.kind === "agent")
@@ -184,8 +184,8 @@ export default function RoomContent({
     trackAnalyticsEvent("AgentVoiceStopped", { roomType: resolvedRoomType })
   }
   const meetingNotesAgentName = meetingNotes.active
-    ? (roomAgents.find((p) => p.peerId === meetingNotes.agentParticipantId)
-        ?.name ?? "an Agent")
+    ? roomAgents.find((p) => p.peerId === meetingNotes.agentParticipantId)
+        ?.name ?? "an Agent"
     : null
 
   const handleStartMeetingNotes = (agentParticipantId: string) => {
@@ -205,11 +205,11 @@ export default function RoomContent({
 
   const activeScreenShares = participants.filter(
     (p) =>
-      p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID && p.screenShareStream,
+      p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID && p.screenShareStream
   )
 
   const [activeSharePeerId, setActiveSharePeerId] = useState<string | null>(
-    null,
+    null
   )
   useEffect(() => {
     if (activeScreenShares.length === 0) {
@@ -340,7 +340,7 @@ export default function RoomContent({
       ])
       setTimeout(
         () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
-        3000,
+        3000
       )
       return
     }
@@ -359,12 +359,12 @@ export default function RoomContent({
         prev.map((f) =>
           f.id === id
             ? { ...f, error: true, errorMessage: "Failed to send" }
-            : f,
-        ),
+            : f
+        )
       )
       setTimeout(
         () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
-        3000,
+        3000
       )
       return
     }
@@ -375,11 +375,11 @@ export default function RoomContent({
   const [screenShareWarning, setScreenShareWarning] = useState("")
   const wrappedToggleScreenShare = () => {
     const isCurrentlySharing = participants.find(
-      (p) => p.peerId === LOCAL_PEER_ID,
+      (p) => p.peerId === LOCAL_PEER_ID
     )?.screenShareEnabled
     if (!isCurrentlySharing) {
       const sharingCount = participants.filter(
-        (p) => p.screenShareEnabled,
+        (p) => p.screenShareEnabled
       ).length
       if (sharingCount >= 3) {
         setScreenShareWarning("Max 3 screen shares allowed at once.")
@@ -840,7 +840,7 @@ export default function RoomContent({
             const requestId = sendCollabRequest(
               workRequestTarget.peerId,
               summary,
-              attachmentIds.length > 0 ? attachmentIds : undefined,
+              attachmentIds.length > 0 ? attachmentIds : undefined
             )
             if (!requestId) return false
             setWorkRequestTarget(null)
