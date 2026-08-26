@@ -223,6 +223,13 @@ export class SfuMediaBridge {
     )
     const run = (async () => {
       if (this.stopped || !this.pc || !this.mySessionId) return
+      // The Pion engine only adds its outbound send m-line when armed, and
+      // #83 live silence traced to this arm step never running in production
+      // (the bootstrap offer is receive-only, so a later fresh offer still
+      // lacked the track and localPublishMid() returned ""). Arming is
+      // idempotent in the engine, so calling it here — immediately before
+      // the publication offer — is always correct.
+      await this.pc.armPublishAudio?.()
       const offer = await this.pc.createOffer()
       await this.pc.setLocalDescription(offer)
       const mid = (await this.pc.localPublishMid?.()) ?? ""
