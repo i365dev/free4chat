@@ -184,6 +184,13 @@ type ControlRequest =
       trackName: string
     }
   | {
+      action: "agent-track-active"
+      participantId: string
+      token: string
+      sessionId: string
+      trackName: string
+    }
+  | {
       action: "reconnect"
       participantId: string
       token: string
@@ -382,9 +389,11 @@ type ClientMessage =
  * an agent holding the ACTIVE voiceReply grant may keep its single published
  * outbound audio track (and the registered mid Stop needs for revocation)
  * across room loads. Every other shape — no grant, wrong agent, multiple
- * tracks, video, or a mid without a matching track — is stripped exactly as
- * the old subscribe-only rule did. This preserves an authorized publication
- * across DO eviction/restart; it never loosens who may create one. */
+ * tracks, video, or a mid without a matching track or pending track name — is
+ * stripped exactly as the old subscribe-only rule did. A pending publication
+ * is kept private until the Runtime confirms its first PCM write. This
+ * preserves an authorized publication across DO eviction/restart; it never
+ * loosens who may create one. */
 export function normalizeAgentParticipantMedia(
   media: RoomParticipant["media"],
   voiceReply: VoiceReplyState,
@@ -397,19 +406,29 @@ export function normalizeAgentParticipantMedia(
     media.agentPublishedMid.length > 0
       ? media.agentPublishedMid
       : undefined
+  const pendingTrackName =
+    typeof media.agentPublishedTrackName === "string" &&
+    media.agentPublishedTrackName.length > 0
+      ? media.agentPublishedTrackName
+      : undefined
   // Callers pass the ALREADY-NORMALIZED grant (normalizeRoom hoists
   // isValidVoiceReplyState above this decision); authorization reuses the
   // exact production predicate so no second rule can drift.
   const authorized =
     isAgentAuthorizedForVoiceReply(voiceReply, participantId) &&
-    tracks.length === 1 &&
-    tracks[0]!.kind === "audio" &&
-    publishedMid !== undefined
+    publishedMid !== undefined &&
+    ((tracks.length === 1 && tracks[0]!.kind === "audio") ||
+      (tracks.length === 0 && pendingTrackName !== undefined))
   if (authorized) return { media, changed: false }
-  if (tracks.length === 0 && publishedMid === undefined)
+  if (
+    tracks.length === 0 &&
+    publishedMid === undefined &&
+    pendingTrackName === undefined
+  )
     return { media, changed: false }
   const next: RoomParticipant["media"] = { ...media, tracks: [] }
   if (publishedMid !== undefined) delete next.agentPublishedMid
+  if (pendingTrackName !== undefined) delete next.agentPublishedTrackName
   return { media: next, changed: true }
 }
 
@@ -772,12 +791,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           // participant-visible state.
           if (
             !participant.media?.agentSubscribedMids &&
-            !participant.media?.agentPublishedMid
+            !participant.media?.agentPublishedMid &&
+            !participant.media?.agentPublishedTrackName
           )
             return participant
           const {
             agentSubscribedMids: _mids,
             agentPublishedMid: _publishedMid,
+            agentPublishedTrackName: _publishedTrackName,
             ...media
           } = participant.media
           return { ...participant, media }
@@ -2155,13 +2176,50 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.media = {
         ...participant.media,
         agentPublishedMid: request.mid,
-        tracks: [
-          ...participant.media.tracks.filter(
-            (track) => track.trackName !== request.trackName
-          ),
-          { trackName: request.trackName, kind: "audio" },
-        ],
+        // Registration is durable revocation bookkeeping only. Do not expose
+        // the track to Humans until the Runtime has successfully written its
+        // first PCM packet; Cloudflare can report a booked track as inactive
+        // before that happens.
+        agentPublishedTrackName: request.trackName,
+        tracks: [],
       }
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      return this.json({ ok: true })
+    }
+
+    if (request.action === "agent-track-active") {
+      // The Worker calls this only after Cloudflare reports this publication
+      // as active. It is intentionally idempotent because confirmation may
+      // be retried after an inactive result or a transient lookup failure.
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token,
+        request.sessionId
+      )
+      if (!participant || participant.kind !== "agent")
+        return this.json({ error: "unauthorized" }, 401)
+      if (!isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id))
+        return this.json({ error: "voice_reply_not_authorized" }, 403)
+      if (!participant.media)
+        return this.json({ error: "media_unavailable" }, 400)
+      if (
+        participant.media.tracks.length === 1 &&
+        participant.media.tracks[0]!.trackName === request.trackName &&
+        participant.media.tracks[0]!.kind === "audio"
+      )
+        return this.json({ ok: true })
+      if (
+        !participant.media.agentPublishedMid ||
+        participant.media.agentPublishedTrackName !== request.trackName
+      )
+        return this.json({ error: "agent_publication_not_ready" }, 409)
+      participant.media = {
+        ...participant.media,
+        tracks: [{ trackName: request.trackName, kind: "audio" }],
+      }
+      delete participant.media.agentPublishedTrackName
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.broadcast({
@@ -2183,6 +2241,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.media.tracks = participant.media.tracks.filter(
         (track) => track.trackName !== request.trackName
       )
+      if (
+        participant.kind === "agent" &&
+        participant.media.agentPublishedTrackName === request.trackName
+      ) {
+        delete participant.media.agentPublishedTrackName
+        delete participant.media.agentPublishedMid
+      }
       await this.saveRoom(room)
       await this.broadcastState(room)
       return this.json({ ok: true })

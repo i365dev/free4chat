@@ -30,6 +30,11 @@ function isHumanMediaDiscoveryDenied(error: unknown): boolean {
 }
 /** Emit a bounded stats event at most this often per track, not per packet. */
 const STATS_FLUSH_INTERVAL_MS = 2000
+// One 20 ms mono S16LE frame at the Pion voice rate. This is a bounded,
+// non-user priming packet: it lets Cloudflare observe the publication before
+// the first audible PCM chunk is sent.
+const VOICE_PRIMING_SILENCE_BYTES = 960
+const MAX_PENDING_VOICE_PCM_BYTES = 8 * 1024 * 1024
 
 export interface SfuMediaBridgeOptions {
   /** Base MCP URL (same env var/default as the rest of the Runtime) or an
@@ -108,6 +113,11 @@ export class SfuMediaBridge {
     }
   >()
   private readonly subscriptions = new Map<string, TrackSubscription>()
+  private voicePublicationAnnounced = false
+  private voiceAnnounceInFlight: Promise<void> | null = null
+  private voicePrimingSent = false
+  private pendingVoicePcm: Uint8Array[] = []
+  private pendingVoicePcmBytes = 0
 
   constructor(options: SfuMediaBridgeOptions) {
     this.onEvent = options.onEvent
@@ -217,6 +227,9 @@ export class SfuMediaBridge {
       throw new Error("media_engine_publish_unsupported")
     if (!this.restClient.publishAudioTrack)
       throw new Error("rest_client_publish_unsupported")
+    this.voicePublicationAnnounced = false
+    this.voiceAnnounceInFlight = null
+    this.voicePrimingSent = false
     await this.negotiationQueue.then(
       () => undefined,
       () => undefined
@@ -266,16 +279,127 @@ export class SfuMediaBridge {
       await this.pc?.deactivatePublish?.()
     } catch {
       // Best effort cooperative stop; server-side close is authoritative.
+    } finally {
+      this.clearPendingVoicePcm()
     }
   }
 
   async writeVoicePcm(chunk: Uint8Array): Promise<void> {
     if (this.stopped) throw new Error("bridge_stopped")
+    await this.primeVoicePublication()
+    await this.confirmVoicePublicationActive()
+    if (
+      this.publish &&
+      this.restClient.confirmPublishedAudioTrackActive &&
+      !this.voicePublicationAnnounced
+    ) {
+      this.enqueuePendingVoicePcm(chunk)
+      return
+    }
+    await this.drainPendingVoicePcm()
     await this.pc?.writePcmChunk?.(chunk)
+    await this.confirmVoicePublicationActive()
   }
 
   async flushVoice(): Promise<void> {
-    await this.pc?.flushAudio?.()
+    await this.primeVoicePublication()
+    await this.confirmVoicePublicationActive()
+    await this.drainPendingVoicePcm()
+    let flushError: unknown
+    try {
+      await this.pc?.flushAudio?.()
+    } catch (error) {
+      flushError = error
+    }
+    await this.confirmVoicePublicationActive()
+    const needsSecondFlush =
+      this.voicePublicationAnnounced && this.pendingVoicePcm.length > 0
+    if (needsSecondFlush) {
+      await this.drainPendingVoicePcm()
+      try {
+        await this.pc?.flushAudio?.()
+      } catch (error) {
+        if (flushError === undefined) flushError = error
+      }
+    }
+    if (flushError !== undefined) throw flushError
+  }
+
+  /** Cloudflare may report a newly booked publication as inactive until its
+   * first RTP packet has arrived. Confirmation is best-effort and single-
+   * flight: a negative/failed check never turns a successful voice write into
+   * a failed speech turn, and the next write/flush is the retry opportunity. */
+  private async confirmVoicePublicationActive(): Promise<void> {
+    if (
+      !this.publish ||
+      this.voicePublicationAnnounced ||
+      !this.mySessionId ||
+      !this.restClient.confirmPublishedAudioTrackActive
+    )
+      return
+    if (!this.voiceAnnounceInFlight) {
+      const sessionId = this.mySessionId
+      const run = (async () => {
+        try {
+          const active = await this.restClient
+            .confirmPublishedAudioTrackActive!(
+            sessionId,
+            this.publish!.trackName
+          )
+          if (active) this.voicePublicationAnnounced = true
+        } catch {
+          // Readiness is advisory; leave the flag false so a later write or
+          // final flush can retry without failing the voice turn.
+        }
+      })()
+      const flight = run.finally(() => {
+        if (this.voiceAnnounceInFlight === flight)
+          this.voiceAnnounceInFlight = null
+      })
+      this.voiceAnnounceInFlight = flight
+    }
+    await this.voiceAnnounceInFlight
+  }
+
+  /** Send at most one synthetic silence frame before user audio for this
+   * publication. If Cloudflare still says inactive, later real writes and
+   * the final flush remain the bounded retry opportunities; the silence is
+   * never user-visible audio. */
+  private async primeVoicePublication(): Promise<void> {
+    if (
+      !this.publish ||
+      this.voicePublicationAnnounced ||
+      this.voicePrimingSent ||
+      !this.pc?.writePcmChunk ||
+      !this.restClient.confirmPublishedAudioTrackActive
+    )
+      return
+    this.voicePrimingSent = true
+    await this.pc.writePcmChunk(new Uint8Array(VOICE_PRIMING_SILENCE_BYTES))
+  }
+
+  private enqueuePendingVoicePcm(chunk: Uint8Array): void {
+    if (chunk.length === 0) return
+    if (this.pendingVoicePcmBytes + chunk.length > MAX_PENDING_VOICE_PCM_BYTES)
+      throw new Error("voice_pcm_buffer_full")
+    const copy = new Uint8Array(chunk)
+    this.pendingVoicePcm.push(copy)
+    this.pendingVoicePcmBytes += copy.length
+  }
+
+  private async drainPendingVoicePcm(): Promise<void> {
+    if (!this.voicePublicationAnnounced || !this.pc?.writePcmChunk) return
+    while (this.pendingVoicePcm.length > 0) {
+      const chunk = this.pendingVoicePcm[0]!
+      await this.pc.writePcmChunk(chunk)
+      this.pendingVoicePcm.shift()
+      this.pendingVoicePcmBytes -= chunk.length
+    }
+  }
+
+  private clearPendingVoicePcm(): void {
+    this.pendingVoicePcm = []
+    this.pendingVoicePcmBytes = 0
   }
 
   /** Cancelled-utterance boundary (#83): discards any buffered partial
@@ -284,6 +408,7 @@ export class SfuMediaBridge {
    * Best-effort cooperative discard; server-side revocation remains
    * authoritative. */
   async cancelVoiceTurn(): Promise<void> {
+    this.clearPendingVoicePcm()
     try {
       await this.pc?.cancelTurnAudio?.()
     } catch {
@@ -309,6 +434,10 @@ export class SfuMediaBridge {
     this.pc?.close()
     this.pc = null
     this.mySessionId = null
+    this.voicePublicationAnnounced = false
+    this.voiceAnnounceInFlight = null
+    this.voicePrimingSent = false
+    this.clearPendingVoicePcm()
     this.stopped = true
   }
 

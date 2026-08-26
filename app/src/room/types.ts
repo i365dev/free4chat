@@ -26,6 +26,9 @@ export interface RoomMediaState {
   // track (#83) — the revocation handle for server-side close; never
   // broadcast to clients.
   agentPublishedMid?: string
+  // Kept private until the Runtime confirms that the publication has
+  // accepted its first PCM packet. At that point it is moved into `tracks`.
+  agentPublishedTrackName?: string
 }
 
 export interface AgentCapabilities {
