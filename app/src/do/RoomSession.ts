@@ -30,6 +30,8 @@ import {
   pendingCleanupHasCapacity,
   queuePendingCleanup,
   removeConfirmedMids,
+  stageAgentMediaRevocation,
+  type AgentMediaRevocationDirection,
 } from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
@@ -781,44 +783,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return room
   }
 
-  // Step 1-2 of the revocation sequence (round 4): SYNCHRONOUS, no I/O.
-  // Moves an agent's tracked subscription mids out of its participant
-  // record and into room.pendingMediaCleanup, in memory only — the caller
-  // is responsible for persisting `room` (saveRoom/scheduleNextAlarm/
-  // broadcastState) *before* ever attempting the actual Cloudflare close
-  // (see attemptCleanupNow). This split exists specifically so a Cloudflare
-  // fetch() is never awaited while an in-memory RoomRecord sits unsaved:
-  // Durable Objects can interleave handling of another incoming request
-  // during that await, and a stale RoomRecord saved afterward would
-  // silently clobber whatever that other request persisted in the
-  // meantime. Never truncates agentSubscribedMids or evicts an existing
-  // pendingMediaCleanup entry — queuePendingCleanup is purely additive; the
-  // bound is enforced elsewhere by refusing *new* Agent media work (see
-  // pendingCleanupHasCapacity), not by dropping data here. No-ops cheaply
-  // when there is nothing to move (ordinary text-only agents, or an agent
-  // that was granted but never actually subscribed to anything).
+  // Steps 1-2 of the revocation sequence (round 4), direction-aware: thin
+  // RoomRecord adapter over realtimeMedia.stageAgentMediaRevocation (pure +
+  // unit-tested there). Synchronous staging only, no I/O; the caller
+  // persists before attemptCleanupNow ever fetches. Meeting Notes triggers
+  // stage "subscribed", voiceReply triggers stage "published", and whole-
+  // participant teardown / full session rotation stages "both" so one
+  // grant's stop can never revoke the other independent grant's media.
   private stageAgentMediaRevocation(
     room: RoomRecord,
-    agentParticipantId: string
+    agentParticipantId: string,
+    direction: AgentMediaRevocationDirection = "both"
   ): void {
-    const participant = room.participants[agentParticipantId]
-    if (!participant || participant.kind !== "agent" || !participant.media)
-      return
-    const mids = participant.media.agentSubscribedMids ?? []
-    const publishedMid = participant.media.agentPublishedMid
-    if (mids.length === 0 && !publishedMid) return
-    const sessionId = participant.media.sessionId
-    participant.media = {
-      ...participant.media,
-      agentSubscribedMids: [],
-      agentPublishedMid: undefined,
-    }
-    room.pendingMediaCleanup = queuePendingCleanup(
+    room.pendingMediaCleanup = stageAgentMediaRevocation(
+      room.participants[agentParticipantId],
       room.pendingMediaCleanup,
-      sessionId,
-      publishedMid && !mids.includes(publishedMid)
-        ? [...mids, publishedMid]
-        : mids
+      direction
     )
   }
 
@@ -2427,12 +2407,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       const previousAgentId = room.meetingNotes.agentParticipantId
       room.meetingNotes = startMeetingNotes(agent.id, Date.now())
-      // Reassignment (A -> B): A's already-established subscription must be
-      // torn down, not merely left to expire on its own lease. Revocation
-      // must be durable *before* any Cloudflare fetch is attempted — stage,
-      // persist, only then attempt the close against a fresh reload.
+      // Reassignment (A -> B): A's already-established Human->Agent
+      // subscriptions must be torn down, not merely left to expire on its
+      // own lease — but only those: A may still hold an independent active
+      // voiceReply grant whose publication must survive this trigger.
+      // Revocation must be durable *before* any Cloudflare fetch is
+      // attempted — stage, persist, only then attempt the close against a
+      // fresh reload.
       if (previousAgentId && previousAgentId !== agent.id)
-        this.stageAgentMediaRevocation(room, previousAgentId)
+        this.stageAgentMediaRevocation(room, previousAgentId, "subscribed")
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -2442,7 +2425,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "meeting-notes-stop") {
       const previousAgentId = room.meetingNotes.agentParticipantId
       room.meetingNotes = NO_MEETING_NOTES
-      if (previousAgentId) this.stageAgentMediaRevocation(room, previousAgentId)
+      // Directional revocation (#83): a Meeting Notes stop closes only the
+      // stopped grant's Human->Agent subscriptions — never an independent
+      // voiceReply publication the same agent may still hold.
+      if (previousAgentId)
+        this.stageAgentMediaRevocation(room, previousAgentId, "subscribed")
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -2483,9 +2470,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const previousAgentId = room.voiceReply.agentParticipantId
       room.voiceReply = startVoiceReply(agent.id, Date.now())
       // Reassignment (A -> B): stage A's established publication durably
-      // before any Cloudflare fetch is attempted.
+      // before any Cloudflare fetch is attempted — published direction
+      // only: A may still hold an independent active Meeting Notes grant
+      // whose Human->Agent subscriptions must survive this trigger.
       if (previousAgentId && previousAgentId !== agent.id)
-        this.stageAgentMediaRevocation(room, previousAgentId)
+        this.stageAgentMediaRevocation(room, previousAgentId, "published")
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -2495,7 +2484,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "voice-reply-stop") {
       const previousAgentId = room.voiceReply.agentParticipantId
       room.voiceReply = NO_VOICE_REPLY
-      if (previousAgentId) this.stageAgentMediaRevocation(room, previousAgentId)
+      // Directional revocation (#83): a voiceReply stop closes only the
+      // stopped grant's Agent->Human published mid and drops the
+      // room-visible Agent audio track — never independent Meeting Notes
+      // subscriptions the same agent may still hold.
+      if (previousAgentId)
+        this.stageAgentMediaRevocation(room, previousAgentId, "published")
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
