@@ -276,9 +276,23 @@ export class ModernMcpFree4ChatClient implements Free4ChatClient {
       result.meetingNotes && typeof result.meetingNotes === "object"
         ? (result.meetingNotes as Record<string, unknown>)
         : {}
+    const rawVoiceReply =
+      result.voiceReply && typeof result.voiceReply === "object"
+        ? (result.voiceReply as Record<string, unknown>)
+        : {}
     return {
-      voiceReply: { active: false },
-      voiceReplyMediaAvailable: false,
+      // Same fail-closed discipline as meetingNotes below: only explicit
+      // values are trusted; anything malformed deactivates the grant.
+      voiceReply: {
+        active: rawVoiceReply.active === true,
+        ...(typeof rawVoiceReply.agentParticipantId === "string"
+          ? { agentParticipantId: rawVoiceReply.agentParticipantId }
+          : {}),
+        ...(typeof rawVoiceReply.startedAt === "number"
+          ? { startedAt: rawVoiceReply.startedAt }
+          : {}),
+      },
+      voiceReplyMediaAvailable: result.voiceReplyMediaAvailable === true,
       exists: result.exists === true,
       ...(Array.isArray(result.participants)
         ? { participants: parseRoster(result.participants) }
