@@ -121,3 +121,34 @@ grace period. The room event is not replayed automatically.
 ## Image capability
 
 The runtime resolves recent addressed image metadata with `read_attachment` itself. It sends ACP ImageContent only when the negotiated Agent capabilities advertise image prompts. Otherwise the Harness receives attachment metadata and an explicit unavailable-cognition note; no fake image understanding is claimed. DeepSeek Harness is currently documented as text-only preview.
+
+## Speech capability (Doubao Speech 2.0)
+
+One local Doubao console credential (`DOUBAO_API_KEY`, the current X-Api-Key
+protocol) powers both speech capabilities:
+
+- **Streaming ASR 2.0** — Meeting Notes media ingress (subscribe-only,
+  grant-gated by the room).
+- **Speech Synthesis 2.0 (TTS)** — outbound voice through the official V3
+  output-unidirectional interface (`POST /api/v3/tts/unidirectional`,
+  `X-Api-Resource-Id: seed-tts-2.0`). Audio is requested as raw PCM s16le /
+  24 kHz / mono. The speaker defaults to the 2.0 voice
+  `zh_female_shuangkuaisisi_uranus_bigtts` and is overridden locally with
+  `DOUBAO_TTS_VOICE` (must be a 2.0 voice).
+
+STT and TTS selections live in separate config slots
+(`speech.stt.provider` / `speech.tts.provider`; env override
+`FREE4CHAT_TTS_PROVIDER`) so they never displace each other.
+
+Local real-audio check (writes provider audio to a file; never prints the
+key):
+
+```bash
+printf '%s' '<api-key>' | free4chat-agent speech setup doubao --stdin
+free4chat-agent speech speak-tts --text "你好，世界。" --out /tmp/probe.pcm
+# add --wav for a RIFF header wrapper
+```
+
+Room-audible Agent voice over the Cloudflare SFU (outbound publish) is not
+wired yet — see #83. Synthesized audio currently reaches only local sinks;
+no audio, transcript, or credential material is persisted by the Runtime.

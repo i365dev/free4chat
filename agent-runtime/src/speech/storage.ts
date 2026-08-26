@@ -5,11 +5,23 @@ import { join } from "node:path"
 import { runtimeDirectory } from "../core/paths.js"
 
 export interface SpeechConfig {
-  speech?: { stt?: { provider?: string } }
+  speech?: {
+    stt?: { provider?: string }
+    tts?: { provider?: string }
+  }
 }
 
 export interface SpeechCredentials {
   providers?: Record<string, Record<string, string>>
+}
+
+/** Which capability slots a saved provider selection activates. Defaults
+ * to ["stt"] so every pre-existing caller and config file behaves exactly
+ * as before (#83 review); a provider supporting several capabilities is
+ * activated in each of its slots while slots the caller omits stay
+ * untouched. */
+export interface SpeechSaveOptions {
+  slots?: readonly ("stt" | "tts")[]
 }
 
 export interface SpeechStore {
@@ -17,7 +29,8 @@ export interface SpeechStore {
   readCredentials(): Promise<SpeechCredentials>
   saveProvider(
     providerId: string,
-    values: Record<string, string>
+    values: Record<string, string>,
+    options?: SpeechSaveOptions
   ): Promise<void>
 }
 
@@ -108,21 +121,30 @@ export class LocalSpeechStore implements SpeechStore {
 
   async saveProvider(
     providerId: string,
-    values: Record<string, string>
+    values: Record<string, string>,
+    options?: SpeechSaveOptions
   ): Promise<void> {
+    const slots = [...new Set(options?.slots ?? ["stt"])]
+    if (slots.length === 0) slots.push("stt")
     const config = await this.readConfig()
     const credentials = await this.readCredentials()
     const providers = { ...(credentials.providers ?? {}) }
     providers[providerId] = { ...values }
-    // Credentials are supporting data; the config provider selection is the
-    // activation pointer and must be committed last.
+    // Credentials are supporting data; the config provider selections are
+    // the activation pointers and must be committed last.
     await this.writeJson(this.directory, "credentials.json", { providers })
+    const speech: NonNullable<SpeechConfig["speech"]> = {
+      ...(config.speech ?? {}),
+    }
+    for (const slot of slots) {
+      const previous = slot === "tts" ? speech.tts : speech.stt
+      const next = { ...(previous ?? {}), provider: providerId }
+      if (slot === "tts") speech.tts = next
+      else speech.stt = next
+    }
     await this.writeJson(this.directory, "config.json", {
       ...config,
-      speech: {
-        ...(config.speech ?? {}),
-        stt: { ...(config.speech?.stt ?? {}), provider: providerId },
-      },
+      speech,
     })
   }
 }
