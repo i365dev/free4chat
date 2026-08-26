@@ -149,7 +149,8 @@ export class SfuMediaBridge {
       if (!description) {
         const transport = await this.restClient.establishDataChannelTransport(
           this.mySessionId,
-          offer
+          offer,
+          "agent-transport"
         )
         description = transport.sessionDescription
       }
@@ -159,7 +160,11 @@ export class SfuMediaBridge {
         await this.pc.setRemoteDescription(description)
         const answer = await this.pc.createAnswer()
         await this.pc.setLocalDescription(answer)
-        await this.restClient.renegotiate(this.mySessionId, answer)
+        await this.restClient.renegotiate(
+          this.mySessionId,
+          answer,
+          "agent-transport"
+        )
       } else {
         await this.pc.setRemoteDescription(description)
       }
@@ -211,7 +216,11 @@ export class SfuMediaBridge {
           await this.pc.setRemoteDescription(result.sessionDescription)
           const answer = await this.pc.createAnswer()
           await this.pc.setLocalDescription(answer)
-          await this.restClient.renegotiate(this.mySessionId, answer)
+          await this.restClient.renegotiate(
+            this.mySessionId,
+            answer,
+            "voice-reply"
+          )
         } else {
           await this.pc.setRemoteDescription(result.sessionDescription)
         }
@@ -383,7 +392,8 @@ export class SfuMediaBridge {
         const offer = await this.restClient.subscribeTrack(
           this.mySessionId,
           participant.sessionId,
-          trackName
+          trackName,
+          "meeting-notes"
         )
         const pending = this.pendingTracks.get(key)
         if (pending) pending.expectedMid = offer.mid
@@ -395,7 +405,11 @@ export class SfuMediaBridge {
         // whenever the human actually sends packets — silent or muted
         // participants must never trigger resubscribe loops that burn the
         // subscribed-MID quota (#101 finding, Phase-2 review P1-4).
-        await this.restClient.renegotiate(this.mySessionId, answer)
+        await this.restClient.renegotiate(
+          this.mySessionId,
+          answer,
+          "meeting-notes"
+        )
       } catch (error) {
         const pending = this.pendingTracks.get(key)
         if (pending) {

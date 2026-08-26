@@ -3,8 +3,12 @@ import { describe, expect, it } from "vitest"
 import {
   clearGrantIfParticipantDeparting,
   isAgentAuthorizedForMedia,
+  isAgentAuthorizedForSharedMedia,
   NO_MEETING_NOTES,
+  NO_VOICE_REPLY,
+  resolveAgentPurposePermission,
   startMeetingNotes,
+  startVoiceReply,
 } from "./meetingNotesAuth"
 
 describe("isAgentAuthorizedForMedia", () => {
@@ -87,5 +91,93 @@ describe("full lifecycle", () => {
 
     state = clearGrantIfParticipantDeparting(state, "agent-a")
     expect(isAgentAuthorizedForMedia(state, "agent-a")).toBe(false)
+  })
+})
+
+describe("isAgentAuthorizedForSharedMedia (#83 review: MN OR VR admission)", () => {
+  const mn = (agent?: string) =>
+    agent ? startMeetingNotes(agent, 1000) : NO_MEETING_NOTES
+  const vr = (agent?: string) =>
+    agent ? startVoiceReply(agent, 1000) : NO_VOICE_REPLY
+
+  it("admits the shared session under a Meeting Notes grant alone", () => {
+    expect(
+      isAgentAuthorizedForSharedMedia(mn("agent-a"), vr(), "agent-a")
+    ).toBe(true)
+  })
+
+  it("admits the shared session under a voiceReply grant alone (MN off, VR on)", () => {
+    expect(
+      isAgentAuthorizedForSharedMedia(mn(), vr("agent-a"), "agent-a")
+    ).toBe(true)
+  })
+
+  it("admits when both grants name the agent", () => {
+    expect(
+      isAgentAuthorizedForSharedMedia(mn("agent-a"), vr("agent-a"), "agent-a")
+    ).toBe(true)
+  })
+
+  it("denies when neither grant is active", () => {
+    expect(isAgentAuthorizedForSharedMedia(mn(), vr(), "agent-a")).toBe(false)
+  })
+
+  it("denies an agent named by neither grant even while both are active for others", () => {
+    expect(
+      isAgentAuthorizedForSharedMedia(mn("agent-b"), vr("agent-c"), "agent-a")
+    ).toBe(false)
+  })
+
+  it("denies once the only authorizing grant stops", () => {
+    const notes = startMeetingNotes("agent-a", 1000)
+    expect(isAgentAuthorizedForSharedMedia(notes, vr(), "agent-a")).toBe(true)
+    expect(
+      isAgentAuthorizedForSharedMedia(NO_MEETING_NOTES, vr(), "agent-a")
+    ).toBe(false)
+  })
+})
+
+describe("resolveAgentPurposePermission — agent-transport purpose", () => {
+  it("allows the bare transport bootstrap (no media direction)", () => {
+    expect(
+      resolveAgentPurposePermission({
+        purpose: "agent-transport",
+        wantsLocalPublish: false,
+        wantsRemoteSubscribe: false,
+        involvesVideo: false,
+      })
+    ).toEqual({ ok: true })
+  })
+
+  it("fails closed on a missing or unknown purpose", () => {
+    for (const purpose of [undefined, "voice", null]) {
+      expect(
+        resolveAgentPurposePermission({
+          purpose,
+          wantsLocalPublish: false,
+          wantsRemoteSubscribe: true,
+          involvesVideo: false,
+        })
+      ).toEqual({ ok: false, error: "agent_media_purpose_required" })
+    }
+  })
+
+  it("refuses any media direction under the transport purpose", () => {
+    expect(
+      resolveAgentPurposePermission({
+        purpose: "agent-transport",
+        wantsLocalPublish: true,
+        wantsRemoteSubscribe: false,
+        involvesVideo: false,
+      })
+    ).toEqual({ ok: false, error: "agent_media_direction_forbidden" })
+    expect(
+      resolveAgentPurposePermission({
+        purpose: "agent-transport",
+        wantsLocalPublish: false,
+        wantsRemoteSubscribe: true,
+        involvesVideo: false,
+      })
+    ).toEqual({ ok: false, error: "agent_media_direction_forbidden" })
   })
 })

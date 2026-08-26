@@ -17,6 +17,7 @@ import {
   clearGrantIfParticipantDeparting,
   clearVoiceReplyIfParticipantDeparting,
   isAgentAuthorizedForMedia,
+  isAgentAuthorizedForSharedMedia,
   isAgentAuthorizedForVoiceReply,
   NO_MEETING_NOTES,
   NO_VOICE_REPLY,
@@ -289,6 +290,14 @@ type ControlRequest =
       participantId: string
       token: string
       sessionId: string
+    }
+  | {
+      // #83 review: narrow admission probe for the ONE shared Agent SFU
+      // session (agent-session route). Admits on meetingNotes OR voiceReply;
+      // unlike agent-room-media it returns NO media state at all.
+      action: "agent-media-admit"
+      participantId: string
+      token: string
     }
   | {
       action: "agent-room-media"
@@ -1530,6 +1539,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })
     }
 
+    if (request.action === "agent-media-admit") {
+      // #83 review: admission probe for the ONE shared Agent SFU session.
+      // Authorizes on meetingNotes OR voiceReply naming THIS connected
+      // agent; deliberately returns no room/media state — Human media
+      // discovery stays agent-room-media-only (Meeting Notes grant).
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      if (
+        !isAgentAuthorizedForSharedMedia(
+          room.meetingNotes,
+          room.voiceReply,
+          participant.id
+        )
+      )
+        return this.json({ error: "agent_media_not_authorized" }, 403)
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      return this.json({ ok: true, expiresAt: room.expiresAt })
+    }
+
     if (request.action === "agent-media-attach") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
@@ -1547,8 +1585,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // external I/O, during which the Human could Stop or reassign
       // Meeting Notes. Re-check the CURRENT grant here and refuse to
       // attach — never mutate the participant into a new active media
-      // session — if it's no longer valid.
-      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
+      // session — if it's no longer valid. #83 review: the shared session
+      // is admissible under EITHER independent grant (meetingNotes OR
+      // voiceReply) naming this agent; this check admits transport only.
+      if (
+        !isAgentAuthorizedForSharedMedia(
+          room.meetingNotes,
+          room.voiceReply,
+          participant.id
+        )
+      )
         return this.json({ error: "meeting_notes_not_authorized" }, 403)
       if (participant.media?.sessionId === request.sessionId) {
         // Idempotent: the same session re-attaching (e.g. a retried
@@ -1881,8 +1927,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           const failure = decision as { ok: false; error: string }
           return this.json({ error: failure.error }, 403)
         }
-        void decision
-        void decision
         if (
           request.wantsVoicePublish === true &&
           !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
@@ -1898,6 +1942,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
         )
           return this.json({ error: "voice_reply_not_authorized" }, 403)
+        // #83 review: the shared transport/bootstrap purpose is authorized
+        // by EITHER independent grant — never by an Agent token alone. A
+        // room where neither grant names this agent has no media business
+        // left on its session at all.
+        if (
+          request.purpose === "agent-transport" &&
+          !isAgentAuthorizedForSharedMedia(
+            room.meetingNotes,
+            room.voiceReply,
+            participant.id
+          )
+        )
+          return this.json({ error: "agent_media_not_authorized" }, 403)
         if (
           participant.media?.agentPublishedMid &&
           (request.localTrackCount ?? 0) > 0

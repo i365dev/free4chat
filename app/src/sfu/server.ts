@@ -339,8 +339,11 @@ export async function handleSfuRequest(
     // Confirms the caller is an existing, authorized *agent* participant
     // before spending a real Cloudflare Realtime session on it. Reuses the
     // same DO auth path as everything else — no separate credential system.
+    // #83 review: admission for the ONE shared Agent session is
+    // meetingNotes OR voiceReply (agent-media-admit) — never Human media
+    // discovery, which stays agent-room-media/Meeting-Notes-only.
     const authResponse = await roomControl(env, room, {
-      action: "agent-room-media",
+      action: "agent-media-admit",
       participantId,
       token,
     })
@@ -479,7 +482,13 @@ export async function handleSfuRequest(
           : undefined,
         typeof remoteTrack.trackName === "string"
           ? remoteTrack.trackName
-          : undefined
+          : undefined,
+        undefined,
+        undefined,
+        // #83 review: purpose must reach the DO's per-remote-track
+        // reauthorization too, so a Meeting Notes revocation between the
+        // first authorize and this one still fails the request closed.
+        typeof body.purpose === "string" ? body.purpose : undefined
       )
       if (!remoteAuth.ok) return remoteAuth
     }
@@ -719,7 +728,12 @@ export async function handleSfuRequest(
       undefined,
       typeof body.publisherSessionId === "string"
         ? body.publisherSessionId
-        : undefined
+        : undefined,
+      undefined,
+      // #83 review: the shared initial transport is admitted only under an
+      // explicit narrow purpose ("agent-transport") that the DO checks
+      // against meetingNotes OR voiceReply — never Agent token alone.
+      typeof body.purpose === "string" ? body.purpose : undefined
     )
     if (!auth.ok) return auth
     if (route === "datachannels/close") {
@@ -749,7 +763,9 @@ export async function handleSfuRequest(
           sessionId,
           undefined,
           undefined,
-          channel.sessionId
+          channel.sessionId,
+          undefined,
+          typeof body.purpose === "string" ? body.purpose : undefined
         )
         if (!channelAuth.ok) return channelAuth
       }

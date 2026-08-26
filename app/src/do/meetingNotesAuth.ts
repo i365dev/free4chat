@@ -59,6 +59,25 @@ export function isAgentAuthorizedForVoiceReply(
   )
 }
 
+/**
+ * #83 review: the ONE shared Agent SFU session (transport, attach) may be
+ * admitted when EITHER independent grant names this agent — a VR-only room
+ * must be able to build its outbound transport exactly like an MN-only one.
+ * This admits transport/session plumbing only: it never exposes Human audio
+ * (agent-room-media discovery stays Meeting-Notes-only) and never permits
+ * publish (that stays voiceReply-only).
+ */
+export function isAgentAuthorizedForSharedMedia(
+  meetingNotes: MeetingNotesState,
+  voiceReply: VoiceReplyState,
+  agentParticipantId: string
+): boolean {
+  return (
+    isAgentAuthorizedForMedia(meetingNotes, agentParticipantId) ||
+    isAgentAuthorizedForVoiceReply(voiceReply, agentParticipantId)
+  )
+}
+
 export function startVoiceReply(
   agentParticipantId: string,
   now: number
@@ -76,13 +95,19 @@ export function clearVoiceReplyIfParticipantDeparting(
   return NO_VOICE_REPLY
 }
 
-export type AgentMediaPurpose = "meeting-notes" | "voice-reply"
+export type AgentMediaPurpose =
+  | "meeting-notes"
+  | "voice-reply"
+  | "agent-transport"
 
 /**
  * #83 direction matrix (pure, fail-closed): what an explicit narrow purpose
  * permits for an Agent media operation. Missing/unknown purpose fails;
  * meeting-notes unlocks ONLY remote Human-audio subscribe; voice-reply
- * unlocks ONLY local single-audio publish; video is always denied.
+ * unlocks ONLY local single-audio publish; agent-transport covers ONLY
+ * transport plumbing (initial DataChannel establish / bootstrap
+ * renegotiation) and is refused for any media direction; video is always
+ * denied.
  */
 export function resolveAgentPurposePermission(args: {
   purpose: unknown
@@ -91,7 +116,11 @@ export function resolveAgentPurposePermission(args: {
   involvesVideo: boolean
 }): { ok: true } | { ok: false; error: string } {
   if (args.involvesVideo) return { ok: false, error: "agent_video_forbidden" }
-  if (args.purpose !== "meeting-notes" && args.purpose !== "voice-reply")
+  if (
+    args.purpose !== "meeting-notes" &&
+    args.purpose !== "voice-reply" &&
+    args.purpose !== "agent-transport"
+  )
     return { ok: false, error: "agent_media_purpose_required" }
   if (args.wantsLocalPublish && args.purpose !== "voice-reply")
     return { ok: false, error: "agent_media_direction_forbidden" }

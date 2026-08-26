@@ -1337,3 +1337,173 @@ describe("preflight capacity check runs before Cloudflare tracks/new (round 5, P
     expect(authorizeCall?.remoteTrackCount).toBe(0)
   })
 })
+
+describe("#83 review: shared Agent session admission is MN OR VR (agent-media-admit)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("agent-session admits through agent-media-admit and never touches Human media discovery", async () => {
+    const seenActions: string[] = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(String(body.action))
+      return { status: 200, body: { ok: true, expiresAt: Date.now() } }
+    })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ sessionId: "cf-session-vr" }))
+    )
+    const res = await handleSfuRequest(
+      req("agent-session", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect((await json(res)).sessionId).toBe("cf-session-vr")
+    expect(seenActions).toContain("agent-media-admit")
+    expect(seenActions).toContain("agent-media-attach")
+    expect(seenActions).not.toContain("agent-room-media")
+  })
+
+  it("a room where neither grant names the agent fails closed before any Cloudflare spend", async () => {
+    let cloudflareCalled = false
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        cloudflareCalled = true
+        return Response.json({ sessionId: "should-not-happen" })
+      })
+    )
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) =>
+      body.action === "agent-media-admit"
+        ? { status: 403, body: { error: "agent_media_not_authorized" } }
+        : { status: 200, body: { ok: true } }
+    )
+    const res = await handleSfuRequest(
+      req("agent-session", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_media_not_authorized")
+    expect(cloudflareCalled).toBe(false)
+  })
+
+  it("agent-room-media keeps using the Meeting-Notes-only discovery action", async () => {
+    const seenActions: string[] = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(String(body.action))
+      return { status: 200, body: { participants: [] } }
+    })
+    const res = await handleSfuRequest(
+      req("agent-room-media", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(seenActions).toEqual(["agent-room-media"])
+  })
+})
+
+describe("#83 review: purpose reaches every DO authorize along the real path", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function recordingEnv() {
+    const authorizations: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize") {
+        authorizations.push(body)
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      }
+      return { status: 200, body: { ok: true } }
+    })
+    return { authorizations, env }
+  }
+
+  it("datachannels/establish forwards the typed transport purpose", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ sessionDescription: {} }))
+    )
+    const { authorizations, env } = recordingEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/establish", {
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "agent-transport",
+          dataChannel: { location: "remote", dataChannelName: "server-events" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(authorizations).toHaveLength(1)
+    expect(authorizations[0].purpose).toBe("agent-transport")
+  })
+
+  it("tracks re-authorizes EACH remote track with the request purpose (remote-track reauth)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          tracks: [{ mid: "mid-a" }, { mid: "mid-b" }],
+        })
+      )
+    )
+    const { authorizations, env } = recordingEnv()
+    const res = await handleSfuRequest(
+      req("tracks", {
+        method: "POST",
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "meeting-notes",
+          tracks: [
+            {
+              location: "remote",
+              sessionId: "human-1",
+              trackName: "mic",
+            },
+            {
+              location: "remote",
+              sessionId: "human-2",
+              trackName: "mic",
+            },
+          ],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    const reauths = authorizations.filter(
+      (auth) => auth.trackSessionId !== undefined
+    )
+    expect(reauths).toHaveLength(2)
+    expect(reauths[0].purpose).toBe("meeting-notes")
+    expect(reauths[1].purpose).toBe("meeting-notes")
+    expect(reauths[0].trackName).toBe("mic")
+  })
+
+  it("renegotiate forwards its purpose to the DO authorize", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({}))
+    )
+    const { authorizations, env } = recordingEnv()
+    const res = await handleSfuRequest(
+      req("renegotiate", {
+        method: "PUT",
+        body: JSON.stringify({
+          ...agentBody,
+          sessionId: "sess-a",
+          purpose: "voice-reply",
+          sessionDescription: { type: "answer", sdp: "v=0\r\n" },
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(authorizations).toHaveLength(1)
+    expect(authorizations[0].purpose).toBe("voice-reply")
+  })
+})
