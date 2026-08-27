@@ -46,12 +46,18 @@ fi
 
 head_sha="$(git rev-parse HEAD)"
 echo "repo_sha=$head_sha"
-if origin_sha="$(git rev-parse --verify refs/remotes/origin/cf-sfu 2>/dev/null)"; then
-  echo "origin_cf_sfu_sha=$origin_sha"
-  [[ "$head_sha" == "$origin_sha" ]] || fail "head_differs_from_origin-cf-sfu"
+if origin_sha_line="$(git ls-remote --exit-code origin refs/heads/cf-sfu 2>/dev/null)"; then
+  origin_sha="${origin_sha_line%%$'\t'*}"
+  if [[ -z "$origin_sha" ]]; then
+    echo "origin_cf_sfu_resolvable=false"
+    fail "origin-cf-sfu_sha_missing"
+  else
+    echo "origin_cf_sfu_sha=$origin_sha"
+    [[ "$head_sha" == "$origin_sha" ]] || fail "head_differs_from_origin-cf-sfu"
+  fi
 else
   echo "origin_cf_sfu_resolvable=false"
-  fail "origin-cf-sfu_not_fetched"
+  fail "origin-cf-sfu_remote_query_failed"
 fi
 
 runtime_version="$(node -p "require('./agent-runtime/package.json').version")"
