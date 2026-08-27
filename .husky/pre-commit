@@ -5,10 +5,6 @@ cd "$ROOT/app" || exit 1
 npx prettier --write . > /dev/null 2>&1
 npx eslint src --fix --max-warnings 0 > /dev/null 2>&1
 
-cd "$ROOT/agent-runtime" || exit 1
-npx prettier --write . > /dev/null 2>&1
-npx eslint src test --fix --max-warnings 0 > /dev/null 2>&1
-
 cd "$ROOT"
 # Re-stage any files the fixers touched (modifications only, never deletions).
 changed=$(git diff --name-only)
