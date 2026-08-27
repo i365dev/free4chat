@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useSfuChatRoom } from "./useSfuChatRoom"
 
 class FakeTrack {
+  kind: "audio" | "video" = "audio"
   enabled = true
   readyState = "live"
   stop = vi.fn()
@@ -27,11 +28,16 @@ class FakeDataChannel {
 }
 
 class FakePeerConnection {
+  static instances: FakePeerConnection[] = []
   connectionState = "new"
   ontrack: ((event: unknown) => void) | null = null
   onconnectionstatechange: (() => void) | null = null
   private mids = 0
   private transceivers: { sender: { track: FakeTrack }; mid: string }[] = []
+
+  constructor() {
+    FakePeerConnection.instances.push(this)
+  }
 
   addTrack(track: FakeTrack) {
     const mid = String(this.mids++)
@@ -74,6 +80,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   let getUserMedia: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    FakePeerConnection.instances.length = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       FakePeerConnection
     class FakeMediaStream {
@@ -266,6 +273,7 @@ describe("useSfuChatRoom room attachments (#123)", () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    FakePeerConnection.instances.length = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       FakePeerConnection
     class FakeMediaStream {
@@ -498,27 +506,38 @@ describe("useSfuChatRoom room attachments (#123)", () => {
 
   it("fails closed and leaves an errored remote subscription retryable", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined)
     let trackAttempts = 0
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString()
-      if (url.endsWith("/api/sfu/session"))
-        return jsonResponse({
-          participantId: "participant-1",
-          participantToken: "participant-token",
-          sessionId: "session-1",
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        })
-      if (url.endsWith("/api/sfu/datachannels/new"))
-        return jsonResponse({ dataChannels: [{ id: 1 }] })
-      if (url.endsWith("/api/sfu/tracks")) {
-        trackAttempts += 1
-        return jsonResponse({
-          requiresImmediateRenegotiation: false,
-          tracks: [{ errorCode: "track_not_found" }],
-        })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks")) {
+          const body = JSON.parse(
+            (init?.body as string | undefined) ?? "{}"
+          ) as {
+            tracks?: Array<{ location?: string }>
+          }
+          if (body.tracks?.[0]?.location !== "remote") return jsonResponse({})
+          trackAttempts += 1
+          if (trackAttempts === 1)
+            return Promise.reject(new Error("secret-sdp-fetch-failure"))
+          return jsonResponse({
+            requiresImmediateRenegotiation: false,
+            tracks: [{ errorCode: "track_not_found" }],
+          })
+        }
+        return jsonResponse({})
       }
-      return jsonResponse({})
-    })
+    )
 
     const { unmount } = await connect("room-remote-error")
     await waitFor(() =>
@@ -552,6 +571,168 @@ describe("useSfuChatRoom room attachments (#123)", () => {
 
     publish()
     await waitFor(() => expect(trackAttempts).toBe(2))
+    const diagnostics = info.mock.calls
+      .filter(([prefix]) => prefix === "free4chat_voice_downstream")
+      .map(([, payload]) => payload as Record<string, unknown>)
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "tracks_new_result",
+          tracks_new_ok: 0,
+          stage: "tracks-new",
+          error_type: "Error",
+        }),
+      ])
+    )
+    expect(JSON.stringify(diagnostics)).not.toContain(
+      "secret-sdp-fetch-failure"
+    )
+    unmount()
+  })
+
+  it("observes the complete Agent audio downstream path without exposing secrets", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined)
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/sfu/session"))
+        return jsonResponse({
+          participantId: "participant-1",
+          participantToken: "participant-token",
+          sessionId: "session-1",
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+      if (url.endsWith("/api/sfu/datachannels/new"))
+        return jsonResponse({ dataChannels: [{ id: 1 }] })
+      if (url.endsWith("/api/sfu/tracks"))
+        return jsonResponse({
+          sessionDescription: { type: "offer", sdp: "secret-sdp" },
+          tracks: [{ mid: "7", trackName: "secret-track" }],
+        })
+      return jsonResponse({})
+    })
+
+    const { unmount } = await connect("room-remote-observability")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 0,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: [
+              {
+                id: "agent-b",
+                name: "Agent B",
+                kind: "agent",
+                connected: true,
+                joinedAt: 0,
+                lastSeenAt: 0,
+                media: {
+                  sessionId: "agent-session",
+                  muted: false,
+                  fileChannelReady: false,
+                  tracks: [{ trackName: "agent-voice", kind: "audio" }],
+                },
+              },
+            ],
+            messages: [],
+            meetingNotes: { active: false },
+            meetingNotesMediaAvailable: true,
+            voiceReply: { active: true },
+            voiceReplyMediaAvailable: true,
+          },
+        }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/sfu/renegotiate")
+        )
+      ).toBe(true)
+    )
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "trackPublished",
+          participant: {
+            id: "agent-b",
+            name: "Agent B",
+            kind: "agent",
+            sessionId: "agent-session",
+            track: { trackName: "agent-voice", kind: "audio" },
+          },
+        }),
+      })
+    })
+    const pc = FakePeerConnection.instances.at(-1)!
+    const track = new FakeTrack()
+    act(() => {
+      pc.ontrack?.({
+        track,
+        streams: [],
+      })
+    })
+
+    const diagnostics = info.mock.calls
+      .filter(([prefix]) => prefix === "free4chat_voice_downstream")
+      .map(([, payload]) => payload as Record<string, unknown>)
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "room_state_observed",
+          agent_audio_track_visible_in_state: 1,
+          agent_audio_track_count: 1,
+        }),
+        expect.objectContaining({
+          event: "track_published_received",
+          participant_kind: "agent",
+          track_kind: "audio",
+          participant_found: 1,
+          publisher_session_present: 1,
+        }),
+        expect.objectContaining({
+          event: "subscribe_track_entered",
+          participant_kind: "agent",
+          track_kind: "audio",
+          media_present: 1,
+        }),
+        expect.objectContaining({
+          event: "tracks_new_result",
+          tracks_new_ok: 1,
+          has_session_description: 1,
+          session_description_type: "offer",
+          track_result_count: 1,
+          track_has_mid: 1,
+        }),
+        expect.objectContaining({ event: "remote_description_applied" }),
+        expect.objectContaining({ event: "answer_created" }),
+        expect.objectContaining({ event: "local_description_applied" }),
+        expect.objectContaining({ event: "renegotiate_ok" }),
+        expect.objectContaining({
+          event: "ontrack_fired",
+          received_track_kind: "audio",
+          pending_remote_track_present: 1,
+        }),
+        expect.objectContaining({
+          event: "pending_session_match",
+          pending_session_match: 1,
+        }),
+        expect.objectContaining({
+          event: "stream_attached",
+          stream_attached: 1,
+          attached_kind: "audio",
+        }),
+      ])
+    )
+    expect(JSON.stringify(diagnostics)).not.toContain("secret-sdp")
+    expect(JSON.stringify(diagnostics)).not.toContain("secret-track")
+    expect(JSON.stringify(diagnostics)).not.toContain("agent-session")
     unmount()
   })
 })
