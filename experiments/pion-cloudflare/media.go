@@ -38,14 +38,17 @@ type MediaSpike struct {
 	dcState     string
 	expectedMid string
 
-	mu          sync.Mutex
-	onTrackInfo map[string]any
-	rtpCounts   map[string]uint64
-	offered     bool
-	outbound    *webrtc.TrackLocalStaticSample
-	publishOn   bool
-	encoder     *opus.Encoder
-	pcmCarry    []byte
+	mu                sync.Mutex
+	onTrackInfo       map[string]any
+	rtpCounts         map[string]uint64
+	offered           bool
+	outbound          *webrtc.TrackLocalStaticSample
+	publishOn         bool
+	encoder           *opus.Encoder
+	pcmCarry          []byte
+	pcmWriteCalls     uint64
+	pcmInputBytes     uint64
+	opusFramesWritten uint64
 	// Outbound wall-clock pacing (#83 review): injectable for deterministic
 	// tests; production uses time.Now/time.Sleep.
 	nowFn   func() time.Time
@@ -467,6 +470,41 @@ func (s *MediaSpike) RtpCounts() map[string]uint64 {
 	return out
 }
 
+// PublishCounts returns application-level PCM/Opus counters and, when Pion
+// exposes an audio outbound RTP stats object, its authoritative network
+// counters. The application counters are deliberately named as such: a
+// successful TrackLocal.WriteSample is not itself proof that a packet left
+// the process.
+func (s *MediaSpike) PublishCounts() map[string]uint64 {
+	s.mu.Lock()
+	counts := map[string]uint64{
+		"pcm_write_calls":     s.pcmWriteCalls,
+		"pcm_input_bytes":     s.pcmInputBytes,
+		"opus_frames_written": s.opusFramesWritten,
+	}
+	pc := s.pc
+	s.mu.Unlock()
+	if pc == nil {
+		return counts
+	}
+	var packets, bytes uint64
+	var found bool
+	for _, stat := range pc.GetStats() {
+		outbound, ok := stat.(webrtc.OutboundRTPStreamStats)
+		if !ok || outbound.Kind != "audio" {
+			continue
+		}
+		found = true
+		packets += uint64(outbound.PacketsSent)
+		bytes += outbound.BytesSent
+	}
+	if found {
+		counts["outbound_rtp_packets"] = packets
+		counts["outbound_rtp_bytes"] = bytes
+	}
+	return counts
+}
+
 // TrackInfo returns captured OnTrack metadata (nil if none matched yet).
 func (s *MediaSpike) TrackInfo() map[string]any {
 	s.mu.Lock()
@@ -593,6 +631,10 @@ func (s *MediaSpike) WritePCM(chunk []byte) error {
 	if !active || track == nil || enc == nil {
 		return errPublishNotActive
 	}
+	s.mu.Lock()
+	s.pcmWriteCalls++
+	s.pcmInputBytes += uint64(len(chunk))
+	s.mu.Unlock()
 	data := append(s.takeCarry(), chunk...)
 	const frame24kBytes = 960
 	frames := len(data) / frame24kBytes
@@ -614,6 +656,9 @@ func (s *MediaSpike) WritePCM(chunk []byte) error {
 		if err := track.WriteSample(media.Sample{Data: out[:n], Duration: frameDuration}); err != nil {
 			return err
 		}
+		s.mu.Lock()
+		s.opusFramesWritten++
+		s.mu.Unlock()
 	}
 	return nil
 }
@@ -678,5 +723,11 @@ func (s *MediaSpike) writeSample(b []byte) error {
 	if !active || t == nil {
 		return errPublishNotActive
 	}
-	return t.WriteSample(media.Sample{Data: b, Duration: 20 * time.Millisecond})
+	if err := t.WriteSample(media.Sample{Data: b, Duration: 20 * time.Millisecond}); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.opusFramesWritten++
+	s.mu.Unlock()
+	return nil
 }

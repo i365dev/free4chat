@@ -279,6 +279,26 @@ export class MeetingNotesController {
     return this.voiceSpeaker
   }
 
+  /** Side-effect-free readiness check for Runtime diagnostics. */
+  hasCurrentVoiceOutput(): boolean {
+    return this.voiceSpeaker !== null
+  }
+
+  private logVoiceTurnStats(
+    event: "voice_turn_finished" | "voice_turn_failed",
+    details: Record<string, string | number>
+  ): void {
+    const bridge = this.bridge
+    if (!bridge || typeof bridge.voicePublishStats !== "function") {
+      this.log(event, details)
+      return
+    }
+    void bridge
+      .voicePublishStats()
+      .then((stats) => this.log(event, { ...details, ...stats }))
+      .catch(() => this.log(event, details))
+  }
+
   private async ensureVoice(): Promise<void> {
     const options = this.options.voiceReply
     const bridge = this.bridge
@@ -323,13 +343,13 @@ export class MeetingNotesController {
           if (event.type === "turnStarted")
             this.log("voice_turn_started", { turn: event.turn })
           else if (event.type === "turnFinished")
-            this.log("voice_turn_finished", {
+            this.logVoiceTurnStats("voice_turn_finished", {
               turn: event.turn,
               chunks: event.chunks,
               frames: event.frames,
             })
           else if (event.type === "turnFailed")
-            this.log("voice_turn_failed", {
+            this.logVoiceTurnStats("voice_turn_failed", {
               turn: event.turn,
               code: event.code,
             })
@@ -386,6 +406,7 @@ export class MeetingNotesController {
         ...(this.voiceTrackName
           ? { publish: { trackName: this.voiceTrackName } }
           : {}),
+        log: this.log,
       })
     this.bridge = bridge
     try {

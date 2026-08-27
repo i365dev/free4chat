@@ -47,6 +47,14 @@ export interface PeerConnectionLike {
   localPublishMid?(): Promise<string | undefined>
   /** Feeds arbitrary S16LE 24 kHz mono PCM bytes into the outbound path. */
   writePcmChunk?(chunk: Uint8Array): Promise<void>
+  /** Read-only counters from the Pion outbound voice path. */
+  publishStats?(): Promise<{
+    pcm_write_calls: number
+    pcm_input_bytes: number
+    opus_frames_written: number
+    outbound_rtp_packets?: number
+    outbound_rtp_bytes?: number
+  }>
 }
 
 export type PeerConnectionFactory = () =>

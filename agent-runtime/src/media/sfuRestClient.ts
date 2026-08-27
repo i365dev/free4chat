@@ -27,6 +27,16 @@ export interface DataChannelTransportLike {
   requiresImmediateRenegotiation?: boolean
 }
 
+export type PublisherTrackStatus = "active" | "inactive" | "waiting" | "unknown"
+
+export interface PublishedAudioTrackDiagnostic {
+  publisher_session_lookup_ok: 0 | 1
+  matching_track_found: 0 | 1
+  matching_track_status: PublisherTrackStatus
+  matching_track_has_mid: 0 | 1
+  active: 0 | 1
+}
+
 /** #83 review: the narrow, typed purpose every Agent signaling request must
  * carry. The Worker/DO re-checks the matching room grant per purpose and
  * fails closed when it is missing or unknown — never Agent token alone:
@@ -95,6 +105,7 @@ export interface SfuRestClientLike {
     mySessionId: string,
     trackName: string
   ): Promise<boolean>
+  lastPublishedAudioTrackDiagnostic?(): PublishedAudioTrackDiagnostic | null
 }
 
 /**
@@ -106,6 +117,8 @@ export interface SfuRestClientLike {
  * its normal room join.
  */
 export class SfuRestClient implements SfuRestClientLike {
+  private lastPublisherDiagnostic: PublishedAudioTrackDiagnostic | null = null
+
   constructor(
     private readonly siteOrigin: string,
     private readonly handle: DecodedParticipantHandle
@@ -290,7 +303,25 @@ export class SfuRestClient implements SfuRestClientLike {
       sessionId: mySessionId,
       trackName,
     })
+    const status =
+      data.matchingTrackStatus === "active" ||
+      data.matchingTrackStatus === "inactive" ||
+      data.matchingTrackStatus === "waiting"
+        ? data.matchingTrackStatus
+        : "unknown"
+    this.lastPublisherDiagnostic = {
+      publisher_session_lookup_ok:
+        data.publisherSessionLookupOk === true ? 1 : 0,
+      matching_track_found: data.matchingTrackFound === true ? 1 : 0,
+      matching_track_status: status,
+      matching_track_has_mid: data.matchingTrackHasMid === true ? 1 : 0,
+      active: data.active === true ? 1 : 0,
+    }
     return data.active === true
+  }
+
+  lastPublishedAudioTrackDiagnostic(): PublishedAudioTrackDiagnostic | null {
+    return this.lastPublisherDiagnostic
   }
 
   async renegotiate(

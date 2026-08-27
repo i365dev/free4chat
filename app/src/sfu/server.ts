@@ -593,7 +593,14 @@ export async function handleSfuRequest(
       publisher.matchingTrackFound &&
       publisher.matchingTrackStatus === "active" &&
       publisher.matchingTrackHasMid
-    if (!active) return json({ active: false })
+    const diagnostic = {
+      publisherSessionLookupOk: publisher.publisherSessionLookupOk,
+      matchingTrackFound: publisher.matchingTrackFound,
+      matchingTrackStatus: publisher.matchingTrackStatus,
+      matchingTrackHasMid: publisher.matchingTrackHasMid,
+      active,
+    }
+    if (!active) return json(diagnostic)
     const activation = await roomControl(env, room, {
       action: "agent-track-active",
       participantId,
@@ -602,7 +609,7 @@ export async function handleSfuRequest(
       trackName,
     })
     if (!activation.ok) return activation
-    return json({ active: true })
+    return json(diagnostic)
   }
 
   if (route === "tracks" || route === "renegotiate") {

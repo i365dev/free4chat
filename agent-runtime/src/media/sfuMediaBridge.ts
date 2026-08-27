@@ -28,6 +28,17 @@ function isHumanMediaDiscoveryDenied(error: unknown): boolean {
     error instanceof Error && error.message === HUMAN_MEDIA_DISCOVERY_DENIED
   )
 }
+
+function safeDiagnosticCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown"
+  const normalized = message.toLowerCase()
+  if (normalized.includes("timeout")) return "timeout"
+  if (normalized.includes("unsupported_chunk")) return "unsupported_chunk"
+  if (normalized.includes("not authorized")) return "not_authorized"
+  if (normalized.includes("decoding")) return "decoding_error"
+  if (normalized.includes("network")) return "network_error"
+  return "operation_failed"
+}
 /** Emit a bounded stats event at most this often per track, not per packet. */
 const STATS_FLUSH_INTERVAL_MS = 2000
 // One 20 ms mono S16LE frame at the Pion voice rate. This is a bounded,
@@ -50,6 +61,8 @@ export interface SfuMediaBridgeOptions {
    * that implements the optional outbound surface (Pion engine only). */
   publish?: { trackName: string }
   createPeerConnection?: PeerConnectionFactory
+  /** Bounded diagnostic logger; never receives media, credentials or IDs. */
+  log?: (event: string, details?: Record<string, string | number>) => void
   /** Injectable for tests; defaults to Date.now. */
   now?: () => number
 }
@@ -91,6 +104,10 @@ export class SfuMediaBridge {
   private readonly pollIntervalMs: number
   private readonly publish?: { trackName: string }
   private readonly now: () => number
+  private readonly log: (
+    event: string,
+    details?: Record<string, string | number>
+  ) => void
 
   private pc: PeerConnectionLike | null = null
   private mySessionId: string | null = null
@@ -118,11 +135,14 @@ export class SfuMediaBridge {
   private voicePrimingSent = false
   private pendingVoicePcm: Uint8Array[] = []
   private pendingVoicePcmBytes = 0
+  private pcmWriteCalls = 0
+  private pcmInputBytes = 0
 
   constructor(options: SfuMediaBridgeOptions) {
     this.onEvent = options.onEvent
     this.onAudioFrame = options.onAudioFrame
     this.now = options.now ?? Date.now
+    this.log = options.log ?? (() => undefined)
     this.publish = options.publish
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.restClient =
@@ -241,37 +261,82 @@ export class SfuMediaBridge {
       () => undefined
     )
     const run = (async () => {
-      if (this.stopped || !this.pc || !this.mySessionId) return
-      // The Pion engine only adds its outbound send m-line when armed, and
-      // #83 live silence traced to this arm step never running in production
-      // (the bootstrap offer is receive-only, so a later fresh offer still
-      // lacked the track and localPublishMid() returned ""). Arming is
-      // idempotent in the engine, so calling it here — immediately before
-      // the publication offer — is always correct.
-      await this.pc.armPublishAudio?.()
-      const offer = await this.pc.createOffer()
-      await this.pc.setLocalDescription(offer)
-      const mid = (await this.pc.localPublishMid?.()) ?? ""
-      if (!mid) throw new Error("publish_mid_unavailable")
-      const result = await this.restClient.publishAudioTrack!(
-        this.mySessionId,
-        { trackName: this.publish!.trackName, mid, offer }
-      )
-      if (result.sessionDescription) {
-        if (result.sessionDescription.type === "offer") {
-          await this.pc.setRemoteDescription(result.sessionDescription)
-          const answer = await this.pc.createAnswer()
-          await this.pc.setLocalDescription(answer)
-          await this.restClient.renegotiate(
-            this.mySessionId,
-            answer,
-            "voice-reply"
-          )
-        } else {
-          await this.pc.setRemoteDescription(result.sessionDescription)
-        }
+      const diagnostic: Record<string, string | number> = {
+        arm_publish_ok: 0,
+        voice_offer_created: 0,
+        local_mid_present: 0,
+        tracks_new_ok: 0,
+        publish_response_description_present: 0,
+        publish_response_description_type: "none",
+        remote_description_applied: 0,
+        activate_publish_ok: 0,
       }
-      await this.pc.activatePublish?.()
+      let stage = "arm-publish"
+      const fail = (error: unknown): never => {
+        this.log("voice_publish_failed", {
+          ...diagnostic,
+          stage,
+          code: safeDiagnosticCode(error),
+        })
+        throw error
+      }
+      try {
+        if (this.stopped || !this.pc || !this.mySessionId) return
+        // The Pion engine only adds its outbound send m-line when armed, and
+        // #83 live silence traced to this arm step never running in production
+        // (the bootstrap offer is receive-only, so a later fresh offer still
+        // lacked the track and localPublishMid() returned ""). Arming is
+        // idempotent in the engine, so calling it here — immediately before
+        // the publication offer — is always correct.
+        await this.pc.armPublishAudio?.()
+        diagnostic.arm_publish_ok = 1
+        stage = "offer"
+        const offer = await this.pc.createOffer()
+        diagnostic.voice_offer_created = 1
+        await this.pc.setLocalDescription(offer)
+        stage = "local-mid"
+        const mid = (await this.pc.localPublishMid?.()) ?? ""
+        if (!mid) throw new Error("publish_mid_unavailable")
+        diagnostic.local_mid_present = 1
+        stage = "tracks-new"
+        const result = await this.restClient.publishAudioTrack!(
+          this.mySessionId,
+          { trackName: this.publish!.trackName, mid, offer }
+        )
+        diagnostic.tracks_new_ok = 1
+        diagnostic.publish_response_description_present =
+          result.sessionDescription ? 1 : 0
+        diagnostic.publish_response_description_type =
+          result.sessionDescription?.type === "offer" ||
+          result.sessionDescription?.type === "answer"
+            ? result.sessionDescription.type
+            : "none"
+        if (result.sessionDescription) {
+          stage = "remote-description"
+          if (result.sessionDescription.type === "offer") {
+            await this.pc.setRemoteDescription(result.sessionDescription)
+            diagnostic.remote_description_applied = 1
+            const answer = await this.pc.createAnswer()
+            await this.pc.setLocalDescription(answer)
+            stage = "renegotiate"
+            await this.restClient.renegotiate(
+              this.mySessionId,
+              answer,
+              "voice-reply"
+            )
+            diagnostic.renegotiate_ok = 1
+          } else {
+            await this.pc.setRemoteDescription(result.sessionDescription)
+            diagnostic.remote_description_applied = 1
+          }
+        }
+        stage = "activate-publish"
+        await this.pc.activatePublish?.()
+        diagnostic.activate_publish_ok = 1
+        this.log("voice_publish_succeeded", diagnostic)
+      } catch (error) {
+        fail(error)
+      }
     })()
     this.negotiationQueue = run.then(
       () => undefined,
@@ -292,6 +357,8 @@ export class SfuMediaBridge {
 
   async writeVoicePcm(chunk: Uint8Array): Promise<void> {
     if (this.stopped) throw new Error("bridge_stopped")
+    this.pcmWriteCalls += 1
+    this.pcmInputBytes += chunk.byteLength
     await this.primeVoicePublication()
     await this.confirmVoicePublicationActive()
     if (
@@ -305,6 +372,34 @@ export class SfuMediaBridge {
     await this.drainPendingVoicePcm()
     await this.pc?.writePcmChunk?.(chunk)
     await this.confirmVoicePublicationActive()
+  }
+
+  async voicePublishStats(): Promise<{
+    pcm_write_calls: number
+    pcm_input_bytes: number
+    opus_frames_written: number
+    outbound_rtp_packets?: number
+    outbound_rtp_bytes?: number
+  }> {
+    const bridgeStats = {
+      pcm_write_calls: this.pcmWriteCalls,
+      pcm_input_bytes: this.pcmInputBytes,
+    }
+    const engineStats = (await this.pc?.publishStats?.()) ?? {
+      opus_frames_written: 0,
+      outbound_rtp_packets: undefined,
+      outbound_rtp_bytes: undefined,
+    }
+    return {
+      ...bridgeStats,
+      opus_frames_written: engineStats.opus_frames_written,
+      ...(engineStats.outbound_rtp_packets === undefined
+        ? {}
+        : { outbound_rtp_packets: engineStats.outbound_rtp_packets }),
+      ...(engineStats.outbound_rtp_bytes === undefined
+        ? {}
+        : { outbound_rtp_bytes: engineStats.outbound_rtp_bytes }),
+    }
   }
 
   async flushVoice(): Promise<void> {
@@ -353,6 +448,18 @@ export class SfuMediaBridge {
             this.publish!.trackName
           )
           if (active) this.voicePublicationAnnounced = true
+          const diagnostic =
+            this.restClient.lastPublishedAudioTrackDiagnostic?.()
+          if (diagnostic) {
+            this.log("voice_publish_cloudflare_check", {
+              publisher_session_lookup_ok:
+                diagnostic.publisher_session_lookup_ok,
+              matching_track_found: diagnostic.matching_track_found,
+              matching_track_status: diagnostic.matching_track_status,
+              matching_track_has_mid: diagnostic.matching_track_has_mid,
+              active: diagnostic.active,
+            })
+          }
         } catch {
           // Readiness is advisory; leave the flag false so a later write or
           // final flush can retry without failing the voice turn.
