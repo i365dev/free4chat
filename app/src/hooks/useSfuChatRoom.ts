@@ -138,7 +138,9 @@ function voiceDownstreamDiagnostic(
 ) {
   // These bounded fields are intentionally emitted for production diagnosis.
   // eslint-disable-next-line no-console
-  console.info("free4chat_voice_downstream", { event, ...details })
+  console.info(
+    `free4chat_voice_downstream ${JSON.stringify({ event, ...details })}`
+  )
 }
 
 function diagnosticParticipantKind(
