@@ -182,13 +182,16 @@ export class MeetingNotesController {
     let epoch: number | null = null
     let vrAuthorized = false
     let vrEpoch: number | null = null
+    let vrTargetsSelf = false
     try {
       const info = await this.options.client.roomInfo(this.options.roomId)
       if (this.options.voiceReply) {
+        vrTargetsSelf =
+          info.voiceReply.agentParticipantId === this.options.participantId
         vrAuthorized =
           info.voiceReplyMediaAvailable === true &&
           info.voiceReply.active === true &&
-          info.voiceReply.agentParticipantId === this.options.participantId
+          vrTargetsSelf
         vrEpoch = info.voiceReply.startedAt ?? null
         const epochChanged =
           this.observedVoiceEpochInitialized &&
@@ -196,7 +199,7 @@ export class MeetingNotesController {
         this.log("voice_reply_state", {
           voice_reply_media_available: info.voiceReplyMediaAvailable ? 1 : 0,
           voice_reply_active: info.voiceReply.active ? 1 : 0,
-          voice_reply_targets_self: vrAuthorized ? 1 : 0,
+          voice_reply_targets_self: vrTargetsSelf ? 1 : 0,
           voice_reply_grant_epoch_present: vrEpoch === null ? 0 : 1,
           voice_reply_grant_epoch_changed: epochChanged ? 1 : 0,
         })
