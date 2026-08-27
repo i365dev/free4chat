@@ -144,19 +144,30 @@ func (r *ResidentRuntime) Start() error {
 	if err := r.join(); err != nil {
 		return err
 	}
-	r.loopWG.Add(1)
-	go r.waitLoop()
+	r.StartLoop()
 	return nil
 }
 
-// StartByCreate implements the create-first lifecycle (#51): connects the
-// Harness first (a Harness failure must never orphan a created room), then
-// atomically creates a fresh room registering this agent as participant #1,
-// adopts the create result exactly like a normal join — the wait loop starts
-// from the create cursor and JoinRoom is never called for this room until a
-// later lease-expiry reconnect, which always uses the normal join path and
-// can never re-create.
-func (r *ResidentRuntime) StartByCreate() (types.CreateRoomResult, error) {
+// StartLoop launches the wait loop. It must be called only AFTER any
+// external registry admission the owner needs (the daemon registers the
+// resident before starting the loop, so a room_expired reported by the very
+// first long-poll can never race an unregister against a not-yet-done
+// register). Safe to call once per lifecycle; the loop exits immediately on
+// a stopped runtime.
+func (r *ResidentRuntime) StartLoop() {
+	r.loopWG.Add(1)
+	go r.waitLoop()
+}
+
+// AdoptCreate implements the create-first lifecycle (#51) up to adoption:
+// connects the Harness first (a Harness failure must never orphan a created
+// room), then atomically creates a fresh room registering this agent as
+// participant #1, and adopts the create result exactly like a normal join —
+// WITHOUT launching the wait loop. The owner must call StartLoop() after any
+// registry admission. JoinRoom is never called for this room until a later
+// lease-expiry reconnect, which always uses the normal join path and can
+// never re-create.
+func (r *ResidentRuntime) AdoptCreate() (types.CreateRoomResult, error) {
 	if err := r.prepareLifecycle(); err != nil {
 		return types.CreateRoomResult{}, err
 	}
@@ -168,8 +179,17 @@ func (r *ResidentRuntime) StartByCreate() (types.CreateRoomResult, error) {
 	r.resolvedRoomID = created.Invite.RoomID
 	r.mu.Unlock()
 	r.adoptJoin(created.JoinResult)
-	r.loopWG.Add(1)
-	go r.waitLoop()
+	return created, nil
+}
+
+// StartByCreate is the combined create-first lifecycle for owners without a
+// separate admission step: AdoptCreate + StartLoop.
+func (r *ResidentRuntime) StartByCreate() (types.CreateRoomResult, error) {
+	created, err := r.AdoptCreate()
+	if err != nil {
+		return types.CreateRoomResult{}, err
+	}
+	r.StartLoop()
 	return created, nil
 }
 

@@ -700,3 +700,107 @@ func TestRoomExpiryRemovesResidentAndWorkspace(t *testing.T) {
 		t.Fatalf("workspace leaked after room expiry: %d entries", len(entries))
 	}
 }
+
+// TestCreateImmediateRoomExpiryLeavesNoGhost pins the create-lifecycle
+// registration race: create_room succeeds, the FIRST wait_for_events already
+// reports room_expired. Because the daemon registers the resident BEFORE the
+// wait loop starts, the expiry cleanup must unregister it and remove its
+// workspace — never re-register a ghost whose workspace is already gone.
+func TestCreateImmediateRoomExpiryLeavesNoGhost(t *testing.T) {
+	d, _ := startDaemon(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body.Method {
+		case "tools/list":
+			writeModernMCPTools(w)
+		case "tools/call":
+			switch body.Params.Name {
+			case "create_room":
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"participantHandle": "create-expiry-handle",
+					"participant":       map[string]any{"id": "agent-created"},
+					"cursor":            float64(0),
+					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
+					"invite": map[string]any{
+						"kind":    "free4chat.room-invite",
+						"version": float64(1),
+						"roomId":  "doomed-created-room",
+						"roomUrl": "https://www.free4.chat/room?id=doomed-created-room",
+					},
+				}))
+			case "wait_for_events":
+				// The very first long-poll reports natural room expiry.
+				writeJSONRPC(w, map[string]any{
+					"jsonrpc": "2.0", "id": 1,
+					"result": map[string]any{
+						"isError": true,
+						"content": []any{map[string]any{
+							"type": "text", "text": `{"error":"room_expired"}`,
+						}},
+					},
+				})
+			case "leave_room":
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			default:
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("FREE4CHAT_MCP_URL", server.URL)
+
+	createdPayload, err := SendIPC(&IpcRequest{
+		Op:           "create",
+		Name:         "Doomed-Creator",
+		AgentCommand: fakeAgentBinary,
+	})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	var created struct {
+		State  string `json:"state"`
+		Invite struct {
+			RoomID string `json:"roomId"`
+		} `json:"invite"`
+	}
+	if err := json.Unmarshal(createdPayload, &created); err != nil ||
+		created.Invite.RoomID != "doomed-created-room" {
+		t.Fatalf("create payload mismatch: %s", createdPayload)
+	}
+
+	// The post-admission wait loop must observe the immediate expiry and
+	// release the resident through the daemon callback: no ghost instance.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && d.InstanceCount() != 0 {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if count := d.InstanceCount(); count != 0 {
+		t.Fatalf("ghost resident survived immediate room expiry: %d", count)
+	}
+
+	residents, err := SendIPC(&IpcRequest{Op: "status"})
+	if err != nil {
+		t.Fatalf("status after expiry failed: %v", err)
+	}
+	var remaining []any
+	if err := json.Unmarshal(residents, &remaining); err != nil || len(remaining) != 0 {
+		t.Fatalf("status must show zero residents after expiry: %s", residents)
+	}
+
+	entries, readErr := os.ReadDir(WorkspacesRoot())
+	if readErr != nil {
+		t.Fatalf("workspaces root unreadable: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("workspace leaked after immediate expiry: %d entries", len(entries))
+	}
+}

@@ -434,7 +434,12 @@ func (d *Daemon) dispatchCreate(request *IpcRequest) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	created, createErr := residentRuntime.StartByCreate()
+	// Adopt WITHOUT starting the wait loop: a create whose very first
+	// long-poll reports room_expired must not race its OnRoomExpired
+	// unregister against the registry admission below (an unregister before
+	// register is a no-op that would leave a ghost resident whose workspace
+	// is already gone).
+	created, createErr := residentRuntime.AdoptCreate()
 	if createErr != nil {
 		residentRuntime.Stop()
 		_ = os.RemoveAll(workspace)
@@ -449,6 +454,9 @@ func (d *Daemon) dispatchCreate(request *IpcRequest) (any, error) {
 		runtime:    residentRuntime,
 		workspace:  workspace,
 	})
+	// Admission complete — only now may the wait loop start observing the
+	// room (and, on immediate expiry, cleanly unregister + remove).
+	residentRuntime.StartLoop()
 	view := statusView(residentRuntime)
 	view["invite"] = created.Invite
 	return view, nil
