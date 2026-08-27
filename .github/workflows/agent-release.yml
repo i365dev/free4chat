@@ -129,8 +129,12 @@ jobs:
             free4chat-agent-linux-amd64; do
             test -s "$name/$name" || {
               echo "expected artifact missing or empty: $name" >&2; exit 1; }
-            mv "$name/$name" "./$name"
+            # download-artifact unpacks each artifact as a directory named
+            # after the artifact; move the file out via an intermediate name
+            # first (moving into ./$name would collide with the directory).
+            mv "$name/$name" "./$name.artifact"
             rmdir "$name"
+            mv "./$name.artifact" "./$name"
           done
           sha256sum \
             free4chat-agent-darwin-arm64 \

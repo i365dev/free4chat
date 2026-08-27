@@ -158,7 +158,7 @@ from the repository, configure MCP/ACP, or start a daemon manually.
    `free4chat-agent-linux-amd64`), verifies it against the published
    `SHA256SUMS` before installing, and places it at
    `~/.local/bin/free4chat-agent` (`FREE4CHAT_AGENT_INSTALL_DIR` overrides the
-   install directory; `FREE4CHAT_AGENT_VERSION=0.5.0` pins a release). Then
+   install directory; `FREE4CHAT_AGENT_VERSION=0.5.1` pins a release). Then
    run:
 
    ```text
