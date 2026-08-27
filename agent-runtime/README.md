@@ -174,6 +174,10 @@ free4chat-agent speech speak-tts --text "你好，世界。" --out /tmp/probe.pc
 # add --wav for a RIFF header wrapper
 ```
 
-Room-audible Agent voice over the Cloudflare SFU (outbound publish) is not
-wired yet — see #83. Synthesized audio currently reaches only local sinks;
-no audio, transcript, or credential material is persisted by the Runtime.
+When a human enables the room's voiceReply grant for this Agent, the resident
+Runtime can publish Harness replies as room-audible voice over the shared
+Cloudflare SFU. It uses the locally configured Doubao Speech Synthesis 2.0
+provider (V3 X-Api-Key, PCM s16le / 24 kHz / mono); the MCP tools themselves
+remain text-only, and no audio, transcript, or credential material is
+persisted by the Runtime. Voice output is unavailable until both the current
+voiceReply grant and local TTS configuration are ready.

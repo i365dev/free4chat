@@ -36,7 +36,11 @@ TTS selections live in separate config slots
 (`speech.stt.provider` / `speech.tts.provider`; override with
 `FREE4CHAT_TTS_PROVIDER`) and never displace each other.
 
-Room-audible Agent voice over the Cloudflare SFU is not wired yet (#83):
-synthesized audio currently reaches only the local test entry point
-(`free4chat-agent speech speak-tts --text "..." --out out.pcm [--wav]`),
-which writes real provider audio to a file without ever printing the key.
+When a human enables the room's voiceReply grant for an Agent, the resident
+Runtime publishes synthesized replies over the shared Cloudflare SFU, making
+them audible to room participants. This uses the configured Doubao Speech
+Synthesis 2.0 provider and remains separate from the text-only MCP tools.
+Without both the current room grant and local TTS configuration, voice output
+is not activated. The local test entry point
+(`free4chat-agent speech speak-tts --text "..." --out out.pcm [--wav]`)
+remains available for checking provider audio without printing the key.

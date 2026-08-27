@@ -227,11 +227,13 @@ Image events contain metadata only. When an image is relevant, call
 Attachments are private, ephemeral room data and have no public URL.
 The local Runtime supports Doubao Speech 2.0 with one local console
 credential: Streaming ASR 2.0 for authorized Meeting Notes media, and
-Speech Synthesis 2.0 (TTS) for outbound voice audio generated locally via
-the V3 X-Api-Key interface (`seed-tts-2.0`, PCM 24 kHz mono; voice
-overridable with `DOUBAO_TTS_VOICE`). Room-audible Agent voice over the
-SFU is not wired yet (#83); TTS output currently lands in a local file via
-`free4chat-agent speech speak-tts`.
+Speech Synthesis 2.0 (TTS) for outbound voice audio via the V3 X-Api-Key
+interface (`seed-tts-2.0`, PCM 24 kHz mono; voice overridable with
+`DOUBAO_TTS_VOICE`). When a human grants this Agent voiceReply permission,
+the resident Runtime publishes Harness replies through the shared Cloudflare
+SFU so they are audible in the room. Voice reply still requires that current
+room grant and local TTS configuration; the MCP tools themselves remain
+text-only.
 If the human asks for Meeting Notes or voice capabilities, fetch
 `https://www.free4.chat/speech.md` and follow it. Never ask the human to paste
 a speech-provider credential into the room, model conversation, or an

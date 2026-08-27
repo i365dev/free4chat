@@ -48,6 +48,8 @@ function makeRoomInfo(opts: {
   mnActive: boolean
   vrActive: boolean
   vrStartedAt?: number
+  vrMediaAvailable?: boolean
+  vrTarget?: string
 }) {
   return {
     exists: true,
@@ -58,9 +60,12 @@ function makeRoomInfo(opts: {
     voiceReplyMediaAvailable: true,
     voiceReply: {
       active: opts.vrActive,
-      agentParticipantId: opts.vrActive ? "agent-1" : undefined,
+      agentParticipantId: opts.vrActive
+        ? (opts.vrTarget ?? "agent-1")
+        : undefined,
       startedAt: opts.vrStartedAt,
     },
+    voiceReplyMediaAvailable: opts.vrMediaAvailable ?? true,
   }
 }
 
@@ -100,7 +105,9 @@ function providerFor(chunks: Array<{ text: string }>) {
 
 function controller(
   bridge: FakeBridge,
-  tts: () => Promise<StreamingTtsProvider | null>
+  tts: () => Promise<StreamingTtsProvider | null>,
+  log: (message: string, data?: Record<string, string | number>) => void = () =>
+    undefined
 ) {
   return new MeetingNotesController({
     client: fakeClient(makeRoomInfo({ mnActive: false, vrActive: false })),
@@ -112,10 +119,101 @@ function controller(
     createBridge: () => bridge as never,
     createPeerConnection: (() => ({ close() {} })) as never,
     restClient: {} as never,
-    log: () => undefined,
+    log,
     voiceReply: { createTtsProvider: tts },
   })
 }
+
+test("voice diagnostics expose grant state and unresolved TTS without secrets", async () => {
+  const bridge = new FakeBridge()
+  const logs: Array<{
+    message: string
+    data?: Record<string, string | number>
+  }> = []
+  const c = controller(
+    bridge,
+    () => Promise.resolve(null),
+    (message, data) => logs.push({ message, data })
+  )
+  await drive(
+    c,
+    makeRoomInfo({ mnActive: true, vrActive: true, vrStartedAt: 100 }),
+    () => Promise.resolve(null)
+  )
+
+  const state = logs.find((entry) => entry.message === "voice_reply_state")
+  assert.deepEqual(state?.data, {
+    voice_reply_media_available: 1,
+    voice_reply_active: 1,
+    voice_reply_targets_self: 1,
+    voice_reply_grant_epoch_present: 1,
+    voice_reply_grant_epoch_changed: 0,
+  })
+  assert.ok(
+    logs.some((entry) => entry.message === "voice_reply_tts_unresolved")
+  )
+  assert.ok(
+    logs.every((entry) => !JSON.stringify(entry).includes("agent-1")),
+    "voice diagnostics must not include participant identifiers"
+  )
+})
+
+test("voice diagnostics keep media availability separate from target matching", async () => {
+  const bridge = new FakeBridge()
+  const logs: Array<{
+    message: string
+    data?: Record<string, string | number>
+  }> = []
+  const c = controller(
+    bridge,
+    () => Promise.resolve(null),
+    (message, data) => logs.push({ message, data })
+  )
+
+  await drive(
+    c,
+    makeRoomInfo({
+      mnActive: false,
+      vrActive: true,
+      vrMediaAvailable: false,
+      vrTarget: "agent-1",
+      vrStartedAt: 100,
+    }),
+    () => Promise.resolve(null)
+  )
+  await drive(
+    c,
+    makeRoomInfo({
+      mnActive: false,
+      vrActive: true,
+      vrMediaAvailable: true,
+      vrTarget: "other-agent",
+      vrStartedAt: 100,
+    }),
+    () => Promise.resolve(null)
+  )
+
+  const states = logs.filter((entry) => entry.message === "voice_reply_state")
+  assert.deepEqual(
+    states.map((entry) => entry.data),
+    [
+      {
+        voice_reply_media_available: 0,
+        voice_reply_active: 1,
+        voice_reply_targets_self: 1,
+        voice_reply_grant_epoch_present: 1,
+        voice_reply_grant_epoch_changed: 0,
+      },
+      {
+        voice_reply_media_available: 1,
+        voice_reply_active: 1,
+        voice_reply_targets_self: 0,
+        voice_reply_grant_epoch_present: 1,
+        voice_reply_grant_epoch_changed: 0,
+      },
+    ]
+  )
+})
 
 async function waitFor(predicate: () => boolean) {
   for (let i = 0; i < 200; i++) {

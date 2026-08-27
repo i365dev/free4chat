@@ -73,6 +73,31 @@ test("the source package.json version never appears as a bootstrap pin in agent.
   )
 })
 
+test("speech docs agree that granted Runtime voice is SFU-backed", () => {
+  for (const doc of [
+    "app/public/agent.md",
+    "app/public/speech.md",
+    "agent-runtime/README.md",
+  ]) {
+    const content = read(doc)
+    assert.match(
+      content,
+      /voiceReply|voice reply/i,
+      `${doc} must describe voice reply`
+    )
+    assert.match(
+      content,
+      /Cloudflare\s+SFU/,
+      `${doc} must describe the SFU path`
+    )
+    assert.doesNotMatch(
+      content,
+      /voice over (the )?(Cloudflare )?SFU (is )?not wired yet/i,
+      `${doc} must not claim that room voice is unavailable`
+    )
+  }
+})
+
 test("DEVELOPMENT.md matches the actual tag-triggered publishing model", () => {
   const development = read("DEVELOPMENT.md")
   assert.ok(
