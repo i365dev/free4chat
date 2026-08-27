@@ -41,7 +41,7 @@ test("bootstrap command uses the official pinned package and argv boundaries", (
   assert.equal(invocation.command, "npx")
   assert.deepEqual(invocation.args, [
     "-y",
-    "@i365dev/free4chat-agent@0.4.0",
+    "@i365dev/free4chat-agent@0.4.1",
     "join",
     "--room",
     "room\nwith `quotes`",

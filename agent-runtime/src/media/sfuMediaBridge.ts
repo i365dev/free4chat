@@ -168,15 +168,15 @@ export class SfuMediaBridge {
         this.mySessionId = await this.restClient.createAgentSession()
       }
       if (!description) {
-        // Pion-engine SFU bootstrap: session creation carries no answer and
-        // the server initiates the SDP exchange through
-        // datachannels/establish. The gathered local offer must be omitted
-        // there — the server answers the DataChannel request with its own
-        // offer, and forwarding our already-set offer makes it reject with
-        // 400 decoding_error.
+        // Pion-engine SFU bootstrap: session creation carries no answer, so
+        // the transport is established by submitting OUR gathered local
+        // offer (client-offer establish, exactly like the Free4Chat browser)
+        // and applying the returned answer. Omitting the offer mixed
+        // client-offer and server-offer signaling and made the server reject
+        // with decoding_error.
         const transport = await this.restClient.establishDataChannelTransport(
           this.mySessionId,
-          undefined,
+          offer,
           "agent-transport"
         )
         description = transport.sessionDescription

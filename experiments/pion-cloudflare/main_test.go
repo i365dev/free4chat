@@ -50,7 +50,8 @@ func TestHandleCmdPublishOpsRoundTripAndFailClosed(t *testing.T) {
 		t.Fatal("write-pcm before activate-publish must fail closed")
 	}
 
-	// Create() already armed the outbound track pre-offer; arming again is
+	// arm-publish arms the outbound track explicitly (Create() leaves it
+	// unarmed so the bootstrap offer is Meeting-Notes-only); re-arming is
 	// idempotent.
 	if r := handleCmd(spike, testTracer(t), cmd{Op: "arm-publish"}); !r.OK {
 		t.Fatalf("arm-publish: %+v", r)

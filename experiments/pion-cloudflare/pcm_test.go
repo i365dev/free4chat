@@ -16,8 +16,56 @@ func newPublishSpike(t *testing.T) *MediaSpike {
 	if err := spike.Create(); err != nil {
 		t.Skipf("pc unavailable: %v", err)
 	}
+	// Create() leaves the outbound track unarmed (Meeting-Notes-only
+	// bootstrap); a publish spike arms it explicitly.
+	if err := spike.ArmPublish(); err != nil {
+		t.Skipf("arm publish: %v", err)
+	}
 	t.Cleanup(spike.Close)
 	return spike
+}
+
+func TestCreateLeavesPublishUnarmedUntilExplicitArmPublish(t *testing.T) {
+	spike, err := NewMediaSpike(testTracer(t), func(map[string]any) {})
+	if err != nil {
+		t.Skipf("engine unavailable: %v", err)
+	}
+	if err := spike.Create(); err != nil {
+		t.Skipf("pc unavailable: %v", err)
+	}
+	t.Cleanup(spike.Close)
+	spike.mu.Lock()
+	unarmed := spike.outbound == nil
+	spike.mu.Unlock()
+	if !unarmed {
+		t.Fatal("Create() must not arm the outbound publish track")
+	}
+	for _, tr := range spike.pc.GetTransceivers() {
+		if tr.Sender() != nil && tr.Sender().Track() != nil {
+			t.Fatal("Create() must leave no send track before ArmPublish")
+		}
+	}
+	if err := spike.ArmPublish(); err != nil {
+		t.Fatalf("ArmPublish: %v", err)
+	}
+	spike.mu.Lock()
+	armed := spike.outbound != nil
+	spike.mu.Unlock()
+	if !armed {
+		t.Fatal("ArmPublish must arm the outbound publish track")
+	}
+	found := false
+	for _, tr := range spike.pc.GetTransceivers() {
+		if tr.Sender() != nil && tr.Sender().Track() != nil {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("ArmPublish must register a send track on a transceiver")
+	}
+	if err := spike.ArmPublish(); err != nil {
+		t.Fatalf("idempotent re-arm: %v", err)
+	}
 }
 
 func TestWritePCMRequiresActivation(t *testing.T) {

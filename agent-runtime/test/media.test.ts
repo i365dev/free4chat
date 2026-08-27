@@ -55,8 +55,8 @@ class FakeRestClient implements SfuRestClientLike {
     sessionId: string
     sessionDescription?: SessionDescriptionLike
   }>
-  /** What establishDataChannelTransport returns; set to a server offer to
-   * exercise the server-offer answer/renegotiate bootstrap. */
+  /** What establishDataChannelTransport returns; a returned answer is
+   * applied directly (client-offer bootstrap). */
   establishSessionDescription: SessionDescriptionLike = {
     type: "answer",
     sdp: "fake-transport-answer",
@@ -132,7 +132,7 @@ class FakePeerConnection implements PeerConnectionLike {
   lastRtpCallback: RtpCallback | undefined
   localPublishMidResult: string | undefined
   activatePublishCalls = 0
-  /** Call order for the server-offer bootstrap assertions. */
+  /** Call order for the client-offer bootstrap assertions. */
   calls: string[] = []
   private trackHandlers: Array<(track: MediaTrackLike) => void> = []
   onTrack = {
@@ -160,8 +160,8 @@ class FakePeerConnection implements PeerConnectionLike {
     this.calls.push(
       `setRemoteDescription:${description.type}:${description.sdp ?? ""}`
     )
-    // The initial server-offer DataChannel transport does not add a media
-    // track. Only a later /tracks subscription offer should fire onTrack.
+    // The initial DataChannel transport is not a subscribed media track.
+    // Only a later /tracks subscription offer should fire onTrack.
     if (description.sdp !== "fake-sdp") return
     const track: MediaTrackLike = {
       kind: "audio",
@@ -395,6 +395,7 @@ test("subscribes to a newly discovered Human audio track and reports it started"
   assert.deepEqual(restClient.establishTransportCalls, [
     {
       sessionId: "agent-session-1",
+      offer: { type: "offer", sdp: "fake-initial-offer" },
       purpose: "agent-transport",
     },
   ])
@@ -827,35 +828,31 @@ test("start() is a no-op while already running (does not create a second session
   bridge.stop()
 })
 
-test("server-offer bootstrap: a session without a description establishes the transport with the offer omitted, answers the server offer, then renegotiates, in order", async () => {
+test("client-offer bootstrap: a session without a description establishes the transport with the initial offer, then applies the returned answer, in order", async () => {
   const restClient = new FakeRestClient()
   restClient.createAgentSessionWithOffer = async () => ({
     sessionId: "agent-session-1",
   })
-  restClient.establishSessionDescription = {
-    type: "offer",
-    sdp: "fake-server-offer",
-  }
   const pc = new FakePeerConnection()
   const { bridge } = makeBridge(restClient, pc)
 
   await bridge.start()
 
   assert.deepEqual(restClient.establishTransportCalls, [
-    { sessionId: "agent-session-1", purpose: "agent-transport" },
+    {
+      sessionId: "agent-session-1",
+      offer: { type: "offer", sdp: "fake-initial-offer" },
+      purpose: "agent-transport",
+    },
   ])
-  assert.equal(restClient.renegotiateCalls, 1)
-  assert.deepEqual(restClient.renegotiatePurposes, ["agent-transport"])
+  assert.equal(restClient.renegotiateCalls, 0)
   assert.deepEqual(pc.localDescriptions, [
     { type: "offer", sdp: "fake-initial-offer" },
-    { type: "answer", sdp: "fake-answer" },
   ])
   assert.deepEqual(pc.calls, [
     "createOffer",
     "setLocalDescription:fake-initial-offer",
-    "setRemoteDescription:offer:fake-server-offer",
-    "createAnswer",
-    "setLocalDescription:fake-answer",
+    "setRemoteDescription:answer:fake-transport-answer",
   ])
   bridge.stop()
 })
@@ -879,7 +876,7 @@ test("native-answer bootstrap is unchanged: a returned answer is applied directl
   bridge.stop()
 })
 
-test("server-offer bootstrap failure surfaces only the bounded error classification and is retryable", async () => {
+test("establish bootstrap failure surfaces only the bounded error classification and is retryable", async () => {
   const restClient = new FakeRestClient()
   restClient.createAgentSessionWithOffer = async () => ({
     sessionId: "agent-session-1",
@@ -897,14 +894,15 @@ test("server-offer bootstrap failure surfaces only the bounded error classificat
   assert.equal(pc.closed, true)
 
   restClient.establishTransportError = undefined
-  restClient.establishSessionDescription = {
-    type: "offer",
-    sdp: "fake-server-offer",
-  }
   const pc2 = new FakePeerConnection()
   const { bridge: bridge2 } = makeBridge(restClient, pc2)
   await bridge2.start()
   assert.equal(restClient.establishTransportCalls.length, 2)
+  assert.deepEqual(restClient.establishTransportCalls[1], {
+    sessionId: "agent-session-1",
+    offer: { type: "offer", sdp: "fake-initial-offer" },
+    purpose: "agent-transport",
+  })
   assert.equal(bridge2.voicePublishCapable, false)
   bridge2.stop()
 })
