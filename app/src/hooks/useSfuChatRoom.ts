@@ -130,6 +130,31 @@ function summarizeRemoteTrackResponse(response: SfuApiResponse) {
   }
 }
 
+type VoiceDownstreamDiagnosticValue = string | number | boolean | string[]
+
+function voiceDownstreamDiagnostic(
+  event: string,
+  details: Record<string, VoiceDownstreamDiagnosticValue> = {}
+) {
+  // These bounded fields are intentionally emitted for production diagnosis.
+  // eslint-disable-next-line no-console
+  console.info("free4chat_voice_downstream", { event, ...details })
+}
+
+function diagnosticParticipantKind(
+  kind: unknown
+): "agent" | "human" | "unknown" {
+  return kind === "agent" || kind === "human" ? kind : "unknown"
+}
+
+function diagnosticTrackKind(kind: unknown): "audio" | "video" | "unknown" {
+  return kind === "audio" || kind === "video" ? kind : "unknown"
+}
+
+function diagnosticErrorType(error: unknown): string {
+  return error instanceof Error && error.name ? error.name : typeof error
+}
+
 function isAgentImage(file: File): boolean {
   return AGENT_IMAGE_TYPES.has(file.type)
 }
@@ -845,9 +870,17 @@ export function useSfuChatRoom(
       const session = sessionRef.current
       const pc = peerConnectionRef.current
       const media = participant.media
+      voiceDownstreamDiagnostic("subscribe_track_entered", {
+        participant_kind: diagnosticParticipantKind(participant.kind),
+        track_kind: diagnosticTrackKind(track.kind),
+        media_present: media ? 1 : 0,
+      })
       if (!session || !pc || !media) return
       const key = `${participant.id}:${media.sessionId}:${track.trackName}`
-      if (subscribedTracksRef.current.has(key)) return
+      if (subscribedTracksRef.current.has(key)) {
+        voiceDownstreamDiagnostic("subscribe_dedup_skipped", {})
+        return
+      }
       if (
         participantMapRef.current.get(participant.id)?.media?.sessionId !==
         media.sessionId
@@ -865,19 +898,50 @@ export function useSfuChatRoom(
           kind: track.kind,
           sessionId: media.sessionId,
         }
-        const response = await apiRequest("tracks", {
-          room: roomName,
-          participantId: session.participantId,
-          token: session.participantToken,
-          sessionId: session.sessionId,
-          tracks: [
-            {
-              location: "remote",
-              sessionId: media.sessionId,
-              trackName: track.trackName,
-              kind: track.kind,
-            },
-          ],
+        let response: SfuApiResponse
+        try {
+          response = await apiRequest("tracks", {
+            room: roomName,
+            participantId: session.participantId,
+            token: session.participantToken,
+            sessionId: session.sessionId,
+            tracks: [
+              {
+                location: "remote",
+                sessionId: media.sessionId,
+                trackName: track.trackName,
+                kind: track.kind,
+              },
+            ],
+          })
+        } catch (error) {
+          voiceDownstreamDiagnostic("tracks_new_result", {
+            tracks_new_ok: 0,
+            stage: "tracks-new",
+            error_type: diagnosticErrorType(error),
+          })
+          voiceDownstreamDiagnostic("negotiation_failed", {
+            stage: "tracks-new",
+            error_type: diagnosticErrorType(error),
+          })
+          throw error
+        }
+        const responseSummary = summarizeRemoteTrackResponse(response)
+        voiceDownstreamDiagnostic("tracks_new_result", {
+          tracks_new_ok: 1,
+          has_session_description: responseSummary.hasSessionDescription
+            ? 1
+            : 0,
+          session_description_type:
+            responseSummary.sessionDescriptionType ?? "none",
+          track_result_count: responseSummary.trackResultCount,
+          track_has_mid: responseSummary.trackHasMid ? 1 : 0,
+          ...(responseSummary.topLevelErrorCode
+            ? { top_level_error_code: responseSummary.topLevelErrorCode }
+            : {}),
+          ...(responseSummary.trackErrorCodes.length > 0
+            ? { track_error_codes: responseSummary.trackErrorCodes }
+            : {}),
         })
         if (!response.sessionDescription) {
           subscribedTracksRef.current.delete(key)
@@ -887,16 +951,57 @@ export function useSfuChatRoom(
           )
           return
         }
-        await pc.setRemoteDescription(response.sessionDescription)
-        const answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        await apiRequest("renegotiate", {
-          room: roomName,
-          participantId: session.participantId,
-          token: session.participantToken,
-          sessionId: session.sessionId,
-          sessionDescription: { type: answer.type, sdp: answer.sdp },
-        })
+        try {
+          await pc.setRemoteDescription(response.sessionDescription)
+          voiceDownstreamDiagnostic("remote_description_applied", {
+            remote_description_applied: 1,
+          })
+        } catch (error) {
+          voiceDownstreamDiagnostic("negotiation_failed", {
+            stage: "remote-description",
+            error_type: diagnosticErrorType(error),
+          })
+          throw error
+        }
+        let answer: RTCSessionDescriptionInit
+        try {
+          answer = await pc.createAnswer()
+          voiceDownstreamDiagnostic("answer_created", { answer_created: 1 })
+        } catch (error) {
+          voiceDownstreamDiagnostic("negotiation_failed", {
+            stage: "create-answer",
+            error_type: diagnosticErrorType(error),
+          })
+          throw error
+        }
+        try {
+          await pc.setLocalDescription(answer)
+          voiceDownstreamDiagnostic("local_description_applied", {
+            local_description_applied: 1,
+          })
+        } catch (error) {
+          voiceDownstreamDiagnostic("negotiation_failed", {
+            stage: "local-description",
+            error_type: diagnosticErrorType(error),
+          })
+          throw error
+        }
+        try {
+          await apiRequest("renegotiate", {
+            room: roomName,
+            participantId: session.participantId,
+            token: session.participantToken,
+            sessionId: session.sessionId,
+            sessionDescription: { type: answer.type, sdp: answer.sdp },
+          })
+          voiceDownstreamDiagnostic("renegotiate_ok", { renegotiate_ok: 1 })
+        } catch (error) {
+          voiceDownstreamDiagnostic("negotiation_failed", {
+            stage: "renegotiate",
+            error_type: diagnosticErrorType(error),
+          })
+          throw error
+        }
       }).catch((error) => {
         subscribedTracksRef.current.delete(key)
         console.warn("sfu_remote_subscribe_failed", {
@@ -910,6 +1015,20 @@ export function useSfuChatRoom(
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
+      const agentAudioTrackCount = state.participants.reduce(
+        (count, participant) =>
+          count +
+          (participant.kind === "agent"
+            ? (participant.media?.tracks ?? []).filter(
+                (track) => track.kind === "audio"
+              ).length
+            : 0),
+        0
+      )
+      voiceDownstreamDiagnostic("room_state_observed", {
+        agent_audio_track_visible_in_state: agentAudioTrackCount > 0 ? 1 : 0,
+        agent_audio_track_count: agentAudioTrackCount,
+      })
       setMeetingNotes(state.meetingNotes)
       setMeetingNotesMediaAvailable(state.meetingNotesMediaAvailable)
       setVoiceReply(state.voiceReply)
@@ -964,11 +1083,24 @@ export function useSfuChatRoom(
     peerConnectionRef.current = pc
     pc.ontrack = (event) => {
       const pending = pendingRemoteTrackRef.current
-      if (!pending) return
-      if (
-        participantMapRef.current.get(pending.peerId)?.media?.sessionId !==
+      voiceDownstreamDiagnostic("ontrack_fired", {
+        ontrack_fired: 1,
+        received_track_kind: diagnosticTrackKind(event.track.kind),
+        pending_remote_track_present: pending ? 1 : 0,
+      })
+      if (!pending) {
+        voiceDownstreamDiagnostic("pending_session_match", {
+          pending_session_match: 0,
+        })
+        return
+      }
+      const pendingSessionMatches =
+        participantMapRef.current.get(pending.peerId)?.media?.sessionId ===
         pending.sessionId
-      ) {
+      voiceDownstreamDiagnostic("pending_session_match", {
+        pending_session_match: pendingSessionMatches ? 1 : 0,
+      })
+      if (!pendingSessionMatches) {
         pendingRemoteTrackRef.current = null
         return
       }
@@ -976,6 +1108,11 @@ export function useSfuChatRoom(
       if (pending.kind === "video")
         remoteScreenStreamsRef.current.set(pending.peerId, stream)
       else remoteAudioStreamsRef.current.set(pending.peerId, stream)
+      voiceDownstreamDiagnostic("stream_attached", {
+        stream_attached: 1,
+        attached_kind: pending.kind,
+        remote_audio_stream_count: remoteAudioStreamsRef.current.size,
+      })
       pendingRemoteTrackRef.current = null
       rebuildParticipants()
     }
@@ -1021,8 +1158,17 @@ export function useSfuChatRoom(
       ) {
         const participantId = message.participant.id
         const incomingSessionId = message.participant.sessionId
+        const current = participantId
+          ? participantMapRef.current.get(participantId)
+          : undefined
+        voiceDownstreamDiagnostic("track_published_received", {
+          track_published_received: 1,
+          participant_kind: diagnosticParticipantKind(message.participant.kind),
+          track_kind: diagnosticTrackKind(message.participant.track.kind),
+          participant_found: current ? 1 : 0,
+          publisher_session_present: incomingSessionId ? 1 : 0,
+        })
         if (!participantId) return
-        const current = participantMapRef.current.get(participantId)
         if (
           current &&
           incomingSessionId &&
