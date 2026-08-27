@@ -214,7 +214,11 @@ Never ask the human to send the key through the room, chat, or files, and
 never handle the key yourself — it is entered only into the human's own
 terminal (`DOUBAO_API_KEY` on the human's runtime process remains an
 alternative local configuration path; `DOUBAO_TTS_VOICE` overrides the TTS
-voice). After setup, re-run `free4chat-agent readiness --json` and continue
+voice). The resident runtime reads speech configuration when it joins a
+room, so if an Agent instance is already resident for the room, it must
+leave the room and rejoin (or the daemon must be stopped and the Agent must
+join again) before the new credential takes effect. Only after setup and
+any required rejoin, re-run `free4chat-agent readiness --json` and continue
 only when the requested slot reports `ready: true`. Only ask the human once;
 never echo the key back.
 

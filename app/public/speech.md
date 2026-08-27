@@ -19,8 +19,12 @@ recordings.
    credential to the runtime directory's `credentials.json` (mode 0600).
    The human may alternatively provide `DOUBAO_API_KEY` on their own
    runtime process.
-4. After setup, run `free4chat-agent readiness --json` again. Claim readiness
-   only when the requested slot reports `ready: true`.
+4. The resident runtime reads speech configuration when it joins a room, so
+   an already-resident Agent does not see a new credential until it leaves
+   the room and rejoins (or the daemon is restarted and the Agent rejoins).
+   After setup and any required rejoin, run
+   `free4chat-agent readiness --json` again. Claim readiness only when the
+   requested slot reports `ready: true`.
 5. Meeting Notes room consent and authorization are separate from provider
    configuration. A configured provider does not grant room media access.
 6. Cloud speech sends audio to the selected provider under the human's own

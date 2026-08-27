@@ -2,14 +2,17 @@
 
 package cli
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 // isTerminal is always false on platforms without terminal handling: speech
 // setup fails closed there.
 func isTerminal(file *os.File) bool { return false }
 
-// termDisableEcho is a no-op on platforms where the interactive speech
-// setup terminal handling is not implemented.
-func termDisableEcho(file *os.File) func() {
-	return func() {}
+// termDisableEcho fails closed on platforms without terminal handling: no
+// credential input may be read there.
+func termDisableEcho(file *os.File) (func() error, error) {
+	return nil, errors.New("terminal echo control is unavailable on this platform")
 }

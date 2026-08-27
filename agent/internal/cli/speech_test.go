@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -227,5 +228,99 @@ func TestSpeechSetupSubprocessRejectsSecretFlag(t *testing.T) {
 func TestSpeechSetupSubprocessRejectsUnsupportedProvider(t *testing.T) {
 	if _, code := runCli(t, "speech", "setup", "--provider", "openai"); code == 0 {
 		t.Fatal("expected failure for unsupported provider")
+	}
+}
+
+// TestSpeechSetupEchoDisableFailureFailsClosed proves the fail-closed echo
+// contract: with an interactive TTY, if disabling echo fails, the input
+// reader is never consumed and no credentials file is written.
+func TestSpeechSetupEchoDisableFailureFailsClosed(t *testing.T) {
+	old := disableTerminalEcho
+	defer func() { disableTerminalEcho = old }()
+	disableTerminalEcho = func(file *os.File) (func() error, error) {
+		return nil, errors.New("simulated termios failure")
+	}
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "input.txt")
+	const secret = "sekrit-that-must-not-be-read"
+	if err := os.WriteFile(inputPath, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+
+	stdout, stderr := setupBuffers()
+	setupErr := speechSetup("doubao", stdin, true, dir, stdout, stderr)
+	if setupErr == nil || !strings.Contains(setupErr.Error(), "echo") {
+		t.Fatalf("expected echo-disable error, got %v", setupErr)
+	}
+	offset, err := stdin.Seek(0, io.SeekCurrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offset != 0 {
+		t.Fatal("input reader was consumed despite echo-disable failure")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "credentials.json")); !os.IsNotExist(statErr) {
+		t.Fatal("credentials.json was written despite echo-disable failure")
+	}
+	if strings.Contains(stdout.String()+stderr.String(), secret) {
+		t.Fatal("the secret appeared in output on the echo-disable failure path")
+	}
+}
+
+// TestSpeechSetupEchoRestoreFailureFailsClosed: a failed echo restore is
+// reported as a generic error and the credential is not persisted.
+func TestSpeechSetupEchoRestoreFailureFailsClosed(t *testing.T) {
+	old := disableTerminalEcho
+	defer func() { disableTerminalEcho = old }()
+	disableTerminalEcho = func(file *os.File) (func() error, error) {
+		return func() error { return errors.New("simulated restore failure") }, nil
+	}
+
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "input.txt")
+	const secret = "sekrit-with-restore-failure"
+	if err := os.WriteFile(inputPath, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := os.Open(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+
+	stdout, stderr := setupBuffers()
+	setupErr := speechSetup("doubao", stdin, true, dir, stdout, stderr)
+	if setupErr == nil || !strings.Contains(setupErr.Error(), "restore") {
+		t.Fatalf("expected restore error, got %v", setupErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "credentials.json")); !os.IsNotExist(statErr) {
+		t.Fatal("credentials.json was written despite echo restore failure")
+	}
+	if strings.Contains(stdout.String()+stderr.String(), secret) {
+		t.Fatal("the secret appeared in output on the restore failure path")
+	}
+}
+
+// TestSpeechSetupSuccessOutputStatesRejoinRequirement pins the activation
+// semantics in the success text: resident runtimes read speech config at
+// join time, so an already-resident Agent must rejoin before the credential
+// takes effect.
+func TestSpeechSetupSuccessOutputStatesRejoinRequirement(t *testing.T) {
+	dir := t.TempDir()
+	stdout, stderr := setupBuffers()
+	if err := speechSetup("doubao", strings.NewReader("test-key\n"), true, dir, stdout, stderr); err != nil {
+		t.Fatalf("speechSetup failed: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"rejoin", "readiness"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("success output missing %q: %s", want, out)
+		}
 	}
 }

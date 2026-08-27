@@ -58,6 +58,10 @@ func stdinIsTerminal() bool {
 	return isTerminal(os.Stdin)
 }
 
+// disableTerminalEcho is the injectable seam for deterministic failure-path
+// tests; the production wiring is termDisableEcho (real termios ioctls).
+var disableTerminalEcho = termDisableEcho
+
 // speechSetup is the testable core: interactive-only, echo-disabled read of
 // the provider credential, validated, then persisted into credentials.json
 // with 0600 permissions while preserving every unrelated field.
@@ -77,24 +81,34 @@ func speechSetup(provider string, stdin io.Reader, interactive bool, runtimeDir 
 	if err := persistAPIKey(runtimeDir, key); err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, "Speech configured (provider doubao). Run `free4chat-agent readiness --json` to confirm.")
+	fmt.Fprintln(stdout, "Speech configured (provider doubao).")
+	fmt.Fprintln(stdout, "The resident runtime reads speech configuration when it joins a room: if an Agent is already resident, leave the room and rejoin (or stop the daemon and join again) before the new credential takes effect.")
+	fmt.Fprintln(stdout, "Then run `free4chat-agent readiness --json` to confirm.")
 	return nil
 }
 
 // readSecret reads one line with terminal echo disabled when stdin is a real
-// terminal file. The credential itself is never echoed back to any stream.
+// terminal file. It fails closed: if echo cannot be confirmed disabled (or
+// cannot be restored afterward), no credential is returned and only generic
+// errors are reported — the key itself is never echoed to any stream.
 func readSecret(stdin io.Reader, stderr io.Writer) (string, error) {
-	restore := func() {}
+	restore := func() error { return nil }
 	if file, ok := stdin.(*os.File); ok {
-		restore = termDisableEcho(file)
-		defer restore()
+		var err error
+		if restore, err = disableTerminalEcho(file); err != nil {
+			fmt.Fprintln(stderr)
+			return "", errors.New("could not disable terminal echo; no credential input was read")
+		}
 	}
 	reader := bufio.NewReader(stdin)
-	line, err := reader.ReadString('\n')
+	line, readErr := reader.ReadString('\n')
 	// The terminal echo is off, so restore the user's line break visually.
 	fmt.Fprintln(stderr)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+	if restoreErr := restore(); restoreErr != nil {
+		return "", errors.New("could not restore terminal echo; the credential was not saved")
+	}
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return "", readErr
 	}
 	line = strings.TrimRight(line, "\r\n")
 	if strings.TrimSpace(line) == "" {
