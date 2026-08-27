@@ -1,0 +1,38 @@
+name: Agent Runtime (Go)
+
+on:
+  push:
+    paths:
+      - "agent/**"
+      - ".github/workflows/go-agent.yml"
+  pull_request:
+    paths:
+      - "agent/**"
+      - ".github/workflows/go-agent.yml"
+
+jobs:
+  agent-go:
+    name: gofmt / vet / test / build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+      - name: gofmt check
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt would reformat:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./... -count=1 -timeout 300s
+      - name: go build
+        run: go build ./cmd/free4chat-agent
