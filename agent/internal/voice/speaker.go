@@ -102,7 +102,7 @@ func (s *Speaker) Speak(text string) {
 		s.mu.Unlock()
 		return
 	}
-	s.cancelLocked()
+	cancelAction := s.cancelLocked()
 	turn := s.turnCounter + 1
 	s.turnCounter = turn
 	chunker := NewChunker(s.maxChunkChars)
@@ -131,6 +131,9 @@ func (s *Speaker) Speak(text string) {
 	s.lastStartedSet = true
 	s.onEventUnlocked(SpeakerEvent{Type: "turnStarted", Turn: turn})
 	s.mu.Unlock()
+	if cancelAction != nil {
+		cancelAction() // sink/engine writes run outside the lock
+	}
 	s.startDrain()
 }
 
@@ -138,37 +141,51 @@ func (s *Speaker) Speak(text string) {
 // sink carry via CancelTurn. Safe to call repeatedly.
 func (s *Speaker) Cancel() {
 	s.mu.Lock()
-	s.cancelLocked()
+	action := s.cancelLocked()
 	s.mu.Unlock()
+	if action != nil {
+		action()
+	}
 }
 
-func (s *Speaker) cancelLocked() {
+// cancelLocked mutates the speaker state under s.mu (caller-held) and
+// RETURNS the sink-cancellation action to execute OUTSIDE the lock —
+// Speaker.mu is never held across sink/engine writes.
+func (s *Speaker) cancelLocked() func() {
 	if len(s.pending) == 0 && !s.draining {
-		return
+		return nil
 	}
 	s.epoch++
 	s.pending = nil
 	// The cancelled turn's token must reach the engine even when its sink
-	// does not exist yet: a stale TTS callback that passes its epoch check
-	// BEFORE this cancel and writes AFTER it is rejected at admission.
+	// does not exist yet — and even when a STALE cached sink from an older
+	// completed turn is still cached (sinkTurn != token): a delayed TTS
+	// callback that passed its epoch check before this cancel and writes
+	// after it must be rejected at the engine's turn admission.
 	token := uint64(0)
 	if s.lastStartedSet {
 		token = uint64(s.lastStarted)
 	}
+	var action func()
 	sink := s.sink
-	if sink != nil && s.sinkTurn == token {
-		_ = sink.CancelTurn()
-	} else if sink == nil && token != 0 {
+	sinkTurn := s.sinkTurn
+	if sink != nil && sinkTurn == token {
+		bound := sink
+		action = func() { _ = bound.CancelTurn() }
+	} else if token != 0 {
 		// Throwaway turn-bound sink solely to invalidate the token at the
 		// engine (sink construction is a cheap local adapter).
-		if created, err := s.createSink(token); err == nil {
-			_ = created.CancelTurn()
-			_ = created.Close()
+		action = func() {
+			if created, err := s.createSink(token); err == nil {
+				_ = created.CancelTurn()
+				_ = created.Close()
+			}
 		}
 	}
 	if s.lastStartedSet {
 		s.onEventUnlocked(SpeakerEvent{Type: "turnCancelled", Turn: s.lastStarted})
 	}
+	return action
 }
 
 func (s *Speaker) onEventUnlocked(event SpeakerEvent) {

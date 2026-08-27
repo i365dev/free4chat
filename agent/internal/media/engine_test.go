@@ -1307,9 +1307,9 @@ func TestStaleCallbackCrossingCancelBoundaryRejected(t *testing.T) {
 	speaker.Speak("第二轮。")
 	waitForRealFrames(t, engine, 2)
 	engine.mu.Lock()
-	t.Logf("DEBUG: realFrames=%d admitted=%d turnGen=%d turnOpen=%v",
-		engine.opusFramesWritten-engine.silenceFills, engine.admittedTurn,
-		engine.turnGeneration, engine.turnOpen)
+	t.Logf("DEBUG: realFrames=%d highestAdmitted=%d cancelledThrough=%d turnGen=%d turnOpen=%v",
+		engine.opusFramesWritten-engine.silenceFills, engine.highestAdmitted,
+		engine.cancelledThrough, engine.turnGeneration, engine.turnOpen)
 	engine.mu.Unlock()
 	if got := engine.realFramesWritten(); got < 2 {
 		t.Fatalf("new turn frames=%d, want >=2", got)
@@ -1412,4 +1412,93 @@ func TestGapFillCancelDuringPaceStopped(t *testing.T) {
 	if got := engine.framesWritten(); got != 1 {
 		t.Fatalf("gap-fill silence emitted after mid-pace cancel: frames=%d, want 1", got)
 	}
+}
+
+// TestMonotonicWatermarkSurvivesManyCancels pins the review's P2: the
+// watermark must reject a very late token even after 65+ sequential
+// cancels (a bounded set would have evicted it), while the newest turn
+// keeps working.
+func TestMonotonicWatermarkSurvivesManyCancels(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	engine.sleepFn = func(time.Duration) {}
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// 65 sequential admit->cancel cycles (tokens 1..65).
+	for token := uint64(1); token <= 65; token++ {
+		if err := engine.WritePCM(make([]byte, 960), token); err != nil {
+			t.Fatalf("write %d: %v", token, err)
+		}
+		engine.CancelTurn(token)
+	}
+	// A VERY late token 1 must still be rejected (the watermark is
+	// monotonic; no set eviction can resurrect it).
+	if err := engine.WritePCM(make([]byte, 960), 1); !errors.Is(err, errPublishNotActive) {
+		t.Fatalf("late token 1 must be rejected after 65 cancels, got %v", err)
+	}
+	// The newest turn still works.
+	if err := engine.WritePCM(make([]byte, 960), 66); err != nil {
+		t.Fatalf("newest token write: %v", err)
+	}
+	waitForRealFrames(t, engine, 1)
+	if got := engine.realFramesWritten(); got != 1 {
+		t.Fatalf("real frames=%d, want 1 (only the newest turn emits)", got)
+	}
+}
+
+// TestCachedSinkCancelInvalidatesNewTurn pins the Speaker-side P1: turn 1
+// completes and its sink stays cached; turn 2 is cancelled BEFORE its own
+// sink exists; a delayed turn-2 callback must emit zero frames; turn 3
+// emits normally on the same active publication.
+func TestCachedSinkCancelInvalidatesNewTurn(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	engine.sleepFn = func(time.Duration) {}
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	var speaker *voice.Speaker
+	var gate sync.Mutex
+	emitPhase := 0 // 0: turn1, 1: turn2, 2: turn3
+	speaker = voice.NewSpeaker(voice.Options{
+		Provider: &fakeMediaTtsProvider{},
+		CreateSink: func(token uint64) (voice.Sink, error) {
+			return &tokenEngineSink{engine: engine, token: token}, nil
+		},
+		OnEvent: func(e voice.SpeakerEvent) {
+			gate.Lock()
+			if e.Type == "turnFinished" {
+				emitPhase++
+			}
+			gate.Unlock()
+		},
+	})
+
+	// Turn 1 completes; its sink (token 1) stays cached in the speaker.
+	speaker.Speak("第一轮。")
+	waitForRealFrames(t, engine, 2)
+	gate.Lock()
+	phase := emitPhase
+	gate.Unlock()
+	if phase < 1 {
+		t.Fatal("turn 1 never finished")
+	}
+
+	// Turn 2 starts (pending) but its sink is NOT created yet; cancel it.
+	speaker.Speak("第二轮。")
+	speaker.Cancel()
+	time.Sleep(50 * time.Millisecond)
+
+	// A delayed turn-2 callback crosses the cancel: zero new real frames.
+	framesAfterTurn2 := engine.realFramesWritten()
+
+	// Turn 3 emits normally on the same publication.
+	speaker.Speak("第三轮。")
+	waitForRealFrames(t, engine, framesAfterTurn2+2)
+	if got := engine.realFramesWritten(); got != framesAfterTurn2+2 {
+		t.Fatalf("turn3 frames=%d want=%d", got, framesAfterTurn2+2)
+	}
+	_ = speaker.Close()
 }

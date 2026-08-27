@@ -87,13 +87,17 @@ type Engine struct {
 	log    func(event string, details map[string]string)
 	dcOpen chan struct{}
 
-	mu                sync.Mutex
-	outbound          *webrtc.TrackLocalStaticSample
-	publishOn         bool
-	pubGeneration     uint64          // bumped on every activate/deactivate (grant boundary)
-	turnGeneration    uint64          // bumped on every CancelTurn (utterance boundary)
-	admittedTurn      uint64          // token of the currently admitted turn (0 = none)
-	cancelledTurns    map[uint64]bool // bounded set of invalidated tokens
+	mu             sync.Mutex
+	outbound       *webrtc.TrackLocalStaticSample
+	publishOn      bool
+	pubGeneration  uint64 // bumped on every activate/deactivate (grant boundary)
+	turnGeneration uint64 // bumped on every CancelTurn (utterance boundary)
+	// Turn admission is a TRUE MONOTONIC WATERMARK within one publication
+	// session: highestAdmitted never decreases; cancelledThrough is the max
+	// cancelled token. A token <= cancelledThrough or < highestAdmitted is
+	// stale by construction — no bounded set can evict a live guard.
+	highestAdmitted   uint64
+	cancelledThrough  uint64
 	encoder           *opus.Encoder
 	pcmWriteCalls     uint64
 	pcmInputBytes     uint64
@@ -185,15 +189,14 @@ func NewEngine(events EngineEvents, log func(event string, details map[string]st
 		log = func(string, map[string]string) {}
 	}
 	return &Engine{
-		ev:             events,
-		log:            log,
-		dcOpen:         make(chan struct{}),
-		rtpCounts:      make(map[string]uint64),
-		nowFn:          time.Now,
-		sleepFn:        time.Sleep,
-		writerNotify:   make(chan struct{}, 1),
-		writerSpace:    make(chan struct{}, 1),
-		cancelledTurns: make(map[uint64]bool),
+		ev:           events,
+		log:          log,
+		dcOpen:       make(chan struct{}),
+		rtpCounts:    make(map[string]uint64),
+		nowFn:        time.Now,
+		sleepFn:      time.Sleep,
+		writerNotify: make(chan struct{}, 1),
+		writerSpace:  make(chan struct{}, 1),
 	}
 }
 
@@ -478,8 +481,8 @@ func (e *Engine) DeactivatePublish() {
 	e.pubGeneration++
 	e.turnGeneration++
 	e.turnOpen = false
-	e.admittedTurn = 0
-	e.cancelledTurns = make(map[uint64]bool)
+	e.highestAdmitted = 0
+	e.cancelledThrough = 0
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
 }
@@ -580,7 +583,7 @@ func (e *Engine) currentTurnGeneration() uint64 {
 func (e *Engine) currentAdmittedTurn() uint64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.admittedTurn
+	return e.highestAdmitted
 }
 
 // admitTurn validates one write against the turn-admission state. Returns
@@ -592,16 +595,15 @@ func (e *Engine) admitTurn(token uint64) bool {
 	if token == 0 {
 		return true // token-less callers (pre-token tests) keep legacy semantics
 	}
-	if e.cancelledTurns[token] {
-		return false
+	if token <= e.cancelledThrough {
+		return false // this exact turn was cancelled (or an older one)
 	}
-	if token != e.admittedTurn {
-		// Tokens are issued monotonically by the speaker: anything OLDER
-		// than the admitted turn is a stale turn, never a new one.
-		if e.admittedTurn != 0 && token < e.admittedTurn {
-			return false
-		}
-		e.admittedTurn = token
+	if token < e.highestAdmitted {
+		return false // monotonic: below the watermark is always stale
+	}
+	if token > e.highestAdmitted {
+		// A genuinely NEW turn: advance the watermark and open the window.
+		e.highestAdmitted = token
 		e.turnOpen = true
 	}
 	return true
@@ -615,10 +617,10 @@ func (e *Engine) ValidateTurn(token uint64) bool {
 	if token == 0 {
 		return true
 	}
-	if e.cancelledTurns[token] {
+	if token <= e.cancelledThrough {
 		return false
 	}
-	if e.admittedTurn != 0 && token < e.admittedTurn {
+	if token < e.highestAdmitted {
 		return false
 	}
 	return true
@@ -657,22 +659,8 @@ func (e *Engine) CancelTurn(token uint64) {
 	e.mu.Lock()
 	e.turnGeneration++
 	e.turnOpen = false
-	if token != 0 {
-		e.cancelledTurns[token] = true
-		if len(e.cancelledTurns) > 64 {
-			// Bound the set: tokens are monotonic, so the SMALLEST entries
-			// are the oldest and can be evicted.
-			smallest := token
-			for candidate := range e.cancelledTurns {
-				if candidate < smallest {
-					smallest = candidate
-				}
-			}
-			delete(e.cancelledTurns, smallest)
-		}
-		if e.admittedTurn == token {
-			e.admittedTurn = 0
-		}
+	if token != 0 && token > e.cancelledThrough {
+		e.cancelledThrough = token
 	}
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
