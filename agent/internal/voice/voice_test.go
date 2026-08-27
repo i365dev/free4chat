@@ -117,7 +117,7 @@ func TestSpeakerFIFOAndNewTurnCancelsOld(t *testing.T) {
 	events := []SpeakerEvent{}
 	speaker := NewSpeaker(Options{
 		Provider:      provider,
-		CreateSink:    func() (Sink, error) { return sink, nil },
+		CreateSink:    func(uint64) (Sink, error) { return sink, nil },
 		MaxChunkChars: 6,
 		OnEvent:       func(event SpeakerEvent) { events = append(events, event) },
 	})
@@ -139,7 +139,7 @@ func TestSpeakerSecondSpeakCancelsFirstSynchronously(t *testing.T) {
 	events := []SpeakerEvent{}
 	speaker := NewSpeaker(Options{
 		Provider:      &fakeTtsProvider{},
-		CreateSink:    func() (Sink, error) { return sink, nil },
+		CreateSink:    func(uint64) (Sink, error) { return sink, nil },
 		MaxChunkChars: 6,
 		OnEvent:       func(event SpeakerEvent) { events = append(events, event) },
 	})
@@ -183,7 +183,7 @@ func TestSpeakerProviderFailureIsTextSafe(t *testing.T) {
 	events := []SpeakerEvent{}
 	speaker := NewSpeaker(Options{
 		Provider:   &failingProvider{},
-		CreateSink: func() (Sink, error) { return sink, nil },
+		CreateSink: func(uint64) (Sink, error) { return sink, nil },
 		OnEvent:    func(event SpeakerEvent) { events = append(events, event) },
 	})
 	speaker.Speak("hello there")
@@ -233,7 +233,7 @@ func TestSpeakerCancelDiscardsStaleAudio(t *testing.T) {
 	events := []SpeakerEvent{}
 	speaker := NewSpeaker(Options{
 		Provider:      &fakeTtsProvider{},
-		CreateSink:    func() (Sink, error) { return sink, nil },
+		CreateSink:    func(uint64) (Sink, error) { return sink, nil },
 		MaxChunkChars: 4,
 		OnEvent:       func(event SpeakerEvent) { events = append(events, event) },
 	})

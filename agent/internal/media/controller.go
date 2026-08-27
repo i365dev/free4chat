@@ -424,8 +424,10 @@ func (c *Controller) ensureVoice() {
 	}
 	speaker := voice.NewSpeaker(voice.Options{
 		Provider: provider,
-		CreateSink: func() (voice.Sink, error) {
-			return &bridgeVoiceSink{bridge: bridge}, nil
+		// Per-turn sink: the speaker hands its turn token to the factory,
+		// binding every write to the exact utterance that produced it.
+		CreateSink: func(token uint64) (voice.Sink, error) {
+			return &bridgeVoiceSink{bridge: bridge, token: token}, nil
 		},
 		MaxChunkChars: voiceConfig.MaxChunkChars,
 		OnEvent:       voiceConfig.OnSpeakerEvent,
@@ -438,20 +440,28 @@ func (c *Controller) ensureVoice() {
 }
 
 // bridgeVoiceSink adapts the shared bridge to the speaker sink boundary.
+// Each sink instance is bound to exactly ONE speaker turn: its token rides
+// every engine write, so a stale TTS callback that survives its own cancel
+// is rejected at the engine's turn admission instead of being admitted as
+// a new turn.
 type bridgeVoiceSink struct {
 	bridge *Bridge
+	token  uint64
 }
 
 func (s *bridgeVoiceSink) WriteAudio(chunk speech.TtsAudioChunk) error {
 	if chunk.Codec != "pcm_s16le" {
 		return errors.New("unsupported_chunk")
 	}
-	return s.bridge.WriteVoicePcm(chunk.Data)
+	return s.bridge.WriteVoicePcm(chunk.Data, s.token)
 }
 
-func (s *bridgeVoiceSink) EndTurn() error    { return s.bridge.FlushVoice() }
-func (s *bridgeVoiceSink) CancelTurn() error { s.bridge.CancelVoiceTurn(); return nil }
-func (s *bridgeVoiceSink) Close() error      { return nil }
+func (s *bridgeVoiceSink) EndTurn() error { return s.bridge.FlushVoice(s.token) }
+func (s *bridgeVoiceSink) CancelTurn() error {
+	s.bridge.CancelVoiceTurn(s.token)
+	return nil
+}
+func (s *bridgeVoiceSink) Close() error { return nil }
 
 func (c *Controller) teardownVoice() {
 	c.mu.Lock()

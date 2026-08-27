@@ -37,9 +37,9 @@ type EngineLike interface {
 	LocalPublishMid() string
 	ActivatePublish() error
 	DeactivatePublish()
-	CancelTurn()
-	WritePCM(chunk []byte) error
-	FlushAudio() error
+	CancelTurn(token uint64)
+	WritePCM(chunk []byte, token uint64) error
+	FlushAudio(token uint64) error
 	PublishCounts() map[string]uint64
 	RtpCounts() map[string]uint64
 	Close()
@@ -642,7 +642,8 @@ func (b *Bridge) DeactivateVoicePublish() {
 
 // WriteVoicePcm feeds one synthesized PCM chunk: prime once, confirm
 // publication, buffer while inactive (bounded), drain in order once active.
-func (b *Bridge) WriteVoicePcm(chunk []byte) error {
+// token is the speaker turn identity used for engine-side turn admission.
+func (b *Bridge) WriteVoicePcm(chunk []byte, token uint64) error {
 	b.mu.Lock()
 	if b.stopped {
 		b.mu.Unlock()
@@ -667,10 +668,10 @@ func (b *Bridge) WriteVoicePcm(chunk []byte) error {
 		}
 		return nil
 	}
-	if err := b.drainPendingVoicePcm(); err != nil {
+	if err := b.drainPendingVoicePcm(token); err != nil {
 		return err
 	}
-	if err := b.writeEnginePcm(chunk); err != nil {
+	if err := b.writeEnginePcm(chunk, token); err != nil {
 		return err
 	}
 	b.confirmVoicePublicationActive()
@@ -678,21 +679,21 @@ func (b *Bridge) WriteVoicePcm(chunk []byte) error {
 }
 
 // FlushVoice flushes the buffered tail with the frozen double-pass semantics.
-func (b *Bridge) FlushVoice() error {
+func (b *Bridge) FlushVoice(token uint64) error {
 	if err := b.primeVoicePublication(); err != nil {
 		return err
 	}
 	b.confirmVoicePublicationActive()
-	if err := b.drainPendingVoicePcm(); err != nil {
+	if err := b.drainPendingVoicePcm(token); err != nil {
 		return err
 	}
-	flushErr := b.flushEngine()
+	flushErr := b.flushEngine(token)
 	b.confirmVoicePublicationActive()
 	if b.voicePublicationAnnounced() && b.pendingVoiceCount() > 0 {
-		if err := b.drainPendingVoicePcm(); err != nil && flushErr == nil {
+		if err := b.drainPendingVoicePcm(token); err != nil && flushErr == nil {
 			flushErr = err
 		}
-		if err := b.flushEngine(); err != nil && flushErr == nil {
+		if err := b.flushEngine(token); err != nil && flushErr == nil {
 			flushErr = err
 		}
 	}
@@ -700,15 +701,16 @@ func (b *Bridge) FlushVoice() error {
 }
 
 // CancelVoiceTurn discards partial buffered audio without deactivating the
-// publication (cancelled utterance must never leak into later turns).
-func (b *Bridge) CancelVoiceTurn() {
+// publication (cancelled utterance must never leak into later turns). The
+// token is explicitly invalidated at the engine's turn admission.
+func (b *Bridge) CancelVoiceTurn(token uint64) {
 	b.mu.Lock()
 	b.pendingVoicePCM = nil
 	b.pendingVoicePCMBytes = 0
 	engine := b.engine
 	b.mu.Unlock()
 	if engine != nil {
-		engine.CancelTurn()
+		engine.CancelTurn(token)
 	}
 }
 
@@ -743,7 +745,7 @@ func (b *Bridge) primeVoicePublication() error {
 	b.voicePrimingSent = true
 	b.mu.Unlock()
 	// One bounded synthetic silence frame before user audio; never audible.
-	return b.writeEnginePcm(make([]byte, voicePrimingSilenceBytes))
+	return b.writeEnginePcm(make([]byte, voicePrimingSilenceBytes), 0)
 }
 
 // padAfterAnnounce writes a bounded synthetic-silence pad (25 frames =
@@ -765,7 +767,7 @@ func (b *Bridge) padAfterAnnounce() {
 	const padFrames = 25
 	silence := make([]byte, voicePrimingSilenceBytes)
 	for i := 0; i < padFrames; i++ {
-		if err := b.writeEnginePcm(silence); err != nil {
+		if err := b.writeEnginePcm(silence, 0); err != nil {
 			return
 		}
 	}
@@ -861,7 +863,7 @@ func (b *Bridge) enqueuePendingVoicePcm(chunk []byte) error {
 	return nil
 }
 
-func (b *Bridge) drainPendingVoicePcm() error {
+func (b *Bridge) drainPendingVoicePcm(token uint64) error {
 	for {
 		b.mu.Lock()
 		if !b.voiceAnnounced || len(b.pendingVoicePCM) == 0 {
@@ -873,30 +875,30 @@ func (b *Bridge) drainPendingVoicePcm() error {
 		b.pendingVoicePCMBytes -= len(chunk)
 		b.voiceBytesDrained += len(chunk)
 		b.mu.Unlock()
-		if err := b.writeEnginePcm(chunk); err != nil {
+		if err := b.writeEnginePcm(chunk, token); err != nil {
 			return err
 		}
 	}
 }
 
-func (b *Bridge) writeEnginePcm(chunk []byte) error {
+func (b *Bridge) writeEnginePcm(chunk []byte, token uint64) error {
 	b.mu.Lock()
 	engine := b.engine
 	b.mu.Unlock()
 	if engine == nil {
 		return errors.New("bridge_not_running")
 	}
-	return engine.WritePCM(chunk)
+	return engine.WritePCM(chunk, token)
 }
 
-func (b *Bridge) flushEngine() error {
+func (b *Bridge) flushEngine(token uint64) error {
 	b.mu.Lock()
 	engine := b.engine
 	b.mu.Unlock()
 	if engine == nil {
 		return errors.New("bridge_not_running")
 	}
-	return engine.FlushAudio()
+	return engine.FlushAudio(token)
 }
 
 // bootstrapErrorClass maps a sanitized bootstrap failure onto a bounded

@@ -98,7 +98,7 @@ func TestVoiceDispatchOrderTextPersistedBeforeSpeak(t *testing.T) {
 
 	speaker := voice.NewSpeaker(voice.Options{
 		Provider: &timelineTtsProvider{},
-		CreateSink: func() (voice.Sink, error) {
+		CreateSink: func(uint64) (voice.Sink, error) {
 			return &timelineSink{timeline: timeline}, nil
 		},
 	})
@@ -148,7 +148,7 @@ func TestNewAddressedTurnCancelsStaleVoiceBeforeHarnessTurn(t *testing.T) {
 	client.sendHook = func(text string) { timeline.record("text-sent:" + text) }
 	speaker := voice.NewSpeaker(voice.Options{
 		Provider: &timelineTtsProvider{},
-		CreateSink: func() (voice.Sink, error) {
+		CreateSink: func(uint64) (voice.Sink, error) {
 			return &timelineSink{timeline: timeline}, nil
 		},
 	})

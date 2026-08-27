@@ -92,7 +92,7 @@ func TestReactivateLoopbackProbe(t *testing.T) {
 	finished := 0
 	speaker := voice.NewSpeaker(voice.Options{
 		Provider:   &doubao.TtsProvider{APIKey: os.Getenv("DOUBAO_API_KEY")},
-		CreateSink: func() (voice.Sink, error) { return &engineSink{engine: engine}, nil },
+		CreateSink: func(uint64) (voice.Sink, error) { return &engineSink{engine: engine}, nil },
 		OnEvent: func(e voice.SpeakerEvent) {
 			if e.Type == "turnFinished" || e.Type == "turnFailed" {
 				evMu.Lock()

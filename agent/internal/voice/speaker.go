@@ -30,8 +30,11 @@ type SpeakerEvent struct {
 
 // Options configures a Speaker.
 type Options struct {
-	Provider        speech.StreamingTtsProvider
-	CreateSink      func() (Sink, error)
+	Provider speech.StreamingTtsProvider
+	// CreateSink receives the TURN TOKEN: every sink instance is bound to
+	// exactly one turn, so a stale TTS callback that survives its own
+	// cancel is rejected at the engine's turn admission.
+	CreateSink      func(token uint64) (Sink, error)
 	MaxQueuedChunks int
 	MaxChunkChars   int
 	OnEvent         func(SpeakerEvent)
@@ -50,7 +53,7 @@ type Options struct {
 // Spoken text and audio are never persisted or logged.
 type Speaker struct {
 	provider        speech.StreamingTtsProvider
-	createSink      func() (Sink, error)
+	createSink      func(token uint64) (Sink, error)
 	maxQueuedChunks int
 	maxChunkChars   int
 	onEvent         func(SpeakerEvent)
@@ -63,6 +66,7 @@ type Speaker struct {
 	lastStartedSet bool
 	stopped        bool
 	sink           Sink
+	sinkTurn       uint64
 	sinkBroken     bool
 	draining       bool
 	drainDone      chan struct{}
@@ -144,9 +148,23 @@ func (s *Speaker) cancelLocked() {
 	}
 	s.epoch++
 	s.pending = nil
+	// The cancelled turn's token must reach the engine even when its sink
+	// does not exist yet: a stale TTS callback that passes its epoch check
+	// BEFORE this cancel and writes AFTER it is rejected at admission.
+	token := uint64(0)
+	if s.lastStartedSet {
+		token = uint64(s.lastStarted)
+	}
 	sink := s.sink
-	if sink != nil {
+	if sink != nil && s.sinkTurn == token {
 		_ = sink.CancelTurn()
+	} else if sink == nil && token != 0 {
+		// Throwaway turn-bound sink solely to invalidate the token at the
+		// engine (sink construction is a cheap local adapter).
+		if created, err := s.createSink(token); err == nil {
+			_ = created.CancelTurn()
+			_ = created.Close()
+		}
 	}
 	if s.lastStartedSet {
 		s.onEventUnlocked(SpeakerEvent{Type: "turnCancelled", Turn: s.lastStarted})
@@ -213,6 +231,7 @@ func (s *Speaker) drain() {
 	frames := 0
 	failed := false
 	code := ""
+	turnToken := uint64(0)
 
 	for {
 		s.mu.Lock()
@@ -222,6 +241,7 @@ func (s *Speaker) drain() {
 		}
 		chunk := s.pending[0]
 		s.pending = s.pending[1:]
+		turnToken = uint64(s.turnCounter)
 		s.mu.Unlock()
 
 		if session == nil {
@@ -246,7 +266,7 @@ func (s *Speaker) drain() {
 			if !current {
 				return errStaleTurn
 			}
-			sink, sinkErr := s.ensureSink()
+			sink, sinkErr := s.ensureSink(turnToken)
 			if sinkErr != nil {
 				return sinkErr
 			}
@@ -306,20 +326,23 @@ type staleTurnError struct{}
 
 func (*staleTurnError) Error() string { return "stale voice turn" }
 
-func (s *Speaker) ensureSink() (Sink, error) {
+// ensureSink returns the sink bound to exactly ONE turn: a different turn
+// gets a fresh sink (the engine's admission keys on the turn token).
+func (s *Speaker) ensureSink(turn uint64) (Sink, error) {
 	s.mu.Lock()
-	if s.sink != nil && !s.sinkBroken {
+	if s.sink != nil && !s.sinkBroken && s.sinkTurn == turn {
 		sink := s.sink
 		s.mu.Unlock()
 		return sink, nil
 	}
 	s.mu.Unlock()
-	sink, err := s.createSink()
+	sink, err := s.createSink(turn)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	s.sink = sink
+	s.sinkTurn = turn
 	s.sinkBroken = false
 	s.mu.Unlock()
 	return sink, nil

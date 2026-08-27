@@ -47,7 +47,7 @@ func TestVoiceChainProbe(t *testing.T) {
 	events := []voice.SpeakerEvent{}
 	speaker := voice.NewSpeaker(voice.Options{
 		Provider: &doubao.TtsProvider{APIKey: os.Getenv("DOUBAO_API_KEY")},
-		CreateSink: func() (voice.Sink, error) {
+		CreateSink: func(uint64) (voice.Sink, error) {
 			return &engineSink{engine: engine}, nil
 		},
 		MaxChunkChars: 220,
@@ -77,8 +77,8 @@ func TestVoiceChainProbe(t *testing.T) {
 type engineSink struct{ engine *Engine }
 
 func (s *engineSink) WriteAudio(c speech.TtsAudioChunk) error {
-	return s.engine.WritePCM(c.Data)
+	return s.engine.WritePCM(c.Data, 0)
 }
-func (s *engineSink) EndTurn() error    { return s.engine.FlushAudio() }
-func (s *engineSink) CancelTurn() error { s.engine.CancelTurn(); return nil }
+func (s *engineSink) EndTurn() error    { return s.engine.FlushAudio(0) }
+func (s *engineSink) CancelTurn() error { s.engine.CancelTurn(0); return nil }
 func (s *engineSink) Close() error      { return nil }

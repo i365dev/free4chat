@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/speech"
+	"github.com/i365dev/free4chat/agent/internal/voice"
+
 	"github.com/pion/webrtc/v4"
 )
 
@@ -194,18 +197,18 @@ func TestWritePCMRequiresActivation(t *testing.T) {
 	if err := engine.ArmPublish(); err != nil {
 		t.Fatalf("arm: %v", err)
 	}
-	if err := engine.WritePCM(make([]byte, 960)); !errors.Is(err, errPublishNotActive) {
+	if err := engine.WritePCM(make([]byte, 960), 0); !errors.Is(err, errPublishNotActive) {
 		t.Fatal("write before activation must fail closed")
 	}
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := engine.WritePCM(make([]byte, 960)); err != nil {
+	if err := engine.WritePCM(make([]byte, 960), 0); err != nil {
 		t.Fatalf("write after activation: %v", err)
 	}
 	waitForFrames(t, engine, 1)
 	engine.DeactivatePublish()
-	if err := engine.WritePCM(make([]byte, 960)); !errors.Is(err, errPublishNotActive) {
+	if err := engine.WritePCM(make([]byte, 960), 0); !errors.Is(err, errPublishNotActive) {
 		t.Fatal("write after deactivation must fail closed")
 	}
 }
@@ -220,11 +223,11 @@ func TestWritePCMPacesOutboundFramesWithInjectedClock(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	// Three complete 20 ms frames in one burst => exactly two paced gaps.
-	if err := engine.WritePCM(make([]byte, 3*960)); err != nil {
+	if err := engine.WritePCM(make([]byte, 3*960), 0); err != nil {
 		t.Fatalf("WritePCM: %v", err)
 	}
 	waitForRealFrames(t, engine, 3)
-	_ = engine.FlushAudio()
+	_ = engine.FlushAudio(0)
 	waitForTurnClosed(t, engine)
 	if len(clock.sleeps) < 2 || clock.sleeps[0] != 20*time.Millisecond ||
 		clock.sleeps[1] != 20*time.Millisecond {
@@ -244,7 +247,7 @@ func TestWritePCMAbortsWhenDeactivatedDuringPace(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := engine.WritePCM(make([]byte, 3*960)); err != nil {
+	if err := engine.WritePCM(make([]byte, 3*960), 0); err != nil {
 		t.Fatalf("WritePCM: %v", err)
 	}
 	waitForFrames(t, engine, 1)
@@ -266,18 +269,18 @@ func TestCancelTurnDiscardsCarryKeepsPublicationActive(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if err := engine.WritePCM(bytes.Repeat([]byte{7}, 500)); err != nil {
+	if err := engine.WritePCM(bytes.Repeat([]byte{7}, 500), 0); err != nil {
 		t.Fatalf("WritePCM: %v", err)
 	}
 	waitForFrames(t, engine, 0) // writer drains instantly with the fake clock
 	if engine.PCMCarry() != 0 {
 		t.Fatal("a sub-frame write must leave carry only until flushed")
 	}
-	engine.CancelTurn()
+	engine.CancelTurn(0)
 	if engine.PCMCarry() != 0 {
 		t.Fatal("CancelTurn must discard the buffered partial frame")
 	}
-	if err := engine.WritePCM(make([]byte, 960)); err != nil {
+	if err := engine.WritePCM(make([]byte, 960), 0); err != nil {
 		t.Fatalf("write after cancel: %v", err)
 	}
 	waitForFrames(t, engine, 1)
@@ -292,7 +295,7 @@ func TestWritePCMFramesArbitraryChunksAndFlushPadsFinalFrame(t *testing.T) {
 		total[i] = byte(i % 7)
 	}
 	for _, chunk := range [][]byte{total[:1000], total[1000:2000], total[2000:]} {
-		if err := engine.WritePCM(chunk); err != nil {
+		if err := engine.WritePCM(chunk, 0); err != nil {
 			t.Fatalf("WritePCM: %v", err)
 		}
 	}
@@ -300,7 +303,7 @@ func TestWritePCMFramesArbitraryChunksAndFlushPadsFinalFrame(t *testing.T) {
 	if got := engine.PCMCarry(); got != 481 {
 		t.Fatalf("carry = %d bytes, want 481", got)
 	}
-	if err := engine.FlushAudio(); err != nil {
+	if err := engine.FlushAudio(0); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	waitForFrames(t, engine, 3)
@@ -313,7 +316,7 @@ func TestDeactivateDiscardsCarryAndResampleDeterministic(t *testing.T) {
 	engine := newTestEngine(t)
 	_ = engine.ArmPublish()
 	_ = engine.ActivatePublish()
-	_ = engine.WritePCM(bytes.Repeat([]byte{3}, 500))
+	_ = engine.WritePCM(bytes.Repeat([]byte{3}, 500), 0)
 	waitForFrames(t, engine, 0)
 	engine.DeactivatePublish()
 	if engine.PCMCarry() != 0 {
@@ -335,7 +338,7 @@ func TestPublishCountsNeverFabricatedFromWriteSample(t *testing.T) {
 	engine := newTestEngine(t)
 	_ = engine.ArmPublish()
 	_ = engine.ActivatePublish()
-	_ = engine.WritePCM(make([]byte, 960))
+	_ = engine.WritePCM(make([]byte, 960), 0)
 	waitForFrames(t, engine, 1)
 	counts := engine.PublishCounts()
 	if counts["pcm_write_calls"] != 1 || counts["pcm_input_bytes"] != 960 {
@@ -371,6 +374,26 @@ func waitForFrames(t *testing.T, engine *Engine, n uint64) {
 	t.Fatalf("writer did not emit %d frames (got %d)", n, engine.framesWritten())
 }
 
+// fakeMediaTtsProvider emits a few PCM chunks per synthesis round.
+type fakeMediaTtsProvider struct{}
+
+func (*fakeMediaTtsProvider) CreateSession() (speech.StreamingTtsSession, error) {
+	return &fakeMediaTtsSession{}, nil
+}
+
+type fakeMediaTtsSession struct{}
+
+func (s *fakeMediaTtsSession) Synthesize(text string, emit func(speech.TtsAudioChunk) error) error {
+	for i := 0; i < 2; i++ {
+		if err := emit(speech.TtsAudioChunk{Codec: "pcm_s16le", SampleRateHz: 24000, Channels: 1, Data: make([]byte, 960)}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *fakeMediaTtsSession) Close() error { return nil }
+
 // blockingSleepFunc returns a sleepFn that blocks until the returned channel
 // is closed; after release, sleeps return immediately (deterministic writer
 // timing control).
@@ -395,9 +418,9 @@ func TestDeactivateClearsQueueBytesConsistently(t *testing.T) {
 	}
 	// Writer: chunk 1 emits its first frame immediately, then blocks on the
 	// second frame's paced sleep; chunks 2-3 stay queued with a live budget.
-	_ = engine.WritePCM(make([]byte, 3*960))
-	_ = engine.WritePCM(make([]byte, 960))
-	_ = engine.WritePCM(make([]byte, 960))
+	_ = engine.WritePCM(make([]byte, 3*960), 0)
+	_ = engine.WritePCM(make([]byte, 960), 0)
+	_ = engine.WritePCM(make([]byte, 960), 0)
 	waitForFrames(t, engine, 1)
 	if got := engine.queueBytesSnapshot(); got == 0 {
 		t.Fatal("precondition: queued chunks must hold a positive byte budget")
@@ -413,7 +436,7 @@ func TestDeactivateClearsQueueBytesConsistently(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 960))
+	_ = engine.WritePCM(make([]byte, 960), 0)
 	waitForFrames(t, engine, 2)
 }
 
@@ -431,13 +454,13 @@ func TestConcurrentRevokeAndFlushKeepsWriterAlive(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	// First flush: primes the pacer with a paced frame (immediate slot).
-	_ = engine.WritePCM(make([]byte, 500))
-	_ = engine.FlushAudio()
+	_ = engine.WritePCM(make([]byte, 500), 0)
+	_ = engine.FlushAudio(0)
 	waitForFrames(t, engine, 1)
 
 	// Second flush: carry non-empty, the paced wait BLOCKS on sleepFn.
-	_ = engine.WritePCM(make([]byte, 100))
-	_ = engine.FlushAudio()
+	_ = engine.WritePCM(make([]byte, 100), 0)
+	_ = engine.FlushAudio(0)
 	waitForQueueDrain(t, engine) // ensure the writer consumed both items
 
 	// Revoke while the writer is blocked in the flush's paced wait.
@@ -448,7 +471,7 @@ func TestConcurrentRevokeAndFlushKeepsWriterAlive(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 960))
+	_ = engine.WritePCM(make([]byte, 960), 0)
 	waitForFrames(t, engine, 2)
 	if got := engine.framesWritten(); got < 2 {
 		t.Fatalf("writer died on revoke+flush race: frames=%d", got)
@@ -463,14 +486,14 @@ func TestReactivateAfterDeactivateWritesAudio(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 960))
+	_ = engine.WritePCM(make([]byte, 960), 0)
 	waitForFrames(t, engine, 1)
 
 	engine.DeactivatePublish()
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 2*960))
+	_ = engine.WritePCM(make([]byte, 2*960), 0)
 	waitForFrames(t, engine, 3)
 	if got := engine.framesWritten(); got != 3 {
 		t.Fatalf("frames=%d, want 3 (no truncation/silence across reactivation)", got)
@@ -506,10 +529,10 @@ func TestCancelDeactivateAccountingNoDrift(t *testing.T) {
 	}
 	for cycle := 0; cycle < 3; cycle++ {
 		// First frame immediate, second blocks in the paced sleep.
-		_ = engine.WritePCM(make([]byte, 3*960))
-		_ = engine.WritePCM(make([]byte, 960))
+		_ = engine.WritePCM(make([]byte, 3*960), 0)
+		_ = engine.WritePCM(make([]byte, 960), 0)
 		waitForFrames(t, engine, uint64(1+cycle*1))
-		engine.CancelTurn()
+		engine.CancelTurn(0)
 		engine.DeactivatePublish()
 		if got := engine.queueBytesSnapshot(); got != 0 {
 			t.Fatalf("cycle %d: budget drifted to %d after cancel+deactivate", cycle, got)
@@ -536,16 +559,16 @@ func TestFullQueueBackpressureKeepsAccountingConsistent(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	big := make([]byte, 64*1024)
-	if err := engine.WritePCM(big); err != nil {
+	if err := engine.WritePCM(big, 0); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	waitForFrames(t, engine, 1)
 	for i := 0; i < 16; i++ {
-		_ = engine.WritePCM(big)
+		_ = engine.WritePCM(big, 0)
 	}
 	blocked := make(chan struct{})
 	go func() {
-		_ = engine.WritePCM(big)
+		_ = engine.WritePCM(big, 0)
 		close(blocked)
 	}()
 	select {
@@ -577,7 +600,7 @@ func TestStaleAudioNeverSentAfterReactivation(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	// Old grant: one frame goes out, the rest of grant-1 audio is blocked.
-	_ = engine.WritePCM(make([]byte, 6*960))
+	_ = engine.WritePCM(make([]byte, 6*960), 0)
 	waitForFrames(t, engine, 1)
 	engine.DeactivatePublish()
 	close(release)
@@ -585,9 +608,9 @@ func TestStaleAudioNeverSentAfterReactivation(t *testing.T) {
 		t.Fatalf("reactivate: %v", err)
 	}
 	// The stale grant-1 backlog must be gone; only grant-2 audio flows.
-	_ = engine.WritePCM(make([]byte, 2*960))
+	_ = engine.WritePCM(make([]byte, 2*960), 0)
 	waitForRealFrames(t, engine, 3)
-	_ = engine.FlushAudio()
+	_ = engine.FlushAudio(0)
 	waitForTurnClosed(t, engine)
 	if got := engine.realFramesWritten(); got != 3 {
 		t.Fatalf("real frames=%d: stale grant audio leaked past reactivation", got)
@@ -604,7 +627,7 @@ func TestEngineCloseBoundedExit(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 3*960))
+	_ = engine.WritePCM(make([]byte, 3*960), 0)
 	waitForFrames(t, engine, 1) // writer now blocked in the paced sleep
 
 	started := time.Now()
@@ -626,15 +649,15 @@ func TestBlockedEnqueueBackpressureKeepsBudgetExact(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 64*1024)) // frame 1 out, rest pending
+	_ = engine.WritePCM(make([]byte, 64*1024), 0) // frame 1 out, rest pending
 	waitForFrames(t, engine, 1)
 	for i := 0; i < 16; i++ {
-		_ = engine.WritePCM(make([]byte, 64*1024))
+		_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	}
 	// One more 64KB chunk would cross the cap: the producer must block.
 	blocked := make(chan struct{})
 	go func() {
-		if err := engine.WritePCM(make([]byte, 64*1024)); err != nil {
+		if err := engine.WritePCM(make([]byte, 64*1024), 0); err != nil {
 			t.Errorf("blocked write errored: %v", err)
 		}
 		close(blocked)
@@ -684,7 +707,7 @@ func TestConcurrentEnqueueConsumeClearAccountingNeverNegativeAndEndsZero(t *test
 				return
 			default:
 			}
-			_ = engine.WritePCM(make([]byte, 1920))
+			_ = engine.WritePCM(make([]byte, 1920), 0)
 		}
 	}()
 	// Clearer: revoke+reactivate cycles racing both producer and writer.
@@ -733,10 +756,10 @@ func TestConcurrentEnqueueConsumeClearAccountingNeverNegativeAndEndsZero(t *test
 	// Park the writer by blocking its sleep.
 	sleepBlock, release := blockingSleepFunc()
 	engine.sleepFn = sleepBlock
-	_ = engine.WritePCM(make([]byte, 960))
+	_ = engine.WritePCM(make([]byte, 960), 0)
 	waitForFrames(t, engine, uint64(engine.framesWritten()+1))
-	_ = engine.WritePCM(make([]byte, 1920))
-	_ = engine.WritePCM(make([]byte, 480))
+	_ = engine.WritePCM(make([]byte, 1920), 0)
+	_ = engine.WritePCM(make([]byte, 480), 0)
 	var sum int
 	for _, item := range engine.queueRingSnapshot() {
 		if item.data != nil {
@@ -762,8 +785,8 @@ func TestLongVoiceTurnStillWritableAfterAccountingChurn(t *testing.T) {
 	}
 	// Churn phase: several activate/write/cancel cycles.
 	for cycle := 0; cycle < 5; cycle++ {
-		_ = engine.WritePCM(make([]byte, 1920))
-		engine.CancelTurn()
+		_ = engine.WritePCM(make([]byte, 1920), 0)
+		engine.CancelTurn(0)
 		engine.DeactivatePublish()
 		if err := engine.ActivatePublish(); err != nil {
 			t.Fatalf("reactivate %d: %v", cycle, err)
@@ -774,7 +797,7 @@ func TestLongVoiceTurnStillWritableAfterAccountingChurn(t *testing.T) {
 	chunks := 0
 	for totalBytes < 200*1024 {
 		size := 1920
-		if err := engine.WritePCM(make([]byte, size)); err != nil {
+		if err := engine.WritePCM(make([]byte, size), 0); err != nil {
 			t.Fatalf("write %d: %v", chunks, err)
 		}
 		totalBytes += size
@@ -782,7 +805,7 @@ func TestLongVoiceTurnStillWritableAfterAccountingChurn(t *testing.T) {
 	}
 	wantFrames := uint64(totalBytes / 960)
 	waitForRealFrames(t, engine, wantFrames)
-	_ = engine.FlushAudio()
+	_ = engine.FlushAudio(0)
 	waitForTurnClosed(t, engine)
 	if got := engine.realFramesWritten(); got != wantFrames {
 		t.Fatalf("real frames=%d want=%d (long turn truncated)", got, wantFrames)
@@ -841,17 +864,17 @@ func TestBlockedProducerHoldsNoReservationUntilAccepted(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 64*1024))
+	_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	waitForFrames(t, engine, 1)
 	for i := 0; i < 16; i++ {
-		_ = engine.WritePCM(make([]byte, 64*1024))
+		_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	}
 	before := engine.queueBytesSnapshot()
 
 	// A producer attempting to cross the cap must block WITHOUT reserving.
 	accepted := make(chan struct{})
 	go func() {
-		if err := engine.WritePCM(make([]byte, 64*1024)); err != nil {
+		if err := engine.WritePCM(make([]byte, 64*1024), 0); err != nil {
 			t.Errorf("accepted write errored: %v", err)
 			close(accepted)
 			return
@@ -908,14 +931,14 @@ func TestWriterConsumeVsClearNeverNegativeWithoutDeactivate(t *testing.T) {
 				return
 			default:
 			}
-			_ = engine.WritePCM(make([]byte, 1920))
+			_ = engine.WritePCM(make([]byte, 1920), 0)
 		}
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 150; i++ {
-			engine.CancelTurn()
+			engine.CancelTurn(0)
 			time.Sleep(150 * time.Microsecond)
 		}
 	}()
@@ -942,7 +965,7 @@ func TestWriterConsumeVsClearNeverNegativeWithoutDeactivate(t *testing.T) {
 	// everything; the budget must reach exactly zero.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		_ = engine.FlushAudio()
+		_ = engine.FlushAudio(0)
 		if engine.queueBytesSnapshot() == 0 && len(engine.queueRingSnapshot()) == 0 {
 			return
 		}
@@ -965,7 +988,7 @@ func TestClearVsEnqueueAccountingEqualsOutstandingReservations(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 64*1024))
+	_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	waitForFrames(t, engine, 1)
 
 	stop := make(chan struct{})
@@ -974,14 +997,14 @@ func TestClearVsEnqueueAccountingEqualsOutstandingReservations(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 10; i++ {
-			_ = engine.WritePCM(make([]byte, 8*1024))
+			_ = engine.WritePCM(make([]byte, 8*1024), 0)
 		}
 	}()
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 30; i++ {
-			engine.CancelTurn()
+			engine.CancelTurn(0)
 			time.Sleep(200 * time.Microsecond)
 		}
 	}()
@@ -1013,16 +1036,16 @@ func TestStopDuringBlockedEnqueueRollsBackReservation(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	_ = engine.WritePCM(make([]byte, 64*1024))
+	_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	waitForFrames(t, engine, 1)
 	for i := 0; i < 16; i++ {
-		_ = engine.WritePCM(make([]byte, 64*1024))
+		_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	}
 	before := engine.queueBytesSnapshot()
 
 	outcome := make(chan error, 1)
 	go func() {
-		outcome <- engine.WritePCM(make([]byte, 64*1024))
+		outcome <- engine.WritePCM(make([]byte, 64*1024), 0)
 	}()
 	select {
 	case <-outcome:
@@ -1059,11 +1082,11 @@ func TestCancelTurnInvalidatesInFlightChunk(t *testing.T) {
 	}
 	// Turn 1: six frames in ONE chunk. Frame 1 emits; frame 2 blocks in the
 	// paced wait; frames 2-6 remain in the writer's in-flight ownership.
-	_ = engine.WritePCM(make([]byte, 6*960))
+	_ = engine.WritePCM(make([]byte, 6*960), 0)
 	waitForFrames(t, engine, 1)
 
-	engine.CancelTurn() // invalidate turn 1, clear queue+carry, keep grant
-	close(release)      // resume the blocked paced wait
+	engine.CancelTurn(0) // invalidate turn 1, clear queue+carry, keep grant
+	close(release)       // resume the blocked paced wait
 
 	// Turn 1's in-flight frames must be discarded at the paced-wait check.
 	time.Sleep(30 * time.Millisecond)
@@ -1072,9 +1095,9 @@ func TestCancelTurnInvalidatesInFlightChunk(t *testing.T) {
 	}
 
 	// Turn 2 on the SAME publication writes normally.
-	_ = engine.WritePCM(make([]byte, 2*960))
+	_ = engine.WritePCM(make([]byte, 2*960), 0)
 	waitForRealFrames(t, engine, 3)
-	_ = engine.FlushAudio()
+	_ = engine.FlushAudio(0)
 	waitForTurnClosed(t, engine)
 	if got := engine.realFramesWritten(); got != 3 {
 		t.Fatalf("turn2 frames=%d, want 3 (new turn must flow immediately)", got)
@@ -1094,15 +1117,15 @@ func TestCancelTurnInvalidatesBackpressureBlockedWrite(t *testing.T) {
 		t.Fatalf("activate: %v", err)
 	}
 	// Turn 1 fills the ring to the cap with the writer blocked mid-pace.
-	_ = engine.WritePCM(make([]byte, 64*1024))
+	_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	waitForFrames(t, engine, 1)
 	for i := 0; i < 16; i++ {
-		_ = engine.WritePCM(make([]byte, 64*1024))
+		_ = engine.WritePCM(make([]byte, 64*1024), 0)
 	}
 	blocked := make(chan struct{})
 	go func() {
 		// Old turn's write: blocks at the cap.
-		if err := engine.WritePCM(make([]byte, 64*1024)); err != nil {
+		if err := engine.WritePCM(make([]byte, 64*1024), 0); err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 		close(blocked)
@@ -1115,7 +1138,7 @@ func TestCancelTurnInvalidatesBackpressureBlockedWrite(t *testing.T) {
 
 	// Cancel frees the queue; the blocked old-turn write wakes and must be
 	// dropped as stale (returns nil, enqueues nothing).
-	engine.CancelTurn()
+	engine.CancelTurn(0)
 	select {
 	case <-blocked:
 	case <-time.After(2 * time.Second):
@@ -1128,7 +1151,7 @@ func TestCancelTurnInvalidatesBackpressureBlockedWrite(t *testing.T) {
 	}
 
 	// New turn flows immediately on the same active publication.
-	_ = engine.WritePCM(make([]byte, 2*960))
+	_ = engine.WritePCM(make([]byte, 2*960), 0)
 	waitForRealFrames(t, engine, 3)
 	if got := engine.realFramesWritten(); got != 3 {
 		t.Fatalf("new turn frames=%d, want 3", got)
@@ -1148,7 +1171,7 @@ func TestCancelTurnStopsGapFill(t *testing.T) {
 	// One frame + flush: the frame opens the turn; after the flush the turn
 	// closes. To catch the fill WINDOW, write a chunk and let the ring
 	// drain mid-turn, then cancel.
-	_ = engine.WritePCM(make([]byte, 2*960))
+	_ = engine.WritePCM(make([]byte, 2*960), 0)
 	waitForRealFrames(t, engine, 2)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1158,7 +1181,7 @@ func TestCancelTurnStopsGapFill(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	before := engine.silenceFillCount()
-	engine.CancelTurn()
+	engine.CancelTurn(0)
 	time.Sleep(50 * time.Millisecond)
 	after := engine.silenceFillCount()
 	// No NEW fills may occur after the cancel (bounded in-flight tail is
@@ -1172,4 +1195,106 @@ func TestCancelTurnStopsGapFill(t *testing.T) {
 	if after == 0 && before == 0 {
 		t.Log("fill window never engaged (timing); cancel-stop semantics still hold")
 	}
+}
+
+// cancelOnFirstWriteSink simulates the exact Speaker->Engine boundary race:
+// the TTS callback has already passed the speaker's epoch check; the cancel
+// lands BEFORE the first sink write completes; the write then proceeds with
+// the STALE turn's token. The engine's turn admission must reject it.
+// tokenEngineSink is the token-aware engine adapter (production parity with
+// bridgeVoiceSink).
+type tokenEngineSink struct {
+	engine *Engine
+	token  uint64
+}
+
+func (s *tokenEngineSink) WriteAudio(c speech.TtsAudioChunk) error {
+	return s.engine.WritePCM(c.Data, s.token)
+}
+func (s *tokenEngineSink) EndTurn() error { return s.engine.FlushAudio(s.token) }
+func (s *tokenEngineSink) CancelTurn() error {
+	s.engine.CancelTurn(s.token)
+	return nil
+}
+func (s *tokenEngineSink) Close() error { return nil }
+
+type cancelOnFirstWriteSink struct {
+	inner    *tokenEngineSink
+	cancelFn func()
+	mu       sync.Mutex
+	first    bool
+	writes   int
+}
+
+func (s *cancelOnFirstWriteSink) WriteAudio(c speech.TtsAudioChunk) error {
+	s.mu.Lock()
+	if s.first {
+		s.first = false
+		cancel := s.cancelFn
+		s.mu.Unlock()
+		cancel() // the race window: cancel AFTER the epoch check
+		s.mu.Lock()
+	}
+	s.writes++
+	s.mu.Unlock()
+	return s.inner.WriteAudio(c)
+}
+func (s *cancelOnFirstWriteSink) EndTurn() error    { return s.inner.EndTurn() }
+func (s *cancelOnFirstWriteSink) CancelTurn() error { return s.inner.CancelTurn() }
+func (s *cancelOnFirstWriteSink) Close() error      { return nil }
+
+// TestStaleCallbackCrossingCancelBoundaryRejected pins reviewer P1: an old
+// TTS callback that passed the speaker epoch check, got cancelled, and then
+// performed its FIRST WriteAudio must not be admitted under the new turn —
+// the engine's turn-token admission rejects it; the new turn flows.
+func TestStaleCallbackCrossingCancelBoundaryRejected(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	engine.sleepFn = func(time.Duration) {}
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	var speaker *voice.Speaker
+	var cancelOnce sync.Once // the race fires ONCE, for turn 1 only
+	speaker = voice.NewSpeaker(voice.Options{
+		Provider: &fakeMediaTtsProvider{},
+		CreateSink: func(token uint64) (voice.Sink, error) {
+			return &cancelOnFirstWriteSink{
+				inner: &tokenEngineSink{engine: engine, token: token},
+				first: true,
+				cancelFn: func() {
+					cancelOnce.Do(func() { speaker.Cancel() })
+				},
+			}, nil
+		},
+	})
+	speaker.Speak("第一轮。")
+	// The first write triggers the cancel; the engine must reject the stale
+	// token and emit NOTHING for turn 1.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if engine.realFramesWritten() == 0 && engine.silenceFillCount() == 0 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := engine.realFramesWritten(); got != 0 {
+		t.Fatalf("stale callback PCM admitted: real frames=%d, want 0", got)
+	}
+
+	// Turn 2 on the same publication writes normally.
+	speaker.Speak("第二轮。")
+	waitForRealFrames(t, engine, 2)
+	engine.mu.Lock()
+	t.Logf("DEBUG: realFrames=%d admitted=%d cancelled=%d turnGen=%d turnOpen=%v",
+		engine.opusFramesWritten-engine.silenceFills, engine.admittedTurn,
+		engine.cancelledTurn, engine.turnGeneration, engine.turnOpen)
+	engine.mu.Unlock()
+	if got := engine.realFramesWritten(); got < 2 {
+		t.Fatalf("new turn frames=%d, want >=2", got)
+	}
+	_ = speaker.Close()
 }

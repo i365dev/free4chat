@@ -96,12 +96,12 @@ func (f *fakeEngine) DeactivatePublish() {
 	f.deactivateCalls++
 	f.mu.Unlock()
 }
-func (f *fakeEngine) CancelTurn() {
+func (f *fakeEngine) CancelTurn(token uint64) {
 	f.mu.Lock()
 	f.cancelCalls++
 	f.mu.Unlock()
 }
-func (f *fakeEngine) WritePCM(chunk []byte) error {
+func (f *fakeEngine) WritePCM(chunk []byte, token uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if !f.publishActive {
@@ -111,7 +111,7 @@ func (f *fakeEngine) WritePCM(chunk []byte) error {
 	f.writes = append(f.writes, copied)
 	return nil
 }
-func (f *fakeEngine) FlushAudio() error {
+func (f *fakeEngine) FlushAudio(token uint64) error {
 	f.mu.Lock()
 	f.flushCalls++
 	f.mu.Unlock()
@@ -470,7 +470,7 @@ func TestBridgeVoicePublishFlowsAndPrimingDrainsExactlyOnce(t *testing.T) {
 
 	// First chunk: publication still inactive -> priming silence written,
 	// real PCM buffered (never written yet).
-	if err := bridge.WriteVoicePcm([]byte("real-pcm-chunk-1")); err != nil {
+	if err := bridge.WriteVoicePcm([]byte("real-pcm-chunk-1"), 1); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	writes := engine.snapshotWrites()
@@ -479,7 +479,7 @@ func TestBridgeVoicePublishFlowsAndPrimingDrainsExactlyOnce(t *testing.T) {
 	}
 
 	// Second chunk: still inactive -> buffered too; no second priming.
-	if err := bridge.WriteVoicePcm([]byte("real-pcm-chunk-2")); err != nil {
+	if err := bridge.WriteVoicePcm([]byte("real-pcm-chunk-2"), 1); err != nil {
 		t.Fatalf("write2: %v", err)
 	}
 	if len(engine.snapshotWrites()) != 1 {
@@ -493,7 +493,7 @@ func TestBridgeVoicePublishFlowsAndPrimingDrainsExactlyOnce(t *testing.T) {
 	rest.confirmDiagnostic.Active = true
 	rest.confirmDiagnostic.MatchingTrackStatus = "active"
 	rest.mu.Unlock()
-	if err := bridge.WriteVoicePcm([]byte("real-pcm-chunk-3")); err != nil {
+	if err := bridge.WriteVoicePcm([]byte("real-pcm-chunk-3"), 1); err != nil {
 		t.Fatalf("write3: %v", err)
 	}
 	writes = engine.snapshotWrites()
@@ -543,7 +543,7 @@ func TestBridgeRevocationDropsPendingPcm(t *testing.T) {
 	}
 	defer bridge.Stop()
 	_ = bridge.ActivateVoicePublish()
-	_ = bridge.WriteVoicePcm([]byte("stale-chunk"))
+	_ = bridge.WriteVoicePcm([]byte("stale-chunk"), 1)
 
 	bridge.DeactivateVoicePublish()
 	if bridge.pendingVoiceCount() != 0 {
@@ -568,7 +568,7 @@ func TestBridgeWritePcmBufferBound(t *testing.T) {
 	big := make([]byte, 1024)
 	var err error
 	for i := 0; i < 9000; i++ {
-		if err = bridge.WriteVoicePcm(big); err != nil {
+		if err = bridge.WriteVoicePcm(big, 1); err != nil {
 			break
 		}
 	}

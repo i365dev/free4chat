@@ -122,7 +122,7 @@ func TestPipelineWavProbe(t *testing.T) {
 	_ = session
 	speaker := voice.NewSpeaker(voice.Options{
 		Provider:   &doubao.TtsProvider{APIKey: os.Getenv("DOUBAO_API_KEY")},
-		CreateSink: func() (voice.Sink, error) { return &engineSink{engine: engine}, nil },
+		CreateSink: func(uint64) (voice.Sink, error) { return &engineSink{engine: engine}, nil },
 	})
 	speaker.Speak("你好，我是完整管线回环测试。这是一段中等长度的语音，用来验证编码和传输质量。")
 	deadline2 := time.Now().Add(45 * time.Second)

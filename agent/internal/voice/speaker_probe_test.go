@@ -22,7 +22,7 @@ func TestSpeakerFullAudioProbe(t *testing.T) {
 	var mu sync.Mutex
 	speaker := NewSpeaker(Options{
 		Provider: &doubao.TtsProvider{APIKey: os.Getenv("DOUBAO_API_KEY")},
-		CreateSink: func() (Sink, error) {
+		CreateSink: func(uint64) (Sink, error) {
 			return &countingSink{onWrite: func(n int) { bytesTotal.Add(int64(n)) }}, nil
 		},
 		MaxChunkChars: 220,
