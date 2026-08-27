@@ -651,17 +651,23 @@ func (e *Engine) queueBytesSnapshot() int {
 // publication: a cancelled utterance must never leak stale audio into a
 // later turn, but the grant stays live.
 func (e *Engine) CancelTurn(token uint64) {
-	// Utterance boundary: invalidate the CURRENT turn generation and close
-	// the fill window, then discard queued/carried PCM. The publication
-	// stays active — the next turn writes normally on the same grant.
-	// The token joins the cancelled set: any late PCM from this turn is
-	// rejected at admission forever, even after later turns were admitted.
+	// Utterance boundary. The watermark advances monotonically regardless.
 	e.mu.Lock()
-	e.turnGeneration++
-	e.turnOpen = false
 	if token != 0 && token > e.cancelledThrough {
 		e.cancelledThrough = token
 	}
+	// A STALE LATE CANCEL (an older token arriving after a newer turn was
+	// admitted) must NOT destroy the newer turn: it records the watermark
+	// only — no generation bump, no window close, no queue/carry clear.
+	// Cancelling the currently admitted turn (or a not-yet-admitted current
+	// token) remains destructive.
+	staleLate := token != 0 && e.highestAdmitted != 0 && token < e.highestAdmitted
+	if staleLate {
+		e.mu.Unlock()
+		return
+	}
+	e.turnGeneration++
+	e.turnOpen = false
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
 }

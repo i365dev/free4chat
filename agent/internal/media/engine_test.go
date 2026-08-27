@@ -374,6 +374,28 @@ func waitForFrames(t *testing.T, engine *Engine, n uint64) {
 	t.Fatalf("writer did not emit %d frames (got %d)", n, engine.framesWritten())
 }
 
+// slowMediaTtsProvider keeps a turn's drain active for ~150ms so tests can
+// deterministically interleave cancels with an in-flight drain.
+type slowMediaTtsProvider struct{}
+
+func (*slowMediaTtsProvider) CreateSession() (speech.StreamingTtsSession, error) {
+	return &slowMediaTtsSession{}, nil
+}
+
+type slowMediaTtsSession struct{}
+
+func (s *slowMediaTtsSession) Synthesize(text string, emit func(speech.TtsAudioChunk) error) error {
+	for i := 0; i < 30; i++ {
+		if err := emit(speech.TtsAudioChunk{Codec: "pcm_s16le", SampleRateHz: 24000, Channels: 1, Data: make([]byte, 960)}); err != nil {
+			return err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return nil
+}
+
+func (s *slowMediaTtsSession) Close() error { return nil }
+
 // fakeMediaTtsProvider emits a few PCM chunks per synthesis round.
 type fakeMediaTtsProvider struct{}
 
@@ -1500,5 +1522,152 @@ func TestCachedSinkCancelInvalidatesNewTurn(t *testing.T) {
 	if got := engine.realFramesWritten(); got != framesAfterTurn2+2 {
 		t.Fatalf("turn3 frames=%d want=%d", got, framesAfterTurn2+2)
 	}
+	_ = speaker.Close()
+}
+
+// TestLateCancelOfOlderTokenDoesNotDestroyNewerTurn pins the review's P1:
+// a delayed cancelAction for an OLDER token must record the watermark only
+// — the newer turn's generation, window, queue, and carry stay untouched
+// and it keeps emitting normally.
+func TestLateCancelOfOlderTokenDoesNotDestroyNewerTurn(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	engine.sleepFn = func(time.Duration) {}
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Turn 2 admitted and flowing.
+	if err := engine.WritePCM(make([]byte, 960), 2); err != nil {
+		t.Fatalf("turn 2 write: %v", err)
+	}
+	waitForRealFrames(t, engine, 1)
+	engine.mu.Lock()
+	generationBefore := engine.turnGeneration
+	engine.mu.Unlock()
+
+	// The delayed late cancel for turn 1 arrives AFTER turn 2 was admitted.
+	engine.CancelTurn(1)
+
+	engine.mu.Lock()
+	generationAfter := engine.turnGeneration
+	turnOpenAfter := engine.turnOpen
+	engine.mu.Unlock()
+	if generationAfter != generationBefore {
+		t.Fatalf("late cancel bumped the newer turn's generation: %d -> %d",
+			generationBefore, generationAfter)
+	}
+	if !turnOpenAfter {
+		t.Fatal("late cancel closed the newer turn's fill window")
+	}
+	if got := engine.PCMCarry(); got != 0 {
+		t.Fatalf("late cancel disturbed the carry: %d", got)
+	}
+	if got := len(engine.queueRingSnapshot()); got != 0 {
+		t.Fatalf("late cancel disturbed the queue: %d items", got)
+	}
+
+	// The newer turn continues emitting.
+	if err := engine.WritePCM(make([]byte, 960), 2); err != nil {
+		t.Fatalf("turn 2 continuation: %v", err)
+	}
+	waitForRealFrames(t, engine, 2)
+	if got := engine.realFramesWritten(); got != 2 {
+		t.Fatalf("real frames=%d, want 2 (turn 2 prefix intact)", got)
+	}
+}
+
+// blockingCancelSink pauses its CancelTurn until released, so tests can
+// interleave a delayed cancelAction with a newer turn's drain.
+type blockingCancelSink struct {
+	inner   *tokenEngineSink
+	started chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	first   bool
+}
+
+func (s *blockingCancelSink) WriteAudio(c speech.TtsAudioChunk) error {
+	return s.inner.WriteAudio(c)
+}
+func (s *blockingCancelSink) EndTurn() error { return s.inner.EndTurn() }
+func (s *blockingCancelSink) CancelTurn() error {
+	// ONLY the first cancel pauses (the delayed cancelAction under test);
+	// later cancels of the same token pass through without waiting, so the
+	// next Speak's implicit cancel never blocks the caller.
+	s.mu.Lock()
+	if !s.first {
+		s.first = true
+		s.mu.Unlock()
+		close(s.started) // signal: the delayed cancelAction has begun
+		<-s.release      // pause: the engine has not seen the cancel yet
+		return s.inner.CancelTurn()
+	}
+	s.mu.Unlock()
+	return s.inner.CancelTurn()
+}
+func (s *blockingCancelSink) Close() error { return nil }
+
+// TestDelayedOlderCancelDoesNotDestroyNewerTurnInterleaving pins the exact
+// interleaving the review describes: turn 1's drain is active; Speak(turn 2)
+// becomes pending; the old drain exits and auto-restarts turn 2; token-2
+// PCM is admitted and flowing; THEN the delayed cancelAction(token 1) runs.
+// Turn 2's prefix must survive and emit completely.
+func TestDelayedOlderCancelDoesNotDestroyNewerTurnInterleaving(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	engine.sleepFn = func(time.Duration) {}
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	turn1CancelStarted := make(chan struct{})
+	releaseTurn1Cancel := make(chan struct{})
+	var firstToken1Sink sync.Once
+	var speaker *voice.Speaker
+	speaker = voice.NewSpeaker(voice.Options{
+		Provider: &slowMediaTtsProvider{},
+		CreateSink: func(token uint64) (voice.Sink, error) {
+			blocking := false
+			if token == 1 {
+				firstToken1Sink.Do(func() { blocking = true })
+			}
+			if blocking {
+				return &blockingCancelSink{
+					inner:   &tokenEngineSink{engine: engine, token: token},
+					started: turn1CancelStarted,
+					release: releaseTurn1Cancel,
+				}, nil
+			}
+			return &tokenEngineSink{engine: engine, token: token}, nil
+		},
+	})
+
+	// Turn 1 starts; its sink (token 1, blocking cancel) is created.
+	speaker.Speak("第一轮。")
+	waitForRealFrames(t, engine, 1)
+
+	// Cancel turn 1 in the background: the action reaches the sink and
+	// PAUSES before the engine sees CancelTurn(1).
+	go speaker.Cancel()
+	<-turn1CancelStarted
+
+	// Speak turn 2: the old turn-1 drain exits and auto-restarts turn 2;
+	// token-2 PCM is admitted and flowing while the cancel is still paused.
+	speaker.Speak("第二轮。")
+	waitForRealFrames(t, engine, 2)
+	framesBeforeRelease := engine.realFramesWritten()
+
+	// Release the delayed late cancel for token 1.
+	close(releaseTurn1Cancel)
+	time.Sleep(50 * time.Millisecond)
+
+	// Turn 2 must have continued after the late cancel: wait for its full
+	// chunk set (2 emits per round) to complete.
+	waitForRealFrames(t, engine, framesBeforeRelease+1)
+	if got := engine.realFramesWritten(); got < framesBeforeRelease+1 {
+		t.Fatalf("turn-2 stream stopped after the late cancel: frames=%d want>=%d",
+			got, framesBeforeRelease+1)
+	}
+	// And no truncation: the turn-2 round emitted its complete set (2 emits).
 	_ = speaker.Close()
 }

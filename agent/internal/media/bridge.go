@@ -714,13 +714,27 @@ func (b *Bridge) FlushVoice(token uint64) error {
 	return flushErr
 }
 
-// CancelVoiceTurn discards partial buffered audio without deactivating the
-// publication (cancelled utterance must never leak into later turns). The
-// token is explicitly invalidated at the engine's turn admission.
+// CancelVoiceTurn discards the cancelled turn's buffered audio without
+// deactivating the publication. Pending items are filtered by their
+// ORIGINATING token: a late cancel for an older turn removes ONLY that
+// turn's items and never destroys a newer turn's pending prefix
+// (pendingVoicePCMBytes stays exact).
 func (b *Bridge) CancelVoiceTurn(token uint64) {
 	b.mu.Lock()
-	b.pendingVoicePCM = nil
-	b.pendingVoicePCMBytes = 0
+	if token != 0 {
+		kept := b.pendingVoicePCM[:0]
+		for _, item := range b.pendingVoicePCM {
+			if item.token != token {
+				kept = append(kept, item)
+			} else {
+				b.pendingVoicePCMBytes -= len(item.data)
+			}
+		}
+		b.pendingVoicePCM = kept
+	} else {
+		b.pendingVoicePCM = nil
+		b.pendingVoicePCMBytes = 0
+	}
 	engine := b.engine
 	b.mu.Unlock()
 	if engine != nil {

@@ -717,3 +717,68 @@ func TestPendingBufferPreservesTokensAndRejectsStaleDrain(t *testing.T) {
 		t.Fatalf("new turn chunk missing: %q", writes)
 	}
 }
+
+// TestCancelOlderTokenPreservesNewerPendingItems pins the bridge-side
+// boundary: a late cancel for an older token removes ONLY that token's
+// pending items; the newer turn's pending prefix survives with exact byte
+// accounting and drains normally.
+func TestCancelOlderTokenPreservesNewerPendingItems(t *testing.T) {
+	engine := newFakeEngine()
+	engine.mid = "9"
+	rest := newFakeRest()
+	rest.confirmActive = false // keep the publication unannounced -> buffering
+	bridge := NewBridge(testBridgeOptions(engine, rest, &PublishConfig{TrackName: "agent-voice"}))
+	if err := bridge.Start(t.Context()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer bridge.Stop()
+	if err := bridge.ActivateVoicePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Turn 1 (unannounced -> buffered) and turn 2 (also buffered).
+	_ = bridge.WriteVoicePcm([]byte("t1-a"), 1)
+	_ = bridge.WriteVoicePcm([]byte("t2-prefix"), 2)
+	before := bridge.pendingVoiceBytesCount()
+
+	// The delayed late cancel for turn 1 must preserve turn 2's items.
+	bridge.CancelVoiceTurn(1)
+
+	if got := bridge.pendingVoiceBytesCount(); got != len("t2-prefix") {
+		t.Fatalf("pending bytes after late cancel = %d, want %d (only turn-2 item)",
+			got, len("t2-prefix"))
+	}
+	_ = before
+
+	// Turn 2 drains normally once the publication goes active.
+	rest.mu.Lock()
+	rest.confirmActive = true
+	rest.confirmDiagnostic.Active = true
+	rest.confirmDiagnostic.MatchingTrackStatus = "active"
+	rest.mu.Unlock()
+	_ = bridge.WriteVoicePcm([]byte("t2-tail"), 2)
+	_ = bridge.FlushVoice(2)
+
+	writes := engine.snapshotWrites()
+	found := false
+	for _, write := range writes {
+		if string(write) == "t2-prefix" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("turn-2 prefix was destroyed by the late cancel: %q", writes)
+	}
+	for _, write := range writes {
+		if string(write) == "t1-a" {
+			t.Fatal("cancelled turn-1 item drained")
+		}
+	}
+}
+
+// pendingVoiceBytesCount exposes the pending buffer accounting for tests.
+func (b *Bridge) pendingVoiceBytesCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.pendingVoicePCMBytes
+}
