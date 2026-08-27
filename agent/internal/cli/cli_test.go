@@ -137,14 +137,21 @@ func TestReadinessReportsGoRuntimeAndDeferredMedia(t *testing.T) {
 			Runtime string `json:"runtime"`
 		} `json:"runtime"`
 		Media struct {
+			Engine    string `json:"engine"`
 			Supported bool   `json:"supported"`
-			Reason    string `json:"reason"`
+			Ready     bool   `json:"ready"`
 		} `json:"media"`
 		Speech struct {
 			STT struct {
-				Ready  bool   `json:"ready"`
-				Reason string `json:"reason"`
+				Provider   string `json:"provider"`
+				Configured bool   `json:"configured"`
+				Ready      bool   `json:"ready"`
 			} `json:"stt"`
+			TTS struct {
+				Provider   string `json:"provider"`
+				Configured bool   `json:"configured"`
+				Ready      bool   `json:"ready"`
+			} `json:"tts"`
 		} `json:"speech"`
 	}
 	if err := json.Unmarshal([]byte(output), &report); err != nil {
@@ -153,11 +160,23 @@ func TestReadinessReportsGoRuntimeAndDeferredMedia(t *testing.T) {
 	if !report.Runtime.Ready || report.Runtime.Runtime != "go" {
 		t.Fatalf("go runtime readiness wrong: %+v", report.Runtime)
 	}
-	if report.Media.Supported || report.Media.Reason != "deferred_to_go_pr_2" {
-		t.Fatalf("media must be honestly deferred until PR 2: %+v", report.Media)
+	// Media is real now (in-process Pion), but speech readiness must stay
+	// honest about the LOCAL provider configuration — never about a room
+	// grant (that is room state, checked by the controller at grant time).
+	if !report.Media.Supported || !report.Media.Ready || report.Media.Engine != "pion" {
+		t.Fatalf("in-process Pion media must be reported available: %+v", report.Media)
 	}
-	if report.Speech.STT.Ready || report.Speech.STT.Reason != "deferred_to_go_pr_2" {
-		t.Fatalf("speech must be honestly deferred until PR 2: %+v", report.Speech.STT)
+	if report.Speech.STT.Provider != "doubao" || report.Speech.TTS.Provider != "doubao" {
+		t.Fatalf("doubao is the only production provider: %+v", report.Speech)
+	}
+	// No DOUBAO_API_KEY in the test environment: configuration must be
+	// reported false, and text readiness must still hold (it does — the
+	// report was produced at all).
+	if report.Speech.STT.Configured || report.Speech.STT.Ready {
+		t.Fatalf("STT must not claim readiness without a credential: %+v", report.Speech.STT)
+	}
+	if report.Speech.TTS.Configured || report.Speech.TTS.Ready {
+		t.Fatalf("TTS must not claim readiness without a credential: %+v", report.Speech.TTS)
 	}
 }
 

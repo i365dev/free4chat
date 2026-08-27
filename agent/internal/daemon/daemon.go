@@ -15,7 +15,9 @@ import (
 
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/harness"
+	"github.com/i365dev/free4chat/agent/internal/media"
 	"github.com/i365dev/free4chat/agent/internal/runtime"
+	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -374,6 +376,16 @@ func (d *Daemon) prepareRuntime(
 	if mcpURL == "" {
 		mcpURL = "https://www.free4.chat/mcp"
 	}
+	siteOrigin, originErr := media.SiteOriginFromMCPURL(mcpURL)
+	if originErr != nil {
+		// A malformed MCP URL disables the media plane; text behavior is
+		// unaffected (media is strictly additive).
+		siteOrigin = ""
+	}
+	// Every join gets a fresh workspace; the transcript lives in a hidden
+	// child directory inside it and is never reused across rooms.
+	transcriptPath := filepath.Join(workspace, ".meeting-notes", "transcript.jsonl")
+	speechConfig := speech.LoadConfig(RuntimeDirectory(), os.Getenv)
 	residentRuntime := runtime.NewResidentRuntime(runtime.Options{
 		InstanceID: instanceID,
 		RoomID:     request.Room, // empty for the create-first lifecycle
@@ -383,7 +395,10 @@ func (d *Daemon) prepareRuntime(
 			TurnTimeoutMs: turnTimeoutMs,
 			CancelGraceMs: cancelGraceMs,
 		}),
-		Capabilities: request.Capabilities,
+		Capabilities:   request.Capabilities,
+		SiteOrigin:     siteOrigin,
+		TranscriptPath: transcriptPath,
+		Speech:         &speechConfig,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the

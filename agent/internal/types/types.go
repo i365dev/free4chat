@@ -189,11 +189,27 @@ type RoomTurnContext struct {
 	Participants []ParticipantRosterEntry `json:"participants,omitempty"`
 }
 
+// HarnessTranscriptSegment is one committed attributed utterance.
+type HarnessTranscriptSegment struct {
+	ParticipantID string `json:"participantId"`
+	Speaker       string `json:"speaker"`
+	Text          string `json:"text"`
+}
+
+// HarnessMeetingTranscript is the runtime-local Meeting Notes snapshot
+// surfaced to the Harness: a local temp file path plus bounded segments.
+// Never a Worker/DO attachment or URL.
+type HarnessMeetingTranscript struct {
+	Path     string                     `json:"path"`
+	Segments []HarnessTranscriptSegment `json:"segments"`
+}
+
 // HarnessTurnInput is the bounded, untrusted-safe context handed to the
 // Harness for one addressed turn. It never contains the participant handle.
 type HarnessTurnInput struct {
-	Room   RoomTurnContext `json:"room"`
-	Events []HarnessEvent  `json:"events"`
+	Room              RoomTurnContext           `json:"room"`
+	Events            []HarnessEvent            `json:"events"`
+	MeetingTranscript *HarnessMeetingTranscript `json:"meetingTranscript,omitempty"`
 }
 
 // HarnessTurnResult is what the Harness produced for a turn.

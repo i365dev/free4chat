@@ -2,14 +2,18 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 
 	"github.com/i365dev/free4chat/agent/internal/daemon"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
+	"github.com/i365dev/free4chat/agent/internal/speech"
 )
 
-// ReadinessReport is the Go runtime readiness projection. Media/speech are
-// honest about being PR 2 scope: unsupported, never silently "ready".
+// ReadinessReport is the Go runtime readiness projection. Media and speech
+// are reported honestly: Pion is compiled in-process (available), while
+// speech distinguishes provider configuration from a live room grant (the
+// grant is room state, never claimed locally).
 type ReadinessReport struct {
 	Runtime map[string]any            `json:"runtime"`
 	Media   map[string]any            `json:"media"`
@@ -19,6 +23,7 @@ type ReadinessReport struct {
 }
 
 func runReadiness(args []string) error {
+	speechConfig := speech.LoadConfig(daemon.RuntimeDirectory(), os.Getenv)
 	report := ReadinessReport{
 		Runtime: map[string]any{
 			"ready":   true,
@@ -26,13 +31,20 @@ func runReadiness(args []string) error {
 			"version": doctor.Version,
 		},
 		Media: map[string]any{
-			"supported": false,
-			"reason":    "deferred_to_go_pr_2",
+			"engine":    "pion",
+			"supported": true,
+			"ready":     true,
 		},
 		Speech: map[string]map[string]any{
 			"stt": {
-				"ready":  false,
-				"reason": "deferred_to_go_pr_2",
+				"provider":   "doubao",
+				"configured": speechConfig.STTEnabled,
+				"ready":      speechConfig.STTEnabled,
+			},
+			"tts": {
+				"provider":   "doubao",
+				"configured": speechConfig.TTSEnabled,
+				"ready":      speechConfig.TTSEnabled,
 			},
 		},
 	}

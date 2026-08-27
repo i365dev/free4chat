@@ -23,12 +23,16 @@ type fakeClient struct {
 	capsSeen  [][]string
 	script    []waitStep
 	defaultOK bool
+	// sendHook observes every SendText in order (tests may inject).
+	sendHook func(text string)
 }
 
 type waitStep struct {
 	err    error
 	events []types.RoomEvent
 	roster []types.ParticipantRosterEntry
+	// gate blocks delivery until closed (deterministic mid-flight tests).
+	gate chan struct{}
 }
 
 func (c *fakeClient) Connect() error               { return nil }
@@ -81,6 +85,9 @@ func (c *fakeClient) WaitForEvents(handle string, cursor int64, timeoutSeconds i
 	if step.err != nil {
 		return types.WaitResult{}, step.err
 	}
+	if step.gate != nil {
+		<-step.gate
+	}
 	wait := types.WaitResult{
 		Events:       step.events,
 		Cursor:       cursor,
@@ -99,6 +106,9 @@ func (c *fakeClient) SendText(_ string, text string) (types.SendTextResult, erro
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sent = append(c.sent, text)
+	if c.sendHook != nil {
+		c.sendHook(text)
+	}
 	return types.SendTextResult{Sequence: int64(len(c.sent))}, nil
 }
 

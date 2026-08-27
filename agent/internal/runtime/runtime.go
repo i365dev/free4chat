@@ -7,7 +7,10 @@ import (
 	"sync"
 
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
+	"github.com/i365dev/free4chat/agent/internal/media"
+	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
+	"github.com/i365dev/free4chat/agent/internal/voice"
 )
 
 // State is the resident lifecycle state reported through status.
@@ -51,6 +54,15 @@ type Options struct {
 	// OnRoomExpired is invoked after a natural room expiry has released
 	// the runtime resources.
 	OnRoomExpired func() error
+	// SiteOrigin is the SFU REST origin derived from the MCP URL (media).
+	SiteOrigin string
+	// TranscriptPath is the per-instance local transcript file; empty
+	// disables persistence (tests).
+	TranscriptPath string
+	// Speech is the resolved local speech configuration (nil = disabled).
+	Speech *speech.Config
+	// Voice configures outbound Voice Reply (nil = Meeting Notes only).
+	Voice *media.VoiceConfig
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
@@ -83,6 +95,18 @@ type ResidentRuntime struct {
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
 	stopCh      chan struct{}
+
+	mediaController *media.Controller
+	transcriber     *speech.Transcriber
+	transcript      *speech.TranscriptStore
+	// voiceSrc is the controller-backed voice boundary; tests may inject a
+	// fake to observe dispatch ordering deterministically.
+	voiceSrc voiceSource
+}
+
+// voiceSource is the minimal voice-output surface the turn pipeline needs.
+type voiceSource interface {
+	CurrentVoiceOutput() *voice.Speaker
 }
 
 // NewResidentRuntime builds a runtime; no network activity yet.
@@ -195,9 +219,18 @@ func (r *ResidentRuntime) StartByCreate() (types.CreateRoomResult, error) {
 
 // prepareLifecycle connects MCP then the Harness session — ordering matters:
 // the Harness session exists before any room is joined or created, so local
-// readiness failures happen before room admission. (Local transcript files
-// are Meeting Notes scope, deferred to PR 2.)
+// readiness failures happen before room admission.
 func (r *ResidentRuntime) prepareLifecycle() error {
+	if r.options.TranscriptPath != "" {
+		store := speech.NewTranscriptStore(r.options.TranscriptPath)
+		if err := store.Ready(); err != nil {
+			// Transcript persistence is optional; a filesystem failure must
+			// never prevent the text Agent from joining the room.
+			r.log("meeting_transcript_init_failed", nil)
+		} else {
+			r.transcript = store
+		}
+	}
 	if err := r.options.Client.Connect(); err != nil {
 		return err
 	}
@@ -221,7 +254,6 @@ func (r *ResidentRuntime) join() error {
 // (join or create): resets cursor/event state from the returned capability.
 func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	// The capability is intentionally kept only in this object and never
 	// included in turns, status, or logs.
 	r.participantHandle = joined.ParticipantHandle
@@ -233,6 +265,11 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.pendingAddressed = nil
 	r.state = StateWaiting
 	r.lastError = ""
+	r.mu.Unlock()
+	// Media controller (re)build happens OUTSIDE the runtime lock: it may
+	// stop the previous bridge, create a transcriber, and poll room_info —
+	// none of that may hold the runtime mutex.
+	r.restartMediaController(joined.ParticipantHandle)
 }
 
 // requireHandle returns the live capability or fails closed.
@@ -381,6 +418,13 @@ func (r *ResidentRuntime) drainTurns() {
 			Participants: r.rosterSnapshot(),
 		})
 		r.enrichAttachments(input)
+		r.attachTranscript(input)
+
+		// A newly addressed turn wins the speaker: stale audio from the
+		// previous response must never keep playing over the new one.
+		if voiceOutput := r.voiceOutput(); voiceOutput != nil {
+			voiceOutput.Cancel()
+		}
 
 		result, err := r.options.Adapter.RunTurn(*input)
 		if err != nil {
@@ -411,6 +455,11 @@ func (r *ResidentRuntime) drainTurns() {
 		r.log("message_persisted", map[string]string{
 			"sequence": strconv.FormatInt(sent.Sequence, 10),
 		})
+		// Voice Reply is additive: speak only after the text reply is
+		// persisted; a nil/unready output keeps the turn text-only.
+		if voiceOutput := r.voiceOutput(); voiceOutput != nil {
+			voiceOutput.Speak(text)
+		}
 	}
 }
 
@@ -624,10 +673,23 @@ func (r *ResidentRuntime) Stop() {
 	r.loopWG.Wait()
 }
 
-// releaseResources mirrors the Node cleanupResources ordering.
+// releaseResources mirrors the Node cleanupResources ordering: media first
+// (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
-	// Cancel a possibly-stuck Harness turn first; closing the ACP process
-	// below remains the final cancellation boundary.
+	if r.mediaController != nil {
+		r.mediaController.Stop()
+		r.mediaController = nil
+	}
+	if r.transcriber != nil {
+		r.transcriber.Close()
+		r.transcriber = nil
+	}
+	if r.transcript != nil {
+		r.transcript.Dispose()
+		r.transcript = nil
+	}
+	// Cancel a possibly-stuck Harness turn; closing the ACP process below
+	// remains the final cancellation boundary.
 	_ = r.options.Adapter.CancelTurn()
 	if handle := r.currentHandle(); handle != "" {
 		_ = r.options.Client.LeaveRoom(handle)
