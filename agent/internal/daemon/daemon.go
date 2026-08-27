@@ -384,6 +384,14 @@ func (d *Daemon) prepareRuntime(
 			CancelGraceMs: cancelGraceMs,
 		}),
 		Capabilities: request.Capabilities,
+		// Natural room expiry must release the resident registry entry and
+		// its private workspace, matching the Node reference's onRoomExpired
+		// wiring — otherwise status keeps showing a ghost instance and the
+		// workspace survives until the daemon restarts.
+		OnRoomExpired: func() error {
+			d.unregister(instanceID)
+			return os.RemoveAll(workspace)
+		},
 	})
 	return residentRuntime, workspace, instanceID, nil
 }

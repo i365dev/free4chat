@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -64,6 +66,94 @@ func newTestAdapter(t *testing.T, launcher types.AgentLauncher, options AdapterO
 	t.Helper()
 	workspace := t.TempDir()
 	return NewACPAdapter(launcher, workspace, options), workspace
+}
+
+func TestExtractTextChunkDropsThoughtsKeepsMessages(t *testing.T) {
+	thought := json.RawMessage(`{
+	  "sessionId": "s",
+	  "update": {
+	    "sessionUpdate": "agent_thought_chunk",
+	    "content": {"type": "text", "text": "SECRET-THINKING"}
+	  }
+	}`)
+	if text, ok := extractTextChunk(thought); ok || text != "" {
+		t.Fatalf("thought chunk must be filtered out, got ok=%v text=%q", ok, text)
+	}
+
+	message := json.RawMessage(`{
+	  "sessionId": "s",
+	  "update": {
+	    "sessionUpdate": "agent_message_chunk",
+	    "content": {"type": "text", "text": "hello"}
+	  }
+	}`)
+	text, ok := extractTextChunk(message)
+	if !ok || text != "hello" {
+		t.Fatalf("message chunk lost: ok=%v text=%q", ok, text)
+	}
+
+	unknown := json.RawMessage(`{
+	  "sessionId": "s",
+	  "update": {"sessionUpdate": "agent_sidebar_chunk",
+	    "content": {"type": "text", "text": "LEAK"}}
+	}`)
+	if text, ok := extractTextChunk(unknown); ok || text != "" {
+		t.Fatalf("unknown chunk kinds must be dropped: ok=%v text=%q", ok, text)
+	}
+}
+
+func TestACPTurnExcludesThoughtChunksFromReply(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("thought", nil), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("think then answer"))
+	if err != nil {
+		t.Fatalf("turn failed: %v", err)
+	}
+	if result.Text != "public-reply" {
+		t.Fatalf("thought text leaked into the public reply: %q", result.Text)
+	}
+}
+
+func TestACPCloseSIGKILLsTERMIgnoringHarness(t *testing.T) {
+	workspace := t.TempDir()
+	pidFile := filepath.Join(workspace, "harness.pid")
+	launcher := scriptLauncher("timeout_stuck", map[string]string{
+		"FAKE_PID_FILE": pidFile,
+	})
+	adapter := NewACPAdapter(launcher, workspace, AdapterOptions{})
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	waitForFile(t, pidFile, 2*time.Second, "harness pid file")
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("pid file unreadable: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("pid parse failed: %v", err)
+	}
+
+	started := time.Now()
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("close failed: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("close with TERM-ignoring Harness must stay bounded, took %s", elapsed)
+	}
+	// The process must be genuinely gone, not just released from the adapter:
+	// poll with signal 0 until ESRCH within the escalation budget.
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return // ESRCH: terminated by the SIGKILL escalation
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("TERM-ignoring Harness pid %d survived Close", pid)
 }
 
 func TestACPNegotiatesOnceAndReusesOneSession(t *testing.T) {
@@ -187,9 +277,11 @@ func TestACPStuckTurnTimesOutCancelsTerminatesAndRecovers(t *testing.T) {
 	workspace := t.TempDir()
 	stateMarker := filepath.Join(workspace, "stuck-state")
 	cancelMarker := filepath.Join(workspace, "cancel-sent")
+	pidFile := filepath.Join(workspace, "first-life.pid")
 	launcher := scriptLauncher("timeout_stuck", map[string]string{
 		"FAKE_STATE_MARKER":  stateMarker,
 		"FAKE_CANCEL_MARKER": cancelMarker,
+		"FAKE_PID_FILE":      pidFile,
 	})
 	adapter := NewACPAdapter(launcher, workspace, AdapterOptions{
 		TurnTimeoutMs: 60,
@@ -216,6 +308,25 @@ func TestACPStuckTurnTimesOutCancelsTerminatesAndRecovers(t *testing.T) {
 	if err != nil || recovered.Text != "recovered" {
 		t.Fatalf("recovery mismatch: %+v %v", recovered, err)
 	}
+
+	// The FIRST stuck life must be dead, not leaked: it ignored SIGTERM, so
+	// only the SIGKILL escalation (single-Wait ownership) can have ended it.
+	data, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatalf("pid file missing: %v", readErr)
+	}
+	firstPid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if parseErr != nil {
+		t.Fatalf("pid parse failed: %v", parseErr)
+	}
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(firstPid, 0); err != nil {
+			return // terminated
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("stuck first-life Harness pid %d leaked past SIGKILL escalation", firstPid)
 }
 
 func waitForFile(t *testing.T, path string, timeout time.Duration, message string) {

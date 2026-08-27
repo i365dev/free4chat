@@ -605,3 +605,98 @@ func writeJSONRPC(w http.ResponseWriter, envelope any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(envelope)
 }
+
+// TestRoomExpiryRemovesResidentAndWorkspace pins the Node reference's
+// onRoomExpired semantics: after the server reports room_expired, the
+// resident leaves the registry AND its workspace is cleaned up immediately —
+// status must never show a ghost instance.
+func TestRoomExpiryRemovesResidentAndWorkspace(t *testing.T) {
+	d, _ := startDaemon(t)
+
+	expiryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body.Method {
+		case "tools/list":
+			writeModernMCPTools(w)
+		case "tools/call":
+			switch body.Params.Name {
+			case "join_room":
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"participantHandle": "expiry-handle",
+					"participant":       map[string]any{"id": "agent-expiring"},
+					"cursor":            float64(0),
+					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
+				}))
+			case "wait_for_events":
+				// First long-poll reports the natural room expiry.
+				writeJSONRPC(w, map[string]any{
+					"jsonrpc": "2.0", "id": 1,
+					"result": map[string]any{
+						"isError": true,
+						"content": []any{map[string]any{
+							"type": "text", "text": `{"error":"room_expired"}`,
+						}},
+					},
+				})
+			case "leave_room":
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			default:
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer expiryServer.Close()
+	t.Setenv("FREE4CHAT_MCP_URL", expiryServer.URL)
+
+	joined, err := SendIPC(&IpcRequest{
+		Op:           "join",
+		Room:         "doomed-room",
+		Name:         "Expiring-Agent",
+		AgentCommand: fakeAgentBinary,
+	})
+	if err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	var view struct {
+		InstanceID string `json:"instanceId"`
+		State      string `json:"state"`
+	}
+	if err := json.Unmarshal(joined, &view); err != nil || view.InstanceID == "" {
+		t.Fatalf("join view mismatch: %s", joined)
+	}
+
+	// The runtime's wait loop must notice room_expired and release itself
+	// through the daemon callback: registry entry gone, workspace removed.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && d.InstanceCount() != 0 {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if count := d.InstanceCount(); count != 0 {
+		t.Fatalf("ghost resident survived room expiry: %d", count)
+	}
+
+	residents, err := SendIPC(&IpcRequest{Op: "status"})
+	if err != nil {
+		t.Fatalf("status after expiry failed: %v", err)
+	}
+	var remaining []any
+	if err := json.Unmarshal(residents, &remaining); err != nil || len(remaining) != 0 {
+		t.Fatalf("status must show zero residents after expiry: %s", residents)
+	}
+
+	entries, readErr := os.ReadDir(WorkspacesRoot())
+	if readErr != nil {
+		t.Fatalf("workspaces root unreadable: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("workspace leaked after room expiry: %d entries", len(entries))
+	}
+}

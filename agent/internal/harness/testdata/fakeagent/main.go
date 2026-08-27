@@ -124,6 +124,11 @@ func main() {
 	tracePath = os.Getenv("FAKE_TRACE")
 	a := &agent{mode: os.Getenv("FAKE_MODE")}
 	sessionID := ""
+	// A FIRST-life stuck process must also survive stdin EOF (the adapter
+	// closes the pipe before escalating): only SIGKILL may end it, which is
+	// exactly what the adapter's bounded escalation tests verify.
+	stuckFirstLife := a.mode == "timeout_stuck" &&
+		!fileExists(os.Getenv("FAKE_STATE_MARKER"))
 	if a.mode == "timeout_stuck" {
 		// Survive SIGTERM deliberately; the adapter's final boundary is
 		// SIGKILL. Signals are consumed without terminating the process.
@@ -133,6 +138,11 @@ func main() {
 			for range sigCh {
 			}
 		}()
+		// Publish this life's pid once (first life only) so tests can prove
+		// the SIGKILL escalation actually terminated it.
+		if pidFile := os.Getenv("FAKE_PID_FILE"); pidFile != "" && !fileExists(pidFile) {
+			_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600)
+		}
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -180,6 +190,18 @@ func main() {
 					reply(a.pending, map[string]any{"stopReason": "cancelled"})
 					a.pending = nil
 				}
+			case "thought":
+				// Emits internal reasoning that must NEVER surface in the
+				// runtime's published reply, then the real message.
+				notify("session/update", map[string]any{
+					"sessionId": sessionID,
+					"update": map[string]any{
+						"sessionUpdate": "agent_thought_chunk",
+						"content":       map[string]any{"type": "text", "text": "SECRET-THINKING-0123456789"},
+					},
+				})
+				updateChunk(sessionID, "public-reply")
+				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "timeout_stuck":
 				if marker := os.Getenv("FAKE_CANCEL_MARKER"); marker != "" && !fileExists(marker) {
 					_ = os.WriteFile(marker, []byte("sent"), 0o600)
@@ -238,6 +260,18 @@ func main() {
 				if !restarted {
 					a.killAfter(10*time.Millisecond, "FAKE_RESTART_MARKER")
 				}
+			case "thought":
+				// Emits internal reasoning that must NEVER surface in the
+				// runtime's published reply, then the real message.
+				notify("session/update", map[string]any{
+					"sessionId": sessionID,
+					"update": map[string]any{
+						"sessionUpdate": "agent_thought_chunk",
+						"content":       map[string]any{"type": "text", "text": "SECRET-THINKING-0123456789"},
+					},
+				})
+				updateChunk(sessionID, "public-reply")
+				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "timeout_stuck":
 				stateMarker := os.Getenv("FAKE_STATE_MARKER")
 				wasStuck := false
@@ -272,6 +306,11 @@ func main() {
 		default:
 			// Unknown/unsupported frames are ignored by the stub.
 		}
+	}
+	if stuckFirstLife {
+		// Survive EOF (pipe closed by the adapter) and every signal except
+		// SIGKILL: this models a Harness that ignores TERM during teardown.
+		select {}
 	}
 }
 

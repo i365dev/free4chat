@@ -82,6 +82,31 @@ type pendingCall struct {
 	result chan *acpMessage
 }
 
+// harnessProcess owns the ONE cmd.Wait() call for a child lifecycle. Both
+// the death watcher and closeInternal observe the same exit signal, so the
+// shutdown path can reliably distinguish "terminated" from "ignored TERM"
+// and escalate to SIGKILL. Calling Wait twice on an exec.Cmd returns
+// immediately with an error, which previously let a TERM-ignoring Harness
+// skip the escalation entirely.
+type harnessProcess struct {
+	cmd    *exec.Cmd
+	exited chan struct{}
+	once   sync.Once
+}
+
+func newHarnessProcess(cmd *exec.Cmd) *harnessProcess {
+	return &harnessProcess{cmd: cmd, exited: make(chan struct{})}
+}
+
+// reap performs the single Wait call; idempotent. The channel closes only
+// after the process has actually exited and been reaped.
+func (p *harnessProcess) reap() {
+	p.once.Do(func() {
+		_ = p.cmd.Wait()
+		close(p.exited)
+	})
+}
+
 // ACPAdapter drives one local Harness process over ACP v1 (nd-json JSON-RPC
 // on stdio). It implements types.HarnessAdapter. Permission requests are
 // fail-closed (always cancelled); custom commands remain trusted-local code,
@@ -94,7 +119,7 @@ type ACPAdapter struct {
 
 	mu           sync.Mutex
 	writeMu      sync.Mutex // serializes every stdin frame
-	child        *exec.Cmd
+	proc         *harnessProcess
 	stdin        io.WriteCloser
 	pending      map[string]*pendingCall
 	nextID       int64
@@ -172,12 +197,12 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 		a.mu.Unlock()
 		return
 	}
-	live := a.child != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.pending) > 0
+	live := a.proc != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.pending) > 0
 	if !live {
 		a.mu.Unlock()
 		return
 	}
-	a.child = nil
+	a.proc = nil
 	a.stdin = nil
 	a.sessionID = ""
 	a.caps = nil
@@ -196,11 +221,11 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 // process death the next call spawns a fresh process.
 func (a *ACPAdapter) EnsureSession() error {
 	a.mu.Lock()
-	if a.sessionID != "" && a.stdin != nil && a.child != nil {
+	if a.sessionID != "" && a.stdin != nil && a.proc != nil {
 		a.mu.Unlock()
 		return nil
 	}
-	if a.child != nil || a.stdin != nil {
+	if a.proc != nil || a.stdin != nil {
 		a.mu.Unlock()
 		return errors.New("ACP session is unavailable after process failure")
 	}
@@ -226,7 +251,8 @@ func (a *ACPAdapter) EnsureSession() error {
 		return fmt.Errorf("spawn %s failed: %w", a.launcher.Command, err)
 	}
 
-	a.child = command
+	proc := newHarnessProcess(command)
+	a.proc = proc
 	a.stdin = stdinPipe
 	a.nextID = 0
 	a.gen++
@@ -234,17 +260,15 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.caps = nil
 	a.turnChunks = nil
 	a.promptActive = false
-	exited := make(chan struct{})
 	a.mu.Unlock()
 
 	gen := a.gen
 	go a.readLoop(stdoutPipe, gen)
+	// The single Wait owner reaps the child and publishes its exit; the
+	// watcher and closeInternal both observe the same signal.
+	go proc.reap()
 	go func() {
-		_ = command.Wait()
-		close(exited)
-	}()
-	go func() {
-		<-exited
+		<-proc.exited
 		// A deliberate close sets closing first, so this stays silent on
 		// graceful shutdowns and only fires for unexpected deaths.
 		a.markProcessDead(gen, errors.New("exit"))
@@ -392,8 +416,12 @@ func (a *ACPAdapter) dispatch(message *acpMessage) {
 	}
 }
 
-// extractTextChunk pulls appended assistant text out of session/update
-// notifications. Handles both a single content block and block arrays.
+// extractTextChunk pulls appended ASSISTANT MESSAGE text out of
+// session/update notifications. Only agent_message_chunk events accumulate;
+// internal reasoning events (agent_thought_chunk, any other sessionUpdate)
+// are deliberately dropped — they must never reach the public send_text
+// reply (the Node reference's session.prompt + readText reads the assistant
+// message, not thoughts). Handles single content blocks and block arrays.
 func extractTextChunk(params json.RawMessage) (string, bool) {
 	if len(params) == 0 {
 		return "", false
@@ -407,9 +435,7 @@ func extractTextChunk(params json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(params, &updateDoc); err != nil {
 		return "", false
 	}
-	if updateDoc.Update.SessionUpdate != "agent_message_chunk" &&
-		updateDoc.Update.SessionUpdate != "" &&
-		updateDoc.Update.SessionUpdate != "agent_thought_chunk" {
+	if updateDoc.Update.SessionUpdate != "agent_message_chunk" {
 		return "", false
 	}
 	appendTextBlocks := func(content json.RawMessage) string {
@@ -696,7 +722,7 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 		return nil
 	}
 	a.closing = true
-	child := a.child
+	proc := a.proc
 	writer := a.stdin
 	sessionID := a.sessionID
 	closePresent := a.caps != nil && a.caps.ClosePresent
@@ -705,7 +731,7 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 	a.sessionID = ""
 	a.caps = nil
 	a.stdin = nil
-	a.child = nil
+	a.proc = nil
 	a.promptActive = false
 	a.turnChunks = nil
 	for _, call := range a.pending {
@@ -750,19 +776,24 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 		}
 		_ = writer.Close()
 	}
-	if child != nil && child.Process != nil {
-		_ = syscall.Kill(child.Process.Pid, syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() {
-			_ = child.Wait()
-			close(done)
-		}()
-		timer := time.After(time.Duration(shutdownTimeoutMs) * time.Millisecond)
+	if proc != nil && proc.cmd.Process != nil {
+		pid := proc.cmd.Process.Pid
+		// The watcher goroutine remains the single Wait owner; we observe
+		// its exit signal instead of re-Wait-ing the same Cmd. A Harness
+		// that ignores SIGTERM therefore reaches the SIGKILL fallback after
+		// the shutdown budget instead of slipping past it.
+		_ = syscall.Kill(pid, syscall.SIGTERM)
 		select {
-		case <-done:
-		case <-timer:
-			_ = syscall.Kill(child.Process.Pid, syscall.SIGKILL)
-			<-done
+		case <-proc.exited:
+		case <-time.After(time.Duration(shutdownTimeoutMs) * time.Millisecond):
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			select {
+			case <-proc.exited:
+			case <-time.After(2 * time.Second):
+				// Absolute bound: even a pathological reaper stall cannot
+				// make shutdown unbounded; the background reaper still
+				// collects the zombie.
+			}
 		}
 	}
 	return nil
