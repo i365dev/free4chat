@@ -91,6 +91,7 @@ type Engine struct {
 	mu                sync.Mutex
 	outbound          *webrtc.TrackLocalStaticSample
 	publishOn         bool
+	pubGeneration     uint64 // bumped on every activate/deactivate (grant boundary)
 	encoder           *opus.Encoder
 	pcmWriteCalls     uint64
 	pcmInputBytes     uint64
@@ -107,12 +108,18 @@ type Engine struct {
 	// inline pacing made the HTTP reader stall between bursts, starving the
 	// browser jitter buffer and producing PLC "robot voice" artifacts.
 	writerMu      sync.Mutex
-	queue         chan []byte
+	queue         chan queueItem
 	queueBytes    int
 	carry         []byte
 	writerRunning bool
 	writerStop    chan struct{}
 	writerDone    chan struct{}
+
+	// Safe pacing diagnostics (electric-audio investigation): wall-clock gap
+	// count between paced frames (rebaseline events) and encode failures.
+	// Never RTP values, SDP, or payload content.
+	pacedGapCount uint64
+	encodeErrors  uint64
 }
 
 // framePacer spaces outbound Opus frames one frame-duration apart (ported
@@ -123,6 +130,7 @@ type framePacer struct {
 	now   func() time.Time
 	sleep func(time.Duration)
 	next  time.Time
+	onGap func() // rebaseline observer (safe counters only)
 }
 
 func newFramePacer(now func() time.Time, sleep func(time.Duration)) *framePacer {
@@ -132,9 +140,14 @@ func newFramePacer(now func() time.Time, sleep func(time.Duration)) *framePacer 
 func (p *framePacer) pace() {
 	p.mu.Lock()
 	now := p.now()
-	if p.next.IsZero() || now.Sub(p.next) >= paceResyncAfter {
+	hadNext := !p.next.IsZero()
+	stale := hadNext && now.Sub(p.next) >= paceResyncAfter
+	if !hadNext || stale {
 		p.next = now.Add(frameDuration)
 		p.mu.Unlock()
+		if stale && p.onGap != nil {
+			p.onGap()
+		}
 		return
 	}
 	wait := p.next.Sub(now)
@@ -163,7 +176,7 @@ func NewEngine(events EngineEvents, log func(event string, details map[string]st
 		rtpCounts: make(map[string]uint64),
 		nowFn:     time.Now,
 		sleepFn:   time.Sleep,
-		queue:     make(chan []byte, 128),
+		queue:     make(chan queueItem, 128),
 	}
 }
 
@@ -420,7 +433,13 @@ func (e *Engine) ActivatePublish() error {
 		e.encoder = enc
 	}
 	e.publishOn = true
+	e.pubGeneration++
 	e.pacer = newFramePacer(e.nowFn, e.sleepFn)
+	e.pacer.onGap = func() {
+		e.mu.Lock()
+		e.pacedGapCount++
+		e.mu.Unlock()
+	}
 	e.writerMu.Lock()
 	if !e.writerRunning {
 		stop := make(chan struct{})
@@ -439,8 +458,30 @@ func (e *Engine) ActivatePublish() error {
 func (e *Engine) DeactivatePublish() {
 	e.mu.Lock()
 	e.publishOn = false
+	e.pubGeneration++
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
+}
+
+// queueItem carries one queued PCM chunk or a flush marker, tagged with the
+// publication generation it was written under. A stale generation is
+// discarded by the writer — audio from a revoked grant must never survive
+// reactivation.
+type queueItem struct {
+	gen  uint64
+	data []byte // nil = flush marker
+}
+
+// generationLocked snapshots the current publication generation.
+func (e *Engine) generationLocked() uint64 {
+	return e.pubGeneration
+}
+
+// currentGeneration reads the generation under lock.
+func (e *Engine) currentGeneration() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pubGeneration
 }
 
 // queueBytesSnapshot exposes the soft byte budget for tests.
@@ -468,9 +509,11 @@ func (e *Engine) clearQueueAndCarry() {
 	e.writerMu.Unlock()
 	for {
 		select {
-		case chunk := <-e.queue:
+		case item := <-e.queue:
 			e.writerMu.Lock()
-			e.queueBytes -= len(chunk)
+			if item.data != nil {
+				e.queueBytes -= len(item.data)
+			}
 			e.writerMu.Unlock()
 		default:
 			e.writerMu.Lock()
@@ -503,6 +546,9 @@ func (e *Engine) WritePCM(chunk []byte) error {
 		return nil
 	}
 	copied := append([]byte(nil), chunk...)
+	e.mu.Lock()
+	gen := e.pubGeneration
+	e.mu.Unlock()
 	e.writerMu.Lock()
 	e.queueBytes += len(copied)
 	space := e.queueBytes <= maxQueuePcmBytes
@@ -510,10 +556,18 @@ func (e *Engine) WritePCM(chunk []byte) error {
 	if !space {
 		return errors.New("engine_pcm_queue_full")
 	}
+	stop := func() <-chan struct{} {
+		e.writerMu.Lock()
+		defer e.writerMu.Unlock()
+		return e.writerStop
+	}()
+	if stop == nil {
+		return errPublishNotActive
+	}
 	select {
-	case e.queue <- copied:
+	case e.queue <- queueItem{gen: gen, data: copied}:
 		return nil
-	case <-e.writerStop:
+	case <-stop:
 		return errPublishNotActive
 	}
 }
@@ -527,10 +581,21 @@ func (e *Engine) FlushAudio() error {
 	if !active {
 		return errPublishNotActive
 	}
+	e.mu.Lock()
+	gen := e.pubGeneration
+	e.mu.Unlock()
+	stop := func() <-chan struct{} {
+		e.writerMu.Lock()
+		defer e.writerMu.Unlock()
+		return e.writerStop
+	}()
+	if stop == nil {
+		return errPublishNotActive
+	}
 	select {
-	case e.queue <- nil: // nil = flush marker
+	case e.queue <- queueItem{gen: gen}: // data nil = flush marker
 		return nil
-	case <-e.writerStop:
+	case <-stop:
 		return errPublishNotActive
 	}
 }
@@ -582,8 +647,17 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 		select {
 		case <-stop:
 			return
-		case chunk := <-e.queue:
-			if chunk == nil {
+		case item := <-e.queue:
+			if item.gen != e.currentGeneration() {
+				// Stale grant: discard the tagged chunk/flush entirely.
+				e.writerMu.Lock()
+				if item.data != nil {
+					e.queueBytes -= len(item.data)
+				}
+				e.writerMu.Unlock()
+				continue
+			}
+			if item.data == nil {
 				// Flush marker: pad and emit the partial tail. A concurrent
 				// revocation makes this a discard-only no-op — the loop
 				// continues, never exits.
@@ -592,7 +666,7 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 				}
 				continue
 			}
-			if err := e.writerWriteChunk(chunk, track(), writer()); err != nil {
+			if err := e.writerWriteChunk(item.gen, item.data, track(), writer()); err != nil {
 				// Not-active or a transient encode/write failure: drop the
 				// rest of this chunk and keep serving later grants.
 				_ = err
@@ -606,7 +680,7 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 // budget is decremented for the WHOLE chunk before any frame is emitted, so
 // a mid-chunk revocation (frames dropped, carry cleared by the caller)
 // never leaves the budget inflated.
-func (e *Engine) writerWriteChunk(chunk []byte, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
+func (e *Engine) writerWriteChunk(gen uint64, chunk []byte, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
 	e.writerMu.Lock()
 	e.queueBytes -= len(chunk)
 	data := append(e.carry, chunk...)
@@ -618,11 +692,16 @@ func (e *Engine) writerWriteChunk(chunk []byte, track *webrtc.TrackLocalStaticSa
 
 	for f := 0; f < frames; f++ {
 		e.pacer.pace()
-		if !e.publishActive() {
+		// BOTH the activation flag and the generation must still match:
+		// a revoke+reactivate between paced waits discards the stale burst.
+		if !e.publishActive() || e.currentGeneration() != gen {
 			return errPublishNotActive
 		}
 		frame := data[f*frame24kBytes : (f+1)*frame24kBytes]
 		if err := e.writerEmitFrame(frame, track, enc); err != nil {
+			e.mu.Lock()
+			e.encodeErrors++
+			e.mu.Unlock()
 			return err
 		}
 	}
@@ -681,6 +760,8 @@ func (e *Engine) PublishCounts() map[string]uint64 {
 		"pcm_write_calls":     e.pcmWriteCalls,
 		"pcm_input_bytes":     e.pcmInputBytes,
 		"opus_frames_written": e.opusFramesWritten,
+		"paced_gap_count":     e.pacedGapCount,
+		"encode_errors":       e.encodeErrors,
 	}
 	pc := e.pc
 	e.mu.Unlock()

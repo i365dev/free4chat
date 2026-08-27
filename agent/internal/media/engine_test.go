@@ -489,3 +489,117 @@ func waitForQueueDrain(t *testing.T, engine *Engine) {
 	}
 	t.Fatal("queue never drained")
 }
+
+// TestCancelDeactivateAccountingNoDrift pins budget consistency across
+// repeated cancel/deactivate cycles with mid-pace revocation.
+func TestCancelDeactivateAccountingNoDrift(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	for cycle := 0; cycle < 3; cycle++ {
+		// First frame immediate, second blocks in the paced sleep.
+		_ = engine.WritePCM(make([]byte, 3*960))
+		_ = engine.WritePCM(make([]byte, 960))
+		waitForFrames(t, engine, uint64(1+cycle*1))
+		engine.CancelTurn()
+		engine.DeactivatePublish()
+		if got := engine.queueBytesSnapshot(); got != 0 {
+			t.Fatalf("cycle %d: budget drifted to %d after cancel+deactivate", cycle, got)
+		}
+		close(release)
+		release = nil
+		sleepFn, release = blockingSleepFunc()
+		engine.sleepFn = sleepFn
+		if err := engine.ActivatePublish(); err != nil {
+			t.Fatalf("cycle %d reactivate: %v", cycle, err)
+		}
+	}
+}
+
+// TestFullQueueRejectionKeepsAccountingConsistent pins the
+// engine_pcm_queue_full path: rejected writes must not inflate the budget.
+func TestFullQueueRejectionKeepsAccountingConsistent(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// First chunk: one frame emitted, then the writer blocks in pace; the
+	// REST of the 1 MiB budget fills while the writer is stuck.
+	big := make([]byte, 64*1024)
+	firstErr := engine.WritePCM(big) // 64KB: first frame emitted, rest queued
+	if firstErr != nil {
+		t.Fatalf("first write: %v", firstErr)
+	}
+	waitForFrames(t, engine, 1)
+	for i := 0; i < 20; i++ {
+		_ = engine.WritePCM(big) // fills past the 1 MiB budget
+	}
+	rejected := 0
+	for i := 0; i < 5; i++ {
+		if err := engine.WritePCM(big); err != nil && err.Error() == "engine_pcm_queue_full" {
+			rejected++
+		}
+	}
+	if rejected == 0 {
+		t.Fatal("expected at least one full-queue rejection")
+	}
+	close(release)
+	engine.DeactivatePublish()
+	if got := engine.queueBytesSnapshot(); got != 0 {
+		t.Fatalf("accounting polluted by rejected writes: budget=%d", got)
+	}
+}
+
+// TestStaleAudioNeverSentAfterReactivation pins the grant boundary: PCM
+// queued under an OLD grant must be discarded on deactivate, and only the
+// NEW grant's audio may reach frames after reactivation.
+func TestStaleAudioNeverSentAfterReactivation(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Old grant: one frame goes out, the rest of grant-1 audio is blocked.
+	_ = engine.WritePCM(make([]byte, 6*960))
+	waitForFrames(t, engine, 1)
+	engine.DeactivatePublish()
+	close(release)
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	// The stale grant-1 backlog must be gone; only grant-2 audio flows.
+	_ = engine.WritePCM(make([]byte, 2*960))
+	waitForFrames(t, engine, 3)
+	if got := engine.framesWritten(); got != 3 {
+		t.Fatalf("frames=%d: stale grant audio leaked past reactivation", got)
+	}
+}
+
+// TestEngineCloseBoundedExit pins the bounded-shutdown contract: Close must
+// return within its budget even while the writer is blocked mid-pace.
+func TestEngineCloseBoundedExit(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, _ := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 3*960))
+	waitForFrames(t, engine, 1) // writer now blocked in the paced sleep
+
+	started := time.Now()
+	engine.Close()
+	if elapsed := time.Since(started); elapsed > 4*time.Second {
+		t.Fatalf("Close took %s with a blocked writer; must stay bounded", elapsed)
+	}
+}

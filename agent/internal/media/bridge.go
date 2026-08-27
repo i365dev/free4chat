@@ -210,6 +210,12 @@ func (b *Bridge) Start(parent context.Context) error {
 	if err != nil {
 		return fail(err)
 	}
+	// Bounded bootstrap stage diagnostics (electric-audio investigation):
+	// presence/attempt/outcome only — never SDP content or IDs.
+	b.log("media_bootstrap_stage", map[string]string{
+		"stage":                  "gathered_offer_present",
+		"gathered_offer_present": "1",
+	})
 	sessionID, err := b.rest.CreateAgentSession()
 	if err != nil {
 		return fail(err)
@@ -217,11 +223,22 @@ func (b *Bridge) Start(parent context.Context) error {
 	b.mu.Lock()
 	b.mySessionID = sessionID
 	b.mu.Unlock()
+	b.log("media_bootstrap_stage", map[string]string{"stage": "session_created"})
 
+	b.log("media_bootstrap_stage", map[string]string{"stage": "establish_attempted"})
 	transport, err := b.rest.EstablishDataChannelTransport(sessionID, *offer, PurposeAgentTransport)
 	if err != nil {
+		b.log("media_bootstrap_stage", map[string]string{
+			"stage":                 "establish_failed",
+			"establish_result_code": bootstrapErrorClass(err),
+		})
 		return fail(err)
 	}
+	b.log("media_bootstrap_stage", map[string]string{
+		"stage":                 "establish_ok",
+		"establish_result_code": "ok",
+		"description_type":      transport.Type,
+	})
 	if transport.Type == "offer" {
 		applied, answer, applyErr := engine.ApplyRemote(transport)
 		if applyErr != nil || applied != "offer" || answer == nil {
@@ -845,6 +862,27 @@ func (b *Bridge) flushEngine() error {
 		return errors.New("bridge_not_running")
 	}
 	return engine.FlushAudio()
+}
+
+// bootstrapErrorClass maps a sanitized bootstrap failure onto a bounded
+// classification (never the response body or SDP).
+func bootstrapErrorClass(err error) string {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "decoding"):
+		return "decoding_error"
+	case strings.Contains(message, "timeout"):
+		return "timeout"
+	case strings.Contains(message, "not_authorized") ||
+		strings.Contains(message, "not authorized"):
+		return "not_authorized"
+	case strings.Contains(message, "rate_limited"):
+		return "rate_limited"
+	case strings.Contains(message, "network"):
+		return "network_error"
+	default:
+		return "other"
+	}
 }
 
 func isHumanMediaDiscoveryDenied(err error) bool {
