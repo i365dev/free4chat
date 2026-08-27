@@ -117,12 +117,11 @@ func (s *MediaSpike) Create() error {
 		return err
 	}
 	s.pc = pc
-	// #83: ONE shared agent session serves Meeting Notes ingress AND
-	// voiceReply publication, so the single outbound Opus track is armed
-	// before any offer. No RTP flows until an authorised activation.
-	if err := s.ArmPublish(); err != nil {
-		return err
-	}
+	// Meeting Notes bootstrap is receive-only: the initial offer must NOT
+	// carry an outbound voice m-line, so Create() leaves the publish track
+	// unarmed. ArmPublish() is called explicitly (arm-publish op) right
+	// before the voice offer (#83 shared session); no RTP flows until an
+	// authorised activation.
 
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
