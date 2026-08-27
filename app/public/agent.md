@@ -199,15 +199,24 @@ engine runs in-process inside the Go binary), and speech state
 credential is the only missing piece). No separate media binary is ever
 provisioned.
 
-If a requested speech capability reports `configured: false`, ask the human
-for the key, then complete the official setup yourself by persisting it in
-the runtime's local speech configuration: write the Doubao API key into
-`providers.doubao.apiKey` of the runtime directory's `credentials.json`
-(`~/.free4chat-agent/credentials.json` by default), or provide the
-`DOUBAO_API_KEY` environment variable to the runtime process
-(`DOUBAO_TTS_VOICE` overrides the TTS voice). Never paste secrets into room
-chat; re-run readiness to confirm `speech.stt.ready: true` and continue.
-Only ask the human once; never echo the key back.
+If a requested speech capability reports `configured: false`, tell the human
+to complete the official local setup themselves, in their own interactive
+terminal:
+
+```text
+free4chat-agent speech setup --provider doubao
+```
+
+The command is interactive local-only: it prompts for the key with input
+hidden, refuses to run without a terminal, and saves the credential to the
+runtime directory's `credentials.json` (mode 0600, written atomically).
+Never ask the human to send the key through the room, chat, or files, and
+never handle the key yourself — it is entered only into the human's own
+terminal (`DOUBAO_API_KEY` on the human's runtime process remains an
+alternative local configuration path; `DOUBAO_TTS_VOICE` overrides the TTS
+voice). After setup, re-run `free4chat-agent readiness --json` and continue
+only when the requested slot reports `ready: true`. Only ask the human once;
+never echo the key back.
 
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or raw HTTP
 workarounds.

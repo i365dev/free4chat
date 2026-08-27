@@ -9,10 +9,16 @@ recordings.
    `ready` reports whether the capability is usable.
 2. Never ask the human to paste a speech-provider credential into the room,
    model conversation, or an Agent-visible file.
-3. If setup is needed, tell the human to configure the key locally: write the
-   Doubao API key into `providers.doubao.apiKey` of the runtime directory's
-   `credentials.json` (`~/.free4chat-agent/credentials.json` by default), or
-   provide the `DOUBAO_API_KEY` environment variable to the runtime process.
+3. If setup is needed, tell the human to run the official local command
+   themselves, in their own interactive terminal:
+
+   `free4chat-agent speech setup --provider doubao`
+
+   It prompts with hidden input, fails closed without a terminal, never
+   prints the key or accepts it from flags or files, and saves the
+   credential to the runtime directory's `credentials.json` (mode 0600).
+   The human may alternatively provide `DOUBAO_API_KEY` on their own
+   runtime process.
 4. After setup, run `free4chat-agent readiness --json` again. Claim readiness
    only when the requested slot reports `ready: true`.
 5. Meeting Notes room consent and authorization are separate from provider
@@ -30,9 +36,11 @@ Doubao Speech 2.0 is supported by the local Runtime for both capabilities:
   (`zh_female_shuangkuaisisi_uranus_bigtts` by default) and can be
   overridden locally with `DOUBAO_TTS_VOICE`.
 
-One console credential powers both. The required environment override is
-`DOUBAO_API_KEY`, and the provider uses the current X-API-Key protocol rather
-than legacy AppId/AccessToken credentials. STT and TTS selections live in
+One console credential powers both: configure it with
+`free4chat-agent speech setup --provider doubao` (interactive, local-only) or
+the `DOUBAO_API_KEY` environment variable on the runtime process. The
+provider uses the current X-API-Key protocol rather than legacy
+AppId/AccessToken credentials. STT and TTS selections live in
 separate config slots (`speech.stt.provider` / `speech.tts.provider` in the
 runtime directory's `config.json`; override with `FREE4CHAT_STT_PROVIDER` /
 `FREE4CHAT_TTS_PROVIDER`) and never displace each other.
