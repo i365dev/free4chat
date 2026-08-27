@@ -827,3 +827,220 @@ func waitForTurnClosed(t *testing.T, engine *Engine) {
 	}
 	t.Fatal("turn window never closed after flush")
 }
+
+// TestBlockedProducerHoldsNoReservationUntilAccepted pins the reviewer's
+// reservation rule under blocking backpressure: a producer waiting at the
+// byte cap holds ZERO reservation (budget unchanged while blocked); the
+// reservation is taken exactly once at acceptance. No DeactivatePublish
+// before the assertions.
+func TestBlockedProducerHoldsNoReservationUntilAccepted(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 64*1024))
+	waitForFrames(t, engine, 1)
+	for i := 0; i < 16; i++ {
+		_ = engine.WritePCM(make([]byte, 64*1024))
+	}
+	before := engine.queueBytesSnapshot()
+
+	// A producer attempting to cross the cap must block WITHOUT reserving.
+	accepted := make(chan struct{})
+	go func() {
+		if err := engine.WritePCM(make([]byte, 64*1024)); err != nil {
+			t.Errorf("accepted write errored: %v", err)
+			close(accepted)
+			return
+		}
+		close(accepted)
+	}()
+	select {
+	case <-accepted:
+		t.Fatal("producer must block at the cap")
+	case <-time.After(150 * time.Millisecond):
+	}
+	if got := engine.queueBytesSnapshot(); got != before {
+		t.Fatalf("blocked producer changed the budget: before=%d after=%d", before, got)
+	}
+
+	close(release) // writer resumes; the producer gets accepted exactly once
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer never accepted")
+	}
+	// Invariant: the budget equals the outstanding accepted reservations
+	// (sum of the ring) at any instant, including right after acceptance.
+	var sum int
+	for _, item := range engine.queueRingSnapshot() {
+		if item.data != nil {
+			sum += len(item.data)
+		}
+	}
+	if got := engine.queueBytesSnapshot(); got != sum {
+		t.Fatalf("budget %d != outstanding accepted reservations %d", got, sum)
+	}
+}
+
+// TestWriterConsumeVsClearNeverNegativeWithoutDeactivate races a producer
+// and a clearer (CancelTurn) against the writer and asserts the budget
+// never goes negative — no DeactivatePublish anywhere — then confirms a
+// natural full drain reaches exactly zero.
+func TestWriterConsumeVsClearNeverNegativeWithoutDeactivate(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	engine.sleepFn = func(d time.Duration) { time.Sleep(150 * time.Microsecond) }
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = engine.WritePCM(make([]byte, 1920))
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 150; i++ {
+			engine.CancelTurn()
+			time.Sleep(150 * time.Microsecond)
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if got := engine.queueBytesSnapshot(); got < 0 {
+				t.Errorf("budget went negative: %d", got)
+				return
+			}
+		}
+	}()
+	time.Sleep(350 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// Natural drain (no deactivate): wait for the writer to consume
+	// everything; the budget must reach exactly zero.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = engine.FlushAudio()
+		if engine.queueBytesSnapshot() == 0 && len(engine.queueRingSnapshot()) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := engine.queueBytesSnapshot(); got != 0 {
+		t.Fatalf("natural drain budget = %d, want 0", got)
+	}
+}
+
+// TestClearVsEnqueueAccountingEqualsOutstandingReservations races clear
+// against enqueues with the writer blocked, then quiesces the producers and
+// asserts the budget equals exactly the sum of the ring's accepted items.
+// No DeactivatePublish before the assertion.
+func TestClearVsEnqueueAccountingEqualsOutstandingReservations(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 64*1024))
+	waitForFrames(t, engine, 1)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			_ = engine.WritePCM(make([]byte, 8*1024))
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 30; i++ {
+			engine.CancelTurn()
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	var sum int
+	for _, item := range engine.queueRingSnapshot() {
+		if item.data != nil {
+			sum += len(item.data)
+		}
+	}
+	if got := engine.queueBytesSnapshot(); got != sum {
+		t.Fatalf("budget %d != outstanding accepted reservations %d", got, sum)
+	}
+	close(release)
+}
+
+// TestStopDuringBlockedEnqueueRollsBackReservation pins the stop-preemption
+// rule: a producer blocked at the cap when the engine closes must return
+// errPublishNotActive holding ZERO reservation — the budget stays equal to
+// the outstanding accepted items only.
+func TestStopDuringBlockedEnqueueRollsBackReservation(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, _ := blockingSleepFunc() // never released
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 64*1024))
+	waitForFrames(t, engine, 1)
+	for i := 0; i < 16; i++ {
+		_ = engine.WritePCM(make([]byte, 64*1024))
+	}
+	before := engine.queueBytesSnapshot()
+
+	outcome := make(chan error, 1)
+	go func() {
+		outcome <- engine.WritePCM(make([]byte, 64*1024))
+	}()
+	select {
+	case <-outcome:
+		t.Fatal("producer must block at the cap")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	engine.Close() // stops the writer: the blocked producer must unblock
+	select {
+	case err := <-outcome:
+		if err == nil || err != errPublishNotActive {
+			t.Fatalf("stopped producer must get errPublishNotActive, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer never unblocked on engine close")
+	}
+	// No reservation may have leaked from the aborted producer.
+	if got := engine.queueBytesSnapshot(); got != before {
+		t.Fatalf("stop-preempted enqueue leaked a reservation: before=%d after=%d", before, got)
+	}
+}
