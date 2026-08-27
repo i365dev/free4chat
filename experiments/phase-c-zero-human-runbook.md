@@ -23,8 +23,9 @@ Hard isolation rules:
 ## Preconditions
 
 1. This PR is deployed to production (`www.free4.chat`).
-2. Both machines can run `npx -y @i365dev/free4chat-agent@<deployed-version> …`
-   (or already have the matching `free4chat-agent` CLI).
+2. Both machines run the matching released `free4chat-agent` version (install
+   via the official installer or GitHub Releases binary; the CLI is the same
+   either way).
 3. Machine B's Harness has a working local browser tool and an authenticated
    browser profile it may use at its own operator's discretion.
 4. Machine A has a real local task that needs a production UI check.

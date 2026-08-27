@@ -4,9 +4,10 @@
 
 The Node/TypeScript Agent Runtime is the final proven pre-Go implementation.
 It is frozen as a behavioral and architectural reference, not an alternative
-supported runtime. It receives no ongoing feature maintenance. The future
-canonical runtime will be the self-contained native Go implementation from
-issue #128.
+supported runtime. It receives no ongoing feature maintenance. The canonical
+runtime is now the self-contained native Go implementation from issue #128
+(`agent/`); the frozen Node baseline remains the behavioral oracle for the
+rewrite.
 
 - Frozen tag: `node-agent-runtime-e2e-2026-08-27`
 - Archive branch: `archive/node-agent-runtime`

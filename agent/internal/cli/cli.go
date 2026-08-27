@@ -39,6 +39,7 @@ func usageText() string {
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
+  free4chat-agent speech setup --provider doubao
   free4chat-agent status
   free4chat-agent leave <instance-id>
   free4chat-agent stop`
@@ -328,6 +329,18 @@ func run(args []string) error {
 
 	case "readiness":
 		return runReadiness(rest)
+
+	case "speech":
+		if len(rest) == 0 {
+			return errUsage()
+		}
+		sub, subRest := rest[0], rest[1:]
+		switch sub {
+		case "setup":
+			return runSpeechSetup(subRest)
+		default:
+			return errUsage()
+		}
 
 	case "doctor":
 		report := doctor.Collect()

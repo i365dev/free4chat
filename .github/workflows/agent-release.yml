@@ -1,0 +1,161 @@
+name: Agent Release
+
+# Native distribution for the Go Agent Runtime. The same four-target build
+# matrix runs on every pull request (build + smoke + workflow artifacts) and
+# on pushed agent-v<version> tags (build + smoke + SHA256SUMS + GitHub
+# Release). Pull-request runs never create tags, releases, or publications.
+on:
+  pull_request:
+    paths:
+      - "agent/**"
+      - ".github/workflows/agent-release.yml"
+  push:
+    tags:
+      - "agent-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: darwin-arm64
+            runner: macos-14
+            target: darwin/arm64
+            artifact: free4chat-agent-darwin-arm64
+          # darwin-amd64 builds on the arm64 macos-14 runner: GOARCH is
+          # explicit and the smoke step executes the amd64 binary via the
+          # Rosetta 2 runtime present on Apple-silicon GitHub runners.
+          - label: darwin-amd64
+            runner: macos-14
+            target: darwin/amd64
+            artifact: free4chat-agent-darwin-amd64
+          - label: linux-amd64
+            runner: ubuntu-22.04
+            target: linux/amd64
+            artifact: free4chat-agent-linux-amd64
+          - label: linux-arm64
+            runner: ubuntu-22.04-arm
+            target: linux/arm64
+            artifact: free4chat-agent-linux-arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_ONLY: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+
+      - name: Verify tag matches source version (tag pushes)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#agent-v}"
+          source_version="$(sed -n 's/^var Version = "\([^"]*\)"$/\1/p' agent/internal/doctor/doctor.go)"
+          if [ -z "$source_version" ] || [ "$tag_version" != "$source_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match source version $source_version" >&2
+            exit 1
+          fi
+
+      - name: Build native binary
+        working-directory: agent
+        env:
+          RELEASE_OUT: ${{ runner.temp }}/agent-dist
+        run: |
+          version_arg=""
+          if [ "${{ github.event_name }}" = "push" ]; then
+            version_arg="${GITHUB_REF_NAME#agent-v}"
+          fi
+          scripts/release.sh "$version_arg"
+
+      - name: "Smoke: doctor / readiness"
+        env:
+          RELEASE_OUT: ${{ runner.temp }}/agent-dist
+        run: |
+          set -euo pipefail
+          binary="${{ runner.temp }}/agent-dist/${{ matrix.artifact }}"
+          test -s "$binary" || { echo "binary missing or empty: $binary" >&2; exit 1; }
+          doctor_json="$("$binary" doctor --json)"
+          readiness_json="$("$binary" readiness --json)"
+          echo "$doctor_json" | grep -q '"runtime": "go"' || {
+            echo "doctor does not report runtime=go: $doctor_json" >&2; exit 1; }
+          echo "$readiness_json" | grep -q '"runtime": "go"' || {
+            echo "readiness does not report runtime=go: $readiness_json" >&2; exit 1; }
+          echo "smoke OK: ${{ matrix.artifact }}"
+
+      - name: "Smoke: minimal environment without Node/npm"
+        env:
+          RELEASE_OUT: ${{ runner.temp }}/agent-dist
+        run: |
+          set -euo pipefail
+          binary="${{ runner.temp }}/agent-dist/${{ matrix.artifact }}"
+          home_dir="$(mktemp -d)"
+          env -i HOME="$home_dir" PATH=/usr/bin:/bin "$binary" doctor --json |
+            grep -q '"runtime": "go"' || {
+              echo "minimal-environment doctor smoke failed" >&2; exit 1; }
+          echo "minimal-env smoke OK: ${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/agent-dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/agent-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Assemble artifacts and SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          for name in \
+            free4chat-agent-darwin-arm64 \
+            free4chat-agent-darwin-amd64 \
+            free4chat-agent-linux-arm64 \
+            free4chat-agent-linux-amd64; do
+            test -s "$name/$name" || {
+              echo "expected artifact missing or empty: $name" >&2; exit 1; }
+            mv "$name/$name" "./$name"
+            rmdir "$name"
+          done
+          sha256sum \
+            free4chat-agent-darwin-arm64 \
+            free4chat-agent-darwin-amd64 \
+            free4chat-agent-linux-arm64 \
+            free4chat-agent-linux-amd64 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          ls -la
+
+      - name: Verify release binaries report the tag version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#agent-v}"
+          ./release-artifacts/free4chat-agent-linux-amd64 doctor --json |
+            grep -q "\"version\": \"$version\"" || {
+              echo "binary does not report version $version" >&2; exit 1; }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Free4Chat Agent ${{ github.ref_name }}"
+          files: |
+            release-artifacts/free4chat-agent-darwin-arm64
+            release-artifacts/free4chat-agent-darwin-amd64
+            release-artifacts/free4chat-agent-linux-arm64
+            release-artifacts/free4chat-agent-linux-amd64
+            release-artifacts/SHA256SUMS
+          fail_on_unmatched_files: true

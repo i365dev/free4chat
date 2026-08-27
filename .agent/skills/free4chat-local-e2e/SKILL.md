@@ -31,7 +31,8 @@ Three hard rules (each one cost a debugging cycle):
    `lsof -iTCP:<port> -sTCP:LISTEN` is empty.
 3. **The daemon process freezes env at first spawn.** After changing
    `FREE4CHAT_MCP_URL` / `FREE4CHAT_STT_PROVIDER` / `DOUBAO_API_KEY`, kill the
-   `dist/cli.js daemon` process and join again; the old env keeps otherwise.
+   `free4chat-agent daemon` process (Go resident daemon under `agent/`) and
+   join again; the old env keeps otherwise.
 
 ## Turnstile switches (local bypass)
 

@@ -1,34 +1,38 @@
 ---
 name: free4chat-agent-media
-description: free4chat Agent media plane (Pion sidecar) architecture quick reference and staged debugging discipline — multi-MID attribution, stdio protocol, signaling direction self-inspection, lazy OnTrack, daemon/env traps. Use when debugging Meeting Notes audio, image/text attachments, unresponsive agents, or non-flowing RTP.
+description: free4chat Agent media plane (Go runtime, in-process Pion) architecture quick reference and staged debugging discipline — multi-MID attribution, signaling direction self-inspection, lazy OnTrack, daemon/env traps. Use when debugging Meeting Notes audio, Voice Reply, image/text attachments, unresponsive agents, or non-flowing RTP.
 ---
 
-# free4Chat Agent media plane quick reference (#100 Phase 2 proven shape)
+# free4Chat Agent media plane quick reference (Go runtime, in-process Pion)
 
-Deep docs: `experiments/pion-cloudflare/ARCHITECTURE.md`; normative: issue
-#100; debugging methodology: issue #101. This skill is the 60-second
-pre-work refresher plus the high-frequency trap list.
+Canonical runtime: `agent/` (self-contained Go binary). Media:
+`agent/internal/media/` — `media.Controller` + `media.Bridge` with Pion
+compiled into the same executable. There is no child process, no sidecar
+engine bridge, no separately provisioned engine binary.
 
 ## Architecture in one diagram
 
 ```
-Human browsers ──WebRTC──> Cloudflare SFU <──Pion(Go child)── Node agent-runtime
-                                                          │ stdio JSON lines
-                                    MeetingNotesController(grant) → per-MID Opus frames
-                                    → Opus→PCM → Doubao STT → local transcript
-                                    → Hermes Harness(@tag wakeup, with notes)
+Human browsers ──WebRTC──> Cloudflare SFU <──in-process Pion── free4chat-agent (Go)
+                                                                 │ resident daemon
+                                  media.Controller (meetingNotes grant)
+                                  → per-MID Opus frames → Doubao STT → transcript
+                                  → Voice Reply: TTS PCM → Opus → publish
 ```
 
-- **Node owns all communication**: MCP join/heartbeat/grant polling, every
-  `/api/sfu/*` call, credentials. Go only exchanges SDP strings and RTP
-  stats — zero HTTP, zero secrets (issue #100 §14 boundary).
-- Engine selection: `FREE4CHAT_MEDIA_ENGINE=pion` + `FREE4CHAT_PION_BIN=…`;
-  default stays werift.
+- **The Go runtime owns all communication**: MCP join/heartbeat/grant polling,
+  every `/api/sfu/*` call, and credentials. Pion is in the same binary.
+- **ONE shared media session** serves both Meeting Notes (Human audio ingress)
+  and Voice Reply (Agent audio egress); bootstrap is receive-only and the
+  outbound track is armed only at voice-grant activation.
+- The meetingNotes grant is room state owned by `RoomSession`: every Agent
+  media operation re-checks the current grant, and Stop is a server-side
+  track close (`do/realtimeMedia.ts`), never a UI toggle.
 - Text attachments: `read_attachment` returns a JSON envelope
   `{attachment,data,text}` for text/* files; the runtime inlines them as
-  `event.textFile` (32K char cap). Images ride MCP ImageContent.
+  `event.textFile`. Images ride MCP ImageContent.
 
-## Staged verification discipline (#101 — follow on every investigation)
+## Staged verification discipline (follow on every investigation)
 
 ```
 A PC+server-events DC → B offer+full ICE gather → C authorized session creation
@@ -42,15 +46,12 @@ A PC+server-events DC → B offer+full ICE gather → C authorized session creat
 - **Pion OnTrack is lazy**: it fires only when SRTP packets arrive. Fully
   successful signaling with nobody speaking = no OnTrack, not a bug.
 - **pc.OnTrack handler must be registered at PC creation** (Pion semantics are
-  assignment-based; late registration loses events — this caused "ontrack
-  never fires + bridge re-subscribes every 10s" in a real session).
+  assignment-based; late registration loses events).
 
-## Signaling direction: always branch on the actual type (#101 §4)
+## Signaling direction: always branch on the actual type
 
 - Production `agent-session` uses the native initial-offer contract: the
   request carries `sessionDescription{offer}` and the response is the answer.
-- cf-sfu HEAD variant: blank session + `datachannels/establish` (offer may be
-  attached, or the server offers first). Support both adaptively.
 - `tracks/new` always returns a **server OFFER** + mid ⇒ setRemote(offer),
   assert have-remote-offer, createAnswer, setLocal, PUT renegotiate.
   `requiresImmediateRenegotiation` is telemetry only, never a substitute for
@@ -60,31 +61,32 @@ A PC+server-events DC → B offer+full ICE gather → C authorized session creat
 
 - Each human publishes an independent track; the SFU forwards tracks
   separately and Pion keeps one receiver per MID ⇒ simultaneous speech does
-  not cross-contaminate (verified live). Bind by exact equality between the
-  tracks/new mid and transceiver.mid — never by callback order.
-- Degradation happens only when one microphone picks up two voices
-  (acoustics, not architecture).
+  not cross-contaminate. Bind by exact equality between the tracks/new mid
+  and transceiver.mid — never by callback order.
 
 ## Stop semantics
 
-Stop makes the server immediately close the agent's subscribed mids (both
-streams EOF'd simultaneously in a verified run) ⇒ transcript freezes at once.
-Never assume client-side soft-stop.
+Stop makes the server immediately close the agent's subscribed mids ⇒
+transcript freezes at once. Never assume client-side soft-stop.
 
 ## High-frequency environment traps
 
 | Symptom | Root cause |
 | --- | --- |
-| Daemon ignores changed env | The daemon process persists env from first spawn → kill it, join again |
-| Every MCP call -32022 | Hit the modern-only deployed stack: `_meta` envelope + `Mcp-Method/Mcp-Name` headers required, no initialize handshake (use ModernMcpFree4ChatClient) |
+| Daemon ignores changed env | The resident daemon keeps the environment from first spawn → restart it, join again |
 | @tag gets no reply | addressed=false: targets are injected by the browser UI; curl/agent-sent text cannot address anyone (by design) |
-| Image unreadable, model claims "500" | Check attachment-errors log first; models embellish unavailable-image notes with plausible status codes |
+| Image unreadable, model claims "500" | Check the runtime's attachment-error log first; models embellish unavailable-image notes with plausible status codes |
 | Browser cannot join under wrangler dev | Origin allow-list only has localhost:3000; Turnstile via build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1` |
 
-## Test/build commands (two systems — do not mix)
+## Test/build commands (canonical Go runtime)
 
 ```bash
-cd agent-runtime && npm test          # tsx --test (node:test style), authoritative gate
-cd app         && npm run type-check && npm test   # vitest
-go vet ./... && go test ./...        # experiments/pion-cloudflare
+cd agent && go test ./... -count=1 -timeout 300s   # Go runtime tests, authoritative gate
+cd app   && npm run type-check && npm test          # Worker/DO vitest
 ```
+
+Historical reference only: `experiments/pion-cloudflare/` (frozen
+implementation reference) and the Node runtime tag
+`node-agent-runtime-e2e-2026-08-27` / branch `archive/node-agent-runtime`
+document the pre-Go sidecar architecture; they are not a supported runtime
+path.
