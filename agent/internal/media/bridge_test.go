@@ -497,21 +497,40 @@ func TestBridgeVoicePublishFlowsAndPrimingDrainsExactlyOnce(t *testing.T) {
 		t.Fatalf("write3: %v", err)
 	}
 	writes = engine.snapshotWrites()
-	if len(writes) != 4 {
-		t.Fatalf("writes after activation = %d, want 4 (priming + 3 chunks)", len(writes))
+	if len(writes) != 29 {
+		t.Fatalf("writes after activation = %d, want 29 (priming + 25-frame pad + 3 chunks)", len(writes))
 	}
-	if string(writes[1]) != "real-pcm-chunk-1" || string(writes[2]) != "real-pcm-chunk-2" ||
-		string(writes[3]) != "real-pcm-chunk-3" {
-		t.Fatalf("pending drain order broken: %q %q %q", writes[1], writes[2], writes[3])
+	// 1 priming silence, then the 500ms post-active pad (all silence), then
+	// the real chunks in order.
+	if len(writes[0]) != voicePrimingSilenceBytes {
+		t.Fatalf("first write must be the priming silence frame")
+	}
+	for _, pad := range writes[1:26] {
+		if !allZero(pad) {
+			t.Fatal("post-active pad must be synthetic silence, never user audio")
+		}
+	}
+	if string(writes[26]) != "real-pcm-chunk-1" || string(writes[27]) != "real-pcm-chunk-2" ||
+		string(writes[28]) != "real-pcm-chunk-3" {
+		t.Fatalf("pending drain order broken: %q %q %q", writes[26], writes[27], writes[28])
 	}
 	// Exactly once: no duplicates anywhere.
 	seen := map[string]int{}
-	for _, chunk := range writes[1:] {
+	for _, chunk := range writes[26:] {
 		seen[string(chunk)]++
 	}
 	if seen["real-pcm-chunk-1"] != 1 || seen["real-pcm-chunk-2"] != 1 {
 		t.Fatalf("pending PCM must drain exactly once: %v", seen)
 	}
+}
+
+func allZero(data []byte) bool {
+	for _, b := range data {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestBridgeRevocationDropsPendingPcm(t *testing.T) {

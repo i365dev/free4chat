@@ -127,6 +127,7 @@ type Bridge struct {
 	// voice publication state
 	voiceAnnounced       bool
 	voicePrimingSent     bool
+	voicePadSent         bool
 	voiceConfirmFlight   chan struct{}
 	pendingVoicePCM      [][]byte
 	pendingVoicePCMBytes int
@@ -570,6 +571,7 @@ func (b *Bridge) ActivateVoicePublish() error {
 	engine := b.engine
 	b.voiceAnnounced = false
 	b.voicePrimingSent = false
+	b.voicePadSent = false
 	b.pendingVoicePCM = nil
 	b.pendingVoicePCMBytes = 0
 	b.mu.Unlock()
@@ -629,6 +631,7 @@ func (b *Bridge) DeactivateVoicePublish() {
 	engine := b.engine
 	b.voiceAnnounced = false
 	b.voicePrimingSent = false
+	b.voicePadSent = false
 	b.pendingVoicePCM = nil
 	b.pendingVoicePCMBytes = 0
 	b.mu.Unlock()
@@ -743,6 +746,31 @@ func (b *Bridge) primeVoicePublication() error {
 	return b.writeEnginePcm(make([]byte, voicePrimingSilenceBytes))
 }
 
+// padAfterAnnounce writes a bounded synthetic-silence pad (25 frames =
+// 500 ms) once per publication, AFTER Cloudflare confirms the publisher
+// active. The browser still needs trackPublished -> subscribe ->
+// renegotiate (~1 s) before the SFU routes audio to it; frames sent inside
+// that window are dropped. Padding absorbs the drop window so the first
+// real words survive — production E2E showed the head of the first reply
+// (1-3 words) being lost otherwise, independent of how long the human
+// waited before speaking. The pad is silence, never user speech.
+func (b *Bridge) padAfterAnnounce() {
+	b.mu.Lock()
+	if b.options.Publish == nil || !b.voiceAnnounced || b.voicePadSent {
+		b.mu.Unlock()
+		return
+	}
+	b.voicePadSent = true
+	b.mu.Unlock()
+	const padFrames = 25
+	silence := make([]byte, voicePrimingSilenceBytes)
+	for i := 0; i < padFrames; i++ {
+		if err := b.writeEnginePcm(silence); err != nil {
+			return
+		}
+	}
+}
+
 func (b *Bridge) confirmVoicePublicationActive() {
 	b.mu.Lock()
 	if b.options.Publish == nil || b.voiceAnnounced || b.mySessionID == "" || b.rest == nil {
@@ -773,10 +801,17 @@ func (b *Bridge) confirmVoicePublicationActive() {
 			b.mu.Unlock()
 			return
 		}
+		firstAnnounce := false
 		if active {
 			b.mu.Lock()
+			if !b.voiceAnnounced {
+				firstAnnounce = true
+			}
 			b.voiceAnnounced = true
 			b.mu.Unlock()
+		}
+		if firstAnnounce {
+			b.padAfterAnnounce()
 		}
 		b.log("voice_publish_cloudflare_check", map[string]string{
 			"publisher_session_lookup_ok": bool01(diagnostic.PublisherSessionLookupOK),

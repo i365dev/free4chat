@@ -238,11 +238,16 @@ func (c *Controller) poll() {
 		return
 	}
 
-	// MN epoch change between polls => the server already closed the old
-	// grant's subscriptions: rebuild the whole shared session.
+	// Epoch changes between polls => the server already closed the old
+	// grant's subscriptions/publication: rebuild the whole shared session.
+	// (Production E2E proved that a Voice Stop->Start re-grant does NOT
+	// restore audible delivery when re-publishing on the same session —
+	// the server-side track state was revoked, so a fresh session is the
+	// only reliable path, mirroring the MN epoch precedent.)
 	c.mu.Lock()
 	mnStale := authorized && c.state != "idle" && !int64Equal(c.grantEpoch, epoch)
-	if mnStale {
+	vrStale := vrAuthorized && c.state != "idle" && !int64Equal(c.voiceEpoch, vrEpoch)
+	if mnStale || vrStale {
 		c.mu.Unlock()
 		c.teardownBridge()
 		c.mu.Lock()

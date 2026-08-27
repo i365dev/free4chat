@@ -9,7 +9,6 @@ package media
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -108,7 +107,9 @@ type Engine struct {
 	// inline pacing made the HTTP reader stall between bursts, starving the
 	// browser jitter buffer and producing PLC "robot voice" artifacts.
 	writerMu      sync.Mutex
-	queue         chan queueItem
+	queueRing     []queueItem
+	writerNotify  chan struct{} // wakeup for the writer (item available)
+	writerSpace   chan struct{} // wakeup for producers (space freed)
 	queueBytes    int
 	carry         []byte
 	writerRunning bool
@@ -120,6 +121,9 @@ type Engine struct {
 	// Never RTP values, SDP, or payload content.
 	pacedGapCount uint64
 	encodeErrors  uint64
+	silenceFills  uint64
+	fillRun       uint64 // consecutive fills (bounded)
+	turnOpen      bool
 }
 
 // framePacer spaces outbound Opus frames one frame-duration apart (ported
@@ -135,6 +139,14 @@ type framePacer struct {
 
 func newFramePacer(now func() time.Time, sleep func(time.Duration)) *framePacer {
 	return &framePacer{now: now, sleep: sleep}
+}
+
+// scheduled reports whether the pacer has an active frame schedule
+// (mid-stream), used to detect gaps that need silence filling.
+func (p *framePacer) scheduled() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.next.IsZero()
 }
 
 func (p *framePacer) pace() {
@@ -170,13 +182,14 @@ func NewEngine(events EngineEvents, log func(event string, details map[string]st
 		log = func(string, map[string]string) {}
 	}
 	return &Engine{
-		ev:        events,
-		log:       log,
-		dcOpen:    make(chan struct{}),
-		rtpCounts: make(map[string]uint64),
-		nowFn:     time.Now,
-		sleepFn:   time.Sleep,
-		queue:     make(chan queueItem, 128),
+		ev:           events,
+		log:          log,
+		dcOpen:       make(chan struct{}),
+		rtpCounts:    make(map[string]uint64),
+		nowFn:        time.Now,
+		sleepFn:      time.Sleep,
+		writerNotify: make(chan struct{}, 1),
+		writerSpace:  make(chan struct{}, 1),
 	}
 }
 
@@ -459,6 +472,7 @@ func (e *Engine) DeactivatePublish() {
 	e.mu.Lock()
 	e.publishOn = false
 	e.pubGeneration++
+	e.turnOpen = false
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
 }
@@ -472,6 +486,62 @@ type queueItem struct {
 	data []byte // nil = flush marker
 }
 
+// enqueueItem appends one item under the single queue lock, with BOUNDED
+// BLOCKING backpressure: when the ring is at its byte cap, the producer
+// waits for the paced writer to free space (real-time throttling) instead
+// of rejecting — rejecting truncated long replies mid-sentence in
+// production. The byte budget is mutated in the SAME critical section as
+// the ring itself, so enqueue / consume / clear can never drift the
+// accounting.
+func (e *Engine) enqueueItem(item queueItem) error {
+	for {
+		space, stop := func() (chan struct{}, chan struct{}) {
+			e.writerMu.Lock()
+			defer e.writerMu.Unlock()
+			if item.data == nil || e.queueBytes+len(item.data) <= maxQueuePcmBytes {
+				if item.data != nil {
+					e.queueBytes += len(item.data)
+				}
+				e.queueRing = append(e.queueRing, item)
+				select {
+				case e.writerNotify <- struct{}{}:
+				default:
+				}
+				return nil, nil
+			}
+			return e.writerSpace, e.writerStop
+		}()
+		if space == nil {
+			return nil // enqueued
+		}
+		select {
+		case <-space:
+			continue
+		case <-stop:
+			return errPublishNotActive
+		}
+	}
+}
+
+// popItem removes the front item, decrementing its reservation exactly once.
+func (e *Engine) popItem() (queueItem, bool) {
+	e.writerMu.Lock()
+	defer e.writerMu.Unlock()
+	if len(e.queueRing) == 0 {
+		return queueItem{}, false
+	}
+	item := e.queueRing[0]
+	e.queueRing = e.queueRing[1:]
+	if item.data != nil {
+		e.queueBytes -= len(item.data)
+	}
+	select {
+	case e.writerSpace <- struct{}{}:
+	default:
+	}
+	return item, true
+}
+
 // generationLocked snapshots the current publication generation.
 func (e *Engine) generationLocked() uint64 {
 	return e.pubGeneration
@@ -482,6 +552,13 @@ func (e *Engine) currentGeneration() uint64 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.pubGeneration
+}
+
+// queueRingSnapshot exposes the pending item count for tests.
+func (e *Engine) queueRingSnapshot() []queueItem {
+	e.writerMu.Lock()
+	defer e.writerMu.Unlock()
+	return append([]queueItem(nil), e.queueRing...)
 }
 
 // queueBytesSnapshot exposes the soft byte budget for tests.
@@ -504,23 +581,21 @@ func (e *Engine) CancelTurn() {
 // is empty the budget resets to zero (a concurrent enqueue after the drain
 // re-increments it before its channel send, so the pair stays coherent).
 func (e *Engine) clearQueueAndCarry() {
+	// Single critical section: the carry, the ring, and the byte budget are
+	// mutated together. queueBytes ends at exactly the sum of the drained
+	// reservations subtracted from the previous total — arithmetically zero.
 	e.writerMu.Lock()
 	e.carry = nil
-	e.writerMu.Unlock()
-	for {
-		select {
-		case item := <-e.queue:
-			e.writerMu.Lock()
-			if item.data != nil {
-				e.queueBytes -= len(item.data)
-			}
-			e.writerMu.Unlock()
-		default:
-			e.writerMu.Lock()
-			e.queueBytes = 0
-			e.writerMu.Unlock()
-			return
+	for _, item := range e.queueRing {
+		if item.data != nil {
+			e.queueBytes -= len(item.data)
 		}
+	}
+	e.queueRing = nil
+	e.writerMu.Unlock()
+	select {
+	case e.writerSpace <- struct{}{}:
+	default:
 	}
 }
 
@@ -548,28 +623,15 @@ func (e *Engine) WritePCM(chunk []byte) error {
 	copied := append([]byte(nil), chunk...)
 	e.mu.Lock()
 	gen := e.pubGeneration
+	e.turnOpen = true
 	e.mu.Unlock()
 	e.writerMu.Lock()
-	e.queueBytes += len(copied)
-	space := e.queueBytes <= maxQueuePcmBytes
+	hasStop := e.writerStop != nil
 	e.writerMu.Unlock()
-	if !space {
-		return errors.New("engine_pcm_queue_full")
-	}
-	stop := func() <-chan struct{} {
-		e.writerMu.Lock()
-		defer e.writerMu.Unlock()
-		return e.writerStop
-	}()
-	if stop == nil {
+	if !hasStop {
 		return errPublishNotActive
 	}
-	select {
-	case e.queue <- queueItem{gen: gen, data: copied}:
-		return nil
-	case <-stop:
-		return errPublishNotActive
-	}
+	return e.enqueueItem(queueItem{gen: gen, data: copied})
 }
 
 // FlushAudio enqueues a flush marker so the writer zero-pads and emits the
@@ -584,20 +646,7 @@ func (e *Engine) FlushAudio() error {
 	e.mu.Lock()
 	gen := e.pubGeneration
 	e.mu.Unlock()
-	stop := func() <-chan struct{} {
-		e.writerMu.Lock()
-		defer e.writerMu.Unlock()
-		return e.writerStop
-	}()
-	if stop == nil {
-		return errPublishNotActive
-	}
-	select {
-	case e.queue <- queueItem{gen: gen}: // data nil = flush marker
-		return nil
-	case <-stop:
-		return errPublishNotActive
-	}
+	return e.enqueueItem(queueItem{gen: gen}) // data nil = flush marker
 }
 
 func (e *Engine) publishActive() bool {
@@ -644,18 +693,33 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 		return e.outbound
 	}
 	for {
-		select {
-		case <-stop:
-			return
-		case item := <-e.queue:
+		item, ok := e.popItem()
+		if !ok {
+			// Mid-turn gap fill: a stalled TTS stream would leave a hole in
+			// the RTP timeline that the browser conceals with PLC (the
+			// "crackle" artifact). A synthetic silence frame keeps the
+			// cadence; never user speech; stops at the flush boundary.
+			if e.fillSilenceIfMidTurn(track(), writer()) {
+				continue
+			}
+			select {
+			case <-stop:
+				return
+			case <-e.writerNotify:
+				continue
+			}
+		}
+		{
 			if item.gen != e.currentGeneration() {
 				// Stale grant: discard the tagged chunk/flush entirely.
-				e.writerMu.Lock()
-				if item.data != nil {
-					e.queueBytes -= len(item.data)
-				}
-				e.writerMu.Unlock()
+				// (popItem already released its reservation exactly once.)
 				continue
+			}
+			if item.data != nil {
+				// Real audio resets the bounded fill window.
+				e.mu.Lock()
+				e.fillRun = 0
+				e.mu.Unlock()
 			}
 			if item.data == nil {
 				// Flush marker: pad and emit the partial tail. A concurrent
@@ -664,6 +728,9 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 				if err := e.writerEmitCarry(track(), writer()); err != nil {
 					_ = err // dropped frame; writer stays alive
 				}
+				e.mu.Lock()
+				e.turnOpen = false
+				e.mu.Unlock()
 				continue
 			}
 			if err := e.writerWriteChunk(item.gen, item.data, track(), writer()); err != nil {
@@ -682,7 +749,6 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 // never leaves the budget inflated.
 func (e *Engine) writerWriteChunk(gen uint64, chunk []byte, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
 	e.writerMu.Lock()
-	e.queueBytes -= len(chunk)
 	data := append(e.carry, chunk...)
 	e.carry = nil
 	const frame24kBytes = 960
@@ -729,6 +795,38 @@ func (e *Engine) writerEmitCarry(track *webrtc.TrackLocalStaticSample, enc *opus
 	return e.writerEmitFrame(padded, track, enc)
 }
 
+// maxConsecutiveSilenceFills bounds a mid-turn fill run to ~1 s: real
+// network stalls stay covered without ever streaming unbounded silence.
+const maxConsecutiveSilenceFills = 50
+
+// fillSilenceIfMidTurn emits one paced synthetic silence frame when the
+// ring drained mid-utterance (turnOpen + active pacer schedule).
+func (e *Engine) fillSilenceIfMidTurn(track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) bool {
+	e.mu.Lock()
+	if e.fillRun >= maxConsecutiveSilenceFills {
+		e.mu.Unlock()
+		return false
+	}
+	open := e.turnOpen && e.publishOn
+	e.mu.Unlock()
+	if !open || !e.pacer.scheduled() {
+		return false
+	}
+	e.pacer.pace()
+	if !e.publishActive() {
+		return false
+	}
+	frame := make([]byte, 960) // 20 ms of silence @24k mono
+	if err := e.writerEmitFrame(frame, track, enc); err != nil {
+		return false
+	}
+	e.mu.Lock()
+	e.silenceFills++
+	e.fillRun++
+	e.mu.Unlock()
+	return true
+}
+
 // writerEmitFrame resamples and encodes exactly one 20 ms frame.
 func (e *Engine) writerEmitFrame(frame []byte, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
 	if track == nil || enc == nil {
@@ -762,6 +860,7 @@ func (e *Engine) PublishCounts() map[string]uint64 {
 		"opus_frames_written": e.opusFramesWritten,
 		"paced_gap_count":     e.pacedGapCount,
 		"encode_errors":       e.encodeErrors,
+		"silence_fills":       e.silenceFills,
 	}
 	pc := e.pc
 	e.mu.Unlock()

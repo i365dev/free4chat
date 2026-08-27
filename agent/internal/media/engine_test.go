@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -222,9 +223,12 @@ func TestWritePCMPacesOutboundFramesWithInjectedClock(t *testing.T) {
 	if err := engine.WritePCM(make([]byte, 3*960)); err != nil {
 		t.Fatalf("WritePCM: %v", err)
 	}
-	waitForFrames(t, engine, 3)
-	if !durationsEqual(clock.sleeps, 20*time.Millisecond, 20*time.Millisecond) {
-		t.Fatalf("sleeps = %v, want [20ms 20ms]", clock.sleeps)
+	waitForRealFrames(t, engine, 3)
+	_ = engine.FlushAudio()
+	waitForTurnClosed(t, engine)
+	if len(clock.sleeps) < 2 || clock.sleeps[0] != 20*time.Millisecond ||
+		clock.sleeps[1] != 20*time.Millisecond {
+		t.Fatalf("sleeps = %v, want [20ms 20ms ...]", clock.sleeps)
 	}
 }
 
@@ -482,7 +486,7 @@ func waitForQueueDrain(t *testing.T, engine *Engine) {
 		engine.writerMu.Lock()
 		carryEmpty := len(engine.carry) == 0
 		engine.writerMu.Unlock()
-		if len(engine.queue) == 0 && carryEmpty {
+		if len(engine.queueRingSnapshot()) == 0 && carryEmpty {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -520,9 +524,10 @@ func TestCancelDeactivateAccountingNoDrift(t *testing.T) {
 	}
 }
 
-// TestFullQueueRejectionKeepsAccountingConsistent pins the
-// engine_pcm_queue_full path: rejected writes must not inflate the budget.
-func TestFullQueueRejectionKeepsAccountingConsistent(t *testing.T) {
+// TestFullQueueBackpressureKeepsAccountingConsistent pins the cap path
+// under the blocking semantics: a producer at the cap waits; after the
+// writer drains everything the budget must be exactly zero.
+func TestFullQueueBackpressureKeepsAccountingConsistent(t *testing.T) {
 	engine := newTestEngine(t)
 	_ = engine.ArmPublish()
 	sleepFn, release := blockingSleepFunc()
@@ -530,30 +535,33 @@ func TestFullQueueRejectionKeepsAccountingConsistent(t *testing.T) {
 	if err := engine.ActivatePublish(); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	// First chunk: one frame emitted, then the writer blocks in pace; the
-	// REST of the 1 MiB budget fills while the writer is stuck.
 	big := make([]byte, 64*1024)
-	firstErr := engine.WritePCM(big) // 64KB: first frame emitted, rest queued
-	if firstErr != nil {
-		t.Fatalf("first write: %v", firstErr)
+	if err := engine.WritePCM(big); err != nil {
+		t.Fatalf("first write: %v", err)
 	}
 	waitForFrames(t, engine, 1)
-	for i := 0; i < 20; i++ {
-		_ = engine.WritePCM(big) // fills past the 1 MiB budget
+	for i := 0; i < 16; i++ {
+		_ = engine.WritePCM(big)
 	}
-	rejected := 0
-	for i := 0; i < 5; i++ {
-		if err := engine.WritePCM(big); err != nil && err.Error() == "engine_pcm_queue_full" {
-			rejected++
-		}
-	}
-	if rejected == 0 {
-		t.Fatal("expected at least one full-queue rejection")
+	blocked := make(chan struct{})
+	go func() {
+		_ = engine.WritePCM(big)
+		close(blocked)
+	}()
+	select {
+	case <-blocked:
+		t.Fatal("producer must block at the cap")
+	case <-time.After(150 * time.Millisecond):
 	}
 	close(release)
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer never unblocked")
+	}
 	engine.DeactivatePublish()
 	if got := engine.queueBytesSnapshot(); got != 0 {
-		t.Fatalf("accounting polluted by rejected writes: budget=%d", got)
+		t.Fatalf("accounting polluted at cap: budget=%d", got)
 	}
 }
 
@@ -578,9 +586,11 @@ func TestStaleAudioNeverSentAfterReactivation(t *testing.T) {
 	}
 	// The stale grant-1 backlog must be gone; only grant-2 audio flows.
 	_ = engine.WritePCM(make([]byte, 2*960))
-	waitForFrames(t, engine, 3)
-	if got := engine.framesWritten(); got != 3 {
-		t.Fatalf("frames=%d: stale grant audio leaked past reactivation", got)
+	waitForRealFrames(t, engine, 3)
+	_ = engine.FlushAudio()
+	waitForTurnClosed(t, engine)
+	if got := engine.realFramesWritten(); got != 3 {
+		t.Fatalf("real frames=%d: stale grant audio leaked past reactivation", got)
 	}
 }
 
@@ -602,4 +612,218 @@ func TestEngineCloseBoundedExit(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 4*time.Second {
 		t.Fatalf("Close took %s with a blocked writer; must stay bounded", elapsed)
 	}
+}
+
+// TestBlockedEnqueueBackpressureKeepsBudgetExact pins the bounded BLOCKING
+// backpressure semantics: at the byte cap the producer WAITS (never
+// rejected, never accounting drift); releasing the writer unblocks it, and
+// the budget always equals the accepted queued data.
+func TestBlockedEnqueueBackpressureKeepsBudgetExact(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 64*1024)) // frame 1 out, rest pending
+	waitForFrames(t, engine, 1)
+	for i := 0; i < 16; i++ {
+		_ = engine.WritePCM(make([]byte, 64*1024))
+	}
+	// One more 64KB chunk would cross the cap: the producer must block.
+	blocked := make(chan struct{})
+	go func() {
+		if err := engine.WritePCM(make([]byte, 64*1024)); err != nil {
+			t.Errorf("blocked write errored: %v", err)
+		}
+		close(blocked)
+	}()
+	select {
+	case <-blocked:
+		t.Fatal("producer must BLOCK at the cap, not return")
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Budget is exactly the cap while blocked.
+	if got := engine.queueBytesSnapshot(); got != maxQueuePcmBytes {
+		t.Fatalf("budget at cap = %d, want %d", got, maxQueuePcmBytes)
+	}
+	// Releasing the paced writer frees space and unblocks the producer.
+	close(release)
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("producer never unblocked after the writer resumed")
+	}
+	engine.DeactivatePublish()
+	if got := engine.queueBytesSnapshot(); got != 0 {
+		t.Fatalf("budget after deactivate = %d, want 0", got)
+	}
+}
+
+// TestConcurrentEnqueueConsumeClearAccountingNeverNegativeAndEndsZero
+// stresses the three racing paths and asserts the budget invariant: never
+// negative, and exactly the accepted queued data once quiesced.
+func TestConcurrentEnqueueConsumeClearAccountingNeverNegativeAndEndsZero(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn := func(d time.Duration) { time.Sleep(200 * time.Microsecond) }
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	// Producer: small chunks, tolerate rejections.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = engine.WritePCM(make([]byte, 1920))
+		}
+	}()
+	// Clearer: revoke+reactivate cycles racing both producer and writer.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			engine.DeactivatePublish()
+			_ = engine.ActivatePublish()
+			time.Sleep(200 * time.Microsecond)
+		}
+	}()
+	// Invariant sampler: the budget must never go negative.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if got := engine.queueBytesSnapshot(); got < 0 {
+				t.Errorf("budget went negative: %d", got)
+				return
+			}
+		}
+	}()
+	time.Sleep(400 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// Quiesce: after a final clear the budget must be exactly zero and the
+	// ring empty.
+	engine.DeactivatePublish()
+	if got := engine.queueBytesSnapshot(); got != 0 {
+		t.Fatalf("final budget = %d, want 0", got)
+	}
+	if ring := engine.queueRingSnapshot(); len(ring) != 0 {
+		t.Fatalf("final ring has %d items, want 0", len(ring))
+	}
+	// Accounting equals accepted queued data: enqueue N items with the
+	// writer stopped, compare budget to the sum of the ring.
+	engine.sleepFn = time.Sleep
+	_ = engine.ActivatePublish()
+	// Park the writer by blocking its sleep.
+	sleepBlock, release := blockingSleepFunc()
+	engine.sleepFn = sleepBlock
+	_ = engine.WritePCM(make([]byte, 960))
+	waitForFrames(t, engine, uint64(engine.framesWritten()+1))
+	_ = engine.WritePCM(make([]byte, 1920))
+	_ = engine.WritePCM(make([]byte, 480))
+	var sum int
+	for _, item := range engine.queueRingSnapshot() {
+		if item.data != nil {
+			sum += len(item.data)
+		}
+	}
+	if got := engine.queueBytesSnapshot(); got != sum {
+		t.Fatalf("budget %d != accepted queued data %d", got, sum)
+	}
+	close(release)
+}
+
+// TestLongVoiceTurnStillWritableAfterAccountingChurn ensures a full-length
+// reply flows completely after heavy deactivate/enqueue churn.
+func TestLongVoiceTurnStillWritableAfterAccountingChurn(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	// Instant writer (no-op clock) so the long turn is limited by CPU, not
+	// wall-clock pacing.
+	engine.sleepFn = func(time.Duration) {}
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Churn phase: several activate/write/cancel cycles.
+	for cycle := 0; cycle < 5; cycle++ {
+		_ = engine.WritePCM(make([]byte, 1920))
+		engine.CancelTurn()
+		engine.DeactivatePublish()
+		if err := engine.ActivatePublish(); err != nil {
+			t.Fatalf("reactivate %d: %v", cycle, err)
+		}
+	}
+	// Long-turn phase: ~200KB across many chunks, no interruption.
+	totalBytes := 0
+	chunks := 0
+	for totalBytes < 200*1024 {
+		size := 1920
+		if err := engine.WritePCM(make([]byte, size)); err != nil {
+			t.Fatalf("write %d: %v", chunks, err)
+		}
+		totalBytes += size
+		chunks++
+	}
+	wantFrames := uint64(totalBytes / 960)
+	waitForRealFrames(t, engine, wantFrames)
+	_ = engine.FlushAudio()
+	waitForTurnClosed(t, engine)
+	if got := engine.realFramesWritten(); got != wantFrames {
+		t.Fatalf("real frames=%d want=%d (long turn truncated)", got, wantFrames)
+	}
+	if got := engine.queueBytesSnapshot(); got != 0 {
+		t.Fatalf("budget after full drain = %d, want 0", got)
+	}
+}
+
+// realFramesWritten counts emitted frames excluding synthetic silence fills.
+func (e *Engine) realFramesWritten() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.opusFramesWritten - e.silenceFills
+}
+
+// waitForRealFrames waits for at least n REAL frames (fills excluded).
+func waitForRealFrames(t *testing.T, engine *Engine, n uint64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if engine.realFramesWritten() >= n {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("writer did not emit %d real frames (got %d)", n, engine.realFramesWritten())
+}
+
+// waitForTurnClosed waits until the flush boundary closed the fill window.
+func waitForTurnClosed(t *testing.T, engine *Engine) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		engine.mu.Lock()
+		closed := !engine.turnOpen
+		engine.mu.Unlock()
+		if closed {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("turn window never closed after flush")
 }

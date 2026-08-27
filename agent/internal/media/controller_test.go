@@ -256,7 +256,7 @@ func TestControllerMeetingNotesEpochChangeRebuildsSession(t *testing.T) {
 	}
 }
 
-func TestControllerVoiceEpochRotationRestartsPublicationOnly(t *testing.T) {
+func TestControllerVoiceEpochRotationRebuildsSession(t *testing.T) {
 	client := &fakeRoomClient{}
 	controller, harness := newControllerHarness(t, client, voiceConfigAlwaysReady())
 	defer controller.Stop()
@@ -271,17 +271,21 @@ func TestControllerVoiceEpochRotationRestartsPublicationOnly(t *testing.T) {
 		t.Fatalf("voice activation expected once, got %d", firstEngine.activateCalls)
 	}
 
-	// VR Stop->Start between polls: same transport session, NEW epoch.
+	// VR Stop->Start between polls: NEW epoch. The server revoked the old
+	// publication, so the WHOLE shared session must be rebuilt (a fresh
+	// agent-session + publication); re-publishing on the same session did
+	// not restore audibility in production E2E.
 	client.setRoom("off", "on", "agent", 0, "on", "on", "agent", 222, nil)
 	controller.poll()
 	waitController(t, 2*time.Second, func() bool {
-		return firstEngine.activateCalls >= 2 && controller.HasVoiceOutput()
-	}, "publication restart")
-	if harness.bridgeCount() != 1 {
-		t.Fatalf("VR epoch rotation must keep the shared session, bridges=%d", harness.bridgeCount())
+		return harness.bridgeCount() == 2 && controller.HasVoiceOutput()
+	}, "session rebuild")
+	if got := harness.engineAt(0).closeCalls; got != 1 {
+		t.Fatalf("old session must be closed on VR epoch rotation, closeCalls=%d", got)
 	}
-	if firstEngine.deactivateCalls < 1 {
-		t.Fatal("old publication must be deactivated under the new epoch")
+	second := harness.engineAt(1)
+	if second == nil || second.activateCalls < 1 {
+		t.Fatal("the rebuilt session must activate a fresh publication")
 	}
 }
 
