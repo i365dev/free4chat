@@ -5,10 +5,14 @@ on:
     paths:
       - "agent/**"
       - ".github/workflows/go-agent.yml"
+      - ".github/workflows/agent-release.yml"
+      - "app/public/install-agent.sh"
   pull_request:
     paths:
       - "agent/**"
       - ".github/workflows/go-agent.yml"
+      - ".github/workflows/agent-release.yml"
+      - "app/public/install-agent.sh"
 
 jobs:
   agent-go:
@@ -36,3 +40,11 @@ jobs:
         run: go test ./... -count=1 -timeout 300s
       - name: go build
         run: go build ./cmd/free4chat-agent
+
+  distribution-cleanup:
+    name: Distribution / cleanup contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check canonical-runtime distribution contract
+        run: bash agent/scripts/check-cleanup.sh
