@@ -34,6 +34,16 @@ export function resolveDefaultCreatePeerConnection(): PeerConnectionFactory {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 5000
+function safeDiagnosticCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "unknown"
+  const normalized = message.toLowerCase()
+  if (normalized.includes("timeout")) return "timeout"
+  if (normalized.includes("unsupported_chunk")) return "unsupported_chunk"
+  if (normalized.includes("not authorized")) return "not_authorized"
+  if (normalized.includes("decoding")) return "decoding_error"
+  if (normalized.includes("network")) return "network_error"
+  return "operation_failed"
+}
 
 type BridgeState = "idle" | "starting" | "running"
 
@@ -105,6 +115,8 @@ export class MeetingNotesController {
   private stopped = true
   // #83 voiceReply state (same shared bridge; never a second session).
   private voiceEpoch: number | null = null
+  private observedVoiceEpoch: number | null = null
+  private observedVoiceEpochInitialized = false
   private voiceSpeaker: VoiceSpeaker | null = null
   private voiceStarting = false
   // Outbound track name for the shared bridge's publish config; null when
@@ -178,6 +190,18 @@ export class MeetingNotesController {
           info.voiceReply.active === true &&
           info.voiceReply.agentParticipantId === this.options.participantId
         vrEpoch = info.voiceReply.startedAt ?? null
+        const epochChanged =
+          this.observedVoiceEpochInitialized &&
+          this.observedVoiceEpoch !== vrEpoch
+        this.log("voice_reply_state", {
+          voice_reply_media_available: info.voiceReplyMediaAvailable ? 1 : 0,
+          voice_reply_active: info.voiceReply.active ? 1 : 0,
+          voice_reply_targets_self: vrAuthorized ? 1 : 0,
+          voice_reply_grant_epoch_present: vrEpoch === null ? 0 : 1,
+          voice_reply_grant_epoch_changed: epochChanged ? 1 : 0,
+        })
+        this.observedVoiceEpoch = vrEpoch
+        this.observedVoiceEpochInitialized = true
       }
       // The master switch is checked on every poll, not just at grant
       // start: if it flips off while a session is already active, this
@@ -192,12 +216,16 @@ export class MeetingNotesController {
         info.meetingNotes.active &&
         info.meetingNotes.agentParticipantId === this.options.participantId
       epoch = info.meetingNotes.startedAt ?? null
-    } catch {
+    } catch (error) {
       // A transient room_info failure fails closed for BOTH grants: do not
       // keep an already-running bridge alive on stale authorization, and do
       // not start a new one on a guess. The next poll tries again.
       authorized = false
       vrAuthorized = false
+      if (this.options.voiceReply)
+        this.log("voice_reply_room_info_failed", {
+          code: safeDiagnosticCode(error),
+        })
     }
     if (this.stopped) return
 
@@ -262,7 +290,14 @@ export class MeetingNotesController {
     this.voiceStarting = true
     try {
       const provider = await options.createTtsProvider()
-      if (!provider || this.bridgeState !== "running") return
+      if (!provider) {
+        this.log("voice_reply_tts_unresolved", {
+          voice_reply_tts_resolved: 0,
+        })
+        return
+      }
+      this.log("voice_reply_tts_resolved", { voice_reply_tts_resolved: 1 })
+      if (this.bridgeState !== "running") return
       await bridge.activateVoicePublish()
       if (this.bridgeState !== "running") return
       this.voiceSpeaker = new VoiceSpeaker({
@@ -307,7 +342,7 @@ export class MeetingNotesController {
       this.log("voice_reply_started")
     } catch (error) {
       this.log("voice_reply_start_failed", {
-        error: error instanceof Error ? error.message : "unknown",
+        code: safeDiagnosticCode(error),
       })
     } finally {
       this.voiceStarting = false
@@ -363,7 +398,7 @@ export class MeetingNotesController {
         this.bridgeState = "idle"
       }
       this.log("meeting_notes_media_start_failed", {
-        error: error instanceof Error ? error.message : "unknown error",
+        code: safeDiagnosticCode(error),
       })
       return
     }

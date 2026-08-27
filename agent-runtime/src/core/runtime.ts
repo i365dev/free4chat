@@ -473,6 +473,15 @@ export class ResidentRoomRuntime {
                     : this.options.speech!.store!,
                 environment: this.options.speech?.environment ?? process.env,
               })
+              this.log("voice_reply_tts_provider", {
+                tts_provider_selected:
+                  state.providerId === "doubao"
+                    ? "doubao"
+                    : state.providerId
+                      ? "other"
+                      : "none",
+                tts_provider_resolved: state.tts ? 1 : 0,
+              })
               return state.tts ?? null
             },
           },
