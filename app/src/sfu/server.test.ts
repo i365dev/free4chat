@@ -84,6 +84,90 @@ const agentBody = {
   token: "tok-1",
 }
 
+describe("TURNSTILE_DISABLED", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("bypasses Turnstile when explicitly enabled, even with a secret", async () => {
+    const requestedUrls: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      requestedUrls.push(String(input))
+      return Response.json({ sessionId: "cf-session-1" })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const res = await handleSfuRequest(
+      req("session", {
+        origin: "https://www.free4.chat",
+        body: JSON.stringify({
+          room: "room-1",
+          name: "Human",
+          turnstileToken: "invalid",
+        }),
+      }),
+      makeEnv({
+        TURNSTILE_SECRET_KEY: "configured-secret",
+        TURNSTILE_DISABLED: "true",
+      })
+    )
+
+    expect(res.status).toBe(200)
+    expect(requestedUrls).toEqual([
+      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/new",
+    ])
+  })
+
+  it("preserves verification when the explicit bypass is absent", async () => {
+    const requestedUrls: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      requestedUrls.push(String(input))
+      return Response.json({ success: false })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const res = await handleSfuRequest(
+      req("session", {
+        origin: "https://www.free4.chat",
+        body: JSON.stringify({
+          room: "room-1",
+          name: "Human",
+          turnstileToken: "invalid",
+        }),
+      }),
+      makeEnv({ TURNSTILE_SECRET_KEY: "configured-secret" })
+    )
+
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("verification_failed")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(requestedUrls).toEqual([
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+    ])
+  })
+
+  it("does not bypass origin or Agent media authorization", async () => {
+    const invalidOrigin = await handleSfuRequest(
+      req("session", {
+        origin: "https://evil.example.com",
+        body: JSON.stringify({ room: "room-1", name: "Human" }),
+      }),
+      makeEnv({ TURNSTILE_DISABLED: "true" })
+    )
+    expect(invalidOrigin.status).toBe(403)
+    expect((await json(invalidOrigin)).error).toBe("forbidden_origin")
+
+    const agentWithoutMediaGate = await handleSfuRequest(
+      req("agent-session", { body: JSON.stringify(agentBody) }),
+      makeEnv({ TURNSTILE_DISABLED: "true" })
+    )
+    expect(agentWithoutMediaGate.status).toBe(403)
+    expect((await json(agentWithoutMediaGate)).error).toBe(
+      "agent_media_disabled"
+    )
+  })
+})
+
 describe("AGENT_MEDIA_ENABLED gate", () => {
   it("agent-session rejects when the gate is unset (production default)", async () => {
     const env = makeEnv()

@@ -15,6 +15,9 @@ export interface SfuEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   TURNSTILE_SECRET_KEY?: string
+  // Explicit, reversible development/E2E bypass. Any value other than the
+  // literal string "true" preserves the normal Turnstile behavior below.
+  TURNSTILE_DISABLED?: string
   // Coarse, environment-wide master switch for Agent SFU media (#82).
   // Absent/anything other than "true" => agent-session/agent-room-media
   // reject unconditionally, and RoomSession also refuses to ever start a
@@ -98,6 +101,7 @@ async function checkRateLimit(
 }
 
 async function verifyTurnstile(token: unknown, env: SfuEnv): Promise<boolean> {
+  if (env.TURNSTILE_DISABLED === "true") return true
   if (!env.TURNSTILE_SECRET_KEY) return true
   if (typeof token !== "string" || !token) return false
   const form = new URLSearchParams({
