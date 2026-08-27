@@ -32,6 +32,7 @@ interface GoResponse {
   answer?: SessionDescriptionLike
   mid?: string
   appliedType?: string
+  counts?: Record<string, number>
 }
 
 interface GoEvent {
@@ -295,6 +296,23 @@ export async function createPionPeerConnection(
         { op: "write-pcm", payload: Buffer.from(chunk).toString("base64") },
         30_000
       )
+    },
+    publishStats: async () => {
+      const reply = await send({ op: "publish-stats" })
+      const counts = reply.counts ?? {}
+      const number = (key: string): number =>
+        typeof counts[key] === "number" ? Number(counts[key]) : 0
+      return {
+        pcm_write_calls: number("pcm_write_calls"),
+        pcm_input_bytes: number("pcm_input_bytes"),
+        opus_frames_written: number("opus_frames_written"),
+        ...(typeof counts.outbound_rtp_packets === "number"
+          ? { outbound_rtp_packets: number("outbound_rtp_packets") }
+          : {}),
+        ...(typeof counts.outbound_rtp_bytes === "number"
+          ? { outbound_rtp_bytes: number("outbound_rtp_bytes") }
+          : {}),
+      }
     },
     close: () => {
       try {

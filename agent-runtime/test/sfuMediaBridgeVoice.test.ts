@@ -70,6 +70,13 @@ function scriptedPc(ops: Op[]) {
     writePcmChunk: async (chunk: Uint8Array) => {
       ops.push(chunk.length === 960 ? "silence" : "write")
     },
+    publishStats: async () => ({
+      pcm_write_calls: 2,
+      pcm_input_bytes: 4,
+      opus_frames_written: 2,
+      outbound_rtp_packets: 2,
+      outbound_rtp_bytes: 200,
+    }),
   }
   return pc as unknown as PeerConnectionLike & {
     armPublishAudio: () => Promise<void>
@@ -162,6 +169,13 @@ describe("SfuMediaBridge voiceReply publication (#83 live-silence fix)", () => {
       { sessionId: "sess-agent", trackName: "agent-voice" },
     ])
     assert.deepEqual(ops.slice(-4), ["silence", "confirm", "write", "write"])
+    assert.deepEqual(await bridge.voicePublishStats(), {
+      pcm_write_calls: 2,
+      pcm_input_bytes: 4,
+      opus_frames_written: 2,
+      outbound_rtp_packets: 2,
+      outbound_rtp_bytes: 200,
+    })
 
     await bridge.stop()
   })

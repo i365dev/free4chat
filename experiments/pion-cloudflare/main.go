@@ -208,6 +208,9 @@ func handleCmd(spike *MediaSpike, tracer *Tracer, c cmd) resp {
 		counts := spike.RtpCounts()
 		return resp{OK: true, Counts: counts}
 
+	case "publish-stats":
+		return resp{OK: true, Counts: spike.PublishCounts()}
+
 	case "close":
 		spike.Close()
 		return resp{OK: true}

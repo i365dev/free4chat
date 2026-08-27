@@ -42,6 +42,16 @@ class FakeBridge {
   async cancelVoiceTurn() {
     this.discarded += 1
   }
+  async voicePublishStats() {
+    return {
+      pcm_write_calls: this.written.length,
+      pcm_input_bytes: this.written.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      ),
+      opus_frames_written: this.written.length,
+    }
+  }
 }
 
 function makeRoomInfo(opts: {
@@ -560,4 +570,7 @@ test("voice speaker lifecycle surfaces through the runtime log for live triage",
   const messages = logs.map((entry) => entry.message)
   assert.ok(messages.includes("voice_reply_started"))
   assert.ok(messages.includes("voice_turn_started"))
+  const finished = logs.find((entry) => entry.message === "voice_turn_finished")
+  assert.equal(finished?.pcm_write_calls, 1)
+  assert.ok(Number(finished?.pcm_input_bytes) > 0)
 })

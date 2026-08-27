@@ -584,6 +584,9 @@ export class ResidentRoomRuntime {
         // A newly addressed turn wins the speaker (#83): stale audio from
         // the previous response must never keep playing over the new one.
         const voiceOutput = this.resolveVoiceOutput()
+        this.log("voice_dispatch_start", {
+          captured_voice_output_available: voiceOutput ? 1 : 0,
+        })
         voiceOutput?.cancel()
         const result = await this.options.adapter.runTurn(input)
         this.harnessFailed = false
@@ -594,6 +597,13 @@ export class ResidentRoomRuntime {
             text
           )
           this.log("message_persisted", { sequence: sent.sequence })
+          this.log("voice_dispatch_before_speak", {
+            captured_voice_output_available: voiceOutput ? 1 : 0,
+            current_voice_output_available: this.currentVoiceOutputAvailable()
+              ? 1
+              : 0,
+            speak_invoked: voiceOutput ? 1 : 0,
+          })
           voiceOutput?.speak(text)
         }
       }
@@ -778,6 +788,12 @@ export class ResidentRoomRuntime {
   private resolveVoiceOutput(): VoiceOutput | null {
     if (this.options.createVoiceOutput) return this.options.createVoiceOutput()
     return this.meetingNotes?.currentVoiceOutput() ?? null
+  }
+
+  /** Side-effect-free readiness snapshot for Voice dispatch diagnostics. */
+  private currentVoiceOutputAvailable(): boolean {
+    if (this.options.createVoiceOutput) return this.voiceOutput !== null
+    return this.meetingNotes?.hasCurrentVoiceOutput() ?? false
   }
 
   private async cleanupResources(): Promise<void> {

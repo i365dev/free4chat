@@ -187,6 +187,41 @@ test("treats an inactive publication confirmation as false", async () => {
   }
 })
 
+test("retains only the bounded publication diagnostic fields", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () =>
+    Response.json({
+      active: true,
+      publisherSessionLookupOk: true,
+      matchingTrackFound: true,
+      matchingTrackStatus: "active",
+      matchingTrackHasMid: true,
+      secret: "must-not-be-retained",
+    })
+  try {
+    const client = new SfuRestClient("https://example.test", handle())
+    assert.equal(
+      await client.confirmPublishedAudioTrackActive!("s", "agent-voice"),
+      true
+    )
+    assert.deepEqual(client.lastPublishedAudioTrackDiagnostic?.(), {
+      publisher_session_lookup_ok: 1,
+      matching_track_found: 1,
+      matching_track_status: "active",
+      matching_track_has_mid: 1,
+      active: 1,
+    })
+    assert.equal(
+      JSON.stringify(client.lastPublishedAudioTrackDiagnostic?.()).includes(
+        "must-not-be-retained"
+      ),
+      false
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("subscribeTrack keeps the remote-track payload shape and carries the mid back", async () => {
   const originalFetch = globalThis.fetch
   let receivedBody: Record<string, unknown> | undefined
