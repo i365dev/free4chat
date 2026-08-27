@@ -571,9 +571,18 @@ describe("useSfuChatRoom room attachments (#123)", () => {
 
     publish()
     await waitFor(() => expect(trackAttempts).toBe(2))
-    const diagnostics = info.mock.calls
-      .filter(([prefix]) => prefix === "free4chat_voice_downstream")
-      .map(([, payload]) => payload as Record<string, unknown>)
+    const diagnostics = info.mock.calls.flatMap(([message]) => {
+      if (
+        typeof message !== "string" ||
+        !message.startsWith("free4chat_voice_downstream ")
+      )
+        return []
+      return [
+        JSON.parse(
+          message.slice("free4chat_voice_downstream ".length)
+        ) as Record<string, unknown>,
+      ]
+    })
     expect(diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -679,9 +688,18 @@ describe("useSfuChatRoom room attachments (#123)", () => {
       })
     })
 
-    const diagnostics = info.mock.calls
-      .filter(([prefix]) => prefix === "free4chat_voice_downstream")
-      .map(([, payload]) => payload as Record<string, unknown>)
+    const diagnostics = info.mock.calls.flatMap(([message]) => {
+      if (
+        typeof message !== "string" ||
+        !message.startsWith("free4chat_voice_downstream ")
+      )
+        return []
+      return [
+        JSON.parse(
+          message.slice("free4chat_voice_downstream ".length)
+        ) as Record<string, unknown>,
+      ]
+    })
     expect(diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
