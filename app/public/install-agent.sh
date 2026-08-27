@@ -62,9 +62,9 @@ sha256_of() { # $1 = file
 }
 
 # --- official release URLs ------------------------------------------------
-# FREE4CHAT_AGENT_DOWNLOAD_BASE is an undocumented test hook that points at a
-# directory serving the asset and SHA256SUMS locally; end users always use
-# the official GitHub Releases URLs below.
+# The official GitHub Release is the ONLY binary source. Both the binary and
+# SHA256SUMS come from the same fixed HTTPS location; there is deliberately
+# no environment override for the download base.
 if [ -n "${FREE4CHAT_AGENT_VERSION:-}" ]; then
   version="${FREE4CHAT_AGENT_VERSION}"
   case "$version" in
@@ -80,18 +80,10 @@ else
   asset_url="$RELEASES_BASE/latest/download/$asset_name"
   sums_url="$RELEASES_BASE/latest/download/SHA256SUMS"
 fi
-if [ -n "${FREE4CHAT_AGENT_DOWNLOAD_BASE:-}" ]; then
-  asset_url="$FREE4CHAT_AGENT_DOWNLOAD_BASE/$asset_name"
-  sums_url="$FREE4CHAT_AGENT_DOWNLOAD_BASE/SHA256SUMS"
-fi
 
-# --- download (HTTPS only in production) ----------------------------------
+# --- download (HTTPS only) ------------------------------------------------
 download() { # $1 = url, $2 = destination
-  if [ -n "${FREE4CHAT_AGENT_DOWNLOAD_BASE:-}" ]; then
-    curl -fsSL -o "$2" "$1"
-  else
-    curl -fsSL --proto '=https' -o "$2" "$1"
-  fi
+  curl -fsSL --proto '=https' -o "$2" "$1"
 }
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/free4chat-agent-install.XXXXXX")"

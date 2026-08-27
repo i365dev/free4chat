@@ -46,5 +46,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
       - name: Check canonical-runtime distribution contract
         run: bash agent/scripts/check-cleanup.sh
+      - name: Installer offline tests (mocked curl, official URL)
+        run: bash agent/scripts/test-install-agent.sh
