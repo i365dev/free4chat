@@ -366,3 +366,126 @@ func waitForFrames(t *testing.T, engine *Engine, n uint64) {
 	}
 	t.Fatalf("writer did not emit %d frames (got %d)", n, engine.framesWritten())
 }
+
+// blockingSleepFunc returns a sleepFn that blocks until the returned channel
+// is closed; after release, sleeps return immediately (deterministic writer
+// timing control).
+func blockingSleepFunc() (func(time.Duration), chan struct{}) {
+	release := make(chan struct{})
+	return func(time.Duration) {
+		<-release
+	}, release
+}
+
+// TestDeactivateClearsQueueBytesConsistently pins the byte-budget fix: a
+// revocation while the writer is mid-pace must reset the queue budget to
+// zero (the old code leaked bytes and eventually starved all writes), and
+// the writer must survive the cycle.
+func TestDeactivateClearsQueueBytesConsistently(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Writer: chunk 1 emits its first frame immediately, then blocks on the
+	// second frame's paced sleep; chunks 2-3 stay queued with a live budget.
+	_ = engine.WritePCM(make([]byte, 3*960))
+	_ = engine.WritePCM(make([]byte, 960))
+	_ = engine.WritePCM(make([]byte, 960))
+	waitForFrames(t, engine, 1)
+	if got := engine.queueBytesSnapshot(); got == 0 {
+		t.Fatal("precondition: queued chunks must hold a positive byte budget")
+	}
+
+	engine.DeactivatePublish()
+	if got := engine.queueBytesSnapshot(); got != 0 {
+		t.Fatalf("deactivate must reset the queue budget, got %d", got)
+	}
+	close(release)
+
+	// Re-activation must keep working (no truncated/silent second grant).
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 960))
+	waitForFrames(t, engine, 2)
+}
+
+// TestConcurrentRevokeAndFlushKeepsWriterAlive pins the flush-marker race:
+// a revoke landing exactly between a flush marker's paced wait and its
+// activation re-check used to RETURN from the writer loop (permanent
+// silence — the one-shot start could not restart it). The writer must
+// survive and serve later grants.
+func TestConcurrentRevokeAndFlushKeepsWriterAlive(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// First flush: primes the pacer with a paced frame (immediate slot).
+	_ = engine.WritePCM(make([]byte, 500))
+	_ = engine.FlushAudio()
+	waitForFrames(t, engine, 1)
+
+	// Second flush: carry non-empty, the paced wait BLOCKS on sleepFn.
+	_ = engine.WritePCM(make([]byte, 100))
+	_ = engine.FlushAudio()
+	waitForQueueDrain(t, engine) // ensure the writer consumed both items
+
+	// Revoke while the writer is blocked in the flush's paced wait.
+	engine.DeactivatePublish()
+	close(release) // writer resumes: activation re-check fails closed
+
+	// The writer must still be alive for the NEXT grant.
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 960))
+	waitForFrames(t, engine, 2)
+	if got := engine.framesWritten(); got < 2 {
+		t.Fatalf("writer died on revoke+flush race: frames=%d", got)
+	}
+}
+
+// TestReactivateAfterDeactivateWritesAudio covers the plain
+// deactivate->reactivate cycle: no truncation, no silence.
+func TestReactivateAfterDeactivateWritesAudio(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 960))
+	waitForFrames(t, engine, 1)
+
+	engine.DeactivatePublish()
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 2*960))
+	waitForFrames(t, engine, 3)
+	if got := engine.framesWritten(); got != 3 {
+		t.Fatalf("frames=%d, want 3 (no truncation/silence across reactivation)", got)
+	}
+}
+
+// waitForQueueDrain waits until both the queue channel and the writer's
+// carry are empty.
+func waitForQueueDrain(t *testing.T, engine *Engine) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		engine.writerMu.Lock()
+		carryEmpty := len(engine.carry) == 0
+		engine.writerMu.Unlock()
+		if len(engine.queue) == 0 && carryEmpty {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("queue never drained")
+}

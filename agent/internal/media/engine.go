@@ -106,13 +106,13 @@ type Engine struct {
 	// decouples the TTS stream's bursty arrival from the RTP send timeline —
 	// inline pacing made the HTTP reader stall between bursts, starving the
 	// browser jitter buffer and producing PLC "robot voice" artifacts.
-	writerMu    sync.Mutex
-	queue       chan []byte
-	queueBytes  int
-	carry       []byte
-	writerStart sync.Once
-	writerStop  chan struct{}
-	writerDone  chan struct{}
+	writerMu      sync.Mutex
+	queue         chan []byte
+	queueBytes    int
+	carry         []byte
+	writerRunning bool
+	writerStop    chan struct{}
+	writerDone    chan struct{}
 }
 
 // framePacer spaces outbound Opus frames one frame-duration apart (ported
@@ -157,15 +157,13 @@ func NewEngine(events EngineEvents, log func(event string, details map[string]st
 		log = func(string, map[string]string) {}
 	}
 	return &Engine{
-		ev:         events,
-		log:        log,
-		dcOpen:     make(chan struct{}),
-		rtpCounts:  make(map[string]uint64),
-		nowFn:      time.Now,
-		sleepFn:    time.Sleep,
-		queue:      make(chan []byte, 128),
-		writerStop: make(chan struct{}),
-		writerDone: make(chan struct{}),
+		ev:        events,
+		log:       log,
+		dcOpen:    make(chan struct{}),
+		rtpCounts: make(map[string]uint64),
+		nowFn:     time.Now,
+		sleepFn:   time.Sleep,
+		queue:     make(chan []byte, 128),
 	}
 }
 
@@ -423,9 +421,16 @@ func (e *Engine) ActivatePublish() error {
 	}
 	e.publishOn = true
 	e.pacer = newFramePacer(e.nowFn, e.sleepFn)
-	e.writerStart.Do(func() {
-		go e.writerLoop()
-	})
+	e.writerMu.Lock()
+	if !e.writerRunning {
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		e.writerStop = stop
+		e.writerDone = done
+		e.writerRunning = true
+		go e.writerLoop(stop, done)
+	}
+	e.writerMu.Unlock()
 	return nil
 }
 
@@ -438,6 +443,13 @@ func (e *Engine) DeactivatePublish() {
 	e.clearQueueAndCarry()
 }
 
+// queueBytesSnapshot exposes the soft byte budget for tests.
+func (e *Engine) queueBytesSnapshot() int {
+	e.writerMu.Lock()
+	defer e.writerMu.Unlock()
+	return e.queueBytes
+}
+
 // CancelTurn discards buffered partial-frame bytes WITHOUT deactivating
 // publication: a cancelled utterance must never leak stale audio into a
 // later turn, but the grant stays live.
@@ -446,15 +458,24 @@ func (e *Engine) CancelTurn() {
 }
 
 // clearQueueAndCarry discards queued PCM and the partial frame so stale
-// utterance audio can never leak into a later turn.
+// utterance audio can never leak into a later turn. The byte budget must
+// stay consistent: every drained item is subtracted, and once the channel
+// is empty the budget resets to zero (a concurrent enqueue after the drain
+// re-increments it before its channel send, so the pair stays coherent).
 func (e *Engine) clearQueueAndCarry() {
 	e.writerMu.Lock()
 	e.carry = nil
 	e.writerMu.Unlock()
 	for {
 		select {
-		case <-e.queue:
+		case chunk := <-e.queue:
+			e.writerMu.Lock()
+			e.queueBytes -= len(chunk)
+			e.writerMu.Unlock()
 		default:
+			e.writerMu.Lock()
+			e.queueBytes = 0
+			e.writerMu.Unlock()
 			return
 		}
 	}
@@ -531,8 +552,22 @@ func (e *Engine) PCMCarry() int {
 // one real Opus packet per 20 ms slot. After any paced wait it re-checks
 // publication activation so a concurrent revocation stops the burst instead
 // of emitting stale frames.
-func (e *Engine) writerLoop() {
-	defer close(e.writerDone)
+//
+// LIFECYCLE INVARIANT: the loop exits ONLY when its stop channel closes.
+// Every data-level error — including errPublishNotActive from a concurrent
+// revoke+flush race, and per-frame encode/write failures — degrades the
+// affected frame only; the writer stays alive so later grant activations
+// keep working (a dead writer plus a one-shot start used to produce
+// permanent silence).
+func (e *Engine) writerLoop(stop, done chan struct{}) {
+	defer func() {
+		close(done)
+		e.writerMu.Lock()
+		if e.writerStop == stop {
+			e.writerRunning = false
+		}
+		e.writerMu.Unlock()
+	}()
 	writer := func() *opus.Encoder {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -545,27 +580,32 @@ func (e *Engine) writerLoop() {
 	}
 	for {
 		select {
-		case <-e.writerStop:
+		case <-stop:
 			return
 		case chunk := <-e.queue:
 			if chunk == nil {
-				// Flush marker: pad and emit the partial tail.
-				if err := e.writerEmitCarry(track(), writer()); err != nil && errors.Is(err, errPublishNotActive) {
-					return
+				// Flush marker: pad and emit the partial tail. A concurrent
+				// revocation makes this a discard-only no-op — the loop
+				// continues, never exits.
+				if err := e.writerEmitCarry(track(), writer()); err != nil {
+					_ = err // dropped frame; writer stays alive
 				}
 				continue
 			}
 			if err := e.writerWriteChunk(chunk, track(), writer()); err != nil {
-				if errors.Is(err, errPublishNotActive) {
-					continue
-				}
-				return
+				// Not-active or a transient encode/write failure: drop the
+				// rest of this chunk and keep serving later grants.
+				_ = err
+				continue
 			}
 		}
 	}
 }
 
-// writerWriteChunk frames one queued PCM chunk at 20 ms cadence.
+// writerWriteChunk frames one queued PCM chunk at 20 ms cadence. The byte
+// budget is decremented for the WHOLE chunk before any frame is emitted, so
+// a mid-chunk revocation (frames dropped, carry cleared by the caller)
+// never leaves the budget inflated.
 func (e *Engine) writerWriteChunk(chunk []byte, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
 	e.writerMu.Lock()
 	e.queueBytes -= len(chunk)
@@ -675,14 +715,22 @@ func (e *Engine) Close() {
 	if alreadyClosed {
 		return
 	}
-	select {
-	case <-e.writerStop:
-	default:
-		close(e.writerStop)
-	}
-	select {
-	case <-e.writerDone:
-	case <-time.After(2 * time.Second):
+	e.writerMu.Lock()
+	stop := e.writerStop
+	done := e.writerDone
+	e.writerMu.Unlock()
+	if stop != nil {
+		select {
+		case <-stop:
+		default:
+			close(stop)
+		}
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+		}
 	}
 	if pc != nil {
 		_ = pc.Close()
