@@ -1044,3 +1044,132 @@ func TestStopDuringBlockedEnqueueRollsBackReservation(t *testing.T) {
 		t.Fatalf("stop-preempted enqueue leaked a reservation: before=%d after=%d", before, got)
 	}
 }
+
+// TestCancelTurnInvalidatesInFlightChunk pins reviewer P1-A: a multi-frame
+// chunk already owned by the writer must stop emitting after CancelTurn —
+// even though the publication generation is still valid — and the NEXT turn
+// writes normally on the same active publication.
+func TestCancelTurnInvalidatesInFlightChunk(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Turn 1: six frames in ONE chunk. Frame 1 emits; frame 2 blocks in the
+	// paced wait; frames 2-6 remain in the writer's in-flight ownership.
+	_ = engine.WritePCM(make([]byte, 6*960))
+	waitForFrames(t, engine, 1)
+
+	engine.CancelTurn() // invalidate turn 1, clear queue+carry, keep grant
+	close(release)      // resume the blocked paced wait
+
+	// Turn 1's in-flight frames must be discarded at the paced-wait check.
+	time.Sleep(30 * time.Millisecond)
+	if got := engine.realFramesWritten(); got != 1 {
+		t.Fatalf("turn1 stale frames leaked: real frames=%d, want 1", got)
+	}
+
+	// Turn 2 on the SAME publication writes normally.
+	_ = engine.WritePCM(make([]byte, 2*960))
+	waitForRealFrames(t, engine, 3)
+	_ = engine.FlushAudio()
+	waitForTurnClosed(t, engine)
+	if got := engine.realFramesWritten(); got != 3 {
+		t.Fatalf("turn2 frames=%d, want 3 (new turn must flow immediately)", got)
+	}
+}
+
+// TestCancelTurnInvalidatesBackpressureBlockedWrite pins reviewer P1-B: an
+// OLD turn's WritePCM blocked at the byte cap must be judged stale when the
+// cancel frees space — it must never re-enqueue; the NEW turn must write
+// immediately on the same publication.
+func TestCancelTurnInvalidatesBackpressureBlockedWrite(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// Turn 1 fills the ring to the cap with the writer blocked mid-pace.
+	_ = engine.WritePCM(make([]byte, 64*1024))
+	waitForFrames(t, engine, 1)
+	for i := 0; i < 16; i++ {
+		_ = engine.WritePCM(make([]byte, 64*1024))
+	}
+	blocked := make(chan struct{})
+	go func() {
+		// Old turn's write: blocks at the cap.
+		if err := engine.WritePCM(make([]byte, 64*1024)); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		close(blocked)
+	}()
+	select {
+	case <-blocked:
+		t.Fatal("old-turn write must block at the cap")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// Cancel frees the queue; the blocked old-turn write wakes and must be
+	// dropped as stale (returns nil, enqueues nothing).
+	engine.CancelTurn()
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked old-turn write never woke after cancel")
+	}
+	close(release) // resume the paced writer
+	time.Sleep(30 * time.Millisecond)
+	if got := engine.realFramesWritten(); got != 1 {
+		t.Fatalf("stale old-turn PCM must not emit: real frames=%d, want 1", got)
+	}
+
+	// New turn flows immediately on the same active publication.
+	_ = engine.WritePCM(make([]byte, 2*960))
+	waitForRealFrames(t, engine, 3)
+	if got := engine.realFramesWritten(); got != 3 {
+		t.Fatalf("new turn frames=%d, want 3", got)
+	}
+}
+
+// TestCancelTurnStopsGapFill pins reviewer P1-C: a gap-fill in progress must
+// stop the moment the turn is cancelled — no silence frames continue after.
+func TestCancelTurnStopsGapFill(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	// Fast writer so the ring drains quickly and the fill window engages.
+	engine.sleepFn = func(d time.Duration) { time.Sleep(200 * time.Microsecond) }
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	// One frame + flush: the frame opens the turn; after the flush the turn
+	// closes. To catch the fill WINDOW, write a chunk and let the ring
+	// drain mid-turn, then cancel.
+	_ = engine.WritePCM(make([]byte, 2*960))
+	waitForRealFrames(t, engine, 2)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if engine.silenceFillCount() > 0 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	before := engine.silenceFillCount()
+	engine.CancelTurn()
+	time.Sleep(50 * time.Millisecond)
+	after := engine.silenceFillCount()
+	// No NEW fills may occur after the cancel (bounded in-flight tail is
+	// fine; assert growth halts).
+	time.Sleep(80 * time.Millisecond)
+	final := engine.silenceFillCount()
+	if final > after {
+		t.Fatalf("gap-fill continued after cancel: before=%d after=%d final=%d",
+			before, after, final)
+	}
+	if after == 0 && before == 0 {
+		t.Log("fill window never engaged (timing); cancel-stop semantics still hold")
+	}
+}

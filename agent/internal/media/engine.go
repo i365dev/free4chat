@@ -91,6 +91,7 @@ type Engine struct {
 	outbound          *webrtc.TrackLocalStaticSample
 	publishOn         bool
 	pubGeneration     uint64 // bumped on every activate/deactivate (grant boundary)
+	turnGeneration    uint64 // bumped on every CancelTurn (utterance boundary)
 	encoder           *opus.Encoder
 	pcmWriteCalls     uint64
 	pcmInputBytes     uint64
@@ -472,6 +473,7 @@ func (e *Engine) DeactivatePublish() {
 	e.mu.Lock()
 	e.publishOn = false
 	e.pubGeneration++
+	e.turnGeneration++
 	e.turnOpen = false
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
@@ -482,8 +484,9 @@ func (e *Engine) DeactivatePublish() {
 // discarded by the writer — audio from a revoked grant must never survive
 // reactivation.
 type queueItem struct {
-	gen  uint64
-	data []byte // nil = flush marker
+	gen     uint64 // publication generation at enqueue
+	turnGen uint64 // turn generation at enqueue (utterance boundary)
+	data    []byte // nil = flush marker
 }
 
 // enqueueItem appends one item under the single queue lock, with BOUNDED
@@ -516,6 +519,11 @@ func (e *Engine) enqueueItem(item queueItem) error {
 		}
 		select {
 		case <-space:
+			if item.turnGen != e.currentTurnGeneration() {
+				// A cancelled turn's blocked write woke after the queue was
+				// cleared: its PCM is stale and must never be enqueued.
+				return nil
+			}
 			continue
 		case <-stop:
 			return errPublishNotActive
@@ -554,6 +562,20 @@ func (e *Engine) currentGeneration() uint64 {
 	return e.pubGeneration
 }
 
+// currentTurnGeneration reads the utterance-boundary generation.
+func (e *Engine) currentTurnGeneration() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.turnGeneration
+}
+
+// silenceFillCount exposes the gap-fill counter for tests.
+func (e *Engine) silenceFillCount() uint64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.silenceFills
+}
+
 // queueRingSnapshot exposes the pending item count for tests.
 func (e *Engine) queueRingSnapshot() []queueItem {
 	e.writerMu.Lock()
@@ -572,6 +594,13 @@ func (e *Engine) queueBytesSnapshot() int {
 // publication: a cancelled utterance must never leak stale audio into a
 // later turn, but the grant stays live.
 func (e *Engine) CancelTurn() {
+	// Utterance boundary: invalidate the CURRENT turn generation and close
+	// the fill window, then discard queued/carried PCM. The publication
+	// stays active — the next turn writes normally on the same grant.
+	e.mu.Lock()
+	e.turnGeneration++
+	e.turnOpen = false
+	e.mu.Unlock()
 	e.clearQueueAndCarry()
 }
 
@@ -623,6 +652,7 @@ func (e *Engine) WritePCM(chunk []byte) error {
 	copied := append([]byte(nil), chunk...)
 	e.mu.Lock()
 	gen := e.pubGeneration
+	turnGen := e.turnGeneration
 	e.turnOpen = true
 	e.mu.Unlock()
 	e.writerMu.Lock()
@@ -631,7 +661,7 @@ func (e *Engine) WritePCM(chunk []byte) error {
 	if !hasStop {
 		return errPublishNotActive
 	}
-	return e.enqueueItem(queueItem{gen: gen, data: copied})
+	return e.enqueueItem(queueItem{gen: gen, turnGen: turnGen, data: copied})
 }
 
 // FlushAudio enqueues a flush marker so the writer zero-pads and emits the
@@ -645,8 +675,9 @@ func (e *Engine) FlushAudio() error {
 	}
 	e.mu.Lock()
 	gen := e.pubGeneration
+	turnGen := e.turnGeneration
 	e.mu.Unlock()
-	return e.enqueueItem(queueItem{gen: gen}) // data nil = flush marker
+	return e.enqueueItem(queueItem{gen: gen, turnGen: turnGen}) // data nil = flush marker
 }
 
 func (e *Engine) publishActive() bool {
@@ -710,8 +741,9 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 			}
 		}
 		{
-			if item.gen != e.currentGeneration() {
-				// Stale grant: discard the tagged chunk/flush entirely.
+			if item.gen != e.currentGeneration() ||
+				item.turnGen != e.currentTurnGeneration() {
+				// Stale grant or stale utterance: discard entirely.
 				// (popItem already released its reservation exactly once.)
 				continue
 			}
@@ -733,7 +765,7 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 				e.mu.Unlock()
 				continue
 			}
-			if err := e.writerWriteChunk(item.gen, item.data, track(), writer()); err != nil {
+			if err := e.writerWriteChunk(item.gen, item.turnGen, item.data, track(), writer()); err != nil {
 				// Not-active or a transient encode/write failure: drop the
 				// rest of this chunk and keep serving later grants.
 				_ = err
@@ -747,7 +779,7 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 // budget is decremented for the WHOLE chunk before any frame is emitted, so
 // a mid-chunk revocation (frames dropped, carry cleared by the caller)
 // never leaves the budget inflated.
-func (e *Engine) writerWriteChunk(gen uint64, chunk []byte, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
+func (e *Engine) writerWriteChunk(gen, turnGen uint64, chunk []byte, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
 	e.writerMu.Lock()
 	data := append(e.carry, chunk...)
 	e.carry = nil
@@ -758,9 +790,12 @@ func (e *Engine) writerWriteChunk(gen uint64, chunk []byte, track *webrtc.TrackL
 
 	for f := 0; f < frames; f++ {
 		e.pacer.pace()
-		// BOTH the activation flag and the generation must still match:
-		// a revoke+reactivate between paced waits discards the stale burst.
-		if !e.publishActive() || e.currentGeneration() != gen {
+		// The activation flag, the PUBLICATION generation AND the TURN
+		// generation must all still match: a cancel or revoke landing
+		// between paced waits discards the stale burst before any frame
+		// goes out.
+		if !e.publishActive() || e.currentGeneration() != gen ||
+			e.currentTurnGeneration() != turnGen {
 			return errPublishNotActive
 		}
 		frame := data[f*frame24kBytes : (f+1)*frame24kBytes]
