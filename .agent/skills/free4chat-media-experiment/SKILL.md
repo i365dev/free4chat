@@ -5,6 +5,17 @@ description: Strict provenance-first SOP for real deployed Free4Chat Meeting Not
 
 # Free4Chat media experiment SOP
 
+> **Historical / reference-only.** This SOP was written for the frozen
+> Node-runtime + sidecar-Pion era. The sidecar architecture no longer exists
+> on `cf-sfu`: `agent-runtime/`, `FREE4CHAT_PION_BIN`, and
+> `scripts/media-e2e-preflight.sh` are gone, and Pion now runs **in-process**
+> inside the canonical Go runtime (`agent/`, released as the
+> `free4chat-agent` binary). The historical reproduction path is the frozen
+> tag `node-agent-runtime-e2e-2026-08-27` / branch `archive/node-agent-runtime`
+> and the frozen reference source `experiments/pion-cloudflare/`. Provenance
+> and safe-evidence discipline below still applies; the concrete
+> build/provisioning steps are marked where they are frozen-era only.
+
 Use this skill for real browser/media experiments against a deployed Free4Chat
 environment. It is deliberately separate from `free4chat-local-e2e`, which
 covers generic local Worker/DO full-stack tests.
@@ -24,21 +35,18 @@ bootstrap, STT, TTS, Pion, Worker behavior, and browser playback in one run.
 2. Use the canonical repository only. Do not create a worktree. Fetch and
    resolve `origin/cf-sfu`; use branch `cf-sfu` with a clean tree and record
    the exact `HEAD` SHA. Historical bisects are an explicit separate mode.
-3. Build `agent-runtime` freshly from that SHA and record its package version.
-   Never reuse an old `dist` directory without rebuilding.
-4. Build Pion from the intended source tree when practical. Set
-   `FREE4CHAT_PION_BIN` to that exact executable. Record its path and intended
-   source SHA; if exact identity cannot be proven, record
-   `pion_source_identity=unverified` and require a binary built in this run.
-5. Run the read-only gate before starting anything:
-
-   ```bash
-   ./scripts/media-e2e-preflight.sh --pion-bin /absolute/path/to/pion
-   ```
-
-   It must pass branch, clean-tree, origin, Runtime build, Pion executable,
-   and process checks. It never starts or kills processes. It only reports
-   counts for Free4Chat Runtime and Pion processes; never terminate unrelated
+3. *(Frozen era only.)* `agent-runtime` exists only in the historical tag
+   `node-agent-runtime-e2e-2026-08-27`. For the canonical Go runtime, install
+   the official release binary and record its version from
+   `free4chat-agent doctor --json` (release assets are SHA256SUMS-verified).
+4. *(Frozen era only.)* The separately built Pion executable and
+   `FREE4CHAT_PION_BIN` no longer exist: Pion is compiled in-process. Record
+   the released `free4chat-agent` version and the SHA256SUMS entry instead of
+   a sidecar binary path.
+5. *(Frozen era only.)* `scripts/media-e2e-preflight.sh` was removed with the
+   sidecar architecture. Its read-only gate discipline (branch, clean-tree,
+   origin, provenance, process counts — never starting or killing processes)
+   still applies manually. It only reports counts; never terminate unrelated
    OpenCode, Codex, Claude, editor, browser, or user processes.
 
 6. Start exactly one fresh Free4Chat daemon and one resident Agent after the
@@ -80,7 +88,8 @@ baseline replaces it.
 
 ## Voice treatment
 
-Use the same repository SHA, freshly built Runtime, Pion binary, deployed
+Use the same repository SHA, released `free4chat-agent` binary (record its
+`doctor --json` version), deployed
 Worker, browser, credentials, and provider configuration as the control, but
 use a second fresh room. Keep Meeting Notes OFF and enable Voice Reply for
 exactly one Agent. Send one minimal deterministic request.
@@ -117,10 +126,9 @@ First report:
 ```text
 hypothesis
 exact repo SHA
-Runtime version and fresh-build provenance
-Pion path and provenance
+free4chat-agent version (doctor --json) and release asset SHA256SUMS entry
 fresh room confirmed
-Free4Chat process counts
+free4chat-agent process counts
 golden-control result
 stage reached
 first failed gate

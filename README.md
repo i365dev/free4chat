@@ -1,7 +1,5 @@
 # free4chat
 
-[![npm version](https://img.shields.io/npm/v/@i365dev/free4chat-agent.svg)](https://www.npmjs.com/package/@i365dev/free4chat-agent)
-
 [www.free4.chat](https://www.free4.chat/) — real-time voice + text chat. No sign-up, no server to run. Open a room and talk.
 
 > ⚠️ Personal project / experimental. Use at your own risk.
@@ -33,7 +31,11 @@ free4chat is built around two principles: **no data outlives the conversation**,
 - Room presence, recent text/action messages, and track metadata are held by a per-room Durable Object while the room is active. A room has no fixed lifetime while occupied; it expires and its state is deleted automatically once it has been empty for a while.
 - Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
 
-The Worker authenticates the room and coordinates presence; audio and screen sharing flow through Cloudflare's media plane, while human files stay in browser-to-browser DataChannels. Text-only Agents can join through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint, observe room context, receive explicit `@Agent` addressing metadata, and read bounded ephemeral image copies through `read_attachment`. For resident participation, the copied Invite Agent prompt bootstraps the publishable `@i365dev/free4chat-agent` package with `npx`, which owns the participant lease and wakes one retained ACP session across many Harness turns. The runtime uses the same adapter for Hermes, OpenCode, Codex, Claude, Pi, DeepSeek Harness preview, and custom ACP agents. Agent voice is not implemented. MCP room access alone does not expose local host tools; ACP is a Harness control/lifecycle protocol, not a sandbox. Current built-in launchers are classified `trusted-room`/experimental until a verified restricted mode exists, and Hermes in particular includes native file, shell, browser, memory, and code tools. See [`app/public/agent.md`](./app/public/agent.md) for the machine-readable protocol.
+The Worker authenticates the room and coordinates presence; audio and screen sharing flow through Cloudflare's media plane, while human files stay in browser-to-browser DataChannels. Text-only Agents can join through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint, observe room context, receive explicit `@Agent` addressing metadata, and read bounded ephemeral image copies through `read_attachment`. For resident participation, the Invite Agent prompt bootstraps the official self-contained native **Go Agent Runtime** (`free4chat-agent`, published as versioned binaries plus SHA256SUMS on GitHub Releases — no Node, npm, or Go toolchain required), which owns the participant lease and wakes one retained ACP session across many Harness turns. The runtime uses the same adapter for Hermes, OpenCode, Codex, Claude, Pi, DeepSeek Harness preview, and custom ACP agents; Pion runs in-process, and Doubao STT/TTS power Meeting Notes and audible Voice Reply. MCP room access alone does not expose local host tools; ACP is a Harness control/lifecycle protocol, not a sandbox. Current built-in launchers are classified `trusted-room`/experimental until a verified restricted mode exists, and Hermes in particular includes native file, shell, browser, memory, and code tools. See [`app/public/agent.md`](./app/public/agent.md) for the machine-readable protocol.
+
+> The previous Node/TypeScript runtime was frozen as an immutable historical
+> reference (tag `node-agent-runtime-e2e-2026-08-27`, branch
+> `archive/node-agent-runtime`) and is no longer maintained.
 
 ## Tech Stack
 
@@ -43,7 +45,7 @@ The Worker authenticates the room and coordinates presence; audio and screen sha
 | API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`                                    |
 | Storage  | Cloudflare KV (room metadata, rate limiting) + per-room Durable Object state                                     |
 | Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)                                           |
-| Agents   | Stateless MCP v2 Room API + optional local Free4Chat Agent Runtime with one ACP v1 adapter and launcher registry |
+| Agents   | Stateless MCP v2 Room API + optional local Go Agent Runtime (self-contained binary, in-process Pion, one ACP v1 adapter and launcher registry) |
 | Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting                             |
 
 ## Stack History

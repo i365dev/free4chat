@@ -10,6 +10,7 @@ Free4Chat is a no-sign-up real-time voice, text, file, and screen-sharing chat a
 - Stack: Next.js 15 → Cloudflare Worker via `@opennextjs/cloudflare`
 - Media: browser WebRTC → Cloudflare Realtime SFU
 - Coordination: Cloudflare Durable Objects
+- Agent Runtime: self-contained Go binary (`agent/`) — canonical; the frozen Node reference (`node-agent-runtime-e2e-2026-08-27` / `archive/node-agent-runtime`) is immutable history only
 
 ## Directory layout
 
@@ -36,10 +37,15 @@ free4chat/
 │   ├── worker.ts                     # Worker entry and DO exports
 │   ├── wrangler.jsonc                # production Worker config
 │   └── .dev.vars.example
-└── .github/workflows/deploy-web.yml
+├── agent/                            # canonical Go Agent Runtime (self-contained binary)
+│   ├── cmd/free4chat-agent/
+│   ├── internal/{cli,daemon,free4chat,runtime,harness,media,speech,voice,...}
+│   ├── scripts/release.sh            # native distribution build + SHA256SUMS
+│   └── scripts/check-cleanup.sh      # distribution/cleanup contract check
+└── .github/workflows/{deploy-web.yml,go-agent.yml,agent-release.yml}
 ```
 
-The optional top-level `agent-runtime/` package is a local Node.js process, not part of the Worker. It owns resident Agent lifecycle and uses outbound MCP only. It must not expose a TCP/HTTP listener, persist participant capabilities, or be imported into the Cloudflare app.
+The `agent/` Go module is a local, self-contained runtime, not part of the Worker. It owns resident Agent lifecycle and uses outbound MCP only. It must not expose a TCP/HTTP listener, persist participant capabilities, or be imported into the Cloudflare app. It ships only as native binaries (plus `SHA256SUMS`) from GitHub Releases; the frozen Node runtime is immutable history (tag `node-agent-runtime-e2e-2026-08-27`, branch `archive/node-agent-runtime`).
 
 ## SFU architecture
 
@@ -67,9 +73,9 @@ Agents are first-class `kind: "agent"` participants. `media` state is normally a
 
 The MCP/text protocol itself is text-only and always will be: no MCP tool ever returns or accepts SFU session IDs, participant tokens, track IDs, or DataChannel IDs. `room_info` returns sanitized participant data and capabilities, never tokens, connection nonces, SFU session IDs, track IDs, DataChannel IDs, or message history — it does surface the room-visible `meetingNotes` grant state (`active`/`agentParticipantId`), since that is public room state, not a capability secret; the same `agentParticipantId` is already visible in the participant list. `wait_for_events` is a bounded long-poll and lease heartbeat (0–25 seconds); it returns all room context with per-Agent `addressed` metadata. Human browser images remain DataChannel transfers; when an Agent is present, supported images (jpeg/png/webp ≤768KB) and text-like files (text/plain, text/markdown, text/csv, application/json) may also be stored as bounded ephemeral chunks for `read_attachment`; text attachments are returned decoded as UTF-8 in the tool result. Do not replace this with polling loops, queues, R2, or a second Durable Object.
 
-For resident participation, `agent-runtime/` owns the opaque participant handle, cursor, lease heartbeat, reconnect/rejoin, bounded sanitized event buffer, attachment reads, and Harness wakeup. One Free4Chat participant represents the runtime across many model turns. The Harness receives only sanitized room context and returns response text; it never receives the handle/token/cursor, SFU credentials, or raw media, and does not call the Free4Chat MCP tools directly. Use the official local programmatic interface for each adapter: Hermes TUI gateway JSON-RPC, Codex App Server, Claude Agent SDK, and Pi AgentSession. Do not auto-approve privileged Harness tools.
+For resident participation, the canonical Go runtime (`agent/`) owns the opaque participant handle, cursor, lease heartbeat, reconnect/rejoin, bounded sanitized event buffer, attachment reads, and Harness wakeup. One Free4Chat participant represents the runtime across many model turns. The Harness receives only sanitized room context and returns response text; it never receives the handle/token/cursor, SFU credentials, or raw media, and does not call the Free4Chat MCP tools directly. Use the official local programmatic interface for each adapter: Hermes TUI gateway JSON-RPC, Codex App Server, Claude Agent SDK, and Pi AgentSession. Do not auto-approve privileged Harness tools.
 
-The same resident Runtime object may *also* own a separate, optional Meeting Notes media capability (`MeetingNotesController` + `SfuMediaBridge`, both under `agent-runtime/src/media/`) — see [Meeting Notes / Agent media](#meeting-notes--agent-media-82) for the full boundary. This is additive, not a second participant: there is exactly one visible Agent per resident Runtime, with an optional media capability layered on top, never a second "Hermes-media 🤖"-style duplicate.
+The same resident Runtime object may *also* own a separate, optional Meeting Notes media capability (`media.Controller` + `media.Bridge`, both under `agent/internal/media/`) — see [Meeting Notes / Agent media](#meeting-notes--agent-media-82) for the full boundary. This is additive, not a second participant: there is exactly one visible Agent per resident Runtime, with an optional media capability layered on top, never a second "Hermes-media 🤖"-style duplicate.
 
 ## Meeting Notes / Agent media (#82)
 
@@ -103,13 +109,19 @@ Use `umamiEvent()` or `trackAnalyticsEvent()` from `src/common/utils.ts`. The an
 ## Development
 
 ```bash
+# Web app
 cd app
 yarn install
 cp .dev.vars.example .dev.vars
 yarn dev
+
+# Go Agent Runtime
+cd agent
+go build ./cmd/free4chat-agent
+go test ./...
 ```
 
-`.dev.vars` is gitignored. Never print or commit it. See `DEVELOPMENT.md` for deployment and secret setup.
+`.dev.vars` is gitignored. Never print or commit it. See `DEVELOPMENT.md` for deployment and secret setup. Native distribution: `agent/scripts/release.sh` builds the platform matrix plus `SHA256SUMS`; `agent/scripts/check-cleanup.sh` enforces the distribution/cleanup contract.
 
 ## Build and deployment
 
@@ -132,3 +144,6 @@ Pushes to `cf-sfu` that touch `app/**` run lint, type-check, build, and deploy t
 - Agent attachment chunks are room-scoped ephemeral state and must be deleted on eviction and room expiry; never add public attachment URLs.
 - Do not place participant capabilities in query strings, logs, analytics, or copied Agent prompts.
 - Do not commit `.dev.vars`, generated secrets, or `*.tsbuildinfo`.
+- The canonical Agent Runtime is the Go binary under `agent/`; the frozen Node runtime is immutable history — do not reintroduce the npm runtime or Node↔Pion provisioning machinery.
+- `experiments/pion-cloudflare/` is historical experiment/reference source: preserve it, do not rewrite or delete it.
+- Preserve the frozen tag `node-agent-runtime-e2e-2026-08-27` and archive branch `archive/node-agent-runtime`.

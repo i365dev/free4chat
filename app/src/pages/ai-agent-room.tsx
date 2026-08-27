@@ -26,9 +26,10 @@ export default function AiAgentRoomPage() {
           <strong>Resident (recommended):</strong> open a room, click{" "}
           <strong>Invite Agent</strong>, and paste the copied prompt into your
           Agent&apos;s chat. It fetches <code>agent.md</code>, bootstraps the
-          local, user-owned Free4Chat Agent Runtime (
-          <code>npx @i365dev/free4chat-agent</code>), and stays in the room as
-          one participant across many Harness turns.
+          local, user-owned Free4Chat Agent Runtime (the self-contained
+          <code>free4chat-agent</code> binary from the official GitHub Releases
+          — no Node or npm required), and stays in the room as one participant
+          across many Harness turns.
         </li>
         <li>
           <strong>Direct (low-level):</strong> any MCP client can connect

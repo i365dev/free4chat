@@ -2,7 +2,8 @@
 
 ## Prerequisites
 
-- Node.js 22+
+- Node.js 22+ (app development)
+- Go 1.27+ (Agent Runtime development)
 - A Cloudflare account with Realtime SFU enabled
 - A Cloudflare Realtime SFU App ID and App Secret
 
@@ -24,17 +25,36 @@ Required local values are documented in `app/.dev.vars.example`:
 
 Turnstile is optional locally. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey, so the just-in-time challenge (triggered when joining a room, not on page load) resolves instantly. Set both `NEXT_PUBLIC_TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` when testing the production verification flow end-to-end.
 
-The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. It supports text/actions, explicit Agent targeting, and bounded ephemeral image vision through `read_attachment`; Agent voice is not implemented. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
+The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
 
-## Resident Agent Runtime
+## Resident Agent Runtime (Go, canonical)
 
-The MCP endpoint is a stateless Room API. It is not a resident lifecycle owner. For a local Agent that should remain present across many Harness turns, the human-facing path is a copied Invite Agent prompt. The Agent fetches `agent.md`, identifies its own Harness, and runs the published package:
+The MCP endpoint is a stateless Room API. It is not a resident lifecycle owner. For a local Agent that should remain present across many Harness turns, the human-facing path is a copied Invite Agent prompt. The Agent fetches `agent.md`, identifies its own Harness, and bootstraps the self-contained native binary from the official GitHub Releases, then runs:
 
 ```bash
-npx -y @i365dev/free4chat-agent@latest join --room <room-id> --agent <harness> --name <name>
+free4chat-agent join --room <room-id> --agent <harness> --name <name>
 ```
 
-Published releases ship through CI when a matching `agent-runtime-v<package-version>` tag is pushed (npm Trusted Publishing); ordinary branch pushes and pull requests validate only. For repository development only, run `npm install && npm run build` in `agent-runtime`, then use `node dist/cli.js ...`. The runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does not open a public inbound port. It keeps the participant handle, token, cursor, and lease in memory; none are passed to the Harness prompt or written to user-visible output. The same generic ACP v1 adapter launches the configured local Harness, negotiates its capabilities, creates one retained ACP session, and wakes it for each addressed room turn. The runtime itself owns `wait_for_events`, reconnect, bounded room context, `read_attachment`, and `send_text`. Use `--agent-command <command> --agent-arg <arg>` for any ACP-compatible process. Do not replace this with cron, shell polling, or an interactive Harness UI session.
+Published releases ship when a matching `agent-v<version>` tag is pushed:
+CI builds the four self-contained binaries
+(`free4chat-agent-darwin-arm64`, `free4chat-agent-darwin-amd64`,
+`free4chat-agent-linux-arm64`, `free4chat-agent-linux-amd64`) plus a
+`SHA256SUMS` manifest and publishes them as a GitHub Release (the tag version
+is injected into the binary and reported by `free4chat-agent doctor --json`).
+The binary is
+self-contained — Node, npm, pnpm, a Go toolchain, and a separately downloaded
+media engine binary are all unnecessary; Pion runs in-process. For repository
+development only, run `go build ./cmd/free4chat-agent` inside `agent/`. The
+runtime uses a restrictive Unix socket under `~/.free4chat-agent/` and does
+not open a public inbound port. It keeps the participant handle, token,
+cursor, and lease in memory; none are passed to the Harness prompt or written
+to user-visible output. The same generic ACP v1 adapter launches the
+configured local Harness, negotiates its capabilities, creates one retained
+ACP session, and wakes it for each addressed room turn. The runtime itself
+owns `wait_for_events`, reconnect, bounded room context, `read_attachment`,
+and `send_text`. Use `--agent-command <command> --agent-arg <arg>` for any
+ACP-compatible process. Do not replace this with cron, shell polling, or an
+interactive Harness UI session.
 
 ACP is a control and lifecycle boundary, not a sandbox. Cancelling
 `session/request_permission` does not restrict native Harness tools. Current
@@ -91,7 +111,7 @@ configuration.
 
 The browser connects directly to Cloudflare Realtime SFU for audio and screen sharing. `RoomSession` is a hibernating Durable Object for presence, mute state, text, reactions, resync, and room expiry. A room has no fixed total lifetime while it holds at least one participant (human or agent); it's cleaned up automatically once it has held zero participants for `EMPTY_ROOM_TIMEOUT_MS` (30 minutes). Files and images use chunked, reliable DataChannels and are never persisted by the application.
 
-The `/mcp` route uses `createMcpHandler` with a fresh MCP v2 server per request. The MCP layer is stateless: it encodes `{ room, participantId, participantToken }` in an opaque URL-safe participant handle, while the Durable Object owns the room participant lease, message cursor, long-poll waiters, ephemeral attachment chunks, and expiry alarm. Agents are first-class text-only participants (`kind: "agent"`); the sanitized MCP surface (`room_info`, room-state events) never exposes media/session/track identifiers to a generic MCP client. A resident Runtime's MediaBridge (#82 Phase 0, subscribe-only SFU audio ingress) is a separate REST surface (`/api/sfu/agent-session`, `/api/sfu/agent-room-media`) not exposed through the MCP tool surface, requiring an authorized agent participant token — but that's not an additional security layer: the participantHandle is only base64url(JSON), decodable by anything that has it, not a cryptographic capability. Phase-0 production access is additionally gated off by `AGENT_MEDIA_ENABLED` (unset/false by default, and not set by the CI deploy workflow), which is a development kill switch, not the eventual authorization model — a future product PR must replace it with explicit, room/user-visible media-listening consent before this ships to production. See `agent-runtime/src/media/` and `app/src/sfu/server.ts`'s `AGENT_MEDIA_ENABLED` comment. `room_info` is read-only; `join_room` may create a new ephemeral room (no fixed lifetime while occupied — see the SFU architecture section below); `wait_for_events` is the lease heartbeat and is capped at 25 seconds. Human image delivery remains SFU/DataChannel; only a bounded temporary vision copy is available to Agents through `read_attachment`.
+The `/mcp` route uses `createMcpHandler` with a fresh MCP v2 server per request. The MCP layer is stateless: it encodes `{ room, participantId, participantToken }` in an opaque URL-safe participant handle, while the Durable Object owns the room participant lease, message cursor, long-poll waiters, ephemeral attachment chunks, and expiry alarm. Agents are first-class text-only participants (`kind: "agent"`); the sanitized MCP surface (`room_info`, room-state events) never exposes media/session/track identifiers to a generic MCP client. A resident Runtime's MediaBridge (#82 Phase 0, subscribe-only SFU audio ingress) is a separate REST surface (`/api/sfu/agent-session`, `/api/sfu/agent-room-media`) not exposed through the MCP tool surface, requiring an authorized agent participant token — but that's not an additional security layer: the participantHandle is only base64url(JSON), decodable by anything that has it, not a cryptographic capability. Phase-0 production access is additionally gated off by `AGENT_MEDIA_ENABLED` (unset/false by default, and not set by the CI deploy workflow), which is a development kill switch, not the eventual authorization model — a future product PR must replace it with explicit, room/user-visible media-listening consent before this ships to production. See `agent/internal/media/` and `app/src/sfu/server.ts`'s `AGENT_MEDIA_ENABLED` comment. `room_info` is read-only; `join_room` may create a new ephemeral room (no fixed lifetime while occupied — see the SFU architecture section below); `wait_for_events` is the lease heartbeat and is capped at 25 seconds. Human image delivery remains SFU/DataChannel; only a bounded temporary vision copy is available to Agents through `read_attachment`.
 
 The public room URL is:
 
@@ -120,7 +140,11 @@ free4chat/
 └── .github/workflows/deploy-web.yml
 ```
 
-The independent `agent-runtime/` package contains the local daemon/CLI, MCP client, lifecycle core, event buffer, generic ACP v1 client, and launcher registry. It is not part of the Worker bundle. It publishes as `@i365dev/free4chat-agent` only through the tag-triggered `agent-runtime-v<package-version>` workflow (npm Trusted Publishing via GitHub OIDC); ordinary branch pushes and pull requests validate without publishing. ACP is the local runtime boundary; MCP remains the external room API. A2A is intentionally future work because it would add remote discovery, authentication, and trust concerns.
+The canonical `agent/` Go module contains the daemon/CLI, MCP client, room lifecycle core, bounded event buffer, in-process Pion media engine, Doubao speech integration, generic ACP v1 client, and launcher registry. It is not part of the Worker bundle. It publishes only through the tag-triggered `agent-v<version>` workflow (native binaries + SHA256SUMS on GitHub Releases); ordinary branch pushes and pull requests validate without publishing. ACP is the local runtime boundary; MCP remains the external room API. A2A is intentionally future work because it would add remote discovery, authentication, and trust concerns.
+
+The previous Node/TypeScript runtime is preserved only as an immutable
+historical reference: tag `node-agent-runtime-e2e-2026-08-27`, branch
+`archive/node-agent-runtime` — it receives no ongoing maintenance.
 
 Resident launchers run with a restricted environment and a per-instance 0700
 workspace. Provider authentication variables may be retained, but unrelated
