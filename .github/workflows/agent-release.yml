@@ -136,6 +136,14 @@ jobs:
             rmdir "$name"
             mv "./$name.artifact" "./$name"
           done
+          # upload/download-artifact v4 does not preserve the executable
+          # bit: the assembled binaries must be made executable again before
+          # the version-verification step runs them.
+          chmod +x \
+            free4chat-agent-darwin-arm64 \
+            free4chat-agent-darwin-amd64 \
+            free4chat-agent-linux-arm64 \
+            free4chat-agent-linux-amd64
           sha256sum \
             free4chat-agent-darwin-arm64 \
             free4chat-agent-darwin-amd64 \
