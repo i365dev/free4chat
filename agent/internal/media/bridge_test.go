@@ -31,12 +31,16 @@ type fakeEngine struct {
 	writes          [][]byte
 	flushCalls      int
 	closeCalls      int
+	// turn admission mirror
+	admitted        uint64
+	cancelledTokens map[uint64]bool
 }
 
 func newFakeEngine() *fakeEngine {
 	return &fakeEngine{
-		gatheredOffer: &Description{Type: "offer", SDP: "local-offer-sdp"},
-		localOffer:    &Description{Type: "offer", SDP: "fresh-offer-sdp"},
+		gatheredOffer:   &Description{Type: "offer", SDP: "local-offer-sdp"},
+		localOffer:      &Description{Type: "offer", SDP: "fresh-offer-sdp"},
+		cancelledTokens: make(map[uint64]bool),
 	}
 }
 
@@ -99,11 +103,41 @@ func (f *fakeEngine) DeactivatePublish() {
 func (f *fakeEngine) CancelTurn(token uint64) {
 	f.mu.Lock()
 	f.cancelCalls++
+	f.cancelledTokens[token] = true
 	f.mu.Unlock()
+}
+
+// ValidateTurn mirrors the real engine's admission check.
+func (f *fakeEngine) ValidateTurn(token uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if token == 0 {
+		return true
+	}
+	if f.cancelledTokens[token] {
+		return false
+	}
+	if f.admitted != 0 && token < f.admitted {
+		return false
+	}
+	return true
 }
 func (f *fakeEngine) WritePCM(chunk []byte, token uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Inline the admission check: ValidateTurn re-locks f.mu, which this
+	// method already holds.
+	if token != 0 {
+		if f.cancelledTokens[token] {
+			return errPublishNotActive
+		}
+		if f.admitted != 0 && token < f.admitted {
+			return errPublishNotActive
+		}
+		if token > f.admitted {
+			f.admitted = token
+		}
+	}
 	if !f.publishActive {
 		return errPublishNotActive
 	}
@@ -574,5 +608,112 @@ func TestBridgeWritePcmBufferBound(t *testing.T) {
 	}
 	if err == nil || err.Error() != "voice_pcm_buffer_full" {
 		t.Fatalf("buffer bound must fail closed with voice_pcm_buffer_full, got %v", err)
+	}
+}
+
+// TestDelayedOldCallbackRejectedAfterCancelAndNewTurnFlows pins the bridge
+// boundary: a delayed old-turn callback entering WriteVoicePcm AFTER its
+// cancel must be rejected (never buffered, never written); the new turn
+// then flows on the same publication.
+func TestDelayedOldCallbackRejectedAfterCancelAndNewTurnFlows(t *testing.T) {
+	engine := newFakeEngine()
+	engine.mid = "9"
+	rest := newFakeRest()
+	rest.confirmActive = true
+	rest.confirmDiagnostic = PublishedAudioDiagnostic{MatchingTrackStatus: "active", Active: true}
+	bridge := NewBridge(testBridgeOptions(engine, rest, &PublishConfig{TrackName: "agent-voice"}))
+	if err := bridge.Start(t.Context()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer bridge.Stop()
+	if err := bridge.ActivateVoicePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Turn 1 admitted, then cancelled.
+	if err := bridge.WriteVoicePcm([]byte("t1"), 1); err != nil {
+		t.Fatalf("t1 write: %v", err)
+	}
+	bridge.CancelVoiceTurn(1)
+
+	// The delayed old callback arrives AFTER the cancel: rejected.
+	if err := bridge.WriteVoicePcm([]byte("t1-late"), 1); err == nil ||
+		err != errPublishNotActive {
+		t.Fatalf("delayed old callback must be rejected, got %v", err)
+	}
+
+	// Turn 2 on the same publication flows normally.
+	if err := bridge.WriteVoicePcm([]byte("t2"), 2); err != nil {
+		t.Fatalf("t2 write: %v", err)
+	}
+	writes := engine.snapshotWrites()
+	found := false
+	for _, write := range writes {
+		if string(write) == "t2" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("new turn PCM missing from engine writes: %q", writes)
+	}
+	for _, write := range writes {
+		if string(write) == "t1-late" {
+			t.Fatal("stale late PCM reached the engine")
+		}
+	}
+}
+
+// TestPendingBufferPreservesTokensAndRejectsStaleDrain pins pending-item
+// token preservation: a stale pending item is never drained under a newer
+// turn's token.
+func TestPendingBufferPreservesTokensAndRejectsStaleDrain(t *testing.T) {
+	engine := newFakeEngine()
+	engine.mid = "9"
+	rest := newFakeRest()
+	bridge := NewBridge(testBridgeOptions(engine, rest, &PublishConfig{TrackName: "agent-voice"}))
+	if err := bridge.Start(t.Context()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer bridge.Stop()
+	if err := bridge.ActivateVoicePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Turn 1's chunks buffer while the publication is unannounced.
+	rest.mu.Lock()
+	rest.confirmActive = false
+	rest.mu.Unlock()
+	_ = bridge.WriteVoicePcm([]byte("t1-chunk"), 1)
+	bridge.CancelVoiceTurn(1) // clears pending (as designed)
+
+	// Repopulate the pending buffer with a DELAYED old callback (simulating
+	// the exact race the review describes) — the entry check must reject it.
+	if err := bridge.WriteVoicePcm([]byte("t1-late-chunk"), 1); err == nil {
+		t.Fatal("delayed old callback must not be buffered")
+	}
+
+	// Turn 2 buffers and drains normally.
+	rest.mu.Lock()
+	rest.confirmActive = true
+	rest.confirmDiagnostic.Active = true
+	rest.confirmDiagnostic.MatchingTrackStatus = "active"
+	rest.mu.Unlock()
+	_ = bridge.WriteVoicePcm([]byte("t2-chunk"), 2)
+	_ = bridge.FlushVoice(2)
+
+	writes := engine.snapshotWrites()
+	for _, write := range writes {
+		if string(write) == "t1-late-chunk" {
+			t.Fatal("stale pending item was drained under the new turn")
+		}
+	}
+	found := false
+	for _, write := range writes {
+		if string(write) == "t2-chunk" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("new turn chunk missing: %q", writes)
 	}
 }

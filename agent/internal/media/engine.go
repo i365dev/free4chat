@@ -90,10 +90,10 @@ type Engine struct {
 	mu                sync.Mutex
 	outbound          *webrtc.TrackLocalStaticSample
 	publishOn         bool
-	pubGeneration     uint64 // bumped on every activate/deactivate (grant boundary)
-	turnGeneration    uint64 // bumped on every CancelTurn (utterance boundary)
-	admittedTurn      uint64 // token of the currently admitted turn (0 = none)
-	cancelledTurn     uint64 // token of the most recently cancelled turn (0 = none)
+	pubGeneration     uint64          // bumped on every activate/deactivate (grant boundary)
+	turnGeneration    uint64          // bumped on every CancelTurn (utterance boundary)
+	admittedTurn      uint64          // token of the currently admitted turn (0 = none)
+	cancelledTurns    map[uint64]bool // bounded set of invalidated tokens
 	encoder           *opus.Encoder
 	pcmWriteCalls     uint64
 	pcmInputBytes     uint64
@@ -185,14 +185,15 @@ func NewEngine(events EngineEvents, log func(event string, details map[string]st
 		log = func(string, map[string]string) {}
 	}
 	return &Engine{
-		ev:           events,
-		log:          log,
-		dcOpen:       make(chan struct{}),
-		rtpCounts:    make(map[string]uint64),
-		nowFn:        time.Now,
-		sleepFn:      time.Sleep,
-		writerNotify: make(chan struct{}, 1),
-		writerSpace:  make(chan struct{}, 1),
+		ev:             events,
+		log:            log,
+		dcOpen:         make(chan struct{}),
+		rtpCounts:      make(map[string]uint64),
+		nowFn:          time.Now,
+		sleepFn:        time.Sleep,
+		writerNotify:   make(chan struct{}, 1),
+		writerSpace:    make(chan struct{}, 1),
+		cancelledTurns: make(map[uint64]bool),
 	}
 }
 
@@ -478,7 +479,7 @@ func (e *Engine) DeactivatePublish() {
 	e.turnGeneration++
 	e.turnOpen = false
 	e.admittedTurn = 0
-	e.cancelledTurn = 0
+	e.cancelledTurns = make(map[uint64]bool)
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
 }
@@ -591,12 +592,34 @@ func (e *Engine) admitTurn(token uint64) bool {
 	if token == 0 {
 		return true // token-less callers (pre-token tests) keep legacy semantics
 	}
-	if token == e.cancelledTurn {
+	if e.cancelledTurns[token] {
 		return false
 	}
 	if token != e.admittedTurn {
+		// Tokens are issued monotonically by the speaker: anything OLDER
+		// than the admitted turn is a stale turn, never a new one.
+		if e.admittedTurn != 0 && token < e.admittedTurn {
+			return false
+		}
 		e.admittedTurn = token
 		e.turnOpen = true
+	}
+	return true
+}
+
+// validateTurn is the non-mutating admission check for the bridge boundary:
+// buffering decisions must reject stale tokens without admitting anything.
+func (e *Engine) ValidateTurn(token uint64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if token == 0 {
+		return true
+	}
+	if e.cancelledTurns[token] {
+		return false
+	}
+	if e.admittedTurn != 0 && token < e.admittedTurn {
+		return false
 	}
 	return true
 }
@@ -629,13 +652,24 @@ func (e *Engine) CancelTurn(token uint64) {
 	// Utterance boundary: invalidate the CURRENT turn generation and close
 	// the fill window, then discard queued/carried PCM. The publication
 	// stays active — the next turn writes normally on the same grant.
-	// The token is explicitly cancelled: any late PCM from this turn is
-	// rejected at admission, even if it crosses the cancel boundary.
+	// The token joins the cancelled set: any late PCM from this turn is
+	// rejected at admission forever, even after later turns were admitted.
 	e.mu.Lock()
 	e.turnGeneration++
 	e.turnOpen = false
 	if token != 0 {
-		e.cancelledTurn = token
+		e.cancelledTurns[token] = true
+		if len(e.cancelledTurns) > 64 {
+			// Bound the set: tokens are monotonic, so the SMALLEST entries
+			// are the oldest and can be evicted.
+			smallest := token
+			for candidate := range e.cancelledTurns {
+				if candidate < smallest {
+					smallest = candidate
+				}
+			}
+			delete(e.cancelledTurns, smallest)
+		}
 		if e.admittedTurn == token {
 			e.admittedTurn = 0
 		}
@@ -804,7 +838,7 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 				// Flush marker: pad and emit the partial tail. A concurrent
 				// revocation makes this a discard-only no-op — the loop
 				// continues, never exits.
-				if err := e.writerEmitCarry(track(), writer()); err != nil {
+				if err := e.writerEmitCarry(item.token, track(), writer()); err != nil {
 					_ = err // dropped frame; writer stays alive
 				}
 				e.mu.Lock()
@@ -858,7 +892,7 @@ func (e *Engine) writerWriteChunk(gen, turnGen, token uint64, chunk []byte, trac
 }
 
 // writerEmitCarry zero-pads the partial tail and emits it in its own slot.
-func (e *Engine) writerEmitCarry(track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
+func (e *Engine) writerEmitCarry(token uint64, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
 	e.writerMu.Lock()
 	carry := e.carry
 	e.carry = nil
@@ -870,7 +904,10 @@ func (e *Engine) writerEmitCarry(track *webrtc.TrackLocalStaticSample, enc *opus
 		carry = append(carry, 0)
 	}
 	e.pacer.pace()
-	if !e.publishActive() {
+	// Re-validate after the paced wait: a cancel landing DURING the wait
+	// must discard the pending tail before any sample goes out.
+	if !e.publishActive() ||
+		(token != 0 && !e.ValidateTurn(token)) {
 		return errPublishNotActive
 	}
 	padded := make([]byte, 960)
@@ -896,7 +933,12 @@ func (e *Engine) fillSilenceIfMidTurn(track *webrtc.TrackLocalStaticSample, enc 
 		return false
 	}
 	e.pacer.pace()
-	if !e.publishActive() {
+	// Re-check after the paced wait: a cancel during the wait must stop the
+	// fill before any silence frame is emitted.
+	e.mu.Lock()
+	stillOpen := e.turnOpen && e.publishOn
+	e.mu.Unlock()
+	if !stillOpen {
 		return false
 	}
 	frame := make([]byte, 960) // 20 ms of silence @24k mono

@@ -38,6 +38,7 @@ type EngineLike interface {
 	ActivatePublish() error
 	DeactivatePublish()
 	CancelTurn(token uint64)
+	ValidateTurn(token uint64) bool
 	WritePCM(chunk []byte, token uint64) error
 	FlushAudio(token uint64) error
 	PublishCounts() map[string]uint64
@@ -78,6 +79,14 @@ type BridgeOptions struct {
 // PublishConfig is the voiceReply publication shape.
 type PublishConfig struct {
 	TrackName string
+}
+
+// pendingPcmItem buffers one pre-announcement PCM chunk together with the
+// turn token that produced it: a stale item must never be drained under a
+// later turn's token.
+type pendingPcmItem struct {
+	token uint64
+	data  []byte
 }
 
 type pendingTrack struct {
@@ -129,7 +138,7 @@ type Bridge struct {
 	voicePrimingSent     bool
 	voicePadSent         bool
 	voiceConfirmFlight   chan struct{}
-	pendingVoicePCM      [][]byte
+	pendingVoicePCM      []pendingPcmItem
 	pendingVoicePCMBytes int
 	pcmWriteCalls        int
 	pcmInputBytes        int
@@ -658,12 +667,17 @@ func (b *Bridge) WriteVoicePcm(chunk []byte, token uint64) error {
 		return err
 	}
 	b.confirmVoicePublicationActive()
+	// Stale-turn admission at the bridge boundary: a delayed old callback
+	// must not be buffered under a newer turn.
+	if !b.validateTurn(token) {
+		return errPublishNotActive
+	}
 	announced := b.voicePublicationAnnounced()
 	if !announced {
 		b.mu.Lock()
 		b.voiceBytesBuffered += len(chunk)
 		b.mu.Unlock()
-		if err := b.enqueuePendingVoicePcm(chunk); err != nil {
+		if err := b.enqueuePendingVoicePcm(chunk, token); err != nil {
 			return err
 		}
 		return nil
@@ -836,6 +850,18 @@ func bool01(value bool) string {
 	return "0"
 }
 
+// validateTurn checks the engine's admission state before buffering or
+// writing: stale tokens are rejected at the bridge boundary.
+func (b *Bridge) validateTurn(token uint64) bool {
+	b.mu.Lock()
+	engine := b.engine
+	b.mu.Unlock()
+	if engine == nil {
+		return false
+	}
+	return engine.ValidateTurn(token)
+}
+
 func (b *Bridge) voicePublicationAnnounced() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -848,7 +874,7 @@ func (b *Bridge) pendingVoiceCount() int {
 	return len(b.pendingVoicePCM)
 }
 
-func (b *Bridge) enqueuePendingVoicePcm(chunk []byte) error {
+func (b *Bridge) enqueuePendingVoicePcm(chunk []byte, token uint64) error {
 	if len(chunk) == 0 {
 		return nil
 	}
@@ -858,7 +884,7 @@ func (b *Bridge) enqueuePendingVoicePcm(chunk []byte) error {
 		return errors.New("voice_pcm_buffer_full")
 	}
 	copied := append([]byte(nil), chunk...)
-	b.pendingVoicePCM = append(b.pendingVoicePCM, copied)
+	b.pendingVoicePCM = append(b.pendingVoicePCM, pendingPcmItem{token: token, data: copied})
 	b.pendingVoicePCMBytes += len(copied)
 	return nil
 }
@@ -870,12 +896,19 @@ func (b *Bridge) drainPendingVoicePcm(token uint64) error {
 			b.mu.Unlock()
 			return nil
 		}
-		chunk := b.pendingVoicePCM[0]
+		item := b.pendingVoicePCM[0]
 		b.pendingVoicePCM = b.pendingVoicePCM[1:]
-		b.pendingVoicePCMBytes -= len(chunk)
-		b.voiceBytesDrained += len(chunk)
+		b.pendingVoicePCMBytes -= len(item.data)
 		b.mu.Unlock()
-		if err := b.writeEnginePcm(chunk, token); err != nil {
+		if item.token != token {
+			// A stale pending item can never drain under a later turn's
+			// token; discard it without touching the engine.
+			continue
+		}
+		b.mu.Lock()
+		b.voiceBytesDrained += len(item.data)
+		b.mu.Unlock()
+		if err := b.writeEnginePcm(item.data, token); err != nil {
 			return err
 		}
 	}

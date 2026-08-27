@@ -500,6 +500,24 @@ func TestReactivateAfterDeactivateWritesAudio(t *testing.T) {
 	}
 }
 
+// waitForRingEmpty waits until the queue ring is empty.
+func waitForRingEmpty(t *testing.T, engine *Engine) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(engine.queueRingSnapshot()) == 0 {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	engine.writerMu.Lock()
+	carry := len(engine.carry)
+	running := engine.writerRunning
+	engine.writerMu.Unlock()
+	t.Fatalf("ring never emptied: ring=%d carry=%d writerRunning=%v frames=%d",
+		len(engine.queueRingSnapshot()), carry, running, engine.framesWritten())
+}
+
 // waitForQueueDrain waits until both the queue channel and the writer's
 // carry are empty.
 func waitForQueueDrain(t *testing.T, engine *Engine) {
@@ -1289,12 +1307,109 @@ func TestStaleCallbackCrossingCancelBoundaryRejected(t *testing.T) {
 	speaker.Speak("第二轮。")
 	waitForRealFrames(t, engine, 2)
 	engine.mu.Lock()
-	t.Logf("DEBUG: realFrames=%d admitted=%d cancelled=%d turnGen=%d turnOpen=%v",
+	t.Logf("DEBUG: realFrames=%d admitted=%d turnGen=%d turnOpen=%v",
 		engine.opusFramesWritten-engine.silenceFills, engine.admittedTurn,
-		engine.cancelledTurn, engine.turnGeneration, engine.turnOpen)
+		engine.turnGeneration, engine.turnOpen)
 	engine.mu.Unlock()
 	if got := engine.realFramesWritten(); got < 2 {
 		t.Fatalf("new turn frames=%d, want >=2", got)
 	}
 	_ = speaker.Close()
+}
+
+// TestMultipleStaleTokenOrdering pins the review's second risk: the engine
+// must reject ARBITRARY late old tokens after newer cancels — not just the
+// most recent one — while the current turn keeps flowing.
+func TestMultipleStaleTokenOrdering(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	engine.sleepFn = func(time.Duration) {}
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Admit -> cancel for two turns.
+	_ = engine.WritePCM(make([]byte, 960), 1)
+	engine.CancelTurn(1)
+	_ = engine.WritePCM(make([]byte, 960), 2)
+	engine.CancelTurn(2)
+	// Turn 3 admitted.
+	if err := engine.WritePCM(make([]byte, 960), 3); err != nil {
+		t.Fatalf("turn 3 write: %v", err)
+	}
+	waitForRealFrames(t, engine, 1)
+
+	// A late turn-1 token must be rejected (older than the admitted turn
+	// AND in the cancelled set), not re-admit as a "new" turn.
+	if err := engine.WritePCM(make([]byte, 960), 1); !errors.Is(err, errPublishNotActive) {
+		t.Fatalf("late token 1 must be rejected, got %v", err)
+	}
+	if err := engine.WritePCM(make([]byte, 960), 2); !errors.Is(err, errPublishNotActive) {
+		t.Fatalf("late token 2 must be rejected, got %v", err)
+	}
+	// Turn 3 continues on the same publication.
+	if err := engine.WritePCM(make([]byte, 960), 3); err != nil {
+		t.Fatalf("turn 3 continuation: %v", err)
+	}
+	waitForRealFrames(t, engine, 2)
+	if got := engine.realFramesWritten(); got != 2 {
+		t.Fatalf("real frames=%d, want 2 (only turn 3 audio)", got)
+	}
+}
+
+// TestCarryCancelDuringPaceRejected pins the paced carry window: a flush
+// blocked in its paced wait when the turn is cancelled must NOT emit the
+// padded tail after the wait.
+func TestCarryCancelDuringPaceRejected(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	// Prime the pacer schedule with one immediate frame; enqueue the
+	// carry + flush marker in the SAME burst so the writer's FIRST paced
+	// sleep lands exactly on the flush marker (the fill never engages).
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 960), 1)
+	_ = engine.WritePCM(make([]byte, 500), 1)
+	_ = engine.FlushAudio(1)
+	waitForRingEmpty(t, engine) // all three consumed; writer blocked in the flush's pace
+	time.Sleep(30 * time.Millisecond)
+
+	engine.CancelTurn(1) // cancel DURING the flush's paced wait
+	close(release)
+
+	// The carry must be discarded at the post-pace re-check.
+	time.Sleep(30 * time.Millisecond)
+	if got := engine.realFramesWritten(); got != 1 {
+		t.Fatalf("carry leaked after mid-pace cancel: real frames=%d, want 1", got)
+	}
+	if got := engine.PCMCarry(); got != 0 {
+		t.Fatalf("carry not discarded: %d", got)
+	}
+}
+
+// TestGapFillCancelDuringPaceStopped pins the fill's paced window: a cancel
+// landing DURING the fill's paced wait must prevent the silence frame.
+func TestGapFillCancelDuringPaceStopped(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	// First pace immediate (frame 1); the SECOND pace (the fill's) blocks.
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 960), 1)
+	waitForFrames(t, engine, 1)
+	// The ring drains; the writer enters the fill path and blocks in its pace.
+	waitForQueueDrain(t, engine)
+	engine.CancelTurn(1)
+	close(release)
+	time.Sleep(30 * time.Millisecond)
+	// No silence frame may have been emitted after the cancel.
+	if got := engine.framesWritten(); got != 1 {
+		t.Fatalf("gap-fill silence emitted after mid-pace cancel: frames=%d, want 1", got)
+	}
 }
