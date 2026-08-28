@@ -1,6 +1,7 @@
 package media
 
 import (
+	"errors"
 	"sync"
 	"testing"
 
@@ -152,5 +153,98 @@ func TestControllerGrantReassignmentLetsNewHolderAnnounce(t *testing.T) {
 	}
 	if got := recB.snapshot(); !kindsEqual(got, GrantMeetingNotes) {
 		t.Fatalf("new holder must announce its own activation, got %v", got)
+	}
+}
+
+// #175 review blocker: a transient RoomInfo failure between two successful
+// observations of the SAME grant epoch must NOT re-announce the prerequisite.
+// The announcement survives transport failures; re-arming happens only when
+// a successful observation positively reports the grant inactive.
+func TestControllerTransientRoomInfoFailureDoesNotReannounceMeetingNotes(t *testing.T) {
+	client := &fakeRoomClient{}
+	controller, rec := controllerWithRecorder(t, client)
+
+	// Active Meeting Notes epoch 111: exactly one edge.
+	client.setRoom("on", "on", "agent", 111, "off", "on", "agent", 0, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantMeetingNotes) {
+		t.Fatalf("first MN activation must fire once, got %v", got)
+	}
+
+	// Transient RoomInfo failure while the grant stays active server-side.
+	client.setRoom("off", "on", "agent", 0, "off", "on", "agent", 0, errors.New("network"))
+	controller.poll()
+
+	// Recovery observes the SAME epoch: no second prerequisite notice.
+	client.setRoom("on", "on", "agent", 111, "off", "on", "agent", 0, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantMeetingNotes) {
+		t.Fatalf("recovery with the same epoch must not re-announce, got %v", got)
+	}
+
+	// A positively observed inactivity still re-arms: the next genuinely new
+	// grant instance (fresh epoch) announces again.
+	client.setRoom("off", "on", "agent", 0, "off", "on", "agent", 0, nil)
+	controller.poll()
+	client.setRoom("on", "on", "agent", 222, "off", "on", "agent", 0, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantMeetingNotes, GrantMeetingNotes) {
+		t.Fatalf("fresh grant instance after positive inactivity must announce, got %v", got)
+	}
+}
+
+// #175 review blocker, Voice Reply side: identical guarantee over the shared
+// bridge's second grant.
+func TestControllerTransientRoomInfoFailureDoesNotReannounceVoiceReply(t *testing.T) {
+	client := &fakeRoomClient{}
+	controller, rec := controllerWithRecorder(t, client)
+
+	// Active Voice Reply epoch 555: exactly one VR edge.
+	client.setRoom("off", "on", "agent", 0, "on", "on", "agent", 555, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantVoiceReply) {
+		t.Fatalf("first VR activation must fire once, got %v", got)
+	}
+
+	// Transient RoomInfo failure while the grant stays active server-side.
+	client.setRoom("off", "on", "agent", 0, "off", "on", "agent", 0, errors.New("network"))
+	controller.poll()
+
+	// Recovery observes the SAME epoch: no second prerequisite notice.
+	client.setRoom("off", "on", "agent", 0, "on", "on", "agent", 555, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantVoiceReply) {
+		t.Fatalf("recovery with the same epoch must not re-announce, got %v", got)
+	}
+
+	// Positive inactivity re-arms; a genuinely new instance announces again.
+	client.setRoom("off", "on", "agent", 0, "off", "on", "agent", 0, nil)
+	controller.poll()
+	client.setRoom("off", "on", "agent", 0, "on", "on", "agent", 666, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantVoiceReply, GrantVoiceReply) {
+		t.Fatalf("fresh VR instance after positive inactivity must announce, got %v", got)
+	}
+}
+
+// Both grants active across a transient failure: neither announcement is
+// lost or duplicated.
+func TestControllerTransientRoomInfoFailurePreservesBothAnnouncements(t *testing.T) {
+	client := &fakeRoomClient{}
+	controller, rec := controllerWithRecorder(t, client)
+
+	client.setRoom("on", "on", "agent", 111, "on", "on", "agent", 555, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantMeetingNotes, GrantVoiceReply) {
+		t.Fatalf("both grants must announce once, got %v", got)
+	}
+
+	client.setRoom("off", "off", "agent", 0, "off", "off", "agent", 0, errors.New("network"))
+	controller.poll()
+
+	client.setRoom("on", "on", "agent", 111, "on", "on", "agent", 555, nil)
+	controller.poll()
+	if got := rec.snapshot(); !kindsEqual(got, GrantMeetingNotes, GrantVoiceReply) {
+		t.Fatalf("recovery with unchanged epochs must not re-announce either grant, got %v", got)
 	}
 }

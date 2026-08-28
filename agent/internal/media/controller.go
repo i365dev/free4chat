@@ -204,6 +204,11 @@ func (c *Controller) poll() {
 	var epoch *int64
 	vrAuthorized := false
 	var vrEpoch *int64
+	// #175 review fix: only a SUCCESSFUL RoomInfo observation may re-arm the
+	// announcement state. A transient failure leaves the grants unknown —
+	// the last announced epoch must survive it, so a recovery that observes
+	// the SAME grant epoch never re-announces the prerequisite.
+	roomInfoObserved := false
 
 	info, err := c.options.Client.RoomInfo(c.options.RoomID)
 	if err != nil {
@@ -212,6 +217,7 @@ func (c *Controller) poll() {
 		vrAuthorized = false
 		c.log("voice_reply_room_info_failed", map[string]string{"code": safeDiagnosticCode(err)})
 	} else {
+		roomInfoObserved = true
 		if c.options.Voice != nil {
 			vrTargetsSelf := info.VoiceReply.AgentParticipantID == c.options.ParticipantID
 			vrAuthorized = info.VoiceReplyMediaAvailable &&
@@ -261,7 +267,9 @@ func (c *Controller) poll() {
 		if epoch != nil {
 			c.mnAnnouncedEpoch = epoch
 		}
-	} else if !authorized {
+	} else if roomInfoObserved && !authorized {
+		// Positively observed inactive: re-arm for a future grant instance.
+		// A transport failure must NOT reach this branch.
 		c.mnAnnounced = false
 		c.mnAnnouncedEpoch = nil
 	}
@@ -270,7 +278,9 @@ func (c *Controller) poll() {
 		if vrEpoch != nil {
 			c.vrAnnouncedEpoch = vrEpoch
 		}
-	} else if !vrAuthorized {
+	} else if roomInfoObserved && !vrAuthorized {
+		// Positively observed inactive: re-arm for a future grant instance.
+		// A transport failure must NOT reach this branch.
 		c.vrAnnounced = false
 		c.vrAnnouncedEpoch = nil
 	}
