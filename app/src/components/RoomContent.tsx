@@ -99,6 +99,8 @@ export default function RoomContent({
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
   const [agentInviteCopied, setAgentInviteCopied] = useState(false)
   const [meetingNotesPickerOpen, setMeetingNotesPickerOpen] = useState(false)
+  // #170: explicit Voice Reply speaker selection.
+  const [voiceReplyPickerOpen, setVoiceReplyPickerOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<
     {
       id: string
@@ -175,16 +177,26 @@ export default function RoomContent({
   const roomAgents = participants.filter((p) => p.kind === "agent")
   // Defensive defaults keep partial hook mocks in tests valid.
   const voiceReply = voiceReplyState ?? { active: false }
-  const connectedAgentForVoice = roomAgents[0]
-  const handleStartVoiceReply = () => {
-    if (!connectedAgentForVoice) return
-    startVoiceReply(connectedAgentForVoice.peerId)
+  // #170: Voice Reply must be explicitly bound to a Human-chosen speaker.
+  // Never silently pick the first Agent in roster order: roster order is
+  // incidental, and an unattended binding can wake the wrong Agent's voice.
+  const handleStartVoiceReply = (agentParticipantId: string) => {
+    startVoiceReply(agentParticipantId)
+    setVoiceReplyPickerOpen(false)
     trackAnalyticsEvent("AgentVoiceStarted", { roomType: resolvedRoomType })
   }
   const handleStopVoiceReply = () => {
     stopVoiceReply()
     trackAnalyticsEvent("AgentVoiceStopped", { roomType: resolvedRoomType })
   }
+  // #170: the active speaker is derived from the server-held grant state;
+  // when the selected Agent departs and the server clears the grant, the UI
+  // goes inactive — never auto-migrated to a rejoined Agent with the same
+  // name (participant ids, not names, are the authorization identity).
+  const voiceReplySpeakerName = voiceReply.active
+    ? roomAgents.find((p) => p.peerId === voiceReply.agentParticipantId)
+        ?.name ?? "an Agent"
+    : null
   const meetingNotesAgentName = meetingNotes.active
     ? roomAgents.find((p) => p.peerId === meetingNotes.agentParticipantId)
         ?.name ?? "an Agent"
@@ -589,21 +601,44 @@ export default function RoomContent({
               type="button"
               onClick={handleStopVoiceReply}
               className="rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-1 text-xs text-rose-200 hover:bg-rose-800/50"
-              title="Stop Agent voice replies"
+              title={`Stop voice replies from ${voiceReplySpeakerName}`}
             >
-              🔊 Stop voice
+              🔊 Voice: {voiceReplySpeakerName}
             </button>
           ) : (
-            voiceReplyMediaAvailable &&
-            connectedAgentForVoice && (
-              <button
-                type="button"
-                onClick={handleStartVoiceReply}
-                className="rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-800/50"
-                title={`Enable voice replies from ${connectedAgentForVoice.name}`}
-              >
-                🔊 Voice replies
-              </button>
+            voiceReplyMediaAvailable && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setVoiceReplyPickerOpen((open) => !open)}
+                  disabled={roomAgents.length === 0}
+                  className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={
+                    roomAgents.length === 0
+                      ? "Invite an Agent to the room first"
+                      : "Choose the voice reply speaker"
+                  }
+                >
+                  🔊 Voice replies
+                </button>
+                {voiceReplyPickerOpen && roomAgents.length > 0 && (
+                  <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
+                    <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
+                      Speaker
+                    </p>
+                    {roomAgents.map((agent) => (
+                      <button
+                        key={agent.peerId}
+                        type="button"
+                        onClick={() => handleStartVoiceReply(agent.peerId)}
+                        className="block w-full truncate px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
+                      >
+                        {agent.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )
           )}
           {meetingNotes.active ? (
