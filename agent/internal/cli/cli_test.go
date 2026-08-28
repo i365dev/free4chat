@@ -2,11 +2,17 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/i365dev/free4chat/agent/internal/daemon"
 )
 
 var binaryPath string
@@ -14,6 +20,11 @@ var binaryPath string
 // TestMain builds the real free4chat-agent binary once: the routing
 // regression guard (#105 review) pins dispatcher behavior via subprocess
 // exits, which requires the actual executable.
+//
+// After the suite it also enforces the #172 leak invariant: ZERO daemon
+// process spawned by these tests may survive. The scan is keyed on the full
+// unique build path, so it can only ever observe processes from THIS test
+// run — the user's canonical ~/.free4chat-agent daemon can never match.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "fcagent-cli-")
 	if err != nil {
@@ -26,8 +37,115 @@ func TestMain(m *testing.M) {
 	}
 	binaryPath = bin
 	code := m.Run()
+	leaked := waitForNoTestDaemons(5 * time.Second)
+	if len(leaked) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"\nFAIL: %d detached free4chat-agent daemon(s) leaked from CLI tests (owned by %s):\n",
+			len(leaked), bin)
+		for _, provenance := range leaked {
+			fmt.Fprintln(os.Stderr, "  "+provenance)
+		}
+		if code == 0 {
+			code = 1
+		}
+	}
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
+}
+
+// testDaemonProcs lists "PID command" lines for every process whose command
+// line contains this run's built binary path. pgrep exits 1 on "no match",
+// which is the healthy empty case.
+func testDaemonProcs() ([]string, error) {
+	out, err := exec.Command("pgrep", "-f", regexp.QuoteMeta(binaryPath)).Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var provenance []string
+	for _, pid := range strings.Fields(string(out)) {
+		command, procErr := exec.Command("ps", "-p", pid, "-o", "command=").Output()
+		if procErr != nil {
+			// The process may have exited between pgrep and ps: it is gone,
+			// which is the desired state.
+			continue
+		}
+		provenance = append(provenance, strings.TrimSpace(pid+" "+string(command)))
+	}
+	return provenance, nil
+}
+
+// waitForNoTestDaemons polls until no test-owned daemon process remains and
+// returns whatever still survives when the deadline passes.
+func waitForNoTestDaemons(timeout time.Duration) []string {
+	deadline := time.Now().Add(timeout)
+	for {
+		procs, err := testDaemonProcs()
+		if err == nil && len(procs) == 0 {
+			return nil
+		}
+		if err != nil {
+			// The process scan itself is unavailable (no pgrep/ps): degrade
+			// to a warning instead of a false failure.
+			fmt.Fprintf(os.Stderr, "warning: daemon leak scan unavailable: %v\n", err)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return procs
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// withAgentDir scopes FREE4CHAT_AGENT_DIR for one helper call and always
+// restores the previous environment.
+func withAgentDir(dir string, fn func()) {
+	previous, had := os.LookupEnv("FREE4CHAT_AGENT_DIR")
+	_ = os.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	defer func() {
+		if had {
+			_ = os.Setenv("FREE4CHAT_AGENT_DIR", previous)
+		} else {
+			_ = os.Unsetenv("FREE4CHAT_AGENT_DIR")
+		}
+	}()
+	fn()
+}
+
+// daemonReachable reports whether a daemon answers a status probe on this
+// runtime directory's socket.
+func daemonReachable(dir string) bool {
+	reachable := false
+	withAgentDir(dir, func() {
+		_, err := daemon.SendIPC(&daemon.IpcRequest{Op: "status"})
+		reachable = err == nil
+	})
+	return reachable
+}
+
+// stopTestDaemon reclaims the daemon owned by THIS test's runtime directory
+// (#172): it uses the daemon's own stop op over IPC — never a signal or
+// pattern kill — and then waits deterministically until the socket stops
+// answering, which the daemon guarantees during its own shutdown. A daemon
+// that was never spawned for this directory is a no-op.
+func stopTestDaemon(t *testing.T, dir string) {
+	t.Helper()
+	if !daemonReachable(dir) {
+		return
+	}
+	withAgentDir(dir, func() {
+		_, _ = daemon.SendIPC(&daemon.IpcRequest{Op: "stop"})
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for daemonReachable(dir) {
+		if time.Now().After(deadline) {
+			t.Errorf("test daemon in %s kept its IPC socket after the stop op", dir)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func runCli(t *testing.T, args ...string) (string, int) {
@@ -36,7 +154,15 @@ func runCli(t *testing.T, args ...string) (string, int) {
 	if err != nil {
 		t.Fatalf("temp dir failed: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// #172: any invocation that routes through the daemon (status, leave,
+	// stop, ...) auto-starts a detached daemon in this unique directory via
+	// EnsureDaemon. Reclaim exactly that daemon during cleanup — production
+	// detach semantics stay untouched, and no other daemon can ever match.
+	// Stop MUST happen before the directory removal (socket lives in it).
+	t.Cleanup(func() {
+		stopTestDaemon(t, dir)
+		_ = os.RemoveAll(dir)
+	})
 	cmd := exec.Command(binaryPath, args...)
 	cmd.Env = append(os.Environ(),
 		"FREE4CHAT_AGENT_DIR="+dir,
@@ -54,6 +180,58 @@ func runCli(t *testing.T, args ...string) (string, int) {
 	}
 	t.Fatalf("cli run failed: %v", err)
 	return out, -1
+}
+
+// TestTestDaemonStopIsScopedAndDeterministic pins the reclaim contract the
+// whole suite relies on: the daemon's own stop op tears down the socket and
+// then the process, without any signal or pattern kill, and nothing else is
+// affected.
+func TestTestDaemonStopIsScopedAndDeterministic(t *testing.T) {
+	dir, err := os.MkdirTemp("", "fcagent-")
+	if err != nil {
+		t.Fatalf("temp dir failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	command := exec.Command(binaryPath, "daemon")
+	command.Env = append(os.Environ(),
+		"FREE4CHAT_AGENT_DIR="+dir,
+		"FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE=1",
+	)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := command.Start(); err != nil {
+		t.Fatalf("daemon spawn failed: %v", err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_ = command.Wait()
+		close(exited)
+	}()
+	// Safety net so a mid-test failure cannot leak the daemon past the
+	// TestMain invariant scan.
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		<-exited
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !daemonReachable(dir) {
+		if time.Now().After(deadline) {
+			t.Fatalf("test daemon never answered on its socket")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	stopTestDaemon(t, dir)
+
+	if daemonReachable(dir) {
+		t.Fatalf("socket must stop answering after the daemon's own stop op")
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("daemon process must exit after its stop op")
+	}
 }
 
 func TestCliRoutingNeverFallsThroughSilently(t *testing.T) {
