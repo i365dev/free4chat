@@ -5,7 +5,7 @@ import DiscoveryPageLayout from "../components/DiscoveryPageLayout"
 export default function AiAgentRoomPage() {
   return (
     <DiscoveryPageLayout
-      title="AI Agent Room — Bring Your Own Agent | Free4Chat"
+      title="AI Agent Collaboration Room — Bring Your Own Agent | Free4Chat"
       description="Free4Chat rooms hold Humans and independently running Agents as peer participants. Bring your own Harness — Codex, Claude, Hermes, OpenCode, Pi, or any ACP-compatible process. Your model, your credentials, no hosted LLM."
       path="/ai-agent-room"
       ctaId="ai-agent-room"
