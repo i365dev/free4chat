@@ -31,6 +31,16 @@ export interface RoomMediaState {
   agentPublishedTrackName?: string
 }
 
+// #176 Phase A: coarse, secret-free Runtime Host projection shared by every
+// resident Agent of one local Runtime root. runtimeHostId is a stable opaque
+// grouping key (never hostname/username/IP/MAC); the speech booleans mean
+// "this host can currently produce STT/TTS if a Room grant authorizes it".
+// Discovery metadata only — never authorization, never a credential detail.
+export interface RuntimeHostProjection {
+  runtimeHostId: string
+  speech: { stt: boolean; tts: boolean }
+}
+
 export interface AgentCapabilities {
   text: true
   // #106 Phase A: the capability tokens this Agent explicitly chose to
@@ -81,6 +91,10 @@ export interface RoomParticipant {
   // solely by current participants with a matching snapshotId. Opt-in,
   // Agent-only, own-surface-only; never authorization and never history.
   surface?: RoomSurfaceV1
+  // #176 Phase A: the Runtime Host behind this Agent (agents only). One
+  // local Runtime root projects the same opaque id and readiness to all of
+  // its residents; the credential itself never becomes Room state.
+  runtimeHost?: RuntimeHostProjection
   media?: RoomMediaState
 }
 

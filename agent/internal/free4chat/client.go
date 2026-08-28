@@ -352,10 +352,15 @@ func parseJoinLike(result map[string]any) (types.JoinResult, error) {
 }
 
 // JoinRoom joins an existing room and returns the new capability set.
-func (c *Client) JoinRoom(roomID, name string, capabilities []string) (types.JoinResult, error) {
+// host optionally carries the #176 Phase A Runtime Host projection; the
+// payload omits it entirely for legacy callers.
+func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
 	args := map[string]any{"roomId": roomID, "name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
+	}
+	if host != nil {
+		args["runtimeHost"] = *host
 	}
 	result, err := c.callTool("join_room", args)
 	if err != nil {
@@ -366,10 +371,13 @@ func (c *Client) JoinRoom(roomID, name string, capabilities []string) (types.Joi
 
 // CreateRoom creates a fresh room registering this agent as participant #1
 // and validates the returned public invite shape.
-func (c *Client) CreateRoom(name string, capabilities []string) (types.CreateRoomResult, error) {
+func (c *Client) CreateRoom(name string, capabilities []string, host *types.RuntimeHostProjection) (types.CreateRoomResult, error) {
 	args := map[string]any{"name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
+	}
+	if host != nil {
+		args["runtimeHost"] = *host
 	}
 	result, err := c.callTool("create_room", args)
 	if err != nil {
@@ -392,6 +400,16 @@ func (c *Client) CreateRoom(name string, capabilities []string) (types.CreateRoo
 			RoomURL: invite["roomUrl"].(string),
 		},
 	}, nil
+}
+
+// UpdateRuntimeHost re-projects the #176 Phase A Runtime Host capability
+// projection for this participant (speech hot reload path).
+func (c *Client) UpdateRuntimeHost(participantHandle string, host types.RuntimeHostProjection) error {
+	_, err := c.callTool("update_runtime_host", map[string]any{
+		"participantHandle": participantHandle,
+		"runtimeHost":       host,
+	})
+	return err
 }
 
 // WaitForEvents long-polls room events; it doubles as the lease heartbeat.

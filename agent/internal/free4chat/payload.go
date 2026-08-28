@@ -132,7 +132,31 @@ func NormalizeRosterEntry(raw any) *types.ParticipantRosterEntry {
 	if surface := ParseSurfaceMetadataStrict(record["surface"]); surface != nil {
 		entry.Surface = surface
 	}
+	if host := ParseRuntimeHostStrict(record["runtimeHost"]); host != nil {
+		entry.RuntimeHost = host
+	}
 	return entry
+}
+
+// ParseRuntimeHostStrict projects the #176 Phase A Runtime Host metadata:
+// an opaque bounded id plus coarse speech booleans. Anything malformed is
+// dropped rather than repaired.
+func ParseRuntimeHostStrict(raw any) *types.RuntimeHostProjection {
+	record, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	id, _ := record["runtimeHostId"].(string)
+	speechBlock, _ := record["speech"].(map[string]any)
+	stt, _ := speechBlock["stt"].(bool)
+	tts, _ := speechBlock["tts"].(bool)
+	if id == "" || len(id) > 64 {
+		return nil
+	}
+	return &types.RuntimeHostProjection{
+		RuntimeHostID: id,
+		Speech:        types.HostSpeechReadiness{STT: stt, TTS: tts},
+	}
 }
 
 // NormalizeRoster projects a raw participant array, dropping unusable

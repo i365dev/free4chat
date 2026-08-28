@@ -138,7 +138,7 @@ func TestJoinRoomAndLifecycleCalls(t *testing.T) {
 		}
 	})
 
-	joined, err := client.JoinRoom("test-room", "Pi", []string{"code"})
+	joined, err := client.JoinRoom("test-room", "Pi", []string{"code"}, nil)
 	if err != nil {
 		t.Fatalf("join failed: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestHTTPStatusClassification(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte(tc.body))
 		})
-		_, err := client.JoinRoom("r", "n", nil)
+		_, err := client.JoinRoom("r", "n", nil, nil)
 		e, ok := err.(*Error)
 		if !ok || e.Code != tc.wantCode {
 			t.Fatalf("status %d: expected %s got %v", tc.status, tc.wantCode, err)
@@ -319,7 +319,7 @@ func TestCreateRoomValidatesInvite(t *testing.T) {
 			},
 		}))
 	})
-	created, err := client.CreateRoom("Pi", nil)
+	created, err := client.CreateRoom("Pi", nil, nil)
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestCreateRoomValidatesInvite(t *testing.T) {
 			},
 		}))
 	})
-	if _, err := bad.CreateRoom("Pi", nil); err == nil {
+	if _, err := bad.CreateRoom("Pi", nil, nil); err == nil {
 		t.Fatal("invalid invite kind must fail")
 	}
 }
@@ -506,5 +506,85 @@ func TestClientSendsExplicitUserAgent(t *testing.T) {
 	}
 	if strings.Contains(seen, "Go-http-client") {
 		t.Fatalf("default Go UA must never be sent: %q", seen)
+	}
+}
+
+// #176 Phase A: the Runtime Host projection rides join_room/create_room
+// arguments only when present; legacy callers keep byte-identical payloads.
+func TestJoinAndCreateCarryRuntimeHostProjection(t *testing.T) {
+	var seenBodies []map[string]any
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		switch toolNameOf(body) {
+		case "":
+			respondToolsList(w)
+			return
+		case "join_room", "create_room", "update_runtime_host":
+			seenBodies = append(seenBodies, body)
+			if toolNameOf(body) == "create_room" {
+				writeJSON(w, callResult(map[string]any{
+					"participantHandle": "h",
+					"participant":       map[string]any{"id": "a1"},
+					"cursor":            float64(1),
+					"expiresAt":         float64(9),
+					"invite": map[string]any{
+						"kind": "free4chat.room-invite", "version": float64(1),
+						"roomId": "r1", "roomUrl": "https://www.free4.chat/room?id=r1",
+					},
+				}))
+				return
+			}
+			if toolNameOf(body) == "join_room" {
+				writeJSON(w, callResult(map[string]any{
+					"participantHandle": "h",
+					"participant":       map[string]any{"id": "a1"},
+					"cursor":            float64(1),
+					"expiresAt":         float64(9),
+				}))
+				return
+			}
+			writeJSON(w, callResult(map[string]any{"ok": true}))
+			return
+		default:
+			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
+		}
+	})
+
+	host := types.RuntimeHostProjection{
+		RuntimeHostID: "11111111-2222-3333-4444-555555555555",
+		Speech:        types.HostSpeechReadiness{STT: true, TTS: false},
+	}
+
+	// Legacy join: no runtimeHost key at all.
+	if _, err := client.JoinRoom("room", "Pi", nil, nil); err != nil {
+		t.Fatalf("legacy join failed: %v", err)
+	}
+	// Hosted join: projection rides the arguments.
+	if _, err := client.JoinRoom("room", "Pi", nil, &host); err != nil {
+		t.Fatalf("hosted join failed: %v", err)
+	}
+	// Hosted create.
+	if _, err := client.CreateRoom("Pi", nil, &host); err != nil {
+		t.Fatalf("hosted create failed: %v", err)
+	}
+	// Hot-reload projection push.
+	if err := client.UpdateRuntimeHost("h", host); err != nil {
+		t.Fatalf("update_runtime_host failed: %v", err)
+	}
+
+	if len(seenBodies) != 4 {
+		t.Fatalf("expected 4 captured tool calls, saw %d", len(seenBodies))
+	}
+	if _, present := toolArgs(seenBodies[0])["runtimeHost"]; present {
+		t.Fatalf("legacy join must omit runtimeHost")
+	}
+	for i := range []string{"join_room", "create_room", "update_runtime_host"} {
+		got := toolArgs(seenBodies[i+1])["runtimeHost"].(map[string]any)
+		if got["runtimeHostId"] != host.RuntimeHostID {
+			t.Fatalf("runtimeHostId mismatch: %v", got)
+		}
+		speech := got["speech"].(map[string]any)
+		if speech["stt"] != true || speech["tts"] != false {
+			t.Fatalf("speech mismatch: %v", speech)
+		}
 	}
 }

@@ -8,8 +8,10 @@ import {
   rosterProjection,
   sanitizeStoredAdvertisedList,
   sanitizeStoredAgentCapabilities,
+  sanitizeStoredRuntimeHost,
   validateAdvertisedCapabilities,
   validateCollabEvent,
+  validateRuntimeHost,
   type CollabEventInput,
 } from "./collab"
 import {
@@ -63,6 +65,7 @@ import type {
   ParticipantKind,
   RoomSurfaceV1,
   CollabEvent,
+  RuntimeHostProjection,
 } from "../room/types"
 
 const RECONNECT_GRACE_MS = 30 * 1000
@@ -288,6 +291,15 @@ type ControlRequest =
       participantId: string
       token: string
       capabilities: string[]
+    }
+  | {
+      // #176 Phase A: re-project this Agent's Runtime Host identity and
+      // coarse speech readiness (speech hot reload path). Same loud-failure
+      // contract as capabilities: invalid input is rejected, never repaired.
+      action: "agent-update-runtime-host"
+      participantId: string
+      token: string
+      runtimeHost: RuntimeHostProjection
     }
   | {
       // #106 Phase B: one structured collaboration envelope. The request kind
@@ -553,6 +565,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             participant.surface = sanitizedSurface.surface
           else delete participant.surface
           changed = true
+        }
+        // #176 Phase A storage hygiene: a malformed persisted Runtime Host
+        // projection is dropped; the Runtime re-projects on its next update.
+        const sanitizedHost = sanitizeStoredRuntimeHost(participant.runtimeHost)
+        if (
+          participant.runtimeHost !== undefined &&
+          sanitizedHost === undefined
+        ) {
+          delete participant.runtimeHost
+          changed = true
+        } else if (sanitizedHost !== undefined) {
+          participant.runtimeHost = sanitizedHost
         }
         for (const key of [
           "sessionId",
@@ -1327,6 +1351,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // capability list chosen by its Runtime/Harness. Invalid input rejects
       // the join — never repaired silently (see do/collab.ts).
       let registeredCapabilities: AgentCapabilities = { text: true }
+      // #176 Phase A: the Runtime Host projection is Agent-only, optional,
+      // and rejected (never repaired) when malformed — mirroring the
+      // advertised-capability contract.
+      let registeredRuntimeHost: RuntimeHostProjection | undefined
+      if (request.participant.runtimeHost !== undefined) {
+        if (!isAgent) return this.json({ error: "invalid_runtime_host" }, 400)
+        const validatedHost = validateRuntimeHost(
+          request.participant.runtimeHost
+        )
+        if (!validatedHost.ok)
+          return this.json(
+            { error: validatedHost.error, reason: validatedHost.reason },
+            400
+          )
+        registeredRuntimeHost = validatedHost.runtimeHost
+      }
       if (isAgent) {
         const validated = validateAdvertisedCapabilities(
           request.participant.capabilities?.advertised ?? []
@@ -1343,7 +1383,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         connected: isAgent,
         lastSeenAt: now,
         ...(isAgent
-          ? { capabilities: registeredCapabilities, media: undefined }
+          ? {
+              capabilities: registeredCapabilities,
+              media: undefined,
+              ...(registeredRuntimeHost
+                ? { runtimeHost: registeredRuntimeHost }
+                : {}),
+            }
           : {}),
       }
       room.participants[participant.id] = participant
@@ -1376,6 +1422,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       if (request.participant.kind !== "agent")
         return this.json({ error: "invalid_participant_kind" }, 400)
+      // #176 Phase A: optional, Agent-only, reject-on-malformed host
+      // projection — identical contract to the register path.
+      let createdRuntimeHost: RuntimeHostProjection | undefined
+      if (request.participant.runtimeHost !== undefined) {
+        const validatedHost = validateRuntimeHost(
+          request.participant.runtimeHost
+        )
+        if (!validatedHost.ok)
+          return this.json(
+            { error: validatedHost.error, reason: validatedHost.reason },
+            400
+          )
+        createdRuntimeHost = validatedHost.runtimeHost
+      }
       const validated = validateAdvertisedCapabilities(
         request.participant.capabilities?.advertised ?? []
       )
@@ -1404,6 +1464,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         lastSeenAt: now,
         capabilities: agentCapabilitiesFrom(validated.capabilities),
         media: undefined,
+        ...(createdRuntimeHost ? { runtimeHost: createdRuntimeHost } : {}),
       }
       room.participants[participant.id] = participant
       this.applyEmptyRoomExpiry(room, now)
@@ -1480,6 +1541,36 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.broadcastState(room)
       return this.json({
         capabilities: participant.capabilities,
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-update-runtime-host") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      // #176 Phase A: loud-failure validation, then a presence/discovery
+      // broadcast only — no messages, no sequence numbers, no waiter wake.
+      const validated = validateRuntimeHost(request.runtimeHost)
+      if (!validated.ok)
+        return this.json(
+          { error: validated.error, reason: validated.reason },
+          400
+        )
+      participant.runtimeHost = validated.runtimeHost
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      return this.json({
+        runtimeHost: participant.runtimeHost,
         expiresAt: room.expiresAt,
       })
     }

@@ -90,6 +90,12 @@ export default function DevelopersMcpPage() {
           replace your advertised capability list at any time.
         </li>
         <li>
+          <code>update_runtime_host(participantHandle, runtimeHost)</code> —
+          re-project your Runtime Host identity and coarse speech readiness
+          (stt/tts booleans) after a local configuration change. Discovery
+          metadata only — never authorization, never credential details.
+        </li>
+        <li>
           <code>
             send_collab_request(participantHandle, targetParticipantId, summary,
             ...)

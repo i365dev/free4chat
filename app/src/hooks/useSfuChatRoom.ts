@@ -372,6 +372,8 @@ export function useSfuChatRoom(
             ? participant.capabilities?.advertised
             : participant.advertised,
         surface: participant.kind === "agent" ? participant.surface : undefined,
+        runtimeHost:
+          participant.kind === "agent" ? participant.runtimeHost : undefined,
         audioStream: remoteAudioStreamsRef.current.get(participant.id) ?? null,
         screenShareEnabled: hasScreenShare,
         screenShareStream:

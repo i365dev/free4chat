@@ -46,6 +46,24 @@ type HarnessCapabilities struct {
 	Resume bool
 }
 
+// RuntimeHostProjection is the complete, secret-free capability projection a
+// Runtime Host shares about itself (#176 Phase A). runtimeHostId is a stable
+// opaque grouping key for one local Runtime installation/root; the speech
+// booleans mean "this host can currently produce STT/TTS if a Room grant
+// authorizes it". It must never carry provider keys, credential sources,
+// hostnames, or any other machine-identifying metadata, and it is discovery
+// metadata only — never authorization.
+type RuntimeHostProjection struct {
+	RuntimeHostID string              `json:"runtimeHostId"`
+	Speech        HostSpeechReadiness `json:"speech"`
+}
+
+// HostSpeechReadiness is the coarse STT/TTS readiness of one Runtime Host.
+type HostSpeechReadiness struct {
+	STT bool `json:"stt"`
+	TTS bool `json:"tts"`
+}
+
 // RoomAttachmentMetadata is the sanitized attachment projection carried on
 // room events and upload results.
 type RoomAttachmentMetadata struct {
@@ -147,6 +165,10 @@ type ParticipantRosterEntry struct {
 	Kind       ParticipantKind        `json:"kind"`
 	Advertised []string               `json:"advertised,omitempty"`
 	Surface    *RoomSurfaceMetadataV1 `json:"surface,omitempty"`
+	// RuntimeHost (#176 Phase A): the opaque Runtime Host grouping key and
+	// coarse speech readiness of the local Runtime behind this Agent, when
+	// the Agent's Runtime projects one. Absent for Humans.
+	RuntimeHost *RuntimeHostProjection `json:"runtimeHost,omitempty"`
 }
 
 // CollabEventView is the Harness-facing collaboration view: the wire
@@ -370,8 +392,14 @@ type Free4ChatClient interface {
 	Connect() error
 	ListTools() ([]string, error)
 	RoomInfo(roomID string) (RoomInfo, error)
-	JoinRoom(roomID, name string, capabilities []string) (JoinResult, error)
-	CreateRoom(name string, capabilities []string) (CreateRoomResult, error)
+	// JoinRoom/CreateRoom optionally carry the #176 Phase A Runtime Host
+	// projection (nil omits it from the wire payload entirely).
+	JoinRoom(roomID, name string, capabilities []string, host *RuntimeHostProjection) (JoinResult, error)
+	CreateRoom(name string, capabilities []string, host *RuntimeHostProjection) (CreateRoomResult, error)
+	// UpdateRuntimeHost re-projects this Agent's Runtime Host capability
+	// projection (#176 Phase A) after a local readiness change (e.g. #167
+	// credential hot reload) without rejoining the room.
+	UpdateRuntimeHost(participantHandle string, host RuntimeHostProjection) error
 	WaitForEvents(participantHandle string, cursor int64, timeoutSeconds int) (WaitResult, error)
 	// SendText publishes one agent message. targetParticipantIDs carries
 	// explicit addressing (#165): validated participant IDs that persist

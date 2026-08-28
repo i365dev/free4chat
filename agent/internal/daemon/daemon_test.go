@@ -67,6 +67,11 @@ func startDaemon(t *testing.T) (*Daemon, string) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	// Test-spawned daemons must never touch the operator's native Keychain:
+	// credential reads would block on securityd (nondeterministic hangs) and
+	// could surface OS consent prompts. Mirrors the documented store.go
+	// opt-out contract for unit tests.
+	t.Setenv("FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE", "1")
 	d := New()
 	done := make(chan struct{})
 	go func() {
@@ -165,7 +170,7 @@ func (c *recordingClient) ListTools() ([]string, error) { return nil, nil }
 func (c *recordingClient) RoomInfo(string) (types.RoomInfo, error) {
 	return types.RoomInfo{Exists: true}, nil
 }
-func (c *recordingClient) JoinRoom(roomID, name string, capabilities []string) (types.JoinResult, error) {
+func (c *recordingClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
 	c.mu.Lock()
 	c.joins++
 	c.mu.Unlock()
@@ -176,8 +181,11 @@ func (c *recordingClient) JoinRoom(roomID, name string, capabilities []string) (
 		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
 	}, nil
 }
-func (*recordingClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
+func (*recordingClient) CreateRoom(string, []string, *types.RuntimeHostProjection) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, errors.New("not used")
+}
+func (*recordingClient) UpdateRuntimeHost(string, types.RuntimeHostProjection) error {
+	return nil
 }
 func (*recordingClient) WaitForEvents(string, int64, int) (types.WaitResult, error) {
 	time.Sleep(20 * time.Millisecond)
@@ -802,5 +810,56 @@ func TestCreateImmediateRoomExpiryLeavesNoGhost(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("workspace leaked after immediate expiry: %d entries", len(entries))
+	}
+}
+
+// #176 Phase A: daemon status exposes the Runtime Host identity and coarse
+// speech readiness shared by every resident of this root.
+func TestStatusProjectsRuntimeHost(t *testing.T) {
+	d, _ := startDaemon(t)
+	client := &recordingClient{}
+	host := &types.RuntimeHostProjection{
+		RuntimeHostID: "22222222-3333-4444-5555-666666666666",
+		Speech:        types.HostSpeechReadiness{STT: false, TTS: true},
+	}
+	rt := runtime.NewResidentRuntime(runtime.Options{
+		InstanceID:  "inst-host",
+		RoomID:      "shared",
+		Name:        "Hosted-Pi",
+		Client:      client,
+		Adapter:     &stubAdapter{name: "stub"},
+		WaitSeconds: 1,
+		Host:        host,
+	})
+	t.Cleanup(rt.Stop)
+	d.register(&residentInstance{
+		instanceID: "inst-host",
+		roomID:     "shared",
+		runtime:    rt,
+	})
+
+	raw, err := SendIPC(&IpcRequest{Op: "status"})
+	if err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+	var views []map[string]any
+	if err := json.Unmarshal(raw, &views); err != nil {
+		t.Fatalf("status parse failed: %v", err)
+	}
+	var view map[string]any
+	for _, candidate := range views {
+		if candidate["instanceId"] == "inst-host" {
+			view = candidate
+		}
+	}
+	if view == nil {
+		t.Fatalf("resident instance missing from status: %v", views)
+	}
+	if view["runtimeHostId"] != host.RuntimeHostID {
+		t.Fatalf("runtimeHostId mismatch: %v", view["runtimeHostId"])
+	}
+	speech, ok := view["speech"].(map[string]any)
+	if !ok || speech["stt"] != false || speech["tts"] != true {
+		t.Fatalf("speech readiness mismatch: %v", view["speech"])
 	}
 }
