@@ -146,7 +146,7 @@ func (c *SfuRestClient) request(path, method string, body map[string]any) (map[s
 	// client does not add Origin automatically the way browser/Node fetch
 	// does for cross-origin POSTs.
 	request.Header.Set("Origin", c.siteOrigin)
-	request.Header.Set("User-Agent", "free4chat-agent/0.5.2")
+	request.Header.Set("User-Agent", "free4chat-agent/0.5.3")
 	response, err := c.http.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("network_error")
