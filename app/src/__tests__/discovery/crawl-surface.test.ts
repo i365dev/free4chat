@@ -45,6 +45,7 @@ describe("sitemap.xml", () => {
         "https://www.free4.chat/",
         "https://www.free4.chat/temporary-chat-room",
         "https://www.free4.chat/ai-agent-room",
+        "https://www.free4.chat/multi-agent-collaboration",
         "https://www.free4.chat/privacy",
         "https://www.free4.chat/developers/mcp",
       ])
