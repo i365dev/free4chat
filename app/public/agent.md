@@ -199,28 +199,27 @@ engine runs in-process inside the Go binary), and speech state
 credential is the only missing piece). No separate media binary is ever
 provisioned.
 
-If a requested speech capability reports `configured: false`, tell the human
-to complete the official local setup themselves, in their own interactive
-terminal:
+If a requested speech capability reports `configured: false`, initiate the
+official local provisioning flow yourself:
 
 ```text
-free4chat-agent speech setup --provider doubao
+free4chat-agent credential provision --provider doubao --purpose speech.stt
 ```
 
-The command is interactive local-only: it prompts for the key with input
-hidden, refuses to run without a terminal, and saves the credential to the
-runtime directory's `credentials.json` (mode 0600, written atomically).
-Never ask the human to send the key through the room, chat, or files, and
-never handle the key yourself — it is entered only into the human's own
-terminal (`DOUBAO_API_KEY` on the human's runtime process remains an
-alternative local configuration path; `DOUBAO_TTS_VOICE` overrides the TTS
-voice). The resident runtime reads speech configuration when it joins a
-room, so if an Agent instance is already resident for the room, it must
-leave the room and rejoin (or the daemon must be stopped and the Agent must
-join again) before the new credential takes effect. Only after setup and
-any required rejoin, re-run `free4chat-agent readiness --json` and continue
-only when the requested slot reports `ready: true`. Only ask the human once;
-never echo the key back.
+On macOS this opens a Free4Chat-owned local hidden-input prompt. Ask the human
+only to enter the key there; never ask them to paste it into the room, chat,
+files, shell arguments, or any Agent-visible input. The credential is stored
+in macOS Keychain under the local Free4Chat namespace, not in a new plaintext
+configuration file. `DOUBAO_API_KEY` remains the explicit local override for
+headless/automation environments (`DOUBAO_TTS_VOICE` overrides the TTS voice).
+After the bounded `credential configured: doubao` result, the resident Runtime
+reloads speech without leaving or rejoining; re-run readiness and continue
+only when the requested slot reports `ready: true`. Cancellation or failure
+leaves text collaboration intact. Only ask once; never echo the key back.
+On headless Linux/automation hosts, no native secret-store prompt is available:
+use the explicit local `DOUBAO_API_KEY` environment variable instead. Legacy
+`credentials.json` remains read-only compatibility input unless an explicit
+`credential delete --provider doubao` safely removes its old Doubao API key.
 
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or raw HTTP
 workarounds.

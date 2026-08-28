@@ -39,6 +39,9 @@ func usageText() string {
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
+  free4chat-agent credential status
+  free4chat-agent credential provision --provider doubao [--purpose speech.stt|speech.tts]
+  free4chat-agent credential delete --provider doubao
   free4chat-agent speech setup --provider doubao
   free4chat-agent status
   free4chat-agent leave <instance-id>
@@ -338,6 +341,39 @@ func run(args []string) error {
 		switch sub {
 		case "setup":
 			return runSpeechSetup(subRest)
+		default:
+			return errUsage()
+		}
+
+	case "credential":
+		if len(rest) == 0 {
+			return errUsage()
+		}
+		sub, subRest := rest[0], rest[1:]
+		switch sub {
+		case "status":
+			if len(subRest) != 0 {
+				return errUsage()
+			}
+			return runCredentialStatus()
+		case "provision":
+			return runCredentialProvision(subRest)
+		case "delete":
+			provider, err := parseSpeechSetupArgs(subRest)
+			if err != nil {
+				return err
+			}
+			envOverride, err := deleteCredential(provider, daemon.RuntimeDirectory(), defaultCredentialStore(), os.Getenv)
+			if err != nil {
+				return err
+			}
+			refreshResidentSpeech()
+			if envOverride {
+				fmt.Printf("credential deleted: %s (DOUBAO_API_KEY remains active)\n", provider)
+				return nil
+			}
+			fmt.Printf("credential deleted: %s\n", provider)
+			return nil
 		default:
 			return errUsage()
 		}

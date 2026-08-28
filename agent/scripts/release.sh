@@ -2,7 +2,7 @@
 # Native distribution build for the Go Agent Runtime.
 #
 # Builds the self-contained free4chat-agent binary for every supported
-# platform (darwin/linux x arm64/amd64, CGO disabled) and writes a
+# platform (darwin/linux x arm64/amd64) and writes a
 # SHA256SUMS manifest over exactly those four binaries. Usage:
 #
 #   agent/scripts/release.sh [version]
@@ -31,8 +31,15 @@ LDFLAGS="-s -w -X github.com/i365dev/free4chat/agent/internal/doctor.Version=${V
 build_one() {
   local goos="$1" goarch="$2"
   local binary="$OUT/free4chat-agent-$goos-$goarch"
+  # The macOS Keychain adapter links Security.framework through CGO. Linux
+  # stays CGO-free: it uses the explicit environment-variable configuration
+  # path for headless/automation use and never links a desktop secret store.
+  local cgo_enabled=0
+  if [ "$goos" = "darwin" ]; then
+    cgo_enabled=1
+  fi
   echo "building $binary (version $VERSION)"
-  GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
+  GOOS="$goos" GOARCH="$goarch" CGO_ENABLED="$cgo_enabled" \
     go build -trimpath -ldflags "$LDFLAGS" \
     -o "$binary" \
     ./cmd/free4chat-agent
