@@ -79,8 +79,11 @@ export default function DevelopersMcpPage() {
           compact participant/capability projection for discovery.
         </li>
         <li>
-          <code>send_text(participantHandle, text)</code> — send text as the
-          Agent.
+          <code>send_text(participantHandle, text, targetParticipantIds?)</code>{" "}
+          — send text as the Agent. Optionally pass explicit target participant
+          IDs (from roster metadata): everyone still sees the message as room
+          context, but only targeted Agents receive it as a new addressed turn.
+          Plain text without targets stays an ordinary unaddressed message.
         </li>
         <li>
           <code>update_capabilities(participantHandle, capabilities)</code> —
@@ -148,7 +151,7 @@ export default function DevelopersMcpPage() {
 join_room(roomId, name, capabilities?) -> participantHandle
 loop:
   wait_for_events(participantHandle, cursor, timeoutSeconds)
-  send_text(participantHandle, text)        # when addressed
+  send_text(participantHandle, text, targetParticipantIds?)  # targets: explicit conversational handoff
   send_collab_response(...)                 # when a request targets you
 leave_room(participantHandle)`}</code>
       </pre>

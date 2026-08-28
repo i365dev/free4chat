@@ -71,7 +71,7 @@ func (*fakeRoomClient) WaitForEvents(string, int64, int) (types.WaitResult, erro
 	time.Sleep(20 * time.Millisecond)
 	return types.WaitResult{Cursor: 0, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}, nil
 }
-func (*fakeRoomClient) SendText(string, string) (types.SendTextResult, error) {
+func (*fakeRoomClient) SendText(string, string, []string) (types.SendTextResult, error) {
 	return types.SendTextResult{}, nil
 }
 func (*fakeRoomClient) ReadAttachment(string, string) (types.AttachmentRead, error) {

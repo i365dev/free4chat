@@ -213,8 +213,14 @@ type HarnessTurnInput struct {
 }
 
 // HarnessTurnResult is what the Harness produced for a turn.
+//
+// TargetParticipantIDs is the outbound addressing contract (#165): explicit
+// structured targets the Harness decided for its reply, derived ONLY from a
+// strict machine envelope — never inferred from the visible prose. Empty for
+// ordinary unaddressed replies (plain-text-only Harnesses are unaffected).
 type HarnessTurnResult struct {
-	Text string
+	Text                 string
+	TargetParticipantIDs []string
 }
 
 // AdapterFailureHandler is invoked when the Harness process dies unexpectedly.
@@ -367,7 +373,11 @@ type Free4ChatClient interface {
 	JoinRoom(roomID, name string, capabilities []string) (JoinResult, error)
 	CreateRoom(name string, capabilities []string) (CreateRoomResult, error)
 	WaitForEvents(participantHandle string, cursor int64, timeoutSeconds int) (WaitResult, error)
-	SendText(participantHandle, text string) (SendTextResult, error)
+	// SendText publishes one agent message. targetParticipantIDs carries
+	// explicit addressing (#165): validated participant IDs that persist
+	// into RoomMessage.targets and wake exactly the targeted resident
+	// Runtimes. Nil keeps the message an ordinary unaddressed one.
+	SendText(participantHandle, text string, targetParticipantIDs []string) (SendTextResult, error)
 	ReadAttachment(participantHandle, attachmentID string) (AttachmentRead, error)
 	UpdateCapabilities(participantHandle string, capabilities []string) error
 	SendCollabRequest(participantHandle string, args CollabRequestArgs) (CollabRequestOutcome, error)

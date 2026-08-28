@@ -96,6 +96,40 @@ const ROOM_CAPABILITIES: RoomCapabilities = {
   agentTargeting: true,
 }
 
+// Shared addressing normalization (#165): keep current Agent participant
+// IDs only, deduplicate, and bound the list. Targeting decides wakeup —
+// never authorization. Anything malformed degrades to an ordinary
+// unaddressed message instead of failing the send. excludeId lets the
+// Agent path drop a target before the bound so a self-echo can never
+// consume one of the slots.
+function normalizeChatTargets(
+  room: RoomRecord,
+  rawTargets: unknown,
+  excludeId?: string
+): string[] {
+  return [
+    ...new Set(
+      (Array.isArray(rawTargets) ? rawTargets : [])
+        .filter((id): id is string => typeof id === "string")
+        .filter((id) => room.participants[id]?.kind === "agent")
+        .filter((id) => id !== excludeId)
+    ),
+  ].slice(0, MAX_TARGETS)
+}
+
+// Agent-originated send_text targets: the same Room addressing semantics as
+// the Human chat path, plus one loop guard — an Agent can never target
+// itself, so a Harness echoing its own participantId cannot wake itself
+// into a reply loop.
+function agentTextTargets(
+  rawTargets: unknown,
+  senderId: string,
+  room: RoomRecord
+): { targets: string[] } | {} {
+  const targets = normalizeChatTargets(room, rawTargets, senderId)
+  return targets.length ? { targets } : {}
+}
+
 export interface RoomSessionEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
   // RoomSession is bound within the same Worker as sfu/server.ts (see
@@ -240,6 +274,11 @@ type ControlRequest =
       participantId: string
       token: string
       text: string
+      // #165: optional explicit addressing carried by the same Room
+      // primitive the Human chat path uses. Participant IDs only — the DO
+      // normalizes, drops non-Agent/self targets, and persists at most
+      // MAX_TARGETS; targeting controls wakeup only, never authorization.
+      targetParticipantIds?: unknown
     }
   | {
       // #106 Phase A: full replacement of this agent's advertised capability
@@ -1399,6 +1438,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         kind: participant.kind,
         type: "text",
         text: text.slice(0, 4000),
+        // #165: Agent-originated explicit addressing reuses the exact Room
+        // target semantics of the Human chat path (dedupe, current-Agent
+        // filter, MAX_TARGETS). Self-targets are dropped so an Agent can
+        // never wake itself into a loop; malformed entries can only ever
+        // degrade to an ordinary unaddressed message.
+        ...agentTextTargets(request.targetParticipantIds, participant.id, room),
         createdAt: Date.now(),
       })
       await this.saveRoom(room)
@@ -2808,13 +2853,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         type: "text",
         text: message.text.trim().slice(0, 4000),
         ...(() => {
-          const targets = [
-            ...new Set(
-              (Array.isArray(message.targets) ? message.targets : [])
-                .filter((id): id is string => typeof id === "string")
-                .filter((id) => room.participants[id]?.kind === "agent")
-            ),
-          ].slice(0, MAX_TARGETS)
+          const targets = normalizeChatTargets(room, message.targets)
           return targets.length ? { targets } : {}
         })(),
         createdAt: Date.now(),

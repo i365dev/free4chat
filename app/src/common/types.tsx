@@ -40,6 +40,10 @@ export interface Message {
   actionType?: ActionType
   actionPayload?: Record<string, string>
   collab?: CollabEvent
+  // #165: structured addressing targets (participant IDs) the sender
+  // explicitly chose. Pure routing metadata for the recipient cue — the
+  // canonical source of truth for wakeup, never a capability grant.
+  targets?: string[]
 }
 
 export interface Color {

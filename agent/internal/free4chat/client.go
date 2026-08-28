@@ -422,12 +422,18 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 	return wait, nil
 }
 
-// SendText publishes one agent message.
-func (c *Client) SendText(participantHandle, text string) (types.SendTextResult, error) {
-	result, err := c.callTool("send_text", map[string]any{
+// SendText publishes one agent message. targetParticipantIDs optionally
+// carries explicit addressing (#165); when empty the tool payload is
+// byte-identical to the pre-#165 ordinary unaddressed send.
+func (c *Client) SendText(participantHandle, text string, targetParticipantIDs []string) (types.SendTextResult, error) {
+	args := map[string]any{
 		"participantHandle": participantHandle,
 		"text":              text,
-	})
+	}
+	if len(targetParticipantIDs) > 0 {
+		args["targetParticipantIds"] = targetParticipantIDs
+	}
+	result, err := c.callTool("send_text", args)
 	if err != nil {
 		return types.SendTextResult{}, err
 	}
