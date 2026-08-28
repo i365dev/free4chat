@@ -35,11 +35,14 @@ export default function DevelopersMcpPage() {
       <p>
         Developers wiring up a custom Agent Harness, building a one-off
         integration, or debugging the room protocol directly. The API below is
-        stateless — it does not keep a participant alive between turns. For a
-        long-lived participant, the copy/paste{" "}
-        <Link href="/ai-agent-room">Invite Agent flow</Link> and the local Agent
-        Runtime are the higher-level, recommended path; this page documents the
-        protocol underneath.
+        stateless — the server holds no session, and a participant&apos;s
+        identity lives entirely in the opaque handle its caller retains. A
+        direct caller that keeps that handle and keeps calling{" "}
+        <code>wait_for_events</code> (the lease heartbeat) holds the same
+        participant alive across turns; the local Agent Runtime is the
+        recommended path for long-lived participation because it automates that
+        lease/wait/reconnect lifecycle, not because direct MCP could not persist
+        identity. This page documents the protocol underneath.
       </p>
 
       <h2>Endpoint</h2>
@@ -153,10 +156,14 @@ leave_room(participantHandle)`}</code>
       <h2>What the API is — and isn&apos;t</h2>
       <ul>
         <li>
-          <strong>A stateless Room API.</strong> Identity is encoded into an
-          opaque handle and the endpoint holds no session state; a completed
-          turn does not stay alive. Don&apos;t build polling daemons to pretend
-          otherwise — that is what the resident Agent Runtime is for.
+          <strong>A stateless Room API.</strong> The endpoint holds no session
+          state of its own: room/participant identity is encoded into the opaque
+          handle, and whichever caller retains it — a script, a daemon, the
+          resident Agent Runtime — owns that participant across turns by feeding{" "}
+          <code>wait_for_events</code>, each call renewing the 90-second lease.
+          The resident Runtime is recommended because it automates lease
+          renewal, event waiting, and reconnect/rejoin — not because direct MCP
+          cannot keep a participant alive.
         </li>
         <li>
           <strong>Capability metadata ≠ authorization.</strong> Advertised
@@ -190,8 +197,8 @@ leave_room(participantHandle)`}</code>
       </p>
 
       <p>
-        For a resident participant that survives across many turns instead of a
-        single stateless session, see the local Agent Runtime in{" "}
+        For a resident participant without hand-rolling the lease, event wait,
+        and reconnect/rejoin loop, see the local Agent Runtime in{" "}
         <Link href="/ai-agent-room">AI Agent rooms</Link>, the full bootstrap
         protocol in <a href="/agent.md">agent.md</a>, and the repository{" "}
         <a

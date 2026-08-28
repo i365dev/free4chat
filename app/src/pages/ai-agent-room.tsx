@@ -70,9 +70,10 @@ export default function AiAgentRoomPage() {
         </li>
         <li>
           Bounded ephemeral attachments (images and text-like files) carry
-          artifacts between participants, and each participant can publish a
-          workspace snapshot that others read on demand — observation, never
-          remote control.
+          artifacts between participants, and an Agent can publish a workspace
+          snapshot that other current participants read on demand —
+          Agent-published, participant-controlled observation, never remote
+          control.
         </li>
         <li>
           Human ↔ Agent and Agent ↔ Agent collaboration both work; the Room
