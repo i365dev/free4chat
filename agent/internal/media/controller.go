@@ -27,9 +27,11 @@ type ControllerOptions struct {
 	// OnTrackStarted/Ended mirror media bridge events (transcriber wiring).
 	OnTrackStarted func(source speech.AudioSource)
 	OnTrackEnded   func(source speech.AudioSource)
-	// OnGrantActivated fires once per successful grant activation (the
-	// runtime uses it to check speech readiness at grant time).
-	OnGrantActivated func()
+	// OnGrantActivated fires on each grant activation EDGE (#171): a grant
+	// newly targeting this participant, or a fresh epoch of it. The runtime
+	// uses it to evaluate that grant's own speech prerequisite once — never
+	// per poll.
+	OnGrantActivated func(kind GrantKind)
 	// Voice configures outbound Voice Reply (nil = Meeting Notes only).
 	Voice *VoiceConfig
 	// Log receives bounded safe events.
@@ -48,6 +50,16 @@ type VoiceConfig struct {
 	OnSpeakerEvent    func(voice.SpeakerEvent)
 }
 
+// GrantKind identifies which room media grant produced an activation edge.
+// Meeting Notes and Voice Reply are independent grants over one shared
+// media bridge; each carries its own speech prerequisite.
+type GrantKind string
+
+const (
+	GrantMeetingNotes GrantKind = "meeting_notes"
+	GrantVoiceReply   GrantKind = "voice_reply"
+)
+
 // Controller owns the Runtime-side half of the media lifecycle: it polls
 // room_info for the Meeting Notes and voiceReply grants and starts/stops the
 // ONE shared Bridge accordingly. This is the ONLY thing that decides when
@@ -64,12 +76,20 @@ type Controller struct {
 	voiceEpoch         *int64
 	voiceObservedEpoch *int64
 	voiceObservedInit  bool
-	bridge             *Bridge
-	speaker            *voice.Speaker
-	voiceStarting      bool
-	stopped            bool
-	cancel             context.CancelFunc
-	now                func() time.Time
+	// #171 grant-announcement state: the last grant instance (kind + epoch)
+	// whose activation edge was already reported, so an unchanged grant
+	// never re-fires while polls continue. Re-armed when the grant stops
+	// targeting this participant.
+	mnAnnounced      bool
+	mnAnnouncedEpoch *int64
+	vrAnnounced      bool
+	vrAnnouncedEpoch *int64
+	bridge           *Bridge
+	speaker          *voice.Speaker
+	voiceStarting    bool
+	stopped          bool
+	cancel           context.CancelFunc
+	now              func() time.Time
 }
 
 // NewController builds an idle controller.
@@ -222,11 +242,47 @@ func (c *Controller) poll() {
 		}
 	}
 
+	// #171: per-grant activation edges. Each grant announces ONCE per grant
+	// instance (kind + epoch): a grant that stays active across polls never
+	// re-fires; a stop/start (new epoch) or a reassignment to this
+	// participant produces a fresh edge. Edges fire even while the shared
+	// bridge is already running, so a second grant added later still gets
+	// its own prerequisite evaluation without splitting the bridge.
 	c.mu.Lock()
 	stopped = c.stopped
+	// A missing epoch (malformed/partial room_info) never participates in
+	// edge comparison: an already-announced grant cannot re-fire from it.
+	mnEdge := authorized &&
+		(!c.mnAnnounced || (epoch != nil && !int64Equal(c.mnAnnouncedEpoch, epoch)))
+	vrEdge := vrAuthorized &&
+		(!c.vrAnnounced || (vrEpoch != nil && !int64Equal(c.vrAnnouncedEpoch, vrEpoch)))
+	if mnEdge {
+		c.mnAnnounced = true
+		if epoch != nil {
+			c.mnAnnouncedEpoch = epoch
+		}
+	} else if !authorized {
+		c.mnAnnounced = false
+		c.mnAnnouncedEpoch = nil
+	}
+	if vrEdge {
+		c.vrAnnounced = true
+		if vrEpoch != nil {
+			c.vrAnnouncedEpoch = vrEpoch
+		}
+	} else if !vrAuthorized {
+		c.vrAnnounced = false
+		c.vrAnnouncedEpoch = nil
+	}
 	c.mu.Unlock()
 	if stopped {
 		return
+	}
+	if mnEdge && c.options.OnGrantActivated != nil {
+		c.options.OnGrantActivated(GrantMeetingNotes)
+	}
+	if vrEdge && c.options.OnGrantActivated != nil {
+		c.options.OnGrantActivated(GrantVoiceReply)
 	}
 
 	anyGrantActive := authorized || vrAuthorized
@@ -352,9 +408,6 @@ func (c *Controller) ensureRunning() {
 	c.state = "running"
 	c.mu.Unlock()
 	c.log("meeting_notes_media_started", nil)
-	if c.options.OnGrantActivated != nil {
-		c.options.OnGrantActivated()
-	}
 }
 
 func (c *Controller) buildBridge() (*Bridge, error) {

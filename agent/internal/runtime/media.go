@@ -120,8 +120,8 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 				r.transcriber.TrackEnded(source)
 			}
 		},
-		OnGrantActivated: func() {
-			r.notifySpeechPrerequisite()
+		OnGrantActivated: func(kind media.GrantKind) {
+			r.notifySpeechPrerequisite(kind)
 		},
 		Voice: voiceConfig,
 	})
@@ -132,11 +132,12 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	go controller.Start(context.Background())
 }
 
-// notifySpeechPrerequisite tells the room ONCE, at grant activation, when
-// the missing piece is local speech configuration — pointing at the agent's
-// own session, never soliciting secrets in room chat.
-func (r *ResidentRuntime) notifySpeechPrerequisite() {
-	notice := buildSpeechNotice(r.speechSnapshot())
+// notifySpeechPrerequisite tells the room ONCE per grant activation edge
+// (#171), evaluating exactly that grant's own speech prerequisite — Meeting
+// Notes requires STT, Voice Reply requires TTS. It points at the agent's
+// own session and never solicits secrets in room chat.
+func (r *ResidentRuntime) notifySpeechPrerequisite(kind media.GrantKind) {
+	notice := buildSpeechNotice(r.speechSnapshot(), kind)
 	if notice == "" {
 		return
 	}
@@ -151,13 +152,23 @@ func (r *ResidentRuntime) notifySpeechPrerequisite() {
 	}
 }
 
-// buildSpeechNotice returns the room message when STT is missing at grant
-// time, or "" when there is nothing to tell the room.
-func buildSpeechNotice(config speech.Config) string {
-	if !config.STTEnabled {
-		return "Meeting Notes was requested, but no speech-to-text provider is configured in my local runtime. I'll complete speech setup in my own session before transcribing — please don't paste API keys into this room."
+// buildSpeechNotice evaluates the speech prerequisite of the grant that
+// activated (#171) and returns the room message, or "" when that
+// prerequisite is satisfied. The shared media bridge is intentionally not
+// split: the grant kind decides which local slot (STT or TTS) must exist.
+func buildSpeechNotice(config speech.Config, kind media.GrantKind) string {
+	switch kind {
+	case media.GrantVoiceReply:
+		if !config.TTSEnabled {
+			return "Voice Reply was requested, but no text-to-speech provider is configured in my local runtime. I'll complete speech setup in my own session before speaking — please don't paste API keys into this room."
+		}
+		return ""
+	default:
+		if !config.STTEnabled {
+			return "Meeting Notes was requested, but no speech-to-text provider is configured in my local runtime. I'll complete speech setup in my own session before transcribing — please don't paste API keys into this room."
+		}
+		return ""
 	}
-	return ""
 }
 
 // logVoiceSpeakerEvent maps speaker lifecycle events to bounded safe logs.
