@@ -15,6 +15,7 @@ import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
+import { createCollabAnalyticsTracker } from "../common/collabAnalytics"
 import type { UserInfo } from "../common/types"
 import {
   umamiEvent,
@@ -152,6 +153,7 @@ export default function RoomContent({
     voiceReplyMediaAvailable,
     startVoiceReply,
     stopVoiceReply,
+    localParticipantId,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
@@ -297,6 +299,59 @@ export default function RoomContent({
 
     return () => window.clearTimeout(timeout)
   }, [connectionStatus, participants.length, resolvedRoomType])
+
+  // Human + Agent collaboration analytics: derived from canonical Room state
+  // (the connected roster and persisted collaboration envelopes), never from
+  // clicks. The tracker baselines the initial post-join snapshot (Agents and
+  // collaboration lifecycle that predate this browser's observation stay
+  // silent) and keeps page-lifetime dedup sets, so state refresh, resync
+  // replay, reconnect, and re-render never re-count the same Agent or the
+  // same canonical collab requestId.
+  const collabAnalyticsRef = useRef<ReturnType<
+    typeof createCollabAnalyticsTracker
+  > | null>(null)
+  if (!collabAnalyticsRef.current) {
+    collabAnalyticsRef.current = createCollabAnalyticsTracker()
+  }
+
+  useEffect(() => {
+    const tracker = collabAnalyticsRef.current
+    if (!tracker) return
+    const context = {
+      roomType: resolvedRoomType,
+      roomHash: hashRoom(roomName),
+      participants,
+      selfPeerId: LOCAL_PEER_ID,
+      selfParticipantId: localParticipantId,
+      presenceBaseline: connectionStatus === "connected",
+    }
+    for (const properties of tracker.observePresence(context)) {
+      trackAnalyticsEvent("AgentJoined", properties)
+    }
+  }, [
+    connectionStatus,
+    participants,
+    roomName,
+    resolvedRoomType,
+    localParticipantId,
+  ])
+
+  useEffect(() => {
+    const tracker = collabAnalyticsRef.current
+    if (!tracker) return
+    const context = {
+      roomType: resolvedRoomType,
+      roomHash: hashRoom(roomName),
+      participants,
+      selfPeerId: LOCAL_PEER_ID,
+      selfParticipantId: localParticipantId,
+    }
+    messages.forEach((m) => {
+      if (m.actionType !== "collab" || !m.collab) return
+      const emitted = tracker.observeCollabEvent(context, m.collab, m.createdAt)
+      if (emitted) trackAnalyticsEvent(emitted.name, emitted.properties)
+    })
+  }, [messages, participants, roomName, resolvedRoomType, localParticipantId])
 
   useEffect(() => {
     messages.forEach((m) => {
