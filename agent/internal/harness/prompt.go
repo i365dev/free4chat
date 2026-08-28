@@ -129,6 +129,9 @@ func RenderUntrustedRoomTurn(input *types.HarnessTurnInput) string {
 			roster = append(roster, line)
 		}
 		roster = append(roster, "Use participantId values as collaboration targets.")
+		roster = append(roster,
+			"Conversational handoff: to explicitly hand the conversation to other Agents, end your reply with one final line of the exact form [[free4chat:targets <participantId>[,<participantId>...]]] using participantId values from the roster above. The host strips that machine line, publishes the rest as your reply, and wakes only the targeted Agents; everyone else still sees the reply as context. Without that line your reply stays an ordinary unaddressed message. Only the exact final line counts — writing it anywhere else, with names instead of participantIds, or inside quoted prose has no routing effect. Mentioning a participant with @Name in the visible text is a human-readable courtesy only and never wakes anyone by itself.",
+		)
 	}
 
 	sharedSafetyRules := []string{

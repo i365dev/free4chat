@@ -154,9 +154,59 @@ func TestJoinRoomAndLifecycleCalls(t *testing.T) {
 		t.Fatalf("wait mismatch: %+v", wait)
 	}
 
-	sent, err := client.SendText("h", "hi")
+	sent, err := client.SendText("h", "hi", nil)
 	if err != nil || sent.Sequence != 7 {
 		t.Fatalf("send mismatch: %+v %v", sent, err)
+	}
+}
+
+// #165: explicit targets ride the existing send_text tool arguments only
+// when present; the ordinary unaddressed payload must stay byte-compatible.
+func TestSendTextCarriesExplicitTargets(t *testing.T) {
+	var seenArgs []map[string]any
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		switch toolNameOf(body) {
+		case "":
+			respondToolsList(w)
+			return
+		case "send_text":
+			seenArgs = append(seenArgs, toolArgs(body))
+			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
+		default:
+			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
+		}
+	})
+
+	for _, tc := range []struct {
+		text    string
+		targets []string
+		want    any
+	}{
+		{text: "plain", targets: nil, want: nil},
+		{text: "one", targets: []string{"agent-b"}, want: []any{"agent-b"}},
+		{text: "many", targets: []string{"agent-b", "agent-c", "agent-d"}, want: []any{"agent-b", "agent-c", "agent-d"}},
+	} {
+		if _, err := client.SendText("h", tc.text, tc.targets); err != nil {
+			t.Fatalf("send %q failed: %v", tc.text, err)
+		}
+	}
+	if len(seenArgs) != 3 {
+		t.Fatalf("expected 3 send_text calls, saw %d", len(seenArgs))
+	}
+	if seenArgs[0]["targetParticipantIds"] != nil {
+		t.Fatalf("plain send must omit targets, saw %v", seenArgs[0]["targetParticipantIds"])
+	}
+	for i, want := range []int{1, 3} {
+		got, _ := seenArgs[i+1]["targetParticipantIds"].([]any)
+		if len(got) != want {
+			t.Fatalf("targeted send %d target count mismatch: %v", i+1, got)
+		}
+	}
+	if seenArgs[1]["targetParticipantIds"].([]any)[0] != "agent-b" {
+		t.Fatalf("single target mismatch: %v", seenArgs[1]["targetParticipantIds"])
+	}
+	if seenArgs[2]["targetParticipantIds"].([]any)[2] != "agent-d" {
+		t.Fatalf("multi target mismatch: %v", seenArgs[2]["targetParticipantIds"])
 	}
 }
 
@@ -193,7 +243,7 @@ func TestIsErrorPayloadMapsToTypedCodes(t *testing.T) {
 			}},
 		}))
 	})
-	_, err := client.SendText("h", "x")
+	_, err := client.SendText("h", "x", nil)
 	e, ok := err.(*Error)
 	if !ok || e.Code != CodeInvalidParticipantHandle {
 		t.Fatalf("tool-level isError must map to typed code: %v", err)
@@ -247,7 +297,7 @@ func TestSSEResponseParsing(t *testing.T) {
 		_, _ = w.Write([]byte(sse))
 	})
 	defer server.Close()
-	_, err := client.SendText("h", "x")
+	_, err := client.SendText("h", "x", nil)
 	if err != nil {
 		// SendText path uses rawCall -> post; SSE parse should succeed.
 		t.Fatalf("SSE response mishandled: %v", err)
@@ -407,7 +457,7 @@ func TestRPCLevelErrorIsTransient(t *testing.T) {
 			"error": map[string]any{"code": -32000, "message": "overloaded"},
 		})
 	})
-	_, err := client.SendText("h", "x")
+	_, err := client.SendText("h", "x", nil)
 	e, ok := err.(*Error)
 	if !ok || e.Code != CodeTransient {
 		t.Fatalf("rpc error should be transient: %v", err)

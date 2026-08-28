@@ -251,6 +251,7 @@ const roomMessageToMessage = (
     actionType: message.actionType as ActionType | undefined,
     actionPayload: message.actionPayload,
     collab: message.collab,
+    targets: message.targets,
   }
 }
 

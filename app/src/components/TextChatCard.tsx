@@ -209,6 +209,49 @@ const MessageMarkdown = memo(function MessageMarkdown({
   )
 })
 
+// #165: the recipient cue is derived ONLY from structured routing metadata
+// (Message.targets resolved against the current roster) — never from parsing
+// the message body. It is plain rendered text, so target metadata cannot
+// execute content. Targets whose @Name the body already shows are skipped to
+// avoid duplicate mentions.
+interface RecipientCue {
+  label: string
+  isName: boolean
+}
+
+function hasCompleteMention(text: string, name: string): boolean {
+  if (!name) return false
+  const pattern = new RegExp(
+    `(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\s)`
+  )
+  return pattern.test(text)
+}
+
+function messageRecipientCues(
+  msg: Message,
+  participants: UserInfo[]
+): RecipientCue[] {
+  if (msg.type !== "text" || !msg.targets?.length) return []
+  const body = msg.text ?? ""
+  const cues: RecipientCue[] = []
+  let unresolved = 0
+  for (const target of msg.targets) {
+    const participant = participants.find((p) => p.peerId === target)
+    if (!participant) {
+      unresolved += 1
+      continue
+    }
+    if (!hasCompleteMention(body, participant.name))
+      cues.push({ label: participant.name, isName: true })
+  }
+  if (unresolved > 0)
+    cues.push({
+      label: unresolved === 1 ? "participant" : `${unresolved} participants`,
+      isName: false,
+    })
+  return cues
+}
+
 function getOrCreateWhiteboardUrl(room: string): string {
   const storageKey = `wb-key-${room}`
   let key = localStorage.getItem(storageKey)
@@ -1034,6 +1077,7 @@ export default function TextChatCard({
           {messages.map((p, i) => {
             if (p.type === "action" && p.actionType === "reaction") return null
             const isSelf = p.peerId === LOCAL_PEER_ID
+            const recipientCues = messageRecipientCues(p, participants)
             return (
               <div
                 className={`mb-4 flex w-full items-end ${
@@ -1063,6 +1107,16 @@ export default function TextChatCard({
                           : "w-fit max-w-full rounded-2xl rounded-tl-md border border-white/10 bg-gray-800/80 px-4 py-2.5 text-gray-100"
                       }
                     >
+                      {recipientCues.length > 0 && (
+                        <p className="mb-1 flex flex-wrap items-center gap-x-1 text-[11px] font-medium text-white/75">
+                          <span>→</span>
+                          {recipientCues.map((cue, index) => (
+                            <span key={index}>
+                              {cue.isName ? `@${cue.label}` : cue.label}
+                            </span>
+                          ))}
+                        </p>
+                      )}
                       <MessageMarkdown text={p.text ?? ""} />
                     </div>
                   ) : p.type === "action" ? (

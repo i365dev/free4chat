@@ -144,8 +144,9 @@ func (r *ResidentRuntime) notifySpeechPrerequisite() {
 	if handle == "" {
 		return
 	}
-	// Best-effort; readiness stays authoritative.
-	if _, err := r.options.Client.SendText(handle, notice); err != nil {
+	// Best-effort; readiness stays authoritative. Unaddressed on purpose:
+	// the notice is ordinary room context for everyone present.
+	if _, err := r.options.Client.SendText(handle, notice, nil); err != nil {
 		r.log("speech_notice_failed", nil)
 	}
 }

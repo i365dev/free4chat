@@ -109,15 +109,18 @@ func hasMediaController(rt *ResidentRuntime) bool {
 
 // fakeClient scripts wait_for_events responses and records lifecycle calls.
 type fakeClient struct {
-	mu        sync.Mutex
-	waits     int
-	joins     int
-	sent      []string
-	leftRoom  bool
-	closed    bool
-	capsSeen  [][]string
-	script    []waitStep
-	defaultOK bool
+	mu    sync.Mutex
+	waits int
+	joins int
+	sent  []string
+	// sentTargets mirrors sent: the explicit targets (#165) each reply
+	// carried, nil for ordinary unaddressed sends.
+	sentTargets [][]string
+	leftRoom    bool
+	closed      bool
+	capsSeen    [][]string
+	script      []waitStep
+	defaultOK   bool
 	// sendHook observes every SendText in order (tests may inject).
 	sendHook func(text string)
 }
@@ -199,10 +202,11 @@ func (c *fakeClient) WaitForEvents(handle string, cursor int64, timeoutSeconds i
 	return wait, nil
 }
 
-func (c *fakeClient) SendText(_ string, text string) (types.SendTextResult, error) {
+func (c *fakeClient) SendText(_ string, text string, targets []string) (types.SendTextResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sent = append(c.sent, text)
+	c.sentTargets = append(c.sentTargets, append([]string(nil), targets...))
 	if c.sendHook != nil {
 		c.sendHook(text)
 	}
@@ -264,10 +268,13 @@ type fakeAdapter struct {
 	caps     *types.HarnessCapabilities
 	turnErr  error
 	turnDtls []string // concatenated addressed texts per turn
-	onFail   func(error)
-	sessions int
-	stopped  bool
-	delay    time.Duration
+	// turnTargets scripts TargetParticipantIDs per turn (#165); nil entries
+	// keep the reply unaddressed.
+	turnTargets [][]string
+	onFail      func(error)
+	sessions    int
+	stopped     bool
+	delay       time.Duration
 }
 
 // adapterRunTurnHook lets individual tests observe the exact enriched turn
@@ -304,8 +311,16 @@ func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput) (types.HarnessTurnRe
 	}
 	a.mu.Lock()
 	a.turnDtls = append(a.turnDtls, combined)
+	count := a.sessions
+	var targets []string
+	if count > 0 && len(a.turnTargets) >= count {
+		targets = append([]string(nil), a.turnTargets[count-1]...)
+	}
 	a.mu.Unlock()
-	return types.HarnessTurnResult{Text: "reply-" + itoa(int64(a.sessionsInt()))}, nil
+	return types.HarnessTurnResult{
+		Text:                 "reply-" + itoa(int64(count)),
+		TargetParticipantIDs: targets,
+	}, nil
 }
 
 func (a *fakeAdapter) sessionsInt() int {
@@ -386,6 +401,72 @@ func (c *fakeClient) snapshotSent() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.sent...)
+}
+
+// snapshotSentTargets mirrors snapshotSent with the explicit targets (#165)
+// each send carried.
+func (c *fakeClient) snapshotSentTargets() [][]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([][]string(nil), c.sentTargets...)
+}
+
+// #165: structured targets decided by the Harness must ride the reply into
+// send_text; the runtime neither drops nor rewrites them.
+func TestAddressedTurnReplyCarriesExplicitTargets(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+	}
+	adapter := &fakeAdapter{name: "pi", turnTargets: [][]string{{"peer-hermes", "peer-codex"}}}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-targets",
+		RoomID:      "test-targets",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotSent()) >= 1 }, "reply")
+	rt.Stop()
+
+	targets := client.snapshotSentTargets()
+	if len(targets) != 1 {
+		t.Fatalf("exactly-once send violated: %v", client.snapshotSent())
+	}
+	if len(targets[0]) != 2 || targets[0][0] != "peer-hermes" || targets[0][1] != "peer-codex" {
+		t.Fatalf("explicit targets must reach send_text unchanged: %v", targets[0])
+	}
+}
+
+// #165: a Harness result without targets stays an ordinary unaddressed send.
+func TestUnaddressedReplyKeepsNoTargets(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+	}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-plain",
+		RoomID:      "test-plain",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotSent()) >= 1 }, "reply")
+	rt.Stop()
+
+	targets := client.snapshotSentTargets()
+	if len(targets) != 1 || targets[0] != nil {
+		t.Fatalf("plain reply must carry no targets: %v", targets)
+	}
 }
 
 func TestUnaddressedTextWakesNothing(t *testing.T) {

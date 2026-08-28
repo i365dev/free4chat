@@ -478,7 +478,7 @@ func (r *ResidentRuntime) drainTurns() {
 			r.log("turn_failed", nil)
 			return
 		}
-		sent, err := r.options.Client.SendText(handle, text)
+		sent, err := r.options.Client.SendText(handle, text, result.TargetParticipantIDs)
 		if err != nil {
 			r.setStateLastError(StateReconnecting, err.Error())
 			r.log("turn_failed", nil)

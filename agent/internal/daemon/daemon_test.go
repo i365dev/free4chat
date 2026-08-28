@@ -183,7 +183,7 @@ func (*recordingClient) WaitForEvents(string, int64, int) (types.WaitResult, err
 	time.Sleep(20 * time.Millisecond)
 	return types.WaitResult{Cursor: 0, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}, nil
 }
-func (c *recordingClient) SendText(_ string, text string) (types.SendTextResult, error) {
+func (c *recordingClient) SendText(_ string, text string, _ []string) (types.SendTextResult, error) {
 	c.mu.Lock()
 	c.sent = append(c.sent, text)
 	c.mu.Unlock()

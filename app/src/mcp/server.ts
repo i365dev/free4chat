@@ -16,6 +16,10 @@ const MAX_CAPABILITY_LENGTH = 48
 const MAX_COLLAB_SUMMARY_LENGTH = 1200
 const MAX_COLLAB_ATTACHMENT_REFS = 3
 const MAX_ATTACHMENT_BASE64 = 1400_000
+// #165: mirrored from do/RoomSession.ts MAX_TARGETS — the same bound the DO
+// applies when persisting addressed text targets.
+const MAX_TARGETS = 8
+const MAX_TARGET_ID_LENGTH = 64
 const JOIN_RATE_LIMIT = 10
 const JOIN_RATE_WINDOW_S = 60
 
@@ -372,13 +376,18 @@ function createMcpServer(context: McpRequestContext) {
   server.registerTool(
     "send_text",
     {
-      description: "Send one text message to the room as the joined Agent.",
+      description:
+        "Send one text message to the room as the joined Agent. Optionally pass explicit target participant IDs (from room_info/wait_for_events roster metadata) to address the message: every participant still sees it as room context, but only targeted Agents receive it as a new addressed turn. Targeting decides attention only — never authorization. Plain text without targets stays an ordinary unaddressed message.",
       inputSchema: {
         participantHandle: z.string().min(1),
         text: z.string().trim().min(1).max(MAX_TEXT_LENGTH),
+        targetParticipantIds: z
+          .array(z.string().trim().min(1).max(MAX_TARGET_ID_LENGTH))
+          .max(MAX_TARGETS)
+          .optional(),
       },
     },
-    async ({ participantHandle, text }) => {
+    async ({ participantHandle, text, targetParticipantIds }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
       const result = await roomControl(env, handle.room, {
@@ -386,6 +395,7 @@ function createMcpServer(context: McpRequestContext) {
         participantId: handle.participantId,
         token: handle.participantToken,
         text,
+        ...(targetParticipantIds?.length ? { targetParticipantIds } : {}),
       })
       return result.ok
         ? toolResult(result.data)

@@ -9,9 +9,10 @@
 //	exit           die shortly after the first prompt completes
 //	restart        die after the first prompt; fresh process answers differently
 //	timeout_stuck  ignore the first prompt forever (survives SIGTERM); next process recovers
+//	envelope       reply with the exact FAKE_REPLY_TEXT payload (#165 addressing tests)
 //
 // Markers/env: FAKE_EXIT_MARKER, FAKE_STATE_MARKER, FAKE_CANCEL_MARKER,
-// FAKE_IMAGE_CAP ("1" advertises image support).
+// FAKE_IMAGE_CAP ("1" advertises image support), FAKE_REPLY_TEXT.
 package main
 
 import (
@@ -260,6 +261,14 @@ func main() {
 				if !restarted {
 					a.killAfter(10*time.Millisecond, "FAKE_RESTART_MARKER")
 				}
+			case "envelope":
+				a.promptCount++
+				text := os.Getenv("FAKE_REPLY_TEXT")
+				if text == "" {
+					text = fmt.Sprintf("reply-%d", a.promptCount)
+				}
+				updateChunk(sessionID, text)
+				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "thought":
 				// Emits internal reasoning that must NEVER surface in the
 				// runtime's published reply, then the real message.
