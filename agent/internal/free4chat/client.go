@@ -29,7 +29,7 @@ const (
 	// protection rejects Go's default "Go-http-client/1.1" UA with a 403
 	// challenge page, so an explicit product UA is mandatory (the Node
 	// reference sent "node" for the same reason).
-	defaultUserAgent = "free4chat-agent/0.5.3"
+	defaultUserAgent = "free4chat-agent/0.5.4"
 
 	headerContentType = "application/json"
 	headerAccept      = "application/json, text/event-stream"
