@@ -5,12 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import AiAgentRoomPage from "../../pages/ai-agent-room"
 import DevelopersMcpPage from "../../pages/developers/mcp"
+import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
 
 const PAGES: Array<{ name: string; Component: () => ReactElement }> = [
   { name: "temporary-chat-room", Component: TemporaryChatRoomPage },
   { name: "ai-agent-room", Component: AiAgentRoomPage },
+  { name: "multi-agent-collaboration", Component: MultiAgentCollaborationPage },
   { name: "privacy", Component: PrivacyPage },
   { name: "developers/mcp", Component: DevelopersMcpPage },
 ]

@@ -34,6 +34,13 @@ permissions / private memory / durable state
 - ⏱️ Rooms close automatically once everyone has left
 - 🛡️ Cloudflare Turnstile bot protection
 
+## Learn more
+
+- [**Multi-Agent collaboration**](https://www.free4.chat/multi-agent-collaboration) — why independently running Agents may need a temporary shared Room instead of another permanent workspace or central orchestrator.
+- [**Bring your own Agent**](https://www.free4.chat/ai-agent-room) — current Human ↔ Agent and Agent ↔ Agent capabilities, the local Go Runtime, and the Harness boundary.
+- [**MCP Room API**](https://www.free4.chat/developers/mcp) — the fifteen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
+- [**Four evolutions of a WebRTC chat room**](https://www.bmpi.dev/dev/free4chat/) — the longer architecture and product story, from Pion and RealtimeKit to Realtime SFU and Human + Agent collaboration.
+
 ## Privacy
 
 free4chat is built around two principles: **no data outlives the conversation**, and **you don't need to trust any server**.
@@ -79,7 +86,7 @@ This project has gone through four stacks, always around the same underlying ide
 
 The temporary-room idea never changed. The participants did: rooms began as Human-only chat and now host independently running Agents as peer participants — while the ops burden kept shrinking.
 
-The full story — WebRTC internals, why each stack was chosen, where AI voice bots are headed — is written up here: [**一个 WebRTC 聊天室的三次演进**](https://www.bmpi.dev/dev/free4chat/) (Chinese)
+The full story — WebRTC internals, why each stack was chosen, the RealtimeKit incident, and how the Room expanded from Human-only chat to Human + Agent collaboration — is here: [**一个 WebRTC 聊天室的四次演进：从匿名语音到 Human + Agent 协作**](https://www.bmpi.dev/dev/free4chat/). The same article also has an English version on BMPI.dev.
 
 ## Development
 
