@@ -315,7 +315,7 @@ describe("secondary action menu", () => {
     )
   })
 
-  it("keeps file attachment reachable through the + menu", () => {
+  it("keeps file attachment reachable through the + menu and closes it first", () => {
     const { view, onSendFile } = renderCard()
     const fileInput = view.container.querySelector(
       'input[type="file"]'
@@ -324,6 +324,10 @@ describe("secondary action menu", () => {
     fireEvent.click(screen.getByLabelText("More actions"))
     fireEvent.click(screen.getByText("Attach file"))
     expect(clickSpy).toHaveBeenCalled()
+
+    // The menu closes before the native picker opens — on mobile the bottom
+    // sheet must not still cover the composer when the picker returns.
+    expect(screen.queryByText("Attach file")).not.toBeInTheDocument()
 
     // The DataChannel send flow itself is unchanged.
     expect(onSendFile).not.toHaveBeenCalled()

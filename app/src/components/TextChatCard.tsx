@@ -1230,7 +1230,12 @@ export default function TextChatCard({
                   </p>
                   <button
                     type="button"
-                    onClick={() => fileInputRef.current?.click()}
+                    onClick={() => {
+                      // Close before opening the native picker so the menu
+                      // (mobile bottom sheet) is gone when the picker returns.
+                      closeMenu()
+                      fileInputRef.current?.click()
+                    }}
                     className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
                   >
                     <span>📎</span> Attach file
