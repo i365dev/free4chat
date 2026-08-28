@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest"
 import {
   ANALYTICS_PROPERTY_KEYS,
   createCollabAnalyticsTracker,
+  delegationTopology,
   roomComposition,
   resolveParticipantKind,
   type CollabAnalyticsContext,
 } from "./collabAnalytics"
-import type { CollabEvent } from "../room/types"
+import type { CollabEvent, CollabEventKind } from "../room/types"
 
 const ROOM_TYPE = "audio"
 const ROOM_HASH = "a1b2c3d4"
@@ -28,8 +29,15 @@ function context(
 
 const HUMAN = { peerId: "raw-self-id", kind: "human" as const }
 const AGENT = { peerId: "agent-1", kind: "agent" as const }
+const AGENT_2 = { peerId: "agent-2", kind: "agent" as const }
 
-function collabEvent(overrides: Partial<CollabEvent>): CollabEvent {
+/**
+ * Production routing shape (do/collab.ts): a request travels from the
+ * original requester to the original target, while the canonical registry
+ * rewrites every response/result envelope in the reverse direction —
+ * from=responder (the original target), target=the original requester.
+ */
+function requestEnvelope(overrides: Partial<CollabEvent> = {}): CollabEvent {
   return {
     requestId: "req-1",
     kind: "request",
@@ -39,41 +47,77 @@ function collabEvent(overrides: Partial<CollabEvent>): CollabEvent {
   }
 }
 
+function terminalEnvelope(
+  kind: Extract<CollabEventKind, "declined" | "completed" | "failed">,
+  overrides: Partial<CollabEvent> = {}
+): CollabEvent {
+  return {
+    requestId: "req-1",
+    kind,
+    fromParticipantId: "agent-1",
+    targetParticipantId: "raw-self-id",
+    ...overrides,
+  }
+}
+
 describe("AgentJoined presence analytics", () => {
-  it("emits for a newly present Agent and not for ordinary Human presence", () => {
+  it("does not count Agents of the initial snapshot, then emits genuinely new joins once", () => {
     const tracker = createCollabAnalyticsTracker()
 
-    const humanOnly = tracker.observePresence(context([HUMAN]))
-    expect(humanOnly).toEqual([])
+    // Before the connection is established the roster is observed without
+    // baseline semantics: nothing may emit yet.
+    expect(tracker.observePresence(context([HUMAN, AGENT]))).toEqual([])
 
-    const withAgent = tracker.observePresence(context([HUMAN, AGENT]))
-    expect(withAgent).toHaveLength(1)
-    expect(withAgent[0]).toEqual({
+    // Initial post-join snapshot: Agents already present are baselined
+    // silently instead of being counted as having just joined.
+    expect(
+      tracker.observePresence(
+        context([HUMAN, AGENT], { presenceBaseline: true })
+      )
+    ).toEqual([])
+
+    // Replays/re-renders of the baselined roster stay silent.
+    expect(
+      tracker.observePresence(
+        context([HUMAN, AGENT], { presenceBaseline: true })
+      )
+    ).toEqual([])
+
+    // A genuinely new Agent after observation began emits exactly once.
+    const joined = tracker.observePresence(
+      context([HUMAN, AGENT, AGENT_2], { presenceBaseline: true })
+    )
+    expect(joined).toHaveLength(1)
+    expect(joined[0]).toEqual({
       roomType: ROOM_TYPE,
       roomHash: ROOM_HASH,
       participantBucket: "2-3",
-      roomComposition: "human-agent",
+      roomComposition: "mixed",
     })
+
+    // Reconnect-style replay of the same roster never re-emits.
+    expect(
+      tracker.observePresence(
+        context([HUMAN, AGENT, AGENT_2], { presenceBaseline: true })
+      )
+    ).toEqual([])
   })
 
-  it("does not re-emit for replayed, re-observed, or reconnected presence", () => {
+  it("baselines an initially empty room, so the first real Agent join emits", () => {
     const tracker = createCollabAnalyticsTracker()
-    expect(tracker.observePresence(context([HUMAN, AGENT]))).toHaveLength(1)
+    expect(
+      tracker.observePresence(context([HUMAN], { presenceBaseline: true }))
+    ).toEqual([])
 
-    // Same roster observed again (re-render / state refresh / replay).
-    expect(tracker.observePresence(context([HUMAN, AGENT]))).toEqual([])
+    const joined = tracker.observePresence(
+      context([HUMAN, AGENT], { presenceBaseline: true })
+    )
+    expect(joined).toHaveLength(1)
+    expect(joined[0]?.roomComposition).toBe("human-agent")
 
-    // Reconnect: roster momentarily empties, then the same Agent returns.
+    // The same Agent leaving and returning is not a second join.
     expect(tracker.observePresence(context([HUMAN]))).toEqual([])
     expect(tracker.observePresence(context([HUMAN, AGENT]))).toEqual([])
-
-    // A genuinely different Agent participant is a new, distinct join.
-    const second = tracker.observePresence(
-      context([HUMAN, AGENT, { peerId: "agent-2", kind: "agent" }])
-    )
-    expect(second).toHaveLength(1)
-    expect(second[0]?.roomComposition).toBe("mixed")
-    expect(second[0]?.participantBucket).toBe("2-3")
   })
 })
 
@@ -82,7 +126,7 @@ describe("CollabRequested / CollabOutcome analytics", () => {
     const tracker = createCollabAnalyticsTracker()
     const ctx = context([HUMAN, AGENT])
 
-    const first = tracker.observeCollabEvent(ctx, collabEvent({}))
+    const first = tracker.observeCollabEvent(ctx, requestEnvelope(), Date.now())
     expect(first).toEqual({
       name: "CollabRequested",
       properties: {
@@ -95,20 +139,44 @@ describe("CollabRequested / CollabOutcome analytics", () => {
     })
 
     // Room state refresh / resync replay re-delivers the same envelope.
-    expect(tracker.observeCollabEvent(ctx, collabEvent({}))).toBeNull()
-    expect(tracker.observeCollabEvent(ctx, collabEvent({ ...{} }))).toBeNull()
+    expect(
+      tracker.observeCollabEvent(ctx, requestEnvelope(), Date.now())
+    ).toBeNull()
+  })
+
+  it("keeps requester/target meaning the original delegation across outcomes", () => {
+    const tracker = createCollabAnalyticsTracker()
+    const ctx = context([HUMAN, AGENT])
+    tracker.observeCollabEvent(ctx, requestEnvelope(), Date.now())
+
+    // The terminal envelope reverses direction (the responder is the Agent);
+    // analytics must still report the ORIGINAL Human -> Agent delegation.
+    const outcome = tracker.observeCollabEvent(
+      ctx,
+      terminalEnvelope("completed"),
+      Date.now()
+    )
+    expect(outcome).toEqual({
+      name: "CollabOutcome",
+      properties: expect.objectContaining({
+        outcome: "completed",
+        requesterKind: "human",
+        targetKind: "agent",
+      }),
+    })
   })
 
   it("emits agent-to-agent requester and target kinds", () => {
     const tracker = createCollabAnalyticsTracker()
-    const ctx = context([AGENT, { peerId: "agent-2", kind: "agent" }])
+    const ctx = context([AGENT, AGENT_2])
 
     const emitted = tracker.observeCollabEvent(
       ctx,
-      collabEvent({
+      requestEnvelope({
         fromParticipantId: "agent-1",
         targetParticipantId: "agent-2",
-      })
+      }),
+      Date.now()
     )
     expect(emitted).toEqual({
       name: "CollabRequested",
@@ -118,60 +186,130 @@ describe("CollabRequested / CollabOutcome analytics", () => {
         roomComposition: "agent-only",
       }),
     })
+
+    // The Agent-to-Agent outcome keeps the same original topology.
+    const outcome = tracker.observeCollabEvent(
+      ctx,
+      terminalEnvelope("declined", {
+        fromParticipantId: "agent-2",
+        targetParticipantId: "agent-1",
+      }),
+      Date.now()
+    )
+    expect(outcome).toEqual({
+      name: "CollabOutcome",
+      properties: expect.objectContaining({
+        outcome: "declined",
+        requesterKind: "agent",
+        targetKind: "agent",
+      }),
+    })
   })
 
-  it("maps terminal kinds to CollabOutcome outcomes exactly once", () => {
+  it("never emits for the intermediate accepted kind", () => {
     const tracker = createCollabAnalyticsTracker()
     const ctx = context([HUMAN, AGENT])
-
-    const declined = tracker.observeCollabEvent(
-      ctx,
-      collabEvent({ kind: "declined" })
-    )
-    expect(declined).toEqual({
-      name: "CollabOutcome",
-      properties: expect.objectContaining({ outcome: "declined" }),
-    })
-    expect(
-      tracker.observeCollabEvent(ctx, collabEvent({ kind: "declined" }))
-    ).toBeNull()
-
-    const completed = tracker.observeCollabEvent(
-      ctx,
-      collabEvent({ requestId: "req-2", kind: "completed" })
-    )
-    expect(completed).toEqual({
-      name: "CollabOutcome",
-      properties: expect.objectContaining({ outcome: "completed" }),
-    })
-
-    const failed = tracker.observeCollabEvent(
-      ctx,
-      collabEvent({ requestId: "req-3", kind: "failed" })
-    )
-    expect(failed).toEqual({
-      name: "CollabOutcome",
-      properties: expect.objectContaining({ outcome: "failed" }),
-    })
     expect(
       tracker.observeCollabEvent(
         ctx,
-        collabEvent({ requestId: "req-3", kind: "failed" })
+        requestEnvelope({ kind: "accepted" }),
+        Date.now()
       )
     ).toBeNull()
   })
 
-  it("sets hasArtifact only from attachment presence, never contents", () => {
+  it("emits an outcome even if the request envelope was never observed", () => {
+    const tracker = createCollabAnalyticsTracker()
+    const ctx = context([HUMAN, AGENT])
+    const outcome = tracker.observeCollabEvent(
+      ctx,
+      terminalEnvelope("completed"),
+      Date.now()
+    )
+    expect(outcome).toEqual({
+      name: "CollabOutcome",
+      properties: expect.objectContaining({ outcome: "completed" }),
+    })
+    // And the later replayed request envelope does not emit retroactively.
+    expect(
+      tracker.observeCollabEvent(ctx, requestEnvelope(), Date.now())
+    ).toBeNull()
+  })
+})
+
+describe("historical Room state baseline", () => {
+  it("stays silent for envelopes created before observation began", () => {
+    const tracker = createCollabAnalyticsTracker()
+    const ctx = context([HUMAN, AGENT])
+    const historical = Date.now() - 60_000
+
+    // Old request retained in Room state when the Human entered.
+    expect(
+      tracker.observeCollabEvent(ctx, requestEnvelope(), historical)
+    ).toBeNull()
+    // Its replays stay silent too.
+    expect(
+      tracker.observeCollabEvent(ctx, requestEnvelope(), historical)
+    ).toBeNull()
+
+    // Old terminal state is likewise never reattributed.
+    expect(
+      tracker.observeCollabEvent(ctx, terminalEnvelope("completed"), historical)
+    ).toBeNull()
+    expect(
+      tracker.observeCollabEvent(ctx, terminalEnvelope("failed"), historical)
+    ).toBeNull()
+
+    // A genuinely new request after observation began emits exactly once.
+    const fresh = tracker.observeCollabEvent(
+      ctx,
+      requestEnvelope({ requestId: "req-new" }),
+      Date.now()
+    )
+    expect(fresh).toEqual({
+      name: "CollabRequested",
+      properties: expect.objectContaining({ requesterKind: "human" }),
+    })
+    expect(
+      tracker.observeCollabEvent(
+        ctx,
+        requestEnvelope({ requestId: "req-new" }),
+        Date.now()
+      )
+    ).toBeNull()
+  })
+
+  it("does not reattribute retained history across a page reload", () => {
+    // A reload creates a fresh tracker (new observation clock); the retained
+    // lifecycle is again older than the boundary and stays silent.
+    const reloadedTracker = createCollabAnalyticsTracker()
+    const ctx = context([HUMAN, AGENT])
+    expect(
+      reloadedTracker.observeCollabEvent(
+        ctx,
+        requestEnvelope({ requestId: "req-old" }),
+        Date.now() - 60_000
+      )
+    ).toBeNull()
+    expect(
+      reloadedTracker.observeCollabEvent(
+        ctx,
+        terminalEnvelope("completed", { requestId: "req-old" }),
+        Date.now() - 60_000
+      )
+    ).toBeNull()
+  })
+})
+
+describe("hasArtifact", () => {
+  it("reflects attachment presence only, never contents", () => {
     const tracker = createCollabAnalyticsTracker()
     const ctx = context([HUMAN, AGENT])
 
     const withArtifact = tracker.observeCollabEvent(
       ctx,
-      collabEvent({
-        requestId: "req-a",
-        kind: "completed",
-        attachmentIds: ["att-1"],
-      })
+      terminalEnvelope("completed", { attachmentIds: ["att-1"] }),
+      Date.now()
     )
     expect(withArtifact).toEqual({
       name: "CollabOutcome",
@@ -183,38 +321,16 @@ describe("CollabRequested / CollabOutcome analytics", () => {
 
     const withoutArtifact = tracker.observeCollabEvent(
       ctx,
-      collabEvent({ requestId: "req-b", kind: "completed" })
+      terminalEnvelope("failed", { requestId: "req-2" }),
+      Date.now()
     )
     expect(withoutArtifact).toEqual({
       name: "CollabOutcome",
       properties: expect.objectContaining({
-        outcome: "completed",
+        outcome: "failed",
         hasArtifact: false,
       }),
     })
-  })
-
-  it("never emits for the intermediate accepted kind", () => {
-    const tracker = createCollabAnalyticsTracker()
-    const ctx = context([HUMAN, AGENT])
-    expect(
-      tracker.observeCollabEvent(ctx, collabEvent({ kind: "accepted" }))
-    ).toBeNull()
-  })
-
-  it("emits an outcome even if the request envelope was never observed", () => {
-    const tracker = createCollabAnalyticsTracker()
-    const ctx = context([HUMAN, AGENT])
-    const outcome = tracker.observeCollabEvent(
-      ctx,
-      collabEvent({ kind: "completed" })
-    )
-    expect(outcome).toEqual({
-      name: "CollabOutcome",
-      properties: expect.objectContaining({ outcome: "completed" }),
-    })
-    // And the later replayed request envelope does not emit retroactively.
-    expect(tracker.observeCollabEvent(ctx, collabEvent({}))).toBeNull()
   })
 })
 
@@ -223,7 +339,9 @@ describe("analytics privacy shape", () => {
     const tracker = createCollabAnalyticsTracker()
     const ctx = context([HUMAN, AGENT])
 
-    const presence = tracker.observePresence(ctx)
+    const presence = tracker.observePresence(
+      context([HUMAN, AGENT], { presenceBaseline: true })
+    )
     for (const payload of presence) {
       expect(Object.keys(payload)).toEqual([
         ...ANALYTICS_PROPERTY_KEYS.AgentJoined,
@@ -232,11 +350,12 @@ describe("analytics privacy shape", () => {
 
     const requested = tracker.observeCollabEvent(
       ctx,
-      collabEvent({
+      requestEnvelope({
         requestId: "raw-request-id",
         summary: "please deploy the secret feature",
         details: { command: "rm -rf /" },
-      })
+      }),
+      Date.now()
     )
     expect(requested).not.toBeNull()
     expect(Object.keys(requested!.properties)).toEqual([
@@ -245,13 +364,13 @@ describe("analytics privacy shape", () => {
 
     const outcome = tracker.observeCollabEvent(
       ctx,
-      collabEvent({
+      terminalEnvelope("completed", {
         requestId: "raw-request-id",
-        kind: "completed",
         summary: "deployed the secret feature",
         details: { url: "https://internal.example.invalid" },
         attachmentIds: ["att-raw-id"],
-      })
+      }),
+      Date.now()
     )
     expect(outcome).not.toBeNull()
     expect(Object.keys(outcome!.properties)).toEqual([
@@ -278,10 +397,11 @@ describe("analytics privacy shape", () => {
     const ctx = context([HUMAN])
     const emitted = tracker.observeCollabEvent(
       ctx,
-      collabEvent({
+      requestEnvelope({
         fromParticipantId: "gone-agent",
         targetParticipantId: "gone-agent",
-      })
+      }),
+      Date.now()
     )
     expect(emitted).toEqual({
       name: "CollabRequested",
@@ -299,9 +419,18 @@ describe("pure helpers", () => {
     expect(roomComposition([HUMAN])).toBe("human-only")
     expect(roomComposition([AGENT])).toBe("agent-only")
     expect(roomComposition([HUMAN, AGENT])).toBe("human-agent")
-    expect(
-      roomComposition([HUMAN, AGENT, { peerId: "agent-2", kind: "agent" }])
-    ).toBe("mixed")
+    expect(roomComposition([HUMAN, AGENT, AGENT_2])).toBe("mixed")
+  })
+
+  it("normalizes the reversed response/result envelope direction", () => {
+    expect(delegationTopology(requestEnvelope())).toEqual({
+      requesterId: "raw-self-id",
+      targetId: "agent-1",
+    })
+    expect(delegationTopology(terminalEnvelope("completed"))).toEqual({
+      requesterId: "raw-self-id",
+      targetId: "agent-1",
+    })
   })
 
   it("resolves the local Human from either its roster entry or raw id", () => {

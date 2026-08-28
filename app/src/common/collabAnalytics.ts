@@ -9,6 +9,14 @@ import type { CollabEvent } from "../room/types"
  * browser observes — the participant roster and persisted collaboration
  * envelopes — never from button clicks or transient UI state.
  *
+ * Observation baseline: facts that already existed when this browser began
+ * observing the Room (Agents in the initial connected roster, collaboration
+ * envelopes created before observation started) are recorded silently and
+ * never emitted under this browser's analytics identity. Only facts that
+ * become new after observation begins are emitted, and each is emitted at
+ * most once per browser session — resync replay, reconnect, and re-render
+ * never re-count.
+ *
  * Privacy: payloads are intentionally coarse. Room names are hashed with the
  * shared hashRoom helper; participant kinds and counts are bucketed. Request
  * summaries, capability strings, participant names, and raw request or
@@ -64,6 +72,12 @@ export interface CollabAnalyticsContext {
   selfPeerId: string
   /** The browser's raw Room participant id, when the session has one. */
   selfParticipantId?: string
+  /**
+   * True only while this observation reflects the initial post-join snapshot
+   * (the connection is established). The tracker baselines Agents present in
+   * that first snapshot instead of counting them as having just joined.
+   */
+  presenceBaseline?: boolean
 }
 
 const AGENT_JOINED_PROPERTIES = [
@@ -122,24 +136,50 @@ export function resolveParticipantKind(
   return participant?.kind ?? "unknown"
 }
 
+/**
+ * Normalize the canonical envelope routing to the ORIGINAL delegation
+ * topology. Responses/results reverse direction: the registry rewrites them
+ * as from=responder (the original target) and target=the original requester
+ * (see do/collab.ts). requesterKind/targetKind must consistently mean the
+ * original requester and target across CollabRequested and CollabOutcome.
+ */
+export function delegationTopology(event: CollabEvent): {
+  requesterId: string
+  targetId: string
+} {
+  return event.kind === "request"
+    ? {
+        requesterId: event.fromParticipantId,
+        targetId: event.targetParticipantId,
+      }
+    : {
+        requesterId: event.targetParticipantId,
+        targetId: event.fromParticipantId,
+      }
+}
+
 export interface CollabAnalyticsTracker {
   /**
-   * Observe the current roster. Returns one payload per Agent participant
-   * id seen for the first time by this browser session; replay, reconnect,
-   * and re-render of already-seen participants return an empty array.
+   * Observe the current roster. The first observation flagged as the initial
+   * post-join snapshot baselines every Agent present without emitting; after
+   * that, each Agent participant id seen for the first time emits exactly
+   * one payload, and replay/reconnect/re-render of known ids emit nothing.
    */
   observePresence(context: CollabAnalyticsContext): AgentJoinedPayload[]
   /**
-   * Observe one canonical collaboration envelope from Room state. Returns
-   * at most one analytics event per canonical requestId per browser
-   * session: the first observation of a request emits CollabRequested, the
-   * first observation of a terminal kind (declined/completed/failed) emits
-   * CollabOutcome, and every later observation of either returns null.
-   * accepted is an intermediate lifecycle kind and never emits.
+   * Observe one canonical collaboration envelope from Room state with its
+   * persisted createdAt. Envelopes created before this tracker's observation
+   * began are historical: they are recorded silently so replays of retained
+   * Room history never emit under this browser's identity. Otherwise, at
+   * most one analytics event per canonical requestId per browser session:
+   * the first new request emits CollabRequested, the first new terminal kind
+   * (declined/completed/failed) emits CollabOutcome, and every later
+   * observation of either returns null. accepted never emits.
    */
   observeCollabEvent(
     context: CollabAnalyticsContext,
-    event: CollabEvent
+    event: CollabEvent,
+    createdAt?: number
   ): CollabAnalyticsEmission | null
 }
 
@@ -147,9 +187,28 @@ export function createCollabAnalyticsTracker(): CollabAnalyticsTracker {
   const seenAgentParticipantIds = new Set<string>()
   const seenRequestIds = new Set<string>()
   const seenOutcomeRequestIds = new Set<string>()
+  // Observation began when the browser mounted the Room; collab envelopes
+  // carry the DO-side creation clock, so this boundary classifies retained
+  // history as historical. Small client/server clock skew can only move the
+  // edge by the skew amount — the same tradeoff the reaction precedent in
+  // RoomContent accepts for its pre-join guard.
+  const observationStartedAt = Date.now()
+  let presenceBaselined = false
 
   return {
     observePresence(context) {
+      if (!presenceBaselined) {
+        if (context.presenceBaseline !== true) return []
+        // Initial post-join snapshot: Agents already present did not "just
+        // join" — record them silently and start observing for new joins.
+        presenceBaselined = true
+        for (const participant of context.participants) {
+          if (participant.kind === "agent") {
+            seenAgentParticipantIds.add(participant.peerId)
+          }
+        }
+        return []
+      }
       const joined: AgentJoinedPayload[] = []
       for (const participant of context.participants) {
         if (participant.kind !== "agent") continue
@@ -165,8 +224,18 @@ export function createCollabAnalyticsTracker(): CollabAnalyticsTracker {
       return joined
     },
 
-    observeCollabEvent(context, event) {
+    observeCollabEvent(context, event, createdAt) {
       if (event.kind === "accepted") return null
+
+      // Retained history predating observation: seed the dedup sets so
+      // replays of the same lifecycle can never emit, but stay silent.
+      if (createdAt !== undefined && createdAt < observationStartedAt) {
+        if (event.kind === "request") seenRequestIds.add(event.requestId)
+        else seenOutcomeRequestIds.add(event.requestId)
+        return null
+      }
+
+      const topology = delegationTopology(event)
 
       if (event.kind === "request") {
         // A request that already reached a terminal outcome in this session
@@ -181,14 +250,8 @@ export function createCollabAnalyticsTracker(): CollabAnalyticsTracker {
         const properties: CollabRequestedPayload = {
           roomType: context.roomType,
           roomHash: context.roomHash,
-          requesterKind: resolveParticipantKind(
-            context,
-            event.fromParticipantId
-          ),
-          targetKind: resolveParticipantKind(
-            context,
-            event.targetParticipantId
-          ),
+          requesterKind: resolveParticipantKind(context, topology.requesterId),
+          targetKind: resolveParticipantKind(context, topology.targetId),
           roomComposition: roomComposition(context.participants),
         }
         return { name: "CollabRequested", properties }
@@ -199,8 +262,8 @@ export function createCollabAnalyticsTracker(): CollabAnalyticsTracker {
       seenOutcomeRequestIds.add(event.requestId)
       const properties: CollabOutcomePayload = {
         outcome: event.kind,
-        requesterKind: resolveParticipantKind(context, event.fromParticipantId),
-        targetKind: resolveParticipantKind(context, event.targetParticipantId),
+        requesterKind: resolveParticipantKind(context, topology.requesterId),
+        targetKind: resolveParticipantKind(context, topology.targetId),
         roomType: context.roomType,
         roomHash: context.roomHash,
         hasArtifact: Array.isArray(event.attachmentIds)

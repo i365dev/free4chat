@@ -302,9 +302,11 @@ export default function RoomContent({
 
   // Human + Agent collaboration analytics: derived from canonical Room state
   // (the connected roster and persisted collaboration envelopes), never from
-  // clicks. The tracker keeps page-lifetime dedup sets so Room state refresh,
-  // resync replay, reconnect, and re-render never re-count the same Agent or
-  // the same canonical collab requestId.
+  // clicks. The tracker baselines the initial post-join snapshot (Agents and
+  // collaboration lifecycle that predate this browser's observation stay
+  // silent) and keeps page-lifetime dedup sets, so state refresh, resync
+  // replay, reconnect, and re-render never re-count the same Agent or the
+  // same canonical collab requestId.
   const collabAnalyticsRef = useRef<ReturnType<
     typeof createCollabAnalyticsTracker
   > | null>(null)
@@ -321,11 +323,18 @@ export default function RoomContent({
       participants,
       selfPeerId: LOCAL_PEER_ID,
       selfParticipantId: localParticipantId,
+      presenceBaseline: connectionStatus === "connected",
     }
     for (const properties of tracker.observePresence(context)) {
       trackAnalyticsEvent("AgentJoined", properties)
     }
-  }, [participants, roomName, resolvedRoomType, localParticipantId])
+  }, [
+    connectionStatus,
+    participants,
+    roomName,
+    resolvedRoomType,
+    localParticipantId,
+  ])
 
   useEffect(() => {
     const tracker = collabAnalyticsRef.current
@@ -339,7 +348,7 @@ export default function RoomContent({
     }
     messages.forEach((m) => {
       if (m.actionType !== "collab" || !m.collab) return
-      const emitted = tracker.observeCollabEvent(context, m.collab)
+      const emitted = tracker.observeCollabEvent(context, m.collab, m.createdAt)
       if (emitted) trackAnalyticsEvent(emitted.name, emitted.properties)
     })
   }, [messages, participants, roomName, resolvedRoomType, localParticipantId])
