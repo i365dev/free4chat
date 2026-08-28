@@ -1,6 +1,8 @@
-import React, { useState, useRef, useEffect } from "react"
+import React, { useState, useRef, useEffect, memo } from "react"
 
 import Avatar from "boring-avatars"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { ActionType, Message } from "@common/types"
@@ -95,29 +97,117 @@ const GAMES = [
   },
 ]
 
-function TextWithLinks({ text }: { text: string }) {
-  const urlRegex = /(https?:\/\/[^\s]+)/g
-  const parts = text.split(urlRegex)
+function extractText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return ""
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node)
+  }
+  if (Array.isArray(node)) return node.map(extractText).join("")
+  if (React.isValidElement(node)) {
+    return extractText((node.props as { children?: React.ReactNode }).children)
+  }
+  return ""
+}
+
+function CodeBlock({ language, code }: { language: string; code: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard unavailable (permissions/insecure context): stay silent.
+    }
+  }
   return (
-    <span className="break-all">
-      {parts.map((part, i) =>
-        urlRegex.test(part) ? (
-          <a
-            key={i}
-            href={part}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline opacity-90 hover:opacity-100"
-          >
-            {part}
-          </a>
-        ) : (
-          part
-        )
-      )}
-    </span>
+    <div className="my-2 overflow-hidden rounded-lg border border-gray-700 bg-gray-950">
+      <div className="flex items-center justify-between border-b border-gray-700 px-3 py-1">
+        <span className="text-[10px] uppercase tracking-wide text-gray-500">
+          {language || "code"}
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="text-[10px] text-gray-400 transition-colors hover:text-white"
+          title="Copy code"
+          aria-label="Copy code"
+        >
+          {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      <pre className="scrollbar-thin overflow-x-auto p-3 text-xs leading-relaxed text-gray-200">
+        <code>{code}</code>
+      </pre>
+    </div>
   )
 }
+
+// Safe-by-default GFM rendering: react-markdown without rehype-raw never
+// executes raw HTML, the default URL transform blocks javascript: URLs, and
+// Markdown images are intentionally not rendered (no remote content loading).
+const markdownComponents = {
+  a: (props: React.ComponentProps<"a">) => (
+    <a
+      target="_blank"
+      rel="noopener noreferrer"
+      {...props}
+      className="underline underline-offset-2 opacity-90 hover:opacity-100"
+    />
+  ),
+  img: () => null,
+  pre: ({ children }: { children?: React.ReactNode }) => {
+    const child = Array.isArray(children) ? children[0] : children
+    if (React.isValidElement(child)) {
+      const props = child.props as {
+        className?: string
+        children?: React.ReactNode
+      }
+      const language = /language-(\S+)/.exec(props.className ?? "")?.[1] ?? ""
+      // Strip the single fence-syntax trailing newline from display and copy.
+      return (
+        <CodeBlock
+          language={language}
+          code={extractText(props.children).replace(/\n$/, "")}
+        />
+      )
+    }
+    return <pre className="scrollbar-thin overflow-x-auto">{children}</pre>
+  },
+  code: (props: React.ComponentProps<"code">) => (
+    <code
+      className="rounded bg-gray-700/70 px-1 py-0.5 font-mono text-[13px]"
+      {...props}
+    />
+  ),
+  table: (props: React.ComponentProps<"table">) => (
+    <div className="scrollbar-thin my-2 overflow-x-auto">
+      <table
+        {...props}
+        className="w-full border-collapse text-left text-xs [&_td]:border [&_td]:border-gray-700 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-gray-700 [&_th]:px-2 [&_th]:py-1 [&_th]:font-semibold"
+      />
+    </div>
+  ),
+}
+
+const MessageMarkdown = memo(function MessageMarkdown({
+  text,
+}: {
+  text: string
+}) {
+  return (
+    <div className="markdown-body break-words text-sm leading-relaxed">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownComponents}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  )
+})
 
 function getOrCreateWhiteboardUrl(room: string): string {
   const storageKey = `wb-key-${room}`
@@ -666,7 +756,7 @@ export default function TextChatCard({
   onCollabResult,
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
-  const [submenu, setSubmenu] = useState<"games" | null>(null)
+  const [submenu, setSubmenu] = useState<"more" | "games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const [pickerIndex, setPickerIndex] = useState(0)
   const [artifactId, setArtifactId] = useState<string | null>(null)
@@ -680,21 +770,40 @@ export default function TextChatCard({
   >([])
   const [pickerDismissed, setPickerDismissed] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const textRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const gamesBtnRef = useRef<HTMLDivElement>(null)
+  const moreBtnRef = useRef<HTMLDivElement>(null)
+  const moreMenuRef = useRef<HTMLDivElement>(null)
   const gamesMenuRef = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
+  // Coarse pointers (touch) keep Enter as a newline so multiline editing
+  // stays natural on mobile keyboards; sending uses the send button.
+  const [isCoarsePointer] = useState<boolean>(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(pointer: coarse)").matches
+      : false
+  )
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [messages, pendingFiles])
 
+  // Auto-grow the textarea with content up to a bounded height, then let it
+  // scroll internally instead of consuming the whole Room.
+  useEffect(() => {
+    const el = textRef.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }, [message])
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      const inBtn = gamesBtnRef.current?.contains(e.target as Node)
-      const inMenu = gamesMenuRef.current?.contains(e.target as Node)
-      if (!inBtn && !inMenu) {
+      const target = e.target as Node
+      const inBtn = moreBtnRef.current?.contains(target)
+      const inMoreMenu = moreMenuRef.current?.contains(target)
+      const inGamesMenu = gamesMenuRef.current?.contains(target)
+      if (!inBtn && !inMoreMenu && !inGamesMenu) {
         setSubmenu(null)
       }
     }
@@ -706,16 +815,17 @@ export default function TextChatCard({
     setSubmenu(null)
   }
 
-  const handleSend = () => {
-    if (message.trim() !== "") {
-      onSendText(
-        message.trim(),
-        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
-      )
-      setMessage("")
-      setSelectedAgents([])
-    }
+  const sendCurrentMessage = () => {
+    if (message.trim() === "") return
+    onSendText(
+      message.trim(),
+      resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
+    )
+    setMessage("")
+    setSelectedAgents([])
   }
+
+  const handleSend = sendCurrentMessage
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (pickerVisible) {
@@ -744,17 +854,12 @@ export default function TextChatCard({
         return
       }
     }
-    if (
-      event.key === "Enter" &&
-      !isComposingRef.current &&
-      message.trim() !== ""
-    ) {
-      onSendText(
-        message.trim(),
-        resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
-      )
-      setMessage("")
-      setSelectedAgents([])
+    if (event.key === "Enter" && !isComposingRef.current) {
+      // Shift+Enter inserts a newline; on coarse (touch) pointers Enter also
+      // stays a newline and sending happens through the send button.
+      if (event.shiftKey || isCoarsePointer) return
+      event.preventDefault()
+      sendCurrentMessage()
     }
   }
 
@@ -842,7 +947,7 @@ export default function TextChatCard({
     (participant) =>
       participant.kind === "agent" && participant.peerId !== LOCAL_PEER_ID
   )
-  const caretPosition = inputRef.current?.selectionStart ?? message.length
+  const caretPosition = textRef.current?.selectionStart ?? message.length
   const mentionMatch = message
     .slice(0, caretPosition)
     .match(/(?:^|\s)@([^\s@]*)$/)
@@ -857,7 +962,7 @@ export default function TextChatCard({
 
   const selectAgent = (agent: UserInfo) => {
     if (!agent) return
-    const caret = inputRef.current?.selectionStart ?? message.length
+    const caret = textRef.current?.selectionStart ?? message.length
     const before = message.slice(0, caret)
     const match = before.match(/(?:^|\s)@([^\s@]*)$/)
     if (!match) return
@@ -871,12 +976,15 @@ export default function TextChatCard({
         ? current
         : [...current, { id: agent.peerId, name: agent.name }]
     )
-    setPickerDismissed(false)
+    // The just-completed @token is done: hide the picker immediately. The
+    // interim render still sees the pre-insertion caret and would otherwise
+    // reshow (and swallow the next Enter); any later edit reopens matching.
+    setPickerDismissed(true)
     setPickerIndex(0)
     window.setTimeout(() => {
       const nextCaret = start + agent.name.length + 2
-      inputRef.current?.focus()
-      inputRef.current?.setSelectionRange(nextCaret, nextCaret)
+      textRef.current?.focus()
+      textRef.current?.setSelectionRange(nextCaret, nextCaret)
     }, 0)
   }
 
@@ -893,10 +1001,28 @@ export default function TextChatCard({
   return (
     <>
       <style>{`
-      .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+      .scrollbar-thin::-webkit-scrollbar { width: 4px; height: 4px; }
       .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
       .scrollbar-thin::-webkit-scrollbar-thumb { background: #374151; border-radius: 9999px; }
       .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+      .markdown-body > :first-child { margin-top: 0; }
+      .markdown-body > :last-child { margin-bottom: 0; }
+      .markdown-body p { margin: 0.375rem 0; }
+      .markdown-body h1, .markdown-body h2, .markdown-body h3,
+      .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+        font-weight: 600; line-height: 1.3; margin: 0.75rem 0 0.375rem; color: #ffffff;
+      }
+      .markdown-body h1 { font-size: 1.125rem; }
+      .markdown-body h2 { font-size: 1rem; }
+      .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { font-size: 0.925rem; }
+      .markdown-body ul { list-style: disc; padding-left: 1.25rem; margin: 0.375rem 0; }
+      .markdown-body ol { list-style: decimal; padding-left: 1.25rem; margin: 0.375rem 0; }
+      .markdown-body li { margin: 0.125rem 0; }
+      .markdown-body li > input[type="checkbox"] { margin-right: 0.375rem; }
+      .markdown-body blockquote {
+        border-left: 3px solid #4b5563; padding-left: 0.75rem; margin: 0.5rem 0; color: #9ca3af;
+      }
+      .markdown-body hr { border-color: #374151; margin: 0.75rem 0; }
     `}</style>
       <div className="flex h-full flex-col overflow-hidden">
         <div className="scrollbar-thin flex-1 overflow-y-auto p-4 text-sm">
@@ -918,7 +1044,7 @@ export default function TextChatCard({
                 <div className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}>
                   <Avatar size={28} variant="beam" name={p.name} />
                 </div>
-                <div style={{ maxWidth: "72%" }}>
+                <div className="min-w-0 flex-1">
                   {!isSelf && (
                     <p className="mb-1 ml-1 text-xs text-gray-400">
                       {p.name}
@@ -933,16 +1059,11 @@ export default function TextChatCard({
                     <div
                       className={
                         isSelf
-                          ? "rounded-bl-3xl rounded-tl-3xl rounded-tr-xl bg-blue-600 px-4 py-3 text-white"
-                          : "rounded-br-3xl rounded-tl-xl rounded-tr-3xl px-4 py-3"
-                      }
-                      style={
-                        isSelf
-                          ? undefined
-                          : { backgroundColor: strToBgColor(p.name) }
+                          ? "ml-auto w-fit max-w-[88%] rounded-2xl rounded-br-md bg-blue-600 px-4 py-2.5 text-white"
+                          : "w-fit max-w-full rounded-2xl rounded-tl-md border border-white/10 bg-gray-800/80 px-4 py-2.5 text-gray-100"
                       }
                     >
-                      <TextWithLinks text={p.text ?? ""} />
+                      <MessageMarkdown text={p.text ?? ""} />
                     </div>
                   ) : p.type === "action" ? (
                     <ActionCard
@@ -1026,71 +1147,7 @@ export default function TextChatCard({
           />
         )}
 
-        <div className="relative border-t border-gray-700 px-3 pb-1 pt-2">
-          <div
-            className="flex items-center gap-1.5 overflow-x-auto"
-            style={{ scrollbarWidth: "none" }}
-          >
-            <button
-              type="button"
-              onClick={handleWhiteboard}
-              className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
-            >
-              <span>🎨</span>
-              <span>Draw</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handlePoll}
-              className="flex items-center gap-1 whitespace-nowrap rounded-full border border-gray-600 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-gray-500 hover:bg-gray-700 hover:text-white"
-            >
-              <span>📊</span>
-              <span>Poll</span>
-            </button>
-
-            <div ref={gamesBtnRef} className="relative">
-              <button
-                type="button"
-                onClick={() =>
-                  setSubmenu((v) => (v === "games" ? null : "games"))
-                }
-                className={`flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-1 text-xs transition-colors ${
-                  submenu === "games"
-                    ? "border-gray-400 bg-gray-700 text-white"
-                    : "border-gray-600 bg-gray-800 text-gray-300 hover:border-gray-500 hover:bg-gray-700 hover:text-white"
-                }`}
-              >
-                <span>🎮</span>
-                <span>Games</span>
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2.5}
-                  stroke="currentColor"
-                  className="h-2.5 w-2.5 opacity-50"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M19.5 8.25l-7.5 7.5-7.5-7.5"
-                  />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {submenu === "games" && (
-            <GamesMenu
-              onSelect={handleGameSelect}
-              onBack={() => setSubmenu(null)}
-              menuRef={gamesMenuRef}
-            />
-          )}
-        </div>
-
-        <div className="relative flex flex-none items-center gap-2 border-t border-gray-700 p-3">
+        <div className="relative flex flex-none items-end gap-2 border-t border-gray-700 p-3">
           {pickerVisible && (
             <div className="absolute bottom-full left-3 right-3 mb-1 overflow-hidden rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
               {(showAgentPicker ? mentionAgents : pickerItems).map(
@@ -1134,10 +1191,86 @@ export default function TextChatCard({
               )}
             </div>
           )}
-          <input
-            ref={inputRef}
-            className="flex-1 rounded-xl bg-gray-900"
-            type="text"
+          <div ref={moreBtnRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setSubmenu((v) => (v === "more" ? null : "more"))}
+              className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white"
+              title="More actions"
+              aria-label="More actions"
+              aria-expanded={submenu === "more" || submenu === "games"}
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={2}
+                stroke="currentColor"
+                className="h-4 w-4"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 4.5v15m7.5-7.5h-15"
+                />
+              </svg>
+            </button>
+            {submenu === "more" && (
+              <>
+                <div
+                  className="fixed inset-0 z-20 md:hidden"
+                  onClick={closeMenu}
+                />
+                <div
+                  ref={moreMenuRef}
+                  className="fixed bottom-0 left-0 right-0 z-30 rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:w-48 md:rounded-lg md:border md:border-gray-600"
+                >
+                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
+                    Room actions
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                  >
+                    <span>📎</span> Attach file
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleWhiteboard}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                  >
+                    <span>🎨</span> Whiteboard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePoll}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                  >
+                    <span>📊</span> Poll
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSubmenu("games")}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                  >
+                    <span>🎮</span> Games
+                  </button>
+                </div>
+              </>
+            )}
+            {submenu === "games" && (
+              <GamesMenu
+                onSelect={handleGameSelect}
+                onBack={() => setSubmenu(null)}
+                menuRef={gamesMenuRef}
+              />
+            )}
+          </div>
+          <textarea
+            ref={textRef}
+            rows={1}
+            className="scrollbar-thin max-h-40 flex-1 resize-none overflow-y-auto rounded-xl bg-gray-900 px-3 py-2 text-sm leading-relaxed text-white placeholder-gray-500 focus:outline-none"
             value={message}
             onKeyDown={handleKeyDown}
             onChange={(e) => {
@@ -1159,7 +1292,8 @@ export default function TextChatCard({
             onCompositionEnd={() => {
               isComposingRef.current = false
             }}
-            placeholder="type your message here..."
+            placeholder="Message the room or @ an Agent…"
+            aria-label="Message the room or @ an Agent"
           />
           <button
             type="button"
@@ -1167,6 +1301,7 @@ export default function TextChatCard({
             disabled={message.trim() === ""}
             className="rounded-lg bg-blue-600 p-2 transition hover:bg-blue-500 disabled:opacity-30"
             title="Send"
+            aria-label="Send message"
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -1180,27 +1315,6 @@ export default function TextChatCard({
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="rounded-lg bg-gray-700 p-2 transition hover:bg-gray-600"
-            title="Send file"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={1.5}
-              stroke="currentColor"
-              className="h-5 w-5 text-white"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13"
               />
             </svg>
           </button>

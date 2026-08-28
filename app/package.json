@@ -23,6 +23,8 @@
     "next": "15",
     "react": "19",
     "react-dom": "19",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "unique-names-generator": "^4.7.1",
     "zod": "4.4.3"
   },
