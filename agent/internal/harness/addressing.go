@@ -9,18 +9,25 @@ import "strings"
 //
 //	[[free4chat:targets <participantId>[,<participantId>...]]]
 //
-// The envelope is parsed and stripped by the local adapter before the reply
-// is published; the extracted participant IDs ride the turn result as
-// explicit structured targets and wake exactly those resident Runtimes.
+// The grammar is exact: the marker `[[free4chat:targets` followed by exactly
+// one space, a comma-separated list of participant IDs (charset
+// [A-Za-z0-9._:-], 1..64 chars each, no spaces, no trimming), and the exact
+// closing `]]` — nothing else on the line.
 //
-// This is a machine envelope, not language: the parser accepts only an
-// exact final line with the exact marker, and participant IDs from a tiny
-// ASCII charset. Nothing else is ever interpreted — visible @Name prose in
-// a reply has no routing meaning. A Harness that never emits the envelope
-// keeps plain unaddressed behavior (backward compatible).
+// Parse outcome is all-or-nothing. An envelope that parses EXACTLY is
+// stripped and yields structured targets (deduplicated, capped). Anything
+// malformed or approximate — missing separator, names instead of IDs, any
+// invalid token anywhere in the list — routes NOTHING: the complete text,
+// envelope line included, stays ordinary visible prose, and no partial
+// repair or partial routing ever happens. The Room remains authoritative
+// and independently drops unknown/non-Agent/self targets.
+//
+// This is a machine envelope, not language: visible @Name prose in a reply
+// has no routing meaning. A Harness that never emits the envelope keeps
+// plain unaddressed behavior (backward compatible).
 
 const (
-	targetsEnvelopeMarker = "[[free4chat:targets"
+	targetsEnvelopePrefix = "[[free4chat:targets "
 	targetsEnvelopeSuffix = "]]"
 	// Mirrors the DO MAX_TARGETS bound for addressed text.
 	maxOutboundTargets = 8
@@ -30,7 +37,7 @@ const (
 // isTargetIDChar reports whether r may appear inside an explicit target
 // participant ID. Room participant IDs are server-generated UUIDs, so the
 // accepted charset is deliberately tiny: anything else (names, prose,
-// quotes, whitespace) fails closed and is dropped.
+// quotes, whitespace) fails closed.
 func isTargetIDChar(r rune) bool {
 	switch {
 	case r >= 'a' && r <= 'z',
@@ -56,47 +63,47 @@ func validTargetID(id string) bool {
 
 // ParseOutboundTargets splits one turn result into its publishable body and
 // its explicit outbound targets. The envelope is recognized only as the
-// LAST line of the reply; malformed or unknown content stays verbatim prose.
-// An envelope with no valid IDs strips to an ordinary unaddressed reply; a
-// reply consisting of only an envelope produces an empty body, which the
-// runtime treats as "nothing to publish". Returned IDs are deduplicated and
-// capped at maxOutboundTargets.
+// LAST line of the reply and only when it matches the exact grammar above;
+// the whole line then routes (deduplicated, capped at maxOutboundTargets).
+// A reply consisting of only an envelope produces an empty body, which the
+// runtime treats as "nothing to publish".
 func ParseOutboundTargets(text string) (string, []string) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return "", nil
 	}
 	lines := strings.Split(trimmed, "\n")
-	last := strings.TrimSpace(lines[len(lines)-1])
-	if !strings.HasPrefix(last, targetsEnvelopeMarker) ||
+	last := lines[len(lines)-1]
+	if !strings.HasPrefix(last, targetsEnvelopePrefix) ||
 		!strings.HasSuffix(last, targetsEnvelopeSuffix) {
 		return trimmed, nil
 	}
-	body := strings.TrimSpace(
-		strings.Join(lines[:len(lines)-1], "\n"),
-	)
 	ids := strings.Split(
-		last[len(targetsEnvelopeMarker):len(last)-len(targetsEnvelopeSuffix)],
+		last[len(targetsEnvelopePrefix):len(last)-len(targetsEnvelopeSuffix)],
 		",",
 	)
+	// Validate the WHOLE list before routing anything: one malformed token
+	// voids the entire envelope, and the line is left as visible prose.
+	for _, id := range ids {
+		if !validTargetID(id) {
+			return trimmed, nil
+		}
+	}
 	targets := make([]string, 0, len(ids))
 	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if !validTargetID(id) {
-			continue
-		}
 		if _, duplicate := seen[id]; duplicate {
 			continue
 		}
 		seen[id] = struct{}{}
-		targets = append(targets, id)
 		if len(targets) == maxOutboundTargets {
 			break
 		}
+		targets = append(targets, id)
 	}
 	if len(targets) == 0 {
-		return body, nil
+		return trimmed, nil
 	}
+	body := strings.TrimSpace(strings.Join(lines[:len(lines)-1], "\n"))
 	return body, targets
 }

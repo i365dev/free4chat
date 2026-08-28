@@ -5,9 +5,11 @@ import (
 	"testing"
 )
 
-// #165: the outbound addressing envelope is a strict machine contract. These
-// tests pin every boundary the runtime relies on: prose is never routing,
-// malformed targets cannot survive, and ordinary replies parse unchanged.
+// #165: the outbound addressing envelope is a strict machine contract with
+// all-or-nothing semantics. These tests pin every boundary the runtime
+// relies on: prose is never routing, a malformed envelope is never repaired
+// and never partially routed (the complete text stays visible prose), and
+// exact envelopes route with dedupe and the room's target bound.
 func TestParseOutboundTargets(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -51,6 +53,59 @@ func TestParseOutboundTargets(t *testing.T) {
 			wantBody:    "reply\n[[free4chat:to agent-b]]",
 			wantTargets: nil,
 		},
+		// Regression (#165 review): the marker without its separator must not
+		// glue onto the first ID and route.
+		{
+			name:        "missing space after marker is prose",
+			text:        "reply\n[[free4chat:targetsagent-b]]",
+			wantBody:    "reply\n[[free4chat:targetsagent-b]]",
+			wantTargets: nil,
+		},
+		{
+			name:        "double space after marker is prose",
+			text:        "reply\n[[free4chat:targets  agent-b]]",
+			wantBody:    "reply\n[[free4chat:targets  agent-b]]",
+			wantTargets: nil,
+		},
+		{
+			name:        "bare marker is prose",
+			text:        "reply\n[[free4chat:targets]]",
+			wantBody:    "reply\n[[free4chat:targets]]",
+			wantTargets: nil,
+		},
+		// Regression (#165 review): names with spaces void the whole
+		// envelope — never partially routed alongside valid IDs.
+		{
+			name:        "name-only list is prose",
+			text:        "reply\n[[free4chat:targets Hermes Agent]]",
+			wantBody:    "reply\n[[free4chat:targets Hermes Agent]]",
+			wantTargets: nil,
+		},
+		{
+			name:        "one name in the list voids the whole envelope",
+			text:        "reply\n[[free4chat:targets Hermes Agent,agent-b]]",
+			wantBody:    "reply\n[[free4chat:targets Hermes Agent,agent-b]]",
+			wantTargets: nil,
+		},
+		{
+			name:        "one over-long id voids the whole envelope",
+			text:        "reply\n[[free4chat:targets " + strings.Repeat("a", 65) + ",agent-b]]",
+			wantBody:    "reply\n[[free4chat:targets " + strings.Repeat("a", 65) + ",agent-b]]",
+			wantTargets: nil,
+		},
+		{
+			name:        "empty list is prose",
+			text:        "reply\n[[free4chat:targets ]]",
+			wantBody:    "reply\n[[free4chat:targets ]]",
+			wantTargets: nil,
+		},
+		{
+			name:        "trailing space inside the list is prose",
+			text:        "reply\n[[free4chat:targets agent-b ]]",
+			wantBody:    "reply\n[[free4chat:targets agent-b ]]",
+			wantTargets: nil,
+		},
+		// Exact envelopes continue to route.
 		{
 			name:        "single target",
 			text:        "继续这个故事。\n[[free4chat:targets agent-hermes]]",
@@ -64,45 +119,21 @@ func TestParseOutboundTargets(t *testing.T) {
 			wantTargets: []string{"agent-b", "agent-c"},
 		},
 		{
-			name:        "spaces around ids are tolerated",
-			text:        "handoff\n[[free4chat:targets agent-b , agent-c]]",
-			wantBody:    "handoff",
-			wantTargets: []string{"agent-b", "agent-c"},
-		},
-		{
 			name:        "duplicate targets collapse",
 			text:        "handoff\n[[free4chat:targets agent-b,agent-b,agent-b]]",
 			wantBody:    "handoff",
 			wantTargets: []string{"agent-b"},
 		},
 		{
-			name:        "names are dropped, ids survive",
-			text:        "handoff\n[[free4chat:targets Hermes Agent,agent-b]]",
+			name:        "unknown but syntactically valid ids pass the boundary",
+			text:        "handoff\n[[free4chat:targets not-a-real-participant]]",
 			wantBody:    "handoff",
-			wantTargets: []string{"agent-b"},
-		},
-		{
-			name:        "all-malformed envelope degrades to unaddressed",
-			text:        "handoff\n[[free4chat:targets Hermes Agent]]",
-			wantBody:    "handoff",
-			wantTargets: nil,
-		},
-		{
-			name:        "empty envelope degrades to unaddressed",
-			text:        "handoff\n[[free4chat:targets ]]",
-			wantBody:    "handoff",
-			wantTargets: nil,
+			wantTargets: []string{"not-a-real-participant"},
 		},
 		{
 			name:        "envelope-only reply publishes nothing",
 			text:        "[[free4chat:targets agent-b]]",
 			wantBody:    "",
-			wantTargets: []string{"agent-b"},
-		},
-		{
-			name:        "over-long id is dropped",
-			text:        "handoff\n[[free4chat:targets " + strings.Repeat("a", 65) + ",agent-b]]",
-			wantBody:    "handoff",
 			wantTargets: []string{"agent-b"},
 		},
 		{
@@ -150,6 +181,29 @@ func TestACPTurnParsesOutboundAddressingEnvelope(t *testing.T) {
 	}
 	if len(result.TargetParticipantIDs) != 1 || result.TargetParticipantIDs[0] != "agent-hermes-uuid" {
 		t.Fatalf("targets mismatch: %v", result.TargetParticipantIDs)
+	}
+}
+
+// Regression (#165 review): a malformed envelope is published verbatim as
+// prose and routes nothing — never silently repaired, never partially routed.
+func TestACPTurnMalformedEnvelopeStaysProse(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("envelope", map[string]string{
+		"FAKE_REPLY_TEXT": "接上。\n[[free4chat:targetsagent-b]]",
+	}), AdapterOptions{TurnTimeoutMs: 5000})
+	defer func() { _ = adapter.Close() }()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("EnsureSession failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("hand off please"))
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Text != "接上。\n[[free4chat:targetsagent-b]]" {
+		t.Fatalf("malformed envelope must remain complete visible prose, got %q", result.Text)
+	}
+	if result.TargetParticipantIDs != nil {
+		t.Fatalf("malformed envelope must route nothing, got %v", result.TargetParticipantIDs)
 	}
 }
 
