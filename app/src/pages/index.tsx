@@ -250,17 +250,6 @@ export default function Home() {
               This website will collect some runtime technical data for
               debugging, using at your risk.
             </p>
-            <p className="mt-3 text-center text-xs text-gray-600">
-              Powered by{" "}
-              <a
-                href="https://www.i365.tech/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-gray-400 underline-offset-2 hover:text-gray-300 hover:underline"
-              >
-                i365.tech
-              </a>
-            </p>
           </div>
         </div>
         <DiscoveryFooter />
