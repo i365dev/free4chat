@@ -98,8 +98,12 @@ type ResidentRuntime struct {
 
 	mediaController *media.Controller
 	mediaMu         sync.Mutex
-	transcriber     *speech.Transcriber
-	transcript      *speech.TranscriptStore
+	// speechConfig is copied from Options at construction and guarded by mu.
+	// Media rebuilds consume an immutable snapshot rather than reading Options
+	// concurrently with credential hot reload.
+	speechConfig speech.Config
+	transcriber  *speech.Transcriber
+	transcript   *speech.TranscriptStore
 	// voiceSrc is the controller-backed voice boundary; tests may inject a
 	// fake to observe dispatch ordering deterministically.
 	voiceSrc voiceSource
@@ -110,12 +114,21 @@ type ResidentRuntime struct {
 // never leaves, reconnects, or restarts the text/Harness lifecycle.
 func (r *ResidentRuntime) ReloadSpeech(config speech.Config) {
 	r.mu.Lock()
-	r.options.Speech = &config
+	r.speechConfig = config
 	handle := r.participantHandle
+	stopped := r.stopped
 	r.mu.Unlock()
-	if handle != "" {
+	if !stopped && handle != "" {
 		r.restartMediaController(handle)
 	}
+}
+
+// speechSnapshot returns a copy that remains stable throughout a media
+// rebuild. Credential values never leave the Runtime/media boundary.
+func (r *ResidentRuntime) speechSnapshot() speech.Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.speechConfig
 }
 
 // voiceSource is the minimal voice-output surface the turn pipeline needs.
@@ -133,6 +146,10 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		wait = WaitSeconds
 	}
 	options.WaitSeconds = wait
+	speechConfig := speech.Config{}
+	if options.Speech != nil {
+		speechConfig = *options.Speech
+	}
 	return &ResidentRuntime{
 		options:        options,
 		log:            options.Log,
@@ -141,6 +158,7 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		advertisedCaps: append([]string(nil), options.Capabilities...),
 		stopCh:         make(chan struct{}),
 		resolvedRoomID: options.RoomID,
+		speechConfig:   speechConfig,
 	}
 }
 

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,12 +24,87 @@ func TestReloadSpeechReplacesOptionalConfigWithoutTextLifecycleChange(t *testing
 	next := speech.Config{APIKey: "runtime-private-key", STTEnabled: true, TTSEnabled: true}
 	rt.ReloadSpeech(next)
 
-	if rt.options.Speech == nil || !rt.options.Speech.STTEnabled || !rt.options.Speech.TTSEnabled {
-		t.Fatalf("speech config was not reloaded: %+v", rt.options.Speech)
+	if !rt.speechConfig.STTEnabled || !rt.speechConfig.TTSEnabled {
+		t.Fatalf("speech config was not reloaded: %+v", rt.speechConfig)
 	}
 	if rt.state != StateWaiting {
 		t.Fatalf("speech reload changed text lifecycle state: %s", rt.state)
 	}
+}
+
+func TestReloadSpeechBeforeStopRebuildsThenStopTearsDown(t *testing.T) {
+	rt := mediaRuntimeForReloadTest(t)
+	rt.ReloadSpeech(speech.Config{APIKey: "runtime-private-key", STTEnabled: true, TTSEnabled: true})
+	waitFor(t, time.Second, func() bool { return hasMediaController(rt) }, "media controller after reload")
+	rt.Stop()
+	if hasMediaController(rt) {
+		t.Fatal("Stop must tear down a controller built by reload")
+	}
+}
+
+func TestReloadSpeechCannotReviveStoppedRuntime(t *testing.T) {
+	rt := mediaRuntimeForReloadTest(t)
+	rt.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		rt.ReloadSpeech(speech.Config{APIKey: "runtime-private-key", STTEnabled: true, TTSEnabled: true})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reload did not return after Stop")
+	}
+	if hasMediaController(rt) {
+		t.Fatal("reload created a controller after shutdown began")
+	}
+}
+
+func TestConcurrentReloadAndStopLeaveNoMediaController(t *testing.T) {
+	rt := mediaRuntimeForReloadTest(t)
+	done := make(chan struct{})
+	go func() {
+		rt.ReloadSpeech(speech.Config{APIKey: "runtime-private-key", STTEnabled: true, TTSEnabled: true})
+		close(done)
+	}()
+	rt.Stop()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent reload did not return")
+	}
+	if hasMediaController(rt) {
+		t.Fatal("concurrent Stop left a media controller behind")
+	}
+}
+
+func mediaRuntimeForReloadTest(t *testing.T) *ResidentRuntime {
+	t.Helper()
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		RoomID: "room", Name: "Agent", Client: client, Adapter: adapter,
+		SiteOrigin: "https://www.free4.chat",
+	})
+	handleJSON, err := json.Marshal(map[string]string{
+		"room": "room", "participantId": "agent", "participantToken": "token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	rt.participantHandle = base64.RawURLEncoding.EncodeToString(handleJSON)
+	rt.participantID = "agent"
+	rt.state = StateWaiting
+	rt.mu.Unlock()
+	return rt
+}
+
+func hasMediaController(rt *ResidentRuntime) bool {
+	rt.mediaMu.Lock()
+	defer rt.mediaMu.Unlock()
+	return rt.mediaController != nil
 }
 
 // fakeClient scripts wait_for_events responses and records lifecycle calls.
@@ -87,15 +164,17 @@ func (c *fakeClient) CreateRoom(string, []string) (types.CreateRoomResult, error
 
 func (c *fakeClient) WaitForEvents(handle string, cursor int64, timeoutSeconds int) (types.WaitResult, error) {
 	var step waitStep
+	scripted := false
 	func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if len(c.script) > 0 {
 			step = c.script[0]
 			c.script = c.script[1:]
+			scripted = true
 		}
 	}()
-	if len(c.script) == 0 && step.err == nil && step.events == nil && step.roster == nil {
+	if !scripted {
 		// Unscripted polls spin quickly with an unchanged cursor.
 		time.Sleep(3 * time.Millisecond)
 		return types.WaitResult{Cursor: cursor, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}, nil
@@ -392,16 +471,20 @@ func TestRoomExpiryReleasesResources(t *testing.T) {
 		{err: &free4chat.Error{Message: "expired", Code: free4chat.CodeRoomExpired}},
 	}
 	adapter := &fakeAdapter{name: "pi"}
-	expired := false
+	expired := make(chan struct{})
 	rt := NewResidentRuntime(Options{
 		InstanceID: "inst-expiry", RoomID: "test", Name: "Agent",
 		Client: client, Adapter: adapter, WaitSeconds: 1,
-		OnRoomExpired: func() error { expired = true; return nil },
+		OnRoomExpired: func() error { close(expired); return nil },
 	})
 	if err := rt.Start(); err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
-	waitFor(t, 2*time.Second, func() bool { return expired }, "expiry notification")
+	select {
+	case <-expired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for expiry notification")
+	}
 
 	if rt.Status().LastError != "room_expired" {
 		t.Fatalf("expected room_expired lastError, got %q", rt.Status().LastError)

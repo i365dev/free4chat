@@ -19,7 +19,10 @@ recordings.
    or new plaintext config file. The legacy `speech setup --provider doubao`
    terminal command remains for compatibility and also writes to Keychain.
    The human may alternatively provide `DOUBAO_API_KEY` on their own runtime
-   process for headless automation.
+   process for headless Linux/automation. This version intentionally provides
+   no Linux/Windows native keyring prompt. Legacy `credentials.json` is
+   read-only compatibility input, except explicit `credential delete --provider
+   doubao`, which removes its old Doubao API key to prevent fallback.
 4. A successful provision asks an existing local daemon to reload speech for
    its resident Rooms; it does not require leaving or rejoining. After setup,
    run `free4chat-agent readiness --json` again. Claim readiness only when

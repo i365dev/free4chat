@@ -46,7 +46,15 @@ func (keychainStore) Set(provider, key, value string) error {
 }
 
 func (keychainStore) Delete(provider, key string) error {
-	item := keychain.NewGenericPassword(serviceName, keychainAccount(provider, key), serviceName, nil, "")
+	account := keychainAccount(provider, key)
+	value, err := keychain.GetGenericPassword(serviceName, account, serviceName, "")
+	if err != nil {
+		return fmt.Errorf("native credential lookup failed")
+	}
+	if len(value) == 0 {
+		return nil
+	}
+	item := keychain.NewGenericPassword(serviceName, account, serviceName, nil, "")
 	if err := keychain.DeleteItem(item); err != nil {
 		return fmt.Errorf("native credential delete failed")
 	}

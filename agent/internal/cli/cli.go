@@ -363,10 +363,15 @@ func run(args []string) error {
 			if err != nil {
 				return err
 			}
-			if err := defaultCredentialStore().Delete(provider, doubaoAPIKey); err != nil {
-				return errors.New("native credential store is unavailable; no credential was deleted")
+			envOverride, err := deleteCredential(provider, daemon.RuntimeDirectory(), defaultCredentialStore(), os.Getenv)
+			if err != nil {
+				return err
 			}
 			refreshResidentSpeech()
+			if envOverride {
+				fmt.Printf("credential deleted: %s (DOUBAO_API_KEY remains active)\n", provider)
+				return nil
+			}
 			fmt.Printf("credential deleted: %s\n", provider)
 			return nil
 		default:

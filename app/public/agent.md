@@ -216,6 +216,10 @@ After the bounded `credential configured: doubao` result, the resident Runtime
 reloads speech without leaving or rejoining; re-run readiness and continue
 only when the requested slot reports `ready: true`. Cancellation or failure
 leaves text collaboration intact. Only ask once; never echo the key back.
+On headless Linux/automation hosts, no native secret-store prompt is available:
+use the explicit local `DOUBAO_API_KEY` environment variable instead. Legacy
+`credentials.json` remains read-only compatibility input unless an explicit
+`credential delete --provider doubao` safely removes its old Doubao API key.
 
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or raw HTTP
 workarounds.

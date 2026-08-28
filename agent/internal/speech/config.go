@@ -3,6 +3,7 @@ package speech
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,3 +119,100 @@ func LoadConfigWithStore(runtimeDir string, environ func(string) string, store c
 // ErrNotConfigured is returned by provider factories when the credential is
 // missing; callers must treat it as "speech not ready", never a room failure.
 var ErrNotConfigured = errors.New("doubao speech is not configured")
+
+// DeleteLegacyAPIKey removes only the legacy providers.doubao.apiKey field.
+// It is used by an explicit credential delete so a removed Keychain value
+// cannot silently reactivate an upgraded installation's plaintext key. Other
+// providers, Doubao voice configuration, and unrelated JSON fields survive.
+func DeleteLegacyAPIKey(runtimeDir string) error {
+	if runtimeDir == "" {
+		return nil
+	}
+	path := filepath.Join(runtimeDir, "credentials.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot read legacy credential file")
+	}
+
+	doc := map[string]json.RawMessage{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return errors.New("legacy credential file is not valid JSON; no credential was deleted")
+	}
+	rawProviders, ok := doc["providers"]
+	if !ok || string(rawProviders) == "null" {
+		return nil
+	}
+	providers := map[string]json.RawMessage{}
+	if err := json.Unmarshal(rawProviders, &providers); err != nil || providers == nil {
+		return errors.New("legacy credential file has a malformed providers section; no credential was deleted")
+	}
+	rawDoubao, ok := providers["doubao"]
+	if !ok || string(rawDoubao) == "null" {
+		return nil
+	}
+	doubao := map[string]json.RawMessage{}
+	if err := json.Unmarshal(rawDoubao, &doubao); err != nil || doubao == nil {
+		return errors.New("legacy credential file has a malformed doubao section; no credential was deleted")
+	}
+	if _, ok := doubao["apiKey"]; !ok {
+		return nil
+	}
+	delete(doubao, "apiKey")
+	updatedDoubao, err := json.Marshal(doubao)
+	if err != nil {
+		return errors.New("legacy credential cleanup failed")
+	}
+	providers["doubao"] = updatedDoubao
+	updatedProviders, err := json.Marshal(providers)
+	if err != nil {
+		return errors.New("legacy credential cleanup failed")
+	}
+	doc["providers"] = updatedProviders
+	updated, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return errors.New("legacy credential cleanup failed")
+	}
+	updated = append(updated, '\n')
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return errors.New("legacy credential cleanup failed")
+	}
+	mode := info.Mode().Perm()
+	if mode == 0 {
+		mode = 0o600
+	}
+	tmp, err := os.CreateTemp(runtimeDir, ".credentials-*.tmp")
+	if err != nil {
+		return errors.New("legacy credential cleanup failed")
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		cleanup()
+		return errors.New("legacy credential cleanup failed")
+	}
+	if _, err := tmp.Write(updated); err != nil {
+		cleanup()
+		return errors.New("legacy credential cleanup failed")
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return errors.New("legacy credential cleanup failed")
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return errors.New("legacy credential cleanup failed")
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return errors.New("legacy credential cleanup failed")
+	}
+	return nil
+}

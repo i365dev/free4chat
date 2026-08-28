@@ -41,7 +41,7 @@ func runCredentialProvision(args []string) error {
 			return errors.New("credential provisioning was cancelled; text collaboration is still available")
 		}
 		if errors.Is(err, credentials.ErrUnavailable) {
-			return errors.New("native credential prompt is unavailable on this host; use DOUBAO_API_KEY for headless automation or run speech setup in a local terminal")
+			return errors.New("native credential prompt is available on macOS only; use DOUBAO_API_KEY for headless or Linux automation")
 		}
 		return errors.New("credential provisioning failed")
 	}
@@ -137,6 +137,22 @@ func provisionCredential(provider, key string, store credentials.Store) error {
 		return errors.New("native credential store is unavailable; no credential was saved")
 	}
 	return nil
+}
+
+// deleteCredential removes both writable locations of the shared provider
+// secret. The legacy value is removed first so a failed parse never lets this
+// command claim success while a plaintext fallback remains active.
+func deleteCredential(provider, runtimeDir string, store credentials.Store, environ func(string) string) (envOverride bool, err error) {
+	if err := speech.DeleteLegacyAPIKey(runtimeDir); err != nil {
+		return false, err
+	}
+	if store == nil {
+		return false, errors.New("native credential store is unavailable; no credential was deleted")
+	}
+	if err := store.Delete(provider, doubaoAPIKey); err != nil {
+		return false, errors.New("native credential store is unavailable; no credential was deleted")
+	}
+	return strings.TrimSpace(environ("DOUBAO_API_KEY")) != "", nil
 }
 
 // refreshResidentSpeech best-effort refreshes a daemon that is already

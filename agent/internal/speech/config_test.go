@@ -1,6 +1,7 @@
 package speech
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,6 +40,45 @@ func TestLoadConfigTreatsUnavailableStoreAsSoftFailure(t *testing.T) {
 	config := LoadConfigWithStore(t.TempDir(), func(string) string { return "" }, unavailableTestStore{})
 	if config.STTEnabled || config.TTSEnabled || config.APIKey != "" {
 		t.Fatalf("unavailable storage must leave optional speech disabled: %+v", config)
+	}
+}
+
+func TestDeleteLegacyAPIKeyPreservesOtherCredentialFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "credentials.json")
+	contents := `{
+  "providers": {
+    "doubao": {"apiKey":"legacy-secret","voice":"voice-kept"},
+    "other": {"token":"keep"}
+  },
+  "otherConfig": {"enabled": true}
+}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteLegacyAPIKey(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	providers := document["providers"].(map[string]any)
+	doubao := providers["doubao"].(map[string]any)
+	if _, ok := doubao["apiKey"]; ok {
+		t.Fatal("legacy apiKey still present after explicit delete")
+	}
+	if doubao["voice"] != "voice-kept" || providers["other"].(map[string]any)["token"] != "keep" ||
+		document["otherConfig"].(map[string]any)["enabled"] != true {
+		t.Fatalf("unrelated legacy configuration changed: %#v", document)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("legacy file permissions changed: info=%v err=%v", info, err)
 	}
 }
 

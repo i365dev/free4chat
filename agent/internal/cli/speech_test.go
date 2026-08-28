@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/i365dev/free4chat/agent/internal/credentials"
+	"github.com/i365dev/free4chat/agent/internal/speech"
 )
 
 // failReader errors on any read: it proves fail-closed paths never consume
@@ -82,6 +83,35 @@ func TestProvisionCredentialNeverReturnsSecret(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(err), secret) {
 		t.Fatal("credential escaped through provisioning result")
+	}
+}
+
+func TestCredentialDeleteCannotFallBackToLegacySecret(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"providers":{"doubao":{"apiKey":"legacy-secret","voice":"kept"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "credentials.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &credentials.MemoryStore{Values: map[string]string{"doubao/apiKey": "keychain-secret"}}
+	envOverride, err := deleteCredential("doubao", dir, store, func(string) string { return "" })
+	if err != nil || envOverride {
+		t.Fatalf("credential delete failed: envOverride=%v err=%v", envOverride, err)
+	}
+	config := speech.LoadConfigWithStore(dir, func(string) string { return "" }, store)
+	if config.APIKey != "" || config.STTEnabled || config.TTSEnabled || config.Voice != "kept" {
+		t.Fatalf("deleted Keychain credential fell back to legacy storage: %+v", config)
+	}
+}
+
+func TestCredentialDeleteReportsActiveEnvironmentOverride(t *testing.T) {
+	envOverride, err := deleteCredential("doubao", t.TempDir(), &credentials.MemoryStore{}, func(key string) string {
+		if key == "DOUBAO_API_KEY" {
+			return "environment-secret"
+		}
+		return ""
+	})
+	if err != nil || !envOverride {
+		t.Fatalf("environment override was not reported: envOverride=%v err=%v", envOverride, err)
 	}
 }
 

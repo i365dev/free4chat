@@ -19,8 +19,25 @@ import (
 // decoded token discarded first. A failure here is logged and never fails
 // the join itself — media is strictly additive to text/ACP.
 func (r *ResidentRuntime) restartMediaController(participantHandle string) {
+	// Lock ordering is always mediaMu -> mu here and in releaseResources.
+	// Stop sets stopped under mu before it waits for mediaMu, so a reload that
+	// begins after shutdown cannot create a controller against a closed client.
 	r.mediaMu.Lock()
 	defer r.mediaMu.Unlock()
+	r.mu.Lock()
+	if r.stopped || participantHandle == "" || participantHandle != r.participantHandle {
+		r.mu.Unlock()
+		return
+	}
+	speechConfig := r.speechConfig
+	roomID := r.resolvedRoomID
+	if roomID == "" {
+		roomID = r.options.RoomID
+	}
+	client := r.options.Client
+	siteOrigin := r.options.SiteOrigin
+	r.mu.Unlock()
+
 	previous := r.mediaController
 	r.mediaController = nil
 	previousTranscriber := r.transcriber
@@ -31,7 +48,7 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	if previousTranscriber != nil {
 		previousTranscriber.Close()
 	}
-	if r.options.SiteOrigin == "" || participantHandle == "" {
+	if siteOrigin == "" {
 		return
 	}
 	handle, err := media.DecodeParticipantHandle(participantHandle)
@@ -45,8 +62,8 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	// Transcriber exists only when speech is configured; otherwise Meeting
 	// Notes ingress runs without STT and the grant-activation notice tells
 	// the room once.
-	if r.options.Speech != nil && r.options.Speech.STTEnabled {
-		provider := &doubao.SttProvider{APIKey: r.options.Speech.APIKey}
+	if speechConfig.STTEnabled {
+		provider := &doubao.SttProvider{APIKey: speechConfig.APIKey}
 		transcriber := speech.NewTranscriber(provider, func(event speech.AttributedSttEvent) {
 			switch event.Event.Type {
 			case "committed":
@@ -69,26 +86,23 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	}
 
 	var voiceConfig *media.VoiceConfig
-	if r.options.Speech != nil {
-		speechConfig := r.options.Speech
-		voiceConfig = &media.VoiceConfig{
-			TrackName:     "agent-voice",
-			MaxChunkChars: 220,
-			CreateTtsProvider: func() (speech.StreamingTtsProvider, error) {
-				if !speechConfig.TTSEnabled {
-					return nil, nil
-				}
-				return &doubao.TtsProvider{APIKey: speechConfig.APIKey, Voice: speechConfig.Voice}, nil
-			},
-			OnSpeakerEvent: r.logVoiceSpeakerEvent,
-		}
+	voiceConfig = &media.VoiceConfig{
+		TrackName:     "agent-voice",
+		MaxChunkChars: 220,
+		CreateTtsProvider: func() (speech.StreamingTtsProvider, error) {
+			if !speechConfig.TTSEnabled {
+				return nil, nil
+			}
+			return &doubao.TtsProvider{APIKey: speechConfig.APIKey, Voice: speechConfig.Voice}, nil
+		},
+		OnSpeakerEvent: r.logVoiceSpeakerEvent,
 	}
 
 	controller := media.NewController(media.ControllerOptions{
-		Client:        r.options.Client,
-		RoomID:        r.activeRoomID(),
+		Client:        client,
+		RoomID:        roomID,
 		ParticipantID: handle.ParticipantID,
-		SiteOrigin:    r.options.SiteOrigin,
+		SiteOrigin:    siteOrigin,
 		Handle:        handle,
 		Log:           r.log,
 		OnAudioFrame: func(source speech.AudioSource, frame speech.AudioFrame) {
@@ -122,7 +136,7 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 // the missing piece is local speech configuration — pointing at the agent's
 // own session, never soliciting secrets in room chat.
 func (r *ResidentRuntime) notifySpeechPrerequisite() {
-	notice := buildSpeechNotice(r.options.Speech)
+	notice := buildSpeechNotice(r.speechSnapshot())
 	if notice == "" {
 		return
 	}
@@ -138,8 +152,8 @@ func (r *ResidentRuntime) notifySpeechPrerequisite() {
 
 // buildSpeechNotice returns the room message when STT is missing at grant
 // time, or "" when there is nothing to tell the room.
-func buildSpeechNotice(config *speech.Config) string {
-	if config == nil || !config.STTEnabled {
+func buildSpeechNotice(config speech.Config) string {
+	if !config.STTEnabled {
 		return "Meeting Notes was requested, but no speech-to-text provider is configured in my local runtime. I'll complete speech setup in my own session before transcribing — please don't paste API keys into this room."
 	}
 	return ""
