@@ -62,14 +62,15 @@ export default function Home() {
         <div className="mx-auto max-w-screen-xl flex-1 overflow-y-auto px-4 py-12 lg:flex lg:items-center">
           <div className="slogan mx-auto max-w-3xl text-center">
             <h1 className="bg-gradient-to-r from-green-300 via-blue-500 to-purple-600 bg-clip-text text-3xl font-extrabold text-transparent sm:text-4xl">
-              Open a room. Talk instantly.
+              Open a room. Bring people and Agents together.
             </h1>
 
             <p className="mx-auto mt-4 text-gray-400 sm:text-sm sm:leading-relaxed">
-              No sign-up. No permanent room history on our servers.
+              No sign-up. No shared workspace. Temporary realtime collaboration.
             </p>
             <p className="mx-auto mt-1 text-gray-600 sm:text-xs sm:leading-relaxed">
-              Rooms close automatically once everyone has left.
+              No permanent room history on our servers — rooms close
+              automatically once everyone has left.
             </p>
 
             <div className="mx-auto mt-8 max-w-xl">

@@ -1,8 +1,8 @@
 import Head from "next/head"
 
-const TITLE = "Free4Chat — Temporary Voice, Text & Agent Rooms"
+const TITLE = "Free4Chat — Temporary Rooms for Humans & Agents"
 const DESCRIPTION =
-  "Open an instant temporary room for voice, text, and screen sharing, or bring your own AI Agent in. No account, no persistent history, no hosted LLM."
+  "Open an instant temporary room for voice, text, and screen sharing, and bring independently running Agents in as participants. No account, no shared workspace, no hosted LLM."
 const URL = "https://www.free4.chat/"
 
 export default function Header() {
