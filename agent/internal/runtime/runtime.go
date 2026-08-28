@@ -61,11 +61,13 @@ type Options struct {
 	TranscriptPath string
 	// Speech is the resolved local speech configuration (nil = disabled).
 	Speech *speech.Config
-	// Host is the Runtime Host capability projection (#176 Phase A) shared
-	// by every resident of this Runtime root. It is sent at join/rejoin and
-	// re-projected on speech hot reload. Nil = legacy caller; the Room then
-	// simply has no host grouping for this participant.
-	Host *types.RuntimeHostProjection
+	// HostSeed is the PRIVATE random seed of this Runtime root (#176 Phase
+	// A). The public, Room-scoped runtimeHostId is derived from it per Room
+	// (never exposed raw) and re-projected on speech hot reload. Empty =
+	// legacy caller; the Room then simply has no host grouping for this
+	// participant. Projection failures are additive and never block a text
+	// join.
+	HostSeed string
 	// Voice configures outbound Voice Reply (nil = Meeting Notes only).
 	Voice *media.VoiceConfig
 }
@@ -96,9 +98,6 @@ type ResidentRuntime struct {
 	advertisedCaps      []string
 	roster              []types.ParticipantRosterEntry
 	resolvedRoomID      string
-	// hostProjection is the current #176 Phase A Runtime Host projection;
-	// guarded by mu, refreshed on speech hot reload.
-	hostProjection *types.RuntimeHostProjection
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -124,13 +123,8 @@ func (r *ResidentRuntime) ReloadSpeech(config speech.Config) {
 	r.mu.Lock()
 	r.speechConfig = config
 	// #176 Phase A: host-owned speech readiness changes with the credential
-	// state; every resident projection for this host updates consistently.
-	if r.hostProjection != nil {
-		r.hostProjection.Speech = types.HostSpeechReadiness{
-			STT: config.STTEnabled,
-			TTS: config.TTSEnabled,
-		}
-	}
+	// state; the derived projection below re-reads the fresh snapshot, so
+	// every same-host resident projection updates consistently.
 	handle := r.participantHandle
 	stopped := r.stopped
 	r.mu.Unlock()
@@ -138,6 +132,16 @@ func (r *ResidentRuntime) ReloadSpeech(config speech.Config) {
 		r.restartMediaController(handle)
 		r.projectRuntimeHost(handle)
 	}
+}
+
+// hostProjectionFor derives the projection to send with a join/rejoin for
+// the given final Room id. Nil on any failure: the projection is additive
+// (#178 review fix 5) and never blocks the text join.
+func (r *ResidentRuntime) hostProjectionFor(roomID string) *types.RuntimeHostProjection {
+	if roomID == "" || r.options.HostSeed == "" {
+		return nil
+	}
+	return r.CurrentHostProjection()
 }
 
 // projectRuntimeHost pushes the current Runtime Host projection to the Room
@@ -148,9 +152,12 @@ func (r *ResidentRuntime) projectRuntimeHost(handle string) {
 	if host == nil {
 		return
 	}
+	// #178 review fix 5: additive and bounded. A rejected or failed
+	// projection never blocks text behavior; diagnostics carry no seed,
+	// handle, or credential material.
 	if err := r.options.Client.UpdateRuntimeHost(handle, *host); err != nil {
 		r.log("runtime_host_projection_failed", map[string]string{
-			"error": err.Error(),
+			"reason": string(free4chat.CodeOf(err)),
 		})
 	}
 }
@@ -191,7 +198,6 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		stopCh:         make(chan struct{}),
 		resolvedRoomID: options.RoomID,
 		speechConfig:   speechConfig,
-		hostProjection: options.Host,
 	}
 }
 
@@ -203,21 +209,35 @@ func (r *ResidentRuntime) activeRoomID() string {
 	return r.options.RoomID
 }
 
-// CurrentHostProjection snapshots the #176 Phase A Runtime Host projection.
-// It is public Room-safe state: opaque grouping key plus coarse readiness.
+// CurrentHostProjection derives the #176 Phase A Room-scoped Runtime Host
+// projection for THIS runtime's current Room: opaque grouping key plus
+// coarse readiness. The private root seed never appears in the result; a
+// missing seed, missing Room, or derivation failure yields nil (the
+// projection is additive and never blocks text behavior).
 func (r *ResidentRuntime) CurrentHostProjection() *types.RuntimeHostProjection {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.hostProjection == nil {
+	seed := r.options.HostSeed
+	if seed == "" {
 		return nil
 	}
-	clone := *r.hostProjection
-	return &clone
-}
-
-// hostProjectionSnapshot returns the projection to send with a join/rejoin.
-func (r *ResidentRuntime) hostProjectionSnapshot() *types.RuntimeHostProjection {
-	return r.CurrentHostProjection()
+	roomID := r.activeRoomID()
+	if roomID == "" {
+		return nil
+	}
+	id, err := types.DeriveRuntimeHostID(seed, roomID)
+	if err != nil {
+		r.log("runtime_host_projection_unavailable", map[string]string{
+			"reason": "derive_failed",
+		})
+		return nil
+	}
+	speechConfig := r.speechSnapshot()
+	return &types.RuntimeHostProjection{
+		RuntimeHostID: id,
+		Speech: types.HostSpeechReadiness{
+			STT: speechConfig.STTEnabled,
+			TTS: speechConfig.TTSEnabled,
+		},
+	}
 }
 
 // CurrentCapabilities returns the currently advertised tokens.
@@ -280,7 +300,7 @@ func (r *ResidentRuntime) AdoptCreate() (types.CreateRoomResult, error) {
 	// #176 Phase A: the create-first lifecycle projects the host identity
 	// exactly like a normal join.
 	created, err := r.options.Client.CreateRoom(
-		r.options.Name, r.advertisedCopy(), r.hostProjectionSnapshot())
+		r.options.Name, r.advertisedCopy(), nil) // create-first derives AFTER the final roomId exists
 	if err != nil {
 		return types.CreateRoomResult{}, err
 	}
@@ -288,6 +308,12 @@ func (r *ResidentRuntime) AdoptCreate() (types.CreateRoomResult, error) {
 	r.resolvedRoomID = created.Invite.RoomID
 	r.mu.Unlock()
 	r.adoptJoin(created.JoinResult)
+	// #178 review fix 3: create-first derives the Room-scoped runtimeHostId
+	// AFTER the final server-generated roomId exists, then pushes it
+	// additively (the register itself carried no projection).
+	if handle := r.currentHandle(); handle != "" {
+		r.projectRuntimeHost(handle)
+	}
 	return created, nil
 }
 
@@ -330,7 +356,7 @@ func (r *ResidentRuntime) join() error {
 	// #176 Phase A: every (re)join re-projects this Runtime's own host
 	// identity — a reconnect can never inherit another host's state.
 	joined, err := r.options.Client.JoinRoom(
-		r.activeRoomID(), r.options.Name, r.advertisedCopy(), r.hostProjectionSnapshot())
+		r.activeRoomID(), r.options.Name, r.advertisedCopy(), r.hostProjectionFor(r.activeRoomID()))
 	if err != nil {
 		return err
 	}

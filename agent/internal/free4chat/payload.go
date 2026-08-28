@@ -132,25 +132,37 @@ func NormalizeRosterEntry(raw any) *types.ParticipantRosterEntry {
 	if surface := ParseSurfaceMetadataStrict(record["surface"]); surface != nil {
 		entry.Surface = surface
 	}
-	if host := ParseRuntimeHostStrict(record["runtimeHost"]); host != nil {
-		entry.RuntimeHost = host
+	// #176 Phase A (canonical Room model): roster entries carry the
+	// Room-scoped Runtime Host id only; host readiness travels once per
+	// host in the response-level runtimeHosts projection.
+	if hostID, ok := record["runtimeHostId"].(string); ok && types.ValidRuntimeHostID(hostID) {
+		entry.RuntimeHostID = hostID
 	}
 	return entry
 }
 
-// ParseRuntimeHostStrict projects the #176 Phase A Runtime Host metadata:
-// an opaque bounded id plus coarse speech booleans. Anything malformed is
-// dropped rather than repaired.
+// ParseRuntimeHostStrict parses the #176 Phase A Runtime Host wire
+// projection {runtimeHostId, speech:{stt,tts}} FAIL-CLOSED (#178 review
+// fix 2): the id must satisfy the shared opaque charset rule
+// (/^[A-Za-z0-9._:-]{8,64}$/), the speech object and BOTH booleans are
+// required, and any malformed, custom, or stale payload is dropped (nil)
+// rather than repaired or partially accepted.
 func ParseRuntimeHostStrict(raw any) *types.RuntimeHostProjection {
 	record, ok := raw.(map[string]any)
 	if !ok {
 		return nil
 	}
 	id, _ := record["runtimeHostId"].(string)
-	speechBlock, _ := record["speech"].(map[string]any)
-	stt, _ := speechBlock["stt"].(bool)
-	tts, _ := speechBlock["tts"].(bool)
-	if id == "" || len(id) > 64 {
+	if !types.ValidRuntimeHostID(id) {
+		return nil
+	}
+	speechBlock, ok := record["speech"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	stt, hasSTT := speechBlock["stt"].(bool)
+	tts, hasTTS := speechBlock["tts"].(bool)
+	if !hasSTT || !hasTTS {
 		return nil
 	}
 	return &types.RuntimeHostProjection{

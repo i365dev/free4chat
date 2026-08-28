@@ -2,84 +2,103 @@ package daemon
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
-// hostIDFile holds the stable opaque identity of THIS Runtime root.
-const hostIDFile = "host-id"
+// hostSeedFile holds the PRIVATE random seed of THIS Runtime root (#176
+// Phase A). The seed never leaves the machine; the public runtimeHostId is
+// derived from it per Room via types.DeriveRuntimeHostID.
+const hostSeedFile = "host-seed"
 
-// RuntimeHostID returns the stable opaque identity of one local Free4Chat
+// RuntimeHostSeed returns the private random seed of one local Free4Chat
 // Runtime installation/root (#176 Phase A).
 //
-// The id is a random UUID created once and persisted under the Runtime
-// directory, so it is:
-//   - stable across daemon restarts and release upgrades of the same root;
-//   - shared by every resident Agent of that root;
-//   - distinct for distinct Runtime roots;
-//   - NEVER derived from hostname, username, IP, MAC address, or any other
-//     machine-identifying metadata — it is safe to expose only as an opaque
-//     grouping key inside Room state.
+// The seed is a random UUID created once and persisted under the Runtime
+// directory (0600), so it is stable across daemon restarts and release
+// upgrades of the same root, shared by every resident of that root, and
+// distinct per root. It is NEVER derived from hostname, username, IP, MAC,
+// or any other machine-identifying metadata, and it is never exposed to the
+// Room — Room-visible runtimeHostId values are derived from it.
 //
-// A malformed leftover file is replaced (a lost grouping key is preferable
-// to a poisoned one). Concurrent first-use is safe: creation uses O_EXCL
-// and the loser reads the winner's file.
-func RuntimeHostID() (string, error) {
+// Initialization is atomic and no-clobber (#178 review fix 1): the seed is
+// written completely to a unique temp file and published into place with
+// link(2), so no reader can ever observe an empty or partially written seed
+// file, and a concurrent creator can never overwrite the winner's seed (the
+// loser reads it). A malformed leftover file is regenerated (a lost grouping
+// key is preferable to a poisoned one).
+func RuntimeHostSeed() (string, error) {
 	dir := RuntimeDirectory()
-	path := filepath.Join(dir, hostIDFile)
-	if id, err := readHostID(path); err == nil {
-		return id, nil
+	path := filepath.Join(dir, hostSeedFile)
+	if seed, err := readHostSeed(path); err == nil {
+		return seed, nil
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("runtime host id directory failed: %w", err)
+		return "", fmt.Errorf("runtime host seed directory failed: %w", err)
 	}
-	id, err := newHostID()
+	seed, err := newHostSeed()
 	if err != nil {
-		return "", fmt.Errorf("runtime host id generation failed: %w", err)
+		return "", fmt.Errorf("runtime host seed generation failed: %w", err)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err == nil {
-			if _, writeErr := file.WriteString(id + "\n"); writeErr != nil {
-				_ = file.Close()
-				return "", fmt.Errorf("runtime host id write failed: %w", writeErr)
-			}
-			if closeErr := file.Close(); closeErr != nil {
-				return "", fmt.Errorf("runtime host id write failed: %w", closeErr)
-			}
-			return id, nil
+		if err := publishSeedFile(path, seed); err == nil {
+			return seed, nil
+		} else if !os.IsExist(err) {
+			return "", fmt.Errorf("runtime host seed publish failed: %w", err)
 		}
-		if !os.IsExist(err) {
-			return "", fmt.Errorf("runtime host id create failed: %w", err)
-		}
-		if existing, readErr := readHostID(path); readErr == nil {
+		// Another creator won the race: read their (complete) seed.
+		if existing, readErr := readHostSeed(path); readErr == nil {
 			return existing, nil
 		}
 		// The existing file is malformed: remove and retry creation once.
 		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
-			return "", fmt.Errorf("runtime host id replace failed: %w", removeErr)
+			return "", fmt.Errorf("runtime host seed replace failed: %w", removeErr)
 		}
 	}
-	return "", fmt.Errorf("runtime host id could not be settled")
+	return "", fmt.Errorf("runtime host seed could not be settled")
 }
 
-// readHostID validates and returns a previously persisted host id.
-func readHostID(path string) (string, error) {
+// publishSeedFile atomically publishes a COMPLETE seed file without any
+// clobbering window: write the full content to a unique temp file in the
+// same directory, then link(2) it into place. link(2) fails with EEXIST
+// when the destination already exists, so a concurrent creator is never
+// overwritten and no reader can ever see an empty file.
+func publishSeedFile(path, seed string) error {
+	tmp := path + ".tmp-" + randomHex(8)
+	if err := os.WriteFile(tmp, []byte(seed+"\n"), 0o600); err != nil {
+		return err
+	}
+	linkErr := os.Link(tmp, path)
+	removeErr := os.Remove(tmp)
+	if linkErr != nil {
+		return linkErr
+	}
+	if removeErr != nil && !os.IsNotExist(removeErr) {
+		return removeErr
+	}
+	return nil
+}
+
+// readHostSeed validates and returns a previously persisted seed.
+func readHostSeed(path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	id := strings.TrimSpace(string(raw))
-	if !validRuntimeHostID(id) {
-		return "", fmt.Errorf("runtime host id file is malformed")
+	seed := strings.TrimSpace(string(raw))
+	if !types.ValidRuntimeHostID(seed) {
+		return "", fmt.Errorf("runtime host seed file is malformed")
 	}
-	return id, nil
+	return seed, nil
 }
 
-// newHostID generates a fresh opaque random id (RFC 4122 v4 UUID).
-func newHostID() (string, error) {
+// newHostSeed generates a fresh opaque random seed (RFC 4122 v4 UUID).
+func newHostSeed() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
@@ -89,21 +108,10 @@ func newHostID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// validRuntimeHostID is the single validation rule shared with the Room
-// side (#176): opaque charset, bounded length. No semantics are attached.
-func validRuntimeHostID(id string) bool {
-	if len(id) < 8 || len(id) > 64 {
-		return false
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "fallback"
 	}
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z',
-			r >= 'A' && r <= 'Z',
-			r >= '0' && r <= '9',
-			r == '-', r == '_', r == '.', r == ':':
-		default:
-			return false
-		}
-	}
-	return true
+	return hex.EncodeToString(b)
 }

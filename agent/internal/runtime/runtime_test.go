@@ -820,15 +820,17 @@ func (c *fakeClient) currentJoinedHandle() string {
 	return "secret-" + itoa(int64(joins))
 }
 
-// #176 Phase A: joins carry the Runtime Host projection; speech hot reload
-// pushes the updated projection without rejoining; reconnects re-project
-// the same host (never another host's state).
+// #176 Phase A (as corrected by #178 review): joins carry the Room-scoped
+// runtimeHostId DERIVED from the private root seed (never the raw seed);
+// speech hot reload pushes the updated readiness without rejoining; the
+// same root + Room always derives the same id.
 func TestRuntimeHostProjectionJoinAndHotReload(t *testing.T) {
 	client := &fakeClient{}
 	adapter := &fakeAdapter{name: "pi"}
-	host := &types.RuntimeHostProjection{
-		RuntimeHostID: "11111111-2222-3333-4444-555555555555",
-		Speech:        types.HostSpeechReadiness{STT: true, TTS: false},
+	seed := "33333333-4444-5555-6666-777777777777"
+	derived, err := types.DeriveRuntimeHostID(seed, "test-host")
+	if err != nil {
+		t.Fatalf("derive failed: %v", err)
 	}
 	rt := NewResidentRuntime(Options{
 		InstanceID:  "inst-host",
@@ -837,7 +839,7 @@ func TestRuntimeHostProjectionJoinAndHotReload(t *testing.T) {
 		Client:      client,
 		Adapter:     adapter,
 		WaitSeconds: 1,
-		Host:        host,
+		HostSeed:    seed,
 	})
 	if err := rt.Start(); err != nil {
 		t.Fatalf("start failed: %v", err)
@@ -846,23 +848,53 @@ func TestRuntimeHostProjectionJoinAndHotReload(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotHosts()) >= 1 }, "join with host projection")
 
 	hosts := client.snapshotHosts()
-	if len(hosts) == 0 || hosts[0] == nil || hosts[0].RuntimeHostID != host.RuntimeHostID {
+	if len(hosts) == 0 || hosts[0] == nil {
 		t.Fatalf("join must carry the host projection, got %v", hosts)
 	}
+	if hosts[0].RuntimeHostID != derived {
+		t.Fatalf("join must carry the DERIVED room-scoped id: got %s want %s (seed %s)",
+			hosts[0].RuntimeHostID, derived, seed)
+	}
 
-	// Speech hot reload: readiness changes push an updated projection.
+	// Speech hot reload: readiness changes push an updated projection for
+	// the SAME derived room-scoped id.
 	rt.ReloadSpeech(speech.Config{STTEnabled: true, TTSEnabled: true})
 	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotHostUpdates()) >= 1 }, "host update push")
 	updates := client.snapshotHostUpdates()
-	if updates[0].RuntimeHostID != host.RuntimeHostID ||
+	if updates[0].RuntimeHostID != derived ||
 		!updates[0].Speech.STT || !updates[0].Speech.TTS {
 		t.Fatalf("hot reload must push updated readiness, got %+v", updates[0])
 	}
 
 	// The in-memory projection is consistent for every reader of this host.
 	current := rt.CurrentHostProjection()
-	if current == nil || !current.Speech.TTS {
+	if current == nil || current.RuntimeHostID != derived || !current.Speech.TTS {
 		t.Fatalf("current projection must reflect reloaded readiness: %+v", current)
+	}
+	rt.Stop()
+}
+
+// #178 review fix 5: with no seed (legacy caller) the projection is simply
+// absent — the text join is never blocked by the host path.
+func TestRuntimeWithoutSeedJoinsWithoutHostProjection(t *testing.T) {
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-noseed",
+		RoomID:      "test-noseed",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     &fakeAdapter{name: "pi"},
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotHosts()) >= 1 }, "join")
+	if hosts := client.snapshotHosts(); len(hosts) != 1 || hosts[0] != nil {
+		t.Fatalf("seedless runtime must join without a projection, got %v", hosts)
+	}
+	if rt.CurrentHostProjection() != nil {
+		t.Fatal("seedless runtime must project nothing")
 	}
 	rt.Stop()
 }

@@ -174,11 +174,11 @@ export function rosterProjection(
         name: participant.name,
         kind: participant.kind,
         ...(advertised && advertised.length > 0 ? { advertised } : {}),
+        ...(participant.kind === "agent" && participant.runtimeHostId
+          ? { runtimeHostId: participant.runtimeHostId }
+          : {}),
         ...(participant.kind === "agent" && participant.surface
           ? { surface: participant.surface }
-          : {}),
-        ...(participant.kind === "agent" && participant.runtimeHost
-          ? { runtimeHost: participant.runtimeHost }
           : {}),
       }
     })
@@ -579,11 +579,36 @@ export function validateRuntimeHost(
   }
 }
 
-// Storage hygiene (#176): a malformed persisted projection is dropped so
-// room loading cannot wedge; the Runtime re-projects on its next update.
+// Storage hygiene (#176 Phase A, canonical model): a malformed persisted
+// projection is dropped so room loading cannot wedge; the Runtime
+// re-projects on its next update.
 export function sanitizeStoredRuntimeHost(
   input: unknown
 ): RuntimeHostProjection | undefined {
   const validated = validateRuntimeHost(input)
   return validated.ok ? validated.runtimeHost : undefined
+}
+
+// Storage hygiene for the canonical runtimeHosts map: drop malformed host
+// entries entirely (never repair).
+export function sanitizeStoredRuntimeHosts(
+  input: unknown
+): Record<string, RuntimeHostProjection> {
+  const hosts: Record<string, RuntimeHostProjection> = {}
+  if (typeof input !== "object" || input === null || Array.isArray(input))
+    return hosts
+  for (const [hostId, raw] of Object.entries(
+    input as Record<string, unknown>
+  )) {
+    if (!RUNTIME_HOST_ID_PATTERN.test(hostId)) continue
+    const validated = validateRuntimeHost({
+      runtimeHostId: hostId,
+      ...(typeof raw === "object" && raw !== null
+        ? { speech: (raw as Record<string, unknown>).speech }
+        : {}),
+    })
+    if (validated.ok && validated.runtimeHost)
+      hosts[hostId] = validated.runtimeHost
+  }
+  return hosts
 }

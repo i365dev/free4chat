@@ -1,8 +1,4 @@
-import type {
-  CollabEvent,
-  RoomSurfaceV1,
-  RuntimeHostProjection,
-} from "../room/types"
+import type { CollabEvent, RoomSurfaceV1 } from "../room/types"
 
 export interface UserInfo {
   name: string
@@ -16,9 +12,9 @@ export interface UserInfo {
   muteState?: boolean | false
   capabilities?: string[]
   surface?: RoomSurfaceV1
-  // #176 Phase A: the Runtime Host behind this Agent (agents only) — opaque
-  // grouping key plus coarse speech readiness. Discovery metadata only.
-  runtimeHost?: RuntimeHostProjection
+  // #176 Phase A: the Room-scoped Runtime Host id behind this Agent (agents
+  // only). Readiness itself travels once per host in Room state.
+  runtimeHostId?: string
 }
 
 export type MessageType = "text" | "image" | "file" | "action"

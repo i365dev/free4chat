@@ -359,7 +359,9 @@ func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *type
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
 	}
-	if host != nil {
+	// #178 review fix 5: the projection is additive — an invalid projection
+	// is omitted (never repaired, never blocks the text join).
+	if host != nil && host.Valid() {
 		args["runtimeHost"] = *host
 	}
 	result, err := c.callTool("join_room", args)
@@ -376,7 +378,8 @@ func (c *Client) CreateRoom(name string, capabilities []string, host *types.Runt
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
 	}
-	if host != nil {
+	// #178 review fix 5: additive, see JoinRoom.
+	if host != nil && host.Valid() {
 		args["runtimeHost"] = *host
 	}
 	result, err := c.callTool("create_room", args)
@@ -436,6 +439,22 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 	}
 	if participants, ok := result["participants"].([]any); ok {
 		wait.Participants = NormalizeRoster(participants)
+	}
+	// #176 Phase A: one coarse readiness projection per Runtime Host id,
+	// shared by all same-host Agents; malformed entries fail closed.
+	if hosts, ok := result["runtimeHosts"].(map[string]any); ok {
+		wait.RuntimeHosts = map[string]types.RuntimeHostProjection{}
+		for hostID, raw := range hosts {
+			if !types.ValidRuntimeHostID(hostID) {
+				continue
+			}
+			if host := ParseRuntimeHostStrict(map[string]any{
+				"runtimeHostId": hostID,
+				"speech":        raw,
+			}); host != nil {
+				wait.RuntimeHosts[hostID] = *host
+			}
+		}
 	}
 	return wait, nil
 }

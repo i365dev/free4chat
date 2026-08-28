@@ -8,7 +8,8 @@ import {
   rosterProjection,
   sanitizeStoredAdvertisedList,
   sanitizeStoredAgentCapabilities,
-  sanitizeStoredRuntimeHost,
+  RUNTIME_HOST_ID_PATTERN,
+  sanitizeStoredRuntimeHosts,
   validateAdvertisedCapabilities,
   validateCollabEvent,
   validateRuntimeHost,
@@ -193,7 +194,10 @@ interface AgentWaiter {
 type ControlRequest =
   | {
       action: "register"
-      participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
+      participant: Omit<RoomParticipant, "connected" | "lastSeenAt"> & {
+        // Humans never project a Runtime Host; any payload is dropped.
+        runtimeHost?: RuntimeHostProjection
+      }
     }
   | {
       action: "authorize"
@@ -254,7 +258,13 @@ type ControlRequest =
   | { action: "room-info"; participantId?: string }
   | {
       action: "agent-register"
-      participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
+      // #176 Phase A wire shape: the Runtime Host arrives as a full
+      // projection; the DO canonicalizes it into runtimeHosts +
+      // participant.runtimeHostId (the raw object never persists).
+      participant: Omit<
+        RoomParticipant,
+        "connected" | "lastSeenAt" | "runtimeHostId"
+      > & { runtimeHost?: RuntimeHostProjection }
     }
   | {
       // #51: atomic CREATE-ONLY room creation. The DO refuses when any room
@@ -263,7 +273,10 @@ type ControlRequest =
       // MCP layer owns bounded retry with fresh ids. Never falls back to
       // joining an existing room.
       action: "agent-create-room"
-      participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
+      participant: Omit<
+        RoomParticipant,
+        "connected" | "lastSeenAt" | "runtimeHostId"
+      > & { runtimeHost?: RuntimeHostProjection }
     }
   | {
       action: "agent-wait"
@@ -566,17 +579,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           else delete participant.surface
           changed = true
         }
-        // #176 Phase A storage hygiene: a malformed persisted Runtime Host
-        // projection is dropped; the Runtime re-projects on its next update.
-        const sanitizedHost = sanitizeStoredRuntimeHost(participant.runtimeHost)
+        // #176 Phase A (canonical model) storage hygiene: an invalid or
+        // unbounded runtimeHostId is dropped; the Runtime re-projects on
+        // its next update. Dangling ids are cleared after the runtimeHosts
+        // map is sanitized below.
         if (
-          participant.runtimeHost !== undefined &&
-          sanitizedHost === undefined
+          participant.runtimeHostId !== undefined &&
+          !RUNTIME_HOST_ID_PATTERN.test(participant.runtimeHostId)
         ) {
-          delete participant.runtimeHost
+          delete participant.runtimeHostId
           changed = true
-        } else if (sanitizedHost !== undefined) {
-          participant.runtimeHost = sanitizedHost
         }
         for (const key of [
           "sessionId",
@@ -679,6 +691,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(targets?.length ? { targets } : {}),
       })
     }
+    // #176 Phase A (canonical model) storage hygiene: keep ONE sanitized
+    // readiness projection per Runtime Host id, then clear participant ids
+    // that dangle after sanitization.
+    const runtimeHosts = sanitizeStoredRuntimeHosts(stored.runtimeHosts)
+    if (
+      stored.runtimeHosts !== undefined &&
+      stored.runtimeHosts !== null &&
+      Object.keys(runtimeHosts).length !==
+        Object.keys(stored.runtimeHosts as Record<string, unknown>).length
+    ) {
+      changed = true
+    }
+    for (const participant of Object.values(participants)) {
+      if (
+        participant.runtimeHostId !== undefined &&
+        runtimeHosts[participant.runtimeHostId] === undefined
+      ) {
+        delete participant.runtimeHostId
+        changed = true
+      }
+    }
+
     if (stored.nextMessageSequence !== nextMessageSequence) changed = true
     const attachments = Array.isArray(stored.attachments)
       ? stored.attachments.filter((attachment) =>
@@ -730,6 +764,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         createdAt: stored.createdAt,
         expiresAt: stored.expiresAt,
         participants,
+        runtimeHosts,
         messages,
         attachments,
         nextMessageSequence,
@@ -866,6 +901,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           } = participant.media
           return { ...participant, media }
         }),
+      // #176 Phase A: one readiness projection per Runtime Host id.
+      runtimeHosts: room.runtimeHosts ?? {},
       messages: room.messages,
       meetingNotes: room.meetingNotes,
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
@@ -890,6 +927,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private isExpired(room: RoomRecord): boolean {
     return Date.now() >= room.expiresAt
+  }
+
+  // #176 Phase A (canonical model): drop Runtime Host projections that no
+  // participant references anymore. Runs after every participant removal so
+  // departed hosts cannot accumulate stale readiness in Room state.
+  private gcRuntimeHosts(room: RoomRecord): void {
+    const hosts = room.runtimeHosts
+    if (!hosts) return
+    for (const hostId of Object.keys(hosts)) {
+      const stillReferenced = Object.values(room.participants).some(
+        (participant) => participant.runtimeHostId === hostId
+      )
+      if (!stillReferenced) delete hosts[hostId]
+    }
   }
 
   // Recomputes room.expiresAt from current participant count. Must run after
@@ -1201,6 +1252,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.json({
             ...result,
             participants: rosterProjection(room.participants),
+            runtimeHosts: room.runtimeHosts ?? {},
           })
         )
       }
@@ -1246,6 +1298,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           // resident Harness answer "who here can potentially do X" without
           // dumping the full room state into every turn.
           participants: rosterProjection(room.participants),
+          // #176 Phase A: one readiness projection per Runtime Host id.
+          runtimeHosts: room.runtimeHosts ?? {},
         })
       }
 
@@ -1273,6 +1327,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                 this.json({
                   ...this.agentEvents(current, participant.id, request.cursor),
                   participants: rosterProjection(current.participants),
+                  runtimeHosts: current.runtimeHosts ?? {},
                 })
               )
             })
@@ -1297,6 +1352,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               .filter((participant) => participant.connected)
               .map((participant) => this.participantForInfo(participant))
           : [],
+        // #176 Phase A: one readiness projection per Runtime Host id.
+        runtimeHosts: room?.runtimeHosts ?? {},
         capabilities: ROOM_CAPABILITIES,
         // Room-visible state, not a capability secret — the same
         // agentParticipantId is already visible in `participants` above.
@@ -1351,21 +1408,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // capability list chosen by its Runtime/Harness. Invalid input rejects
       // the join — never repaired silently (see do/collab.ts).
       let registeredCapabilities: AgentCapabilities = { text: true }
-      // #176 Phase A: the Runtime Host projection is Agent-only, optional,
-      // and rejected (never repaired) when malformed — mirroring the
-      // advertised-capability contract.
+      // #176 Phase A (canonical Room model, #178 review fix 5): the
+      // optional Runtime Host projection is Agent-only and ADDITIVE — a
+      // malformed payload is dropped (no host stored) and the text join
+      // proceeds; the Runtime re-projects via agent-update-runtime-host.
       let registeredRuntimeHost: RuntimeHostProjection | undefined
-      if (request.participant.runtimeHost !== undefined) {
-        if (!isAgent) return this.json({ error: "invalid_runtime_host" }, 400)
+      if (isAgent && request.participant.runtimeHost !== undefined) {
         const validatedHost = validateRuntimeHost(
           request.participant.runtimeHost
         )
-        if (!validatedHost.ok)
-          return this.json(
-            { error: validatedHost.error, reason: validatedHost.reason },
-            400
-          )
-        registeredRuntimeHost = validatedHost.runtimeHost
+        if (validatedHost.ok && validatedHost.runtimeHost)
+          registeredRuntimeHost = validatedHost.runtimeHost
       }
       if (isAgent) {
         const validated = validateAdvertisedCapabilities(
@@ -1378,8 +1431,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           )
         registeredCapabilities = agentCapabilitiesFrom(validated.capabilities)
       }
+      // The raw projection object never persists — only the canonical
+      // runtimeHostId on the participant and the map entry below.
+      const { runtimeHost: _hostPayload, ...participantWire } =
+        request.participant
       const participant: RoomParticipant = {
-        ...request.participant,
+        ...participantWire,
         connected: isAgent,
         lastSeenAt: now,
         ...(isAgent
@@ -1387,12 +1444,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               capabilities: registeredCapabilities,
               media: undefined,
               ...(registeredRuntimeHost
-                ? { runtimeHost: registeredRuntimeHost }
+                ? { runtimeHostId: registeredRuntimeHost.runtimeHostId }
                 : {}),
             }
           : {}),
       }
       room.participants[participant.id] = participant
+      if (registeredRuntimeHost) {
+        // Canonical Room model (#176): ONE readiness projection per host id,
+        // shared by all same-host Agents.
+        room.runtimeHosts = {
+          ...(room.runtimeHosts ?? {}),
+          [registeredRuntimeHost.runtimeHostId]: registeredRuntimeHost,
+        }
+      }
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -1422,19 +1487,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       if (request.participant.kind !== "agent")
         return this.json({ error: "invalid_participant_kind" }, 400)
-      // #176 Phase A: optional, Agent-only, reject-on-malformed host
-      // projection — identical contract to the register path.
+      // #176 Phase A (canonical Room model, #178 review fix 5): optional,
+      // Agent-only, ADDITIVE — malformed payloads are dropped and the text
+      // join proceeds; the Runtime re-projects after adoption.
       let createdRuntimeHost: RuntimeHostProjection | undefined
       if (request.participant.runtimeHost !== undefined) {
         const validatedHost = validateRuntimeHost(
           request.participant.runtimeHost
         )
-        if (!validatedHost.ok)
-          return this.json(
-            { error: validatedHost.error, reason: validatedHost.reason },
-            400
-          )
-        createdRuntimeHost = validatedHost.runtimeHost
+        if (validatedHost.ok && validatedHost.runtimeHost)
+          createdRuntimeHost = validatedHost.runtimeHost
       }
       const validated = validateAdvertisedCapabilities(
         request.participant.capabilities?.advertised ?? []
@@ -1464,9 +1526,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         lastSeenAt: now,
         capabilities: agentCapabilitiesFrom(validated.capabilities),
         media: undefined,
-        ...(createdRuntimeHost ? { runtimeHost: createdRuntimeHost } : {}),
+        ...(createdRuntimeHost
+          ? { runtimeHostId: createdRuntimeHost.runtimeHostId }
+          : {}),
       }
       room.participants[participant.id] = participant
+      if (createdRuntimeHost) {
+        room.runtimeHosts = {
+          ...(room.runtimeHosts ?? {}),
+          [createdRuntimeHost.runtimeHostId]: createdRuntimeHost,
+        }
+      }
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -1564,13 +1634,25 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           { error: validated.error, reason: validated.reason },
           400
         )
-      participant.runtimeHost = validated.runtimeHost
+      // Canonical Room model (#176): upsert ONE readiness projection per
+      // host id, shared by all same-host Agents, then reference it from this
+      // participant. Presence/discovery broadcast only.
+      const host = validated.runtimeHost
+      room.runtimeHosts = {
+        ...(room.runtimeHosts ?? {}),
+        [host.runtimeHostId]: host,
+      }
+      participant.runtimeHostId = host.runtimeHostId
+      // Re-projection may move this participant to a new host id: collect
+      // the previously referenced host if nothing else uses it.
+      this.gcRuntimeHosts(room)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
       return this.json({
-        runtimeHost: participant.runtimeHost,
+        runtimeHost: host,
+        runtimeHosts: room.runtimeHosts,
         expiresAt: room.expiresAt,
       })
     }
@@ -2048,6 +2130,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.stageAgentMediaRevocation(room, participant.id)
       const departingSurface = participant.surface
       delete room.participants[participant.id]
+      this.gcRuntimeHosts(room)
       room.meetingNotes = clearGrantIfParticipantDeparting(
         room.meetingNotes,
         participant.id
@@ -2390,6 +2473,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     delete room.participants[participant.id]
+    this.gcRuntimeHosts(room)
     room.meetingNotes = clearGrantIfParticipantDeparting(
       room.meetingNotes,
       participant.id
@@ -2639,6 +2723,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "leave") {
       delete room.participants[participant.id]
+      this.gcRuntimeHosts(room)
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       await this.broadcastState(room)
@@ -3278,6 +3363,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             surface: participant.surface,
           })
         delete room.participants[id]
+        this.gcRuntimeHosts(room)
         room.meetingNotes = clearGrantIfParticipantDeparting(
           room.meetingNotes,
           id

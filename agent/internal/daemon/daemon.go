@@ -398,12 +398,16 @@ func (d *Daemon) prepareRuntime(
 	// child directory inside it and is never reused across rooms.
 	transcriptPath := filepath.Join(workspace, ".meeting-notes", "transcript.jsonl")
 	speechConfig := speech.LoadConfig(RuntimeDirectory(), os.Getenv)
-	// #176 Phase A: every resident of this Runtime root projects the SAME
-	// opaque host identity and coarse host-owned speech readiness — the
-	// credential itself never becomes participant or Room state.
-	hostProjection, hostErr := d.hostProjection(&speechConfig)
-	if hostErr != nil {
-		return nil, "", "", hostErr
+	// #176 Phase A: load the PRIVATE Runtime root seed. Every resident of
+	// this root derives the same Room-scoped public runtimeHostId from it;
+	// the raw seed never becomes participant or Room state. A seed failure
+	// is additive and must never block a text join — the resident simply
+	// joins without a host projection.
+	hostSeed := ""
+	if seed, seedErr := RuntimeHostSeed(); seedErr != nil {
+		fmt.Fprintf(os.Stderr, "free4chat-agent: runtime host seed unavailable (%v); joining without a host projection\n", seedErr)
+	} else {
+		hostSeed = seed
 	}
 	residentRuntime := runtime.NewResidentRuntime(runtime.Options{
 		InstanceID: instanceID,
@@ -418,7 +422,7 @@ func (d *Daemon) prepareRuntime(
 		SiteOrigin:     siteOrigin,
 		TranscriptPath: transcriptPath,
 		Speech:         &speechConfig,
-		Host:           hostProjection,
+		HostSeed:       hostSeed,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the
@@ -604,24 +608,6 @@ func (d *Daemon) InstanceCount() int {
 
 // statusViews snapshots all residents, adding advertised capabilities when
 // non-empty (matching the Node payload shape).
-// hostProjection builds the #176 Phase A Runtime Host projection for this
-// Runtime root: the persisted opaque identity plus coarse, host-owned
-// speech readiness derived from the current local speech configuration.
-// Provider/credential details never enter the projection.
-func (d *Daemon) hostProjection(config *speech.Config) (*types.RuntimeHostProjection, error) {
-	id, err := RuntimeHostID()
-	if err != nil {
-		return nil, err
-	}
-	return &types.RuntimeHostProjection{
-		RuntimeHostID: id,
-		Speech: types.HostSpeechReadiness{
-			STT: config.STTEnabled,
-			TTS: config.TTSEnabled,
-		},
-	}, nil
-}
-
 func (d *Daemon) statusViews() []map[string]any {
 	d.mu.Lock()
 	all := make([]*residentInstance, 0, len(d.instances))
@@ -635,8 +621,9 @@ func (d *Daemon) statusViews() []map[string]any {
 		if caps := instance.runtime.CurrentCapabilities(); len(caps) > 0 {
 			view["capabilities"] = caps
 		}
-		// #176 Phase A: local observability of the Runtime Host identity and
-		// coarse speech readiness shared by every resident of this root.
+		// #176 Phase A: local observability of the Room-scoped Runtime Host
+		// identity and coarse speech readiness shared by every resident of
+		// this root. The raw root seed never appears in any view.
 		if host := instance.runtime.CurrentHostProjection(); host != nil {
 			view["runtimeHostId"] = host.RuntimeHostID
 			view["speech"] = map[string]bool{"stt": host.Speech.STT, "tts": host.Speech.TTS}

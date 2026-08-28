@@ -363,7 +363,7 @@ function createMcpServer(context: McpRequestContext) {
     "update_runtime_host",
     {
       description:
-        "Re-project this Agent's Runtime Host capability projection (#176): the stable opaque runtimeHostId of the local Runtime root plus coarse speech readiness (stt/tts booleans). Discovery metadata only — never authorization, never credential details. Call after a local speech configuration change (e.g. credential provision) so the Room updates without rejoining.",
+        "Re-project this Agent's Runtime Host capability projection (#176): the stable opaque, Room-scoped runtimeHostId your local Runtime derived for this Room plus coarse speech readiness (stt/tts booleans). One readiness is shared by all same-host Agents. Discovery metadata only — never authorization, never credential details. Call after a local speech configuration change (e.g. credential provision) so the Room updates without rejoining.",
       inputSchema: {
         participantHandle: z.string().min(1),
         runtimeHost: runtimeHostSchema,

@@ -4,10 +4,20 @@ import { RoomSession } from "./RoomSession"
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 
-// #176 Phase A fixture: one Human plus Agents so the Runtime Host projection
-// can be exercised against the real DO register/update/projection paths.
+// #176 Phase A (canonical Room model, #178 review): one coarse readiness
+// projection per Runtime Host id in RoomRecord.runtimeHosts, referenced by
+// participants via runtimeHostId. Tests cover register/update projections,
+// shared readiness for same-host Agents, hot reload, persistence + storage
+// hygiene, and garbage collection on departure.
+
+const VALID_HOST = {
+  runtimeHostId: "11111111-2222-3333-4444-555555555555",
+  speech: { stt: true, tts: false },
+}
+
 function buildStoredRoom(
-  agentRuntimeHosts: Record<string, unknown | undefined> = {}
+  agentRuntimeHostIds: Record<string, string | undefined> = {},
+  runtimeHosts?: Record<string, unknown>
 ) {
   const agentIds = ["agent-a", "agent-b"]
   return {
@@ -34,24 +44,20 @@ function buildStoredRoom(
             joinedAt: 1,
             lastSeenAt: Date.now(),
             token: `tok-${id}`,
-            ...(agentRuntimeHosts[id] !== undefined
-              ? { runtimeHost: agentRuntimeHosts[id] }
+            ...(agentRuntimeHostIds[id] !== undefined
+              ? { runtimeHostId: agentRuntimeHostIds[id] }
               : {}),
           },
         ])
       ),
     },
+    ...(runtimeHosts === undefined ? {} : { runtimeHosts }),
     messages: [],
     nextMessageSequence: 1,
     meetingNotes: { active: false },
     voiceReply: { active: false },
     pendingMediaCleanup: [],
   }
-}
-
-const VALID_HOST = {
-  runtimeHostId: "11111111-2222-3333-4444-555555555555",
-  speech: { stt: true, tts: false },
 }
 
 function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
@@ -126,6 +132,9 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
         participants: Record<string, Record<string, unknown>>
       }
     ).participants
+  const storedRuntimeHosts = () =>
+    ((store.get("room") as { runtimeHosts?: Record<string, unknown> })
+      .runtimeHosts ?? {}) as Record<string, unknown>
   return {
     control,
     agentRegister,
@@ -133,66 +142,117 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
     roomInfo,
     agentWait,
     storedParticipants,
+    storedRuntimeHosts,
   }
 }
 
-describe("RoomSession Runtime Host projection (#176 Phase A)", () => {
-  it("registers an Agent with a host projection and projects it in room-info and the wait roster", async () => {
+describe("RoomSession Runtime Host canonical model (#176 Phase A)", () => {
+  it("registers an Agent with a host projection: map + participant id + projections", async () => {
     const room = makeRoomSession(buildStoredRoom())
     const registered = await room.agentRegister(VALID_HOST)
     expect(registered.status).toBe(200)
+    // Participant references the host id; readiness lives in the map.
     expect(registered.json.participant).toMatchObject({
-      runtimeHost: VALID_HOST,
+      runtimeHostId: VALID_HOST.runtimeHostId,
+    })
+    expect(room.storedParticipants()["agent-new"].runtimeHostId).toBe(
+      VALID_HOST.runtimeHostId
+    )
+    expect(room.storedRuntimeHosts()).toEqual({
+      [VALID_HOST.runtimeHostId]: VALID_HOST,
     })
 
     const info = await room.roomInfo()
     const participants = info.json.participants as Array<
       Record<string, unknown>
     >
-    const hosted = participants.find((p) => p.id === "agent-new")
-    expect(hosted?.runtimeHost).toEqual(VALID_HOST)
-
-    const roster = (await room.agentWait("agent-a")).json.participants as Array<
-      Record<string, unknown>
-    >
-    expect(roster.find((p) => p.id === "agent-new")?.runtimeHost).toEqual(
-      VALID_HOST
+    expect(participants.find((p) => p.id === "agent-new")?.runtimeHostId).toBe(
+      VALID_HOST.runtimeHostId
     )
+    expect(info.json.runtimeHosts).toEqual({
+      [VALID_HOST.runtimeHostId]: VALID_HOST,
+    })
+
+    const wait = (await room.agentWait("agent-a")).json
+    const roster = wait.participants as Array<Record<string, unknown>>
+    expect(roster.find((p) => p.id === "agent-new")?.runtimeHostId).toBe(
+      VALID_HOST.runtimeHostId
+    )
+    expect(wait.runtimeHosts).toEqual({
+      [VALID_HOST.runtimeHostId]: VALID_HOST,
+    })
     // Humans never project a host.
-    expect(roster.find((p) => p.kind === "human")?.runtimeHost).toBeUndefined()
+    expect(
+      roster.find((p) => p.kind === "human")?.runtimeHostId
+    ).toBeUndefined()
   })
 
-  it("rejects malformed host projections and human projection registration", async () => {
+  it("two Agents of the same host share ONE readiness projection; hot reload updates it for both", async () => {
     const room = makeRoomSession(buildStoredRoom())
-    expect(
-      (
-        await room.agentRegister({
-          runtimeHostId: "bad id!",
-          speech: { stt: true, tts: true },
-        })
-      ).status
-    ).toBe(400)
-    expect(
-      (
-        await room.agentRegister({
-          runtimeHostId: "short",
-          speech: { stt: true, tts: true },
-        })
-      ).status
-    ).toBe(400)
-    expect(
-      (
-        await room.agentRegister({
-          runtimeHostId: VALID_HOST.runtimeHostId,
-          speech: { stt: "yes", tts: true },
-        })
-      ).status
-    ).toBe(400)
-    expect((await room.agentRegister("not-an-object")).status).toBe(400)
+    await room.agentRegister(VALID_HOST, "agent-a2")
+    await room.agentRegister(VALID_HOST, "agent-b2")
+    // Same host id registered twice: still exactly ONE stored projection.
+    expect(Object.keys(room.storedRuntimeHosts()).length).toBe(1)
+    expect(room.storedParticipants()["agent-a2"].runtimeHostId).toBe(
+      VALID_HOST.runtimeHostId
+    )
+    expect(room.storedParticipants()["agent-b2"].runtimeHostId).toBe(
+      VALID_HOST.runtimeHostId
+    )
+
+    // Hot reload via the FIRST agent updates the shared readiness both
+    // agents project.
+    const updated = await room.control({
+      action: "agent-update-runtime-host",
+      participantId: "agent-a2",
+      token: "tok-agent-a2",
+      runtimeHost: {
+        runtimeHostId: VALID_HOST.runtimeHostId,
+        speech: { stt: false, tts: true },
+      },
+    })
+    expect(updated.status).toBe(200)
+    expect(room.storedRuntimeHosts()[VALID_HOST.runtimeHostId]).toEqual({
+      runtimeHostId: VALID_HOST.runtimeHostId,
+      speech: { stt: false, tts: true },
+    })
+  })
+
+  it("malformed registration projections are additive: dropped, join proceeds", async () => {
+    const room = makeRoomSession(buildStoredRoom())
+    // #178 review fix 5: a malformed projection must never block a text
+    // join — it is dropped (no host stored) and the Agent registers fine.
+    const badPayloads = [
+      { runtimeHostId: "bad id!", speech: { stt: true, tts: true } },
+      { runtimeHostId: "short", speech: { stt: true, tts: true } },
+      {
+        runtimeHostId: VALID_HOST.runtimeHostId,
+        speech: { stt: "yes", tts: true },
+      },
+      "not-an-object",
+    ]
+    let counter = 0
+    for (const bad of badPayloads) {
+      counter += 1
+      const result = await room.agentRegister(bad, `agent-bad-${counter}`)
+      expect(result.status).toBe(200)
+      expect(
+        (result.json.participant as Record<string, unknown>).runtimeHostId
+      ).toBeUndefined()
+    }
+    expect(Object.keys(room.storedRuntimeHosts()).length).toBe(0)
     // Agents without a projection are unaffected (backward compatible).
     expect((await room.agentRegister()).status).toBe(200)
-    // Humans may not project a Runtime Host at all.
-    expect((await room.humanRegister()).status).toBe(400)
+    // Humans never project a host: their registration payload is dropped
+    // (additive semantics — the join itself must never block).
+    const human = await room.humanRegister()
+    expect(human.status).toBe(200)
+    const afterHuman = (await room.roomInfo()).json.participants as Array<
+      Record<string, unknown>
+    >
+    expect(
+      afterHuman.find((p) => p.id === "human-2")?.runtimeHostId
+    ).toBeUndefined()
   })
 
   it("re-projects via agent-update-runtime-host with loud validation and auth", async () => {
@@ -209,9 +269,14 @@ describe("RoomSession Runtime Host projection (#176 Phase A)", () => {
       },
     })
     expect(updated.status).toBe(200)
-    expect(room.storedParticipants()["agent-new"].runtimeHost).toEqual({
-      runtimeHostId: "99999999-8888-7777-6666-555555555555",
-      speech: { stt: false, tts: true },
+    expect(room.storedParticipants()["agent-new"].runtimeHostId).toBe(
+      "99999999-8888-7777-6666-555555555555"
+    )
+    expect(room.storedRuntimeHosts()).toEqual({
+      "99999999-8888-7777-6666-555555555555": {
+        runtimeHostId: "99999999-8888-7777-6666-555555555555",
+        speech: { stt: false, tts: true },
+      },
     })
 
     // Wrong bearer capability: unauthorized.
@@ -238,7 +303,8 @@ describe("RoomSession Runtime Host projection (#176 Phase A)", () => {
       ).status
     ).toBe(403)
 
-    // Malformed projection is rejected loudly, never repaired.
+    // Malformed projection is rejected loudly on the UPDATE op, never
+    // repaired; the last valid projection survives the rejected update.
     expect(
       (
         await room.control({
@@ -252,33 +318,76 @@ describe("RoomSession Runtime Host projection (#176 Phase A)", () => {
         })
       ).status
     ).toBe(400)
-    // The last valid projection survives the rejected update.
-    expect(room.storedParticipants()["agent-new"].runtimeHost).toEqual({
-      runtimeHostId: "99999999-8888-7777-6666-555555555555",
-      speech: { stt: false, tts: true },
+    expect(room.storedRuntimeHosts()).toEqual({
+      "99999999-8888-7777-6666-555555555555": {
+        runtimeHostId: "99999999-8888-7777-6666-555555555555",
+        speech: { stt: false, tts: true },
+      },
     })
   })
 
-  it("drops a malformed persisted projection during room load and keeps absent ones absent", async () => {
-    const room = makeRoomSession(
-      buildStoredRoom({
-        "agent-a": {
-          runtimeHostId: "bad id with spaces",
+  it("garbage-collects host projections when their last Agent departs, keeps shared hosts", async () => {
+    const room = makeRoomSession(buildStoredRoom())
+    await room.agentRegister(VALID_HOST, "agent-a2")
+    await room.agentRegister(VALID_HOST, "agent-b2")
+    expect(Object.keys(room.storedRuntimeHosts()).length).toBe(1)
+
+    // First Agent leaves: the host is still referenced by agent-b2.
+    await room.control({
+      action: "agent-leave",
+      participantId: "agent-a2",
+      token: "tok-agent-a2",
+    })
+    expect(Object.keys(room.storedRuntimeHosts()).length).toBe(1)
+
+    // Last referencing Agent leaves: the host projection is collected.
+    await room.control({
+      action: "agent-leave",
+      participantId: "agent-b2",
+      token: "tok-agent-b2",
+    })
+    expect(Object.keys(room.storedRuntimeHosts()).length).toBe(0)
+  })
+
+  it("persists runtimeHosts across loads and sanitizes malformed storage", async () => {
+    const storedHost = {
+      runtimeHostId: VALID_HOST.runtimeHostId,
+      speech: { stt: true, tts: false },
+    }
+    const stored = buildStoredRoom(
+      {
+        "agent-a": VALID_HOST.runtimeHostId,
+        "agent-b": "ghost-host-id",
+      },
+      {
+        [VALID_HOST.runtimeHostId]: storedHost,
+        "bad id!": {
+          runtimeHostId: "bad id!",
           speech: { stt: true, tts: true },
         },
-      })
+      }
     )
+    const room = makeRoomSession(stored)
+
     const info = await room.roomInfo()
+    // Valid entry survived the load; malformed entry dropped.
+    expect(info.json.runtimeHosts).toEqual({
+      [VALID_HOST.runtimeHostId]: storedHost,
+    })
     const participants = info.json.participants as Array<
       Record<string, unknown>
     >
+    // Valid reference kept; dangling reference cleared.
+    expect(participants.find((p) => p.id === "agent-a")?.runtimeHostId).toBe(
+      VALID_HOST.runtimeHostId
+    )
     expect(
-      participants.find((p) => p.id === "agent-a")?.runtimeHost
+      participants.find((p) => p.id === "agent-b")?.runtimeHostId
     ).toBeUndefined()
-    expect(
-      participants.find((p) => p.id === "agent-b")?.runtimeHost
-    ).toBeUndefined()
-    // Storage was repaired too.
-    expect(room.storedParticipants()["agent-a"].runtimeHost).toBeUndefined()
+    // Storage repaired.
+    expect(room.storedRuntimeHosts()).toEqual({
+      [VALID_HOST.runtimeHostId]: storedHost,
+    })
+    expect(room.storedParticipants()["agent-b"].runtimeHostId).toBeUndefined()
   })
 })

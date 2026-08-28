@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/runtime"
+	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -813,15 +814,13 @@ func TestCreateImmediateRoomExpiryLeavesNoGhost(t *testing.T) {
 	}
 }
 
-// #176 Phase A: daemon status exposes the Runtime Host identity and coarse
-// speech readiness shared by every resident of this root.
+// #176 Phase A (as corrected by #178 review): daemon status exposes the
+// Room-scoped DERIVED runtimeHostId (never the private root seed) and the
+// coarse speech readiness shared by every resident of this root.
 func TestStatusProjectsRuntimeHost(t *testing.T) {
 	d, _ := startDaemon(t)
 	client := &recordingClient{}
-	host := &types.RuntimeHostProjection{
-		RuntimeHostID: "22222222-3333-4444-5555-666666666666",
-		Speech:        types.HostSpeechReadiness{STT: false, TTS: true},
-	}
+	seed := "44444444-5555-6666-7777-888888888888"
 	rt := runtime.NewResidentRuntime(runtime.Options{
 		InstanceID:  "inst-host",
 		RoomID:      "shared",
@@ -829,7 +828,8 @@ func TestStatusProjectsRuntimeHost(t *testing.T) {
 		Client:      client,
 		Adapter:     &stubAdapter{name: "stub"},
 		WaitSeconds: 1,
-		Host:        host,
+		Speech:      &speech.Config{STTEnabled: false, TTSEnabled: true},
+		HostSeed:    seed,
 	})
 	t.Cleanup(rt.Stop)
 	d.register(&residentInstance{
@@ -837,6 +837,11 @@ func TestStatusProjectsRuntimeHost(t *testing.T) {
 		roomID:     "shared",
 		runtime:    rt,
 	})
+
+	derived, deriveErr := types.DeriveRuntimeHostID(seed, "shared")
+	if deriveErr != nil {
+		t.Fatalf("derive failed: %v", deriveErr)
+	}
 
 	raw, err := SendIPC(&IpcRequest{Op: "status"})
 	if err != nil {
@@ -855,8 +860,9 @@ func TestStatusProjectsRuntimeHost(t *testing.T) {
 	if view == nil {
 		t.Fatalf("resident instance missing from status: %v", views)
 	}
-	if view["runtimeHostId"] != host.RuntimeHostID {
-		t.Fatalf("runtimeHostId mismatch: %v", view["runtimeHostId"])
+	if view["runtimeHostId"] != derived {
+		t.Fatalf("status must show the DERIVED room-scoped id: got %v want %s (seed %s)",
+			view["runtimeHostId"], derived, seed)
 	}
 	speech, ok := view["speech"].(map[string]any)
 	if !ok || speech["stt"] != false || speech["tts"] != true {
