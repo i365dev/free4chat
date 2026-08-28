@@ -162,6 +162,18 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		return d.dispatchCreate(request)
 	case "status":
 		return d.statusViews(), nil
+	case "reload-speech":
+		config := speech.LoadConfig(RuntimeDirectory(), os.Getenv)
+		d.mu.Lock()
+		instances := make([]*residentInstance, 0, len(d.instances))
+		for _, instance := range d.instances {
+			instances = append(instances, instance)
+		}
+		d.mu.Unlock()
+		for _, instance := range instances {
+			instance.runtime.ReloadSpeech(config)
+		}
+		return map[string]any{"reloaded": len(instances)}, nil
 	case "leave":
 		if request.InstanceID == "" {
 			return nil, errors.New("leave requires instanceId")

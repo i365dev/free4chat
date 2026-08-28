@@ -97,11 +97,25 @@ type ResidentRuntime struct {
 	stopCh      chan struct{}
 
 	mediaController *media.Controller
+	mediaMu         sync.Mutex
 	transcriber     *speech.Transcriber
 	transcript      *speech.TranscriptStore
 	// voiceSrc is the controller-backed voice boundary; tests may inject a
 	// fake to observe dispatch ordering deterministically.
 	voiceSrc voiceSource
+}
+
+// ReloadSpeech replaces only the optional provider configuration and rebuilds
+// the additive media bridge against the current participant capability. It
+// never leaves, reconnects, or restarts the text/Harness lifecycle.
+func (r *ResidentRuntime) ReloadSpeech(config speech.Config) {
+	r.mu.Lock()
+	r.options.Speech = &config
+	handle := r.participantHandle
+	r.mu.Unlock()
+	if handle != "" {
+		r.restartMediaController(handle)
+	}
 }
 
 // voiceSource is the minimal voice-output surface the turn pipeline needs.
@@ -676,6 +690,8 @@ func (r *ResidentRuntime) Stop() {
 // releaseResources mirrors the Node cleanupResources ordering: media first
 // (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
+	r.mediaMu.Lock()
+	defer r.mediaMu.Unlock()
 	if r.mediaController != nil {
 		r.mediaController.Stop()
 		r.mediaController = nil

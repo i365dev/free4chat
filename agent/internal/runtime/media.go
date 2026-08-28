@@ -19,6 +19,8 @@ import (
 // decoded token discarded first. A failure here is logged and never fails
 // the join itself — media is strictly additive to text/ACP.
 func (r *ResidentRuntime) restartMediaController(participantHandle string) {
+	r.mediaMu.Lock()
+	defer r.mediaMu.Unlock()
 	previous := r.mediaController
 	r.mediaController = nil
 	previousTranscriber := r.transcriber

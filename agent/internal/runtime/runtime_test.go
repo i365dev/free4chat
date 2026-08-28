@@ -6,11 +6,29 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/i365dev/free4chat/agent/internal/speech"
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
+
+func TestReloadSpeechReplacesOptionalConfigWithoutTextLifecycleChange(t *testing.T) {
+	initial := speech.Config{}
+	rt := NewResidentRuntime(Options{Speech: &initial})
+	rt.state = StateWaiting
+
+	next := speech.Config{APIKey: "runtime-private-key", STTEnabled: true, TTSEnabled: true}
+	rt.ReloadSpeech(next)
+
+	if rt.options.Speech == nil || !rt.options.Speech.STTEnabled || !rt.options.Speech.TTSEnabled {
+		t.Fatalf("speech config was not reloaded: %+v", rt.options.Speech)
+	}
+	if rt.state != StateWaiting {
+		t.Fatalf("speech reload changed text lifecycle state: %s", rt.state)
+	}
+}
 
 // fakeClient scripts wait_for_events responses and records lifecycle calls.
 type fakeClient struct {

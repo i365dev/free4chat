@@ -2,13 +2,15 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/i365dev/free4chat/agent/internal/credentials"
 )
 
 // failReader errors on any read: it proves fail-closed paths never consume
@@ -23,6 +25,15 @@ func (r *failReader) Read(p []byte) (int, error) {
 // setupEnv builds a fresh stdout/stderr buffer pair for one setup call.
 func setupBuffers() (*bytes.Buffer, *bytes.Buffer) {
 	return &bytes.Buffer{}, &bytes.Buffer{}
+}
+
+func useMemoryStore(t *testing.T) *credentials.MemoryStore {
+	t.Helper()
+	store := &credentials.MemoryStore{}
+	previous := defaultCredentialStore
+	defaultCredentialStore = func() credentials.Store { return store }
+	t.Cleanup(func() { defaultCredentialStore = previous })
+	return store
 }
 
 func TestParseSpeechSetupArgs(t *testing.T) {
@@ -46,6 +57,34 @@ func TestParseSpeechSetupArgs(t *testing.T) {
 	}
 }
 
+func TestParseCredentialProvisionArgsIsPurposeBounded(t *testing.T) {
+	provider, purpose, err := parseCredentialProvisionArgs([]string{"--provider", "doubao", "--purpose", "speech.stt"})
+	if err != nil || provider != "doubao" || purpose != "speech.stt" {
+		t.Fatalf("unexpected provision parse: provider=%q purpose=%q err=%v", provider, purpose, err)
+	}
+	for _, args := range [][]string{
+		{"--provider", "doubao", "--purpose", "realtime.voice"},
+		{"--provider", "doubao", "--api-key", "sekrit"},
+		{"--provider", "openai"},
+	} {
+		if _, _, err := parseCredentialProvisionArgs(args); err == nil {
+			t.Fatalf("expected provision parse failure for %v", args)
+		}
+	}
+}
+
+func TestProvisionCredentialNeverReturnsSecret(t *testing.T) {
+	store := &credentials.MemoryStore{}
+	const secret = "secret-that-must-not-appear"
+	err := provisionCredential("doubao", secret, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fmt.Sprint(err), secret) {
+		t.Fatal("credential escaped through provisioning result")
+	}
+}
+
 func TestSpeechSetupRejectsNonInteractiveWithoutReading(t *testing.T) {
 	stdout, stderr := setupBuffers()
 	stdin := &failReader{}
@@ -62,6 +101,7 @@ func TestSpeechSetupRejectsNonInteractiveWithoutReading(t *testing.T) {
 }
 
 func TestSpeechSetupEmptyKeyFailsWithoutWrite(t *testing.T) {
+	useMemoryStore(t)
 	dir := t.TempDir()
 	stdout, stderr := setupBuffers()
 	err := speechSetup("doubao", strings.NewReader("\n"), true, dir, stdout, stderr)
@@ -73,7 +113,8 @@ func TestSpeechSetupEmptyKeyFailsWithoutWrite(t *testing.T) {
 	}
 }
 
-func TestSpeechSetupPersistsKeyPreservesFieldsAndPermissions(t *testing.T) {
+func TestSpeechSetupPersistsKeyInStoreAndDoesNotRewriteLegacyFile(t *testing.T) {
+	store := useMemoryStore(t)
 	dir := t.TempDir()
 	credentialsPath := filepath.Join(dir, "credentials.json")
 	original := `{
@@ -94,61 +135,18 @@ func TestSpeechSetupPersistsKeyPreservesFieldsAndPermissions(t *testing.T) {
 		t.Fatalf("speechSetup failed: %v", err)
 	}
 
+	stored, err := store.Get("doubao", doubaoAPIKey)
+	if err != nil || stored != secret {
+		t.Fatalf("keychain store did not retain the key: %v", err)
+	}
 	data, err := os.ReadFile(credentialsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("credentials.json is not valid JSON: %v", err)
-	}
-	var providers map[string]json.RawMessage
-	if err := json.Unmarshal(doc["providers"], &providers); err != nil {
-		t.Fatal(err)
-	}
-	var doubao map[string]json.RawMessage
-	if err := json.Unmarshal(providers["doubao"], &doubao); err != nil {
-		t.Fatal(err)
-	}
-	var stored string
-	if err := json.Unmarshal(doubao["apiKey"], &stored); err != nil || stored != secret {
-		t.Fatalf("apiKey not persisted correctly: %q err=%v", stored, err)
-	}
-	var voice string
-	if err := json.Unmarshal(doubao["voice"], &voice); err != nil || voice != "zh_custom_voice" {
-		t.Fatalf("unrelated doubao field not preserved: %q err=%v", voice, err)
-	}
-	var other map[string]json.RawMessage
-	if err := json.Unmarshal(providers["other"], &other); err != nil || len(other) == 0 {
-		t.Fatal("unrelated provider section not preserved")
-	}
-	if _, ok := doc["unrelated"]; !ok {
-		t.Fatal("unrelated top-level field not preserved")
-	}
-	if _, ok := doc["note"]; !ok {
-		t.Fatal("top-level string field not preserved")
-	}
-
-	info, err := os.Stat(credentialsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("credentials.json mode = %o, want 0600", perm)
-	}
-	// No temporary files left behind.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.Contains(entry.Name(), ".tmp") {
-			t.Fatalf("temporary file left behind: %s", entry.Name())
-		}
+	if err != nil || string(data) != original {
+		t.Fatal("legacy credentials.json was unexpectedly rewritten")
 	}
 }
 
 func TestSpeechSetupNeverPrintsTheSecret(t *testing.T) {
+	store := useMemoryStore(t)
 	dir := t.TempDir()
 	stdout, stderr := setupBuffers()
 	const secret = "super-secret-api-key-123"
@@ -163,14 +161,13 @@ func TestSpeechSetupNeverPrintsTheSecret(t *testing.T) {
 	if !strings.Contains(combined, "input hidden") {
 		t.Fatal("expected the hidden-input prompt in output")
 	}
-	// The credential is persisted (sanity: the key exists only on disk).
-	data, err := os.ReadFile(filepath.Join(dir, "credentials.json"))
-	if err != nil || !strings.Contains(string(data), secret) {
-		t.Fatal("persisted credentials.json does not contain the key")
+	if stored, err := store.Get("doubao", doubaoAPIKey); err != nil || stored != secret {
+		t.Fatal("credential store did not retain the key")
 	}
 }
 
-func TestSpeechSetupMalformedCredentialsFailsClosed(t *testing.T) {
+func TestSpeechSetupMalformedLegacyCredentialsDoesNotBlockKeychain(t *testing.T) {
+	store := useMemoryStore(t)
 	dir := t.TempDir()
 	credentialsPath := filepath.Join(dir, "credentials.json")
 	garbage := []byte("not valid json {{{")
@@ -179,16 +176,20 @@ func TestSpeechSetupMalformedCredentialsFailsClosed(t *testing.T) {
 	}
 	stdout, stderr := setupBuffers()
 	err := speechSetup("doubao", strings.NewReader("sekrit\n"), true, dir, stdout, stderr)
-	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
-		t.Fatalf("expected malformed-file error, got %v", err)
+	if err != nil {
+		t.Fatalf("legacy file should not block Keychain setup: %v", err)
 	}
 	after, readErr := os.ReadFile(credentialsPath)
 	if readErr != nil || !bytes.Equal(after, garbage) {
 		t.Fatal("malformed credentials.json was modified")
 	}
+	if stored, err := store.Get("doubao", doubaoAPIKey); err != nil || stored != "sekrit" {
+		t.Fatal("credential store did not retain the key")
+	}
 }
 
-func TestSpeechSetupUnwritableDirectoryFailsClosed(t *testing.T) {
+func TestSpeechSetupDoesNotNeedWritableRuntimeDirectory(t *testing.T) {
+	useMemoryStore(t)
 	parent := t.TempDir()
 	blocker := filepath.Join(parent, "blocker")
 	if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
@@ -197,8 +198,8 @@ func TestSpeechSetupUnwritableDirectoryFailsClosed(t *testing.T) {
 	runtimeDir := filepath.Join(blocker, "sub")
 	stdout, stderr := setupBuffers()
 	err := speechSetup("doubao", strings.NewReader("sekrit\n"), true, runtimeDir, stdout, stderr)
-	if err == nil {
-		t.Fatal("expected failure for unwritable runtime directory")
+	if err != nil {
+		t.Fatalf("native credential setup should not write runtime directory: %v", err)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), "sekrit") {
 		t.Fatal("the secret appeared in output on the failure path")
@@ -235,6 +236,7 @@ func TestSpeechSetupSubprocessRejectsUnsupportedProvider(t *testing.T) {
 // contract: with an interactive TTY, if disabling echo fails, the input
 // reader is never consumed and no credentials file is written.
 func TestSpeechSetupEchoDisableFailureFailsClosed(t *testing.T) {
+	useMemoryStore(t)
 	old := disableTerminalEcho
 	defer func() { disableTerminalEcho = old }()
 	disableTerminalEcho = func(file *os.File) (func() error, error) {
@@ -276,6 +278,7 @@ func TestSpeechSetupEchoDisableFailureFailsClosed(t *testing.T) {
 // TestSpeechSetupEchoRestoreFailureFailsClosed: a failed echo restore is
 // reported as a generic error and the credential is not persisted.
 func TestSpeechSetupEchoRestoreFailureFailsClosed(t *testing.T) {
+	useMemoryStore(t)
 	old := disableTerminalEcho
 	defer func() { disableTerminalEcho = old }()
 	disableTerminalEcho = func(file *os.File) (func() error, error) {
@@ -307,18 +310,15 @@ func TestSpeechSetupEchoRestoreFailureFailsClosed(t *testing.T) {
 	}
 }
 
-// TestSpeechSetupSuccessOutputStatesRejoinRequirement pins the activation
-// semantics in the success text: resident runtimes read speech config at
-// join time, so an already-resident Agent must rejoin before the credential
-// takes effect.
-func TestSpeechSetupSuccessOutputStatesRejoinRequirement(t *testing.T) {
+func TestSpeechSetupSuccessOutputStatesHotReload(t *testing.T) {
+	useMemoryStore(t)
 	dir := t.TempDir()
 	stdout, stderr := setupBuffers()
 	if err := speechSetup("doubao", strings.NewReader("test-key\n"), true, dir, stdout, stderr); err != nil {
 		t.Fatalf("speechSetup failed: %v", err)
 	}
 	out := stdout.String()
-	for _, want := range []string{"rejoin", "readiness"} {
+	for _, want := range []string{"reload", "readiness"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("success output missing %q: %s", want, out)
 		}

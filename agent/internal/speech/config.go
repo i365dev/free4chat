@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/i365dev/free4chat/agent/internal/credentials"
 )
 
 // Config resolves the Doubao-only speech configuration surface used by the
@@ -24,10 +26,18 @@ type Config struct {
 	Voice string
 }
 
-// LoadConfig resolves both slots from the runtime directory + environment.
-// A missing or malformed storage file is a soft failure: speech simply
-// reports not-ready and ordinary text behavior continues.
+// LoadConfig resolves both slots from explicit environment values, then the
+// native credential store, then legacy credentials.json. A missing or
+// malformed source is a soft failure: speech simply reports not-ready and
+// ordinary text behavior continues.
 func LoadConfig(runtimeDir string, environ func(string) string) Config {
+	return LoadConfigWithStore(runtimeDir, environ, credentials.DefaultStore())
+}
+
+// LoadConfigWithStore is the injectable form used by local credential
+// provisioning and tests. New credentials are never written to the legacy
+// file; it is read only so existing installations continue to work.
+func LoadConfigWithStore(runtimeDir string, environ func(string) string, store credentials.Store) Config {
 	env := environ
 	config := Config{}
 
@@ -85,6 +95,11 @@ func LoadConfig(runtimeDir string, environ func(string) string) Config {
 	if stored != nil {
 		apiKey = stored["apiKey"]
 		voice = stored["voice"]
+	}
+	if store != nil {
+		if fromStore, err := store.Get("doubao", "apiKey"); err == nil && strings.TrimSpace(fromStore) != "" {
+			apiKey = strings.TrimSpace(fromStore)
+		}
 	}
 	if fromEnv := strings.TrimSpace(env("DOUBAO_API_KEY")); fromEnv != "" {
 		apiKey = fromEnv

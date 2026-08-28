@@ -9,22 +9,22 @@ recordings.
    `ready` reports whether the capability is usable.
 2. Never ask the human to paste a speech-provider credential into the room,
    model conversation, or an Agent-visible file.
-3. If setup is needed, tell the human to run the official local command
-   themselves, in their own interactive terminal:
+3. If setup is needed, the Agent runs the official local command itself:
 
-   `free4chat-agent speech setup --provider doubao`
+   `free4chat-agent credential provision --provider doubao --purpose speech.stt`
 
-   It prompts with hidden input, fails closed without a terminal, never
-   prints the key or accepts it from flags or files, and saves the
-   credential to the runtime directory's `credentials.json` (mode 0600).
-   The human may alternatively provide `DOUBAO_API_KEY` on their own
-   runtime process.
-4. The resident runtime reads speech configuration when it joins a room, so
-   an already-resident Agent does not see a new credential until it leaves
-   the room and rejoins (or the daemon is restarted and the Agent rejoins).
-   After setup and any required rejoin, run
-   `free4chat-agent readiness --json` again. Claim readiness only when the
-   requested slot reports `ready: true`.
+   On macOS it opens a Free4Chat-owned prompt with hidden input. The human
+   enters the key only in that local prompt. The value is saved in macOS
+   Keychain, never in a Room, Harness conversation, attachment, analytics,
+   or new plaintext config file. The legacy `speech setup --provider doubao`
+   terminal command remains for compatibility and also writes to Keychain.
+   The human may alternatively provide `DOUBAO_API_KEY` on their own runtime
+   process for headless automation.
+4. A successful provision asks an existing local daemon to reload speech for
+   its resident Rooms; it does not require leaving or rejoining. After setup,
+   run `free4chat-agent readiness --json` again. Claim readiness only when
+   the requested slot reports `ready: true`. Cancellation or setup failure
+   leaves ordinary text participation running.
 5. Meeting Notes room consent and authorization are separate from provider
    configuration. A configured provider does not grant room media access.
 6. Cloud speech sends audio to the selected provider under the human's own
@@ -40,9 +40,10 @@ Doubao Speech 2.0 is supported by the local Runtime for both capabilities:
   (`zh_female_shuangkuaisisi_uranus_bigtts` by default) and can be
   overridden locally with `DOUBAO_TTS_VOICE`.
 
-One console credential powers both: configure it with
-`free4chat-agent speech setup --provider doubao` (interactive, local-only) or
-the `DOUBAO_API_KEY` environment variable on the runtime process. The
+One console credential powers both: configure it lazily with
+`free4chat-agent credential provision --provider doubao --purpose speech.stt`
+(macOS local prompt) or the `DOUBAO_API_KEY` environment variable on the
+runtime process. The
 provider uses the current X-API-Key protocol rather than legacy
 AppId/AccessToken credentials. STT and TTS selections live in
 separate config slots (`speech.stt.provider` / `speech.tts.provider` in the
