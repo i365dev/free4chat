@@ -3,7 +3,10 @@
 // values in diagnostics or error strings.
 package credentials
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
 
 const serviceName = "com.free4chat.agent"
 
@@ -24,10 +27,22 @@ type Store interface {
 	Delete(provider, key string) error
 }
 
-// DefaultStore returns the platform-native store. On hosts without one it
-// reports ErrUnavailable; environment variables and legacy read-only import
-// remain available through the speech config resolver.
-func DefaultStore() Store { return newSystemStore() }
+// DefaultStore returns the platform-native store. Test subprocesses set the
+// explicit opt-out below so unit tests never trigger an OS Keychain prompt.
+// On hosts without a native store it reports ErrUnavailable; environment
+// variables and legacy read-only import remain available through config.
+func DefaultStore() Store {
+	if os.Getenv("FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE") == "1" {
+		return disabledStore{}
+	}
+	return newSystemStore()
+}
+
+type disabledStore struct{}
+
+func (disabledStore) Get(string, string) (string, error) { return "", ErrUnavailable }
+func (disabledStore) Set(string, string, string) error   { return ErrUnavailable }
+func (disabledStore) Delete(string, string) error        { return ErrUnavailable }
 
 // MemoryStore is intentionally exported for deterministic callers/tests; it
 // is never selected by production wiring.

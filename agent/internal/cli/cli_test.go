@@ -38,7 +38,10 @@ func runCli(t *testing.T, args ...string) (string, int) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	cmd := exec.Command(binaryPath, args...)
-	cmd.Env = append(os.Environ(), "FREE4CHAT_AGENT_DIR="+dir)
+	cmd.Env = append(os.Environ(),
+		"FREE4CHAT_AGENT_DIR="+dir,
+		"FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE=1",
+	)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
