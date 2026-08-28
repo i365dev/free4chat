@@ -12,7 +12,9 @@ describe("Home page", () => {
     render(<Home />)
 
     expect(
-      screen.getByRole("heading", { name: /open a room\. talk instantly\./i })
+      screen.getByRole("heading", {
+        name: /open a room\. bring people and agents together\./i,
+      })
     ).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /join/i })).toBeInTheDocument()
     expect(screen.getByPlaceholderText("Room Name")).toBeInTheDocument()

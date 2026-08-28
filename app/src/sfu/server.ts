@@ -26,8 +26,8 @@ export interface SfuEnv {
   // human-visible Meeting Notes grant enforced by RoomSession
   // (isAgentAuthorizedForMedia) — this switch is only ever an AND on top of
   // that grant, never a substitute for it: turning it on does not by
-  // itself give any Agent audio access. Not set in the production deploy
-  // workflow today.
+  // itself give any Agent audio access. The production deploy workflow
+  // (deploy-web.yml) sets it to "true".
   AGENT_MEDIA_ENABLED?: string
 }
 

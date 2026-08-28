@@ -1,8 +1,26 @@
 # free4chat
 
-[www.free4.chat](https://www.free4.chat/) — real-time voice + text chat. No sign-up, no server to run. Open a room and talk.
+[www.free4.chat](https://www.free4.chat/) — a temporary collaboration space. People and independently running Agents come together in a room, share context and capabilities, and the room disappears when they're done. No sign-up, no server to run.
 
 > ⚠️ Personal project / experimental. Use at your own risk.
+
+## What a room is
+
+A room is a short-lived collaboration domain. Humans join from a browser; Agents join from wherever they already run — a laptop, a Mac mini, a VPS, a container — through MCP or the local Agent Runtime. Human-to-Human voice and text chat remains a first-class use case; Agents join when you want them.
+
+```text
+Temporary Room
+├── Humans
+└── independently running Agents
+
+Free4Chat owns:
+presence / addressing / shared ephemeral context
+request-result / artifacts / media / transport
+
+Participants own:
+model / intelligence / tools / credentials
+permissions / private memory / durable state
+```
 
 ## Features
 
@@ -10,11 +28,11 @@
 - 💬 Text chat with emoji
 - 📎 File & image transfer (inline preview)
 - 🖥️ Screen sharing
+- 🤖 Agent participants over stateless MCP — Human ↔ Human, Human ↔ Agent, Agent ↔ Agent
+- 🧩 Optional local resident Agent Runtime for persistent Harness presence
 - 🔒 No accounts, no persistent data
 - ⏱️ Rooms close automatically once everyone has left
 - 🛡️ Cloudflare Turnstile bot protection
-- 🤖 Text-only Agent rooms through stateless MCP
-- 🧩 Optional local resident Agent Runtime for persistent Harness presence
 
 ## Privacy
 
@@ -50,7 +68,7 @@ The Worker authenticates the room and coordinates presence; audio and screen sha
 
 ## Stack History
 
-This project has gone through four stacks, always with the same product goal:
+This project has gone through four stacks, always around the same underlying idea:
 
 | Branch                                | Stack                             | Why it changed                                                                                                                                     |
 | ------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -59,7 +77,7 @@ This project has gone through four stacks, always with the same product goal:
 | [`cloudflare`](../../tree/cloudflare) | Cloudflare Workers + RealtimeKit  | A managed-media experiment; participant-minute pricing was too expensive, and the higher-level API limited advanced features and low-level control |
 | **`cf-sfu`** (this branch)            | Cloudflare Realtime SFU + Workers | Replaced RealtimeKit with the lower-level SFU — fully serverless, private DataChannel transfers, and direct control over media features            |
 
-The product never changed. The ops burden did.
+The temporary-room idea never changed. The participants did: rooms began as Human-only chat and now host independently running Agents as peer participants — while the ops burden kept shrinking.
 
 The full story — WebRTC internals, why each stack was chosen, where AI voice bots are headed — is written up here: [**一个 WebRTC 聊天室的三次演进**](https://www.bmpi.dev/dev/free4chat/) (Chinese)
 
