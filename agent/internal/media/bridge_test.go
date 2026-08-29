@@ -22,6 +22,9 @@ type fakeEngine struct {
 	applyApplied    string
 	applyAnswer     *Description
 	applyErr        error
+	waitCalls       int
+	waitTimeout     time.Duration
+	waitErr         error
 	armCalls        int
 	mid             string
 	activateCalls   int
@@ -75,7 +78,14 @@ func (f *fakeEngine) ApplyRemote(remote Description) (string, *Description, erro
 	f.mu.Unlock()
 	return applied, answer, err
 }
-func (f *fakeEngine) WaitConnected(timeout time.Duration) error { return nil }
+func (f *fakeEngine) WaitConnected(timeout time.Duration) error {
+	f.mu.Lock()
+	f.waitCalls++
+	f.waitTimeout = timeout
+	err := f.waitErr
+	f.mu.Unlock()
+	return err
+}
 func (f *fakeEngine) ArmPublish() error {
 	f.mu.Lock()
 	f.armCalls++
@@ -357,6 +367,27 @@ func TestBridgeBootstrapSubmitsGatheredLocalOfferAndAppliesAnswer(t *testing.T) 
 	}
 	if len(rest.snapshotRenegotiations()) != 0 {
 		t.Fatal("no renegotiate expected on the answer path")
+	}
+	if engine.waitCalls != 1 || engine.waitTimeout != connectTimeout {
+		t.Fatalf("connected readiness gate = %d calls with %s, want one %s call",
+			engine.waitCalls, engine.waitTimeout, connectTimeout)
+	}
+}
+
+func TestBridgeBootstrapFailsClosedWhenPeerConnectionNeverConnects(t *testing.T) {
+	engine := newFakeEngine()
+	engine.waitErr = errors.New("peer connection timed out")
+	rest := newFakeRest()
+	bridge := NewBridge(testBridgeOptions(engine, rest, nil))
+	if err := bridge.Start(t.Context()); err == nil {
+		t.Fatal("bootstrap must not report a ready bridge before Pion connects")
+	}
+	if engine.waitCalls != 1 || engine.waitTimeout != connectTimeout {
+		t.Fatalf("connected readiness gate = %d calls with %s, want one %s call",
+			engine.waitCalls, engine.waitTimeout, connectTimeout)
+	}
+	if engine.closeCalls != 1 {
+		t.Fatalf("failed connected readiness must close the partial engine, close calls = %d", engine.closeCalls)
 	}
 }
 

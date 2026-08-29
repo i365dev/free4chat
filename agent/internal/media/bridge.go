@@ -269,6 +269,21 @@ func (b *Bridge) Start(parent context.Context) error {
 			return fail(applyErr)
 		}
 	}
+	// The proven Pion runbook's stage E is a real readiness boundary, not
+	// merely a diagnostic convenience. A successful SDP exchange only means
+	// Cloudflare accepted the description; before ICE/DTLS reaches connected,
+	// TrackLocal.WriteSample can accept PCM locally while no RTP is capable of
+	// leaving the Runtime. Do not expose a Voice speaker (or begin Room-media
+	// discovery) until that transport is actually connected.
+	if err := engine.WaitConnected(connectTimeout); err != nil {
+		b.log("media_bootstrap_stage", map[string]string{
+			"stage": "peerconnection_connect_failed",
+		})
+		return fail(err)
+	}
+	b.log("media_bootstrap_stage", map[string]string{
+		"stage": "peerconnection_connected",
+	})
 
 	if err := b.poll(); err != nil && !isHumanMediaDiscoveryDenied(err) {
 		return fail(err)
