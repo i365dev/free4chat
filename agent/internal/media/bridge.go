@@ -296,6 +296,12 @@ func (b *Bridge) Start(parent context.Context) error {
 		})
 		return fail(err)
 	}
+	// A Stop can land immediately after Pion reports Connected. Check the
+	// bridge context again before the first RoomMedia request so a cancelled
+	// bootstrap never starts discovery or a subscription negotiation.
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	b.log("media_bootstrap_stage", map[string]string{
 		"stage": "peerconnection_connected",
 	})

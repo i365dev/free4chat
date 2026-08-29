@@ -437,6 +437,41 @@ func TestBridgeStopCancelsConnectionWait(t *testing.T) {
 	}
 }
 
+func TestBridgeStopBeforeConnectedWaitReturnsSkipsDiscovery(t *testing.T) {
+	engine := newFakeEngine()
+	waitEntered := make(chan struct{})
+	allowWaitReturn := make(chan struct{})
+	engine.waitFn = func(context.Context, time.Duration) error {
+		close(waitEntered)
+		<-allowWaitReturn
+		return nil
+	}
+	rest := newFakeRest()
+	bridge := NewBridge(testBridgeOptions(engine, rest, nil))
+	startDone := make(chan error, 1)
+	go func() { startDone <- bridge.Start(context.Background()) }()
+
+	select {
+	case <-waitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never reached the connection wait")
+	}
+	bridge.Stop()
+	close(allowWaitReturn)
+
+	select {
+	case err := <-startDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled bootstrap did not return")
+	}
+	if got := rest.snapshotRoomMediaCalls(); got != 0 {
+		t.Fatalf("RoomMedia calls after Stop = %d, want 0", got)
+	}
+}
+
 func TestBridgeBootstrapRemoteOfferProducesAnswerAndRenegotiates(t *testing.T) {
 	engine := newFakeEngine()
 	rest := newFakeRest()
