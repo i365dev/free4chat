@@ -14,8 +14,18 @@ func newSystemStore() Store { return keychainStore{} }
 
 func keychainAccount(provider, key string) string { return provider + "/" + key }
 
+// keychainLocator deliberately leaves label blank. macOS does not guarantee
+// that a generic-password item's display label survives a save, and using it
+// as a lookup predicate made a successfully provisioned credential invisible
+// on the next Runtime read. Service plus account is this application's stable
+// private identity for the item.
+func keychainLocator(provider, key string) (service, account, label, accessGroup string) {
+	return serviceName, keychainAccount(provider, key), "", ""
+}
+
 func (keychainStore) Get(provider, key string) (string, error) {
-	data, err := keychain.GetGenericPassword(serviceName, keychainAccount(provider, key), serviceName, "")
+	service, account, label, accessGroup := keychainLocator(provider, key)
+	data, err := keychain.GetGenericPassword(service, account, label, accessGroup)
 	if err != nil {
 		return "", fmt.Errorf("native credential lookup failed")
 	}
@@ -26,9 +36,9 @@ func (keychainStore) Get(provider, key string) (string, error) {
 }
 
 func (keychainStore) Set(provider, key, value string) error {
-	account := keychainAccount(provider, key)
-	query := keychain.NewGenericPassword(serviceName, account, serviceName, nil, "")
-	if existing, err := keychain.GetGenericPassword(serviceName, account, serviceName, ""); err != nil {
+	service, account, label, accessGroup := keychainLocator(provider, key)
+	query := keychain.NewGenericPassword(service, account, label, nil, accessGroup)
+	if existing, err := keychain.GetGenericPassword(service, account, label, accessGroup); err != nil {
 		return fmt.Errorf("native credential lookup failed")
 	} else if len(existing) > 0 {
 		update := keychain.NewItem()
@@ -38,7 +48,7 @@ func (keychainStore) Set(provider, key, value string) error {
 		}
 		return nil
 	}
-	item := keychain.NewGenericPassword(serviceName, account, serviceName, []byte(value), "")
+	item := keychain.NewGenericPassword(service, account, label, []byte(value), accessGroup)
 	if err := keychain.AddItem(item); err != nil {
 		return fmt.Errorf("native credential save failed")
 	}
@@ -46,15 +56,15 @@ func (keychainStore) Set(provider, key, value string) error {
 }
 
 func (keychainStore) Delete(provider, key string) error {
-	account := keychainAccount(provider, key)
-	value, err := keychain.GetGenericPassword(serviceName, account, serviceName, "")
+	service, account, label, accessGroup := keychainLocator(provider, key)
+	value, err := keychain.GetGenericPassword(service, account, label, accessGroup)
 	if err != nil {
 		return fmt.Errorf("native credential lookup failed")
 	}
 	if len(value) == 0 {
 		return nil
 	}
-	item := keychain.NewGenericPassword(serviceName, account, serviceName, nil, "")
+	item := keychain.NewGenericPassword(service, account, label, nil, accessGroup)
 	if err := keychain.DeleteItem(item); err != nil {
 		return fmt.Errorf("native credential delete failed")
 	}
