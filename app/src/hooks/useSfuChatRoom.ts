@@ -15,8 +15,8 @@ import {
 
 import type { RoomAttachmentRead } from "../room/types"
 import type {
+  SfuAgentVoiceState,
   SfuMeetingNotesState,
-  SfuVoiceReplyState,
   SfuMessage,
   SfuParticipant,
   SfuRoomState,
@@ -286,10 +286,8 @@ export function useSfuChatRoom(
   // arrives, rather than defaulting to an optimistic "available".
   const [meetingNotesMediaAvailable, setMeetingNotesMediaAvailable] =
     useState(false)
-  const [voiceReply, setVoiceReply] = useState<SfuVoiceReplyState>({
-    active: false,
-  })
-  const [voiceReplyMediaAvailable, setVoiceReplyMediaAvailable] =
+  const [agentVoice, setAgentVoiceState] = useState<SfuAgentVoiceState>({})
+  const [agentVoiceMediaAvailable, setAgentVoiceMediaAvailable] =
     useState(false)
 
   const sessionRef = useRef<SfuSession | null>(null)
@@ -374,6 +372,14 @@ export function useSfuChatRoom(
         surface: participant.kind === "agent" ? participant.surface : undefined,
         runtimeHostId:
           participant.kind === "agent" ? participant.runtimeHostId : undefined,
+        voiceAvailable:
+          participant.kind === "agent" &&
+          state?.agentVoiceMediaAvailable === true &&
+          participant.runtimeHostId !== undefined &&
+          state.runtimeHosts?.[participant.runtimeHostId]?.speech.tts === true,
+        voiceEnabled:
+          participant.kind === "agent" &&
+          state?.agentVoice?.[participant.id]?.enabled === true,
         audioStream: remoteAudioStreamsRef.current.get(participant.id) ?? null,
         screenShareEnabled: hasScreenShare,
         screenShareStream:
@@ -1036,8 +1042,8 @@ export function useSfuChatRoom(
       })
       setMeetingNotes(state.meetingNotes)
       setMeetingNotesMediaAvailable(state.meetingNotesMediaAvailable)
-      setVoiceReply(state.voiceReply)
-      setVoiceReplyMediaAvailable(state.voiceReplyMediaAvailable)
+      setAgentVoiceState(state.agentVoice)
+      setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
         if (
@@ -1819,21 +1825,16 @@ export function useSfuChatRoom(
     sendSocketMessage({ type: "meeting-notes-stop" })
   }, [sendSocketMessage])
 
-  // #83: Human grant for exactly one connected resident Agent's outbound
-  // voice; server re-checks sender/target on every control message.
-  const startVoiceReply = useCallback(
-    (agentParticipantId: string) => {
+  const setAgentVoice = useCallback(
+    (agentParticipantId: string, enabled: boolean) => {
       sendSocketMessage({
-        type: "voice-reply-start",
+        type: "agent-voice-set",
         agentParticipantId,
+        enabled,
       })
     },
     [sendSocketMessage]
   )
-
-  const stopVoiceReply = useCallback(() => {
-    sendSocketMessage({ type: "voice-reply-stop" })
-  }, [sendSocketMessage])
 
   const sendFileMessage = useCallback(
     async (file: File) => {
@@ -1971,9 +1972,8 @@ export function useSfuChatRoom(
     meetingNotesMediaAvailable,
     startMeetingNotes,
     stopMeetingNotes,
-    voiceReply,
-    voiceReplyMediaAvailable,
-    startVoiceReply,
-    stopVoiceReply,
+    agentVoice,
+    agentVoiceMediaAvailable,
+    setAgentVoice,
   }
 }

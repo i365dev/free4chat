@@ -131,6 +131,11 @@ type Engine struct {
 	silenceFills  uint64
 	fillRun       uint64 // consecutive fills (bounded)
 	turnOpen      bool
+	// turnInvalidated closes as soon as the active turn is cancelled or its
+	// publication is revoked. A flush marker may already be inside a paced
+	// writer sleep at that point, so its waiter must not depend on the writer
+	// waking before it can release the host voice gate.
+	turnInvalidated chan struct{}
 }
 
 // framePacer spaces outbound Opus frames one frame-duration apart (ported
@@ -454,6 +459,7 @@ func (e *Engine) ActivatePublish() error {
 	}
 	e.publishOn = true
 	e.pubGeneration++
+	e.invalidateTurnLocked()
 	e.pacer = newFramePacer(e.nowFn, e.sleepFn)
 	e.pacer.onGap = func() {
 		e.mu.Lock()
@@ -483,6 +489,7 @@ func (e *Engine) DeactivatePublish() {
 	e.turnOpen = false
 	e.highestAdmitted = 0
 	e.cancelledThrough = 0
+	e.invalidateTurnLocked()
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
 }
@@ -496,6 +503,20 @@ type queueItem struct {
 	turnGen uint64 // turn generation at enqueue (utterance boundary)
 	token   uint64 // turn ADMISSION token (speaker turn identity)
 	data    []byte // nil = flush marker
+	// flushDone is present only for a caller that must wait until the paced
+	// writer consumes this marker. It is buffered so cancellation/revocation
+	// can unblock the waiter without depending on it being scheduled first.
+	flushDone chan error
+}
+
+func finishFlush(item queueItem, err error) {
+	if item.flushDone == nil {
+		return
+	}
+	select {
+	case item.flushDone <- err:
+	default:
+	}
 }
 
 // enqueueItem appends one item under the single queue lock, with BOUNDED
@@ -668,8 +689,19 @@ func (e *Engine) CancelTurn(token uint64) {
 	}
 	e.turnGeneration++
 	e.turnOpen = false
+	e.invalidateTurnLocked()
 	e.mu.Unlock()
 	e.clearQueueAndCarry()
+}
+
+// invalidateTurnLocked releases final-flush waiters immediately. Caller
+// holds e.mu. The next accepted turn uses a fresh channel so a past cancel
+// can never poison a later utterance.
+func (e *Engine) invalidateTurnLocked() {
+	if e.turnInvalidated != nil {
+		close(e.turnInvalidated)
+	}
+	e.turnInvalidated = make(chan struct{})
 }
 
 // clearQueueAndCarry discards queued PCM and the partial frame so stale
@@ -682,14 +714,21 @@ func (e *Engine) clearQueueAndCarry() {
 	// mutated together. queueBytes ends at exactly the sum of the drained
 	// reservations subtracted from the previous total — arithmetically zero.
 	e.writerMu.Lock()
+	flushes := make([]queueItem, 0)
 	e.carry = nil
 	for _, item := range e.queueRing {
 		if item.data != nil {
 			e.queueBytes -= len(item.data)
 		}
+		if item.flushDone != nil {
+			flushes = append(flushes, item)
+		}
 	}
 	e.queueRing = nil
 	e.writerMu.Unlock()
+	for _, item := range flushes {
+		finishFlush(item, errPublishNotActive)
+	}
 	select {
 	case e.writerSpace <- struct{}{}:
 	default:
@@ -754,10 +793,58 @@ func (e *Engine) FlushAudio(token uint64) error {
 	return e.enqueueItem(queueItem{gen: gen, turnGen: turnGen, token: token}) // data nil = flush marker
 }
 
+// FlushAudioAndWait enqueues the normal-completion marker then waits until
+// the paced writer has consumed every preceding PCM item and processed that
+// marker. This is the completion boundary for a host-local voice gate: the
+// next Agent must not start publishing while this Agent's queued PCM is still
+// audible. Revocation, cancellation, and Close all unblock this wait with a
+// fail-closed error.
+func (e *Engine) FlushAudioAndWait(token uint64) error {
+	e.mu.Lock()
+	active := e.publishOn
+	gen := e.pubGeneration
+	turnGen := e.turnGeneration
+	invalidated := e.turnInvalidated
+	e.mu.Unlock()
+	if !active {
+		return errPublishNotActive
+	}
+	ack := make(chan error, 1)
+	if err := e.enqueueItem(queueItem{
+		gen: gen, turnGen: turnGen, token: token, flushDone: ack,
+	}); err != nil {
+		return err
+	}
+	e.writerMu.Lock()
+	stop := e.writerStop
+	e.writerMu.Unlock()
+	if stop == nil {
+		return errPublishNotActive
+	}
+	select {
+	case err := <-ack:
+		return err
+	case <-invalidated:
+		return errPublishNotActive
+	case <-stop:
+		return errPublishNotActive
+	}
+}
+
 func (e *Engine) publishActive() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.publishOn
+}
+
+// currentPacer snapshots the publication's pacing state under the same lock
+// that replaces it on reactivation. The writer deliberately runs the copied
+// pacer outside that lock: a concurrent revoke/restart may make its frame
+// stale, and the post-pace generation checks below will then discard it.
+func (e *Engine) currentPacer() *framePacer {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pacer
 }
 
 // PCMCarryLen exposes the writer's buffered unframed byte count (tests).
@@ -820,6 +907,7 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 				(item.token != 0 && item.token != e.currentAdmittedTurn()) {
 				// Stale grant, stale utterance, or cancelled-turn PCM:
 				// discard entirely (popItem released the reservation).
+				finishFlush(item, errPublishNotActive)
 				continue
 			}
 			if item.data != nil {
@@ -832,12 +920,17 @@ func (e *Engine) writerLoop(stop, done chan struct{}) {
 				// Flush marker: pad and emit the partial tail. A concurrent
 				// revocation makes this a discard-only no-op — the loop
 				// continues, never exits.
-				if err := e.writerEmitCarry(item.token, track(), writer()); err != nil {
-					_ = err // dropped frame; writer stays alive
-				}
+				err := e.writerEmitCarry(
+					item.gen,
+					item.turnGen,
+					item.token,
+					track(),
+					writer(),
+				)
 				e.mu.Lock()
 				e.turnOpen = false
 				e.mu.Unlock()
+				finishFlush(item, err)
 				continue
 			}
 			if err := e.writerWriteChunk(item.gen, item.turnGen, item.token, item.data, track(), writer()); err != nil {
@@ -864,7 +957,11 @@ func (e *Engine) writerWriteChunk(gen, turnGen, token uint64, chunk []byte, trac
 	e.writerMu.Unlock()
 
 	for f := 0; f < frames; f++ {
-		e.pacer.pace()
+		pacer := e.currentPacer()
+		if pacer == nil {
+			return errPublishNotActive
+		}
+		pacer.pace()
 		// The activation flag, the PUBLICATION generation AND the TURN
 		// generation must all still match: a cancel or revoke landing
 		// between paced waits discards the stale burst before any frame
@@ -886,7 +983,10 @@ func (e *Engine) writerWriteChunk(gen, turnGen, token uint64, chunk []byte, trac
 }
 
 // writerEmitCarry zero-pads the partial tail and emits it in its own slot.
-func (e *Engine) writerEmitCarry(token uint64, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
+// It carries the item generations through the paced wait: a revoke followed
+// by a new publication can otherwise make publishActive true again before the
+// old tail wakes, which would leak prior-turn PCM into the new grant.
+func (e *Engine) writerEmitCarry(gen, turnGen, token uint64, track *webrtc.TrackLocalStaticSample, enc *opus.Encoder) error {
 	e.writerMu.Lock()
 	carry := e.carry
 	e.carry = nil
@@ -897,10 +997,16 @@ func (e *Engine) writerEmitCarry(token uint64, track *webrtc.TrackLocalStaticSam
 	if len(carry)%2 == 1 {
 		carry = append(carry, 0)
 	}
-	e.pacer.pace()
+	pacer := e.currentPacer()
+	if pacer == nil {
+		return errPublishNotActive
+	}
+	pacer.pace()
 	// Re-validate after the paced wait: a cancel landing DURING the wait
 	// must discard the pending tail before any sample goes out.
 	if !e.publishActive() ||
+		e.currentGeneration() != gen ||
+		e.currentTurnGeneration() != turnGen ||
 		(token != 0 && !e.ValidateTurn(token)) {
 		return errPublishNotActive
 	}
@@ -923,10 +1029,11 @@ func (e *Engine) fillSilenceIfMidTurn(track *webrtc.TrackLocalStaticSample, enc 
 	}
 	open := e.turnOpen && e.publishOn
 	e.mu.Unlock()
-	if !open || !e.pacer.scheduled() {
+	pacer := e.currentPacer()
+	if !open || pacer == nil || !pacer.scheduled() {
 		return false
 	}
-	e.pacer.pace()
+	pacer.pace()
 	// Re-check after the paced wait: a cancel during the wait must stop the
 	// fill before any silence frame is emitted.
 	e.mu.Lock()

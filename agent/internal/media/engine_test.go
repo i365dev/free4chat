@@ -500,6 +500,77 @@ func TestConcurrentRevokeAndFlushKeepsWriterAlive(t *testing.T) {
 	}
 }
 
+// FlushAudioAndWait is the host-gate completion boundary: it must not return
+// merely because a marker is queued. The paced writer has to consume every
+// prior audio frame and the marker first.
+func TestFlushAudioAndWaitBlocksUntilPacedWriterConsumesMarker(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := engine.WritePCM(make([]byte, 2*960), 1); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	waitForRealFrames(t, engine, 1) // second frame is held in the paced writer
+	done := make(chan error, 1)
+	go func() { done <- engine.FlushAudioAndWait(1) }()
+	select {
+	case err := <-done:
+		t.Fatalf("flush returned before paced PCM drained: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("flush completion: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("flush did not acknowledge paced marker consumption")
+	}
+	if got := engine.realFramesWritten(); got != 2 {
+		t.Fatalf("flush acknowledged before all audible frames: got %d, want 2", got)
+	}
+}
+
+func TestFlushAudioAndWaitUnblocksWhenCancelledDuringMarkerPace(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := engine.WritePCM(make([]byte, 960), 1); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := engine.WritePCM(make([]byte, 500), 1); err != nil {
+		t.Fatalf("tail write: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- engine.FlushAudioAndWait(1) }()
+	// The immediate frame, tail, and marker were enqueued as one burst, so
+	// the writer consumes them in order and blocks in the marker's paced wait
+	// (rather than an idle gap-fill) before this condition is satisfied.
+	// Cancellation must release the host-gate waiter without waiting for that
+	// paced writer to resume.
+	waitForRingEmpty(t, engine)
+	time.Sleep(30 * time.Millisecond)
+	engine.CancelTurn(1)
+	select {
+	case err := <-done:
+		if !errors.Is(err, errPublishNotActive) {
+			t.Fatalf("cancelled flush error = %v, want publish inactive", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled flush waiter remained blocked")
+	}
+	close(release)
+}
+
 // TestReactivateAfterDeactivateWritesAudio covers the plain
 // deactivate->reactivate cycle: no truncation, no silence.
 func TestReactivateAfterDeactivateWritesAudio(t *testing.T) {
@@ -1409,6 +1480,36 @@ func TestCarryCancelDuringPaceRejected(t *testing.T) {
 	}
 	if got := engine.PCMCarry(); got != 0 {
 		t.Fatalf("carry not discarded: %d", got)
+	}
+}
+
+// TestCarryRevokeAndReactivateDuringPaceRejected covers the stronger
+// publication boundary. A blocked old flush tail must not become audible if
+// revocation is immediately followed by a fresh grant before the old paced
+// writer wakes.
+func TestCarryRevokeAndReactivateDuringPaceRejected(t *testing.T) {
+	engine := newTestEngine(t)
+	_ = engine.ArmPublish()
+	sleepFn, release := blockingSleepFunc()
+	engine.sleepFn = sleepFn
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	_ = engine.WritePCM(make([]byte, 960), 1)
+	_ = engine.WritePCM(make([]byte, 500), 1)
+	_ = engine.FlushAudio(1)
+	waitForRingEmpty(t, engine)
+	time.Sleep(30 * time.Millisecond)
+
+	engine.DeactivatePublish()
+	if err := engine.ActivatePublish(); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	close(release)
+
+	time.Sleep(30 * time.Millisecond)
+	if got := engine.realFramesWritten(); got != 1 {
+		t.Fatalf("old carry leaked after revoke+reactivate: real frames=%d, want 1", got)
 	}
 }
 

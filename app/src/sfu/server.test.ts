@@ -830,6 +830,27 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it("Agent local voice publish is rejected before Cloudflare when cleanup is backpressured", async () => {
+    const seenActions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      seenActions.push(body)
+      if (body.action === "authorize")
+        return { status: 503, body: { error: "agent_media_cleanup_backlog" } }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+    expect(res.status).toBe(503)
+    expect((await json(res)).error).toBe("agent_media_cleanup_backlog")
+    expect(fetchMock).not.toHaveBeenCalled()
+    const authorizeCall = seenActions.find((a) => a.action === "authorize")
+    expect(authorizeCall?.localTrackCount).toBe(1)
+  })
+
   it("Granted Agent + exactly one local audio track with purpose voice-reply => forwarded upstream once and booked via agent-track-published", async () => {
     const roomActions: Array<Record<string, unknown>> = []
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {

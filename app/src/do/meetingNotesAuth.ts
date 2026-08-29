@@ -1,7 +1,7 @@
 import type {
+  AgentVoiceState,
   AgentMediaPermissions,
   MeetingNotesState,
-  VoiceReplyState,
 } from "../room/types"
 
 export const NO_MEETING_NOTES: MeetingNotesState = { active: false }
@@ -47,35 +47,12 @@ export function startMeetingNotes(
   return { active: true, agentParticipantId, startedAt: now }
 }
 
-export const NO_VOICE_REPLY: VoiceReplyState = { active: false }
-
-/** #83 single-source structural validation for a PERSISTED voiceReply
- * grant. RoomSession.validVoiceReply() delegates here so storage hygiene
- * and media normalization can never drift apart on what counts as a valid
- * active grant (active:false needs nothing further; active:true requires a
- * non-empty agentParticipantId AND a numeric startedAt). */
-export function isValidVoiceReplyState(
-  value: unknown
-): value is VoiceReplyState {
-  if (!value || typeof value !== "object") return false
-  const candidate = value as Partial<VoiceReplyState>
-  if (typeof candidate.active !== "boolean") return false
-  if (!candidate.active) return true
-  return (
-    typeof candidate.agentParticipantId === "string" &&
-    candidate.agentParticipantId.length > 0 &&
-    typeof candidate.startedAt === "number"
-  )
-}
-
-/** #83: may this connected resident Agent publish its single voice track? */
-export function isAgentAuthorizedForVoiceReply(
-  voiceReply: VoiceReplyState,
+/** May this connected resident Agent publish its own outbound voice track? */
+export function isAgentAuthorizedForVoice(
+  agentVoice: AgentVoiceState,
   agentParticipantId: string
 ): boolean {
-  return (
-    voiceReply.active && voiceReply.agentParticipantId === agentParticipantId
-  )
+  return agentVoice[agentParticipantId]?.enabled === true
 }
 
 /**
@@ -88,30 +65,13 @@ export function isAgentAuthorizedForVoiceReply(
  */
 export function isAgentAuthorizedForSharedMedia(
   meetingNotes: MeetingNotesState,
-  voiceReply: VoiceReplyState,
+  agentVoice: AgentVoiceState,
   agentParticipantId: string
 ): boolean {
   return (
     isAgentAuthorizedForMedia(meetingNotes, agentParticipantId) ||
-    isAgentAuthorizedForVoiceReply(voiceReply, agentParticipantId)
+    isAgentAuthorizedForVoice(agentVoice, agentParticipantId)
   )
-}
-
-export function startVoiceReply(
-  agentParticipantId: string,
-  now: number
-): VoiceReplyState {
-  return { active: true, agentParticipantId, startedAt: now }
-}
-
-/** Departure/expiry staleness rule, mirroring Meeting Notes. */
-export function clearVoiceReplyIfParticipantDeparting(
-  voiceReply: VoiceReplyState,
-  departingParticipantId: string
-): VoiceReplyState {
-  if (voiceReply.agentParticipantId !== departingParticipantId)
-    return voiceReply
-  return NO_VOICE_REPLY
 }
 
 export type AgentMediaPurpose =
@@ -151,7 +111,7 @@ export function resolveAgentPurposePermission(args: {
 /** Booleans-only discovery payload for Agent discovery/session responses. */
 export function agentMediaPermissions(
   meetingNotes: MeetingNotesState,
-  voiceReply: VoiceReplyState,
+  agentVoice: AgentVoiceState,
   agentParticipantId: string
 ): AgentMediaPermissions {
   return {
@@ -159,9 +119,6 @@ export function agentMediaPermissions(
       meetingNotes,
       agentParticipantId
     ),
-    canPublishVoice: isAgentAuthorizedForVoiceReply(
-      voiceReply,
-      agentParticipantId
-    ),
+    canPublishVoice: isAgentAuthorizedForVoice(agentVoice, agentParticipantId),
   }
 }

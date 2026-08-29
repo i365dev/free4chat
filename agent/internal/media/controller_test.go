@@ -52,10 +52,15 @@ func (f *fakeRoomClient) RoomInfo(string) (types.RoomInfo, error) {
 			Active: f.mnActive, AgentParticipantID: f.mnAgent, StartedAt: f.mnStarted,
 		},
 		MeetingNotesMediaAvailable: f.mnAvail,
-		VoiceReply: types.VoiceReplyInfo{
-			Active: f.vrActive, AgentParticipantID: f.vrAgent, StartedAt: f.vrStarted,
-		},
-		VoiceReplyMediaAvailable: f.vrAvail,
+		AgentVoice: func() map[string]types.AgentVoiceGrant {
+			if !f.vrActive || f.vrAgent == "" || f.vrStarted <= 0 {
+				return map[string]types.AgentVoiceGrant{}
+			}
+			return map[string]types.AgentVoiceGrant{
+				f.vrAgent: {EnabledAt: f.vrStarted},
+			}
+		}(),
+		AgentVoiceMediaAvailable: f.vrAvail,
 	}, nil
 }
 

@@ -651,8 +651,8 @@ describe("useSfuChatRoom room attachments (#123)", () => {
             messages: [],
             meetingNotes: { active: false },
             meetingNotesMediaAvailable: true,
-            voiceReply: { active: true },
-            voiceReplyMediaAvailable: true,
+            agentVoice: { "agent-b": { enabled: true, enabledAt: 1 } },
+            agentVoiceMediaAvailable: true,
           },
         }),
       })

@@ -18,16 +18,12 @@ import {
 import {
   agentMediaPermissions,
   clearGrantIfParticipantDeparting,
-  clearVoiceReplyIfParticipantDeparting,
   isAgentAuthorizedForMedia,
   isAgentAuthorizedForSharedMedia,
-  isAgentAuthorizedForVoiceReply,
-  isValidVoiceReplyState,
+  isAgentAuthorizedForVoice,
   NO_MEETING_NOTES,
-  NO_VOICE_REPLY,
   resolveAgentPurposePermission,
   startMeetingNotes,
-  startVoiceReply,
 } from "./meetingNotesAuth"
 import {
   closeRealtimeTracks,
@@ -51,12 +47,12 @@ import {
 } from "./surface"
 import type {
   AgentCapabilities,
+  AgentVoiceState,
   AgentEvent,
   RoomCapabilities,
   RoomAttachment,
   MeetingNotesState,
   PendingMediaCleanup,
-  VoiceReplyState,
   RoomMediaTrack,
   AgentAttachmentMimeType,
   RoomMessage,
@@ -172,7 +168,7 @@ interface StoredRoom
     | "attachments"
     | "nextMessageSequence"
     | "meetingNotes"
-    | "voiceReply"
+    | "agentVoice"
     | "pendingMediaCleanup"
   > {
   participants: Record<string, StoredParticipant>
@@ -180,7 +176,9 @@ interface StoredRoom
   attachments?: RoomAttachment[]
   nextMessageSequence?: number
   meetingNotes?: MeetingNotesState
-  voiceReply?: VoiceReplyState
+  // Legacy singleton state is read only to fail closed during migration.
+  voiceReply?: unknown
+  agentVoice?: unknown
   pendingMediaCleanup?: PendingMediaCleanup[]
 }
 
@@ -446,21 +444,18 @@ type ClientMessage =
   | { type: "leave" }
   | { type: "meeting-notes-start"; agentParticipantId: string }
   | { type: "meeting-notes-stop" }
-  | { type: "voice-reply-start"; agentParticipantId: string }
-  | { type: "voice-reply-stop" }
+  | {
+      type: "agent-voice-set"
+      agentParticipantId: string
+      enabled: boolean
+    }
 
-/** #83 live-fix storage hygiene for one Agent participant's media block:
- * an agent holding the ACTIVE voiceReply grant may keep its single published
- * outbound audio track (and the registered mid Stop needs for revocation)
- * across room loads. Every other shape — no grant, wrong agent, multiple
- * tracks, video, or a mid without a matching track or pending track name — is
- * stripped exactly as the old subscribe-only rule did. A pending publication
- * is kept private until the Runtime confirms its first PCM write. This
- * preserves an authorized publication across DO eviction/restart; it never
- * loosens who may create one. */
+/** Storage hygiene for one Agent participant's published voice media. A
+ * current per-participant grant is required to retain its revocation handle;
+ * every other shape is stripped fail closed on load. */
 export function normalizeAgentParticipantMedia(
   media: RoomParticipant["media"],
-  voiceReply: VoiceReplyState,
+  agentVoice: AgentVoiceState,
   participantId: string
 ): { media: RoomParticipant["media"]; changed: boolean } {
   if (!media) return { media, changed: false }
@@ -475,11 +470,8 @@ export function normalizeAgentParticipantMedia(
     media.agentPublishedTrackName.length > 0
       ? media.agentPublishedTrackName
       : undefined
-  // Callers pass the ALREADY-NORMALIZED grant (normalizeRoom hoists
-  // isValidVoiceReplyState above this decision); authorization reuses the
-  // exact production predicate so no second rule can drift.
   const authorized =
-    isAgentAuthorizedForVoiceReply(voiceReply, participantId) &&
+    isAgentAuthorizedForVoice(agentVoice, participantId) &&
     publishedMid !== undefined &&
     ((tracks.length === 1 && tracks[0]!.kind === "audio") ||
       (tracks.length === 0 && pendingTrackName !== undefined))
@@ -537,7 +529,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const stored = await this.ctx.storage.get<StoredRoom>("room")
     if (!stored) return null
     const normalized = this.normalizeRoom(stored)
-    if (normalized.changed) await this.saveRoom(normalized.room)
+    if (normalized.changed) {
+      // A legacy-voice migration may have staged an already-flowing RTP mid.
+      // Persist and arm the short cleanup retry before this normalized Room
+      // state is ever returned to a caller; do not fetch here, because that
+      // would leave the caller holding a stale RoomRecord across I/O.
+      await this.saveRoom(normalized.room)
+      await this.scheduleNextAlarm(normalized.room)
+    }
     return normalized.room
   }
 
@@ -546,14 +545,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     changed: boolean
   } {
     let changed = false
-    // Normalize the voiceReply grant FIRST so agent media hygiene below
-    // sees the post-validation state — a persisted {active:true, matching
-    // agent} block with a missing/invalid startedAt must degrade to
-    // NO_VOICE_REPLY before the publication-preservation decision, never
-    // after (P1 fail-closed ordering).
-    const normalizedVoiceReply = isValidVoiceReplyState(stored.voiceReply)
-      ? stored.voiceReply
-      : NO_VOICE_REPLY
     const participants: Record<string, RoomParticipant> = {}
 
     for (const [id, rawParticipant] of Object.entries(stored.participants)) {
@@ -600,15 +591,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             delete participant[key]
             changed = true
           }
-        }
-        const normalizedAgentMedia = normalizeAgentParticipantMedia(
-          participant.media,
-          normalizedVoiceReply,
-          participant.id
-        )
-        if (normalizedAgentMedia.changed) {
-          participant.media = normalizedAgentMedia.media
-          changed = true
         }
         if (participant.media?.agentSubscribedMids !== undefined) {
           const validMids = Array.isArray(participant.media.agentSubscribedMids)
@@ -740,23 +722,54 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       changed = true
     }
 
-    let voiceReply: VoiceReplyState = normalizedVoiceReply
-    if (
-      voiceReply.active &&
-      (!voiceReply.agentParticipantId ||
-        participants[voiceReply.agentParticipantId]?.kind !== "agent")
-    ) {
-      // Stale grant (departed/never-agent) must not keep authorizing.
-      voiceReply = NO_VOICE_REPLY
-      changed = true
-    }
-
     let pendingMediaCleanup: PendingMediaCleanup[]
     if (this.validPendingMediaCleanup(stored.pendingMediaCleanup)) {
       pendingMediaCleanup = stored.pendingMediaCleanup
     } else {
       pendingMediaCleanup = []
       changed = true
+    }
+
+    // #170 migration deliberately ignores every legacy singleton
+    // voiceReply as authorization. Before dropping that state, however,
+    // durable-stage its known outbound mid: an established Cloudflare track
+    // keeps flowing after Room state has been rewritten unless the server
+    // still owns the tracks/close handle. This is corrective revocation, not
+    // a grant transfer — the Agent remains muted in agentVoice.
+    const legacyVoiceParticipantId = this.legacyVoiceParticipantId(
+      stored.voiceReply
+    )
+    if (stored.voiceReply !== undefined) changed = true
+    if (legacyVoiceParticipantId) {
+      const legacyParticipant = participants[legacyVoiceParticipantId]
+      const legacyMid = legacyParticipant?.media?.agentPublishedMid
+      if (legacyParticipant?.kind === "agent" && legacyMid) {
+        pendingMediaCleanup = stageAgentMediaRevocation(
+          legacyParticipant,
+          pendingMediaCleanup,
+          "published"
+        )
+        changed = true
+      }
+    }
+    const normalizedAgentVoice = this.normalizeAgentVoice(
+      stored.agentVoice,
+      participants,
+      runtimeHosts
+    )
+    if (normalizedAgentVoice.changed) changed = true
+    const agentVoice = normalizedAgentVoice.agentVoice
+    for (const participant of Object.values(participants)) {
+      if (participant.kind !== "agent") continue
+      const normalizedAgentMedia = normalizeAgentParticipantMedia(
+        participant.media,
+        agentVoice,
+        participant.id
+      )
+      if (normalizedAgentMedia.changed) {
+        participant.media = normalizedAgentMedia.media
+        changed = true
+      }
     }
 
     return {
@@ -769,7 +782,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachments,
         nextMessageSequence,
         meetingNotes,
-        voiceReply,
+        agentVoice,
         pendingMediaCleanup,
       },
       changed,
@@ -788,8 +801,53 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
   }
 
-  private validVoiceReply(value: unknown): value is VoiceReplyState {
-    return isValidVoiceReplyState(value)
+  private normalizeAgentVoice(
+    value: unknown,
+    participants: Record<string, RoomParticipant>,
+    runtimeHosts: Record<string, RuntimeHostProjection>
+  ): { agentVoice: AgentVoiceState; changed: boolean } {
+    const raw =
+      value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {}
+    let changed = raw !== value
+    const agentVoice: AgentVoiceState = {}
+    for (const [participantId, rawGrant] of Object.entries(raw)) {
+      const participant = participants[participantId]
+      const host = participant?.runtimeHostId
+        ? runtimeHosts[participant.runtimeHostId]
+        : undefined
+      const grant = rawGrant as Partial<AgentVoiceState[string]> | null
+      const valid =
+        participant?.kind === "agent" &&
+        participant.connected &&
+        host?.speech.tts === true &&
+        Boolean(grant) &&
+        grant?.enabled === true &&
+        typeof grant.enabledAt === "number" &&
+        Number.isFinite(grant.enabledAt) &&
+        grant.enabledAt > 0
+      if (!valid) {
+        changed = true
+        continue
+      }
+      agentVoice[participantId] = {
+        enabled: true,
+        enabledAt: grant.enabledAt!,
+      }
+    }
+    return { agentVoice, changed }
+  }
+
+  private legacyVoiceParticipantId(value: unknown): string | undefined {
+    if (!value || typeof value !== "object") return undefined
+    const candidate = value as {
+      agentParticipantId?: unknown
+    }
+    return typeof candidate.agentParticipantId === "string" &&
+      candidate.agentParticipantId.length > 0
+      ? candidate.agentParticipantId
+      : undefined
   }
 
   private validPendingMediaCleanup(
@@ -906,8 +964,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       messages: room.messages,
       meetingNotes: room.meetingNotes,
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
-      voiceReply: room.voiceReply,
-      voiceReplyMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+      agentVoice: room.agentVoice,
+      agentVoiceMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     }
   }
 
@@ -1359,12 +1417,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // agentParticipantId is already visible in `participants` above.
         meetingNotes: room?.meetingNotes ?? NO_MEETING_NOTES,
         meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
-        voiceReply: room?.voiceReply ?? NO_VOICE_REPLY,
-        voiceReplyMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+        agentVoice: room?.agentVoice ?? {},
+        agentVoiceMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
         mediaPermissions: room
           ? agentMediaPermissions(
               room.meetingNotes,
-              room.voiceReply,
+              room.agentVoice,
               request.participantId
             )
           : { canSubscribeHumanAudio: false, canPublishVoice: false },
@@ -1390,7 +1448,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           attachments: [],
           nextMessageSequence: 0,
           meetingNotes: NO_MEETING_NOTES,
-          voiceReply: { active: false },
+          agentVoice: {},
           pendingMediaCleanup: [],
         }
       }
@@ -1506,7 +1564,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachments: [],
         nextMessageSequence: 0,
         meetingNotes: NO_MEETING_NOTES,
-        voiceReply: { active: false },
+        agentVoice: {},
         pendingMediaCleanup: [],
       }
       const participant: RoomParticipant = {
@@ -1614,15 +1672,36 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           { error: validated.error, reason: validated.reason },
           400
         )
+      const host = validated.runtimeHost
+      const previousHostId = participant.runtimeHostId
+      const previousProjection = room.runtimeHosts?.[host.runtimeHostId]
       // Canonical Room model (#176): upsert ONE readiness projection per
       // host id, shared by all same-host Agents, then reference it from this
-      // participant. Presence/discovery broadcast only.
-      const host = validated.runtimeHost
+      // participant. #170 makes authorization fail closed on either a host
+      // switch or a same-host TTS readiness loss.
       room.runtimeHosts = {
         ...(room.runtimeHosts ?? {}),
         [host.runtimeHostId]: host,
       }
       participant.runtimeHostId = host.runtimeHostId
+      const revokeVoice = (candidate: RoomParticipant) => {
+        if (!room.agentVoice[candidate.id]) return
+        delete room.agentVoice[candidate.id]
+        this.stageAgentMediaRevocation(room, candidate.id, "published")
+      }
+      if (previousHostId && previousHostId !== host.runtimeHostId)
+        revokeVoice(participant)
+      if (
+        previousProjection?.speech.tts === true &&
+        host.speech.tts === false
+      ) {
+        for (const candidate of Object.values(room.participants))
+          if (
+            candidate.kind === "agent" &&
+            candidate.runtimeHostId === host.runtimeHostId
+          )
+            revokeVoice(candidate)
+      }
       // Re-projection may move this participant to a new host id: collect
       // the previously referenced host if nothing else uses it.
       this.gcRuntimeHosts(room)
@@ -1630,6 +1709,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
       return this.json({
         runtimeHost: host,
         runtimeHosts: room.runtimeHosts,
@@ -1812,7 +1892,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (
         !isAgentAuthorizedForSharedMedia(
           room.meetingNotes,
-          room.voiceReply,
+          room.agentVoice,
           participant.id
         )
       )
@@ -1846,7 +1926,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (
         !isAgentAuthorizedForSharedMedia(
           room.meetingNotes,
-          room.voiceReply,
+          room.agentVoice,
           participant.id
         )
       )
@@ -2115,10 +2195,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room.meetingNotes,
         participant.id
       )
-      room.voiceReply = clearVoiceReplyIfParticipantDeparting(
-        room.voiceReply,
-        participant.id
-      )
+      delete room.agentVoice[participant.id]
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       // #111: no surface history survives departure — chunks die after the
@@ -2189,7 +2266,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         }
         if (
           request.wantsVoicePublish === true &&
-          !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
+          !isAgentAuthorizedForVoice(room.agentVoice, participant.id)
         )
           return this.json({ error: "voice_reply_not_authorized" }, 403)
         if (
@@ -2199,7 +2276,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return this.json({ error: "meeting_notes_not_authorized" }, 403)
         if (
           request.purpose === "voice-reply" &&
-          !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id)
+          !isAgentAuthorizedForVoice(room.agentVoice, participant.id)
         )
           return this.json({ error: "voice_reply_not_authorized" }, 403)
         // #83 review: the shared transport/bootstrap purpose is authorized
@@ -2210,7 +2287,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           request.purpose === "agent-transport" &&
           !isAgentAuthorizedForSharedMedia(
             room.meetingNotes,
-            room.voiceReply,
+            room.agentVoice,
             participant.id
           )
         )
@@ -2221,8 +2298,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
           return this.json({ error: "agent_publish_capacity_exceeded" }, 503)
       }
-      // Round 5 (P2): preflight capacity check *before* the Worker ever
-      // calls Cloudflare's tracks/new for these remote subscriptions —
+      // Preflight capacity check *before* the Worker ever
+      // calls Cloudflare's tracks/new for any new Agent media track —
       // catching an already-backpressured room here means it never creates
       // yet another upstream subscription only to have agent-track-
       // subscribed reject it afterward (which would just grow the very
@@ -2231,24 +2308,27 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // revoked or reassigned in the window between this call and
       // tracks/new actually completing (the TOCTOU race — finding #2/
       // Blocker 2), which only the post-upstream registration can catch.
-      if (
-        participant.kind === "agent" &&
-        request.remoteTrackCount &&
-        request.remoteTrackCount > 0
-      ) {
-        const activeMids = participant.media?.agentSubscribedMids?.length ?? 0
-        if (activeMids + request.remoteTrackCount > MAX_AGENT_SUBSCRIBED_MIDS)
-          return this.json({ error: "agent_media_capacity_exceeded" }, 503)
-        const sessionId =
-          participant.media?.sessionId ?? request.sessionId ?? ""
-        if (
-          !pendingCleanupHasCapacity(
-            room.pendingMediaCleanup,
-            sessionId,
-            request.remoteTrackCount
+      if (participant.kind === "agent") {
+        const remoteTrackCount = request.remoteTrackCount ?? 0
+        const localTrackCount = request.localTrackCount ?? 0
+        if (remoteTrackCount > 0) {
+          const activeMids = participant.media?.agentSubscribedMids?.length ?? 0
+          if (activeMids + remoteTrackCount > MAX_AGENT_SUBSCRIBED_MIDS)
+            return this.json({ error: "agent_media_capacity_exceeded" }, 503)
+        }
+        const newTrackCount = remoteTrackCount + localTrackCount
+        if (newTrackCount > 0) {
+          const sessionId =
+            participant.media?.sessionId ?? request.sessionId ?? ""
+          if (
+            !pendingCleanupHasCapacity(
+              room.pendingMediaCleanup,
+              sessionId,
+              newTrackCount
+            )
           )
-        )
-          return this.json({ error: "agent_media_cleanup_backlog" }, 503)
+            return this.json({ error: "agent_media_cleanup_backlog" }, 503)
+        }
       }
       if (request.trackSessionId && request.trackName) {
         // #83 review: an Agent's exact-track reauthorization must resolve to
@@ -2360,7 +2440,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant || participant.kind !== "agent")
         return this.json({ error: "unauthorized" }, 401)
       if (
-        !isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id) ||
+        !isAgentAuthorizedForVoice(room.agentVoice, participant.id) ||
         typeof request.mid !== "string" ||
         request.mid.length === 0
       )
@@ -2372,6 +2452,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant.media.agentPublishedMid !== request.mid
       )
         return this.json({ error: "agent_publish_capacity_exceeded" }, 503)
+      // This is the post-upstream half of the local publication admission
+      // check. A cleanup backlog may have filled after /tracks authorize but
+      // before Cloudflare returned this mid; refuse registration so the
+      // Worker closes (or durably hands off) this just-created track rather
+      // than creating more unrevocable RTP pressure.
+      if (
+        !participant.media.agentPublishedMid &&
+        !pendingCleanupHasCapacity(
+          room.pendingMediaCleanup,
+          participant.media.sessionId,
+          1
+        )
+      )
+        return this.json({ error: "agent_media_cleanup_backlog" }, 503)
       participant.media = {
         ...participant.media,
         agentPublishedMid: request.mid,
@@ -2399,7 +2493,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       if (!participant || participant.kind !== "agent")
         return this.json({ error: "unauthorized" }, 401)
-      if (!isAgentAuthorizedForVoiceReply(room.voiceReply, participant.id))
+      if (!isAgentAuthorizedForVoice(room.agentVoice, participant.id))
         return this.json({ error: "voice_reply_not_authorized" }, 403)
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
@@ -2458,10 +2552,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       room.meetingNotes,
       participant.id
     )
-    room.voiceReply = clearVoiceReplyIfParticipantDeparting(
-      room.voiceReply,
-      participant.id
-    )
+    delete room.agentVoice[participant.id]
     this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
     await this.broadcastState(room)
@@ -2811,60 +2902,61 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.attemptCleanupNow(room.pendingMediaCleanup)
       return
     }
-    if (message.type === "voice-reply-start") {
-      if (this.env.AGENT_MEDIA_ENABLED !== "true") {
-        socket.send(
-          JSON.stringify({ type: "error", error: "voice_reply_media_disabled" })
-        )
+    if (message.type === "agent-voice-set") {
+      if (participant.kind !== "human") {
+        socket.send(JSON.stringify({ type: "error", error: "human_only" }))
         return
       }
       const agent = room.participants[message.agentParticipantId]
-      if (!agent || agent.kind !== "agent" || !agent.connected) {
-        socket.send(
-          JSON.stringify({ type: "error", error: "agent_not_in_room" })
+      if (message.enabled) {
+        const host = agent?.runtimeHostId
+          ? room.runtimeHosts?.[agent.runtimeHostId]
+          : undefined
+        if (
+          this.env.AGENT_MEDIA_ENABLED !== "true" ||
+          !agent ||
+          agent.kind !== "agent" ||
+          !agent.connected ||
+          host?.speech.tts !== true
+        ) {
+          socket.send(
+            JSON.stringify({ type: "error", error: "voice_unavailable" })
+          )
+          return
+        }
+        // Idempotent enable preserves the epoch and avoids an unnecessary
+        // Runtime publication restart.
+        if (!isAgentAuthorizedForVoice(room.agentVoice, agent.id)) {
+          // Fast-fail before giving the Runtime a new local publication
+          // authorization. The /tracks authorize preflight below is the
+          // authoritative TOCTOU check immediately before Cloudflare work;
+          // this control-path check simply keeps a backpressured Room muted.
+          const sessionId = agent.media?.sessionId ?? ""
+          if (
+            !pendingCleanupHasCapacity(room.pendingMediaCleanup, sessionId, 1)
+          ) {
+            socket.send(
+              JSON.stringify({
+                type: "error",
+                error: "agent_media_cleanup_backlog",
+              })
+            )
+            return
+          }
+          room.agentVoice[agent.id] = { enabled: true, enabledAt: Date.now() }
+        }
+      } else if (room.agentVoice[message.agentParticipantId]) {
+        delete room.agentVoice[message.agentParticipantId]
+        // Stop only this Agent's outbound publication; Meeting Notes and
+        // every other Agent's independent voice authorization survive.
+        this.stageAgentMediaRevocation(
+          room,
+          message.agentParticipantId,
+          "published"
         )
-        return
       }
-      // Idempotent replay: same speaker must not bump the epoch (the runtime
-      // treats an epoch change as "server tore down the publication").
-      if (isAgentAuthorizedForVoiceReply(room.voiceReply, agent.id)) {
-        socket.send(
-          JSON.stringify({ type: "state", state: this.stateFor(room) })
-        )
-        return
-      }
-      if (room.pendingMediaCleanup.length >= MAX_PENDING_CLEANUP_ENTRIES) {
-        socket.send(
-          JSON.stringify({
-            type: "error",
-            error: "agent_media_cleanup_backlog",
-          })
-        )
-        return
-      }
-      const previousAgentId = room.voiceReply.agentParticipantId
-      room.voiceReply = startVoiceReply(agent.id, Date.now())
-      // Reassignment (A -> B): stage A's established publication durably
-      // before any Cloudflare fetch is attempted — published direction
-      // only: A may still hold an independent active Meeting Notes grant
-      // whose Human->Agent subscriptions must survive this trigger.
-      if (previousAgentId && previousAgentId !== agent.id)
-        this.stageAgentMediaRevocation(room, previousAgentId, "published")
-      await this.saveRoom(room)
-      await this.scheduleNextAlarm(room)
-      await this.broadcastState(room)
-      await this.attemptCleanupNow(room.pendingMediaCleanup)
-      return
-    }
-    if (message.type === "voice-reply-stop") {
-      const previousAgentId = room.voiceReply.agentParticipantId
-      room.voiceReply = NO_VOICE_REPLY
-      // Directional revocation (#83): a voiceReply stop closes only the
-      // stopped grant's Agent->Human published mid and drops the
-      // room-visible Agent audio track — never independent Meeting Notes
-      // subscriptions the same agent may still hold.
-      if (previousAgentId)
-        this.stageAgentMediaRevocation(room, previousAgentId, "published")
+      // This is presence/authorization state only: no RoomMessage, sequence
+      // increment, or Agent waiter wakeup.
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -3348,10 +3440,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           room.meetingNotes,
           id
         )
-        room.voiceReply = clearVoiceReplyIfParticipantDeparting(
-          room.voiceReply,
-          id
-        )
+        delete room.agentVoice[id]
         changed = true
         const waiter = this.agentWaiters.get(id)
         if (waiter) {

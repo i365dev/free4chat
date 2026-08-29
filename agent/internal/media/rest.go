@@ -70,7 +70,7 @@ const (
 
 // HumanMediaDiscoveryDenied is the DO's agent-room-media denial for an agent
 // whose room has no active Meeting Notes grant — expected and tolerated at
-// bootstrap when the shared session was admitted under voiceReply only.
+// bootstrap when the shared session was admitted under Agent Voice only.
 const HumanMediaDiscoveryDenied = "meeting_notes_not_authorized"
 
 // RoomMediaParticipant describes one Human's media state.

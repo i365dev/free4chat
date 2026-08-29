@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import {
-  NO_MEETING_NOTES,
-  NO_VOICE_REPLY,
-  startMeetingNotes,
-  startVoiceReply,
-} from "./meetingNotesAuth"
+import { NO_MEETING_NOTES, startMeetingNotes } from "./meetingNotesAuth"
 import { RoomSession } from "./RoomSession"
 import type { RoomParticipant } from "../room/types"
 
@@ -36,7 +31,7 @@ function storedHuman(
 
 function buildStoredRoom(grants: {
   meetingNotesFor?: string
-  voiceReplyFor?: string
+  agentVoiceFor?: string
 }) {
   return {
     createdAt: Date.now(),
@@ -56,6 +51,7 @@ function buildStoredRoom(grants: {
         joinedAt: 1,
         lastSeenAt: Date.now(),
         token: "tok-a",
+        runtimeHostId: "host-agent",
         media: {
           sessionId: "asess",
           muted: true,
@@ -65,16 +61,22 @@ function buildStoredRoom(grants: {
         },
       },
     },
+    runtimeHosts: {
+      "host-agent": {
+        runtimeHostId: "host-agent",
+        speech: { stt: false, tts: true },
+      },
+    },
     messages: [],
     nextMessageSequence: 1,
     meetingNotes:
       grants.meetingNotesFor === "agent-a"
         ? startMeetingNotes("agent-a", 1000)
         : NO_MEETING_NOTES,
-    voiceReply:
-      grants.voiceReplyFor === "agent-a"
-        ? startVoiceReply("agent-a", 1000)
-        : NO_VOICE_REPLY,
+    agentVoice:
+      grants.agentVoiceFor === "agent-a"
+        ? { "agent-a": { enabled: true, enabledAt: 1000 } }
+        : {},
     pendingMediaCleanup: [],
   }
 }
@@ -92,30 +94,38 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
     },
   }
   const rs = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
+  const control = (
+    body: Record<string, unknown>
+  ): Promise<{
+    status: number
+    json: Record<string, unknown>
+  }> =>
+    rs
+      .fetch(
+        new Request("https://room/control", {
+          method: "POST",
+          body: JSON.stringify(body),
+        })
+      )
+      .then(async (response) => ({
+        status: response.status,
+        json: (await response.json()) as Record<string, unknown>,
+      }))
   return {
     authorize(body: Record<string, unknown>): Promise<{
       status: number
       json: Record<string, unknown>
     }> {
-      return rs
-        .fetch(
-          new Request("https://room/control", {
-            method: "POST",
-            body: JSON.stringify({ action: "authorize", ...body }),
-          })
-        )
-        .then(async (response) => ({
-          status: response.status,
-          json: (await response.json()) as Record<string, unknown>,
-        }))
+      return control({ action: "authorize", ...body })
     },
+    control,
   }
 }
 
 describe("RoomSession authorize — real DO agent matrix (#83 review P1)", () => {
   const room = buildStoredRoom({
     meetingNotesFor: "agent-a",
-    voiceReplyFor: "agent-a",
+    agentVoiceFor: "agent-a",
   })
 
   it("agent-transport datachannels/close correlation (dataChannelSessionId) passes", async () => {
@@ -234,6 +244,85 @@ describe("RoomSession authorize — real DO agent matrix (#83 review P1)", () =>
     })
     expect(result.status).toBe(200)
     expect(result.json.kind).toBe("agent")
+  })
+
+  it("authorizes each enabled Agent independently and fails closed when one is muted", async () => {
+    const multi = buildStoredRoom({ agentVoiceFor: "agent-a" })
+    multi.participants["agent-b"] = {
+      ...(multi.participants["agent-a"] as RoomParticipant),
+      id: "agent-b",
+      token: "tok-b",
+      media: {
+        sessionId: "bsess",
+        muted: true,
+        fileChannelReady: false,
+        tracks: [],
+      },
+    } as RoomParticipant
+    multi.agentVoice["agent-b"] = { enabled: true, enabledAt: 2000 }
+    const { authorize } = makeRoomSession(multi)
+    for (const [participantId, token, sessionId] of [
+      ["agent-a", "tok-a", "asess"],
+      ["agent-b", "tok-b", "bsess"],
+    ]) {
+      const result = await authorize({
+        participantId,
+        token,
+        sessionId,
+        purpose: "voice-reply",
+        wantsVoicePublish: true,
+        localTrackCount: 1,
+      })
+      expect(result.status).toBe(200)
+    }
+
+    delete multi.agentVoice["agent-b"]
+    const muted = await makeRoomSession(multi).authorize({
+      participantId: "agent-b",
+      token: "tok-b",
+      sessionId: "bsess",
+      purpose: "voice-reply",
+      wantsVoicePublish: true,
+      localTrackCount: 1,
+    })
+    expect(muted.status).toBe(403)
+    expect(muted.json.error).toBe("voice_reply_not_authorized")
+  })
+
+  it("rejects a local Agent Voice publication before upstream work when cleanup is full", async () => {
+    const backpressured = buildStoredRoom({ agentVoiceFor: "agent-a" })
+    backpressured.pendingMediaCleanup = Array.from(
+      { length: 16 },
+      (_, index) => ({ sessionId: `stuck-${index}`, mids: ["mid"] })
+    )
+    const result = await makeRoomSession(backpressured).authorize({
+      participantId: "agent-a",
+      token: "tok-a",
+      sessionId: "asess",
+      purpose: "voice-reply",
+      wantsVoicePublish: true,
+      localTrackCount: 1,
+    })
+    expect(result.status).toBe(503)
+    expect(result.json.error).toBe("agent_media_cleanup_backlog")
+  })
+
+  it("rejects post-upstream publication registration when cleanup fills during the race", async () => {
+    const backpressured = buildStoredRoom({ agentVoiceFor: "agent-a" })
+    backpressured.pendingMediaCleanup = Array.from(
+      { length: 16 },
+      (_, index) => ({ sessionId: `stuck-${index}`, mids: ["mid"] })
+    )
+    const result = await makeRoomSession(backpressured).control({
+      action: "agent-track-published",
+      participantId: "agent-a",
+      token: "tok-a",
+      sessionId: "asess",
+      mid: "new-local-mid",
+      trackName: "agent-voice",
+    })
+    expect(result.status).toBe(503)
+    expect(result.json.error).toBe("agent_media_cleanup_backlog")
   })
 
   it("a Human plain authorize needs no purpose (browser paths unaffected)", async () => {

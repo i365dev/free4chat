@@ -32,7 +32,7 @@ type ControllerOptions struct {
 	// uses it to evaluate that grant's own speech prerequisite once — never
 	// per poll.
 	OnGrantActivated func(kind GrantKind)
-	// Voice configures outbound Voice Reply (nil = Meeting Notes only).
+	// Voice configures outbound Agent Voice (nil = Meeting Notes only).
 	Voice *VoiceConfig
 	// Log receives bounded safe events.
 	Log func(event string, details map[string]string)
@@ -47,21 +47,25 @@ type VoiceConfig struct {
 	TrackName         string
 	CreateTtsProvider func() (speech.StreamingTtsProvider, error)
 	MaxChunkChars     int
+	HostVoiceGate     voice.Gate
 	OnSpeakerEvent    func(voice.SpeakerEvent)
 }
 
 // GrantKind identifies which room media grant produced an activation edge.
-// Meeting Notes and Voice Reply are independent grants over one shared
+// Meeting Notes and Agent Voice are independent grants over one shared
 // media bridge; each carries its own speech prerequisite.
 type GrantKind string
 
 const (
 	GrantMeetingNotes GrantKind = "meeting_notes"
-	GrantVoiceReply   GrantKind = "voice_reply"
+	GrantAgentVoice   GrantKind = "agent_voice"
+	// Deprecated internal spelling retained only for existing adapter tests;
+	// it maps to the participant-specific Agent Voice grant above.
+	GrantVoiceReply = GrantAgentVoice
 )
 
 // Controller owns the Runtime-side half of the media lifecycle: it polls
-// room_info for the Meeting Notes and voiceReply grants and starts/stops the
+// room_info for the Meeting Notes and Agent Voice grants and starts/stops the
 // ONE shared Bridge accordingly. This is the ONLY thing that decides when
 // this process may hold an active media session — authorization always comes
 // from the room-visible grant, never from a local decision.
@@ -164,7 +168,7 @@ func (c *Controller) Stop() {
 	c.teardownBridge()
 }
 
-// CurrentVoiceOutput returns the speakable output while a voiceReply grant
+// CurrentVoiceOutput returns the speakable output while an Agent Voice grant
 // is active; nil when inactive/starting (callers stay text-only).
 func (c *Controller) CurrentVoiceOutput() *voice.Speaker {
 	c.mu.Lock()
@@ -219,11 +223,10 @@ func (c *Controller) poll() {
 	} else {
 		roomInfoObserved = true
 		if c.options.Voice != nil {
-			vrTargetsSelf := info.VoiceReply.AgentParticipantID == c.options.ParticipantID
-			vrAuthorized = info.VoiceReplyMediaAvailable &&
-				info.VoiceReply.Active && vrTargetsSelf
-			if info.VoiceReply.StartedAt > 0 {
-				value := info.VoiceReply.StartedAt
+			grant, vrTargetsSelf := info.AgentVoice[c.options.ParticipantID]
+			vrAuthorized = info.AgentVoiceMediaAvailable && vrTargetsSelf && grant.EnabledAt > 0
+			if grant.EnabledAt > 0 {
+				value := grant.EnabledAt
 				vrEpoch = &value
 			}
 			c.mu.Lock()
@@ -232,8 +235,8 @@ func (c *Controller) poll() {
 			c.voiceObservedInit = true
 			c.mu.Unlock()
 			c.log("voice_reply_state", map[string]string{
-				"voice_reply_media_available":     bool01(info.VoiceReplyMediaAvailable),
-				"voice_reply_active":              bool01(info.VoiceReply.Active),
+				"agent_voice_media_available":     bool01(info.AgentVoiceMediaAvailable),
+				"agent_voice_enabled":             bool01(vrAuthorized),
 				"voice_reply_targets_self":        bool01(vrTargetsSelf),
 				"voice_reply_grant_epoch_present": bool01(vrEpoch != nil),
 				"voice_reply_grant_epoch_changed": bool01(epochChanged),
@@ -292,7 +295,7 @@ func (c *Controller) poll() {
 		c.options.OnGrantActivated(GrantMeetingNotes)
 	}
 	if vrEdge && c.options.OnGrantActivated != nil {
-		c.options.OnGrantActivated(GrantVoiceReply)
+		c.options.OnGrantActivated(GrantAgentVoice)
 	}
 
 	anyGrantActive := authorized || vrAuthorized
@@ -493,6 +496,7 @@ func (c *Controller) ensureVoice() {
 			return &bridgeVoiceSink{bridge: bridge, token: token}, nil
 		},
 		MaxChunkChars: voiceConfig.MaxChunkChars,
+		Gate:          voiceConfig.HostVoiceGate,
 		OnEvent:       voiceConfig.OnSpeakerEvent,
 	})
 	c.mu.Lock()

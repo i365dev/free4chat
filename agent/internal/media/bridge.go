@@ -41,6 +41,10 @@ type EngineLike interface {
 	ValidateTurn(token uint64) bool
 	WritePCM(chunk []byte, token uint64) error
 	FlushAudio(token uint64) error
+	// FlushAudioAndWait returns only once the paced writer has consumed the
+	// final marker. Host-level Agent Voice serialization depends on this
+	// acknowledgement: enqueueing the marker alone leaves prior PCM audible.
+	FlushAudioAndWait(token uint64) error
 	PublishCounts() map[string]uint64
 	RtpCounts() map[string]uint64
 	Close()
@@ -76,7 +80,7 @@ type BridgeOptions struct {
 	Now func() time.Time
 }
 
-// PublishConfig is the voiceReply publication shape.
+// PublishConfig is the Agent Voice publication shape.
 type PublishConfig struct {
 	TrackName string
 }
@@ -116,7 +120,7 @@ func subscriptionKey(participantID, sessionID, trackName string) string {
 
 // Bridge owns the ONE shared Pion PeerConnection / Cloudflare Agent session
 // serving both grants. Meeting Notes controls Human-audio subscribe/input;
-// voiceReply controls this Agent's local publish/output. Exactly one session
+// Agent Voice controls this Agent's local publish/output. Exactly one session
 // exists whenever EITHER grant is live.
 type Bridge struct {
 	options BridgeOptions
@@ -945,7 +949,7 @@ func (b *Bridge) flushEngine(token uint64) error {
 	if engine == nil {
 		return errors.New("bridge_not_running")
 	}
-	return engine.FlushAudio(token)
+	return engine.FlushAudioAndWait(token)
 }
 
 // bootstrapErrorClass maps a sanitized bootstrap failure onto a bounded
