@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"strings"
@@ -210,6 +211,17 @@ func TestWritePCMRequiresActivation(t *testing.T) {
 	engine.DeactivatePublish()
 	if err := engine.WritePCM(make([]byte, 960), 0); !errors.Is(err, errPublishNotActive) {
 		t.Fatal("write after deactivation must fail closed")
+	}
+}
+
+func TestWaitConnectedReturnsPromptlyWhenCancelled(t *testing.T) {
+	engine := newTestEngine(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := engine.WaitConnected(ctx, time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitConnected error = %v, want context cancellation", err)
 	}
 }
 

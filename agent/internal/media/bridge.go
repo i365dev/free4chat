@@ -32,7 +32,7 @@ type EngineLike interface {
 	GatherCompleteOffer() (*Description, error)
 	CreateLocalOffer() (*Description, error)
 	ApplyRemote(remote Description) (string, *Description, error)
-	WaitConnected(timeout time.Duration) error
+	WaitConnected(ctx context.Context, timeout time.Duration) error
 	ArmPublish() error
 	LocalPublishMid() string
 	ActivatePublish() error
@@ -275,7 +275,7 @@ func (b *Bridge) Start(parent context.Context) error {
 	// TrackLocal.WriteSample can accept PCM locally while no RTP is capable of
 	// leaving the Runtime. Do not expose a Voice speaker (or begin Room-media
 	// discovery) until that transport is actually connected.
-	if err := engine.WaitConnected(connectTimeout); err != nil {
+	if err := engine.WaitConnected(ctx, connectTimeout); err != nil {
 		b.log("media_bootstrap_stage", map[string]string{
 			"stage": "peerconnection_connect_failed",
 		})

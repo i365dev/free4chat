@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ type fakeEngine struct {
 	waitCalls       int
 	waitTimeout     time.Duration
 	waitErr         error
+	waitFn          func(context.Context, time.Duration) error
 	armCalls        int
 	mid             string
 	activateCalls   int
@@ -78,12 +80,16 @@ func (f *fakeEngine) ApplyRemote(remote Description) (string, *Description, erro
 	f.mu.Unlock()
 	return applied, answer, err
 }
-func (f *fakeEngine) WaitConnected(timeout time.Duration) error {
+func (f *fakeEngine) WaitConnected(ctx context.Context, timeout time.Duration) error {
 	f.mu.Lock()
 	f.waitCalls++
 	f.waitTimeout = timeout
 	err := f.waitErr
+	waitFn := f.waitFn
 	f.mu.Unlock()
+	if waitFn != nil {
+		return waitFn(ctx, timeout)
+	}
 	return err
 }
 func (f *fakeEngine) ArmPublish() error {
@@ -388,6 +394,38 @@ func TestBridgeBootstrapFailsClosedWhenPeerConnectionNeverConnects(t *testing.T)
 	}
 	if engine.closeCalls != 1 {
 		t.Fatalf("failed connected readiness must close the partial engine, close calls = %d", engine.closeCalls)
+	}
+}
+
+func TestBridgeStopCancelsConnectionWait(t *testing.T) {
+	engine := newFakeEngine()
+	waitStarted := make(chan struct{})
+	engine.waitFn = func(ctx context.Context, _ time.Duration) error {
+		close(waitStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	bridge := NewBridge(testBridgeOptions(engine, newFakeRest(), nil))
+	startDone := make(chan error, 1)
+	go func() { startDone <- bridge.Start(context.Background()) }()
+
+	select {
+	case <-waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never reached the connection wait")
+	}
+	bridge.Stop()
+
+	select {
+	case err := <-startDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop must cancel an in-flight connection wait")
+	}
+	if engine.closeCalls != 1 {
+		t.Fatalf("Stop must close the partial engine once, got %d closes", engine.closeCalls)
 	}
 }
 
