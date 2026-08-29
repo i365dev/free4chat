@@ -307,6 +307,31 @@ func TestDoctorHumanAndJsonOutputs(t *testing.T) {
 	}
 }
 
+func TestVersionReportsStableLocalMachineReadableValue(t *testing.T) {
+	jsonOutput, code := runCli(t, "version", "--json")
+	if code != 0 {
+		t.Fatalf("version --json failed: %q", jsonOutput)
+	}
+	var report struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(jsonOutput), &report); err != nil {
+		t.Fatalf("version JSON parse failed: %v (%q)", err, jsonOutput)
+	}
+	if !regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(report.Version) {
+		t.Fatalf("version is not stable semantic version: %q", report.Version)
+	}
+	if strings.Contains(jsonOutput, "FREE4CHAT_AGENT_DIR") ||
+		strings.Contains(jsonOutput, "free4chat-agent-") {
+		t.Fatalf("version output leaked local details: %q", jsonOutput)
+	}
+
+	textOutput, code := runCli(t, "version")
+	if code != 0 || strings.TrimSpace(textOutput) != report.Version {
+		t.Fatalf("human version output mismatch: code=%d output=%q", code, textOutput)
+	}
+}
+
 func TestReadinessReportsGoRuntimeAndDeferredMedia(t *testing.T) {
 	output, code := runCli(t, "readiness", "--json")
 	if code != 0 {

@@ -49,12 +49,17 @@ case "$host_arch" in
   *) echo "unsupported test host arch: $host_arch" >&2; exit 1 ;;
 esac
 asset_name="free4chat-agent-$goos-$goarch"
+canonical_version="$(sed -n 's/^var Version = "\([^"]*\)"$/\1/p' agent/internal/doctor/doctor.go)"
+[ -n "$canonical_version" ] || { echo "canonical runtime version missing" >&2; exit 1; }
 
 # --- fake release assets: a real host binary + SHA256SUMS ------------------
 mkdir -p "$WORK/assets"
 (
   cd agent
-  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+  # The fake asset only needs to run on this test host. Keep native cgo on
+  # macOS so the optional Keychain package remains available; release builds
+  # still use the CGO-disabled matrix in agent/scripts/release.sh.
+  GOCACHE="$WORK/go-cache" CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -o "$WORK/assets/$asset_name" ./cmd/free4chat-agent
 )
 asset_hash="$(shasum -a 256 "$WORK/assets/$asset_name" 2>/dev/null | awk '{print $1}')"
@@ -182,10 +187,31 @@ if [ -x "$WORK/home/.local/bin/free4chat-agent" ] &&
 else
   note_bad "installed binary does not run"
 fi
+if [ -x "$WORK/home/.local/bin/free4chat-agent" ] &&
+  "$WORK/home/.local/bin/free4chat-agent" version --json 2>/dev/null |
+  grep -q "\"version\": \"$canonical_version\""; then
+  note_ok "installed binary reports the canonical runtime version"
+else
+  note_bad "installed binary does not report the canonical runtime version"
+fi
 if grep -q "releases/latest/download/$asset_name" "$LOG" 2>/dev/null; then
   note_ok "latest mode used the official latest-download URL"
 else
   note_bad "latest mode did not use the official latest-download URL"
+fi
+
+# Existing binaries are replaced only after the new download has passed the
+# same checksum gate; the fresh install must not silently keep stale bytes.
+EXISTING_HOME="$WORK/home-existing"
+mkdir -p "$EXISTING_HOME/.local/bin"
+printf '%s\n' stale-binary > "$EXISTING_HOME/.local/bin/free4chat-agent"
+FAKEBIN="$WORK/f12"; mkfakebin "$FAKEBIN" 1 1
+run_case "existing binary replacement" ok /usr/bin/env -i HOME="$EXISTING_HOME" PATH="$FAKEBIN" \
+  FAKE_ASSETS="$WORK/assets" bash "$INSTALLER"
+if cmp "$WORK/assets/$asset_name" "$EXISTING_HOME/.local/bin/free4chat-agent" >/dev/null 2>&1; then
+  note_ok "existing binary was replaced by the verified release asset"
+else
+  note_bad "existing binary was not replaced"
 fi
 
 # Happy path with a pinned version: the URL must be the official tag URL.

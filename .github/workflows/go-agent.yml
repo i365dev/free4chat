@@ -53,3 +53,5 @@ jobs:
         run: bash agent/scripts/check-cleanup.sh
       - name: Installer offline tests (mocked curl, official URL)
         run: bash agent/scripts/test-install-agent.sh
+      - name: Fresh Invite bootstrap/version contract
+        run: bash agent/scripts/test-bootstrap-contract.sh

@@ -37,6 +37,7 @@ func usageText() string {
   free4chat-agent surface publish --file <snapshot.jpeg|png|webp> [--instance <id>]
   free4chat-agent surface clear [--instance <id>]
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
+  free4chat-agent version [--json]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
   free4chat-agent credential status
@@ -386,6 +387,9 @@ func run(args []string) error {
 		fmt.Println(doctor.Format(report))
 		return nil
 
+	case "version":
+		return runVersion(rest)
+
 	case "status":
 		return runViaDaemon(&daemon.IpcRequest{Op: "status"})
 
@@ -401,6 +405,23 @@ func run(args []string) error {
 	default:
 		return errUsage()
 	}
+}
+
+// runVersion reports the build version without contacting the daemon or any
+// network service. The JSON form is the stable local bootstrap contract.
+func runVersion(args []string) error {
+	for _, arg := range args {
+		if arg != "--json" {
+			return errUsage()
+		}
+	}
+	if hasFlag(args, "--json") {
+		return printJSON(struct {
+			Version string `json:"version"`
+		}{Version: doctor.Version})
+	}
+	fmt.Println(doctor.Version)
+	return nil
 }
 
 // runViaDaemon performs ensureDaemon + IPC round-trip + pretty print.
