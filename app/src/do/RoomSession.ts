@@ -8,11 +8,8 @@ import {
   rosterProjection,
   sanitizeStoredAdvertisedList,
   sanitizeStoredAgentCapabilities,
-  RUNTIME_HOST_ID_PATTERN,
-  sanitizeStoredRuntimeHosts,
   validateAdvertisedCapabilities,
   validateCollabEvent,
-  validateRuntimeHost,
   type CollabEventInput,
 } from "./collab"
 import {
@@ -36,6 +33,16 @@ import {
   type AgentMediaRevocationDirection,
 } from "./realtimeMedia"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
+import {
+  garbageCollectRuntimeHosts,
+  normalizeRuntimeHosts,
+  projectRuntimeHosts,
+  registerRuntimeHost,
+  runtimeHostForParticipant,
+  runtimeHostParticipantIds,
+  updateRuntimeHost,
+  validateRuntimeHost,
+} from "./runtimeHost"
 import {
   SURFACE_CHUNK_SIZE,
   SURFACE_KEY_PREFIX,
@@ -570,17 +577,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           else delete participant.surface
           changed = true
         }
-        // #176 Phase A (canonical model) storage hygiene: an invalid or
-        // unbounded runtimeHostId is dropped; the Runtime re-projects on
-        // its next update. Dangling ids are cleared after the runtimeHosts
-        // map is sanitized below.
-        if (
-          participant.runtimeHostId !== undefined &&
-          !RUNTIME_HOST_ID_PATTERN.test(participant.runtimeHostId)
-        ) {
-          delete participant.runtimeHostId
-          changed = true
-        }
         for (const key of [
           "sessionId",
           "muted",
@@ -675,25 +671,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     // #176 Phase A (canonical model) storage hygiene: keep ONE sanitized
     // readiness projection per Runtime Host id, then clear participant ids
-    // that dangle after sanitization.
-    const runtimeHosts = sanitizeStoredRuntimeHosts(stored.runtimeHosts)
-    if (
-      stored.runtimeHosts !== undefined &&
-      stored.runtimeHosts !== null &&
-      Object.keys(runtimeHosts).length !==
-        Object.keys(stored.runtimeHosts as Record<string, unknown>).length
-    ) {
-      changed = true
-    }
-    for (const participant of Object.values(participants)) {
-      if (
-        participant.runtimeHostId !== undefined &&
-        runtimeHosts[participant.runtimeHostId] === undefined
-      ) {
-        delete participant.runtimeHostId
-        changed = true
-      }
-    }
+    // that dangle after sanitization. The domain module owns both halves of
+    // this repair so the Room loader does not duplicate Runtime Host rules.
+    const normalizedRuntimeHosts = normalizeRuntimeHosts(
+      stored.runtimeHosts,
+      Object.values(participants)
+    )
+    const runtimeHosts = normalizedRuntimeHosts.runtimeHosts
+    for (const participantId of normalizedRuntimeHosts.danglingParticipantIds)
+      delete participants[participantId].runtimeHostId
+    if (normalizedRuntimeHosts.changed) changed = true
 
     if (stored.nextMessageSequence !== nextMessageSequence) changed = true
     const attachments = Array.isArray(stored.attachments)
@@ -814,8 +801,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const agentVoice: AgentVoiceState = {}
     for (const [participantId, rawGrant] of Object.entries(raw)) {
       const participant = participants[participantId]
-      const host = participant?.runtimeHostId
-        ? runtimeHosts[participant.runtimeHostId]
+      const host = participant
+        ? runtimeHostForParticipant(runtimeHosts, participant)
         : undefined
       const grant = rawGrant as Partial<AgentVoiceState[string]> | null
       const valid =
@@ -960,7 +947,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return { ...participant, media }
         }),
       // #176 Phase A: one readiness projection per Runtime Host id.
-      runtimeHosts: room.runtimeHosts ?? {},
+      runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
       messages: room.messages,
       meetingNotes: room.meetingNotes,
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
@@ -985,20 +972,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private isExpired(room: RoomRecord): boolean {
     return Date.now() >= room.expiresAt
-  }
-
-  // #176 Phase A (canonical model): drop Runtime Host projections that no
-  // participant references anymore. Runs after every participant removal so
-  // departed hosts cannot accumulate stale readiness in Room state.
-  private gcRuntimeHosts(room: RoomRecord): void {
-    const hosts = room.runtimeHosts
-    if (!hosts) return
-    for (const hostId of Object.keys(hosts)) {
-      const stillReferenced = Object.values(room.participants).some(
-        (participant) => participant.runtimeHostId === hostId
-      )
-      if (!stillReferenced) delete hosts[hostId]
-    }
   }
 
   // Recomputes room.expiresAt from current participant count. Must run after
@@ -1310,7 +1283,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.json({
             ...result,
             participants: rosterProjection(room.participants),
-            runtimeHosts: room.runtimeHosts ?? {},
+            runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
           })
         )
       }
@@ -1357,7 +1330,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           // dumping the full room state into every turn.
           participants: rosterProjection(room.participants),
           // #176 Phase A: one readiness projection per Runtime Host id.
-          runtimeHosts: room.runtimeHosts ?? {},
+          runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
         })
       }
 
@@ -1385,7 +1358,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                 this.json({
                   ...this.agentEvents(current, participant.id, request.cursor),
                   participants: rosterProjection(current.participants),
-                  runtimeHosts: current.runtimeHosts ?? {},
+                  runtimeHosts: projectRuntimeHosts(current.runtimeHosts),
                 })
               )
             })
@@ -1411,7 +1384,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               .map((participant) => this.participantForInfo(participant))
           : [],
         // #176 Phase A: one readiness projection per Runtime Host id.
-        runtimeHosts: room?.runtimeHosts ?? {},
+        runtimeHosts: projectRuntimeHosts(room?.runtimeHosts),
         capabilities: ROOM_CAPABILITIES,
         // Room-visible state, not a capability secret — the same
         // agentParticipantId is already visible in `participants` above.
@@ -1508,14 +1481,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           : {}),
       }
       room.participants[participant.id] = participant
-      if (registeredRuntimeHost) {
+      if (registeredRuntimeHost)
         // Canonical Room model (#176): ONE readiness projection per host id,
         // shared by all same-host Agents.
-        room.runtimeHosts = {
-          ...(room.runtimeHosts ?? {}),
-          [registeredRuntimeHost.runtimeHostId]: registeredRuntimeHost,
-        }
-      }
+        room.runtimeHosts = registerRuntimeHost(
+          room.runtimeHosts,
+          registeredRuntimeHost
+        )
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -1673,38 +1645,46 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           400
         )
       const host = validated.runtimeHost
-      const previousHostId = participant.runtimeHostId
-      const previousProjection = room.runtimeHosts?.[host.runtimeHostId]
-      // Canonical Room model (#176): upsert ONE readiness projection per
-      // host id, shared by all same-host Agents, then reference it from this
-      // participant. #170 makes authorization fail closed on either a host
-      // switch or a same-host TTS readiness loss.
-      room.runtimeHosts = {
-        ...(room.runtimeHosts ?? {}),
-        [host.runtimeHostId]: host,
-      }
+      // Canonical Room model (#176): upsert ONE readiness projection per host
+      // id, shared by all same-host Agents. The domain transition supplies
+      // the previous projection; Voice revocation remains an effect owned by
+      // this RoomSession command path.
+      const runtimeHostTransition = updateRuntimeHost(
+        room.runtimeHosts,
+        Object.values(room.participants),
+        participant.id,
+        host
+      )
+      room.runtimeHosts = runtimeHostTransition.runtimeHosts
       participant.runtimeHostId = host.runtimeHostId
       const revokeVoice = (candidate: RoomParticipant) => {
         if (!room.agentVoice[candidate.id]) return
         delete room.agentVoice[candidate.id]
         this.stageAgentMediaRevocation(room, candidate.id, "published")
       }
-      if (previousHostId && previousHostId !== host.runtimeHostId)
+      if (
+        runtimeHostTransition.previousHostId &&
+        runtimeHostTransition.previousHostId !== host.runtimeHostId
+      )
         revokeVoice(participant)
       if (
-        previousProjection?.speech.tts === true &&
+        runtimeHostTransition.previousProjection?.speech.tts === true &&
         host.speech.tts === false
-      ) {
-        for (const candidate of Object.values(room.participants))
-          if (
-            candidate.kind === "agent" &&
-            candidate.runtimeHostId === host.runtimeHostId
-          )
-            revokeVoice(candidate)
-      }
+      )
+        for (const candidateId of runtimeHostParticipantIds(
+          Object.values(room.participants),
+          host.runtimeHostId,
+          participant.id
+        )) {
+          const candidate = room.participants[candidateId]
+          if (candidate?.kind === "agent") revokeVoice(candidate)
+        }
       // Re-projection may move this participant to a new host id: collect
       // the previously referenced host if nothing else uses it.
-      this.gcRuntimeHosts(room)
+      room.runtimeHosts = garbageCollectRuntimeHosts(
+        room.runtimeHosts,
+        Object.values(room.participants)
+      )
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -1712,7 +1692,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.attemptCleanupNow(room.pendingMediaCleanup)
       return this.json({
         runtimeHost: host,
-        runtimeHosts: room.runtimeHosts,
+        runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
         expiresAt: room.expiresAt,
       })
     }
@@ -2190,7 +2170,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.stageAgentMediaRevocation(room, participant.id)
       const departingSurface = participant.surface
       delete room.participants[participant.id]
-      this.gcRuntimeHosts(room)
+      room.runtimeHosts = garbageCollectRuntimeHosts(
+        room.runtimeHosts,
+        Object.values(room.participants)
+      )
       room.meetingNotes = clearGrantIfParticipantDeparting(
         room.meetingNotes,
         participant.id
@@ -2547,7 +2530,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     delete room.participants[participant.id]
-    this.gcRuntimeHosts(room)
+    room.runtimeHosts = garbageCollectRuntimeHosts(
+      room.runtimeHosts,
+      Object.values(room.participants)
+    )
     room.meetingNotes = clearGrantIfParticipantDeparting(
       room.meetingNotes,
       participant.id
@@ -2794,7 +2780,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "leave") {
       delete room.participants[participant.id]
-      this.gcRuntimeHosts(room)
+      room.runtimeHosts = garbageCollectRuntimeHosts(
+        room.runtimeHosts,
+        Object.values(room.participants)
+      )
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       await this.broadcastState(room)
@@ -2909,8 +2898,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       const agent = room.participants[message.agentParticipantId]
       if (message.enabled) {
-        const host = agent?.runtimeHostId
-          ? room.runtimeHosts?.[agent.runtimeHostId]
+        const host = agent
+          ? runtimeHostForParticipant(room.runtimeHosts, agent)
           : undefined
         if (
           this.env.AGENT_MEDIA_ENABLED !== "true" ||
@@ -3435,7 +3424,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             surface: participant.surface,
           })
         delete room.participants[id]
-        this.gcRuntimeHosts(room)
+        room.runtimeHosts = garbageCollectRuntimeHosts(
+          room.runtimeHosts,
+          Object.values(room.participants)
+        )
         room.meetingNotes = clearGrantIfParticipantDeparting(
           room.meetingNotes,
           id
