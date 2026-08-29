@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/runtime"
 	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -154,6 +155,22 @@ func TestIpcSurfaceValidationErrorsAndFallbacks(t *testing.T) {
 		Summary:    "x",
 		InstanceID: "",
 	}, "collab result requires requestId, status, and summary")
+}
+
+func TestDaemonInfoReportsBuildVersion(t *testing.T) {
+	startDaemon(t)
+
+	raw, err := SendIPC(&IpcRequest{Op: "daemon-info"})
+	if err != nil {
+		t.Fatalf("daemon-info failed: %v", err)
+	}
+	var info DaemonInfo
+	if err := json.Unmarshal(raw, &info); err != nil {
+		t.Fatalf("daemon-info parse failed: %v", err)
+	}
+	if info.DaemonVersion != doctor.Version {
+		t.Fatalf("daemon version mismatch: got %q want %q", info.DaemonVersion, doctor.Version)
+	}
 }
 
 // recordingClient captures capability updates and room sends so ambiguity,
