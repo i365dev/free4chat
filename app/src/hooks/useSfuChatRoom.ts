@@ -1107,21 +1107,24 @@ export function useSfuChatRoom(
         const previous = participantMapRef.current.get(participant.id)
         const previousTracks = previous?.media?.tracks ?? []
         const currentTracks = participant.media?.tracks ?? []
-        const trackRemoved = previousTracks.some(
-          (previousTrack) =>
-            !currentTracks.some(
-              (currentTrack) =>
-                currentTrack.trackName === previousTrack.trackName &&
-                currentTrack.kind === previousTrack.kind
-            )
-        )
+        const agentAudioTrackRemoved =
+          participant.kind === "agent" &&
+          previousTracks.some(
+            (previousTrack) =>
+              previousTrack.kind === "audio" &&
+              !currentTracks.some(
+                (currentTrack) =>
+                  currentTrack.trackName === previousTrack.trackName &&
+                  currentTrack.kind === previousTrack.kind
+              )
+          )
         if (
           previous?.media &&
           participant.media &&
           previous.media.sessionId !== participant.media.sessionId
         )
           resetRemoteParticipant(participant.id)
-        else if (trackRemoved) resetRemoteParticipant(participant.id)
+        else if (agentAudioTrackRemoved) resetRemoteParticipant(participant.id)
       }
       participantMapRef.current = new Map(
         state.participants.map((participant) => [
