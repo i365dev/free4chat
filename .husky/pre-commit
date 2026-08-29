@@ -1,13 +1,82 @@
 #!/bin/sh
+set -eu
+
 ROOT="$(git rev-parse --show-toplevel)"
-
-cd "$ROOT/app" || exit 1
-npx prettier --write . > /dev/null 2>&1
-npx eslint src --fix --max-warnings 0 > /dev/null 2>&1
-
 cd "$ROOT"
-# Re-stage any files the fixers touched (modifications only, never deletions).
-changed=$(git diff --name-only)
-if [ -n "$changed" ]; then
-  echo "$changed" | while read -r f; do git add "$f" 2>/dev/null; done
+
+# Format only files already staged for this commit.  Running the fixers over the
+# entire app directory and then staging every working-tree change can silently
+# pull unrelated work into a commit.
+format_files=""
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  case "$file" in
+    app/*.js | app/*.cjs | app/*.mjs | app/*.jsx | app/*.ts | app/*.tsx | app/*.mts | app/*.cts | app/*.json | app/*.jsonc | app/*.css | app/*.md | app/*.mdx | app/*.svg | app/*.yml | app/*.yaml)
+      format_files="${format_files}${format_files:+
+}${file#app/}"
+      ;;
+  esac
+done <<EOF
+$(git diff --cached --name-only --diff-filter=ACMR -- app)
+EOF
+
+[ -n "$format_files" ] || exit 0
+
+# A formatter can only safely re-stage a file when it has no unstaged hunks.
+# Refuse the commit instead of changing its index in that case.
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  if ! git diff --quiet -- "app/$file"; then
+    echo "pre-commit: app/$file has unstaged changes; stage or stash them before committing." >&2
+    exit 1
+  fi
+done <<EOF
+$format_files
+EOF
+
+(
+  cd "$ROOT/app"
+  set --
+  while IFS= read -r file; do
+    [ -n "$file" ] && set -- "$@" "$file"
+  done <<EOF
+$format_files
+EOF
+  npx prettier --write "$@"
+)
+
+eslint_files=""
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  case "$file" in
+    src/*.js | src/*.cjs | src/*.mjs | src/*.jsx | src/*.ts | src/*.tsx | src/*.mts | src/*.cts)
+      eslint_files="${eslint_files}${eslint_files:+
+}${file}"
+      ;;
+  esac
+done <<EOF
+$format_files
+EOF
+
+if [ -n "$eslint_files" ]; then
+  (
+    cd "$ROOT/app"
+    set --
+    while IFS= read -r file; do
+      [ -n "$file" ] && set -- "$@" "$file"
+    done <<EOF
+$eslint_files
+EOF
+    npx eslint --fix --max-warnings 0 -- "$@"
+  )
 fi
+
+# Re-stage exactly the files that were staged and formatted above—never every
+# changed file in the worktree.
+set --
+while IFS= read -r file; do
+  [ -n "$file" ] && set -- "$@" "app/$file"
+done <<EOF
+$format_files
+EOF
+git add -- "$@"
