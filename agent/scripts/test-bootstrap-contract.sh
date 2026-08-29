@@ -51,6 +51,9 @@ expect_text "explicit pin remains documented" 'FREE4CHAT_AGENT_VERSION=x.y.z' "$
 expect_text "current binaries avoid reinstall" 'must not trigger the installer or another download' "$DOC"
 expect_text "running process boundary remains explicit" 'does not replace an already-running old daemon' "$DOC"
 expect_text "version query is the local check" 'free4chat-agent version --json' "$DOC"
+expect_text "published old releases have a fallback" 'fall back to' "$DOC"
+expect_text "doctor is the compatibility fallback" 'free4chat-agent doctor --json' "$DOC"
+expect_text "both probes must fail before fail-closed install" 'both commands fail' "$DOC"
 
 join_line="$(grep -n '^   free4chat-agent join' "$DOC" | tail -1 | cut -d: -f1)"
 verify_line="$(grep -n 'exactly equals the expected version above' "$DOC" | tail -1 | cut -d: -f1)"
@@ -85,6 +88,117 @@ if [ ! -e "$WORK/runtime" ]; then
   note "PASS: version --json does not start a daemon"
 else
   note "FAIL: version --json touched the daemon runtime directory" >&2
+  fail=1
+fi
+
+# Exercise the exact compatibility path used for the published v0.5.4
+# binary: the new fast path is unsupported, but doctor --json is valid.
+extract_version() {
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' |
+    head -1
+}
+
+is_stable_version() {
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+probe_runtime_version() {
+  local binary="$1" output version
+  output="$("$binary" version --json 2>/dev/null)" || output=""
+  version="$(printf '%s\n' "$output" | extract_version)"
+  if [ -n "$version" ] && is_stable_version "$version"; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+  output="$("$binary" doctor --json 2>/dev/null)" || output=""
+  version="$(printf '%s\n' "$output" | extract_version)"
+  if [ -n "$version" ] && is_stable_version "$version"; then
+    printf '%s\n' "$version"
+    return 0
+  fi
+  return 1
+}
+
+bootstrap_action() {
+  local binary="$1" expected="$2" installed
+  if [ ! -x "$binary" ]; then
+    printf '%s\n' install
+    return 0
+  fi
+  installed="$(probe_runtime_version "$binary")" || installed=""
+  if [ "$installed" = "$expected" ]; then
+    printf '%s\n' reuse
+  else
+    printf '%s\n' install
+  fi
+}
+
+write_fake_agent() {
+  local path="$1" fast_path="$2" doctor_version="$3"
+  cat > "$path" <<EOF
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "version --json")
+    $fast_path
+    ;;
+  "doctor --json")
+    printf '{"version":"$doctor_version"}\n'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
+  chmod +x "$path"
+}
+
+write_fake_agent "$WORK/published-v0.5.4" 'echo unsupported >&2; exit 2' "$source_version"
+write_fake_agent "$WORK/stale-contract" 'echo unsupported >&2; exit 2' "0.5.3"
+write_fake_agent "$WORK/newer-contract" 'printf "%s\\n" "{\\"version\\":\\"0.5.5\\"}"' "0.5.5"
+write_fake_agent "$WORK/malformed-contract" 'echo not-json; exit 0' "not-a-version"
+write_fake_agent "$WORK/wrong-after-install" 'echo unsupported >&2; exit 2' "0.5.3"
+
+if [ "$(bootstrap_action "$WORK/published-v0.5.4" "$source_version")" = reuse ] &&
+  [ "$(probe_runtime_version "$WORK/published-v0.5.4")" = "$source_version" ]; then
+  note "PASS: published old-contract binary reuses via doctor fallback"
+else
+  note "FAIL: published old-contract binary did not reuse via doctor fallback" >&2
+  fail=1
+fi
+if [ "$(bootstrap_action "$WORK/free4chat-agent" "$source_version")" = reuse ]; then
+  note "PASS: new exact-version binary reuses via fast path"
+else
+  note "FAIL: new exact-version binary did not reuse" >&2
+  fail=1
+fi
+if [ "$(bootstrap_action "$WORK/stale-contract" "$source_version")" = install ]; then
+  note "PASS: older old-contract binary selects installer"
+else
+  note "FAIL: older old-contract binary bypassed installer" >&2
+  fail=1
+fi
+if [ "$(bootstrap_action "$WORK/newer-contract" "$source_version")" = install ]; then
+  note "PASS: newer binary selects installer"
+else
+  note "FAIL: newer binary was silently accepted" >&2
+  fail=1
+fi
+if [ "$(bootstrap_action "$WORK/malformed-contract" "$source_version")" = install ]; then
+  note "PASS: malformed probes fail closed"
+else
+  note "FAIL: malformed probes were silently accepted" >&2
+  fail=1
+fi
+if [ "$(bootstrap_action "$WORK/missing-agent" "$source_version")" = install ]; then
+  note "PASS: missing binary selects installer"
+else
+  note "FAIL: missing binary did not select installer" >&2
+  fail=1
+fi
+if [ "$(probe_runtime_version "$WORK/wrong-after-install" 2>/dev/null)" != "$source_version" ]; then
+  note "PASS: wrong post-install version blocks readiness"
+else
+  note "FAIL: wrong post-install version was accepted" >&2
   fail=1
 fi
 

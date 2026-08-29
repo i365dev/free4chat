@@ -11,11 +11,12 @@ describe("buildAgentInvitePrompt bootstrap contract", () => {
     )
     expect(prompt).toContain("command -v")
     expect(prompt).toContain("free4chat-agent version --json")
+    expect(prompt).toContain("fall back to free4chat-agent doctor --json")
     expect(prompt).toContain("exactly matches the current expected version")
     expect(prompt).toContain("missing, stale, newer/different")
     expect(prompt).toContain("official checksum-verifying installer")
     expect(prompt).toContain(
-      "verify the resulting local version before joining"
+      "verify the resulting local version with the same compatible probe before joining"
     )
   })
 

@@ -57,8 +57,8 @@ mkdir -p "$WORK/assets"
 (
   cd agent
   # The fake asset only needs to run on this test host. Keep native cgo on
-  # macOS so the optional Keychain package remains available; release builds
-  # still use the CGO-disabled matrix in agent/scripts/release.sh.
+  # macOS so the optional Keychain package remains available; the release
+  # script makes the corresponding Darwin-vs-Linux cgo choice explicitly.
   GOCACHE="$WORK/go-cache" CGO_ENABLED=1 GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -o "$WORK/assets/$asset_name" ./cmd/free4chat-agent
 )
