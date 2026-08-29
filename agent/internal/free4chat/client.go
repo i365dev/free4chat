@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -285,8 +286,8 @@ func (c *Client) RoomInfo(roomID string) (types.RoomInfo, error) {
 	}
 	info.MeetingNotes = parseGrantState(result["meetingNotes"])
 	info.MeetingNotesMediaAvailable = result["meetingNotesMediaAvailable"] == true
-	info.VoiceReply = parseVoiceReplyState(result["voiceReply"])
-	info.VoiceReplyMediaAvailable = result["voiceReplyMediaAvailable"] == true
+	info.AgentVoice = parseAgentVoice(result["agentVoice"])
+	info.AgentVoiceMediaAvailable = result["agentVoiceMediaAvailable"] == true
 	return info, nil
 }
 
@@ -306,20 +307,24 @@ func parseGrantState(raw any) types.MeetingNotesInfo {
 	return info
 }
 
-func parseVoiceReplyState(raw any) types.VoiceReplyInfo {
+func parseAgentVoice(raw any) map[string]types.AgentVoiceGrant {
 	record, _ := raw.(map[string]any)
-	info := types.VoiceReplyInfo{}
-	if record == nil {
-		return info
+	grants := make(map[string]types.AgentVoiceGrant)
+	for participantID, rawGrant := range record {
+		grant, ok := rawGrant.(map[string]any)
+		if !ok || grant["enabled"] != true {
+			continue
+		}
+		enabledAt, ok := grant["enabledAt"].(float64)
+		if !ok ||
+			enabledAt <= 0 ||
+			enabledAt >= 1<<63 ||
+			enabledAt != math.Trunc(enabledAt) {
+			continue
+		}
+		grants[participantID] = types.AgentVoiceGrant{EnabledAt: int64(enabledAt)}
 	}
-	info.Active = record["active"] == true
-	if id, ok := record["agentParticipantId"].(string); ok {
-		info.AgentParticipantID = id
-	}
-	if started, ok := record["startedAt"].(float64); ok {
-		info.StartedAt = int64(started)
-	}
-	return info
+	return grants
 }
 
 func parseJoinLike(result map[string]any) (types.JoinResult, error) {

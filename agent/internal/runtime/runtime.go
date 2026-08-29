@@ -70,6 +70,9 @@ type Options struct {
 	HostSeed string
 	// Voice configures outbound Voice Reply (nil = Meeting Notes only).
 	Voice *media.VoiceConfig
+	// HostVoiceGate is daemon-owned and shared by every resident Runtime on
+	// this local Runtime Host. It serializes full TTS+publication operations.
+	HostVoiceGate voice.Gate
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness

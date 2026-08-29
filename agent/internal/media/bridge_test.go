@@ -151,6 +151,9 @@ func (f *fakeEngine) FlushAudio(token uint64) error {
 	f.mu.Unlock()
 	return nil
 }
+func (f *fakeEngine) FlushAudioAndWait(token uint64) error {
+	return f.FlushAudio(token)
+}
 func (f *fakeEngine) PublishCounts() map[string]uint64 {
 	return map[string]uint64{"opus_frames_written": uint64(len(f.snapshotWrites()))}
 }

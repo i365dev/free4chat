@@ -15,6 +15,10 @@ export interface UserInfo {
   // #176 Phase A: the Room-scoped Runtime Host id behind this Agent (agents
   // only). Readiness itself travels once per host in Room state.
   runtimeHostId?: string
+  // Derived client-side from one Runtime Host TTS projection plus the Room's
+  // participant-specific agentVoice authorization. Never persisted here.
+  voiceAvailable?: boolean
+  voiceEnabled?: boolean
 }
 
 export type MessageType = "text" | "image" | "file" | "action"

@@ -4,12 +4,10 @@ import {
   clearGrantIfParticipantDeparting,
   isAgentAuthorizedForMedia,
   isAgentAuthorizedForSharedMedia,
-  isValidVoiceReplyState,
+  isAgentAuthorizedForVoice,
   NO_MEETING_NOTES,
-  NO_VOICE_REPLY,
   resolveAgentPurposePermission,
   startMeetingNotes,
-  startVoiceReply,
 } from "./meetingNotesAuth"
 
 describe("isAgentAuthorizedForMedia", () => {
@@ -98,42 +96,54 @@ describe("full lifecycle", () => {
 describe("isAgentAuthorizedForSharedMedia (#83 review: MN OR VR admission)", () => {
   const mn = (agent?: string) =>
     agent ? startMeetingNotes(agent, 1000) : NO_MEETING_NOTES
-  const vr = (agent?: string) =>
-    agent ? startVoiceReply(agent, 1000) : NO_VOICE_REPLY
+  const voice = (agent?: string) =>
+    agent ? { [agent]: { enabled: true as const, enabledAt: 1000 } } : {}
 
   it("admits the shared session under a Meeting Notes grant alone", () => {
     expect(
-      isAgentAuthorizedForSharedMedia(mn("agent-a"), vr(), "agent-a")
+      isAgentAuthorizedForSharedMedia(mn("agent-a"), voice(), "agent-a")
     ).toBe(true)
   })
 
-  it("admits the shared session under a voiceReply grant alone (MN off, VR on)", () => {
+  it("admits the shared session under an Agent Voice grant alone", () => {
     expect(
-      isAgentAuthorizedForSharedMedia(mn(), vr("agent-a"), "agent-a")
+      isAgentAuthorizedForSharedMedia(mn(), voice("agent-a"), "agent-a")
     ).toBe(true)
   })
 
   it("admits when both grants name the agent", () => {
     expect(
-      isAgentAuthorizedForSharedMedia(mn("agent-a"), vr("agent-a"), "agent-a")
+      isAgentAuthorizedForSharedMedia(
+        mn("agent-a"),
+        voice("agent-a"),
+        "agent-a"
+      )
     ).toBe(true)
   })
 
   it("denies when neither grant is active", () => {
-    expect(isAgentAuthorizedForSharedMedia(mn(), vr(), "agent-a")).toBe(false)
+    expect(isAgentAuthorizedForSharedMedia(mn(), voice(), "agent-a")).toBe(
+      false
+    )
   })
 
   it("denies an agent named by neither grant even while both are active for others", () => {
     expect(
-      isAgentAuthorizedForSharedMedia(mn("agent-b"), vr("agent-c"), "agent-a")
+      isAgentAuthorizedForSharedMedia(
+        mn("agent-b"),
+        voice("agent-c"),
+        "agent-a"
+      )
     ).toBe(false)
   })
 
   it("denies once the only authorizing grant stops", () => {
     const notes = startMeetingNotes("agent-a", 1000)
-    expect(isAgentAuthorizedForSharedMedia(notes, vr(), "agent-a")).toBe(true)
+    expect(isAgentAuthorizedForSharedMedia(notes, voice(), "agent-a")).toBe(
+      true
+    )
     expect(
-      isAgentAuthorizedForSharedMedia(NO_MEETING_NOTES, vr(), "agent-a")
+      isAgentAuthorizedForSharedMedia(NO_MEETING_NOTES, voice(), "agent-a")
     ).toBe(false)
   })
 })
@@ -183,53 +193,11 @@ describe("resolveAgentPurposePermission — agent-transport purpose", () => {
   })
 })
 
-describe("isValidVoiceReplyState (#130 P1)", () => {
-  it("accepts an inactive grant without further fields", () => {
-    expect(isValidVoiceReplyState({ active: false })).toBe(true)
-  })
-
-  it("accepts an active grant with non-empty agent id and numeric startedAt", () => {
-    expect(
-      isValidVoiceReplyState({
-        active: true,
-        agentParticipantId: "agent-1",
-        startedAt: 1000,
-      })
-    ).toBe(true)
-  })
-
-  it("rejects an active grant with a missing or invalid startedAt", () => {
-    expect(
-      isValidVoiceReplyState({ active: true, agentParticipantId: "a" })
-    ).toBe(false)
-    expect(
-      isValidVoiceReplyState({
-        active: true,
-        agentParticipantId: "a",
-        startedAt: "not-a-number",
-      })
-    ).toBe(false)
-  })
-
-  it("rejects an active grant with empty/non-string agent id", () => {
-    expect(
-      isValidVoiceReplyState({
-        active: true,
-        agentParticipantId: "",
-        startedAt: 1,
-      })
-    ).toBe(false)
-    expect(
-      isValidVoiceReplyState({
-        active: true,
-        agentParticipantId: 42,
-        startedAt: 1,
-      })
-    ).toBe(false)
-  })
-
-  it("rejects non-object values", () => {
-    for (const bad of [undefined, null, "nope", 42])
-      expect(isValidVoiceReplyState(bad)).toBe(false)
+describe("isAgentAuthorizedForVoice", () => {
+  it("authorizes only present enabled participant grants", () => {
+    const voice = { "agent-a": { enabled: true as const, enabledAt: 1000 } }
+    expect(isAgentAuthorizedForVoice(voice, "agent-a")).toBe(true)
+    expect(isAgentAuthorizedForVoice(voice, "agent-b")).toBe(false)
+    expect(isAgentAuthorizedForVoice({}, "agent-a")).toBe(false)
   })
 })

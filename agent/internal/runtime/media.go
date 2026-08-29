@@ -89,6 +89,7 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	voiceConfig = &media.VoiceConfig{
 		TrackName:     "agent-voice",
 		MaxChunkChars: 220,
+		HostVoiceGate: r.options.HostVoiceGate,
 		CreateTtsProvider: func() (speech.StreamingTtsProvider, error) {
 			if !speechConfig.TTSEnabled {
 				return nil, nil
@@ -158,7 +159,7 @@ func (r *ResidentRuntime) notifySpeechPrerequisite(kind media.GrantKind) {
 // split: the grant kind decides which local slot (STT or TTS) must exist.
 func buildSpeechNotice(config speech.Config, kind media.GrantKind) string {
 	switch kind {
-	case media.GrantVoiceReply:
+	case media.GrantAgentVoice:
 		if !config.TTSEnabled {
 			return "Voice Reply was requested, but no text-to-speech provider is configured in my local runtime. I'll complete speech setup in my own session before speaking — please don't paste API keys into this room."
 		}
@@ -214,7 +215,7 @@ func (r *ResidentRuntime) logVoiceBridgeStats(event string) {
 }
 
 // voiceOutput returns the current speakable output (nil when no live
-// voiceReply grant); callers stay text-only on nil.
+// Agent Voice grant); callers stay text-only on nil.
 func (r *ResidentRuntime) voiceOutput() *voice.Speaker {
 	if r.voiceSrc == nil {
 		return nil

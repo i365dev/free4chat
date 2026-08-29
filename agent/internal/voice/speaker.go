@@ -1,6 +1,7 @@
 package voice
 
 import (
+	"context"
 	"sync"
 	"unicode"
 
@@ -37,7 +38,10 @@ type Options struct {
 	CreateSink      func(token uint64) (Sink, error)
 	MaxQueuedChunks int
 	MaxChunkChars   int
-	OnEvent         func(SpeakerEvent)
+	// Gate spans provider synthesis through final audible flush. A nil gate
+	// gives a direct/test Runtime its own gate.
+	Gate    Gate
+	OnEvent func(SpeakerEvent)
 }
 
 // Speaker is the runtime-owned bridge between response text and the
@@ -57,6 +61,7 @@ type Speaker struct {
 	maxQueuedChunks int
 	maxChunkChars   int
 	onEvent         func(SpeakerEvent)
+	gate            Gate
 
 	mu             sync.Mutex
 	pending        []string
@@ -70,6 +75,7 @@ type Speaker struct {
 	sinkBroken     bool
 	draining       bool
 	drainDone      chan struct{}
+	drainCancel    context.CancelFunc
 }
 
 // NewSpeaker builds an idle speaker.
@@ -85,12 +91,17 @@ func NewSpeaker(options Options) *Speaker {
 	if onEvent == nil {
 		onEvent = func(SpeakerEvent) {}
 	}
+	gate := options.Gate
+	if gate == nil {
+		gate = NewGate()
+	}
 	return &Speaker{
 		provider:        options.Provider,
 		createSink:      options.CreateSink,
 		maxQueuedChunks: maxQueued,
 		maxChunkChars:   options.MaxChunkChars,
 		onEvent:         onEvent,
+		gate:            gate,
 	}
 }
 
@@ -166,6 +177,7 @@ func (s *Speaker) cancelLocked() func() {
 	if s.lastStartedSet {
 		token = uint64(s.lastStarted)
 	}
+	drainCancel := s.drainCancel
 	var action func()
 	sink := s.sink
 	sinkTurn := s.sinkTurn
@@ -185,7 +197,15 @@ func (s *Speaker) cancelLocked() func() {
 	if s.lastStartedSet {
 		s.onEventUnlocked(SpeakerEvent{Type: "turnCancelled", Turn: s.lastStarted})
 	}
-	return action
+	if drainCancel == nil {
+		return action
+	}
+	return func() {
+		drainCancel()
+		if action != nil {
+			action()
+		}
+	}
 }
 
 func (s *Speaker) onEventUnlocked(event SpeakerEvent) {
@@ -204,7 +224,11 @@ func (s *Speaker) Close() error {
 	done := s.drainDone
 	sink := s.sink
 	s.sink = nil
+	cancel := s.drainCancel
 	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if done != nil {
 		<-done
 	}
@@ -222,13 +246,16 @@ func (s *Speaker) startDrain() {
 	}
 	s.draining = true
 	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	s.drainDone = done
+	s.drainCancel = cancel
 	s.mu.Unlock()
 	go func() {
-		s.drain()
+		s.drain(ctx)
 		s.mu.Lock()
 		s.draining = false
 		s.drainDone = nil
+		s.drainCancel = nil
 		restart := !s.stopped && len(s.pending) > 0
 		s.mu.Unlock()
 		close(done)
@@ -238,7 +265,12 @@ func (s *Speaker) startDrain() {
 	}()
 }
 
-func (s *Speaker) drain() {
+func (s *Speaker) drain(ctx context.Context) {
+	release, err := s.gate.Acquire(ctx)
+	if err != nil {
+		return
+	}
+	defer release()
 	s.mu.Lock()
 	epoch := s.epoch
 	s.mu.Unlock()

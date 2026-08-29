@@ -187,13 +187,13 @@ export function isHumanAudioTrackTarget(
 // Which Agent media directions a revocation trigger covers (#83 review).
 // The Meeting Notes grant independently authorizes Human→Agent *subscribe*
 // media on the agent's session (tracked as agentSubscribedMids); the
-// voiceReply grant independently authorizes Agent→Human *published* media
+// Agent Voice grant independently authorizes Agent→Human *published* media
 // (agentPublishedMid plus its room-visible audio track entry). Stopping or
 // reassigning ONE grant must never tear down the OTHER grant's
 // still-active media — so every trigger stages exactly its own direction:
 //
 // - "subscribed": meeting-notes-stop / note-taker reassignment only.
-// - "published": voice-reply-stop / speaker reassignment only.
+// - "published": disabling Agent Voice / speaker reassignment only.
 // - "both": participant leave, lease-expiry sweep, and full media-session
 //   rotation (S1→S2), which tear down everything by definition.
 export type AgentMediaRevocationDirection = "subscribed" | "published" | "both"

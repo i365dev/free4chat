@@ -349,11 +349,11 @@ type MeetingNotesInfo struct {
 	StartedAt          int64  `json:"startedAt,omitempty"`
 }
 
-// VoiceReplyInfo is the room-visible voiceReply grant state (#83).
-type VoiceReplyInfo struct {
-	Active             bool   `json:"active"`
-	AgentParticipantID string `json:"agentParticipantId,omitempty"`
-	StartedAt          int64  `json:"startedAt,omitempty"`
+// AgentVoiceGrant is one participant-specific outbound voice authorization.
+// Its presence (not a display name or Runtime Host) is the only Runtime-side
+// permission to speak; EnabledAt is the authorization epoch.
+type AgentVoiceGrant struct {
+	EnabledAt int64 `json:"enabledAt"`
 }
 
 // RoomInfo is the sanitized room_info projection. It never contains tokens,
@@ -364,9 +364,9 @@ type RoomInfo struct {
 	MeetingNotes MeetingNotesInfo         `json:"meetingNotes"`
 	// Fail closed: only explicit true counts. Media is PR 2 scope in the Go
 	// runtime; these fields remain part of the transport contract.
-	MeetingNotesMediaAvailable bool           `json:"meetingNotesMediaAvailable"`
-	VoiceReply                 VoiceReplyInfo `json:"voiceReply"`
-	VoiceReplyMediaAvailable   bool           `json:"voiceReplyMediaAvailable"`
+	MeetingNotesMediaAvailable bool                       `json:"meetingNotesMediaAvailable"`
+	AgentVoice                 map[string]AgentVoiceGrant `json:"agentVoice"`
+	AgentVoiceMediaAvailable   bool                       `json:"agentVoiceMediaAvailable"`
 }
 
 // WaitResult is wait_for_events' long-poll result with the advanced cursor.

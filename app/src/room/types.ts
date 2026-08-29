@@ -185,14 +185,18 @@ export interface MeetingNotesState {
   startedAt?: number
 }
 
-// Room-scoped voiceReply grant (#83): authorizes exactly one connected
-// resident Agent to publish its single outbound audio track. Same shape as
-// MeetingNotesState so "never granted" and "stopped" look identical.
-export interface VoiceReplyState {
-  active: boolean
-  agentParticipantId?: string
-  startedAt?: number
+// A Room-wide publish authorization for one currently connected Agent. The
+// entry exists only while enabled; absence means muted. enabledAt is the
+// participant-specific authorization epoch consumed by resident Runtimes.
+export interface AgentVoiceGrant {
+  enabled: true
+  enabledAt: number
 }
+
+// Canonical Agent Voice authorization. This deliberately carries no false
+// entries and no Runtime Host details: readiness belongs to runtimeHosts and
+// authorization belongs to the participant that will publish the audio.
+export type AgentVoiceState = Record<string, AgentVoiceGrant>
 
 // Directional media permissions for an Agent media session (#83) — booleans
 // only, never secrets or media identifiers.
@@ -217,8 +221,10 @@ export interface RoomState {
   // false: every actual Runtime media request would 403 regardless of the
   // room-visible grant.
   meetingNotesMediaAvailable: boolean
-  voiceReply: VoiceReplyState
-  voiceReplyMediaAvailable: boolean
+  agentVoice: AgentVoiceState
+  // Coarse Worker media admission switch. Per-Agent UI availability still
+  // comes from the Runtime Host's TTS readiness, never from this field.
+  agentVoiceMediaAvailable: boolean
 }
 
 // A Cloudflare Realtime track-close attempt that hasn't been confirmed
@@ -243,7 +249,7 @@ export interface RoomRecord {
   attachments: RoomAttachment[]
   nextMessageSequence: number
   meetingNotes: MeetingNotesState
-  voiceReply: VoiceReplyState
+  agentVoice: AgentVoiceState
   pendingMediaCleanup: PendingMediaCleanup[]
 }
 

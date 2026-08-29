@@ -19,6 +19,7 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/runtime"
 	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
+	"github.com/i365dev/free4chat/agent/internal/voice"
 )
 
 // residentInstance is one live room runtime owned by the daemon.
@@ -38,6 +39,7 @@ type Daemon struct {
 	stopping   bool
 	finalized  bool
 	finishOnce sync.Once
+	voiceGate  voice.Gate
 }
 
 // New creates an idle daemon.
@@ -45,6 +47,7 @@ func New() *Daemon {
 	return &Daemon{
 		instances: make(map[string]*residentInstance),
 		closed:    make(chan struct{}),
+		voiceGate: voice.NewGate(),
 	}
 }
 
@@ -423,6 +426,7 @@ func (d *Daemon) prepareRuntime(
 		TranscriptPath: transcriptPath,
 		Speech:         &speechConfig,
 		HostSeed:       hostSeed,
+		HostVoiceGate:  d.voiceGate,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the
