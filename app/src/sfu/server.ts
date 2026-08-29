@@ -599,6 +599,7 @@ export async function handleSfuRequest(
       matchingTrackStatus: publisher.matchingTrackStatus,
       matchingTrackHasMid: publisher.matchingTrackHasMid,
       active,
+      downstreamReady: false,
     }
     if (!active) return json(diagnostic)
     const activation = await roomControl(env, room, {
@@ -609,6 +610,18 @@ export async function handleSfuRequest(
       trackName,
     })
     if (!activation.ok) return activation
+    const readiness = await roomControl(env, room, {
+      action: "agent-track-ready",
+      participantId,
+      token,
+      sessionId,
+      trackName,
+    })
+    if (!readiness.ok) return readiness
+    const readinessBody = (await readiness.json().catch(() => ({}))) as {
+      ready?: unknown
+    }
+    diagnostic.downstreamReady = readinessBody.ready === true
     return json(diagnostic)
   }
 
@@ -823,6 +836,7 @@ export async function handleSfuRequest(
           sessionId,
           mid: publishedMid,
           trackName: publishTrackName,
+          announce: false,
         })
         if (!registered.ok) {
           const closed = await closeRealtimeTracks(env, sessionId, [

@@ -241,6 +241,7 @@ export function stageAgentMediaRevocation(
   if (direction !== "subscribed") {
     nextMedia.agentPublishedMid = undefined
     nextMedia.agentPublishedTrackName = undefined
+    nextMedia.agentVoiceReady = undefined
     nextMedia.tracks = nextMedia.tracks.filter(
       (track) => track.kind !== "audio"
     )

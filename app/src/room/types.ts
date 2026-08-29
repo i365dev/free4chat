@@ -26,9 +26,14 @@ export interface RoomMediaState {
   // track (#83) — the revocation handle for server-side close; never
   // broadcast to clients.
   agentPublishedMid?: string
-  // Kept private until the Runtime confirms that the publication has
-  // accepted its first PCM packet. At that point it is moved into `tracks`.
+  // Private revocation metadata retained while the public `tracks` entry is
+  // announced after the Runtime's bounded silent publisher priming. The
+  // Runtime does not drain user PCM until a Human subscription ACKs readiness.
   agentPublishedTrackName?: string
+  // Set only after a Human has completed the remote-track negotiation for the
+  // current Agent Voice publication. Private readiness bookkeeping; never
+  // broadcast or returned from room_info.
+  agentVoiceReady?: boolean
 }
 
 // #176 Phase A (canonical Room model, #178 review): one coarse, secret-free

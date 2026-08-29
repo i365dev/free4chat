@@ -1006,6 +1006,23 @@ export function useSfuChatRoom(
             sessionDescription: { type: answer.type, sdp: answer.sdp },
           })
           voiceDownstreamDiagnostic("renegotiate_ok", { renegotiate_ok: 1 })
+          if (participant.kind === "agent" && track.kind === "audio") {
+            // The Runtime must not drain a first utterance merely because
+            // Cloudflare booked its upstream publication. This ACK is sent
+            // only after the Human browser has completed the full remote
+            // tracks/new + answer + renegotiate path for that exact session
+            // and track; the Room validates it against the private current
+            // publication before making it visible to the Runtime.
+            sendSocketMessage({
+              type: "agent-voice-ready",
+              agentParticipantId: participant.id,
+              sessionId: media.sessionId,
+              trackName: track.trackName,
+            })
+            voiceDownstreamDiagnostic("agent_voice_ready_ack_sent", {
+              agent_voice_ready_ack_sent: 1,
+            })
+          }
         } catch (error) {
           voiceDownstreamDiagnostic("negotiation_failed", {
             stage: "renegotiate",
@@ -1020,7 +1037,7 @@ export function useSfuChatRoom(
         })
       })
     },
-    [apiRequest, enqueueNegotiation, roomName]
+    [apiRequest, enqueueNegotiation, roomName, sendSocketMessage]
   )
 
   const applyRoomState = useCallback(

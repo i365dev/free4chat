@@ -501,6 +501,19 @@ describe("useSfuChatRoom room attachments (#123)", () => {
         )
       ).toBe(true)
     )
+    await waitFor(() =>
+      expect(
+        ws.sent
+          .map((raw) => JSON.parse(raw))
+          .some(
+            (m) =>
+              m.type === "agent-voice-ready" &&
+              m.agentParticipantId === "agent-b" &&
+              m.sessionId === "agent-session" &&
+              m.trackName === "agent-voice"
+          )
+      ).toBe(true)
+    )
     unmount()
   })
 
