@@ -138,7 +138,7 @@ func TestJoinRoomAndLifecycleCalls(t *testing.T) {
 		}
 	})
 
-	joined, err := client.JoinRoom("test-room", "Pi", []string{"code"})
+	joined, err := client.JoinRoom("test-room", "Pi", []string{"code"}, nil)
 	if err != nil {
 		t.Fatalf("join failed: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestHTTPStatusClassification(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte(tc.body))
 		})
-		_, err := client.JoinRoom("r", "n", nil)
+		_, err := client.JoinRoom("r", "n", nil, nil)
 		e, ok := err.(*Error)
 		if !ok || e.Code != tc.wantCode {
 			t.Fatalf("status %d: expected %s got %v", tc.status, tc.wantCode, err)
@@ -506,5 +506,154 @@ func TestClientSendsExplicitUserAgent(t *testing.T) {
 	}
 	if strings.Contains(seen, "Go-http-client") {
 		t.Fatalf("default Go UA must never be sent: %q", seen)
+	}
+}
+
+// #176 Phase A (as corrected by #178 review fix 3): the Runtime Host
+// projection rides join_room arguments only when present; create_room NEVER
+// accepts one (the roomId does not exist at call time); update_runtime_host
+// re-projects it. Legacy callers keep byte-identical payloads.
+func TestJoinCarriesRuntimeHostProjectionCreateRoomNeverDoes(t *testing.T) {
+	var seenBodies []map[string]any
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		switch toolNameOf(body) {
+		case "":
+			respondToolsList(w)
+			return
+		case "join_room", "create_room", "update_runtime_host":
+			seenBodies = append(seenBodies, body)
+			if toolNameOf(body) == "create_room" {
+				writeJSON(w, callResult(map[string]any{
+					"participantHandle": "h",
+					"participant":       map[string]any{"id": "a1"},
+					"cursor":            float64(1),
+					"expiresAt":         float64(9),
+					"invite": map[string]any{
+						"kind": "free4chat.room-invite", "version": float64(1),
+						"roomId": "r1", "roomUrl": "https://www.free4.chat/room?id=r1",
+					},
+				}))
+				return
+			}
+			if toolNameOf(body) == "join_room" {
+				writeJSON(w, callResult(map[string]any{
+					"participantHandle": "h",
+					"participant":       map[string]any{"id": "a1"},
+					"cursor":            float64(1),
+					"expiresAt":         float64(9),
+				}))
+				return
+			}
+			writeJSON(w, callResult(map[string]any{"ok": true}))
+			return
+		default:
+			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
+		}
+	})
+
+	host := types.RuntimeHostProjection{
+		RuntimeHostID: "11111111-2222-3333-4444-555555555555",
+		Speech:        types.HostSpeechReadiness{STT: true, TTS: false},
+	}
+
+	// Legacy join: no runtimeHost key at all.
+	if _, err := client.JoinRoom("room", "Pi", nil, nil); err != nil {
+		t.Fatalf("legacy join failed: %v", err)
+	}
+	// Hosted join: projection rides the arguments.
+	if _, err := client.JoinRoom("room", "Pi", nil, &host); err != nil {
+		t.Fatalf("hosted join failed: %v", err)
+	}
+	// Create NEVER carries runtimeHost: the roomId does not exist yet.
+	if _, err := client.CreateRoom("Pi", nil); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	// Hot-reload projection push.
+	if err := client.UpdateRuntimeHost("h", host); err != nil {
+		t.Fatalf("update_runtime_host failed: %v", err)
+	}
+
+	if len(seenBodies) != 4 {
+		t.Fatalf("expected 4 captured tool calls, saw %d", len(seenBodies))
+	}
+	if _, present := toolArgs(seenBodies[0])["runtimeHost"]; present {
+		t.Fatalf("legacy join must omit runtimeHost")
+	}
+	// create_room must NEVER carry runtimeHost (#178 review fix 3): the
+	// Room-scoped id cannot exist before the server-generated roomId.
+	if _, present := toolArgs(seenBodies[2])["runtimeHost"]; present {
+		t.Fatalf("create_room must never carry runtimeHost")
+	}
+	// Captured order: [0] legacy join, [1] hosted join, [2] create_room,
+	// [3] update_runtime_host.
+	for i, name := range map[int]string{1: "join_room", 3: "update_runtime_host"} {
+		_ = name
+		got := toolArgs(seenBodies[i])["runtimeHost"].(map[string]any)
+		if got["runtimeHostId"] != host.RuntimeHostID {
+			t.Fatalf("runtimeHostId mismatch at capture %d: %v", i, got)
+		}
+		speech := got["speech"].(map[string]any)
+		if speech["stt"] != true || speech["tts"] != false {
+			t.Fatalf("speech mismatch: %v", speech)
+		}
+	}
+}
+
+// #178 review fix 1: wait_for_events responses carry runtimeHosts as a
+// map of COMPLETE RuntimeHostProjection values — the real server shape.
+// The client must parse each value directly (never re-wrap it as speech)
+// and keep only entries whose embedded id matches the map key.
+func TestWaitForEventsParsesRuntimeHostsServerShape(t *testing.T) {
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		switch toolNameOf(body) {
+		case "":
+			respondToolsList(w)
+			return
+		case "wait_for_events":
+			writeJSON(w, callResult(map[string]any{
+				"events":    []any{},
+				"cursor":    float64(3),
+				"expiresAt": float64(100),
+				"participants": []any{
+					map[string]any{
+						"id": "agent-a", "name": "Agent A", "kind": "agent",
+						"runtimeHostId": "11111111-2222-3333-4444-555555555555",
+					},
+				},
+				"runtimeHosts": map[string]any{
+					// Real server shape: value IS the full projection.
+					"11111111-2222-3333-4444-555555555555": map[string]any{
+						"runtimeHostId": "11111111-2222-3333-4444-555555555555",
+						"speech":        map[string]any{"stt": true, "tts": false},
+					},
+					// Embedded id must match the map key, else drop.
+					"99999999-8888-7777-6666-555555555555": map[string]any{
+						"runtimeHostId": "12121212-3434-5656-7878-909090909090",
+						"speech":        map[string]any{"stt": false, "tts": true},
+					},
+					// Malformed entry must fail closed.
+					"33333333-4444-5555-6666-777777777777": map[string]any{
+						"runtimeHostId": "33333333-4444-5555-6666-777777777777",
+					},
+				},
+			}))
+		default:
+			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
+		}
+	})
+
+	wait, err := client.WaitForEvents("h", 0, 1)
+	if err != nil {
+		t.Fatalf("wait failed: %v", err)
+	}
+	if len(wait.RuntimeHosts) != 1 {
+		t.Fatalf("exactly the one valid host must parse, got %+v", wait.RuntimeHosts)
+	}
+	host, ok := wait.RuntimeHosts["11111111-2222-3333-4444-555555555555"]
+	if !ok || !host.Speech.STT || host.Speech.TTS {
+		t.Fatalf("host readiness mismatch: %+v", host)
+	}
+	if roster := wait.Participants; len(roster) != 1 || roster[0].RuntimeHostID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("roster runtimeHostId mismatch: %+v", roster)
 	}
 }

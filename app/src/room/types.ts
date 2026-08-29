@@ -31,6 +31,19 @@ export interface RoomMediaState {
   agentPublishedTrackName?: string
 }
 
+// #176 Phase A (canonical Room model, #178 review): one coarse, secret-free
+// readiness projection PER Runtime Host, stored once in RoomRecord
+// .runtimeHosts and shared by every resident Agent of that host. The
+// runtimeHostId is a stable opaque, Room-scoped grouping key derived by the
+// local Runtime (never hostname/username/IP/MAC, never the raw root seed);
+// the speech booleans mean "this host can currently produce STT/TTS if a
+// Room grant authorizes it". Discovery metadata only — never authorization,
+// never a credential detail.
+export interface RuntimeHostProjection {
+  runtimeHostId: string
+  speech: { stt: boolean; tts: boolean }
+}
+
 export interface AgentCapabilities {
   text: true
   // #106 Phase A: the capability tokens this Agent explicitly chose to
@@ -81,6 +94,11 @@ export interface RoomParticipant {
   // solely by current participants with a matching snapshotId. Opt-in,
   // Agent-only, own-surface-only; never authorization and never history.
   surface?: RoomSurfaceV1
+  // #176 Phase A (canonical Room model): the Room-scoped Runtime Host id
+  // behind this Agent (agents only). Readiness lives ONCE per host in
+  // RoomRecord.runtimeHosts, shared by all same-host Agents; the credential
+  // itself never becomes Room state.
+  runtimeHostId?: string
   media?: RoomMediaState
 }
 
@@ -187,6 +205,9 @@ export interface RoomState {
   createdAt: number
   expiresAt: number
   participants: Array<Omit<RoomParticipant, "token" | "connectionNonce">>
+  // #176 Phase A: one readiness projection per Runtime Host id (see
+  // RoomRecord.runtimeHosts).
+  runtimeHosts?: Record<string, RuntimeHostProjection>
   messages: RoomMessage[]
   meetingNotes: MeetingNotesState
   // Whether the server-side Meeting Notes media capability (the
@@ -214,6 +235,10 @@ export interface RoomRecord {
   createdAt: number
   expiresAt: number
   participants: Record<string, RoomParticipant>
+  // #176 Phase A (canonical Room model): ONE readiness projection per
+  // Runtime Host id, shared by all same-host Agents. Garbage-collected when
+  // no participant references the host anymore.
+  runtimeHosts?: Record<string, RuntimeHostProjection>
   messages: RoomMessage[]
   attachments: RoomAttachment[]
   nextMessageSequence: number

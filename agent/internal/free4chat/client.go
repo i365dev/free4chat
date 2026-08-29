@@ -352,10 +352,17 @@ func parseJoinLike(result map[string]any) (types.JoinResult, error) {
 }
 
 // JoinRoom joins an existing room and returns the new capability set.
-func (c *Client) JoinRoom(roomID, name string, capabilities []string) (types.JoinResult, error) {
+// host optionally carries the #176 Phase A Runtime Host projection; the
+// payload omits it entirely for legacy callers.
+func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
 	args := map[string]any{"roomId": roomID, "name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
+	}
+	// #178 review fix 5: the projection is additive — an invalid projection
+	// is omitted (never repaired, never blocks the text join).
+	if host != nil && host.Valid() {
+		args["runtimeHost"] = *host
 	}
 	result, err := c.callTool("join_room", args)
 	if err != nil {
@@ -365,7 +372,11 @@ func (c *Client) JoinRoom(roomID, name string, capabilities []string) (types.Joi
 }
 
 // CreateRoom creates a fresh room registering this agent as participant #1
-// and validates the returned public invite shape.
+// and validates the returned public invite shape. It NEVER carries a
+// runtimeHost: the server-generated roomId does not exist at call time, so
+// the Room-scoped runtimeHostId cannot be derived yet — the caller obtains
+// the final roomId here and pushes the derived projection afterwards via
+// UpdateRuntimeHost (#178 review fix 3).
 func (c *Client) CreateRoom(name string, capabilities []string) (types.CreateRoomResult, error) {
 	args := map[string]any{"name": name}
 	if len(capabilities) > 0 {
@@ -394,6 +405,16 @@ func (c *Client) CreateRoom(name string, capabilities []string) (types.CreateRoo
 	}, nil
 }
 
+// UpdateRuntimeHost re-projects the #176 Phase A Runtime Host capability
+// projection for this participant (speech hot reload path).
+func (c *Client) UpdateRuntimeHost(participantHandle string, host types.RuntimeHostProjection) error {
+	_, err := c.callTool("update_runtime_host", map[string]any{
+		"participantHandle": participantHandle,
+		"runtimeHost":       host,
+	})
+	return err
+}
+
 // WaitForEvents long-polls room events; it doubles as the lease heartbeat.
 func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSeconds int) (types.WaitResult, error) {
 	result, err := c.callTool("wait_for_events", map[string]any{
@@ -418,6 +439,20 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 	}
 	if participants, ok := result["participants"].([]any); ok {
 		wait.Participants = NormalizeRoster(participants)
+	}
+	// #176 Phase A (#178 review fix 1): the server's runtimeHosts map
+	// values ARE complete RuntimeHostProjection objects. Parse each value
+	// directly (fail-closed) and require the embedded id to match the map
+	// key — never re-wrap the value.
+	if hosts, ok := result["runtimeHosts"].(map[string]any); ok {
+		wait.RuntimeHosts = map[string]types.RuntimeHostProjection{}
+		for hostID, raw := range hosts {
+			host := ParseRuntimeHostStrict(raw)
+			if host == nil || host.RuntimeHostID != hostID {
+				continue
+			}
+			wait.RuntimeHosts[hostID] = *host
+		}
 	}
 	return wait, nil
 }

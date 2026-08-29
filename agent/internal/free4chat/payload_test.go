@@ -2,6 +2,7 @@ package free4chat
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -190,4 +191,38 @@ func deepCopyMap(source map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// #178 review fix 2: ParseRuntimeHostStrict must match the wire contract
+// fail-closed — id charset/length, required speech object, required
+// booleans. Malformed/custom/stale payloads are dropped, never repaired or
+// partially accepted.
+func TestParseRuntimeHostStrictFailsClosed(t *testing.T) {
+	valid := map[string]any{
+		"runtimeHostId": "11111111-2222-3333-4444-555555555555",
+		"speech":        map[string]any{"stt": true, "tts": false},
+	}
+	if host := ParseRuntimeHostStrict(valid); host == nil || !host.Speech.STT || host.Speech.TTS {
+		t.Fatalf("valid projection must parse: %+v", host)
+	}
+
+	negative := map[string]any{
+		"missing speech":       map[string]any{"runtimeHostId": "22222222-3333-4444-5555-666666666666"},
+		"speech not an object": map[string]any{"runtimeHostId": "22222222-3333-4444-5555-666666666666", "speech": "yes"},
+		"stt missing":          map[string]any{"runtimeHostId": "22222222-3333-4444-5555-666666666666", "speech": map[string]any{"tts": true}},
+		"tts not a boolean":    map[string]any{"runtimeHostId": "22222222-3333-4444-5555-666666666666", "speech": map[string]any{"stt": true, "tts": "yes"}},
+		"stt nil":              map[string]any{"runtimeHostId": "22222222-3333-4444-5555-666666666666", "speech": map[string]any{"stt": nil, "tts": true}},
+		"id with space":        map[string]any{"runtimeHostId": "bad id with spaces", "speech": map[string]any{"stt": true, "tts": true}},
+		"id too short":         map[string]any{"runtimeHostId": "short", "speech": map[string]any{"stt": true, "tts": true}},
+		"id too long":          map[string]any{"runtimeHostId": strings.Repeat("a", 65), "speech": map[string]any{"stt": true, "tts": true}},
+		"id empty":             map[string]any{"runtimeHostId": "", "speech": map[string]any{"stt": true, "tts": true}},
+		"id not a string":      map[string]any{"runtimeHostId": 42, "speech": map[string]any{"stt": true, "tts": true}},
+		"not an object":        "stale-string-payload",
+		"custom junk envelope": map[string]any{"hostId": "22222222-3333-4444-5555-666666666666", "ready": true},
+	}
+	for name, payload := range negative {
+		if host := ParseRuntimeHostStrict(payload); host != nil {
+			t.Fatalf("%s: malformed payload must fail closed, got %+v", name, host)
+		}
+	}
 }

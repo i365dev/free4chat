@@ -22,6 +22,15 @@ const MAX_TARGETS = 8
 const MAX_TARGET_ID_LENGTH = 64
 const JOIN_RATE_LIMIT = 10
 const JOIN_RATE_WINDOW_S = 60
+// #176 Phase A: mirrored from do/collab.ts — the Runtime Host projection is
+// an opaque bounded id plus coarse speech booleans, nothing else.
+const runtimeHostSchema = z.object({
+  runtimeHostId: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9._:-]{8,64}$/),
+  speech: z.object({ stt: z.boolean(), tts: z.boolean() }),
+})
 
 const MCP_HOSTNAMES = [
   "free4.chat",
@@ -195,9 +204,10 @@ function createMcpServer(context: McpRequestContext) {
           .array(z.string().trim().min(1).max(MAX_CAPABILITY_LENGTH))
           .max(MAX_CAPABILITIES)
           .optional(),
+        runtimeHost: runtimeHostSchema.optional(),
       },
     },
-    async ({ roomId, name, capabilities }) => {
+    async ({ roomId, name, capabilities, runtimeHost }) => {
       if (!(await allowJoin(env, context.requestInfo)))
         return toolError("rate_limited")
       const participantId = crypto.randomUUID()
@@ -217,6 +227,7 @@ function createMcpServer(context: McpRequestContext) {
             text: true,
             ...(normalized.length > 0 ? { advertised: normalized } : {}),
           },
+          ...(runtimeHost ? { runtimeHost } : {}),
         },
       })
       if (!result.ok)
@@ -252,6 +263,11 @@ function createMcpServer(context: McpRequestContext) {
       },
     },
     async ({ name, capabilities }) => {
+      // #178 review fix 3: create_room NEVER accepts a runtimeHost — the
+      // Room-scoped id is derived from the final server-generated roomId,
+      // which does not exist at call time. Obtain the roomId here, then
+      // call update_runtime_host.
+      void runtimeHostSchema
       // Same per-IP budget as joining: creation is one join-shaped
       // admission, not an unbounded resource.
       if (!(await allowJoin(env, context.requestInfo)))
@@ -341,6 +357,35 @@ function createMcpServer(context: McpRequestContext) {
         : toolError(
             result.data.error === "invalid_capabilities"
               ? "invalid_capabilities"
+              : controlError(result)
+          )
+    }
+  )
+
+  server.registerTool(
+    "update_runtime_host",
+    {
+      description:
+        "Re-project this Agent's Runtime Host capability projection (#176): the stable opaque, Room-scoped runtimeHostId your local Runtime derived for this Room plus coarse speech readiness (stt/tts booleans). One readiness is shared by all same-host Agents. Discovery metadata only — never authorization, never credential details. Call after a local speech configuration change (e.g. credential provision) so the Room updates without rejoining.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        runtimeHost: runtimeHostSchema,
+      },
+    },
+    async ({ participantHandle, runtimeHost }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-update-runtime-host",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        runtimeHost,
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(
+            typeof result.data.error === "string"
+              ? result.data.error
               : controlError(result)
           )
     }

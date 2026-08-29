@@ -1,4 +1,5 @@
 import type {
+  RuntimeHostProjection,
   AgentCapabilities,
   RoomSurfaceV1,
   CollabEvent,
@@ -173,6 +174,9 @@ export function rosterProjection(
         name: participant.name,
         kind: participant.kind,
         ...(advertised && advertised.length > 0 ? { advertised } : {}),
+        ...(participant.kind === "agent" && participant.runtimeHostId
+          ? { runtimeHostId: participant.runtimeHostId }
+          : {}),
         ...(participant.kind === "agent" && participant.surface
           ? { surface: participant.surface }
           : {}),
@@ -516,4 +520,95 @@ export class CollabRegistry {
       this.requests.delete(oldest.value)
     }
   }
+}
+
+// #176 Phase A: the single validation rule for a Runtime Host projection.
+// The id is an opaque bounded token (charset shared with the Go Runtime);
+// speech readiness is exactly two booleans. Nothing else is accepted, and
+// nothing here carries provider/credential details.
+export const RUNTIME_HOST_ID_PATTERN = /^[A-Za-z0-9._:-]{8,64}$/
+
+export interface RuntimeHostValidationResult {
+  ok: boolean
+  runtimeHost?: RuntimeHostProjection
+  error?: string
+  reason?: string
+}
+
+export function validateRuntimeHost(
+  input: unknown
+): RuntimeHostValidationResult {
+  if (typeof input !== "object" || input === null || Array.isArray(input))
+    return {
+      ok: false,
+      error: "invalid_runtime_host",
+      reason: "must_be_object",
+    }
+  const candidate = input as Record<string, unknown>
+  const runtimeHostId = candidate.runtimeHostId
+  if (
+    typeof runtimeHostId !== "string" ||
+    !RUNTIME_HOST_ID_PATTERN.test(runtimeHostId)
+  )
+    return {
+      ok: false,
+      error: "invalid_runtime_host",
+      reason: "invalid_runtime_host_id",
+    }
+  const speech = candidate.speech
+  if (typeof speech !== "object" || speech === null || Array.isArray(speech))
+    return {
+      ok: false,
+      error: "invalid_runtime_host",
+      reason: "invalid_speech",
+    }
+  const slots = (speech as Record<string, unknown>).stt
+  const voice = (speech as Record<string, unknown>).tts
+  if (typeof slots !== "boolean" || typeof voice !== "boolean")
+    return {
+      ok: false,
+      error: "invalid_runtime_host",
+      reason: "invalid_speech",
+    }
+  return {
+    ok: true,
+    runtimeHost: {
+      runtimeHostId,
+      speech: { stt: slots, tts: voice },
+    },
+  }
+}
+
+// Storage hygiene (#176 Phase A, canonical model): a malformed persisted
+// projection is dropped so room loading cannot wedge; the Runtime
+// re-projects on its next update.
+export function sanitizeStoredRuntimeHost(
+  input: unknown
+): RuntimeHostProjection | undefined {
+  const validated = validateRuntimeHost(input)
+  return validated.ok ? validated.runtimeHost : undefined
+}
+
+// Storage hygiene for the canonical runtimeHosts map: drop malformed host
+// entries entirely (never repair).
+export function sanitizeStoredRuntimeHosts(
+  input: unknown
+): Record<string, RuntimeHostProjection> {
+  const hosts: Record<string, RuntimeHostProjection> = {}
+  if (typeof input !== "object" || input === null || Array.isArray(input))
+    return hosts
+  for (const [hostId, raw] of Object.entries(
+    input as Record<string, unknown>
+  )) {
+    if (!RUNTIME_HOST_ID_PATTERN.test(hostId)) continue
+    const validated = validateRuntimeHost({
+      runtimeHostId: hostId,
+      ...(typeof raw === "object" && raw !== null
+        ? { speech: (raw as Record<string, unknown>).speech }
+        : {}),
+    })
+    if (validated.ok && validated.runtimeHost)
+      hosts[hostId] = validated.runtimeHost
+  }
+  return hosts
 }

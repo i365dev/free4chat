@@ -398,6 +398,17 @@ func (d *Daemon) prepareRuntime(
 	// child directory inside it and is never reused across rooms.
 	transcriptPath := filepath.Join(workspace, ".meeting-notes", "transcript.jsonl")
 	speechConfig := speech.LoadConfig(RuntimeDirectory(), os.Getenv)
+	// #176 Phase A: load the PRIVATE Runtime root seed. Every resident of
+	// this root derives the same Room-scoped public runtimeHostId from it;
+	// the raw seed never becomes participant or Room state. A seed failure
+	// is additive and must never block a text join — the resident simply
+	// joins without a host projection.
+	hostSeed := ""
+	if seed, seedErr := RuntimeHostSeed(); seedErr != nil {
+		fmt.Fprintf(os.Stderr, "free4chat-agent: runtime host seed unavailable (%v); joining without a host projection\n", seedErr)
+	} else {
+		hostSeed = seed
+	}
 	residentRuntime := runtime.NewResidentRuntime(runtime.Options{
 		InstanceID: instanceID,
 		RoomID:     request.Room, // empty for the create-first lifecycle
@@ -411,6 +422,7 @@ func (d *Daemon) prepareRuntime(
 		SiteOrigin:     siteOrigin,
 		TranscriptPath: transcriptPath,
 		Speech:         &speechConfig,
+		HostSeed:       hostSeed,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the
@@ -608,6 +620,13 @@ func (d *Daemon) statusViews() []map[string]any {
 		view := statusView(instance.runtime)
 		if caps := instance.runtime.CurrentCapabilities(); len(caps) > 0 {
 			view["capabilities"] = caps
+		}
+		// #176 Phase A: local observability of the Room-scoped Runtime Host
+		// identity and coarse speech readiness shared by every resident of
+		// this root. The raw root seed never appears in any view.
+		if host := instance.runtime.CurrentHostProjection(); host != nil {
+			view["runtimeHostId"] = host.RuntimeHostID
+			view["speech"] = map[string]bool{"stt": host.Speech.STT, "tts": host.Speech.TTS}
 		}
 		views = append(views, view)
 	}

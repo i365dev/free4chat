@@ -116,6 +116,10 @@ type fakeClient struct {
 	// sentTargets mirrors sent: the explicit targets (#165) each reply
 	// carried, nil for ordinary unaddressed sends.
 	sentTargets [][]string
+	// hostsSeen records the #176 Runtime Host projection each join carried
+	// (nil = legacy caller); hostUpdates records hot-reload pushes.
+	hostsSeen   []*types.RuntimeHostProjection
+	hostUpdates []types.RuntimeHostProjection
 	leftRoom    bool
 	closed      bool
 	capsSeen    [][]string
@@ -140,7 +144,10 @@ func (c *fakeClient) RoomInfo(string) (types.RoomInfo, error) {
 	return types.RoomInfo{Exists: true}, nil
 }
 
-func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string) (types.JoinResult, error) {
+func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
+	c.mu.Lock()
+	c.hostsSeen = append(c.hostsSeen, host)
+	c.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.joins++
@@ -163,6 +170,13 @@ func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string) (types
 
 func (c *fakeClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, nil
+}
+
+func (c *fakeClient) UpdateRuntimeHost(_ string, host types.RuntimeHostProjection) error {
+	c.mu.Lock()
+	c.hostUpdates = append(c.hostUpdates, host)
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *fakeClient) WaitForEvents(handle string, cursor int64, timeoutSeconds int) (types.WaitResult, error) {
@@ -409,6 +423,22 @@ func (c *fakeClient) snapshotSentTargets() [][]string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([][]string(nil), c.sentTargets...)
+}
+
+// snapshotHosts mirrors snapshotSent with the #176 Runtime Host projection
+// each join carried (nil = legacy caller).
+func (c *fakeClient) snapshotHosts() []*types.RuntimeHostProjection {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*types.RuntimeHostProjection(nil), c.hostsSeen...)
+}
+
+// snapshotHostUpdates mirrors snapshotSent with the #176 hot-reload
+// projection pushes.
+func (c *fakeClient) snapshotHostUpdates() []types.RuntimeHostProjection {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]types.RuntimeHostProjection(nil), c.hostUpdates...)
 }
 
 // #165: structured targets decided by the Harness must ride the reply into
@@ -788,4 +818,83 @@ func (c *fakeClient) currentJoinedHandle() string {
 		return ""
 	}
 	return "secret-" + itoa(int64(joins))
+}
+
+// #176 Phase A (as corrected by #178 review): joins carry the Room-scoped
+// runtimeHostId DERIVED from the private root seed (never the raw seed);
+// speech hot reload pushes the updated readiness without rejoining; the
+// same root + Room always derives the same id.
+func TestRuntimeHostProjectionJoinAndHotReload(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi"}
+	seed := "33333333-4444-5555-6666-777777777777"
+	derived, err := types.DeriveRuntimeHostID(seed, "test-host")
+	if err != nil {
+		t.Fatalf("derive failed: %v", err)
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-host",
+		RoomID:      "test-host",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+		HostSeed:    seed,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	// The projection rides the JOIN itself; no addressed turn is needed.
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotHosts()) >= 1 }, "join with host projection")
+
+	hosts := client.snapshotHosts()
+	if len(hosts) == 0 || hosts[0] == nil {
+		t.Fatalf("join must carry the host projection, got %v", hosts)
+	}
+	if hosts[0].RuntimeHostID != derived {
+		t.Fatalf("join must carry the DERIVED room-scoped id: got %s want %s (seed %s)",
+			hosts[0].RuntimeHostID, derived, seed)
+	}
+
+	// Speech hot reload: readiness changes push an updated projection for
+	// the SAME derived room-scoped id.
+	rt.ReloadSpeech(speech.Config{STTEnabled: true, TTSEnabled: true})
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotHostUpdates()) >= 1 }, "host update push")
+	updates := client.snapshotHostUpdates()
+	if updates[0].RuntimeHostID != derived ||
+		!updates[0].Speech.STT || !updates[0].Speech.TTS {
+		t.Fatalf("hot reload must push updated readiness, got %+v", updates[0])
+	}
+
+	// The in-memory projection is consistent for every reader of this host.
+	current := rt.CurrentHostProjection()
+	if current == nil || current.RuntimeHostID != derived || !current.Speech.TTS {
+		t.Fatalf("current projection must reflect reloaded readiness: %+v", current)
+	}
+	rt.Stop()
+}
+
+// #178 review fix 5: with no seed (legacy caller) the projection is simply
+// absent — the text join is never blocked by the host path.
+func TestRuntimeWithoutSeedJoinsWithoutHostProjection(t *testing.T) {
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-noseed",
+		RoomID:      "test-noseed",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     &fakeAdapter{name: "pi"},
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotHosts()) >= 1 }, "join")
+	if hosts := client.snapshotHosts(); len(hosts) != 1 || hosts[0] != nil {
+		t.Fatalf("seedless runtime must join without a projection, got %v", hosts)
+	}
+	if rt.CurrentHostProjection() != nil {
+		t.Fatal("seedless runtime must project nothing")
+	}
+	rt.Stop()
 }

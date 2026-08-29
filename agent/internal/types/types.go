@@ -6,6 +6,13 @@
 // src/types.ts) preserving product/security semantics, not TypeScript shape.
 package types
 
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+)
+
 // LauncherMaturity mirrors the Node launcher maturity classification.
 type LauncherMaturity string
 
@@ -44,6 +51,72 @@ type HarnessCapabilities struct {
 	Text   bool
 	Images bool
 	Resume bool
+}
+
+// RuntimeHostProjection is the complete, secret-free capability projection a
+// Runtime Host shares about itself (#176 Phase A). runtimeHostId is a stable
+// opaque grouping key for one local Runtime installation/root; the speech
+// booleans mean "this host can currently produce STT/TTS if a Room grant
+// authorizes it". It must never carry provider keys, credential sources,
+// hostnames, or any other machine-identifying metadata, and it is discovery
+// metadata only — never authorization.
+type RuntimeHostProjection struct {
+	RuntimeHostID string              `json:"runtimeHostId"`
+	Speech        HostSpeechReadiness `json:"speech"`
+}
+
+// HostSpeechReadiness is the coarse STT/TTS readiness of one Runtime Host.
+type HostSpeechReadiness struct {
+	STT bool `json:"stt"`
+	TTS bool `json:"tts"`
+}
+
+// Valid enforces the #176 wire contract fail-closed: the id must satisfy the
+// shared opaque charset rule and the projection is otherwise fixed by its
+// type shape. Callers must omit (never repair) an invalid projection.
+func (p RuntimeHostProjection) Valid() bool {
+	return ValidRuntimeHostID(p.RuntimeHostID)
+}
+
+// ValidRuntimeHostID is the single validation rule shared with the Room
+// side (#176): opaque charset, bounded length. No semantics are attached.
+func ValidRuntimeHostID(id string) bool {
+	if len(id) < 8 || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.', r == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// DeriveRuntimeHostID derives the Room-scoped public runtimeHostId for one
+// Room from the private Runtime root seed (#176 Phase A): a deterministic
+// HMAC-SHA256 over the final non-empty roomId, keyed by the seed. Same root
+// + same Room → the same id across restarts and rejoins; different Rooms on
+// one root → different ids (no cross-Room correlation via the seed); the
+// raw seed is never exposed to the Room.
+func DeriveRuntimeHostID(seed, roomID string) (string, error) {
+	if !ValidRuntimeHostID(seed) {
+		return "", errors.New("runtime host seed is malformed")
+	}
+	if roomID == "" || len(roomID) > 64 {
+		return "", errors.New("runtime host id requires a final non-empty roomId")
+	}
+	mac := hmac.New(sha256.New, []byte(seed))
+	mac.Write([]byte(roomID))
+	id := hex.EncodeToString(mac.Sum(nil))
+	if !ValidRuntimeHostID(id) {
+		return "", errors.New("derived runtime host id is malformed")
+	}
+	return id, nil
 }
 
 // RoomAttachmentMetadata is the sanitized attachment projection carried on
@@ -147,6 +220,12 @@ type ParticipantRosterEntry struct {
 	Kind       ParticipantKind        `json:"kind"`
 	Advertised []string               `json:"advertised,omitempty"`
 	Surface    *RoomSurfaceMetadataV1 `json:"surface,omitempty"`
+	// RuntimeHostID (#176 Phase A): the Room-scoped opaque Runtime Host
+	// grouping key of the local Runtime behind this Agent, when its Runtime
+	// projects one. Host readiness travels once per host in the Room's
+	// runtimeHosts projection, shared by all same-host Agents. Absent for
+	// Humans.
+	RuntimeHostID string `json:"runtimeHostId,omitempty"`
 }
 
 // CollabEventView is the Harness-facing collaboration view: the wire
@@ -296,6 +375,9 @@ type WaitResult struct {
 	Cursor       int64
 	ExpiresAt    int64
 	Participants []ParticipantRosterEntry
+	// RuntimeHosts (#176 Phase A): one coarse readiness projection per
+	// Runtime Host id present in the Room, shared by all same-host Agents.
+	RuntimeHosts map[string]RuntimeHostProjection
 }
 
 // CollabRequestArgs are the arguments for send_collab_request.
@@ -370,8 +452,18 @@ type Free4ChatClient interface {
 	Connect() error
 	ListTools() ([]string, error)
 	RoomInfo(roomID string) (RoomInfo, error)
-	JoinRoom(roomID, name string, capabilities []string) (JoinResult, error)
+	// JoinRoom optionally carries the #176 Phase A Runtime Host projection
+	// (nil omits it from the wire payload entirely).
+	JoinRoom(roomID, name string, capabilities []string, host *RuntimeHostProjection) (JoinResult, error)
+	// CreateRoom NEVER carries a runtimeHost: the Room-scoped id is derived
+	// from the final server-generated roomId, which does not exist at call
+	// time (#178 review fix 3). Push the derived projection afterwards via
+	// UpdateRuntimeHost.
 	CreateRoom(name string, capabilities []string) (CreateRoomResult, error)
+	// UpdateRuntimeHost re-projects this Agent's Runtime Host capability
+	// projection (#176 Phase A) after a local readiness change (e.g. #167
+	// credential hot reload) without rejoining the room.
+	UpdateRuntimeHost(participantHandle string, host RuntimeHostProjection) error
 	WaitForEvents(participantHandle string, cursor int64, timeoutSeconds int) (WaitResult, error)
 	// SendText publishes one agent message. targetParticipantIDs carries
 	// explicit addressing (#165): validated participant IDs that persist

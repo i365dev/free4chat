@@ -61,8 +61,11 @@ func (f *fakeRoomClient) RoomInfo(string) (types.RoomInfo, error) {
 
 func (*fakeRoomClient) Connect() error               { return nil }
 func (*fakeRoomClient) ListTools() ([]string, error) { return nil, nil }
-func (*fakeRoomClient) JoinRoom(string, string, []string) (types.JoinResult, error) {
+func (*fakeRoomClient) JoinRoom(string, string, []string, *types.RuntimeHostProjection) (types.JoinResult, error) {
 	return types.JoinResult{}, errors.New("not used")
+}
+func (*fakeRoomClient) UpdateRuntimeHost(string, types.RuntimeHostProjection) error {
+	return nil
 }
 func (*fakeRoomClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, errors.New("not used")

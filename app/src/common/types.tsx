@@ -12,6 +12,9 @@ export interface UserInfo {
   muteState?: boolean | false
   capabilities?: string[]
   surface?: RoomSurfaceV1
+  // #176 Phase A: the Room-scoped Runtime Host id behind this Agent (agents
+  // only). Readiness itself travels once per host in Room state.
+  runtimeHostId?: string
 }
 
 export type MessageType = "text" | "image" | "file" | "action"
