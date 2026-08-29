@@ -277,4 +277,86 @@ describe("RoomSession Agent Voice", () => {
     ).toBeUndefined()
     expect(normalized.room.participants.pi.media.tracks).toEqual([])
   })
+
+  it("prewarms the Agent publication and accepts only current Human readiness ACKs", async () => {
+    const { action, session, socket, store } = harness()
+    const room = store.get("room") as any
+    room.agentVoice.pi = { enabled: true, enabledAt: 1 }
+    room.participants.pi.media = {
+      sessionId: "pi-session",
+      muted: false,
+      fileChannelReady: false,
+      tracks: [],
+    }
+    const broadcast = vi
+      .spyOn(session as any, "broadcast")
+      .mockResolvedValue(undefined)
+    const published = await action({
+      action: "agent-track-published",
+      participantId: "pi",
+      token: "pi-token",
+      sessionId: "pi-session",
+      mid: "pub-mid",
+      trackName: "agent-voice",
+      announce: false,
+    })
+    expect(published.status).toBe(200)
+    const savedRoom = store.get("room") as any
+    expect(savedRoom.participants.pi.media.tracks).toEqual([])
+    expect(savedRoom.participants.pi.media.agentVoiceReady).toBe(false)
+
+    const active = await action({
+      action: "agent-track-active",
+      participantId: "pi",
+      token: "pi-token",
+      sessionId: "pi-session",
+      trackName: "agent-voice",
+    })
+    expect(active.status).toBe(200)
+    expect((store.get("room") as any).participants.pi.media.tracks).toEqual([
+      { trackName: "agent-voice", kind: "audio" },
+    ])
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "trackPublished" })
+    )
+
+    await (session as any).handleClientMessage(
+      socket,
+      { participantId: "human", token: "human-token", connectionNonce: "n" },
+      {
+        type: "agent-voice-ready",
+        agentParticipantId: "pi",
+        sessionId: "pi-session",
+        trackName: "agent-voice",
+      }
+    )
+    expect(
+      (store.get("room") as any).participants.pi.media.agentVoiceReady
+    ).toBe(true)
+
+    const ready = await action({
+      action: "agent-track-ready",
+      participantId: "pi",
+      token: "pi-token",
+      sessionId: "pi-session",
+      trackName: "agent-voice",
+    })
+    expect(await ready.json()).toEqual({ ready: true })
+
+    // A duplicate ACK is idempotent; a stale session is rejected and cannot
+    // arm a fresh publication.
+    await (session as any).handleClientMessage(
+      socket,
+      { participantId: "human", token: "human-token", connectionNonce: "n" },
+      {
+        type: "agent-voice-ready",
+        agentParticipantId: "pi",
+        sessionId: "old-session",
+        trackName: "agent-voice",
+      }
+    )
+    expect(socket.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "error", error: "agent_publication_not_ready" })
+    )
+  })
 })

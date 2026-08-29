@@ -23,6 +23,12 @@ const (
 	// maxPendingVoicePcmBytes bounds buffered real PCM while publication
 	// activation is pending.
 	maxPendingVoicePcmBytes = 8 * 1024 * 1024
+	// A completed TTS turn must not silently discard its buffered prefix when a
+	// Human subscription is slow or unavailable. This is a bounded safety
+	// valve for the explicit readiness handshake; cancellation/revocation
+	// still unblocks it immediately through turn admission.
+	voiceDownstreamReadyWait       = 10 * time.Second
+	voiceDownstreamReadyPollPeriod = 250 * time.Millisecond
 )
 
 // EngineLike is the in-process Pion engine boundary (fake-able for tests).
@@ -140,7 +146,6 @@ type Bridge struct {
 	// voice publication state
 	voiceAnnounced       bool
 	voicePrimingSent     bool
-	voicePadSent         bool
 	voiceConfirmFlight   chan struct{}
 	pendingVoicePCM      []pendingPcmItem
 	pendingVoicePCMBytes int
@@ -620,7 +625,6 @@ func (b *Bridge) ActivateVoicePublish() error {
 	engine := b.engine
 	b.voiceAnnounced = false
 	b.voicePrimingSent = false
-	b.voicePadSent = false
 	b.pendingVoicePCM = nil
 	b.pendingVoicePCMBytes = 0
 	b.mu.Unlock()
@@ -670,6 +674,18 @@ func (b *Bridge) ActivateVoicePublish() error {
 		return fail("activate-publish", err)
 	}
 	diagnostic["activate_publish_ok"] = "1"
+	// Emit one bounded silent frame while the publication is still being
+	// announced. This prewarms Cloudflare's publisher state before the Human
+	// browser starts tracks/new, without ever putting user speech on an
+	// un-negotiated downstream path.
+	if err := b.primeVoicePublication(); err != nil {
+		return fail("prime-publish", err)
+	}
+	diagnostic["prime_publish_ok"] = "1"
+	// Promote the now-primed publication to the Human-visible track as soon as
+	// Cloudflare confirms it. If the control-plane check is still inactive,
+	// the first PCM/flush path retries it without draining user speech.
+	b.confirmVoicePublicationActive()
 	b.log("voice_publish_succeeded", diagnostic)
 	return nil
 }
@@ -680,7 +696,6 @@ func (b *Bridge) DeactivateVoicePublish() {
 	engine := b.engine
 	b.voiceAnnounced = false
 	b.voicePrimingSent = false
-	b.voicePadSent = false
 	b.pendingVoicePCM = nil
 	b.pendingVoicePCMBytes = 0
 	b.mu.Unlock()
@@ -738,6 +753,16 @@ func (b *Bridge) FlushVoice(token uint64) error {
 		return err
 	}
 	b.confirmVoicePublicationActive()
+	// A short TTS response can reach EndTurn before the browser has completed
+	// its subscription negotiation. Keep every real PCM chunk in the bounded
+	// bridge buffer until the explicit downstream-ready acknowledgement arrives;
+	// never flush it into an unsubscribed Pion writer.
+	if b.pendingVoiceCount() > 0 && !b.voicePublicationAnnounced() {
+		if err := b.waitForVoicePublicationReady(token); err != nil {
+			b.CancelVoiceTurn(token)
+			return err
+		}
+	}
 	if err := b.drainPendingVoicePcm(token); err != nil {
 		return err
 	}
@@ -816,31 +841,6 @@ func (b *Bridge) primeVoicePublication() error {
 	return b.writeEnginePcm(make([]byte, voicePrimingSilenceBytes), 0)
 }
 
-// padAfterAnnounce writes a bounded synthetic-silence pad (25 frames =
-// 500 ms) once per publication, AFTER Cloudflare confirms the publisher
-// active. The browser still needs trackPublished -> subscribe ->
-// renegotiate (~1 s) before the SFU routes audio to it; frames sent inside
-// that window are dropped. Padding absorbs the drop window so the first
-// real words survive — production E2E showed the head of the first reply
-// (1-3 words) being lost otherwise, independent of how long the human
-// waited before speaking. The pad is silence, never user speech.
-func (b *Bridge) padAfterAnnounce() {
-	b.mu.Lock()
-	if b.options.Publish == nil || !b.voiceAnnounced || b.voicePadSent {
-		b.mu.Unlock()
-		return
-	}
-	b.voicePadSent = true
-	b.mu.Unlock()
-	const padFrames = 25
-	silence := make([]byte, voicePrimingSilenceBytes)
-	for i := 0; i < padFrames; i++ {
-		if err := b.writeEnginePcm(silence, 0); err != nil {
-			return
-		}
-	}
-}
-
 func (b *Bridge) confirmVoicePublicationActive() {
 	b.mu.Lock()
 	if b.options.Publish == nil || b.voiceAnnounced || b.mySessionID == "" || b.rest == nil {
@@ -872,7 +872,7 @@ func (b *Bridge) confirmVoicePublicationActive() {
 			return
 		}
 		firstAnnounce := false
-		if active {
+		if active && diagnostic.DownstreamReady {
 			b.mu.Lock()
 			if !b.voiceAnnounced {
 				firstAnnounce = true
@@ -880,21 +880,59 @@ func (b *Bridge) confirmVoicePublicationActive() {
 			b.voiceAnnounced = true
 			b.mu.Unlock()
 		}
-		if firstAnnounce {
-			b.padAfterAnnounce()
-		}
 		b.log("voice_publish_cloudflare_check", map[string]string{
 			"publisher_session_lookup_ok": bool01(diagnostic.PublisherSessionLookupOK),
 			"matching_track_found":        bool01(diagnostic.MatchingTrackFound),
 			"matching_track_status":       diagnostic.MatchingTrackStatus,
 			"matching_track_has_mid":      bool01(diagnostic.MatchingTrackHasMid),
 			"active":                      bool01(diagnostic.Active),
+			"downstream_ready":            bool01(diagnostic.DownstreamReady),
+			"first_announce":              bool01(firstAnnounce),
 		})
 		b.mu.Lock()
 		b.voiceConfirmFlight = nil
 		b.mu.Unlock()
 	}()
 	<-flight
+}
+
+// waitForVoicePublicationReady waits for the current publication to be both
+// Cloudflare-active and downstream-ready. The browser ACK is the correctness
+// boundary; the timeout only bounds a broken/no-listener room and prevents an
+// unbounded PCM retention. Turn cancellation/revocation is observed on every
+// iteration, so a superseded turn never holds the host gate for the timeout.
+func (b *Bridge) waitForVoicePublicationReady(token uint64) error {
+	started := time.Now()
+	b.log("voice_downstream_ready_wait", map[string]string{
+		"pending_bytes": fmt.Sprintf("%d", b.pendingVoiceBytes()),
+	})
+	deadline := time.Now().Add(voiceDownstreamReadyWait)
+	for {
+		if !b.validateTurn(token) {
+			return errPublishNotActive
+		}
+		if b.voicePublicationAnnounced() {
+			b.log("voice_downstream_ready", map[string]string{
+				"wait_ms": fmt.Sprintf("%d", time.Since(started)/time.Millisecond),
+			})
+			return nil
+		}
+		b.confirmVoicePublicationActive()
+		if b.voicePublicationAnnounced() {
+			b.log("voice_downstream_ready", map[string]string{
+				"wait_ms": fmt.Sprintf("%d", time.Since(started)/time.Millisecond),
+			})
+			return nil
+		}
+		if time.Now().After(deadline) {
+			b.log("voice_downstream_ready_timeout", map[string]string{
+				"pending_bytes": fmt.Sprintf("%d", b.pendingVoiceBytes()),
+				"wait_ms":       fmt.Sprintf("%d", voiceDownstreamReadyWait/time.Millisecond),
+			})
+			return errors.New("voice_downstream_not_ready")
+		}
+		time.Sleep(voiceDownstreamReadyPollPeriod)
+	}
 }
 
 func bool01(value bool) string {
@@ -926,6 +964,12 @@ func (b *Bridge) pendingVoiceCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(b.pendingVoicePCM)
+}
+
+func (b *Bridge) pendingVoiceBytes() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.pendingVoicePCMBytes
 }
 
 func (b *Bridge) enqueuePendingVoicePcm(chunk []byte, token uint64) error {

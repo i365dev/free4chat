@@ -228,9 +228,20 @@ type ControlRequest =
       sessionId: string
       mid: string
       trackName: string
+      // Runtime may defer the public trackPublished broadcast until its
+      // bounded silent priming packet has reached Cloudflare. This prevents a
+      // Human from attempting tracks/new against a still-inactive booking.
+      announce?: boolean
     }
   | {
       action: "agent-track-active"
+      participantId: string
+      token: string
+      sessionId: string
+      trackName: string
+    }
+  | {
+      action: "agent-track-ready"
       participantId: string
       token: string
       sessionId: string
@@ -456,6 +467,16 @@ type ClientMessage =
       agentParticipantId: string
       enabled: boolean
     }
+  | {
+      // Human-side acknowledgement after the Agent Voice remote subscription
+      // has completed tracks/new + answer + renegotiate. The identifiers are
+      // checked against the current private publication before readiness is
+      // recorded; stale/duplicate acknowledgements are harmless.
+      type: "agent-voice-ready"
+      agentParticipantId: string
+      sessionId: string
+      trackName: string
+    }
 
 /** Storage hygiene for one Agent participant's published voice media. A
  * current per-participant grant is required to retain its revocation handle;
@@ -492,6 +513,7 @@ export function normalizeAgentParticipantMedia(
   const next: RoomParticipant["media"] = { ...media, tracks: [] }
   if (publishedMid !== undefined) delete next.agentPublishedMid
   if (pendingTrackName !== undefined) delete next.agentPublishedTrackName
+  delete next.agentVoiceReady
   return { media: next, changed: true }
 }
 
@@ -935,13 +957,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           if (
             !participant.media?.agentSubscribedMids &&
             !participant.media?.agentPublishedMid &&
-            !participant.media?.agentPublishedTrackName
+            !participant.media?.agentPublishedTrackName &&
+            !participant.media?.agentVoiceReady
           )
             return participant
           const {
             agentSubscribedMids: _mids,
             agentPublishedMid: _publishedMid,
             agentPublishedTrackName: _publishedTrackName,
+            agentVoiceReady: _voiceReady,
             ...media
           } = participant.media
           return { ...participant, media }
@@ -1011,6 +1035,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       room.pendingMediaCleanup,
       direction
     )
+  }
+
+  // A readiness ACK is intentionally conservative: it means at least one
+  // currently connected Human has a negotiated subscription. If any Human
+  // connection leaves or drops, clear the private bits and require the next
+  // subscriber to ACK again before the Runtime drains a future turn.
+  private clearAgentVoiceReadiness(room: RoomRecord): void {
+    for (const participant of Object.values(room.participants)) {
+      if (participant.kind !== "agent" || !participant.media) continue
+      delete participant.media.agentVoiceReady
+    }
   }
 
   // Steps 6-7 of the revocation sequence (round 4): the actual Cloudflare
@@ -2449,18 +2484,40 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
       )
         return this.json({ error: "agent_media_cleanup_backlog" }, 503)
+      // A replay for an already-visible publication must not retract its
+      // public track merely because the original caller used deferred
+      // announcement.
+      const alreadyVisible =
+        participant.media.tracks.length === 1 &&
+        participant.media.tracks[0]!.trackName === request.trackName &&
+        participant.media.tracks[0]!.kind === "audio"
+      const announce = request.announce !== false || alreadyVisible
       participant.media = {
         ...participant.media,
         agentPublishedMid: request.mid,
-        // Registration is durable revocation bookkeeping only. Do not expose
-        // the track to Humans until the Runtime has successfully written its
-        // first PCM packet; Cloudflare can report a booked track as inactive
-        // before that happens.
+        // Runtime-owned publications may defer the public broadcast until the
+        // bounded silent priming packet makes Cloudflare report the booking
+        // active. The Runtime still holds real speech until the browser sends
+        // the explicit agent-voice-ready acknowledgement.
         agentPublishedTrackName: request.trackName,
-        tracks: [],
+        agentVoiceReady: false,
+        tracks: announce
+          ? [{ trackName: request.trackName, kind: "audio" }]
+          : [],
       }
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
+      if (announce)
+        await this.broadcast({
+          type: "trackPublished",
+          participant: {
+            id: participant.id,
+            name: participant.name,
+            kind: participant.kind,
+            sessionId: participant.media.sessionId,
+            track: { trackName: request.trackName, kind: "audio" },
+          },
+        })
       return this.json({ ok: true })
     }
 
@@ -2484,8 +2541,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant.media.tracks.length === 1 &&
         participant.media.tracks[0]!.trackName === request.trackName &&
         participant.media.tracks[0]!.kind === "audio"
-      )
+      ) {
+        if (participant.media.agentPublishedTrackName === request.trackName) {
+          delete participant.media.agentPublishedTrackName
+          await this.saveRoom(room)
+        }
         return this.json({ ok: true })
+      }
       if (
         !participant.media.agentPublishedMid ||
         participant.media.agentPublishedTrackName !== request.trackName
@@ -2509,6 +2571,31 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         },
       })
       return this.json({ ok: true })
+    }
+
+    if (request.action === "agent-track-ready") {
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token,
+        request.sessionId
+      )
+      if (!participant || participant.kind !== "agent")
+        return this.json({ error: "unauthorized" }, 401)
+      if (!isAgentAuthorizedForVoice(room.agentVoice, participant.id))
+        return this.json({ error: "voice_reply_not_authorized" }, 403)
+      if (!participant.media)
+        return this.json({ error: "media_unavailable" }, 400)
+      const currentTrackName =
+        participant.media.agentPublishedTrackName ??
+        (participant.media.tracks.length === 1 &&
+        participant.media.tracks[0]!.kind === "audio"
+          ? participant.media.tracks[0]!.trackName
+          : undefined)
+      const ready =
+        participant.media.agentVoiceReady === true &&
+        currentTrackName === request.trackName
+      return this.json({ ready })
     }
 
     if (request.action === "unpublish") {
@@ -2779,6 +2866,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     if (message.type === "leave") {
+      this.clearAgentVoiceReadiness(room)
       delete room.participants[participant.id]
       room.runtimeHosts = garbageCollectRuntimeHosts(
         room.runtimeHosts,
@@ -2889,6 +2977,54 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
       await this.attemptCleanupNow(room.pendingMediaCleanup)
+      return
+    }
+    if (message.type === "agent-voice-ready") {
+      if (participant.kind !== "human") {
+        socket.send(JSON.stringify({ type: "error", error: "human_only" }))
+        return
+      }
+      const agent = room.participants[message.agentParticipantId]
+      if (!agent || agent.kind !== "agent" || !agent.connected) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "agent_not_in_room" })
+        )
+        return
+      }
+      if (!isAgentAuthorizedForVoice(room.agentVoice, agent.id)) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "voice_reply_not_authorized" })
+        )
+        return
+      }
+      const media = agent.media
+      const currentTrackName =
+        media?.agentPublishedTrackName ??
+        (media?.tracks.length === 1 && media.tracks[0]!.kind === "audio"
+          ? media.tracks[0]!.trackName
+          : undefined)
+      if (
+        !media ||
+        media.sessionId !== message.sessionId ||
+        !media.agentPublishedMid ||
+        currentTrackName !== message.trackName
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "agent_publication_not_ready",
+          })
+        )
+        return
+      }
+      // Idempotent duplicate acknowledgements are harmless. The private
+      // readiness bit is tied to the exact current media session/publication
+      // above, so an old browser subscription cannot arm a new one.
+      if (media.agentVoiceReady !== true) {
+        media.agentVoiceReady = true
+        agent.lastSeenAt = Date.now()
+        await this.saveRoom(room)
+      }
       return
     }
     if (message.type === "agent-voice-set") {
@@ -3382,6 +3518,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant.connected = false
     participant.lastSeenAt = Date.now()
     participant.connectionNonce = undefined
+    this.clearAgentVoiceReadiness(room)
     await this.saveRoom(room)
     await this.scheduleNextAlarm(room)
     await this.broadcastState(room)

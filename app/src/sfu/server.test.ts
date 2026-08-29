@@ -877,6 +877,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
       sessionId: "sess-1",
       mid: "0",
       trackName: "agent-voice",
+      announce: false,
     })
   })
 
@@ -889,6 +890,8 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     )
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
       roomActions.push(body)
+      if (body.action === "agent-track-ready")
+        return { status: 200, body: { ready: true } }
       return { status: 200, body: { ok: true } }
     })
     const res = await handleSfuRequest(
@@ -903,6 +906,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     )
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect((await json(res)).downstreamReady).toBe(true)
     expect(roomActions).toEqual([
       {
         action: "authorize",
@@ -914,6 +918,13 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
       },
       {
         action: "agent-track-active",
+        participantId: "agent-1",
+        token: "tok-1",
+        sessionId: "sess-1",
+        trackName: "agent-voice",
+      },
+      {
+        action: "agent-track-ready",
         participantId: "agent-1",
         token: "tok-1",
         sessionId: "sess-1",

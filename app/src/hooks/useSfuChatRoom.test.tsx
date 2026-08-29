@@ -501,6 +501,242 @@ describe("useSfuChatRoom room attachments (#123)", () => {
         )
       ).toBe(true)
     )
+    await waitFor(() =>
+      expect(
+        ws.sent
+          .map((raw) => JSON.parse(raw))
+          .some(
+            (m) =>
+              m.type === "agent-voice-ready" &&
+              m.agentParticipantId === "agent-b" &&
+              m.sessionId === "agent-session" &&
+              m.trackName === "agent-voice"
+          )
+      ).toBe(true)
+    )
+    unmount()
+  })
+
+  it("re-asserts Agent readiness on resync without repeating a completed subscription", async () => {
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/sfu/session"))
+        return jsonResponse({
+          participantId: "participant-1",
+          participantToken: "participant-token",
+          sessionId: "session-1",
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+      if (url.endsWith("/api/sfu/datachannels/new"))
+        return jsonResponse({ dataChannels: [{ id: 1 }] })
+      if (url.endsWith("/api/sfu/tracks"))
+        return jsonResponse({
+          requiresImmediateRenegotiation: true,
+          sessionDescription: { type: "offer", sdp: "fake-sfu-offer" },
+          tracks: [{ mid: "7", trackName: "agent-voice" }],
+        })
+      return jsonResponse({})
+    })
+
+    const { unmount } = await connect("room-readiness-resync")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+    const trackPublished = {
+      type: "trackPublished",
+      participant: {
+        id: "agent-b",
+        name: "Agent B",
+        kind: "agent",
+        sessionId: "agent-session",
+        track: { trackName: "agent-voice", kind: "audio" },
+      },
+    }
+    act(() => ws.onmessage?.({ data: JSON.stringify(trackPublished) }))
+    await waitFor(() =>
+      expect(
+        ws.sent
+          .map((raw) => JSON.parse(raw))
+          .some((message) => message.type === "agent-voice-ready")
+      ).toBe(true)
+    )
+    const remoteTrackCalls = () =>
+      fetchMock.mock.calls.filter(([input, init]) => {
+        if (!String(input).endsWith("/api/sfu/tracks")) return false
+        const body = JSON.parse(init?.body as string) as {
+          tracks?: Array<{ location?: string }>
+        }
+        return body.tracks?.[0]?.location === "remote"
+      }).length
+    const initialRemoteTrackCalls = remoteTrackCalls()
+    const initialRenegotiateCalls = fetchMock.mock.calls.filter(([input]) =>
+      String(input).endsWith("/api/sfu/renegotiate")
+    ).length
+    ws.sent = []
+
+    // Simulate Room resync after its fail-closed readiness reset. The media
+    // subscription remains valid, so the hook must ACK again without a new
+    // tracks/new or renegotiation request.
+    act(() =>
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 0,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: [
+              {
+                id: "agent-b",
+                name: "Agent B",
+                kind: "agent",
+                connected: true,
+                joinedAt: 0,
+                lastSeenAt: 0,
+                media: {
+                  sessionId: "agent-session",
+                  muted: false,
+                  fileChannelReady: false,
+                  tracks: [{ trackName: "agent-voice", kind: "audio" }],
+                },
+              },
+            ],
+            messages: [],
+            meetingNotes: { active: false },
+            meetingNotesMediaAvailable: true,
+            agentVoice: { "agent-b": { enabled: true, enabledAt: 1 } },
+            agentVoiceMediaAvailable: true,
+          },
+        }),
+      })
+    )
+    await waitFor(() =>
+      expect(
+        ws.sent
+          .map((raw) => JSON.parse(raw))
+          .some(
+            (message) =>
+              message.type === "agent-voice-ready" &&
+              message.agentParticipantId === "agent-b"
+          )
+      ).toBe(true)
+    )
+    expect(remoteTrackCalls()).toBe(initialRemoteTrackCalls)
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/sfu/renegotiate")
+      ).length
+    ).toBe(initialRenegotiateCalls)
+    unmount()
+  })
+
+  it("does not ACK a deduplicated Agent subscription while negotiation is in flight", async () => {
+    let resolveRemoteTracks!: (response: Response) => void
+    const pendingRemoteTracks = new Promise<Response>((resolve) => {
+      resolveRemoteTracks = resolve
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks")) {
+          const body = JSON.parse((init?.body as string | undefined) ?? "{}")
+          if (body.tracks?.[0]?.location === "remote")
+            return pendingRemoteTracks
+        }
+        return jsonResponse({})
+      }
+    )
+
+    const { unmount } = await connect("room-readiness-in-flight")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+    const participant = {
+      id: "agent-b",
+      name: "Agent B",
+      kind: "agent",
+      sessionId: "agent-session",
+      track: { trackName: "agent-voice", kind: "audio" },
+    }
+    act(() =>
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "trackPublished", participant }),
+      })
+    )
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input, init]) => {
+          if (!String(input).endsWith("/api/sfu/tracks")) return false
+          const body = JSON.parse((init?.body as string | undefined) ?? "{}")
+          return body.tracks?.[0]?.location === "remote"
+        })
+      ).toBe(true)
+    )
+
+    // A resync while the first negotiation is pending is still a dedup, but
+    // it is not ACK-safe yet.
+    act(() =>
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 0,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: [
+              {
+                id: "agent-b",
+                name: "Agent B",
+                kind: "agent",
+                connected: true,
+                joinedAt: 0,
+                lastSeenAt: 0,
+                media: {
+                  sessionId: "agent-session",
+                  muted: false,
+                  fileChannelReady: false,
+                  tracks: [{ trackName: "agent-voice", kind: "audio" }],
+                },
+              },
+            ],
+            messages: [],
+            meetingNotes: { active: false },
+            meetingNotesMediaAvailable: true,
+            agentVoice: { "agent-b": { enabled: true, enabledAt: 1 } },
+            agentVoiceMediaAvailable: true,
+          },
+        }),
+      })
+    )
+    expect(
+      ws.sent
+        .map((raw) => JSON.parse(raw))
+        .some((message) => message.type === "agent-voice-ready")
+    ).toBe(false)
+
+    resolveRemoteTracks(
+      await jsonResponse({
+        requiresImmediateRenegotiation: true,
+        sessionDescription: { type: "offer", sdp: "fake-sfu-offer" },
+        tracks: [{ mid: "7", trackName: "agent-voice" }],
+      })
+    )
+    await waitFor(() =>
+      expect(
+        ws.sent
+          .map((raw) => JSON.parse(raw))
+          .some((message) => message.type === "agent-voice-ready")
+      ).toBe(true)
+    )
     unmount()
   })
 

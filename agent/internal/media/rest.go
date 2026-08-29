@@ -95,6 +95,11 @@ type PublishedAudioDiagnostic struct {
 	MatchingTrackStatus      string `json:"matching_track_status"` // active|inactive|waiting|unknown
 	MatchingTrackHasMid      bool   `json:"matching_track_has_mid"`
 	Active                   bool   `json:"active"`
+	// DownstreamReady is true only after a current Human browser completes the
+	// remote subscription negotiation. It is separate from Cloudflare's
+	// publisher-active signal: an active upstream track can have nowhere
+	// audible to go yet.
+	DownstreamReady bool `json:"downstream_ready"`
 }
 
 // RestClientLike is the REST boundary the bridge depends on (fake-able).
@@ -286,6 +291,11 @@ func (c *SfuRestClient) PublishAudioTrack(sessionID, trackName, mid string, offe
 	body["tracks"] = []any{map[string]any{
 		"location": "local", "trackName": trackName, "kind": "audio", "mid": mid,
 	}}
+	// Keep the booking private until the bridge has emitted its bounded
+	// priming silence and confirmed Cloudflare's publisher active. The follow-up
+	// agent-track-active call then broadcasts trackPublished for Human
+	// subscription prewarming.
+	body["announce"] = false
 	body["sessionDescription"] = map[string]any{"type": offer.Type, "sdp": offer.SDP}
 	data, err := c.request("tracks", http.MethodPost, body)
 	if err != nil {
@@ -319,6 +329,7 @@ func (c *SfuRestClient) ConfirmPublishedAudioTrackActive(sessionID, trackName st
 		MatchingTrackFound:       data["matchingTrackFound"] == true,
 		MatchingTrackHasMid:      data["matchingTrackHasMid"] == true,
 		Active:                   data["active"] == true,
+		DownstreamReady:          data["downstreamReady"] == true,
 	}
 	diagnostic.MatchingTrackStatus = "unknown"
 	if status, ok := data["matchingTrackStatus"].(string); ok &&

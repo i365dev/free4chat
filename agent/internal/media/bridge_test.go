@@ -217,27 +217,28 @@ func (f *fakeEngine) snapshotApplied() []Description {
 
 // fakeRest implements RestClientLike with scripted behavior.
 type fakeRest struct {
-	mu                  sync.Mutex
-	sessionID           string
-	establishCalls      int
-	establishDesc       Description
-	establishErr        error
-	roomMediaCalls      int
-	roomMediaReturn     []RoomMediaParticipant
-	roomMediaErr        error
-	subscribeKeys       []string
-	subscribeDesc       Description
-	subscribeMid        string
-	midSequence         []string
-	subscribeErr        error
-	publishCalls        int
-	publishDesc         Description
-	publishErr          error
-	renegotiatePurposes []Purpose
-	confirmCalls        int
-	confirmActive       bool
-	confirmDiagnostic   PublishedAudioDiagnostic
-	confirmErr          error
+	mu                     sync.Mutex
+	sessionID              string
+	establishCalls         int
+	establishDesc          Description
+	establishErr           error
+	roomMediaCalls         int
+	roomMediaReturn        []RoomMediaParticipant
+	roomMediaErr           error
+	subscribeKeys          []string
+	subscribeDesc          Description
+	subscribeMid           string
+	midSequence            []string
+	subscribeErr           error
+	publishCalls           int
+	publishDesc            Description
+	publishErr             error
+	renegotiatePurposes    []Purpose
+	confirmCalls           int
+	confirmActive          bool
+	confirmDownstreamReady bool
+	confirmDiagnostic      PublishedAudioDiagnostic
+	confirmErr             error
 }
 
 func newFakeRest() *fakeRest {
@@ -249,6 +250,7 @@ func newFakeRest() *fakeRest {
 		confirmDiagnostic: PublishedAudioDiagnostic{
 			MatchingTrackStatus: "inactive",
 		},
+		confirmDownstreamReady: true,
 	}
 }
 
@@ -309,7 +311,9 @@ func (f *fakeRest) ConfirmPublishedAudioTrackActive(sessionID, trackName string)
 	if f.confirmErr != nil {
 		return false, PublishedAudioDiagnostic{}, f.confirmErr
 	}
-	return f.confirmActive, f.confirmDiagnostic, nil
+	diagnostic := f.confirmDiagnostic
+	diagnostic.DownstreamReady = f.confirmActive && f.confirmDownstreamReady
+	return f.confirmActive, diagnostic, nil
 }
 
 func (f *fakeRest) snapshotRenegotiations() []Purpose {
@@ -646,26 +650,21 @@ func TestBridgeVoicePublishFlowsAndPrimingDrainsExactlyOnce(t *testing.T) {
 		t.Fatalf("write3: %v", err)
 	}
 	writes = engine.snapshotWrites()
-	if len(writes) != 29 {
-		t.Fatalf("writes after activation = %d, want 29 (priming + 25-frame pad + 3 chunks)", len(writes))
+	if len(writes) != 4 {
+		t.Fatalf("writes after activation = %d, want 4 (priming + 3 chunks)", len(writes))
 	}
-	// 1 priming silence, then the 500ms post-active pad (all silence), then
-	// the real chunks in order.
+	// One priming silence frame is followed by the real chunks in order. The
+	// old guessed 500ms pad is no longer needed once the browser ACKs readiness.
 	if len(writes[0]) != voicePrimingSilenceBytes {
 		t.Fatalf("first write must be the priming silence frame")
 	}
-	for _, pad := range writes[1:26] {
-		if !allZero(pad) {
-			t.Fatal("post-active pad must be synthetic silence, never user audio")
-		}
-	}
-	if string(writes[26]) != "real-pcm-chunk-1" || string(writes[27]) != "real-pcm-chunk-2" ||
-		string(writes[28]) != "real-pcm-chunk-3" {
-		t.Fatalf("pending drain order broken: %q %q %q", writes[26], writes[27], writes[28])
+	if string(writes[1]) != "real-pcm-chunk-1" || string(writes[2]) != "real-pcm-chunk-2" ||
+		string(writes[3]) != "real-pcm-chunk-3" {
+		t.Fatalf("pending drain order broken: %q %q %q", writes[1], writes[2], writes[3])
 	}
 	// Exactly once: no duplicates anywhere.
 	seen := map[string]int{}
-	for _, chunk := range writes[26:] {
+	for _, chunk := range writes[1:] {
 		seen[string(chunk)]++
 	}
 	if seen["real-pcm-chunk-1"] != 1 || seen["real-pcm-chunk-2"] != 1 {
@@ -673,13 +672,46 @@ func TestBridgeVoicePublishFlowsAndPrimingDrainsExactlyOnce(t *testing.T) {
 	}
 }
 
-func allZero(data []byte) bool {
-	for _, b := range data {
-		if b != 0 {
-			return false
-		}
+func TestBridgeBuffersFirstUtteranceUntilDownstreamReady(t *testing.T) {
+	engine := newFakeEngine()
+	engine.mid = "9"
+	rest := newFakeRest()
+	rest.confirmActive = true
+	rest.confirmDiagnostic = PublishedAudioDiagnostic{
+		MatchingTrackStatus: "active",
+		Active:              true,
 	}
-	return true
+	rest.confirmDownstreamReady = false
+	bridge := NewBridge(testBridgeOptions(engine, rest, &PublishConfig{TrackName: "agent-voice"}))
+	if err := bridge.Start(t.Context()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer bridge.Stop()
+	if err := bridge.ActivateVoicePublish(); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if err := bridge.WriteVoicePcm([]byte("first sentence"), 1); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if got := engine.snapshotWrites(); len(got) != 1 || len(got[0]) != voicePrimingSilenceBytes {
+		t.Fatalf("unready downstream must receive only priming silence, got %d writes", len(got))
+	}
+
+	// Deliberately exceed the old 500ms guessed padding window. EndTurn must
+	// keep the real prefix buffered until the explicit readiness transition.
+	done := make(chan error, 1)
+	go func() { done <- bridge.FlushVoice(1) }()
+	time.Sleep(750 * time.Millisecond)
+	rest.mu.Lock()
+	rest.confirmDownstreamReady = true
+	rest.mu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("flush after downstream readiness: %v", err)
+	}
+	writes := engine.snapshotWrites()
+	if len(writes) != 2 || string(writes[1]) != "first sentence" {
+		t.Fatalf("first PCM was not preserved across delayed readiness: %#v", writes)
+	}
 }
 
 func TestBridgeRevocationDropsPendingPcm(t *testing.T) {

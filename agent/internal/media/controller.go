@@ -607,6 +607,8 @@ func safeDiagnosticCode(err error) string {
 		return "timeout"
 	case strings.Contains(message, "unsupported_chunk"):
 		return "unsupported_chunk"
+	case strings.Contains(message, "downstream_not_ready"):
+		return "downstream_not_ready"
 	case strings.Contains(message, "not authorized") ||
 		strings.Contains(message, "not_authorized"):
 		return "not_authorized"
