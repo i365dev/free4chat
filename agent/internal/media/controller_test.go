@@ -67,7 +67,7 @@ func (*fakeRoomClient) JoinRoom(string, string, []string, *types.RuntimeHostProj
 func (*fakeRoomClient) UpdateRuntimeHost(string, types.RuntimeHostProjection) error {
 	return nil
 }
-func (*fakeRoomClient) CreateRoom(string, []string, *types.RuntimeHostProjection) (types.CreateRoomResult, error) {
+func (*fakeRoomClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, errors.New("not used")
 }
 func (*fakeRoomClient) WaitForEvents(string, int64, int) (types.WaitResult, error) {

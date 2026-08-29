@@ -260,10 +260,14 @@ function createMcpServer(context: McpRequestContext) {
           .array(z.string().trim().min(1).max(MAX_CAPABILITY_LENGTH))
           .max(MAX_CAPABILITIES)
           .optional(),
-        runtimeHost: runtimeHostSchema.optional(),
       },
     },
-    async ({ name, capabilities, runtimeHost }) => {
+    async ({ name, capabilities }) => {
+      // #178 review fix 3: create_room NEVER accepts a runtimeHost — the
+      // Room-scoped id is derived from the final server-generated roomId,
+      // which does not exist at call time. Obtain the roomId here, then
+      // call update_runtime_host.
+      void runtimeHostSchema
       // Same per-IP budget as joining: creation is one join-shaped
       // admission, not an unbounded resource.
       if (!(await allowJoin(env, context.requestInfo)))
@@ -292,7 +296,6 @@ function createMcpServer(context: McpRequestContext) {
               text: true,
               ...(normalized.length > 0 ? { advertised: normalized } : {}),
             },
-            ...(runtimeHost ? { runtimeHost } : {}),
           },
         })
         if (result.ok) {

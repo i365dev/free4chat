@@ -273,10 +273,10 @@ type ControlRequest =
       // MCP layer owns bounded retry with fresh ids. Never falls back to
       // joining an existing room.
       action: "agent-create-room"
-      participant: Omit<
-        RoomParticipant,
-        "connected" | "lastSeenAt" | "runtimeHostId"
-      > & { runtimeHost?: RuntimeHostProjection }
+      // #178 review fix 3: create NEVER carries a runtimeHost — the
+      // Room-scoped id is derived from the final server-generated roomId
+      // after creation and pushed via agent-update-runtime-host.
+      participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
     }
   | {
       action: "agent-wait"
@@ -1487,17 +1487,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       if (request.participant.kind !== "agent")
         return this.json({ error: "invalid_participant_kind" }, 400)
-      // #176 Phase A (canonical Room model, #178 review fix 5): optional,
-      // Agent-only, ADDITIVE — malformed payloads are dropped and the text
-      // join proceeds; the Runtime re-projects after adoption.
-      let createdRuntimeHost: RuntimeHostProjection | undefined
-      if (request.participant.runtimeHost !== undefined) {
-        const validatedHost = validateRuntimeHost(
-          request.participant.runtimeHost
-        )
-        if (validatedHost.ok && validatedHost.runtimeHost)
-          createdRuntimeHost = validatedHost.runtimeHost
-      }
       const validated = validateAdvertisedCapabilities(
         request.participant.capabilities?.advertised ?? []
       )
@@ -1526,17 +1515,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         lastSeenAt: now,
         capabilities: agentCapabilitiesFrom(validated.capabilities),
         media: undefined,
-        ...(createdRuntimeHost
-          ? { runtimeHostId: createdRuntimeHost.runtimeHostId }
-          : {}),
       }
       room.participants[participant.id] = participant
-      if (createdRuntimeHost) {
-        room.runtimeHosts = {
-          ...(room.runtimeHosts ?? {}),
-          [createdRuntimeHost.runtimeHostId]: createdRuntimeHost,
-        }
-      }
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)

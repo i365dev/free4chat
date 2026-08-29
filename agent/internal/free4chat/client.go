@@ -372,15 +372,15 @@ func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *type
 }
 
 // CreateRoom creates a fresh room registering this agent as participant #1
-// and validates the returned public invite shape.
-func (c *Client) CreateRoom(name string, capabilities []string, host *types.RuntimeHostProjection) (types.CreateRoomResult, error) {
+// and validates the returned public invite shape. It NEVER carries a
+// runtimeHost: the server-generated roomId does not exist at call time, so
+// the Room-scoped runtimeHostId cannot be derived yet — the caller obtains
+// the final roomId here and pushes the derived projection afterwards via
+// UpdateRuntimeHost (#178 review fix 3).
+func (c *Client) CreateRoom(name string, capabilities []string) (types.CreateRoomResult, error) {
 	args := map[string]any{"name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
-	}
-	// #178 review fix 5: additive, see JoinRoom.
-	if host != nil && host.Valid() {
-		args["runtimeHost"] = *host
 	}
 	result, err := c.callTool("create_room", args)
 	if err != nil {
@@ -440,20 +440,18 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 	if participants, ok := result["participants"].([]any); ok {
 		wait.Participants = NormalizeRoster(participants)
 	}
-	// #176 Phase A: one coarse readiness projection per Runtime Host id,
-	// shared by all same-host Agents; malformed entries fail closed.
+	// #176 Phase A (#178 review fix 1): the server's runtimeHosts map
+	// values ARE complete RuntimeHostProjection objects. Parse each value
+	// directly (fail-closed) and require the embedded id to match the map
+	// key — never re-wrap the value.
 	if hosts, ok := result["runtimeHosts"].(map[string]any); ok {
 		wait.RuntimeHosts = map[string]types.RuntimeHostProjection{}
 		for hostID, raw := range hosts {
-			if !types.ValidRuntimeHostID(hostID) {
+			host := ParseRuntimeHostStrict(raw)
+			if host == nil || host.RuntimeHostID != hostID {
 				continue
 			}
-			if host := ParseRuntimeHostStrict(map[string]any{
-				"runtimeHostId": hostID,
-				"speech":        raw,
-			}); host != nil {
-				wait.RuntimeHosts[hostID] = *host
-			}
+			wait.RuntimeHosts[hostID] = *host
 		}
 	}
 	return wait, nil

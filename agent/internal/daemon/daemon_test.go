@@ -182,7 +182,7 @@ func (c *recordingClient) JoinRoom(roomID, name string, capabilities []string, h
 		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
 	}, nil
 }
-func (*recordingClient) CreateRoom(string, []string, *types.RuntimeHostProjection) (types.CreateRoomResult, error) {
+func (*recordingClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, errors.New("not used")
 }
 func (*recordingClient) UpdateRuntimeHost(string, types.RuntimeHostProjection) error {

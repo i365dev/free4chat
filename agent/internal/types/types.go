@@ -452,10 +452,14 @@ type Free4ChatClient interface {
 	Connect() error
 	ListTools() ([]string, error)
 	RoomInfo(roomID string) (RoomInfo, error)
-	// JoinRoom/CreateRoom optionally carry the #176 Phase A Runtime Host
-	// projection (nil omits it from the wire payload entirely).
+	// JoinRoom optionally carries the #176 Phase A Runtime Host projection
+	// (nil omits it from the wire payload entirely).
 	JoinRoom(roomID, name string, capabilities []string, host *RuntimeHostProjection) (JoinResult, error)
-	CreateRoom(name string, capabilities []string, host *RuntimeHostProjection) (CreateRoomResult, error)
+	// CreateRoom NEVER carries a runtimeHost: the Room-scoped id is derived
+	// from the final server-generated roomId, which does not exist at call
+	// time (#178 review fix 3). Push the derived projection afterwards via
+	// UpdateRuntimeHost.
+	CreateRoom(name string, capabilities []string) (CreateRoomResult, error)
 	// UpdateRuntimeHost re-projects this Agent's Runtime Host capability
 	// projection (#176 Phase A) after a local readiness change (e.g. #167
 	// credential hot reload) without rejoining the room.

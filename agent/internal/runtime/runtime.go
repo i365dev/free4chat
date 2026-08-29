@@ -299,8 +299,7 @@ func (r *ResidentRuntime) AdoptCreate() (types.CreateRoomResult, error) {
 	}
 	// #176 Phase A: the create-first lifecycle projects the host identity
 	// exactly like a normal join.
-	created, err := r.options.Client.CreateRoom(
-		r.options.Name, r.advertisedCopy(), nil) // create-first derives AFTER the final roomId exists
+	created, err := r.options.Client.CreateRoom(r.options.Name, r.advertisedCopy())
 	if err != nil {
 		return types.CreateRoomResult{}, err
 	}

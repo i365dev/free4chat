@@ -197,3 +197,55 @@ func TestDeriveRuntimeHostIDRoomScoped(t *testing.T) {
 		t.Fatal("empty roomId must fail closed")
 	}
 }
+
+// #178 review fix 2 (blocker regression): pre-existing MALFORMED seed +
+// 50 concurrent callers. The serialized recovery must yield exactly ONE
+// replacement seed — never the TOCTOU race where two callers each remove
+// and republish different seeds.
+func TestRuntimeHostSeedMalformedRecoveryConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, hostSeedFile), []byte("poisoned seed!"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const goroutines = 50
+	results := make([]string, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = RuntimeHostSeed()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	seen := map[string]int{}
+	for i := 0; i < goroutines; i++ {
+		if errs[i] != nil {
+			t.Fatalf("concurrent recovery caller %d failed: %v", i, errs[i])
+		}
+		if results[i] == "" || !types.ValidRuntimeHostID(results[i]) {
+			t.Fatalf("concurrent recovery caller %d observed a bad seed: %q", i, results[i])
+		}
+		seen[results[i]]++
+	}
+	if len(seen) != 1 {
+		t.Fatalf("serialized recovery must yield exactly ONE seed, saw %d distinct: %v", len(seen), seen)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, hostSeedFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != results[0] {
+		t.Fatalf("disk seed must match the agreed seed: %q vs %q", strings.TrimSpace(string(data)), results[0])
+	}
+}

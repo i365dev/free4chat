@@ -26,12 +26,15 @@ const hostSeedFile = "host-seed"
 // or any other machine-identifying metadata, and it is never exposed to the
 // Room — Room-visible runtimeHostId values are derived from it.
 //
-// Initialization is atomic and no-clobber (#178 review fix 1): the seed is
-// written completely to a unique temp file and published into place with
-// link(2), so no reader can ever observe an empty or partially written seed
-// file, and a concurrent creator can never overwrite the winner's seed (the
-// loser reads it). A malformed leftover file is regenerated (a lost grouping
-// key is preferable to a poisoned one).
+// The whole read-evaluate-publish sequence is SERIALIZED across processes
+// and goroutines via an exclusive flock (#178 review fix 2). Without it,
+// two callers that both observe a malformed file could each remove and
+// republish DIFFERENT seeds (one caller's removal could even delete the
+// other's freshly published valid seed). Initialization stays atomic and
+// no-clobber: the complete seed is published with link(2) from a unique
+// temp file, so no reader ever observes an empty file. A malformed leftover
+// file is replaced under the lock (a lost grouping key is preferable to a
+// poisoned one).
 func RuntimeHostSeed() (string, error) {
 	dir := RuntimeDirectory()
 	path := filepath.Join(dir, hostSeedFile)
@@ -41,26 +44,30 @@ func RuntimeHostSeed() (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("runtime host seed directory failed: %w", err)
 	}
+	release, err := lockHostSeed(dir)
+	if err != nil {
+		return "", fmt.Errorf("runtime host seed lock failed: %w", err)
+	}
+	defer release()
+	// Re-read under the lock: a competing caller may have published a valid
+	// seed while this one waited for it.
+	if seed, err := readHostSeed(path); err == nil {
+		return seed, nil
+	}
 	seed, err := newHostSeed()
 	if err != nil {
 		return "", fmt.Errorf("runtime host seed generation failed: %w", err)
 	}
-	for attempt := 0; attempt < 2; attempt++ {
-		if err := publishSeedFile(path, seed); err == nil {
-			return seed, nil
-		} else if !os.IsExist(err) {
-			return "", fmt.Errorf("runtime host seed publish failed: %w", err)
-		}
-		// Another creator won the race: read their (complete) seed.
-		if existing, readErr := readHostSeed(path); readErr == nil {
-			return existing, nil
-		}
-		// The existing file is malformed: remove and retry creation once.
-		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
-			return "", fmt.Errorf("runtime host seed replace failed: %w", removeErr)
-		}
+	// Serialized replace (#178 review fix 2): remove any malformed leftover,
+	// then atomically publish the complete new file (link(2) — still no
+	// empty window). No other process or goroutine can interleave here.
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("runtime host seed replace failed: %w", err)
 	}
-	return "", fmt.Errorf("runtime host seed could not be settled")
+	if err := publishSeedFile(path, seed); err != nil {
+		return "", fmt.Errorf("runtime host seed publish failed: %w", err)
+	}
+	return seed, nil
 }
 
 // publishSeedFile atomically publishes a COMPLETE seed file without any

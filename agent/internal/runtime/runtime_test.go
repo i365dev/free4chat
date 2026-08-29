@@ -168,7 +168,7 @@ func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *
 	return j, nil
 }
 
-func (c *fakeClient) CreateRoom(string, []string, *types.RuntimeHostProjection) (types.CreateRoomResult, error) {
+func (c *fakeClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, nil
 }
 
