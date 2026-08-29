@@ -212,7 +212,7 @@ EOF
 
 write_fake_agent "$WORK/published-v0.5.4" 'echo unsupported >&2; exit 2' "$doc_version"
 write_fake_agent "$WORK/stale-contract" 'echo unsupported >&2; exit 2' "0.5.3"
-write_fake_agent "$WORK/newer-contract" 'printf "%s\\n" "{\\"version\\":\\"0.5.5\\"}"' "$source_version"
+write_fake_agent "$WORK/newer-contract" 'printf "%s\n" "{\"version\":\"0.5.6\"}"' "$source_version"
 write_fake_agent "$WORK/malformed-contract" 'echo not-json; exit 0' "not-a-version"
 write_fake_agent "$WORK/wrong-after-install" 'echo unsupported >&2; exit 2' "0.5.3"
 
@@ -229,10 +229,14 @@ else
   note "FAIL: source binary did not report its exact version" >&2
   fail=1
 fi
-if [ "$(bootstrap_action "$WORK/free4chat-agent" "$doc_version")" = install ]; then
+if [ "$source_version" != "$doc_version" ] &&
+  [ "$(bootstrap_action "$WORK/free4chat-agent" "$doc_version")" = install ]; then
   note "PASS: source version can lead live bootstrap activation"
+elif [ "$source_version" = "$doc_version" ] &&
+  [ "$(bootstrap_action "$WORK/free4chat-agent" "$doc_version")" = reuse ]; then
+  note "PASS: source and live bootstrap versions are aligned"
 else
-  note "FAIL: live bootstrap unexpectedly accepted a not-yet-activated source version" >&2
+  note "FAIL: source/live version relationship was handled incorrectly" >&2
   fail=1
 fi
 if [ "$(bootstrap_action "$WORK/stale-contract" "$doc_version")" = install ]; then
