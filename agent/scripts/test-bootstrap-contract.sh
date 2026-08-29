@@ -2,8 +2,9 @@
 # Deterministic contract tests for the fresh Invite Runtime bootstrap.
 #
 # The host-side bootstrap is documented in app/public/agent.md and copied into
-# the Invite prompt. This test keeps that instruction contract synchronized
-# with the canonical Go version source and the executable version query.
+# the Invite prompt. Source Runtime version and live bootstrap expected version
+# are intentionally staged independently during a release rollout; this test
+# keeps both values valid and checks the activation contract separately.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -25,16 +26,21 @@ source_version="$(sed -n 's/^var Version = "\([^"]*\)"$/\1/p' agent/internal/doc
 doc_version="$(sed -n 's/^`\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)` (release tag `agent-v[^`]*`).*/\1/p' app/public/agent.md | head -1)"
 
 if [[ "$source_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  note "PASS: canonical version is stable semantic version"
+  note "PASS: source version is stable semantic version"
 else
-  note "FAIL: canonical version is not a stable semantic version: '$source_version'" >&2
+  note "FAIL: source version is not a stable semantic version: '$source_version'" >&2
   fail=1
 fi
-if [ "$doc_version" = "$source_version" ]; then
-  note "PASS: agent.md expected version matches canonical Go version"
+if [[ "$doc_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  note "PASS: live agent.md version is stable semantic version"
 else
-  note "FAIL: agent.md version '$doc_version' does not match '$source_version'" >&2
+  note "FAIL: live agent.md version is not a stable semantic version: '$doc_version'" >&2
   fail=1
+fi
+if [ "$doc_version" != "$source_version" ]; then
+  note "PASS: source and live bootstrap versions may be staged independently"
+else
+  note "INFO: source and live bootstrap versions are currently aligned"
 fi
 
 DOC=app/public/agent.md
@@ -145,11 +151,11 @@ fake_install_current() {
   local install_dir="$1"
   local requested_version="${FREE4CHAT_AGENT_VERSION:-latest}"
   printf '%s\n' "$requested_version" > "$WORK/install-version"
-  if [ "$requested_version" != "$source_version" ]; then
+  if [ "$requested_version" != "$doc_version" ]; then
     return 1
   fi
   mkdir -p "$install_dir"
-  cp "$WORK/free4chat-agent" "$install_dir/free4chat-agent"
+  cp "$WORK/published-v0.5.4" "$install_dir/free4chat-agent"
   chmod 0755 "$install_dir/free4chat-agent"
 }
 
@@ -204,50 +210,56 @@ EOF
   chmod +x "$path"
 }
 
-write_fake_agent "$WORK/published-v0.5.4" 'echo unsupported >&2; exit 2' "$source_version"
+write_fake_agent "$WORK/published-v0.5.4" 'echo unsupported >&2; exit 2' "$doc_version"
 write_fake_agent "$WORK/stale-contract" 'echo unsupported >&2; exit 2' "0.5.3"
-write_fake_agent "$WORK/newer-contract" 'printf "%s\\n" "{\\"version\\":\\"0.5.5\\"}"' "0.5.5"
+write_fake_agent "$WORK/newer-contract" 'printf "%s\\n" "{\\"version\\":\\"0.5.5\\"}"' "$source_version"
 write_fake_agent "$WORK/malformed-contract" 'echo not-json; exit 0' "not-a-version"
 write_fake_agent "$WORK/wrong-after-install" 'echo unsupported >&2; exit 2' "0.5.3"
 
-if [ "$(bootstrap_action "$WORK/published-v0.5.4" "$source_version")" = reuse ] &&
-  [ "$(probe_runtime_version "$WORK/published-v0.5.4")" = "$source_version" ]; then
+if [ "$(bootstrap_action "$WORK/published-v0.5.4" "$doc_version")" = reuse ] &&
+  [ "$(probe_runtime_version "$WORK/published-v0.5.4")" = "$doc_version" ]; then
   note "PASS: published old-contract binary reuses via doctor fallback"
 else
   note "FAIL: published old-contract binary did not reuse via doctor fallback" >&2
   fail=1
 fi
 if [ "$(bootstrap_action "$WORK/free4chat-agent" "$source_version")" = reuse ]; then
-  note "PASS: new exact-version binary reuses via fast path"
+  note "PASS: source binary reports its exact version via fast path"
 else
-  note "FAIL: new exact-version binary did not reuse" >&2
+  note "FAIL: source binary did not report its exact version" >&2
   fail=1
 fi
-if [ "$(bootstrap_action "$WORK/stale-contract" "$source_version")" = install ]; then
+if [ "$(bootstrap_action "$WORK/free4chat-agent" "$doc_version")" = install ]; then
+  note "PASS: source version can lead live bootstrap activation"
+else
+  note "FAIL: live bootstrap unexpectedly accepted a not-yet-activated source version" >&2
+  fail=1
+fi
+if [ "$(bootstrap_action "$WORK/stale-contract" "$doc_version")" = install ]; then
   note "PASS: older old-contract binary selects installer"
 else
   note "FAIL: older old-contract binary bypassed installer" >&2
   fail=1
 fi
-if [ "$(bootstrap_action "$WORK/newer-contract" "$source_version")" = install ]; then
+if [ "$(bootstrap_action "$WORK/newer-contract" "$doc_version")" = install ]; then
   note "PASS: newer binary selects installer"
 else
   note "FAIL: newer binary was silently accepted" >&2
   fail=1
 fi
-if [ "$(bootstrap_action "$WORK/malformed-contract" "$source_version")" = install ]; then
+if [ "$(bootstrap_action "$WORK/malformed-contract" "$doc_version")" = install ]; then
   note "PASS: malformed probes fail closed"
 else
   note "FAIL: malformed probes were silently accepted" >&2
   fail=1
 fi
-if [ "$(bootstrap_action "$WORK/missing-agent" "$source_version")" = install ]; then
+if [ "$(bootstrap_action "$WORK/missing-agent" "$doc_version")" = install ]; then
   note "PASS: missing binary selects installer"
 else
   note "FAIL: missing binary did not select installer" >&2
   fail=1
 fi
-if [ "$(probe_runtime_version "$WORK/wrong-after-install" 2>/dev/null)" != "$source_version" ]; then
+if [ "$(probe_runtime_version "$WORK/wrong-after-install" 2>/dev/null)" != "$doc_version" ]; then
   note "PASS: wrong post-install version blocks readiness"
 else
   note "FAIL: wrong post-install version was accepted" >&2
@@ -267,12 +279,12 @@ if (
   export HOME="$WORK/home"
   unset FREE4CHAT_AGENT_INSTALL_DIR XDG_BIN_HOME
   export PATH="$old_bin_dir:$PATH"
-  resolved_bin="$(bootstrap_runtime_bin "$source_version")"
+  resolved_bin="$(bootstrap_runtime_bin "$doc_version")"
   expected_bin="$default_bin_dir/free4chat-agent"
   [ "$resolved_bin" = "$expected_bin" ] &&
     [ "$(command -v free4chat-agent)" = "$old_bin_dir/free4chat-agent" ] &&
-    [ "$(probe_runtime_version "$resolved_bin")" = "$source_version" ] &&
-    [ "$(cat "$WORK/install-version")" = "$source_version" ]
+    [ "$(probe_runtime_version "$resolved_bin")" = "$doc_version" ] &&
+    [ "$(cat "$WORK/install-version")" = "$doc_version" ]
 ); then
   note "PASS: stale earlier PATH entry cannot override post-install runtime"
 else
@@ -288,10 +300,10 @@ if (
   export FREE4CHAT_AGENT_INSTALL_DIR="$custom_bin_dir"
   unset XDG_BIN_HOME
   export PATH="$old_bin_dir:$PATH"
-  resolved_bin="$(bootstrap_runtime_bin "$source_version")"
+  resolved_bin="$(bootstrap_runtime_bin "$doc_version")"
   expected_bin="$custom_bin_dir/free4chat-agent"
   [ "$resolved_bin" = "$expected_bin" ] &&
-    [ "$(probe_runtime_version "$resolved_bin")" = "$source_version" ]
+    [ "$(probe_runtime_version "$resolved_bin")" = "$doc_version" ]
 ); then
   note "PASS: custom install directory remains the selected runtime path"
 else

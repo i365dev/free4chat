@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/i365dev/free4chat/agent/internal/doctor"
 )
 
 // DecodedHandle is the participant capability decoded from the MCP
@@ -146,7 +148,7 @@ func (c *SfuRestClient) request(path, method string, body map[string]any) (map[s
 	// client does not add Origin automatically the way browser/Node fetch
 	// does for cross-origin POSTs.
 	request.Header.Set("Origin", c.siteOrigin)
-	request.Header.Set("User-Agent", "free4chat-agent/0.5.4")
+	request.Header.Set("User-Agent", "free4chat-agent/"+doctor.Version)
 	response, err := c.http.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("network_error")

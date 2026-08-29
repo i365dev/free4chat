@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -25,15 +26,15 @@ const (
 	modernProtocolVersion = "2026-07-28"
 	defaultEndpoint       = "https://www.free4.chat/mcp"
 
-	// defaultUserAgent identifies the Go runtime client. Cloudflare's bot
-	// protection rejects Go's default "Go-http-client/1.1" UA with a 403
-	// challenge page, so an explicit product UA is mandatory (the Node
-	// reference sent "node" for the same reason).
-	defaultUserAgent = "free4chat-agent/0.5.4"
-
 	headerContentType = "application/json"
 	headerAccept      = "application/json, text/event-stream"
 )
+
+// defaultUserAgent identifies the Go runtime client. Cloudflare's bot
+// protection rejects Go's default "Go-http-client/1.1" UA with a 403
+// challenge page, so an explicit product UA is mandatory (the Node
+// reference sent "node" for the same reason).
+var defaultUserAgent = "free4chat-agent/" + doctor.Version
 
 var requiredTools = []string{
 	"room_info", "join_room", "create_room", "wait_for_events",
