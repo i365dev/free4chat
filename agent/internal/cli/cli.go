@@ -424,9 +424,14 @@ func runVersion(args []string) error {
 	return nil
 }
 
-// runViaDaemon performs ensureDaemon + IPC round-trip + pretty print.
+// runViaDaemon performs the version-checked daemon handshake for join, then
+// sends the IPC request and pretty-prints the result.
 func runViaDaemon(request *daemon.IpcRequest) error {
-	if err := daemon.EnsureDaemon(); err != nil {
+	if request.Op == "join" {
+		if err := daemon.EnsureDaemonVersion(doctor.Version); err != nil {
+			return err
+		}
+	} else if err := daemon.EnsureDaemon(); err != nil {
 		return err
 	}
 	result, err := daemon.SendIPC(request)

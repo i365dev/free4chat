@@ -76,6 +76,14 @@ type IpcResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// DaemonInfo is the bounded local handshake used before a CLI join is
+// forwarded to a resident daemon. It deliberately carries only the daemon
+// build version; resident instances and their private capabilities stay in
+// the existing status projection.
+type DaemonInfo struct {
+	DaemonVersion string `json:"daemonVersion"`
+}
+
 // DecodeRequest parses one raw IPC line.
 func DecodeRequest(line []byte) (*IpcRequest, error) {
 	var request IpcRequest

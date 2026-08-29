@@ -64,7 +64,9 @@ func runReadiness(args []string) error {
 
 	if roomID := option(args, "--room"); roomID != "" {
 		var instances []map[string]any
-		if err := daemon.EnsureDaemon(); err == nil {
+		if err := daemon.EnsureDaemonVersion(doctor.Version); err == nil {
+			report.Runtime["daemonReady"] = true
+			report.Runtime["daemonVersion"] = doctor.Version
 			if result, ipcErr := daemon.SendIPC(&daemon.IpcRequest{Op: "status"}); ipcErr == nil {
 				decoded, marshalErr := decodeAny(result)
 				if marshalErr == nil {
@@ -77,6 +79,12 @@ func runReadiness(args []string) error {
 					}
 				}
 			}
+		} else {
+			// The CLI version alone is not proof that the resident process is
+			// current. Keep readiness honest when an old or unverifiable daemon
+			// is already answering on the local socket.
+			report.Runtime["ready"] = false
+			report.Runtime["daemonReady"] = false
 		}
 		report.Room = roomReadiness(roomID, instances)
 	}

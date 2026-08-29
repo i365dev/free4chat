@@ -7,12 +7,14 @@ on:
       - ".github/workflows/go-agent.yml"
       - ".github/workflows/agent-release.yml"
       - "app/public/install-agent.sh"
+      - "app/public/agent.md"
   pull_request:
     paths:
       - "agent/**"
       - ".github/workflows/go-agent.yml"
       - ".github/workflows/agent-release.yml"
       - "app/public/install-agent.sh"
+      - "app/public/agent.md"
 
 jobs:
   agent-go:

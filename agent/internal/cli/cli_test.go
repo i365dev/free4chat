@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/daemon"
+	"github.com/i365dev/free4chat/agent/internal/doctor"
 )
 
 var binaryPath string
@@ -398,6 +401,71 @@ func TestStatusPayloadShowsResidentAfterDaemonAutoStart(t *testing.T) {
 	if code != 0 || !strings.Contains(roomView, `"reason": "not_joined"`) &&
 		!strings.Contains(roomView, `"reason":"not_joined"`) {
 		t.Fatalf("room readiness mismatch: %q", roomView)
+	}
+}
+
+func TestRunViaDaemonRejectsStaleResidentBeforeJoin(t *testing.T) {
+	dir, err := os.MkdirTemp("", "fcagent-")
+	if err != nil {
+		t.Fatalf("temp dir failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	listener, err := net.Listen("unix", daemon.SocketPath())
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	operations := make(chan string, 2)
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			func() {
+				defer conn.Close()
+				line, readErr := bufio.NewReader(conn).ReadString('\n')
+				if readErr != nil {
+					return
+				}
+				var request struct {
+					Op string `json:"op"`
+				}
+				if json.Unmarshal([]byte(strings.TrimSpace(line)), &request) != nil {
+					return
+				}
+				operations <- request.Op
+				response, marshalErr := json.Marshal(daemon.IpcResponse{
+					OK: true,
+					Result: daemon.DaemonInfo{
+						DaemonVersion: "0.5.3",
+					},
+				})
+				if marshalErr == nil {
+					_, _ = conn.Write(append(response, '\n'))
+				}
+			}()
+		}
+	}()
+
+	err = runViaDaemon(&daemon.IpcRequest{Op: "join"})
+	if err == nil || !strings.Contains(err.Error(), "does not match runtime "+doctor.Version) {
+		t.Fatalf("stale daemon must be rejected before room join, got %v", err)
+	}
+	select {
+	case operation := <-operations:
+		if operation != "daemon-info" {
+			t.Fatalf("first operation must be daemon-info, got %s", operation)
+		}
+	default:
+		t.Fatal("stale daemon did not receive the daemon-info probe")
+	}
+	select {
+	case operation := <-operations:
+		t.Fatalf("stale daemon received a room operation after rejection: %s", operation)
+	default:
 	}
 }
 

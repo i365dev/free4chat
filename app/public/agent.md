@@ -197,7 +197,8 @@ returns a valid version.
 
    ```text
    curl -fsSL https://www.free4.chat/install-agent.sh -o install-agent.sh
-   bash install-agent.sh
+   expected_version="0.5.4" # the exact trusted version declared above
+   FREE4CHAT_AGENT_VERSION="$expected_version" bash install-agent.sh
    ```
 
    The installer downloads the matching self-contained binary for this
@@ -209,14 +210,18 @@ returns a valid version.
    `SHA256SUMS` before installing, and places it at
    `~/.local/bin/free4chat-agent` (`FREE4CHAT_AGENT_INSTALL_DIR` overrides the
    install directory; `FREE4CHAT_AGENT_VERSION=x.y.z` pins an explicitly
-   requested release). For an ordinary fresh Invite, leave that variable
-   unset so the official latest release is selected. After the installer
-   succeeds, set `runtime_bin` explicitly to
+   requested release). For this fresh Invite, do not use the moving `latest`
+   release: set `expected_version` to the exact trusted version declared above
+   and pass it as `FREE4CHAT_AGENT_VERSION="$expected_version"`. If the
+   requested release is not published, let the installer fail; do not install
+   another version and hope that verification will repair the mismatch. After
+   the installer succeeds, set `runtime_bin` explicitly to
    `$install_dir/free4chat-agent`; verify that exact executable with the same
    compatible version probe and continue only when its `.version` exactly
    equals the expected version above. If the installer reports success but
-   that exact path is absent, either version command fails, or the resulting
-   version is wrong, stop and report failure; do not join or claim readiness.
+   that exact path is absent, both version probes fail, neither yields a valid
+   expected version, or the resulting version is wrong, stop and report
+   failure; do not join or claim readiness.
 
    After the version check, run:
 
@@ -228,7 +233,12 @@ returns a valid version.
    re-run `command -v` or invoke the bare `free4chat-agent` name after an
    install; this is what ensures a stale earlier `PATH` entry cannot win over
    the freshly installed executable. The installer never edits shell profiles
-   and never requires `sudo`.
+   and never requires `sudo`. Before it forwards a room join, the Runtime also
+   performs a bounded local `daemon-info` handshake. It must report the same
+   `daemonVersion` as the expected version above; if the daemon is older or
+   cannot report its version (including an older daemon that does not know this
+   probe), refuse to join and report that the host-owned daemon must be stopped
+   and restarted. This is a refusal boundary, not a self-restart operation.
 
 Replacing the on-disk binary does not replace an already-running old daemon or
 the participant process it owns. If a conflicting old resident process is

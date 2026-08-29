@@ -58,6 +58,10 @@ expect_text "bootstrap preserves resolved executable path" 'runtime_bin="$(comma
 expect_text "join uses resolved executable path" '"$runtime_bin" join' "$DOC"
 expect_text "installer destination precedence is documented" 'FREE4CHAT_AGENT_INSTALL_DIR`, then `XDG_BIN_HOME`, then' "$DOC"
 expect_text "bootstrap never re-resolves after install" 're-run `command -v` or invoke the bare `free4chat-agent` name after an' "$DOC"
+expect_text "installer is pinned to expected version" 'FREE4CHAT_AGENT_VERSION="$expected_version" bash install-agent.sh' "$DOC"
+expect_text "join checks resident daemon version" 'bounded local `daemon-info` handshake' "$DOC"
+expect_text "stale daemon cannot be reused" 'refuse to join and report that the host-owned daemon must be stopped' "$DOC"
+expect_text "daemon version is required to match" 'daemonVersion` as the expected version above' "$DOC"
 
 join_line="$(grep -nF '   "$runtime_bin" join' "$DOC" | tail -1 | cut -d: -f1)"
 verify_line="$(grep -n 'equals the expected version above' "$DOC" | tail -1 | cut -d: -f1)"
@@ -139,6 +143,11 @@ bootstrap_action() {
 
 fake_install_current() {
   local install_dir="$1"
+  local requested_version="${FREE4CHAT_AGENT_VERSION:-latest}"
+  printf '%s\n' "$requested_version" > "$WORK/install-version"
+  if [ "$requested_version" != "$source_version" ]; then
+    return 1
+  fi
   mkdir -p "$install_dir"
   cp "$WORK/free4chat-agent" "$install_dir/free4chat-agent"
   chmod 0755 "$install_dir/free4chat-agent"
@@ -164,7 +173,10 @@ bootstrap_runtime_bin() {
   else
     return 1
   fi
-  fake_install_current "$install_dir"
+  export FREE4CHAT_AGENT_VERSION="$expected"
+  if ! fake_install_current "$install_dir"; then
+    return 1
+  fi
   runtime_bin="$install_dir/free4chat-agent"
   installed="$(probe_runtime_version "$runtime_bin")" || installed=""
   if [ "$installed" != "$expected" ]; then
@@ -259,7 +271,8 @@ if (
   expected_bin="$default_bin_dir/free4chat-agent"
   [ "$resolved_bin" = "$expected_bin" ] &&
     [ "$(command -v free4chat-agent)" = "$old_bin_dir/free4chat-agent" ] &&
-    [ "$(probe_runtime_version "$resolved_bin")" = "$source_version" ]
+    [ "$(probe_runtime_version "$resolved_bin")" = "$source_version" ] &&
+    [ "$(cat "$WORK/install-version")" = "$source_version" ]
 ); then
   note "PASS: stale earlier PATH entry cannot override post-install runtime"
 else

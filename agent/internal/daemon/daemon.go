@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/harness"
 	"github.com/i365dev/free4chat/agent/internal/media"
@@ -162,6 +163,8 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		return d.dispatchCreate(request)
 	case "status":
 		return d.statusViews(), nil
+	case "daemon-info":
+		return DaemonInfo{DaemonVersion: doctor.Version}, nil
 	case "reload-speech":
 		config := speech.LoadConfig(RuntimeDirectory(), os.Getenv)
 		d.mu.Lock()

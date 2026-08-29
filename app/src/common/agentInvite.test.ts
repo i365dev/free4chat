@@ -17,8 +17,13 @@ describe("buildAgentInvitePrompt bootstrap contract", () => {
     expect(prompt).toContain(
       "FREE4CHAT_AGENT_INSTALL_DIR, then XDG_BIN_HOME, then $HOME/.local/bin"
     )
+    expect(prompt).toContain('FREE4CHAT_AGENT_VERSION="$expected_version"')
     expect(prompt).toContain(
       "use runtime_bin for readiness, diagnostics, and join"
+    )
+    expect(prompt).toContain("bounded local daemon-info handshake")
+    expect(prompt).toContain(
+      "requiring daemonVersion to equal expected_version before any Room join"
     )
     expect(prompt).toContain("exactly matches the current expected version")
     expect(prompt).toContain("missing, stale, newer/different")
