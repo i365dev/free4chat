@@ -215,7 +215,7 @@ write_fake_agent "$WORK/stale-contract" 'echo unsupported >&2; exit 2' "0.5.3"
 # Keep this deliberately above the released source/doc version: a newer
 # executable must still select the explicitly pinned installer rather than
 # being assumed compatible.
-write_fake_agent "$WORK/newer-contract" 'printf "%s\n" "{\"version\":\"0.5.8\"}"' "$source_version"
+write_fake_agent "$WORK/newer-contract" 'printf "%s\n" "{\"version\":\"0.5.9\"}"' "$source_version"
 write_fake_agent "$WORK/malformed-contract" 'echo not-json; exit 0' "not-a-version"
 write_fake_agent "$WORK/wrong-after-install" 'echo unsupported >&2; exit 2' "0.5.3"
 
