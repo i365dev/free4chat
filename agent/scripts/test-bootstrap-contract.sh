@@ -50,13 +50,17 @@ expect_text "official origin remains fixed" 'https://github.com/i365dev/free4cha
 expect_text "explicit pin remains documented" 'FREE4CHAT_AGENT_VERSION=x.y.z' "$DOC"
 expect_text "current binaries avoid reinstall" 'must not trigger the installer or another download' "$DOC"
 expect_text "running process boundary remains explicit" 'does not replace an already-running old daemon' "$DOC"
-expect_text "version query is the local check" 'free4chat-agent version --json' "$DOC"
+expect_text "version query is the local check" '"$runtime_bin" version --json' "$DOC"
 expect_text "published old releases have a fallback" 'fall back to' "$DOC"
-expect_text "doctor is the compatibility fallback" 'free4chat-agent doctor --json' "$DOC"
+expect_text "doctor is the compatibility fallback" '"$runtime_bin" doctor --json' "$DOC"
 expect_text "both probes must fail before fail-closed install" 'both commands fail' "$DOC"
+expect_text "bootstrap preserves resolved executable path" 'runtime_bin="$(command -v free4chat-agent || true)"' "$DOC"
+expect_text "join uses resolved executable path" '"$runtime_bin" join' "$DOC"
+expect_text "installer destination precedence is documented" 'FREE4CHAT_AGENT_INSTALL_DIR`, then `XDG_BIN_HOME`, then' "$DOC"
+expect_text "bootstrap never re-resolves after install" 're-run `command -v` or invoke the bare `free4chat-agent` name after an' "$DOC"
 
-join_line="$(grep -n '^   free4chat-agent join' "$DOC" | tail -1 | cut -d: -f1)"
-verify_line="$(grep -n 'exactly equals the expected version above' "$DOC" | tail -1 | cut -d: -f1)"
+join_line="$(grep -nF '   "$runtime_bin" join' "$DOC" | tail -1 | cut -d: -f1)"
+verify_line="$(grep -n 'equals the expected version above' "$DOC" | tail -1 | cut -d: -f1)"
 if [ -n "$join_line" ] && [ -n "$verify_line" ] && [ "$verify_line" -lt "$join_line" ]; then
   note "PASS: version verification precedes join"
 else
@@ -133,6 +137,42 @@ bootstrap_action() {
   fi
 }
 
+fake_install_current() {
+  local install_dir="$1"
+  mkdir -p "$install_dir"
+  cp "$WORK/free4chat-agent" "$install_dir/free4chat-agent"
+  chmod 0755 "$install_dir/free4chat-agent"
+}
+
+bootstrap_runtime_bin() {
+  local expected="$1" runtime_bin installed install_dir
+  runtime_bin="$(command -v free4chat-agent 2>/dev/null || true)"
+  if [ -n "$runtime_bin" ]; then
+    installed="$(probe_runtime_version "$runtime_bin")" || installed=""
+    if [ "$installed" = "$expected" ]; then
+      printf '%s\n' "$runtime_bin"
+      return 0
+    fi
+  fi
+
+  if [ -n "${FREE4CHAT_AGENT_INSTALL_DIR:-}" ]; then
+    install_dir="$FREE4CHAT_AGENT_INSTALL_DIR"
+  elif [ -n "${XDG_BIN_HOME:-}" ]; then
+    install_dir="$XDG_BIN_HOME"
+  elif [ -n "${HOME:-}" ]; then
+    install_dir="$HOME/.local/bin"
+  else
+    return 1
+  fi
+  fake_install_current "$install_dir"
+  runtime_bin="$install_dir/free4chat-agent"
+  installed="$(probe_runtime_version "$runtime_bin")" || installed=""
+  if [ "$installed" != "$expected" ]; then
+    return 1
+  fi
+  printf '%s\n' "$runtime_bin"
+}
+
 write_fake_agent() {
   local path="$1" fast_path="$2" doctor_version="$3"
   cat > "$path" <<EOF
@@ -199,6 +239,50 @@ if [ "$(probe_runtime_version "$WORK/wrong-after-install" 2>/dev/null)" != "$sou
   note "PASS: wrong post-install version blocks readiness"
 else
   note "FAIL: wrong post-install version was accepted" >&2
+  fail=1
+fi
+
+# Verify that a stale executable earlier on PATH cannot win after installation.
+# The fake installer writes to the normal user directory, while command -v
+# continues to resolve the stale binary first. The bootstrap must retain and
+# use the explicit post-install destination instead.
+old_bin_dir="$WORK/fake-old/bin"
+default_bin_dir="$WORK/home/.local/bin"
+mkdir -p "$old_bin_dir" "$WORK/home"
+cp "$WORK/stale-contract" "$old_bin_dir/free4chat-agent"
+chmod 0755 "$old_bin_dir/free4chat-agent"
+if (
+  export HOME="$WORK/home"
+  unset FREE4CHAT_AGENT_INSTALL_DIR XDG_BIN_HOME
+  export PATH="$old_bin_dir:$PATH"
+  resolved_bin="$(bootstrap_runtime_bin "$source_version")"
+  expected_bin="$default_bin_dir/free4chat-agent"
+  [ "$resolved_bin" = "$expected_bin" ] &&
+    [ "$(command -v free4chat-agent)" = "$old_bin_dir/free4chat-agent" ] &&
+    [ "$(probe_runtime_version "$resolved_bin")" = "$source_version" ]
+); then
+  note "PASS: stale earlier PATH entry cannot override post-install runtime"
+else
+  note "FAIL: stale earlier PATH entry still controls post-install runtime" >&2
+  fail=1
+fi
+
+# The explicit installer override must also become the exact executable used
+# for verification and the eventual join.
+custom_bin_dir="$WORK/custom/bin"
+if (
+  export HOME="$WORK/home"
+  export FREE4CHAT_AGENT_INSTALL_DIR="$custom_bin_dir"
+  unset XDG_BIN_HOME
+  export PATH="$old_bin_dir:$PATH"
+  resolved_bin="$(bootstrap_runtime_bin "$source_version")"
+  expected_bin="$custom_bin_dir/free4chat-agent"
+  [ "$resolved_bin" = "$expected_bin" ] &&
+    [ "$(probe_runtime_version "$resolved_bin")" = "$source_version" ]
+); then
+  note "PASS: custom install directory remains the selected runtime path"
+else
+  note "FAIL: custom install directory was not selected for runtime path" >&2
   fail=1
 fi
 

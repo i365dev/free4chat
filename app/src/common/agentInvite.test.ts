@@ -10,13 +10,21 @@ describe("buildAgentInvitePrompt bootstrap contract", () => {
       "fetch the current expected Runtime version from agent.md"
     )
     expect(prompt).toContain("command -v")
-    expect(prompt).toContain("free4chat-agent version --json")
-    expect(prompt).toContain("fall back to free4chat-agent doctor --json")
+    expect(prompt).toContain("runtime_bin")
+    expect(prompt).toContain('"$runtime_bin" version --json')
+    expect(prompt).toContain('fall back to "$runtime_bin" doctor --json')
+    expect(prompt).toContain("Never re-run command -v")
+    expect(prompt).toContain(
+      "FREE4CHAT_AGENT_INSTALL_DIR, then XDG_BIN_HOME, then $HOME/.local/bin"
+    )
+    expect(prompt).toContain(
+      "use runtime_bin for readiness, diagnostics, and join"
+    )
     expect(prompt).toContain("exactly matches the current expected version")
     expect(prompt).toContain("missing, stale, newer/different")
     expect(prompt).toContain("official checksum-verifying installer")
     expect(prompt).toContain(
-      "verify the resulting local version with the same compatible probe before joining"
+      "verify that exact executable with the same compatible probe before joining"
     )
   })
 
