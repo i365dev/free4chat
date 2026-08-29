@@ -198,6 +198,9 @@ func (b *Bridge) Start(parent context.Context) error {
 		b.resetToStopped()
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 
 	engine, err := b.options.CreateEngine(EngineEvents{
 		OnTrack:      b.handleIncomingTrack,
@@ -224,6 +227,9 @@ func (b *Bridge) Start(parent context.Context) error {
 	if err != nil {
 		return fail(err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	// Bounded bootstrap stage diagnostics (electric-audio investigation):
 	// presence/attempt/outcome only — never SDP content or IDs.
 	b.log("media_bootstrap_stage", map[string]string{
@@ -232,6 +238,9 @@ func (b *Bridge) Start(parent context.Context) error {
 	})
 	sessionID, err := b.rest.CreateAgentSession()
 	if err != nil {
+		return fail(err)
+	}
+	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
 	b.mu.Lock()
@@ -248,6 +257,9 @@ func (b *Bridge) Start(parent context.Context) error {
 		})
 		return fail(err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	b.log("media_bootstrap_stage", map[string]string{
 		"stage":                 "establish_ok",
 		"establish_result_code": "ok",
@@ -260,6 +272,9 @@ func (b *Bridge) Start(parent context.Context) error {
 				applyErr = errors.New("missing local answer after remote offer")
 			}
 			return fail(applyErr)
+		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
 		}
 		if err := b.rest.Renegotiate(sessionID, *answer, PurposeAgentTransport); err != nil {
 			return fail(err)

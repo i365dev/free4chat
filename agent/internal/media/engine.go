@@ -346,8 +346,13 @@ func (e *Engine) WaitConnected(ctx context.Context, timeout time.Duration) error
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if e.pc.ConnectionState() == webrtc.PeerConnectionStateConnected {
+		state := e.pc.ConnectionState()
+		if state == webrtc.PeerConnectionStateConnected {
 			return nil
+		}
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			return fmt.Errorf("peer connection stopped before reaching connected (state=%s ice=%s)",
+				state, e.pc.ICEConnectionState())
 		}
 		select {
 		case <-deadline:

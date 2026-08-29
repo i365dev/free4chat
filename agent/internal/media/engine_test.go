@@ -225,6 +225,16 @@ func TestWaitConnectedReturnsPromptlyWhenCancelled(t *testing.T) {
 	}
 }
 
+func TestWaitConnectedFailsPromptlyAfterClose(t *testing.T) {
+	engine := newTestEngine(t)
+	engine.Close()
+
+	err := engine.WaitConnected(context.Background(), time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "state=closed") {
+		t.Fatalf("WaitConnected error = %v, want closed connection state", err)
+	}
+}
+
 func TestWritePCMPacesOutboundFramesWithInjectedClock(t *testing.T) {
 	engine := newTestEngine(t)
 	_ = engine.ArmPublish()

@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -228,6 +229,58 @@ func TestControllerMeetingNotesGrantStartsAndRevocationStopsBridge(t *testing.T)
 	client.setRoom("off", "on", "agent", 0, "off", "on", "agent", 0, nil)
 	controller.poll()
 	waitController(t, 2*time.Second, func() bool { return firstEngine.closeCalls == 1 }, "bridge stop")
+}
+
+func TestControllerStopCancelsStartingBridge(t *testing.T) {
+	client := &fakeRoomClient{}
+	client.setRoom("on", "on", "agent", 111, "off", "on", "agent", 0, nil)
+	engine := newFakeEngine()
+	rest := newFakeRest()
+	waitStarted := make(chan struct{})
+	engine.waitFn = func(ctx context.Context, _ time.Duration) error {
+		close(waitStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	controller := NewController(ControllerOptions{
+		Client:         client,
+		RoomID:         "room",
+		ParticipantID:  "agent",
+		PollIntervalMs: 100,
+		CreateBridge: func() (*Bridge, error) {
+			return NewBridge(testBridgeOptions(engine, rest, nil)), nil
+		},
+	})
+	startDone := make(chan struct{})
+	go func() {
+		controller.Start(context.Background())
+		close(startDone)
+	}()
+
+	select {
+	case <-waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("controller never reached bridge connection wait")
+	}
+	controller.Stop()
+
+	select {
+	case <-startDone:
+	case <-time.After(time.Second):
+		t.Fatal("Controller.Stop must cancel a starting bridge")
+	}
+	if engine.closeCalls != 1 {
+		t.Fatalf("starting bridge close calls = %d, want 1", engine.closeCalls)
+	}
+	if got := rest.snapshotRoomMediaCalls(); got != 0 {
+		t.Fatalf("RoomMedia calls after cancelled bootstrap = %d, want 0", got)
+	}
+	controller.mu.Lock()
+	state, bridge := controller.state, controller.bridge
+	controller.mu.Unlock()
+	if state != "idle" || bridge != nil {
+		t.Fatalf("controller after Stop = state %q bridge %v, want idle nil", state, bridge)
+	}
 }
 
 func TestControllerRoomInfoFailureFailsClosed(t *testing.T) {

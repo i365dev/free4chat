@@ -222,6 +222,7 @@ type fakeRest struct {
 	establishCalls      int
 	establishDesc       Description
 	establishErr        error
+	roomMediaCalls      int
 	roomMediaReturn     []RoomMediaParticipant
 	roomMediaErr        error
 	subscribeKeys       []string
@@ -264,6 +265,7 @@ func (f *fakeRest) EstablishDataChannelTransport(sessionID string, offer Descrip
 func (f *fakeRest) RoomMedia() ([]RoomMediaParticipant, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.roomMediaCalls++
 	if f.roomMediaErr != nil {
 		return nil, f.roomMediaErr
 	}
@@ -320,6 +322,12 @@ func (f *fakeRest) snapshotSubscribes() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.subscribeKeys...)
+}
+
+func (f *fakeRest) snapshotRoomMediaCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roomMediaCalls
 }
 
 func testBridgeOptions(engine *fakeEngine, rest *fakeRest, publish *PublishConfig) BridgeOptions {
