@@ -1,6 +1,7 @@
 package media
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -22,6 +23,10 @@ type fakeEngine struct {
 	applyApplied    string
 	applyAnswer     *Description
 	applyErr        error
+	waitCalls       int
+	waitTimeout     time.Duration
+	waitErr         error
+	waitFn          func(context.Context, time.Duration) error
 	armCalls        int
 	mid             string
 	activateCalls   int
@@ -75,7 +80,18 @@ func (f *fakeEngine) ApplyRemote(remote Description) (string, *Description, erro
 	f.mu.Unlock()
 	return applied, answer, err
 }
-func (f *fakeEngine) WaitConnected(timeout time.Duration) error { return nil }
+func (f *fakeEngine) WaitConnected(ctx context.Context, timeout time.Duration) error {
+	f.mu.Lock()
+	f.waitCalls++
+	f.waitTimeout = timeout
+	err := f.waitErr
+	waitFn := f.waitFn
+	f.mu.Unlock()
+	if waitFn != nil {
+		return waitFn(ctx, timeout)
+	}
+	return err
+}
 func (f *fakeEngine) ArmPublish() error {
 	f.mu.Lock()
 	f.armCalls++
@@ -206,6 +222,7 @@ type fakeRest struct {
 	establishCalls      int
 	establishDesc       Description
 	establishErr        error
+	roomMediaCalls      int
 	roomMediaReturn     []RoomMediaParticipant
 	roomMediaErr        error
 	subscribeKeys       []string
@@ -248,6 +265,7 @@ func (f *fakeRest) EstablishDataChannelTransport(sessionID string, offer Descrip
 func (f *fakeRest) RoomMedia() ([]RoomMediaParticipant, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.roomMediaCalls++
 	if f.roomMediaErr != nil {
 		return nil, f.roomMediaErr
 	}
@@ -306,6 +324,12 @@ func (f *fakeRest) snapshotSubscribes() []string {
 	return append([]string(nil), f.subscribeKeys...)
 }
 
+func (f *fakeRest) snapshotRoomMediaCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roomMediaCalls
+}
+
 func testBridgeOptions(engine *fakeEngine, rest *fakeRest, publish *PublishConfig) BridgeOptions {
 	events := BridgeEvents{}
 	var mu sync.Mutex
@@ -357,6 +381,94 @@ func TestBridgeBootstrapSubmitsGatheredLocalOfferAndAppliesAnswer(t *testing.T) 
 	}
 	if len(rest.snapshotRenegotiations()) != 0 {
 		t.Fatal("no renegotiate expected on the answer path")
+	}
+	if engine.waitCalls != 1 || engine.waitTimeout != connectTimeout {
+		t.Fatalf("connected readiness gate = %d calls with %s, want one %s call",
+			engine.waitCalls, engine.waitTimeout, connectTimeout)
+	}
+}
+
+func TestBridgeBootstrapFailsClosedWhenPeerConnectionNeverConnects(t *testing.T) {
+	engine := newFakeEngine()
+	engine.waitErr = errors.New("peer connection timed out")
+	rest := newFakeRest()
+	bridge := NewBridge(testBridgeOptions(engine, rest, nil))
+	if err := bridge.Start(t.Context()); err == nil {
+		t.Fatal("bootstrap must not report a ready bridge before Pion connects")
+	}
+	if engine.waitCalls != 1 || engine.waitTimeout != connectTimeout {
+		t.Fatalf("connected readiness gate = %d calls with %s, want one %s call",
+			engine.waitCalls, engine.waitTimeout, connectTimeout)
+	}
+	if engine.closeCalls != 1 {
+		t.Fatalf("failed connected readiness must close the partial engine, close calls = %d", engine.closeCalls)
+	}
+}
+
+func TestBridgeStopCancelsConnectionWait(t *testing.T) {
+	engine := newFakeEngine()
+	waitStarted := make(chan struct{})
+	engine.waitFn = func(ctx context.Context, _ time.Duration) error {
+		close(waitStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	bridge := NewBridge(testBridgeOptions(engine, newFakeRest(), nil))
+	startDone := make(chan error, 1)
+	go func() { startDone <- bridge.Start(context.Background()) }()
+
+	select {
+	case <-waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never reached the connection wait")
+	}
+	bridge.Stop()
+
+	select {
+	case err := <-startDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop must cancel an in-flight connection wait")
+	}
+	if engine.closeCalls != 1 {
+		t.Fatalf("Stop must close the partial engine once, got %d closes", engine.closeCalls)
+	}
+}
+
+func TestBridgeStopBeforeConnectedWaitReturnsSkipsDiscovery(t *testing.T) {
+	engine := newFakeEngine()
+	waitEntered := make(chan struct{})
+	allowWaitReturn := make(chan struct{})
+	engine.waitFn = func(context.Context, time.Duration) error {
+		close(waitEntered)
+		<-allowWaitReturn
+		return nil
+	}
+	rest := newFakeRest()
+	bridge := NewBridge(testBridgeOptions(engine, rest, nil))
+	startDone := make(chan error, 1)
+	go func() { startDone <- bridge.Start(context.Background()) }()
+
+	select {
+	case <-waitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("bridge never reached the connection wait")
+	}
+	bridge.Stop()
+	close(allowWaitReturn)
+
+	select {
+	case err := <-startDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled bootstrap did not return")
+	}
+	if got := rest.snapshotRoomMediaCalls(); got != 0 {
+		t.Fatalf("RoomMedia calls after Stop = %d, want 0", got)
 	}
 }
 

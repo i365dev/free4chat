@@ -8,6 +8,7 @@
 package media
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"sync"
@@ -336,19 +337,29 @@ func waitAnswerGather(pc *webrtc.PeerConnection) {
 	}
 }
 
-// WaitConnected blocks until connected or timeout.
-func (e *Engine) WaitConnected(timeout time.Duration) error {
+// WaitConnected blocks until connected, cancelled, or timed out.
+func (e *Engine) WaitConnected(ctx context.Context, timeout time.Duration) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	deadline := time.After(timeout)
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if e.pc.ConnectionState() == webrtc.PeerConnectionStateConnected {
+		state := e.pc.ConnectionState()
+		if state == webrtc.PeerConnectionStateConnected {
 			return nil
+		}
+		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			return fmt.Errorf("peer connection stopped before reaching connected (state=%s ice=%s)",
+				state, e.pc.ICEConnectionState())
 		}
 		select {
 		case <-deadline:
 			return fmt.Errorf("peer connection did not reach connected within %s (state=%s ice=%s)",
 				timeout, e.pc.ConnectionState(), e.pc.ICEConnectionState())
+		case <-ctx.Done():
+			return fmt.Errorf("peer connection wait cancelled: %w", ctx.Err())
 		case <-tick.C:
 		}
 	}

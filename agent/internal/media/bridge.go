@@ -32,7 +32,7 @@ type EngineLike interface {
 	GatherCompleteOffer() (*Description, error)
 	CreateLocalOffer() (*Description, error)
 	ApplyRemote(remote Description) (string, *Description, error)
-	WaitConnected(timeout time.Duration) error
+	WaitConnected(ctx context.Context, timeout time.Duration) error
 	ArmPublish() error
 	LocalPublishMid() string
 	ActivatePublish() error
@@ -198,6 +198,9 @@ func (b *Bridge) Start(parent context.Context) error {
 		b.resetToStopped()
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 
 	engine, err := b.options.CreateEngine(EngineEvents{
 		OnTrack:      b.handleIncomingTrack,
@@ -224,6 +227,9 @@ func (b *Bridge) Start(parent context.Context) error {
 	if err != nil {
 		return fail(err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	// Bounded bootstrap stage diagnostics (electric-audio investigation):
 	// presence/attempt/outcome only — never SDP content or IDs.
 	b.log("media_bootstrap_stage", map[string]string{
@@ -232,6 +238,9 @@ func (b *Bridge) Start(parent context.Context) error {
 	})
 	sessionID, err := b.rest.CreateAgentSession()
 	if err != nil {
+		return fail(err)
+	}
+	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
 	b.mu.Lock()
@@ -248,6 +257,9 @@ func (b *Bridge) Start(parent context.Context) error {
 		})
 		return fail(err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
 	b.log("media_bootstrap_stage", map[string]string{
 		"stage":                 "establish_ok",
 		"establish_result_code": "ok",
@@ -261,6 +273,9 @@ func (b *Bridge) Start(parent context.Context) error {
 			}
 			return fail(applyErr)
 		}
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
 		if err := b.rest.Renegotiate(sessionID, *answer, PurposeAgentTransport); err != nil {
 			return fail(err)
 		}
@@ -269,6 +284,27 @@ func (b *Bridge) Start(parent context.Context) error {
 			return fail(applyErr)
 		}
 	}
+	// The proven Pion runbook's stage E is a real readiness boundary, not
+	// merely a diagnostic convenience. A successful SDP exchange only means
+	// Cloudflare accepted the description; before ICE/DTLS reaches connected,
+	// TrackLocal.WriteSample can accept PCM locally while no RTP is capable of
+	// leaving the Runtime. Do not expose a Voice speaker (or begin Room-media
+	// discovery) until that transport is actually connected.
+	if err := engine.WaitConnected(ctx, connectTimeout); err != nil {
+		b.log("media_bootstrap_stage", map[string]string{
+			"stage": "peerconnection_connect_failed",
+		})
+		return fail(err)
+	}
+	// A Stop can land immediately after Pion reports Connected. Check the
+	// bridge context again before the first RoomMedia request so a cancelled
+	// bootstrap never starts discovery or a subscription negotiation.
+	if err := ctx.Err(); err != nil {
+		return fail(err)
+	}
+	b.log("media_bootstrap_stage", map[string]string{
+		"stage": "peerconnection_connected",
+	})
 
 	if err := b.poll(); err != nil && !isHumanMediaDiscoveryDenied(err) {
 		return fail(err)

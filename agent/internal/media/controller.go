@@ -93,6 +93,8 @@ type Controller struct {
 	voiceStarting    bool
 	stopped          bool
 	cancel           context.CancelFunc
+	ctx              context.Context
+	bridgeCancel     context.CancelFunc
 	now              func() time.Time
 }
 
@@ -119,17 +121,19 @@ func NewController(options ControllerOptions) *Controller {
 // Start runs the first poll synchronously, then arms the ticker — a caller
 // awaiting Start sees the first authorization check settle deterministically.
 func (c *Controller) Start(parent context.Context) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	c.mu.Lock()
 	if !c.stopped {
 		c.mu.Unlock()
+		cancel()
 		return
 	}
 	c.stopped = false
-	c.mu.Unlock()
-
-	ctx, cancel := context.WithCancel(parent)
-	c.mu.Lock()
 	c.cancel = cancel
+	c.ctx = ctx
 	c.mu.Unlock()
 
 	c.poll()
@@ -161,6 +165,7 @@ func (c *Controller) Stop() {
 	c.stopped = true
 	cancel := c.cancel
 	c.cancel = nil
+	c.ctx = nil
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -383,27 +388,45 @@ func (c *Controller) ensureRunning() {
 	c.state = "starting"
 	c.generation++
 	generation := c.generation
+	parent := c.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	bridgeCtx, bridgeCancel := context.WithCancel(parent)
+	c.bridgeCancel = bridgeCancel
 	c.mu.Unlock()
 
 	bridge, err := c.buildBridge()
 	if err != nil {
+		bridgeCancel()
 		c.mu.Lock()
 		if c.generation == generation {
 			c.state = "idle"
+			c.bridgeCancel = nil
 		}
 		c.mu.Unlock()
 		c.log("meeting_notes_media_start_failed", map[string]string{"code": safeDiagnosticCode(err)})
 		return
 	}
 	c.mu.Lock()
+	if c.stopped || c.generation != generation || c.state != "starting" {
+		c.mu.Unlock()
+		bridgeCancel()
+		bridge.Stop()
+		return
+	}
 	c.bridge = bridge
 	c.mu.Unlock()
 
-	if err := bridge.Start(context.Background()); err != nil {
+	if err := bridge.Start(bridgeCtx); err != nil {
+		bridgeCancel()
 		c.mu.Lock()
-		c.bridge = nil
-		if c.generation == generation {
+		if c.bridge == bridge {
+			c.bridge = nil
+		}
+		if c.generation == generation && c.state == "starting" {
 			c.state = "idle"
+			c.bridgeCancel = nil
 		}
 		c.mu.Unlock()
 		c.log("meeting_notes_media_start_failed", map[string]string{
@@ -413,8 +436,9 @@ func (c *Controller) ensureRunning() {
 		return
 	}
 	c.mu.Lock()
-	if c.generation != generation {
+	if c.stopped || c.generation != generation || c.state != "starting" || c.bridge != bridge {
 		c.mu.Unlock()
+		bridgeCancel()
 		bridge.Stop()
 		return
 	}
@@ -551,16 +575,16 @@ func (c *Controller) teardownBridge() {
 	c.teardownVoice()
 	c.mu.Lock()
 	c.generation++
-	if c.state == "idle" {
-		c.mu.Unlock()
-		return
-	}
-	wasRunning := c.state == "running"
 	bridge := c.bridge
+	bridgeCancel := c.bridgeCancel
 	c.bridge = nil
+	c.bridgeCancel = nil
 	c.state = "idle"
 	c.mu.Unlock()
-	if wasRunning && bridge != nil {
+	if bridgeCancel != nil {
+		bridgeCancel()
+	}
+	if bridge != nil {
 		bridge.Stop()
 		c.log("meeting_notes_media_stopped", nil)
 	}

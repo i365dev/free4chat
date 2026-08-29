@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"strings"
@@ -213,6 +214,27 @@ func TestWritePCMRequiresActivation(t *testing.T) {
 	}
 }
 
+func TestWaitConnectedReturnsPromptlyWhenCancelled(t *testing.T) {
+	engine := newTestEngine(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := engine.WaitConnected(ctx, time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitConnected error = %v, want context cancellation", err)
+	}
+}
+
+func TestWaitConnectedFailsPromptlyAfterClose(t *testing.T) {
+	engine := newTestEngine(t)
+	engine.Close()
+
+	err := engine.WaitConnected(context.Background(), time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "state=closed") {
+		t.Fatalf("WaitConnected error = %v, want closed connection state", err)
+	}
+}
+
 func TestWritePCMPacesOutboundFramesWithInjectedClock(t *testing.T) {
 	engine := newTestEngine(t)
 	_ = engine.ArmPublish()
@@ -272,10 +294,10 @@ func TestCancelTurnDiscardsCarryKeepsPublicationActive(t *testing.T) {
 	if err := engine.WritePCM(bytes.Repeat([]byte{7}, 500), 0); err != nil {
 		t.Fatalf("WritePCM: %v", err)
 	}
-	waitForFrames(t, engine, 0) // writer drains instantly with the fake clock
-	if engine.PCMCarry() != 0 {
-		t.Fatal("a sub-frame write must leave carry only until flushed")
-	}
+	// WritePCM is asynchronous: wait until the writer has actually accepted
+	// the sub-frame chunk before verifying that CancelTurn clears its carry.
+	// Checking immediately races the writer scheduler and was flaky in CI.
+	waitForPCMCarry(t, engine, 500)
 	engine.CancelTurn(0)
 	if engine.PCMCarry() != 0 {
 		t.Fatal("CancelTurn must discard the buffered partial frame")
@@ -372,6 +394,19 @@ func waitForFrames(t *testing.T, engine *Engine, n uint64) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatalf("writer did not emit %d frames (got %d)", n, engine.framesWritten())
+}
+
+// waitForPCMCarry waits for the async writer to hold exactly n partial bytes.
+func waitForPCMCarry(t *testing.T, engine *Engine, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if engine.PCMCarry() == n {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("writer carry = %d bytes, want %d", engine.PCMCarry(), n)
 }
 
 // slowMediaTtsProvider keeps a turn's drain active for ~150ms so tests can
