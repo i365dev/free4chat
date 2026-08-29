@@ -301,6 +301,12 @@ export function useSfuChatRoom(
   const remoteScreenStreamsRef = useRef(new Map<string, MediaStream>())
   const participantMapRef = useRef(new Map<string, SfuParticipant>())
   const subscribedTracksRef = useRef(new Set<string>())
+  // `subscribedTracksRef` is admission/in-flight state. Keep a separate set
+  // for subscriptions whose full negotiation completed, so a Room readiness
+  // reset (for example a control WebSocket reconnect) can re-assert the ACK
+  // without issuing a second tracks/new request. In-flight or failed keys
+  // never enter this set and therefore can never ACK early.
+  const readySubscribedTracksRef = useRef(new Set<string>())
   const pendingRemoteTrackRef = useRef<{
     peerId: string
     kind: "audio" | "video"
@@ -389,10 +395,13 @@ export function useSfuChatRoom(
     setParticipants(list)
   }, [nickName, roomName])
 
-  const sendSocketMessage = useCallback((message: object) => {
+  const sendSocketMessage = useCallback((message: object): boolean => {
     const socket = websocketRef.current
-    if (socket?.readyState === WebSocket.OPEN)
+    if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(message))
+      return true
+    }
+    return false
   }, [])
 
   const enqueueNegotiation = useCallback(
@@ -586,6 +595,10 @@ export function useSfuChatRoom(
     for (const key of subscribedTracksRef.current) {
       if (key.startsWith(`${participantId}:`))
         subscribedTracksRef.current.delete(key)
+    }
+    for (const key of readySubscribedTracksRef.current) {
+      if (key.startsWith(`${participantId}:`))
+        readySubscribedTracksRef.current.delete(key)
     }
 
     const channel = remoteFileChannelsRef.current.get(participantId)
@@ -889,6 +902,26 @@ export function useSfuChatRoom(
       if (!session || !pc || !media) return
       const key = `${participant.id}:${media.sessionId}:${track.trackName}`
       if (subscribedTracksRef.current.has(key)) {
+        const current = participantMapRef.current.get(participant.id)
+        if (
+          current?.media?.sessionId === media.sessionId &&
+          readySubscribedTracksRef.current.has(key) &&
+          participant.kind === "agent" &&
+          track.kind === "audio"
+        ) {
+          // The media subscription is still alive, but Room readiness may
+          // have been fail-closed by a control WebSocket close. Re-assert the
+          // ACK on resync without repeating tracks/new or renegotiation.
+          const sent = sendSocketMessage({
+            type: "agent-voice-ready",
+            agentParticipantId: participant.id,
+            sessionId: media.sessionId,
+            trackName: track.trackName,
+          })
+          voiceDownstreamDiagnostic("agent_voice_ready_reasserted", {
+            agent_voice_ready_reasserted: sent ? 1 : 0,
+          })
+        }
         voiceDownstreamDiagnostic("subscribe_dedup_skipped", {})
         return
       }
@@ -902,8 +935,11 @@ export function useSfuChatRoom(
         if (
           participantMapRef.current.get(participant.id)?.media?.sessionId !==
           media.sessionId
-        )
+        ) {
+          subscribedTracksRef.current.delete(key)
+          readySubscribedTracksRef.current.delete(key)
           return
+        }
         pendingRemoteTrackRef.current = {
           peerId: participant.id,
           kind: track.kind,
@@ -956,6 +992,7 @@ export function useSfuChatRoom(
         })
         if (!response.sessionDescription) {
           subscribedTracksRef.current.delete(key)
+          readySubscribedTracksRef.current.delete(key)
           console.warn(
             "sfu_remote_subscribe_missing_description",
             summarizeRemoteTrackResponse(response)
@@ -1007,20 +1044,24 @@ export function useSfuChatRoom(
           })
           voiceDownstreamDiagnostic("renegotiate_ok", { renegotiate_ok: 1 })
           if (participant.kind === "agent" && track.kind === "audio") {
+            // Negotiation completion is the ACK-safe boundary. Record it
+            // even if the control WebSocket is briefly unavailable; a later
+            // resync on the new socket will re-assert the same ACK.
+            readySubscribedTracksRef.current.add(key)
             // The Runtime must not drain a first utterance merely because
             // Cloudflare booked its upstream publication. This ACK is sent
             // only after the Human browser has completed the full remote
             // tracks/new + answer + renegotiate path for that exact session
             // and track; the Room validates it against the private current
             // publication before making it visible to the Runtime.
-            sendSocketMessage({
+            const sent = sendSocketMessage({
               type: "agent-voice-ready",
               agentParticipantId: participant.id,
               sessionId: media.sessionId,
               trackName: track.trackName,
             })
             voiceDownstreamDiagnostic("agent_voice_ready_ack_sent", {
-              agent_voice_ready_ack_sent: 1,
+              agent_voice_ready_ack_sent: sent ? 1 : 0,
             })
           }
         } catch (error) {
@@ -1032,6 +1073,7 @@ export function useSfuChatRoom(
         }
       }).catch((error) => {
         subscribedTracksRef.current.delete(key)
+        readySubscribedTracksRef.current.delete(key)
         console.warn("sfu_remote_subscribe_failed", {
           errorType: error instanceof Error ? error.name : typeof error,
         })
@@ -1063,12 +1105,23 @@ export function useSfuChatRoom(
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
+        const previousTracks = previous?.media?.tracks ?? []
+        const currentTracks = participant.media?.tracks ?? []
+        const trackRemoved = previousTracks.some(
+          (previousTrack) =>
+            !currentTracks.some(
+              (currentTrack) =>
+                currentTrack.trackName === previousTrack.trackName &&
+                currentTrack.kind === previousTrack.kind
+            )
+        )
         if (
           previous?.media &&
           participant.media &&
           previous.media.sessionId !== participant.media.sessionId
         )
           resetRemoteParticipant(participant.id)
+        else if (trackRemoved) resetRemoteParticipant(participant.id)
       }
       participantMapRef.current = new Map(
         state.participants.map((participant) => [
@@ -1351,6 +1404,7 @@ export function useSfuChatRoom(
         dataChannelReadyRef.current = false
         localTrackMidsRef.current.clear()
         subscribedTracksRef.current.clear()
+        readySubscribedTracksRef.current.clear()
         remoteAudioStreamsRef.current.clear()
         remoteScreenStreamsRef.current.clear()
         pendingRemoteTrackRef.current = null
