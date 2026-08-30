@@ -80,6 +80,10 @@ type Options struct {
 	// ProviderHandles is daemon-owned volatile storage shared by residents of
 	// the same local Runtime Host. It is intentionally never persisted.
 	ProviderHandles *ProviderHandleStore
+	// TranscriptProducers is the daemon-local lease coordinator for a
+	// Room-selected Live Transcript Runtime Host. Nil disables the optional
+	// producer path fail-closed while preserving text and legacy media.
+	TranscriptProducers media.LiveTranscriptCoordinator
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
@@ -123,6 +127,11 @@ type ResidentRuntime struct {
 	speechConfig speech.Config
 	transcriber  *speech.Transcriber
 	transcript   *speech.TranscriptStore
+	// Live Transcript producer state is only local callback admission state;
+	// committed text lives in the Room control plane, never in this cache.
+	liveTranscript          types.LiveTranscriptInfo
+	liveTranscriptProducing bool
+	sttGeneration           uint64
 	// voiceSrc is the controller-backed voice boundary; tests may inject a
 	// fake to observe dispatch ordering deterministically.
 	voiceSrc voiceSource
@@ -618,6 +627,7 @@ func (r *ResidentRuntime) drainTurns() {
 			Participants: r.rosterSnapshot(),
 		})
 		r.enrichAttachments(input)
+		r.attachLiveTranscript(input)
 		r.attachTranscript(input)
 
 		// A newly addressed turn wins the speaker: stale audio from the
@@ -882,6 +892,10 @@ func (r *ResidentRuntime) releaseResources() {
 		r.mediaController.Stop()
 		r.mediaController = nil
 	}
+	r.mu.Lock()
+	r.liveTranscript = types.LiveTranscriptInfo{}
+	r.liveTranscriptProducing = false
+	r.mu.Unlock()
 	if r.transcriber != nil {
 		r.transcriber.Close()
 		r.transcriber = nil

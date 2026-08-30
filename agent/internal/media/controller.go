@@ -19,6 +19,18 @@ type ControllerOptions struct {
 	ParticipantID string
 	SiteOrigin    string
 	Handle        DecodedHandle
+	// RuntimeHostID is the room-scoped public host identity of this local
+	// Runtime. Live Transcript must match it exactly.
+	RuntimeHostID string
+	// RuntimeInstanceID distinguishes local resident agents for the daemon
+	// coordinator; it never reaches Room state or Harness input.
+	RuntimeInstanceID string
+	// LiveTranscriptCoordinator elects exactly one local producer for an
+	// active (room, host, epoch) grant.
+	LiveTranscriptCoordinator LiveTranscriptCoordinator
+	// CanProduceLiveTranscript proves this daemon still holds the private
+	// provider association for RuntimeHostID. Nil/false fails closed.
+	CanProduceLiveTranscript func() bool
 	// PollIntervalMs defaults to 5s.
 	PollIntervalMs int
 	// OnAudioFrame receives attributed SFU audio frames (wire to the
@@ -32,6 +44,9 @@ type ControllerOptions struct {
 	// uses it to evaluate that grant's own speech prerequisite once — never
 	// per poll.
 	OnGrantActivated func(kind GrantKind)
+	// OnLiveTranscriptState tells the runtime whether this resident owns the
+	// active local producer lease. It is a state edge, never a Harness wakeup.
+	OnLiveTranscriptState func(state types.LiveTranscriptInfo, producing bool)
 	// Voice configures outbound Agent Voice (nil = Meeting Notes only).
 	Voice *VoiceConfig
 	// Log receives bounded safe events.
@@ -40,6 +55,14 @@ type ControllerOptions struct {
 	Now func() time.Time
 	// CreateBridge injectable for tests (real production wiring default).
 	CreateBridge func() (*Bridge, error)
+}
+
+// LiveTranscriptCoordinator is implemented by the daemon-local ownership
+// ledger. The Room controls Host selection; this interface only serializes
+// residents within that one Host.
+type LiveTranscriptCoordinator interface {
+	Acquire(roomID, runtimeHostID string, epoch int64, instanceID string) bool
+	Release(roomID, runtimeHostID string, epoch int64, instanceID string)
 }
 
 // VoiceConfig is the outbound voice surface.
@@ -57,8 +80,9 @@ type VoiceConfig struct {
 type GrantKind string
 
 const (
-	GrantMeetingNotes GrantKind = "meeting_notes"
-	GrantAgentVoice   GrantKind = "agent_voice"
+	GrantMeetingNotes   GrantKind = "meeting_notes"
+	GrantAgentVoice     GrantKind = "agent_voice"
+	GrantLiveTranscript GrantKind = "live_transcript"
 	// Deprecated internal spelling retained only for existing adapter tests;
 	// it maps to the participant-specific Agent Voice grant above.
 	GrantVoiceReply = GrantAgentVoice
@@ -80,6 +104,13 @@ type Controller struct {
 	voiceEpoch         *int64
 	voiceObservedEpoch *int64
 	voiceObservedInit  bool
+	// liveEpoch is the epoch currently bound into the shared bridge; it is
+	// distinct from the local lease/observation state so a callback cannot
+	// hide a required Stop->Start rebuild.
+	liveEpoch         *int64
+	liveLeaseEpoch    *int64
+	liveObservedEpoch *int64
+	liveProducing     bool
 	// #171 grant-announcement state: the last grant instance (kind + epoch)
 	// whose activation edge was already reported, so an unchanged grant
 	// never re-fires while polls continue. Re-armed when the grant stops
@@ -167,6 +198,7 @@ func (c *Controller) Stop() {
 	c.cancel = nil
 	c.ctx = nil
 	c.mu.Unlock()
+	c.releaseLiveTranscriptLease()
 	if cancel != nil {
 		cancel()
 	}
@@ -213,6 +245,8 @@ func (c *Controller) poll() {
 	var epoch *int64
 	vrAuthorized := false
 	var vrEpoch *int64
+	liveAuthorized := false
+	var liveInfo types.LiveTranscriptInfo
 	// #175 review fix: only a SUCCESSFUL RoomInfo observation may re-arm the
 	// announcement state. A transient failure leaves the grants unknown —
 	// the last announced epoch must survive it, so a recovery that observes
@@ -227,6 +261,7 @@ func (c *Controller) poll() {
 		c.log("voice_reply_room_info_failed", map[string]string{"code": safeDiagnosticCode(err)})
 	} else {
 		roomInfoObserved = true
+		liveInfo = info.LiveTranscript
 		if c.options.Voice != nil {
 			grant, vrTargetsSelf := info.AgentVoice[c.options.ParticipantID]
 			vrAuthorized = info.AgentVoiceMediaAvailable && vrTargetsSelf && grant.EnabledAt > 0
@@ -254,7 +289,12 @@ func (c *Controller) poll() {
 			value := info.MeetingNotes.StartedAt
 			epoch = &value
 		}
+		liveAuthorized = c.acquireLiveTranscriptLease(info.LiveTranscript)
 	}
+	if !liveAuthorized {
+		c.releaseLiveTranscriptLease()
+	}
+	c.notifyLiveTranscriptState(liveInfo, liveAuthorized)
 
 	// #171: per-grant activation edges. Each grant announces ONCE per grant
 	// instance (kind + epoch): a grant that stays active across polls never
@@ -303,10 +343,11 @@ func (c *Controller) poll() {
 		c.options.OnGrantActivated(GrantAgentVoice)
 	}
 
-	anyGrantActive := authorized || vrAuthorized
+	anyGrantActive := authorized || vrAuthorized || liveAuthorized
 	if !anyGrantActive {
 		c.mu.Lock()
 		c.grantEpoch = nil
+		c.liveEpoch = nil
 		c.mu.Unlock()
 		c.teardownBridge()
 		return
@@ -321,13 +362,18 @@ func (c *Controller) poll() {
 	c.mu.Lock()
 	mnStale := authorized && c.state != "idle" && !int64Equal(c.grantEpoch, epoch)
 	vrStale := vrAuthorized && c.state != "idle" && !int64Equal(c.voiceEpoch, vrEpoch)
-	if mnStale || vrStale {
+	liveStale := liveAuthorized && c.state != "idle" && !int64Equal(c.liveEpoch, &liveInfo.Epoch)
+	if mnStale || vrStale || (liveStale && !authorized && !vrAuthorized) {
 		c.mu.Unlock()
 		c.teardownBridge()
 		c.mu.Lock()
 	}
 	if authorized {
 		c.grantEpoch = epoch
+	}
+	if liveAuthorized {
+		value := liveInfo.Epoch
+		c.liveEpoch = &value
 	}
 	c.mu.Unlock()
 
@@ -374,6 +420,67 @@ func int64Equal(a, b *int64) bool {
 		return false
 	}
 	return *a == *b
+}
+
+// acquireLiveTranscriptLease first verifies the public Host/epoch projection,
+// then the local private provider association, and finally the daemon-local
+// single-producer lease. Every failure is fail closed.
+func (c *Controller) acquireLiveTranscriptLease(state types.LiveTranscriptInfo) bool {
+	if !state.Active || state.Epoch <= 0 || state.ProducerRuntimeHostID == "" ||
+		state.ProducerRuntimeHostID != c.options.RuntimeHostID ||
+		c.options.RuntimeInstanceID == "" || c.options.LiveTranscriptCoordinator == nil ||
+		c.options.CanProduceLiveTranscript == nil || !c.options.CanProduceLiveTranscript() {
+		return false
+	}
+	if !c.options.LiveTranscriptCoordinator.Acquire(
+		c.options.RoomID, c.options.RuntimeHostID, state.Epoch, c.options.RuntimeInstanceID) {
+		return false
+	}
+	value := state.Epoch
+	c.mu.Lock()
+	c.liveLeaseEpoch = &value
+	c.mu.Unlock()
+	return true
+}
+
+// releaseLiveTranscriptLease only releases the exact epoch this resident
+// acquired. It is safe to call on every failed poll and during shutdown.
+func (c *Controller) releaseLiveTranscriptLease() {
+	if c.options.LiveTranscriptCoordinator == nil || c.options.RuntimeHostID == "" || c.options.RuntimeInstanceID == "" {
+		return
+	}
+	c.mu.Lock()
+	epoch := c.liveLeaseEpoch
+	c.liveLeaseEpoch = nil
+	c.mu.Unlock()
+	if epoch != nil {
+		c.options.LiveTranscriptCoordinator.Release(
+			c.options.RoomID, c.options.RuntimeHostID, *epoch, c.options.RuntimeInstanceID)
+	}
+}
+
+// notifyLiveTranscriptState only crosses the runtime boundary on a producer
+// state edge or epoch rotation. It never wakes a Harness turn.
+func (c *Controller) notifyLiveTranscriptState(state types.LiveTranscriptInfo, producing bool) {
+	c.mu.Lock()
+	changed := producing != c.liveProducing ||
+		(producing && (c.liveObservedEpoch == nil || *c.liveObservedEpoch != state.Epoch))
+	if changed {
+		c.liveProducing = producing
+		if producing {
+			value := state.Epoch
+			c.liveObservedEpoch = &value
+		} else {
+			c.liveObservedEpoch = nil
+		}
+	}
+	c.mu.Unlock()
+	if changed && c.options.OnLiveTranscriptState != nil {
+		if !producing {
+			state = types.LiveTranscriptInfo{}
+		}
+		c.options.OnLiveTranscriptState(state, producing)
+	}
 }
 
 // ensureRunning builds and starts the shared bridge exactly once (the
@@ -470,6 +577,7 @@ func (c *Controller) buildBridge() (*Bridge, error) {
 				c.log(event, map[string]string{"state": state})
 			},
 		},
+		SubscribePurpose: c.subscribePurpose,
 		Publish: func() *PublishConfig {
 			if c.options.Voice == nil {
 				return nil
@@ -480,6 +588,19 @@ func (c *Controller) buildBridge() (*Bridge, error) {
 		Log:            c.log,
 		Now:            c.now,
 	}), nil
+}
+
+// subscribePurpose is sampled by the Bridge for each remote Human track.
+// The live producer is the narrowest current authorization; Meeting Notes
+// remains the compatibility fallback for its independent legacy grant.
+func (c *Controller) subscribePurpose() Purpose {
+	c.mu.Lock()
+	live := c.liveProducing
+	c.mu.Unlock()
+	if live {
+		return PurposeLiveTranscript
+	}
+	return PurposeMeetingNotes
 }
 
 // ensureVoice resolves the TTS provider and builds the speaker on the active

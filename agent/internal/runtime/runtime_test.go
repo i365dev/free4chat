@@ -129,6 +129,60 @@ type fakeClient struct {
 	sendHook func(text string)
 }
 
+type transcriptClient struct {
+	*fakeClient
+	roomInfo types.RoomInfo
+	roomErr  error
+	appends  []types.LiveTranscriptSegment
+}
+
+func (c *transcriptClient) RoomInfo(string) (types.RoomInfo, error) {
+	return c.roomInfo, c.roomErr
+}
+
+func (c *transcriptClient) AppendLiveTranscript(_ string, epoch int64, segmentID, sourceParticipantID, text string) error {
+	c.appends = append(c.appends, types.LiveTranscriptSegment{
+		SegmentID: segmentID, Epoch: epoch, ParticipantID: sourceParticipantID, Text: text,
+	})
+	return nil
+}
+
+func TestLiveTranscriptRefreshAndProducerPublishingAreBoundedAndGenerationGated(t *testing.T) {
+	client := &transcriptClient{fakeClient: &fakeClient{}, roomInfo: types.RoomInfo{
+		Exists: true,
+		LiveTranscriptSegments: []types.LiveTranscriptSegment{{
+			SegmentID: "lt_shared", Epoch: 3, Sequence: 8, ParticipantID: "human", Speaker: "Human", Text: "Shared decision.", CreatedAt: 9,
+		}},
+	}}
+	rt := NewResidentRuntime(Options{RoomID: "room", Client: client, Adapter: &fakeAdapter{name: "pi"}})
+	input := &types.HarnessTurnInput{}
+	rt.attachLiveTranscript(input)
+	if input.LiveTranscript == nil || len(input.LiveTranscript.Segments) != 1 || input.LiveTranscript.Segments[0].Text != "Shared decision." {
+		t.Fatalf("fresh room shared transcript missing: %#v", input.LiveTranscript)
+	}
+
+	rt.mu.Lock()
+	rt.participantHandle = "private-handle"
+	rt.liveTranscript = types.LiveTranscriptInfo{Active: true, Epoch: 3}
+	rt.liveTranscriptProducing = true
+	rt.sttGeneration = 4
+	rt.mu.Unlock()
+	rt.publishLiveTranscriptSegment(4, "human", "Committed locally")
+	if len(client.appends) != 1 || client.appends[0].Epoch != 3 || client.appends[0].ParticipantID != "human" {
+		t.Fatalf("expected one authenticated append, got %#v", client.appends)
+	}
+
+	// A Stop/reassignment increments the logical producer state before a late
+	// provider callback can publish; no stale segment reaches Room control.
+	rt.mu.Lock()
+	rt.liveTranscriptProducing = false
+	rt.mu.Unlock()
+	rt.publishLiveTranscriptSegment(4, "human", "Must be dropped")
+	if len(client.appends) != 1 {
+		t.Fatalf("stale generation published after revocation: %#v", client.appends)
+	}
+}
+
 type waitStep struct {
 	err    error
 	events []types.RoomEvent

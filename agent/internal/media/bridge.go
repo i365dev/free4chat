@@ -79,9 +79,13 @@ type BridgeOptions struct {
 	CreateEngine EngineFactory
 	Events       BridgeEvents
 	// Publish configures the outbound voice track (nil = Meeting Notes only).
-	Publish        *PublishConfig
-	PollIntervalMs int
-	Log            func(event string, details map[string]string)
+	Publish *PublishConfig
+	// SubscribePurpose selects the scoped authorization for Human-audio
+	// subscriptions. It is sampled for every subscribe/renegotiate so a Live
+	// Transcript producer never reuses a Meeting Notes permission implicitly.
+	SubscribePurpose func() Purpose
+	PollIntervalMs   int
+	Log              func(event string, details map[string]string)
 	// Now is injectable for deterministic stats tests.
 	Now func() time.Time
 }
@@ -125,9 +129,9 @@ func subscriptionKey(participantID, sessionID, trackName string) string {
 }
 
 // Bridge owns the ONE shared Pion PeerConnection / Cloudflare Agent session
-// serving both grants. Meeting Notes controls Human-audio subscribe/input;
-// Agent Voice controls this Agent's local publish/output. Exactly one session
-// exists whenever EITHER grant is live.
+// serving the independent grants. Meeting Notes and Live Transcript control
+// Human-audio subscribe/input; Agent Voice controls this Agent's local
+// publish/output. Exactly one session exists whenever any grant is live.
 type Bridge struct {
 	options BridgeOptions
 	log     func(event string, details map[string]string)
@@ -473,7 +477,11 @@ func (b *Bridge) subscribe(participant RoomMediaParticipant, trackName string) e
 	}
 	b.mu.Unlock()
 
-	offer, mid, err := b.rest.SubscribeTrack(sessionID, participant.SessionID, trackName, PurposeMeetingNotes)
+	purpose := PurposeMeetingNotes
+	if b.options.SubscribePurpose != nil {
+		purpose = b.options.SubscribePurpose()
+	}
+	offer, mid, err := b.rest.SubscribeTrack(sessionID, participant.SessionID, trackName, purpose)
 	if err != nil {
 		b.dropReservation(key)
 		return err
@@ -490,7 +498,7 @@ func (b *Bridge) subscribe(participant RoomMediaParticipant, trackName string) e
 		return err
 	}
 	if applied == "offer" && answer != nil {
-		if err := b.rest.Renegotiate(sessionID, *answer, PurposeMeetingNotes); err != nil {
+		if err := b.rest.Renegotiate(sessionID, *answer, purpose); err != nil {
 			b.dropReservation(key)
 			return err
 		}

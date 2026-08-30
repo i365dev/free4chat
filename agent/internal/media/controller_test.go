@@ -23,6 +23,7 @@ type fakeRoomClient struct {
 	vrAvail   bool
 	vrAgent   string
 	vrStarted int64
+	live      types.LiveTranscriptInfo
 	err       error
 }
 
@@ -62,6 +63,7 @@ func (f *fakeRoomClient) RoomInfo(string) (types.RoomInfo, error) {
 			}
 		}(),
 		AgentVoiceMediaAvailable: f.vrAvail,
+		LiveTranscript:           f.live,
 	}, nil
 }
 
@@ -108,6 +110,44 @@ func (*fakeRoomClient) ReadSurface(string, string, string) (types.SurfaceReadRes
 }
 func (*fakeRoomClient) LeaveRoom(string) error { return nil }
 func (*fakeRoomClient) Close() error           { return nil }
+
+type testLiveTranscriptCoordinator struct {
+	mu     sync.Mutex
+	leases map[string]struct {
+		epoch int64
+		owner string
+	}
+}
+
+func (c *testLiveTranscriptCoordinator) Acquire(roomID, hostID string, epoch int64, instanceID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.leases == nil {
+		c.leases = map[string]struct {
+			epoch int64
+			owner string
+		}{}
+	}
+	key := roomID + "\x00" + hostID
+	current, ok := c.leases[key]
+	if !ok || current.epoch != epoch {
+		c.leases[key] = struct {
+			epoch int64
+			owner string
+		}{epoch: epoch, owner: instanceID}
+		return true
+	}
+	return current.owner == instanceID
+}
+
+func (c *testLiveTranscriptCoordinator) Release(roomID, hostID string, epoch int64, instanceID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := roomID + "\x00" + hostID
+	if current, ok := c.leases[key]; ok && current.epoch == epoch && current.owner == instanceID {
+		delete(c.leases, key)
+	}
+}
 
 // controllerHarness tracks bridge lifecycles through real fake-backed bridges.
 type controllerHarness struct {
@@ -204,6 +244,71 @@ func waitController(t *testing.T, timeout time.Duration, condition func() bool, 
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for %s", message)
+}
+
+func TestControllerLiveTranscriptElectsOneVerifiedSameHostProducer(t *testing.T) {
+	client := &fakeRoomClient{live: types.LiveTranscriptInfo{
+		Active: true, ProducerRuntimeHostID: "host-a", StartedByHumanParticipantID: "human", Epoch: 7, StartedAt: 9,
+	}}
+	coordinator := &testLiveTranscriptCoordinator{}
+	harness := &controllerHarness{}
+	var mu sync.Mutex
+	states := map[string][]bool{}
+	newLiveController := func(instanceID string) *Controller {
+		return NewController(ControllerOptions{
+			Client:                    client,
+			RoomID:                    "room",
+			ParticipantID:             instanceID,
+			SiteOrigin:                "https://www.free4.chat",
+			Handle:                    DecodedHandle{Room: "room", ParticipantID: instanceID, ParticipantToken: "tok"},
+			RuntimeHostID:             "host-a",
+			RuntimeInstanceID:         instanceID,
+			LiveTranscriptCoordinator: coordinator,
+			CanProduceLiveTranscript:  func() bool { return true },
+			PollIntervalMs:            10_000,
+			CreateBridge:              harness.createBridge,
+			Log:                       func(string, map[string]string) {},
+			OnLiveTranscriptState: func(_ types.LiveTranscriptInfo, producing bool) {
+				mu.Lock()
+				states[instanceID] = append(states[instanceID], producing)
+				mu.Unlock()
+			},
+		})
+	}
+	first := newLiveController("agent-a")
+	second := newLiveController("agent-b")
+	defer second.Stop()
+	defer first.Stop()
+	first.Start(t.Context())
+	waitController(t, time.Second, func() bool { return harness.bridgeCount() == 1 }, "first live producer")
+	second.Start(t.Context())
+	time.Sleep(20 * time.Millisecond)
+	if got := harness.bridgeCount(); got != 1 {
+		t.Fatalf("same Host must have one media producer bridge, got %d", got)
+	}
+	mu.Lock()
+	firstStates := append([]bool(nil), states["agent-a"]...)
+	secondStates := append([]bool(nil), states["agent-b"]...)
+	mu.Unlock()
+	if len(firstStates) == 0 || !firstStates[0] || len(secondStates) != 0 {
+		t.Fatalf("unexpected producer ownership edges: first=%v second=%v", firstStates, secondStates)
+	}
+
+	// A Host mismatch is not a local failover trigger: neither resident may
+	// produce for a Room grant naming another Runtime Host.
+	client.mu.Lock()
+	client.live.ProducerRuntimeHostID = "host-b"
+	client.live.Epoch = 8
+	client.mu.Unlock()
+	first.poll()
+	second.poll()
+	mu.Lock()
+	firstStates = append([]bool(nil), states["agent-a"]...)
+	secondStates = append([]bool(nil), states["agent-b"]...)
+	mu.Unlock()
+	if last := firstStates[len(firstStates)-1]; last || len(secondStates) != 0 {
+		t.Fatalf("remote Host grant must not produce locally: first=%v second=%v", firstStates, secondStates)
+	}
 }
 
 func TestControllerMeetingNotesGrantStartsAndRevocationStopsBridge(t *testing.T) {

@@ -4,7 +4,8 @@ import {
   appendLiveTranscriptSegment,
   canAgentAppendLiveTranscript,
   MAX_LIVE_TRANSCRIPT_SEGMENTS,
-  MAX_LIVE_TRANSCRIPT_TEXT_CHARS,
+  MAX_LIVE_TRANSCRIPT_STORAGE_BYTES,
+  liveTranscriptStorageByteLength,
   normalizeLiveTranscriptProducer,
   normalizeStoredLiveTranscript,
   startLiveTranscript,
@@ -259,41 +260,43 @@ describe("Live Transcript domain", () => {
     expect(overflow.liveTranscriptSegments.at(-1)?.segmentId).toBe(
       "segment-new"
     )
-    expect(
-      overflow.liveTranscriptSegments.reduce(
-        (total, segment) => total + segment.text.length,
-        0
-      )
-    ).toBeLessThanOrEqual(MAX_LIVE_TRANSCRIPT_TEXT_CHARS)
-
+    // A character count is not a storage limit: CJK uses three UTF-8 bytes
+    // per glyph. The persisted separate value is bounded by its actual JSON
+    // UTF-8 representation, evicting oldest committed context first.
     const characterBounded = appendLiveTranscriptSegment({
       liveTranscript: ACTIVE,
-      liveTranscriptSegments: Array.from({ length: 16 }, (_, index) => ({
+      liveTranscriptSegments: Array.from({ length: 30 }, (_, index) => ({
         segmentId: `characters-${index}`,
         epoch: 7,
         sequence: index + 1,
         participantId: "human",
         speaker: "Human",
-        text: "x".repeat(4_000),
+        text: "语".repeat(4_000),
         createdAt: index + 1,
       })),
-      nextTranscriptSequence: 17,
+      nextTranscriptSequence: 31,
       epoch: 7,
       segmentId: "characters-new",
       sourceParticipant: { id: "human", name: "Human", kind: "human" },
-      text: "x".repeat(4_000),
+      text: "语".repeat(4_000),
       now: 1_000,
     })
     if (!characterBounded.ok) throw new Error("expected transcript append")
-    expect(characterBounded.liveTranscriptSegments).toHaveLength(16)
-    expect(characterBounded.liveTranscriptSegments[0]?.segmentId).toBe(
-      "characters-1"
+    expect(characterBounded.liveTranscriptSegments.length).toBeGreaterThan(0)
+    expect(characterBounded.liveTranscriptSegments).not.toHaveLength(31)
+    expect(characterBounded.liveTranscriptSegments[0]?.segmentId).not.toBe(
+      "characters-0"
+    )
+    expect(characterBounded.liveTranscriptSegments.at(-1)?.segmentId).toBe(
+      "characters-new"
     )
     expect(
-      characterBounded.liveTranscriptSegments.reduce(
-        (total, segment) => total + segment.text.length,
-        0
-      )
-    ).toBeLessThanOrEqual(MAX_LIVE_TRANSCRIPT_TEXT_CHARS)
+      liveTranscriptStorageByteLength({
+        liveTranscript: ACTIVE,
+        liveTranscriptSegments: characterBounded.liveTranscriptSegments,
+        nextLiveTranscriptEpoch: 8,
+        nextTranscriptSequence: characterBounded.nextTranscriptSequence,
+      })
+    ).toBeLessThanOrEqual(MAX_LIVE_TRANSCRIPT_STORAGE_BYTES)
   })
 })

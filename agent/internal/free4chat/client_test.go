@@ -1,6 +1,7 @@
 package free4chat
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,76 @@ import (
 
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
+
+func TestRoomInfoParsesLiveTranscriptStrictly(t *testing.T) {
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		if toolNameOf(body) != "room_info" {
+			t.Fatalf("unexpected tool: %q", toolNameOf(body))
+		}
+		writeJSON(w, callResult(map[string]any{
+			"exists": true,
+			"liveTranscript": map[string]any{
+				"active": true, "producerRuntimeHostId": "host-live-a",
+				"startedByHumanParticipantId": "human-1", "epoch": float64(4), "startedAt": float64(9),
+			},
+			"liveTranscriptSegments": []any{map[string]any{
+				"segmentId": "lt_alpha", "epoch": float64(4), "sequence": float64(3),
+				"participantId": "human-1", "speaker": "Human", "text": "A decision.", "createdAt": float64(10),
+			}},
+		}))
+	})
+	info, err := client.RoomInfo("room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.LiveTranscript.Active || info.LiveTranscript.Epoch != 4 || len(info.LiveTranscriptSegments) != 1 {
+		t.Fatalf("live transcript parse mismatch: %#v", info)
+	}
+
+	// A malformed active grant and an out-of-order segment list both fail
+	// closed instead of being partially trusted by the media/Harness paths.
+	if got := parseLiveTranscriptState(map[string]any{"active": true, "epoch": float64(1)}); got.Active {
+		t.Fatalf("partial active state must fail closed: %#v", got)
+	}
+	if got := parseLiveTranscriptSegments([]any{
+		map[string]any{"segmentId": "a", "epoch": float64(1), "sequence": float64(2), "participantId": "h", "speaker": "H", "text": "one", "createdAt": float64(1)},
+		map[string]any{"segmentId": "b", "epoch": float64(1), "sequence": float64(1), "participantId": "h", "speaker": "H", "text": "two", "createdAt": float64(2)},
+	}); got != nil {
+		t.Fatalf("out-of-order segments must fail closed: %#v", got)
+	}
+}
+
+func TestAppendLiveTranscriptUsesNarrowRoomControlWire(t *testing.T) {
+	var seenPath string
+	var seenHeaders http.Header
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenHeaders = r.Header.Clone()
+		if err := json.NewDecoder(r.Body).Decode(&seenBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	handleBytes, _ := json.Marshal(map[string]string{
+		"room": "room-live", "participantId": "agent-live", "participantToken": "secret-token",
+	})
+	handle := base64.RawURLEncoding.EncodeToString(handleBytes)
+	client := New(server.URL + "/mcp")
+	if err := client.AppendLiveTranscript(handle, 7, "lt_abc", "human-1", "Committed text"); err != nil {
+		t.Fatal(err)
+	}
+	if seenPath != "/api/room/live-transcript/append" ||
+		seenHeaders.Get("X-Room-Id") != "room-live" ||
+		seenHeaders.Get("X-Room-Participant-Id") != "agent-live" ||
+		seenHeaders.Get("X-Room-Participant-Token") != "secret-token" {
+		t.Fatalf("wrong direct control wire: path=%q headers=%v", seenPath, seenHeaders)
+	}
+	if seenBody["speaker"] != nil || seenBody["rawAudio"] != nil || seenBody["text"] != "Committed text" {
+		t.Fatalf("unexpected control body: %#v", seenBody)
+	}
+}
 
 // fakeServer emulates the deployed /mcp wire contract closely enough to
 // exercise transport classification and payload parsing.

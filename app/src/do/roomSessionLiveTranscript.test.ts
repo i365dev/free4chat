@@ -163,7 +163,14 @@ async function harness(options?: {
       text: "We agreed on the plan.",
       ...overrides,
     })
-  const stored = () => store.get("room") as any
+  // RoomSession stores the bounded shared transcript in its own DO value so
+  // the primary legacy-KV Room record cannot exceed 128 KiB. Tests inspect
+  // the same in-memory projection the session reconstructs on load.
+  const stored = () =>
+    ({
+      ...(store.get("room") as Record<string, unknown>),
+      ...(store.get("live-transcript") as Record<string, unknown> | undefined),
+    } as any)
   return { session, socket, store, sendHuman, control, append, stored }
 }
 
@@ -299,6 +306,28 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
     await room.sendHuman("human", {
       type: "live-transcript-start",
       runtimeHostId: HOST_A,
+    })
+    const mediaAuthorize = await room.control({
+      action: "authorize",
+      participantId: "producer",
+      token: "producer-token",
+      purpose: "live-transcript",
+      remoteTrackCount: 1,
+    })
+    expect(mediaAuthorize).toMatchObject({
+      status: 200,
+      json: { ok: true, kind: "agent" },
+    })
+    const copiedMediaAuthorize = await room.control({
+      action: "authorize",
+      participantId: "copied-host",
+      token: "copied-host-token",
+      purpose: "live-transcript",
+      remoteTrackCount: 1,
+    })
+    expect(copiedMediaAuthorize).toMatchObject({
+      status: 403,
+      json: { error: "live_transcript_not_authorized" },
     })
     const copied = await room.append({
       participantId: "copied-host",

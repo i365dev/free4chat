@@ -11,6 +11,10 @@ import { handleRoomRequest, type RoomProtocolEnv } from "./server"
 const ORIGIN = "http://localhost:3000"
 
 type CapturedUpload = { contentType: string | null }
+type CapturedControl = {
+  body: Record<string, unknown>
+  contentType: string | null
+}
 
 function makeEnv(
   doFetch: (upload: { contentType: string | null }) => Response
@@ -44,6 +48,30 @@ function envCapturing(uploads: CapturedUpload[]): RoomProtocolEnv {
     uploads.push(upload)
     return Response.json({ id: "att-x" })
   })
+}
+
+function liveTranscriptEnv(captured: CapturedControl[]): RoomProtocolEnv {
+  const namespace = {
+    idFromName: (name: string) => ({ name }),
+    get: () => ({
+      fetch: async (
+        _url: string | URL,
+        init?: { body?: BodyInit | null; headers?: HeadersInit }
+      ) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+          string,
+          unknown
+        >
+        const headers = new Headers(init?.headers)
+        captured.push({
+          body,
+          contentType: headers.get("Content-Type"),
+        })
+        return Response.json({ ok: true })
+      },
+    }),
+  }
+  return { SFU_ROOM: namespace as unknown as RoomProtocolEnv["SFU_ROOM"] }
 }
 
 function uploadRequest(
@@ -131,5 +159,76 @@ describe("room attachment upload gate", () => {
     const env = makeEnv(() => Response.json({}))
     const response = await handleRoomRequest(request, env)
     expect(response.status).toBe(403)
+  })
+})
+
+describe("Live Transcript Runtime append gate", () => {
+  it("forwards only the narrow authenticated segment control payload", async () => {
+    const captured: CapturedControl[] = []
+    const request = new Request(
+      "https://www.free4.chat/api/room/live-transcript/append",
+      {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "Content-Type": "application/json",
+          "X-Room-Id": "test-room",
+          "X-Room-Participant-Id": "agent-1",
+          "X-Room-Participant-Token": "private-token",
+        },
+        body: JSON.stringify({
+          epoch: 7,
+          segmentId: "lt_abc",
+          sourceParticipantId: "human-1",
+          text: "Decision recorded.",
+          speaker: "must-not-cross-this-boundary",
+          rawAudio: "must-not-cross-this-boundary",
+        }),
+      }
+    )
+    const response = await handleRoomRequest(
+      request,
+      liveTranscriptEnv(captured)
+    )
+    expect(response.status).toBe(200)
+    expect(captured).toEqual([
+      {
+        contentType: "application/json",
+        body: {
+          action: "agent-live-transcript-append",
+          participantId: "agent-1",
+          token: "private-token",
+          epoch: 7,
+          segmentId: "lt_abc",
+          sourceParticipantId: "human-1",
+          text: "Decision recorded.",
+        },
+      },
+    ])
+  })
+
+  it("rejects a malformed Runtime append before contacting the Room", async () => {
+    const request = new Request(
+      "https://www.free4.chat/api/room/live-transcript/append",
+      {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "Content-Type": "application/json",
+          "X-Room-Id": "test-room",
+          "X-Room-Participant-Id": "agent-1",
+          "X-Room-Participant-Token": "private-token",
+        },
+        body: JSON.stringify({
+          epoch: 0,
+          segmentId: "x",
+          sourceParticipantId: "h",
+          text: "x",
+        }),
+      }
+    )
+    const env = liveTranscriptEnv([])
+    const response = await handleRoomRequest(request, env)
+    expect(response.status).toBe(400)
   })
 })

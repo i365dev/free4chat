@@ -65,6 +65,7 @@ type Purpose string
 const (
 	PurposeAgentTransport Purpose = "agent-transport"
 	PurposeMeetingNotes   Purpose = "meeting-notes"
+	PurposeLiveTranscript Purpose = "live-transcript"
 	PurposeVoiceReply     Purpose = "voice-reply"
 )
 
