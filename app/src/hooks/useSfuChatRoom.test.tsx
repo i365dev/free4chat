@@ -1089,6 +1089,90 @@ describe("useSfuChatRoom room attachments (#123)", () => {
     unmount()
   })
 
+  it("drops an in-flight retry from a stale Human media session before ACKing", async () => {
+    let sessionAttempts = 0
+    let remoteTrackAttempts = 0
+    const remoteSubscriberSessionIds: string[] = []
+    let resolveRetryTracks!: (response: Response) => void
+    const pendingRetryTracks = new Promise<Response>((resolve) => {
+      resolveRetryTracks = resolve
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session")) {
+          sessionAttempts += 1
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: `human-session-${sessionAttempts}`,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        }
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks")) {
+          const body = JSON.parse(
+            (init?.body as string | undefined) ?? "{}"
+          ) as {
+            sessionId?: string
+            tracks?: Array<{ location?: string }>
+          }
+          if (body.tracks?.[0]?.location !== "remote") return jsonResponse({})
+          remoteTrackAttempts += 1
+          remoteSubscriberSessionIds.push(body.sessionId ?? "")
+          if (remoteTrackAttempts === 1)
+            return jsonResponse(noSdpAgentVoiceTrackResponse)
+          if (remoteTrackAttempts === 2) return pendingRetryTracks
+          return jsonResponse(usableAgentVoiceTrackResponse)
+        }
+        return jsonResponse({})
+      }
+    )
+
+    const { unmount } = await connect("room-agent-no-sdp-stale-media")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const oldPc = FakePeerConnection.instances.at(-1)!
+    const oldSetRemoteDescription = vi.spyOn(oldPc, "setRemoteDescription")
+    const oldWs = RecordingWebSocket.instances.at(-1)!
+
+    publishAgentVoice(oldWs)
+    await waitFor(() => expect(remoteTrackAttempts).toBe(2))
+
+    oldPc.connectionState = "disconnected"
+    act(() => oldPc.onconnectionstatechange?.())
+    await waitFor(() => expect(sessionAttempts).toBe(2))
+
+    // The reconnect's local publication is queued behind the old retry, so
+    // resolve the latter only after the new Human session has replaced it.
+    resolveRetryTracks(await jsonResponse(usableAgentVoiceTrackResponse))
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(1)
+    )
+    const newWs = RecordingWebSocket.instances.at(-1)!
+
+    expect(oldSetRemoteDescription).not.toHaveBeenCalled()
+    expect(readyMessages(newWs)).toEqual([])
+
+    resyncAgentVoice(newWs, "agent-session")
+    await waitFor(() => expect(remoteTrackAttempts).toBe(3))
+    await waitFor(() => expect(readyMessages(newWs)).toHaveLength(1))
+
+    expect(remoteSubscriberSessionIds).toEqual([
+      "human-session-1",
+      "human-session-1",
+      "human-session-2",
+    ])
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/sfu/renegotiate")
+      )
+    ).toHaveLength(1)
+    unmount()
+  })
+
   it("observes the complete Agent audio downstream path without exposing secrets", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined)
     fetchMock.mockImplementation((input: RequestInfo | URL) => {

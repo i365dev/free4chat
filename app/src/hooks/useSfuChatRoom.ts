@@ -114,6 +114,8 @@ interface SfuApiResponse {
 interface AgentAudioSubscriptionRetry {
   attempt: number
   timeout: ReturnType<typeof setTimeout>
+  subscriberSessionId: string
+  subscriberPeerConnection: RTCPeerConnection
 }
 
 function hasUsableSessionDescription(response: SfuApiResponse): boolean {
@@ -472,6 +474,16 @@ export function useSfuChatRoom(
           )
       )
     },
+    []
+  )
+
+  const isCurrentSubscriberSession = useCallback(
+    (
+      subscriberSessionId: string,
+      subscriberPeerConnection: RTCPeerConnection
+    ): boolean =>
+      sessionRef.current?.sessionId === subscriberSessionId &&
+      peerConnectionRef.current === subscriberPeerConnection,
     []
   )
 
@@ -1006,7 +1018,9 @@ export function useSfuChatRoom(
       participantId: string,
       sessionId: string,
       trackName: string,
-      attempt: number
+      attempt: number,
+      subscriberSessionId: string,
+      subscriberPeerConnection: RTCPeerConnection
     ) => {
       const delay = AGENT_AUDIO_SUBSCRIPTION_RETRY_DELAYS_MS[attempt - 2]
       if (delay === undefined) return false
@@ -1015,6 +1029,18 @@ export function useSfuChatRoom(
         const pending = agentAudioSubscriptionRetriesRef.current.get(key)
         if (!pending || pending.attempt !== attempt) return
         agentAudioSubscriptionRetriesRef.current.delete(key)
+        if (
+          !isCurrentSubscriberSession(
+            pending.subscriberSessionId,
+            pending.subscriberPeerConnection
+          )
+        ) {
+          voiceDownstreamDiagnostic(
+            "agent_audio_subscription_retry_cancelled",
+            { attempt, reason: "stale_subscriber_session" }
+          )
+          return
+        }
         if (
           !isCurrentAgentAudioPublication(participantId, sessionId, trackName)
         ) {
@@ -1047,14 +1073,19 @@ export function useSfuChatRoom(
         readySubscribedTracksRef.current.delete(key)
         void subscribeTrackRef.current(participant, track, attempt)
       }, delay)
-      agentAudioSubscriptionRetriesRef.current.set(key, { attempt, timeout })
+      agentAudioSubscriptionRetriesRef.current.set(key, {
+        attempt,
+        timeout,
+        subscriberSessionId,
+        subscriberPeerConnection,
+      })
       voiceDownstreamDiagnostic("agent_audio_subscription_retry_scheduled", {
         attempt,
         delay_ms: delay,
       })
       return true
     },
-    [isCurrentAgentAudioPublication]
+    [isCurrentAgentAudioPublication, isCurrentSubscriberSession]
   )
 
   const subscribeTrack = useCallback(
@@ -1069,6 +1100,37 @@ export function useSfuChatRoom(
       })
       if (!session || !pc || !media) return
       const key = `${participant.id}:${media.sessionId}:${track.trackName}`
+      const isAgentAudioSubscription =
+        participant.kind === "agent" && track.kind === "audio"
+      const subscriberSessionId = session.sessionId
+      const subscriberPeerConnection = pc
+      const cancelStaleAgentAudioSubscription = (stage: string): boolean => {
+        if (!isAgentAudioSubscription) return false
+        const currentSubscriberSession = isCurrentSubscriberSession(
+          subscriberSessionId,
+          subscriberPeerConnection
+        )
+        const currentPublication = isCurrentAgentAudioPublication(
+          participant.id,
+          media.sessionId,
+          track.trackName
+        )
+        if (currentSubscriberSession && currentPublication) return false
+        // A new Human SFU session can reuse this remote-publication key. Do
+        // not let an old async operation clear that new session's admission.
+        if (currentSubscriberSession) {
+          subscribedTracksRef.current.delete(key)
+          readySubscribedTracksRef.current.delete(key)
+        }
+        voiceDownstreamDiagnostic("agent_audio_subscription_retry_cancelled", {
+          attempt,
+          reason: currentSubscriberSession
+            ? "stale_publication"
+            : "stale_subscriber_session",
+          stage,
+        })
+        return true
+      }
       if (subscribedTracksRef.current.has(key)) {
         const current = participantMapRef.current.get(participant.id)
         if (
@@ -1093,16 +1155,7 @@ export function useSfuChatRoom(
         voiceDownstreamDiagnostic("subscribe_dedup_skipped", {})
         return
       }
-      if (
-        participant.kind === "agent" &&
-        track.kind === "audio" &&
-        !isCurrentAgentAudioPublication(
-          participant.id,
-          media.sessionId,
-          track.trackName
-        )
-      )
-        return
+      if (cancelStaleAgentAudioSubscription("subscribe_entered")) return
       if (
         participantMapRef.current.get(participant.id)?.media?.sessionId !==
         media.sessionId
@@ -1110,6 +1163,7 @@ export function useSfuChatRoom(
         return
       subscribedTracksRef.current.add(key)
       await enqueueNegotiation(async () => {
+        if (cancelStaleAgentAudioSubscription("before_tracks_new")) return
         if (
           participantMapRef.current.get(participant.id)?.media?.sessionId !==
           media.sessionId
@@ -1140,6 +1194,23 @@ export function useSfuChatRoom(
             ],
           })
         } catch (error) {
+          if (
+            isAgentAudioSubscription &&
+            !isCurrentSubscriberSession(
+              subscriberSessionId,
+              subscriberPeerConnection
+            )
+          ) {
+            voiceDownstreamDiagnostic(
+              "agent_audio_subscription_retry_cancelled",
+              {
+                attempt,
+                reason: "stale_subscriber_session",
+                stage: "tracks-new",
+              }
+            )
+            return
+          }
           voiceDownstreamDiagnostic("tracks_new_result", {
             tracks_new_ok: 0,
             stage: "tracks-new",
@@ -1168,24 +1239,7 @@ export function useSfuChatRoom(
             ? { track_error_codes: responseSummary.trackErrorCodes }
             : {}),
         })
-        const isAgentAudioSubscription =
-          participant.kind === "agent" && track.kind === "audio"
-        if (
-          isAgentAudioSubscription &&
-          !isCurrentAgentAudioPublication(
-            participant.id,
-            media.sessionId,
-            track.trackName
-          )
-        ) {
-          subscribedTracksRef.current.delete(key)
-          readySubscribedTracksRef.current.delete(key)
-          voiceDownstreamDiagnostic(
-            "agent_audio_subscription_retry_cancelled",
-            { attempt, reason: "stale_response" }
-          )
-          return
-        }
+        if (cancelStaleAgentAudioSubscription("tracks_new_response")) return
         if (!hasUsableSessionDescription(response)) {
           const scheduled =
             isAgentAudioSubscription &&
@@ -1196,7 +1250,9 @@ export function useSfuChatRoom(
               participant.id,
               media.sessionId,
               track.trackName,
-              attempt + 1
+              attempt + 1,
+              subscriberSessionId,
+              subscriberPeerConnection
             )
           if (!scheduled) {
             subscribedTracksRef.current.delete(key)
@@ -1214,7 +1270,11 @@ export function useSfuChatRoom(
           return
         }
         try {
+          if (cancelStaleAgentAudioSubscription("before_remote_description"))
+            return
           await pc.setRemoteDescription(response.sessionDescription)
+          if (cancelStaleAgentAudioSubscription("remote_description_applied"))
+            return
           voiceDownstreamDiagnostic("remote_description_applied", {
             remote_description_applied: 1,
           })
@@ -1228,6 +1288,7 @@ export function useSfuChatRoom(
         let answer: RTCSessionDescriptionInit
         try {
           answer = await pc.createAnswer()
+          if (cancelStaleAgentAudioSubscription("answer_created")) return
           voiceDownstreamDiagnostic("answer_created", { answer_created: 1 })
         } catch (error) {
           voiceDownstreamDiagnostic("negotiation_failed", {
@@ -1238,6 +1299,8 @@ export function useSfuChatRoom(
         }
         try {
           await pc.setLocalDescription(answer)
+          if (cancelStaleAgentAudioSubscription("local_description_applied"))
+            return
           voiceDownstreamDiagnostic("local_description_applied", {
             local_description_applied: 1,
           })
@@ -1249,6 +1312,7 @@ export function useSfuChatRoom(
           throw error
         }
         try {
+          if (cancelStaleAgentAudioSubscription("before_renegotiate")) return
           await apiRequest("renegotiate", {
             room: roomName,
             participantId: session.participantId,
@@ -1256,15 +1320,9 @@ export function useSfuChatRoom(
             sessionId: session.sessionId,
             sessionDescription: { type: answer.type, sdp: answer.sdp },
           })
+          if (cancelStaleAgentAudioSubscription("renegotiate_complete")) return
           voiceDownstreamDiagnostic("renegotiate_ok", { renegotiate_ok: 1 })
-          if (
-            isAgentAudioSubscription &&
-            isCurrentAgentAudioPublication(
-              participant.id,
-              media.sessionId,
-              track.trackName
-            )
-          ) {
+          if (isAgentAudioSubscription) {
             // Negotiation completion is the ACK-safe boundary. Record it
             // even if the control WebSocket is briefly unavailable; a later
             // resync on the new socket will re-assert the same ACK.
@@ -1284,13 +1342,6 @@ export function useSfuChatRoom(
             voiceDownstreamDiagnostic("agent_voice_ready_ack_sent", {
               agent_voice_ready_ack_sent: sent ? 1 : 0,
             })
-          } else if (isAgentAudioSubscription) {
-            subscribedTracksRef.current.delete(key)
-            readySubscribedTracksRef.current.delete(key)
-            voiceDownstreamDiagnostic(
-              "agent_audio_subscription_retry_cancelled",
-              { attempt, reason: "stale_before_ack" }
-            )
           }
         } catch (error) {
           voiceDownstreamDiagnostic("negotiation_failed", {
@@ -1300,8 +1351,21 @@ export function useSfuChatRoom(
           throw error
         }
       }).catch((error) => {
-        subscribedTracksRef.current.delete(key)
-        readySubscribedTracksRef.current.delete(key)
+        if (
+          !isAgentAudioSubscription ||
+          isCurrentSubscriberSession(
+            subscriberSessionId,
+            subscriberPeerConnection
+          )
+        ) {
+          subscribedTracksRef.current.delete(key)
+          readySubscribedTracksRef.current.delete(key)
+        } else {
+          voiceDownstreamDiagnostic(
+            "agent_audio_subscription_retry_cancelled",
+            { attempt, reason: "stale_subscriber_session", stage: "failed" }
+          )
+        }
         console.warn("sfu_remote_subscribe_failed", {
           errorType: error instanceof Error ? error.name : typeof error,
         })
@@ -1311,6 +1375,7 @@ export function useSfuChatRoom(
       apiRequest,
       enqueueNegotiation,
       isCurrentAgentAudioPublication,
+      isCurrentSubscriberSession,
       roomName,
       scheduleAgentAudioSubscriptionRetry,
       sendSocketMessage,
