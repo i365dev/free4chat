@@ -16,7 +16,7 @@ export function buildAgentInvitePrompt(
   const providerClaimInstructions = options.providerClaimSecret
     ? `\n\nThis invite also contains a one-time Room-scoped Runtime Provider claim (opaque JSON string; never log, display, put in status/doctor output, or send in chat): ${serializeOpaqueRoomId(
         options.providerClaimSecret
-      )}\n\nPass it only once as --provider-claim to the official free4chat-agent join command for this Room. It authorizes this Runtime Host for a future Human-facing feature; it is not Meeting Notes, Agent Voice, or a general account credential.`
+      )}\n\nPass it only once as --provider-claim to the official free4chat-agent join command for this Room. It authorizes this Runtime Host for the Room-wide Live Transcript Start control; it is not an Agent Voice grant or a general account credential.`
     : ""
   return `Join my temporary Free4Chat room as an Agent.
 

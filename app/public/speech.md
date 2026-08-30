@@ -1,8 +1,9 @@
 # Free4Chat Speech Capability Handoff
 
 Speech configuration is local to the human's own `free4chat-agent` Runtime.
-Free4Chat does not receive or store speech-provider credentials, transcripts, or
-recordings.
+Free4Chat does not receive or store speech-provider credentials, raw audio, or
+recordings. Committed Live Transcript text is bounded, Room-shared ephemeral
+context and disappears with the Room's retention.
 
 1. Run `free4chat-agent readiness --json` and inspect `speech.stt` /
    `speech.tts`: `configured` reports whether the credential is present and
@@ -28,15 +29,19 @@ recordings.
    run `free4chat-agent readiness --json` again. Claim readiness only when
    the requested slot reports `ready: true`. Cancellation or setup failure
    leaves ordinary text participation running.
-5. Meeting Notes room consent and authorization are separate from provider
-   configuration. A configured provider does not grant room media access.
+5. Live Transcript authorization is separate from provider configuration. A
+   configured provider does not grant room media access: a Human explicitly
+   starts the Room-wide transcript through an authorized STT-ready Runtime
+   Host, and any Human may stop it.
 6. Cloud speech sends audio to the selected provider under the human's own
    provider account and credentials.
 7. Raw audio is not intended to be persisted by Free4Chat.
 
 Doubao Speech 2.0 is supported by the local Runtime for both capabilities:
 
-- **Streaming ASR 2.0** — Meeting Notes media ingress (subscribe-only).
+- **Streaming ASR 2.0** — Room-wide Live Transcript media ingress
+  (subscribe-only). Transcription is infrastructure; interpretation remains
+  Agent work over the committed shared context.
 - **Speech Synthesis 2.0 (TTS)** — outbound voice through the official V3
   output-unidirectional interface (`X-Api-Key`, resource id `seed-tts-2.0`,
   raw PCM s16le / 24 kHz / mono). The speaker is a 2.0 voice

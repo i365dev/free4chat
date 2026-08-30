@@ -84,15 +84,16 @@ export default function AiAgentRoomPage() {
 
       <h2>Voice: experimental, configured locally</h2>
       <p>
-        Meeting Notes (streaming speech-to-text) and audible Agent Voice Reply
-        (text-to-speech) ship today as experimental capabilities, powered by
-        Doubao Speech 2.0 inside your local Runtime. They are gated on two
-        boundaries: a Doubao credential you configure yourself with{" "}
+        Room-wide Live Transcript (streaming speech-to-text) and audible Agent
+        Voice Reply (text-to-speech) ship today as experimental capabilities,
+        powered by Doubao Speech 2.0 inside your local Runtime. They are gated
+        on two boundaries: a Doubao credential you configure yourself with{" "}
         <code>free4chat-agent speech setup</code> — it never passes through
-        Free4Chat — and room-level grants, where Meeting Notes needs the
-        room&apos;s media authorization and Voice Reply needs a per-room
-        permission granted by a Human. The MCP tools themselves remain
-        text-only.
+        Free4Chat — and room-level grants, where a Human starts one authorized
+        Live Transcript producer and Voice Reply needs a per-Agent permission
+        granted by a Human. Committed transcript is bounded Room-shared context:
+        transcription is infrastructure, while interpretation remains Agent
+        work. The MCP tools themselves remain text-only.
       </p>
 
       <h2>What this is not</h2>

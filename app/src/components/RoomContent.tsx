@@ -11,6 +11,7 @@ import {
 
 import AgentWorkRequestComposer from "./AgentWorkRequestComposer"
 import HumanCapabilitiesEditor from "./HumanCapabilitiesEditor"
+import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
@@ -106,7 +107,6 @@ export default function RoomContent({
   )
   const [agentInvitePreparing, setAgentInvitePreparing] = useState(false)
   const [agentInviteError, setAgentInviteError] = useState("")
-  const [meetingNotesPickerOpen, setMeetingNotesPickerOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<
     {
       id: string
@@ -153,10 +153,13 @@ export default function RoomContent({
     error,
     connectionStatus,
     resolvedRoomType,
-    meetingNotes,
-    meetingNotesMediaAvailable,
-    startMeetingNotes,
-    stopMeetingNotes,
+    liveTranscript,
+    liveTranscriptSegments,
+    runtimeHosts,
+    runtimeHostProviders,
+    liveTranscriptMediaAvailable,
+    startLiveTranscript,
+    stopLiveTranscript,
     agentVoiceMediaAvailable,
     setAgentVoice,
     createRuntimeProviderClaim,
@@ -179,7 +182,6 @@ export default function RoomContent({
       p.kind === "agent" && p.peerId !== LOCAL_PEER_ID ? p : null
     )
 
-  const roomAgents = participants.filter((p) => p.kind === "agent")
   const toggleAgentVoice = (participant: UserInfo) => {
     if (!participant.voiceAvailable) return
     const enabled = !participant.voiceEnabled
@@ -188,22 +190,16 @@ export default function RoomContent({
       roomType: resolvedRoomType,
     })
   }
-  const meetingNotesAgentName = meetingNotes.active
-    ? roomAgents.find((p) => p.peerId === meetingNotes.agentParticipantId)
-        ?.name ?? "an Agent"
-    : null
-
-  const handleStartMeetingNotes = (agentParticipantId: string) => {
-    startMeetingNotes(agentParticipantId)
-    setMeetingNotesPickerOpen(false)
-    trackAnalyticsEvent("MeetingNotesStarted", {
+  const handleStartLiveTranscript = (runtimeHostId: string) => {
+    startLiveTranscript(runtimeHostId)
+    trackAnalyticsEvent("LiveTranscriptStarted", {
       roomType: resolvedRoomType,
     })
   }
 
-  const handleStopMeetingNotes = () => {
-    stopMeetingNotes()
-    trackAnalyticsEvent("MeetingNotesStopped", {
+  const handleStopLiveTranscript = () => {
+    stopLiveTranscript()
+    trackAnalyticsEvent("LiveTranscriptStopped", {
       roomType: resolvedRoomType,
     })
   }
@@ -647,51 +643,16 @@ export default function RoomContent({
               {agentInviteError}
             </span>
           )}
-          {meetingNotes.active ? (
-            <button
-              type="button"
-              onClick={handleStopMeetingNotes}
-              className="flex items-center gap-1 rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-1 text-xs text-rose-200 hover:bg-rose-800/50"
-              title="Stop Meeting Notes"
-            >
-              📝 Stop
-            </button>
-          ) : (
-            meetingNotesMediaAvailable && (
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setMeetingNotesPickerOpen((open) => !open)}
-                  disabled={roomAgents.length === 0}
-                  className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  title={
-                    roomAgents.length === 0
-                      ? "Invite an Agent to the room first"
-                      : "Start Meeting Notes"
-                  }
-                >
-                  📝 Meeting Notes
-                </button>
-                {meetingNotesPickerOpen && roomAgents.length > 0 && (
-                  <div className="absolute right-0 top-full z-20 mt-1 w-48 rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
-                    <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
-                      Note-taker
-                    </p>
-                    {roomAgents.map((agent) => (
-                      <button
-                        key={agent.peerId}
-                        type="button"
-                        onClick={() => handleStartMeetingNotes(agent.peerId)}
-                        className="block w-full truncate px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
-                      >
-                        {agent.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )
-          )}
+          <LiveTranscriptControl
+            liveTranscript={liveTranscript}
+            runtimeHosts={runtimeHosts}
+            runtimeHostProviders={runtimeHostProviders}
+            localParticipantId={localParticipantId}
+            participants={participants}
+            mediaAvailable={liveTranscriptMediaAvailable}
+            onStart={handleStartLiveTranscript}
+            onStop={handleStopLiveTranscript}
+          />
           <button
             type="button"
             onClick={() => router.push("/")}
@@ -724,20 +685,7 @@ export default function RoomContent({
           <strong className="text-sm font-normal"> {error} </strong>
         </div>
       )}
-      {meetingNotes.active && meetingNotesMediaAvailable && (
-        <div
-          className="mx-4 mt-1 flex flex-none items-center gap-2 rounded border border-rose-700/50 bg-rose-900/30 px-4 py-2 text-rose-100"
-          role="status"
-        >
-          <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-rose-500" />
-          </span>
-          <span className="text-sm">
-            📝 Meeting Notes — Listening… ({meetingNotesAgentName})
-          </span>
-        </div>
-      )}
+      <LiveTranscriptSegments segments={liveTranscriptSegments} />
       {screenShareWarning !== "" && (
         <div
           className="mx-4 mt-1 flex flex-none items-center gap-4 rounded border border-amber-700/50 bg-amber-900/40 px-4 py-2 text-amber-200"

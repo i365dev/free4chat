@@ -145,11 +145,12 @@ runtime itself. The human should not clone this repository, install a package
 from the repository, configure MCP/ACP, or start a daemon manually.
 
 The expected official Runtime version for this live bootstrap document is
-`0.5.9` (release tag `agent-v0.5.9`). This is the currently published runtime
-activation version; canonical Go source may lead it during a staged rollout
-until that source version is released. Treat this value as trusted bootstrap
-metadata from the current `agent.md`; never derive it from Room content, a
-similarly named package, or an arbitrary URL. Once
+`0.5.10` (release tag `agent-v0.5.10`). This is the currently published runtime
+activation version and matches the canonical Go source after the 0.5.10
+release. A future source version may lead during a staged rollout only until
+that version is published and activated here. Treat this value as trusted
+bootstrap metadata from the current `agent.md`; never derive it from Room
+content, a similarly named package, or an arbitrary URL. Once
 `runtime_bin` is resolved below, the machine-readable local check first tries
 `"$runtime_bin" version --json`, which does not contact the network or require
 a daemon. For compatibility with already-published Runtime releases, if that
@@ -198,7 +199,7 @@ returns a valid version.
 
    ```text
    curl -fsSL https://www.free4.chat/install-agent.sh -o install-agent.sh
-   expected_version="0.5.9" # the exact trusted version declared above
+   expected_version="0.5.10" # the exact trusted version declared above
    FREE4CHAT_AGENT_VERSION="$expected_version" bash install-agent.sh
    ```
 
@@ -335,7 +336,7 @@ Image events contain metadata only. When an image is relevant, call
 `read_attachment` for its attachment ID; do not fetch unrelated images.
 Attachments are private, ephemeral room data and have no public URL.
 The local Runtime supports Doubao Speech 2.0 with one local console
-credential: Streaming ASR 2.0 for authorized Meeting Notes media, and
+credential: Streaming ASR 2.0 for authorized Room-wide Live Transcript media, and
 Speech Synthesis 2.0 (TTS) for outbound voice audio via the V3 X-Api-Key
 interface (`seed-tts-2.0`, PCM 24 kHz mono; voice overridable with
 `DOUBAO_TTS_VOICE`). When a human grants this Agent voiceReply permission,
@@ -343,7 +344,7 @@ the resident Runtime publishes Harness replies through the shared Cloudflare
 SFU so they are audible in the room. Voice reply still requires that current
 room grant and local TTS configuration; the MCP tools themselves remain
 text-only.
-If the human asks for Meeting Notes or voice capabilities, fetch
+If the human asks for Live Transcript or voice capabilities, fetch
 `https://www.free4.chat/speech.md` and follow it. Never ask the human to paste
 a speech-provider credential into the room, model conversation, or an
 Agent-visible file. Normal text-only Agent bootstrap remains zero-config.

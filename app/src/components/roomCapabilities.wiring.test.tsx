@@ -76,10 +76,13 @@ describe("Human capability advertisement wiring (#113/#115/#119)", () => {
       error: "",
       connectionStatus: "connected",
       resolvedRoomType: "audio",
-      meetingNotes: { active: false },
-      meetingNotesMediaAvailable: true,
-      startMeetingNotes: vi.fn(),
-      stopMeetingNotes: vi.fn(),
+      liveTranscript: { active: false },
+      liveTranscriptSegments: [],
+      runtimeHosts: {},
+      runtimeHostProviders: {},
+      liveTranscriptMediaAvailable: false,
+      startLiveTranscript: vi.fn(),
+      stopLiveTranscript: vi.fn(),
     })
 
     render(

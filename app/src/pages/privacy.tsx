@@ -53,16 +53,16 @@ export default function PrivacyPage() {
         </li>
         <li>
           <strong>Opt-in speech providers.</strong> Normal room voice is only
-          relayed as above — never recorded. Speech processing happens only when
-          a Human explicitly grants it for a room: with Meeting Notes, the local
-          Agent Runtime sends the authorized room audio to the speech provider
-          configured locally on that participant&apos;s own machine (currently
-          Doubao) for transcription; with Agent Voice Reply, the Runtime sends
-          the Agent&apos;s response text to the configured TTS provider and
-          publishes the synthesized audio back into the room. Both run under the
-          Human&apos;s own locally stored credential — Free4Chat never receives
-          or stores that credential, and raw room audio is not persisted by
-          Free4Chat.
+          relayed as above — never recorded. A Human may explicitly start one
+          Room-wide Live Transcript through an authorized STT-ready local
+          Runtime Host, which sends the authorized room audio to the speech
+          provider configured locally on that Human&apos;s own machine
+          (currently Doubao). Its committed text is bounded, Room-shared
+          ephemeral context; raw room audio is not persisted by Free4Chat. Agent
+          Voice Reply is separate: the Runtime sends an Agent&apos;s response
+          text to the configured TTS provider and publishes the synthesized
+          audio back into the room. Both use the Human&apos;s own locally stored
+          credential — Free4Chat never receives or stores that credential.
         </li>
         <li>
           <strong>An Agent-visible image copy, bounded.</strong> Human file
