@@ -13,6 +13,15 @@ import {
   type CollabEventInput,
 } from "./collab"
 import {
+  appendLiveTranscriptSegment,
+  canAgentAppendLiveTranscript,
+  NO_LIVE_TRANSCRIPT,
+  normalizeLiveTranscriptProducer,
+  normalizeStoredLiveTranscript,
+  startLiveTranscript,
+  stopLiveTranscript,
+} from "./liveTranscript"
+import {
   executeMediaCloseEffects,
   reconcileMediaCloseResults,
   snapshotMediaCloseEffects,
@@ -54,6 +63,7 @@ import {
 } from "./runtimeHost"
 import {
   createRuntimeHostProviderClaim,
+  canHumanUseRuntimeHost,
   garbageCollectRuntimeHostProviders,
   markRuntimeHostProviderMember,
   normalizeRuntimeHostProviders,
@@ -195,6 +205,10 @@ interface StoredRoom
     RoomRecord,
     | "participants"
     | "messages"
+    | "liveTranscript"
+    | "liveTranscriptSegments"
+    | "nextLiveTranscriptEpoch"
+    | "nextTranscriptSequence"
     | "attachments"
     | "nextMessageSequence"
     | "meetingNotes"
@@ -205,6 +219,10 @@ interface StoredRoom
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
+  liveTranscript?: unknown
+  liveTranscriptSegments?: unknown
+  nextLiveTranscriptEpoch?: unknown
+  nextTranscriptSequence?: unknown
   attachments?: RoomAttachment[]
   nextMessageSequence?: number
   meetingNotes?: MeetingNotesState
@@ -343,6 +361,18 @@ type ControlRequest =
       // normalizes, drops non-Agent/self targets, and persists at most
       // MAX_TARGETS; targeting controls wakeup only, never authorization.
       targetParticipantIds?: unknown
+    }
+  | {
+      // Internal Runtime infrastructure for PR2. This is intentionally not
+      // surfaced as an MCP collaboration tool: the Runtime submits a
+      // committed STT result under its already-authenticated participant.
+      action: "agent-live-transcript-append"
+      participantId: string
+      token: string
+      epoch: unknown
+      segmentId: unknown
+      sourceParticipantId: unknown
+      text: unknown
     }
   | {
       // #106 Phase A: full replacement of this agent's advertised capability
@@ -495,6 +525,8 @@ type ClientMessage =
   | { type: "leave" }
   | { type: "meeting-notes-start"; agentParticipantId: string }
   | { type: "meeting-notes-stop" }
+  | { type: "live-transcript-start"; runtimeHostId: string }
+  | { type: "live-transcript-stop" }
   | {
       type: "agent-voice-set"
       agentParticipantId: string
@@ -718,6 +750,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     })
     if (normalizedRuntimeHostProviders.changed) changed = true
 
+    // #177 PR1: legacy rooms have no Live Transcript fields. Normalize the
+    // bounded shared context independently from media grants, then fail an
+    // obsolete active producer closed if its Host/provider/Human lifecycle
+    // is no longer genuinely valid. Meeting Notes is deliberately ignored.
+    const normalizedLiveTranscript = normalizeStoredLiveTranscript({
+      liveTranscript: stored.liveTranscript,
+      liveTranscriptSegments: stored.liveTranscriptSegments,
+      nextLiveTranscriptEpoch: stored.nextLiveTranscriptEpoch,
+      nextTranscriptSequence: stored.nextTranscriptSequence,
+    })
+    if (normalizedLiveTranscript.changed) changed = true
+    const normalizedLiveProducer = normalizeLiveTranscriptProducer({
+      liveTranscript: normalizedLiveTranscript.liveTranscript,
+      participants: Object.values(participants),
+      runtimeHosts,
+      providers: normalizedRuntimeHostProviders.providers,
+      mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+    })
+    if (normalizedLiveProducer.changed) changed = true
+
     if (stored.nextMessageSequence !== nextMessageSequence) changed = true
     const attachments = Array.isArray(stored.attachments)
       ? stored.attachments.filter((attachment) =>
@@ -786,6 +838,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         runtimeHostProviders: normalizedRuntimeHostProviders.providers,
         runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
+        liveTranscript: normalizedLiveProducer.liveTranscript,
+        liveTranscriptSegments: normalizedLiveTranscript.liveTranscriptSegments,
+        nextLiveTranscriptEpoch:
+          normalizedLiveTranscript.nextLiveTranscriptEpoch,
+        nextTranscriptSequence: normalizedLiveTranscript.nextTranscriptSequence,
         attachments,
         nextMessageSequence,
         meetingNotes,
@@ -926,6 +983,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room.runtimeHostProviders
       ),
       messages: room.messages,
+      liveTranscript: room.liveTranscript,
+      liveTranscriptSegments: room.liveTranscriptSegments,
       meetingNotes: room.meetingNotes,
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
       agentVoice: room.agentVoice,
@@ -1152,6 +1211,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       runtimeHosts: room.runtimeHosts,
       participants: Object.values(room.participants),
     })
+    this.normalizeLiveTranscriptForRoom(room)
+  }
+
+  // A running transcript is valid only while its exact Runtime Host, the
+  // private Human↔Host provider association, and one verified Host member
+  // remain live. This intentionally does not require the selected Human's
+  // control WebSocket to stay connected during a normal reconnect grace.
+  private normalizeLiveTranscriptForRoom(room: RoomRecord): void {
+    const normalized = normalizeLiveTranscriptProducer({
+      liveTranscript: room.liveTranscript,
+      participants: Object.values(room.participants),
+      runtimeHosts: room.runtimeHosts,
+      providers: room.runtimeHostProviders,
+      mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+    })
+    if (normalized.changed) room.liveTranscript = normalized.liveTranscript
   }
 
   // A true Human departure (explicit leave or expiry) revokes its Room-only
@@ -1416,6 +1491,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         runtimeHostProviders: projectRuntimeHostProviders(
           room?.runtimeHostProviders
         ),
+        // Bounded committed transcript context is shared Room state. The
+        // private provider proof and all media/STT credentials remain absent.
+        liveTranscript: room?.liveTranscript ?? NO_LIVE_TRANSCRIPT,
+        liveTranscriptSegments: room?.liveTranscriptSegments ?? [],
         capabilities: ROOM_CAPABILITIES,
         // Room-visible state, not a capability secret — the same
         // agentParticipantId is already visible in `participants` above.
@@ -1502,6 +1581,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           expiresAt: NO_EXPIRY,
           participants: {},
           messages: [],
+          liveTranscript: NO_LIVE_TRANSCRIPT,
+          liveTranscriptSegments: [],
+          nextLiveTranscriptEpoch: 1,
+          nextTranscriptSequence: 1,
           attachments: [],
           nextMessageSequence: 0,
           meetingNotes: NO_MEETING_NOTES,
@@ -1646,6 +1729,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         expiresAt: NO_EXPIRY,
         participants: {},
         messages: [],
+        liveTranscript: NO_LIVE_TRANSCRIPT,
+        liveTranscriptSegments: [],
+        nextLiveTranscriptEpoch: 1,
+        nextTranscriptSequence: 1,
         attachments: [],
         nextMessageSequence: 0,
         meetingNotes: NO_MEETING_NOTES,
@@ -1669,6 +1756,80 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({
         participant: this.participantForInfo(participant),
         cursor: room.nextMessageSequence,
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-live-transcript-append") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      if (!room.liveTranscript.active)
+        return this.json({ error: "live_transcript_inactive" }, 409)
+      // A public runtimeHostId is discovery metadata only. Appending requires
+      // this exact authenticated Agent to be a current, server-verified
+      // member of the active Host's provider association.
+      if (
+        !canAgentAppendLiveTranscript({
+          liveTranscript: room.liveTranscript,
+          caller: participant,
+          participants: Object.values(room.participants),
+          runtimeHosts: room.runtimeHosts,
+          providers: room.runtimeHostProviders,
+          mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+        })
+      )
+        return this.json({ error: "live_transcript_not_authorized" }, 403)
+      const source =
+        typeof request.sourceParticipantId === "string"
+          ? room.participants[request.sourceParticipantId]
+          : undefined
+      const appended = appendLiveTranscriptSegment({
+        liveTranscript: room.liveTranscript,
+        liveTranscriptSegments: room.liveTranscriptSegments,
+        nextTranscriptSequence: room.nextTranscriptSequence,
+        epoch: request.epoch,
+        segmentId: request.segmentId,
+        sourceParticipant: source,
+        text: request.text,
+        now: Date.now(),
+      })
+      if (appended.ok === false)
+        return this.json(
+          { error: appended.error },
+          appended.error === "live_transcript_epoch_mismatch" ||
+            appended.error === "live_transcript_inactive"
+            ? 409
+            : 400
+        )
+      participant.lastSeenAt = Date.now()
+      if (appended.duplicate) {
+        // A retry remains a lease heartbeat but emits no duplicate state,
+        // transcript sequence, ordinary RoomMessage, or Agent wakeup.
+        await this.saveRoom(room)
+        await this.scheduleNextAlarm(room)
+        return this.json({
+          duplicate: true,
+          expiresAt: room.expiresAt,
+        })
+      }
+      room.liveTranscriptSegments = appended.liveTranscriptSegments
+      room.nextTranscriptSequence = appended.nextTranscriptSequence
+      // Transcript visibility is a RoomState broadcast only. It does not use
+      // appendMessage() and deliberately never calls resolveAgentWaiters().
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      return this.json({
+        duplicate: false,
+        segment: appended.segment,
         expiresAt: room.expiresAt,
       })
     }
@@ -3023,6 +3184,67 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "datachannel-ready") {
       participant.media.fileChannelReady = true
       await this.saveRoom(room)
+      await this.broadcastState(room)
+      return
+    }
+    if (message.type === "live-transcript-start") {
+      // One Room can have only one producer. Once active, every Start replay
+      // is merely an observation of the existing selection: it cannot switch
+      // Hosts, allocate another epoch, or shift provider cost to another
+      // Human.
+      if (room.liveTranscript.active) {
+        socket.send(
+          JSON.stringify({ type: "state", state: this.stateFor(room) })
+        )
+        return
+      }
+      if (this.env.AGENT_MEDIA_ENABLED !== "true") {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "live_transcript_media_disabled",
+          })
+        )
+        return
+      }
+      if (
+        !canHumanUseRuntimeHost({
+          participants: Object.values(room.participants),
+          runtimeHosts: room.runtimeHosts,
+          providers: room.runtimeHostProviders,
+          humanParticipantId: participant.id,
+          runtimeHostId: message.runtimeHostId,
+          requiredSpeech: "stt",
+        })
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "live_transcript_unavailable",
+          })
+        )
+        return
+      }
+      const transition = startLiveTranscript({
+        liveTranscript: room.liveTranscript,
+        nextLiveTranscriptEpoch: room.nextLiveTranscriptEpoch,
+        humanParticipantId: participant.id,
+        runtimeHostId: message.runtimeHostId,
+        now: Date.now(),
+      })
+      room.liveTranscript = transition.liveTranscript
+      room.nextLiveTranscriptEpoch = transition.nextLiveTranscriptEpoch
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      return
+    }
+    if (message.type === "live-transcript-stop") {
+      // Privacy failsafe: every authenticated current Human may stop the
+      // Room-wide transcript, regardless of producer ownership/readiness.
+      room.liveTranscript = stopLiveTranscript(room.liveTranscript)
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
       return
     }

@@ -218,6 +218,33 @@ export interface MeetingNotesState {
   startedAt?: number
 }
 
+// Room-wide Live Transcript is shared, bounded context — not an Agent grant
+// and not a media capability. `producerRuntimeHostId` is deliberately only
+// public discovery/grouping metadata; the private Runtime Host provider
+// association remains the authorization proof in RoomRecord.
+export type LiveTranscriptState =
+  | { active: false }
+  | {
+      active: true
+      producerRuntimeHostId: string
+      startedByHumanParticipantId: string
+      epoch: number
+      startedAt: number
+    }
+
+// A committed, Room-scoped STT result. Sequence and createdAt are assigned by
+// RoomSession; speaker is derived from the current Human participant rather
+// than trusted from a Runtime callback.
+export interface LiveTranscriptSegment {
+  segmentId: string
+  epoch: number
+  sequence: number
+  participantId: string
+  speaker: string
+  text: string
+  createdAt: number
+}
+
 // A Room-wide publish authorization for one currently connected Agent. The
 // entry exists only while enabled; absence means muted. enabledAt is the
 // participant-specific authorization epoch consumed by resident Runtimes.
@@ -249,6 +276,11 @@ export interface RoomState {
   // The corresponding claim/provider-handle material is server-private.
   runtimeHostProviders?: Record<string, RuntimeHostProviderPublicAssociation>
   messages: RoomMessage[]
+  // Present on every current RoomSession projection. Optional in the wire
+  // contract so older browser clients that cached the prior state shape keep
+  // decoding RoomState safely.
+  liveTranscript?: LiveTranscriptState
+  liveTranscriptSegments?: LiveTranscriptSegment[]
   meetingNotes: MeetingNotesState
   // Whether the server-side Meeting Notes media capability (the
   // AGENT_MEDIA_ENABLED master switch) is on in this environment at all —
@@ -287,6 +319,12 @@ export interface RoomRecord {
   runtimeHostProviders?: Record<string, RuntimeHostProviderAssociation>
   runtimeHostProviderClaims?: Record<string, PendingRuntimeHostProviderClaim>
   messages: RoomMessage[]
+  liveTranscript: LiveTranscriptState
+  liveTranscriptSegments: LiveTranscriptSegment[]
+  // Next values to allocate. They are Room-local counters, never timestamps
+  // or ordinary message/event cursors.
+  nextLiveTranscriptEpoch: number
+  nextTranscriptSequence: number
   attachments: RoomAttachment[]
   nextMessageSequence: number
   meetingNotes: MeetingNotesState
