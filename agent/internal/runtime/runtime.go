@@ -121,6 +121,11 @@ type ResidentRuntime struct {
 
 	mediaController *media.Controller
 	mediaMu         sync.Mutex
+	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
+	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
+	// mediaMu; without this generation fence, a late old callback could end a
+	// newly-created transcriber for the same Human track.
+	mediaGeneration uint64
 	// speechConfig is copied from Options at construction and guarded by mu.
 	// Media rebuilds consume an immutable snapshot rather than reading Options
 	// concurrently with credential hot reload.
@@ -888,10 +893,15 @@ func (r *ResidentRuntime) Stop() {
 func (r *ResidentRuntime) releaseResources() {
 	r.mediaMu.Lock()
 	defer r.mediaMu.Unlock()
+	// Invalidate every callback before Controller.Stop tears the bridge down.
+	// Its active-subscription TrackEnded notifications are intentionally
+	// asynchronous to keep this lifecycle mutex non-reentrant.
+	r.mediaGeneration++
 	if r.mediaController != nil {
 		r.mediaController.Stop()
 		r.mediaController = nil
 	}
+	r.voiceSrc = nil
 	r.mu.Lock()
 	r.liveTranscript = types.LiveTranscriptInfo{}
 	r.liveTranscriptProducing = false

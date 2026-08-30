@@ -379,14 +379,76 @@ func (b *Bridge) resetToStopped() {
 		engine.Close()
 	}
 	for _, sub := range subs {
-		if b.options.Events.OnTrackEnded != nil {
-			b.options.Events.OnTrackEnded(speech.AudioSource{
-				ParticipantID:   sub.participantID,
-				ParticipantName: sub.participantName,
-				TrackName:       sub.trackName,
-			})
+		// Stop is called by Runtime lifecycle paths that may be holding their
+		// own media mutex. Track-ended consumers are allowed to take that
+		// mutex, so teardown must never synchronously re-enter them and deadlock
+		// the leave/restart/shutdown path. The subscription has already been
+		// detached above; this is a best-effort lifecycle notification only.
+		b.notifyTrackEndedAsync(sub)
+	}
+}
+
+// ClearRemoteSubscriptions forgets only remote Human-audio subscriptions.
+// It deliberately leaves the shared PeerConnection and any Agent Voice
+// publication intact. The server closes Live Transcript subscriptions on a
+// Stop/revocation, so retaining their local reservation would suppress the
+// tracks/new call required by a later Live Transcript epoch on this same
+// shared bridge.
+func (b *Bridge) ClearRemoteSubscriptions() {
+	b.mu.Lock()
+	subs := make([]*subscription, 0, len(b.subs))
+	for _, sub := range b.subs {
+		subs = append(subs, sub)
+	}
+	b.subs = make(map[string]*subscription)
+	b.pending = make(map[string]*pendingTrack)
+	b.mu.Unlock()
+
+	for _, sub := range subs {
+		// Only a bound subscription can have started an STT track. Pending
+		// reservations still need clearing so they cannot suppress a retry,
+		// but have no TrackStarted counterpart to end.
+		if sub.mid != "" {
+			b.notifyTrackEnded(sub)
 		}
 	}
+}
+
+// RefreshRemoteSubscriptions performs an immediate discovery pass after a
+// remote-subscription epoch starts or rotates. The regular polling loop is a
+// fallback, not the correctness boundary for the first Live Transcript RTP
+// subscription of a new epoch.
+func (b *Bridge) RefreshRemoteSubscriptions() error {
+	b.mu.Lock()
+	running := !b.stopped && b.engine != nil && b.mySessionID != ""
+	b.mu.Unlock()
+	if !running {
+		return errors.New("bridge_not_running")
+	}
+	return b.poll()
+}
+
+func (b *Bridge) notifyTrackEnded(sub *subscription) {
+	if b.options.Events.OnTrackEnded == nil {
+		return
+	}
+	b.options.Events.OnTrackEnded(speech.AudioSource{
+		ParticipantID:   sub.participantID,
+		ParticipantName: sub.participantName,
+		TrackName:       sub.trackName,
+	})
+}
+
+func (b *Bridge) notifyTrackEndedAsync(sub *subscription) {
+	if b.options.Events.OnTrackEnded == nil {
+		return
+	}
+	source := speech.AudioSource{
+		ParticipantID:   sub.participantID,
+		ParticipantName: sub.participantName,
+		TrackName:       sub.trackName,
+	}
+	go b.options.Events.OnTrackEnded(source)
 }
 
 // Poll discovers Human media and subscribes every audio track exactly once
@@ -431,13 +493,7 @@ func (b *Bridge) reconcileEnded(participants []RoomMediaParticipant) {
 	}
 	b.mu.Unlock()
 	for _, sub := range ended {
-		if b.options.Events.OnTrackEnded != nil {
-			b.options.Events.OnTrackEnded(speech.AudioSource{
-				ParticipantID:   sub.participantID,
-				ParticipantName: sub.participantName,
-				TrackName:       sub.trackName,
-			})
-		}
+		b.notifyTrackEnded(sub)
 	}
 }
 

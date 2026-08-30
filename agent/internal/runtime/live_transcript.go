@@ -87,6 +87,30 @@ func (r *ResidentRuntime) liveProducerSnapshot(generation uint64) (string, int64
 func (r *ResidentRuntime) setLiveTranscriptProducer(state types.LiveTranscriptInfo, producing bool) {
 	r.mediaMu.Lock()
 	defer r.mediaMu.Unlock()
+	r.setLiveTranscriptProducerLocked(state, producing)
+}
+
+// setLiveTranscriptProducerForMediaGeneration rejects a state edge emitted
+// after that controller has been stopped or replaced. Bridge teardown emits
+// TrackEnded asynchronously to avoid mediaMu self-deadlock, so all callbacks
+// from a controller share this generation fence.
+func (r *ResidentRuntime) setLiveTranscriptProducerForMediaGeneration(
+	generation uint64,
+	state types.LiveTranscriptInfo,
+	producing bool,
+) {
+	r.mediaMu.Lock()
+	defer r.mediaMu.Unlock()
+	if r.mediaGeneration != generation {
+		return
+	}
+	r.setLiveTranscriptProducerLocked(state, producing)
+}
+
+func (r *ResidentRuntime) setLiveTranscriptProducerLocked(
+	state types.LiveTranscriptInfo,
+	producing bool,
+) {
 	r.mu.Lock()
 	changed := producing != r.liveTranscriptProducing ||
 		(producing && (!r.liveTranscript.Active || r.liveTranscript.Epoch != state.Epoch))

@@ -145,10 +145,11 @@ runtime itself. The human should not clone this repository, install a package
 from the repository, configure MCP/ACP, or start a daemon manually.
 
 The expected official Runtime version for this live bootstrap document is
-`0.5.10` (release tag `agent-v0.5.10`). This is the version declared by the
-canonical Go Runtime source and injected into release binaries. Treat this
-value as trusted bootstrap metadata from the current `agent.md`; never derive
-it from Room content, a similarly named package, or an arbitrary URL. Once
+`0.5.9` (release tag `agent-v0.5.9`). This is the currently published runtime
+activation version; canonical Go source may lead it during a staged rollout
+until that source version is released. Treat this value as trusted bootstrap
+metadata from the current `agent.md`; never derive it from Room content, a
+similarly named package, or an arbitrary URL. Once
 `runtime_bin` is resolved below, the machine-readable local check first tries
 `"$runtime_bin" version --json`, which does not contact the network or require
 a daemon. For compatibility with already-published Runtime releases, if that
@@ -197,7 +198,7 @@ returns a valid version.
 
    ```text
    curl -fsSL https://www.free4.chat/install-agent.sh -o install-agent.sh
-   expected_version="0.5.10" # the exact trusted version declared above
+   expected_version="0.5.9" # the exact trusted version declared above
    FREE4CHAT_AGENT_VERSION="$expected_version" bash install-agent.sh
    ```
 

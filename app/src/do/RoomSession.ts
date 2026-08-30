@@ -787,8 +787,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         stored.nextTranscriptSequence,
     })
     if (normalizedLiveTranscript.changed) changed = true
+    // Keep the still-active, storage-normalized state as the revocation
+    // source. `normalizeLiveTranscriptProducer` below can fail it closed;
+    // replacing it with Off before staging would orphan already-flowing RTP.
+    const liveTranscriptBeforeProducerNormalization =
+      normalizedLiveTranscript.liveTranscript
     const normalizedLiveProducer = normalizeLiveTranscriptProducer({
-      liveTranscript: normalizedLiveTranscript.liveTranscript,
+      liveTranscript: liveTranscriptBeforeProducerNormalization,
       participants: Object.values(participants),
       runtimeHosts,
       providers: normalizedRuntimeHostProviders.providers,
@@ -842,6 +847,31 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     })
     if (normalizedGrants.changed) changed = true
     const { meetingNotes, agentVoice } = normalizedGrants
+    if (
+      normalizedLiveProducer.changed &&
+      liveTranscriptBeforeProducerNormalization.active
+    ) {
+      // loadRoom() has no external I/O: stage the exact active producer's
+      // subscribed mids while its Host is still known, then return/persist
+      // Off. This covers AGENT_MEDIA_ENABLED changing true -> false and
+      // stored Host/provider/STT loss after a DO eviction. Meeting Notes may
+      // legitimately share the bridge, so preserve its independent remote
+      // subscription authorization exactly as explicit Stop does.
+      for (const participant of Object.values(participants)) {
+        if (
+          participant.kind === "agent" &&
+          participant.runtimeHostId ===
+            liveTranscriptBeforeProducerNormalization.producerRuntimeHostId &&
+          !isAgentAuthorizedForMedia(meetingNotes, participant.id)
+        ) {
+          pendingMediaCleanup = stageAgentMediaRevocation(
+            participant,
+            pendingMediaCleanup,
+            "subscribed"
+          )
+        }
+      }
+    }
     for (const participant of Object.values(participants)) {
       if (participant.kind !== "agent") continue
       const normalizedAgentMedia = normalizeAgentVoiceParticipantMedia(

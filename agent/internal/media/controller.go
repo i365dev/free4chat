@@ -353,20 +353,25 @@ func (c *Controller) poll() {
 		return
 	}
 
-	// Epoch changes between polls => the server already closed the old
-	// grant's subscriptions/publication: rebuild the whole shared session.
-	// (Production E2E proved that a Voice Stop->Start re-grant does NOT
-	// restore audible delivery when re-publishing on the same session —
-	// the server-side track state was revoked, so a fresh session is the
-	// only reliable path, mirroring the MN epoch precedent.)
+	// Epoch changes between polls mean the server already closed the old
+	// grant's tracks. Meeting Notes and Voice Reply need a whole-session
+	// rebuild. Live Transcript needs only its remote subscriptions cleared
+	// when another independent grant keeps the shared bridge alive; retaining
+	// those old local reservations would suppress tracks/new in the new epoch.
 	c.mu.Lock()
 	mnStale := authorized && c.state != "idle" && !int64Equal(c.grantEpoch, epoch)
 	vrStale := vrAuthorized && c.state != "idle" && !int64Equal(c.voiceEpoch, vrEpoch)
-	liveStale := liveAuthorized && c.state != "idle" && !int64Equal(c.liveEpoch, &liveInfo.Epoch)
-	if mnStale || vrStale || (liveStale && !authorized && !vrAuthorized) {
-		c.mu.Unlock()
-		c.teardownBridge()
-		c.mu.Lock()
+	liveWasBound := c.liveEpoch != nil
+	liveStarted := liveAuthorized && !liveWasBound
+	liveStale := liveAuthorized && liveWasBound && !int64Equal(c.liveEpoch, &liveInfo.Epoch)
+	// A successful room_info observation of Live Transcript Off means the
+	// server is revoking its remote subscriptions. A transport failure is
+	// deliberately excluded: it fails local processing closed but does not
+	// invent a server-side revocation.
+	liveStopped := roomInfoObserved && !liveAuthorized && liveWasBound
+	rebuildBridge := mnStale || vrStale || (liveStale && !authorized && !vrAuthorized)
+	if liveStopped {
+		c.liveEpoch = nil
 	}
 	if authorized {
 		c.grantEpoch = epoch
@@ -375,14 +380,36 @@ func (c *Controller) poll() {
 		value := liveInfo.Epoch
 		c.liveEpoch = &value
 	}
+	bridge := c.bridge
 	c.mu.Unlock()
+	if rebuildBridge {
+		// Production E2E proved that a Voice Reply Stop->Start re-grant does
+		// not restore audible delivery when re-publishing on the same session.
+		// A Live-only rotation follows the same fresh-session path.
+		c.teardownBridge()
+		bridge = nil
+	}
+	if !rebuildBridge && (liveStopped || liveStale) && bridge != nil {
+		// Preserve Agent Voice and its PeerConnection; only forget the
+		// server-revoked remote Human tracks. A new Live epoch will immediately
+		// rediscover and subscribe below.
+		bridge.ClearRemoteSubscriptions()
+	}
 
 	c.ensureRunning()
 	c.mu.Lock()
 	running := c.state == "running"
+	bridge = c.bridge
 	c.mu.Unlock()
 	if !running {
 		return
+	}
+	if !rebuildBridge && liveAuthorized && (liveStarted || liveStale) && bridge != nil {
+		if err := bridge.RefreshRemoteSubscriptions(); err != nil {
+			c.log("live_transcript_subscription_refresh_failed", map[string]string{
+				"code": safeDiagnosticCode(err),
+			})
+		}
 	}
 
 	if c.options.Voice == nil || !vrAuthorized {

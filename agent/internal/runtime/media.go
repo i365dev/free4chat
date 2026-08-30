@@ -39,6 +39,11 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 
 	previous := r.mediaController
 	r.mediaController = nil
+	// A Bridge emits TrackEnded asynchronously during teardown. Invalidate
+	// this controller's callbacks before Stop so they cannot touch the fresh
+	// transcriber installed below after a reload/rejoin.
+	r.mediaGeneration++
+	mediaGeneration := r.mediaGeneration
 	if previous != nil {
 		previous.Stop()
 	}
@@ -98,37 +103,62 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 		},
 		Log: r.log,
 		OnAudioFrame: func(source speech.AudioSource, frame speech.AudioFrame) {
-			r.mediaMu.Lock()
-			defer r.mediaMu.Unlock()
-			if r.transcriber != nil {
-				r.transcriber.AcceptAudio(source, frame)
-			}
+			r.withCurrentMediaGeneration(mediaGeneration, func() {
+				if r.transcriber != nil {
+					r.transcriber.AcceptAudio(source, frame)
+				}
+			})
 		},
 		OnTrackStarted: func(source speech.AudioSource) {
-			r.mediaMu.Lock()
-			defer r.mediaMu.Unlock()
-			if r.transcriber != nil {
-				r.transcriber.TrackStarted(source)
-			}
+			r.withCurrentMediaGeneration(mediaGeneration, func() {
+				if r.transcriber != nil {
+					r.transcriber.TrackStarted(source)
+				}
+			})
 		},
 		OnTrackEnded: func(source speech.AudioSource) {
-			r.mediaMu.Lock()
-			defer r.mediaMu.Unlock()
-			if r.transcriber != nil {
-				r.transcriber.TrackEnded(source)
-			}
+			r.withCurrentMediaGeneration(mediaGeneration, func() {
+				if r.transcriber != nil {
+					r.transcriber.TrackEnded(source)
+				}
+			})
 		},
 		OnGrantActivated: func(kind media.GrantKind) {
-			r.notifySpeechPrerequisite(kind)
+			if r.isCurrentMediaGeneration(mediaGeneration) {
+				r.notifySpeechPrerequisite(kind)
+			}
 		},
-		OnLiveTranscriptState: r.setLiveTranscriptProducer,
-		Voice:                 voiceConfig,
+		OnLiveTranscriptState: func(state types.LiveTranscriptInfo, producing bool) {
+			r.setLiveTranscriptProducerForMediaGeneration(
+				mediaGeneration,
+				state,
+				producing,
+			)
+		},
+		Voice: voiceConfig,
 	})
 	r.mediaController = controller
 	r.voiceSrc = controller
 	// Non-blocking like the frozen Node reference: the first grant poll must
 	// never gate join()/create() on a room_info round trip.
 	go controller.Start(context.Background())
+}
+
+func (r *ResidentRuntime) withCurrentMediaGeneration(
+	generation uint64,
+	callback func(),
+) {
+	r.mediaMu.Lock()
+	defer r.mediaMu.Unlock()
+	if r.mediaGeneration == generation {
+		callback()
+	}
+}
+
+func (r *ResidentRuntime) isCurrentMediaGeneration(generation uint64) bool {
+	r.mediaMu.Lock()
+	defer r.mediaMu.Unlock()
+	return r.mediaGeneration == generation
 }
 
 // notifySpeechPrerequisite tells the room ONCE per grant activation edge

@@ -186,6 +186,15 @@ func (h *controllerHarness) engineAt(i int) *fakeEngine {
 	return h.engines[i]
 }
 
+func (h *controllerHarness) restAt(i int) *fakeRest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if i < 0 || i >= len(h.rests) {
+		return nil
+	}
+	return h.rests[i]
+}
+
 func newControllerHarness(t *testing.T, client *fakeRoomClient, voiceCfg *VoiceConfig) (*Controller, *controllerHarness) {
 	t.Helper()
 	harness := &controllerHarness{}
@@ -336,6 +345,74 @@ func TestControllerMeetingNotesGrantStartsAndRevocationStopsBridge(t *testing.T)
 	waitController(t, 2*time.Second, func() bool { return firstEngine.closeCalls == 1 }, "bridge stop")
 }
 
+func TestControllerStopWithActiveSubscriptionDoesNotBlockMediaLifecycleMutex(t *testing.T) {
+	client := &fakeRoomClient{}
+	client.setRoom("on", "on", "agent", 111, "off", "on", "agent", 0, nil)
+	engine := newFakeEngine()
+	rest := newFakeRest()
+	rest.roomMediaReturn = []RoomMediaParticipant{{
+		ParticipantID: "human", Name: "Ada", SessionID: "human-session",
+		Tracks: []RoomTrack{{TrackName: "mic", Kind: "audio"}},
+	}}
+	var mediaMu sync.Mutex
+	ended := make(chan struct{}, 1)
+	controller := NewController(ControllerOptions{
+		Client:         client,
+		RoomID:         "room",
+		ParticipantID:  "agent",
+		PollIntervalMs: 10_000,
+		CreateBridge: func() (*Bridge, error) {
+			options := testBridgeOptions(engine, rest, nil)
+			options.Events.OnTrackEnded = func(speech.AudioSource) {
+				mediaMu.Lock()
+				defer mediaMu.Unlock()
+				ended <- struct{}{}
+			}
+			return NewBridge(options), nil
+		},
+	})
+	controller.Start(t.Context())
+	waitController(t, time.Second, func() bool {
+		return len(rest.snapshotSubscribes()) == 1
+	}, "active Human subscription")
+	engine.emitTrack("0", CodecInfo{MimeType: "audio/opus", ClockRate: 48000, Channels: 2})
+
+	// restartMediaController/releaseResources call Controller.Stop while their
+	// own mediaMu is held. Model that exact lock shape and require shutdown to
+	// return before the consumer can acquire it.
+	mediaMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		controller.Stop()
+		close(done)
+	}()
+	completed := false
+	select {
+	case <-done:
+		completed = true
+	case <-time.After(time.Second):
+	}
+	mediaMu.Unlock()
+	if !completed {
+		t.Fatal("Controller.Stop deadlocked on an active TrackEnded callback")
+	}
+	select {
+	case <-ended:
+	case <-time.After(time.Second):
+		t.Fatal("active subscription did not report TrackEnded after shutdown")
+	}
+
+	// A lifecycle restart remains possible after the old callback has drained;
+	// teardown did not leave Controller state wedged behind mediaMu.
+	controller.Start(t.Context())
+	waitController(t, time.Second, func() bool {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		return controller.state == "running"
+	}, "controller restart after active subscription shutdown")
+	controller.Stop()
+}
+
 func TestControllerStopCancelsStartingBridge(t *testing.T) {
 	client := &fakeRoomClient{}
 	client.setRoom("on", "on", "agent", 111, "off", "on", "agent", 0, nil)
@@ -452,6 +529,98 @@ func TestControllerVoiceEpochRotationRebuildsSession(t *testing.T) {
 	second := harness.engineAt(1)
 	if second == nil || second.activateCalls < 1 {
 		t.Fatal("the rebuilt session must activate a fresh publication")
+	}
+}
+
+func TestControllerLiveTranscriptEpochRotationResubscribesWithoutRestartingVoiceBridge(t *testing.T) {
+	client := &fakeRoomClient{
+		live: types.LiveTranscriptInfo{
+			Active: true, ProducerRuntimeHostID: "host-a", StartedByHumanParticipantID: "human", Epoch: 7, StartedAt: 7,
+		},
+	}
+	client.setRoom("off", "on", "agent", 0, "on", "on", "agent", 111, nil)
+	coordinator := &testLiveTranscriptCoordinator{}
+	harness := &controllerHarness{}
+	var controller *Controller
+	controller = NewController(ControllerOptions{
+		Client:                    client,
+		RoomID:                    "room",
+		ParticipantID:             "agent",
+		SiteOrigin:                "https://www.free4.chat",
+		Handle:                    DecodedHandle{Room: "room", ParticipantID: "agent", ParticipantToken: "tok"},
+		RuntimeHostID:             "host-a",
+		RuntimeInstanceID:         "instance-a",
+		LiveTranscriptCoordinator: coordinator,
+		CanProduceLiveTranscript:  func() bool { return true },
+		PollIntervalMs:            10_000,
+		Voice:                     voiceConfigAlwaysReady(),
+		CreateBridge: func() (*Bridge, error) {
+			engine := newFakeEngine()
+			engine.mid = "9"
+			rest := newFakeRest()
+			harness.mu.Lock()
+			harness.engines = append(harness.engines, engine)
+			harness.rests = append(harness.rests, rest)
+			harness.bridges++
+			harness.mu.Unlock()
+			options := testBridgeOptions(engine, rest, &PublishConfig{TrackName: "agent-voice"})
+			options.SubscribePurpose = controller.subscribePurpose
+			return NewBridge(options), nil
+		},
+		Log: func(string, map[string]string) {},
+	})
+	defer controller.Stop()
+
+	controller.Start(t.Context())
+	waitController(t, time.Second, func() bool {
+		return harness.bridgeCount() == 1 && controller.HasVoiceOutput()
+	}, "Live Transcript epoch 7 and Voice shared bridge")
+	engine := harness.engineAt(0)
+	rest := harness.restAt(0)
+	if engine == nil || rest == nil {
+		t.Fatal("missing first shared bridge")
+	}
+	rest.mu.Lock()
+	rest.roomMediaReturn = []RoomMediaParticipant{{
+		ParticipantID: "human", Name: "Ada", SessionID: "human-session",
+		Tracks: []RoomTrack{{TrackName: "mic", Kind: "audio"}},
+	}}
+	rest.mu.Unlock()
+	if err := controller.bridge.RefreshRemoteSubscriptions(); err != nil {
+		t.Fatalf("initial Live Transcript subscribe: %v", err)
+	}
+	if got := rest.snapshotSubscribes(); len(got) != 1 {
+		t.Fatalf("initial subscriptions = %v, want one", got)
+	}
+	if got := rest.snapshotSubscribePurposes(); len(got) != 1 || got[0] != PurposeLiveTranscript {
+		t.Fatalf("initial subscribe purposes = %v, want live-transcript", got)
+	}
+
+	// The server revokes these RTP mids on Stop, but Voice keeps the shared
+	// bridge and publication alive. The local bridge must forget just its
+	// remote reservation rather than rebuilding the unrelated Voice session.
+	client.mu.Lock()
+	client.live = types.LiveTranscriptInfo{}
+	client.mu.Unlock()
+	controller.poll()
+	if got := harness.bridgeCount(); got != 1 || engine.closeCalls != 0 || !controller.HasVoiceOutput() {
+		t.Fatalf("Live Stop must preserve the Voice bridge: bridges=%d close=%d voice=%t", got, engine.closeCalls, controller.HasVoiceOutput())
+	}
+
+	client.mu.Lock()
+	client.live = types.LiveTranscriptInfo{
+		Active: true, ProducerRuntimeHostID: "host-a", StartedByHumanParticipantID: "human", Epoch: 8, StartedAt: 8,
+	}
+	client.mu.Unlock()
+	controller.poll()
+	if got := harness.bridgeCount(); got != 1 || engine.closeCalls != 0 || !controller.HasVoiceOutput() {
+		t.Fatalf("Live Start epoch 8 must not restart Voice: bridges=%d close=%d voice=%t", got, engine.closeCalls, controller.HasVoiceOutput())
+	}
+	if got := rest.snapshotSubscribes(); len(got) != 2 {
+		t.Fatalf("Human audio was not re-subscribed in epoch 8: %v", got)
+	}
+	if got := rest.snapshotSubscribePurposes(); len(got) != 2 || got[1] != PurposeLiveTranscript {
+		t.Fatalf("new epoch subscribe purposes = %v, want second live-transcript", got)
 	}
 }
 
