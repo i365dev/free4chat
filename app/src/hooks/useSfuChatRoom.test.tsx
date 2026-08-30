@@ -251,6 +251,166 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 })
 
+describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
+  class RecordingWebSocket {
+    static OPEN = 1
+    static instances: RecordingWebSocket[] = []
+    readyState = 1
+    onopen: (() => void) | null = null
+    onmessage: ((event: { data: string }) => void) | null = null
+    onerror: (() => void) | null = null
+    onclose: (() => void) | null = null
+    sent: string[] = []
+
+    constructor(public url: string) {
+      RecordingWebSocket.instances.push(this)
+    }
+    send(data: string) {
+      this.sent.push(data)
+    }
+    close() {}
+  }
+
+  beforeEach(() => {
+    FakePeerConnection.instances.length = 0
+    RecordingWebSocket.instances.length = 0
+    ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
+      FakePeerConnection
+    ;(global as unknown as { WebSocket: unknown }).WebSocket =
+      RecordingWebSocket
+    ;(global as unknown as { MediaStream: unknown }).MediaStream = class {
+      constructor(_tracks: FakeTrack[] = []) {}
+      getAudioTracks() {
+        return []
+      }
+      getTracks() {
+        return []
+      }
+    }
+    Object.defineProperty(global.navigator, "mediaDevices", {
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getAudioTracks: () => [new FakeTrack()],
+        }),
+      },
+      configurable: true,
+    })
+    global.fetch = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).endsWith("/api/sfu/session"))
+        return jsonResponse({
+          participantId: "human-a",
+          participantToken: "participant-token",
+          sessionId: "session-a",
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        })
+      if (String(input).endsWith("/api/sfu/datachannels/new"))
+        return jsonResponse({ dataChannels: [{ id: 1 }] })
+      return jsonResponse({})
+    }) as unknown as typeof fetch
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it("keeps committed transcript state outside messages and sends only explicit Live Transcript controls", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("transcript-room", "Alice", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 1,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: [
+              {
+                id: "human-a",
+                name: "Alice",
+                kind: "human",
+                connected: true,
+                joinedAt: 1,
+                lastSeenAt: 1,
+              },
+              {
+                id: "agent-b",
+                name: "Codex",
+                kind: "agent",
+                connected: true,
+                joinedAt: 1,
+                lastSeenAt: 1,
+              },
+            ],
+            runtimeHosts: {
+              "host-a": {
+                runtimeHostId: "host-a",
+                speech: { stt: true, tts: true },
+              },
+            },
+            runtimeHostProviders: {
+              "host-a": { humanParticipantId: "human-a", claimedAt: 1 },
+            },
+            messages: [],
+            liveTranscript: {
+              active: true,
+              producerRuntimeHostId: "host-a",
+              startedByHumanParticipantId: "human-a",
+              epoch: 7,
+              startedAt: 1,
+            },
+            liveTranscriptSegments: [
+              {
+                segmentId: "segment-1",
+                epoch: 7,
+                sequence: 1,
+                participantId: "human-a",
+                speaker: "Alice",
+                text: "Committed speech",
+                createdAt: 1,
+              },
+            ],
+            meetingNotes: { active: false },
+            meetingNotesMediaAvailable: true,
+            agentVoice: {},
+            agentVoiceMediaAvailable: true,
+          },
+        }),
+      })
+    )
+
+    await waitFor(() =>
+      expect(result.current.liveTranscriptSegments).toHaveLength(1)
+    )
+    expect(result.current.liveTranscript).toMatchObject({
+      active: true,
+      epoch: 7,
+    })
+    expect(result.current.messages).toEqual([])
+
+    act(() => result.current.startLiveTranscript("host-a"))
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
+      type: "live-transcript-start",
+      runtimeHostId: "host-a",
+    })
+    act(() => result.current.stopLiveTranscript())
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
+      type: "live-transcript-stop",
+    })
+    expect(
+      socket.sent.map((message) => JSON.parse(message).type)
+    ).not.toContain("message")
+    expect(
+      socket.sent.map((message) => JSON.parse(message).type)
+    ).not.toContain("collab-request")
+    unmount()
+  })
+})
+
 describe("useSfuChatRoom room attachments (#123)", () => {
   class RecordingWebSocket {
     static OPEN = 1

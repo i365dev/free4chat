@@ -14,10 +14,15 @@ import {
   validateAdvertisedCapabilities,
 } from "@do/collab"
 
-import type { RoomAttachmentRead } from "../room/types"
+import type {
+  LiveTranscriptSegment,
+  LiveTranscriptState,
+  RoomAttachmentRead,
+  RuntimeHostProjection,
+  RuntimeHostProviderPublicAssociation,
+} from "../room/types"
 import type {
   SfuAgentVoiceState,
-  SfuMeetingNotesState,
   SfuMessage,
   SfuParticipant,
   SfuRoomState,
@@ -315,14 +320,22 @@ export function useSfuChatRoom(
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
   const [resolvedRoomType] = useState<"audio" | "screenshare">(roomType)
-  const [meetingNotes, setMeetingNotes] = useState<SfuMeetingNotesState>({
+  const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptState>({
     active: false,
   })
-  // Whether the server-side media capability is even on in this
-  // environment — independent of any specific grant. Starts `false` so the
-  // Start control stays hidden/disabled until the first real room state
-  // arrives, rather than defaulting to an optimistic "available".
-  const [meetingNotesMediaAvailable, setMeetingNotesMediaAvailable] =
+  const [liveTranscriptSegments, setLiveTranscriptSegments] = useState<
+    LiveTranscriptSegment[]
+  >([])
+  const [runtimeHosts, setRuntimeHosts] = useState<
+    Record<string, RuntimeHostProjection> | undefined
+  >()
+  const [runtimeHostProviders, setRuntimeHostProviders] = useState<
+    Record<string, RuntimeHostProviderPublicAssociation> | undefined
+  >()
+  // The server's existing media-admission projection remains the final
+  // environment-level availability signal. Start false so the Room UI never
+  // offers a speculative transcript activation before authoritative state.
+  const [liveTranscriptMediaAvailable, setLiveTranscriptMediaAvailable] =
     useState(false)
   const [agentVoice, setAgentVoiceState] = useState<SfuAgentVoiceState>({})
   const [agentVoiceMediaAvailable, setAgentVoiceMediaAvailable] =
@@ -1403,8 +1416,11 @@ export function useSfuChatRoom(
         agent_audio_track_visible_in_state: agentAudioTrackCount > 0 ? 1 : 0,
         agent_audio_track_count: agentAudioTrackCount,
       })
-      setMeetingNotes(state.meetingNotes)
-      setMeetingNotesMediaAvailable(state.meetingNotesMediaAvailable)
+      setLiveTranscript(state.liveTranscript ?? { active: false })
+      setLiveTranscriptSegments(state.liveTranscriptSegments ?? [])
+      setRuntimeHosts(state.runtimeHosts)
+      setRuntimeHostProviders(state.runtimeHostProviders)
+      setLiveTranscriptMediaAvailable(state.meetingNotesMediaAvailable)
       setAgentVoiceState(state.agentVoice)
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
       for (const participant of state.participants) {
@@ -2217,18 +2233,18 @@ export function useSfuChatRoom(
     []
   )
 
-  const startMeetingNotes = useCallback(
-    (agentParticipantId: string) => {
+  const startLiveTranscript = useCallback(
+    (runtimeHostId: string) => {
       sendSocketMessage({
-        type: "meeting-notes-start",
-        agentParticipantId,
+        type: "live-transcript-start",
+        runtimeHostId,
       })
     },
     [sendSocketMessage]
   )
 
-  const stopMeetingNotes = useCallback(() => {
-    sendSocketMessage({ type: "meeting-notes-stop" })
+  const stopLiveTranscript = useCallback(() => {
+    sendSocketMessage({ type: "live-transcript-stop" })
   }, [sendSocketMessage])
 
   const setAgentVoice = useCallback(
@@ -2410,10 +2426,13 @@ export function useSfuChatRoom(
     error,
     connectionStatus,
     resolvedRoomType,
-    meetingNotes,
-    meetingNotesMediaAvailable,
-    startMeetingNotes,
-    stopMeetingNotes,
+    liveTranscript,
+    liveTranscriptSegments,
+    runtimeHosts,
+    runtimeHostProviders,
+    liveTranscriptMediaAvailable,
+    startLiveTranscript,
+    stopLiveTranscript,
     agentVoice,
     agentVoiceMediaAvailable,
     setAgentVoice,

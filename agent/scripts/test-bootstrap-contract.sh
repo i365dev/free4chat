@@ -116,6 +116,14 @@ is_stable_version() {
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
+# Keep the newer-runtime fixture strictly newer than the live bootstrap
+# declaration. It must never accidentally become equal after a release bump.
+next_patch_version() {
+  local major minor patch
+  IFS=. read -r major minor patch <<< "$1"
+  printf '%s.%s.%s\n' "$major" "$minor" "$((10#$patch + 1))"
+}
+
 probe_runtime_version() {
   local binary="$1" output version
   output="$("$binary" version --json 2>/dev/null)" || output=""
@@ -212,10 +220,12 @@ EOF
 
 write_fake_agent "$WORK/published-v0.5.4" 'echo unsupported >&2; exit 2' "$doc_version"
 write_fake_agent "$WORK/stale-contract" 'echo unsupported >&2; exit 2' "0.5.3"
-# Keep this deliberately above the released source/doc version: a newer
-# executable must still select the explicitly pinned installer rather than
-# being assumed compatible.
-write_fake_agent "$WORK/newer-contract" 'printf "%s\n" "{\"version\":\"0.5.10\"}"' "$source_version"
+# A newer installed executable must still select the explicitly pinned
+# installer rather than being assumed compatible. Derive it from agent.md so
+# it remains newer when source and live bootstrap versions become aligned.
+newer_contract_version="$(next_patch_version "$doc_version")"
+newer_fast_path="echo '{\"version\":\"$newer_contract_version\"}'"
+write_fake_agent "$WORK/newer-contract" "$newer_fast_path" "$source_version"
 write_fake_agent "$WORK/malformed-contract" 'echo not-json; exit 0' "not-a-version"
 write_fake_agent "$WORK/wrong-after-install" 'echo unsupported >&2; exit 2' "0.5.3"
 

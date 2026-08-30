@@ -60,10 +60,13 @@ const baseHookReturn = {
   connectionStatus: "verifying" as string,
   resolvedRoomType: "audio" as const,
   timeLeft: 0,
-  meetingNotes: { active: false } as { active: boolean },
-  meetingNotesMediaAvailable: true,
-  startMeetingNotes: vi.fn(),
-  stopMeetingNotes: vi.fn(),
+  liveTranscript: { active: false } as { active: boolean },
+  liveTranscriptSegments: [],
+  runtimeHosts: {},
+  runtimeHostProviders: {},
+  liveTranscriptMediaAvailable: false,
+  startLiveTranscript: vi.fn(),
+  stopLiveTranscript: vi.fn(),
   createRuntimeProviderClaim: vi.fn(),
 }
 
@@ -215,5 +218,54 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       "Clipboard access was blocked"
     )
     expect(screen.getByRole("button", { name: "Copy invite" })).toBeEnabled()
+  })
+
+  it("uses the Room-wide Live Transcript control without replacing Agent Voice", () => {
+    const startLiveTranscript = vi.fn()
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      liveTranscriptMediaAvailable: true,
+      agentVoiceMediaAvailable: true,
+      runtimeHosts: {
+        "host-a": {
+          runtimeHostId: "host-a",
+          speech: { stt: true, tts: true },
+        },
+      },
+      runtimeHostProviders: {
+        "host-a": { humanParticipantId: "human-local", claimedAt: 1 },
+      },
+      startLiveTranscript,
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          voiceAvailable: true,
+          voiceEnabled: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Start" }))
+    expect(startLiveTranscript).toHaveBeenCalledWith("host-a")
+    expect(screen.queryByText(/Meeting Notes/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Note-taker/i)).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Enable voice for Codex" })
+    ).toBeEnabled()
   })
 })
