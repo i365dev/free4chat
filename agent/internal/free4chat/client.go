@@ -11,13 +11,17 @@ package free4chat
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -289,6 +293,8 @@ func (c *Client) RoomInfo(roomID string) (types.RoomInfo, error) {
 	info.MeetingNotesMediaAvailable = result["meetingNotesMediaAvailable"] == true
 	info.AgentVoice = parseAgentVoice(result["agentVoice"])
 	info.AgentVoiceMediaAvailable = result["agentVoiceMediaAvailable"] == true
+	info.LiveTranscript = parseLiveTranscriptState(result["liveTranscript"])
+	info.LiveTranscriptSegments = parseLiveTranscriptSegments(result["liveTranscriptSegments"])
 	return info, nil
 }
 
@@ -326,6 +332,170 @@ func parseAgentVoice(raw any) map[string]types.AgentVoiceGrant {
 		grants[participantID] = types.AgentVoiceGrant{EnabledAt: int64(enabledAt)}
 	}
 	return grants
+}
+
+// parseLiveTranscriptState accepts only a complete active producer grant.
+// A malformed value must never become a usable Runtime media authorization.
+func parseLiveTranscriptState(raw any) types.LiveTranscriptInfo {
+	record, _ := raw.(map[string]any)
+	if record == nil || record["active"] != true {
+		return types.LiveTranscriptInfo{}
+	}
+	hostID, hostOK := record["producerRuntimeHostId"].(string)
+	humanID, humanOK := record["startedByHumanParticipantId"].(string)
+	epoch, epochOK := positiveWholeNumber(record["epoch"])
+	startedAt, startedAtOK := positiveWholeNumber(record["startedAt"])
+	if !hostOK || !types.ValidRuntimeHostID(hostID) ||
+		!humanOK || !validBoundedText(humanID, 256) ||
+		!epochOK || !startedAtOK {
+		return types.LiveTranscriptInfo{}
+	}
+	return types.LiveTranscriptInfo{
+		Active:                      true,
+		ProducerRuntimeHostID:       hostID,
+		StartedByHumanParticipantID: humanID,
+		Epoch:                       epoch,
+		StartedAt:                   startedAt,
+	}
+}
+
+// parseLiveTranscriptSegments fails the entire snapshot closed when any
+// element is malformed. A partial sequence could otherwise give a Harness a
+// misleading view of a Room conversation.
+func parseLiveTranscriptSegments(raw any) []types.LiveTranscriptSegment {
+	items, ok := raw.([]any)
+	if !ok || len(items) > 500 {
+		return nil
+	}
+	segments := make([]types.LiveTranscriptSegment, 0, len(items))
+	var previousSequence int64
+	for index, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok {
+			return nil
+		}
+		id, idOK := record["segmentId"].(string)
+		epoch, epochOK := positiveWholeNumber(record["epoch"])
+		sequence, sequenceOK := positiveWholeNumber(record["sequence"])
+		participantID, participantOK := record["participantId"].(string)
+		speaker, speakerOK := record["speaker"].(string)
+		text, textOK := record["text"].(string)
+		createdAt, createdAtOK := positiveWholeNumber(record["createdAt"])
+		if !idOK || !validLiveTranscriptSegmentID(id) ||
+			!epochOK || !sequenceOK ||
+			!participantOK || !validBoundedText(participantID, 256) ||
+			!speakerOK || !validBoundedText(speaker, 256) ||
+			!textOK || strings.TrimSpace(text) != text || !validBoundedText(text, 4000) ||
+			!createdAtOK || (index > 0 && sequence <= previousSequence) {
+			return nil
+		}
+		previousSequence = sequence
+		segments = append(segments, types.LiveTranscriptSegment{
+			SegmentID:     id,
+			Epoch:         epoch,
+			Sequence:      sequence,
+			ParticipantID: participantID,
+			Speaker:       speaker,
+			Text:          text,
+			CreatedAt:     createdAt,
+		})
+	}
+	return segments
+}
+
+func positiveWholeNumber(raw any) (int64, bool) {
+	value, ok := raw.(float64)
+	if !ok || value <= 0 || value >= 1<<63 || value != math.Trunc(value) {
+		return 0, false
+	}
+	return int64(value), true
+}
+
+func validBoundedText(value string, maxCodeUnits int) bool {
+	// RoomSession validates JavaScript string.length (UTF-16 code units), so
+	// match that wire contract rather than accepting a larger astral-plane
+	// value that the server would reject.
+	return value != "" && utf8.ValidString(value) && len(utf16.Encode([]rune(value))) <= maxCodeUnits
+}
+
+func validLiveTranscriptSegmentID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z') && !(char >= 'A' && char <= 'Z') &&
+			!(char >= '0' && char <= '9') && char != '-' && char != '_' &&
+			char != '.' && char != ':' {
+			return false
+		}
+	}
+	return true
+}
+
+type roomControlHandle struct {
+	Room             string `json:"room"`
+	ParticipantID    string `json:"participantId"`
+	ParticipantToken string `json:"participantToken"`
+}
+
+// AppendLiveTranscript commits a completed STT segment directly to the
+// authenticated Room control endpoint. It intentionally bypasses MCP: this
+// is a narrow Runtime-owned media side channel, never a Harness tool.
+func (c *Client) AppendLiveTranscript(participantHandle string, epoch int64, segmentID, sourceParticipantID, text string) error {
+	if epoch <= 0 || !validLiveTranscriptSegmentID(segmentID) ||
+		!validBoundedText(sourceParticipantID, 256) ||
+		strings.TrimSpace(text) != text || !validBoundedText(text, 4000) {
+		return &Error{Message: "invalid live transcript segment", Code: CodeToolError}
+	}
+	rawHandle, err := base64.RawURLEncoding.DecodeString(participantHandle)
+	if err != nil {
+		return &Error{Message: "invalid participant handle", Code: CodeToolError}
+	}
+	var handle roomControlHandle
+	if err := json.Unmarshal(rawHandle, &handle); err != nil ||
+		!validBoundedText(handle.Room, 256) || !validBoundedText(handle.ParticipantID, 256) || handle.ParticipantToken == "" {
+		return &Error{Message: "invalid participant handle", Code: CodeToolError}
+	}
+	endpoint, err := url.Parse(c.Endpoint)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return &Error{Message: "invalid room endpoint", Code: CodeToolError}
+	}
+	endpoint.Path = "/api/room/live-transcript/append"
+	endpoint.RawQuery = ""
+	payload, err := json.Marshal(map[string]any{
+		"epoch":               epoch,
+		"segmentId":           segmentID,
+		"sourceParticipantId": sourceParticipantID,
+		"text":                text,
+	})
+	if err != nil {
+		return &Error{Message: "encode live transcript", Code: CodeTransient}
+	}
+	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return &Error{Message: "create live transcript request", Code: CodeTransient}
+	}
+	request.Header.Set("Content-Type", headerContentType)
+	request.Header.Set("Accept", headerContentType)
+	request.Header.Set("User-Agent", defaultUserAgent)
+	request.Header.Set("Origin", endpoint.Scheme+"://"+endpoint.Host)
+	request.Header.Set("X-Room-Id", handle.Room)
+	request.Header.Set("X-Room-Participant-Id", handle.ParticipantID)
+	request.Header.Set("X-Room-Participant-Token", handle.ParticipantToken)
+	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return &Error{Message: "live transcript request failed", Code: CodeTransient}
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode <= 299 {
+		return nil
+	}
+	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+		return &Error{Message: "live transcript temporarily unavailable", Code: CodeTransient}
+	}
+	// Auth, epoch, and validation failures are terminal for this committed
+	// segment. Do not echo the response because it may include untrusted text.
+	return &Error{Message: "live transcript append rejected", Code: CodeToolError}
 }
 
 func parseJoinLike(result map[string]any) (types.JoinResult, error) {

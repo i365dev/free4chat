@@ -80,6 +80,10 @@ type Options struct {
 	// ProviderHandles is daemon-owned volatile storage shared by residents of
 	// the same local Runtime Host. It is intentionally never persisted.
 	ProviderHandles *ProviderHandleStore
+	// TranscriptProducers is the daemon-local lease coordinator for a
+	// Room-selected Live Transcript Runtime Host. Nil disables the optional
+	// producer path fail-closed while preserving text and legacy media.
+	TranscriptProducers media.LiveTranscriptCoordinator
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
@@ -117,12 +121,22 @@ type ResidentRuntime struct {
 
 	mediaController *media.Controller
 	mediaMu         sync.Mutex
+	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
+	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
+	// mediaMu; without this generation fence, a late old callback could end a
+	// newly-created transcriber for the same Human track.
+	mediaGeneration uint64
 	// speechConfig is copied from Options at construction and guarded by mu.
 	// Media rebuilds consume an immutable snapshot rather than reading Options
 	// concurrently with credential hot reload.
 	speechConfig speech.Config
 	transcriber  *speech.Transcriber
 	transcript   *speech.TranscriptStore
+	// Live Transcript producer state is only local callback admission state;
+	// committed text lives in the Room control plane, never in this cache.
+	liveTranscript          types.LiveTranscriptInfo
+	liveTranscriptProducing bool
+	sttGeneration           uint64
 	// voiceSrc is the controller-backed voice boundary; tests may inject a
 	// fake to observe dispatch ordering deterministically.
 	voiceSrc voiceSource
@@ -618,6 +632,7 @@ func (r *ResidentRuntime) drainTurns() {
 			Participants: r.rosterSnapshot(),
 		})
 		r.enrichAttachments(input)
+		r.attachLiveTranscript(input)
 		r.attachTranscript(input)
 
 		// A newly addressed turn wins the speaker: stale audio from the
@@ -878,10 +893,19 @@ func (r *ResidentRuntime) Stop() {
 func (r *ResidentRuntime) releaseResources() {
 	r.mediaMu.Lock()
 	defer r.mediaMu.Unlock()
+	// Invalidate every callback before Controller.Stop tears the bridge down.
+	// Its active-subscription TrackEnded notifications are intentionally
+	// asynchronous to keep this lifecycle mutex non-reentrant.
+	r.mediaGeneration++
 	if r.mediaController != nil {
 		r.mediaController.Stop()
 		r.mediaController = nil
 	}
+	r.voiceSrc = nil
+	r.mu.Lock()
+	r.liveTranscript = types.LiveTranscriptInfo{}
+	r.liveTranscriptProducing = false
+	r.mu.Unlock()
 	if r.transcriber != nil {
 		r.transcriber.Close()
 		r.transcriber = nil

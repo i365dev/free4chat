@@ -163,8 +163,15 @@ async function harness(options?: {
       text: "We agreed on the plan.",
       ...overrides,
     })
-  const stored = () => store.get("room") as any
-  return { session, socket, store, sendHuman, control, append, stored }
+  // RoomSession stores the bounded shared transcript in its own DO value so
+  // the primary legacy-KV Room record cannot exceed 128 KiB. Tests inspect
+  // the same in-memory projection the session reconstructs on load.
+  const stored = () =>
+    ({
+      ...(store.get("room") as Record<string, unknown>),
+      ...(store.get("live-transcript") as Record<string, unknown> | undefined),
+    } as any)
+  return { session, socket, store, ctx, sendHuman, control, append, stored }
 }
 
 describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
@@ -294,11 +301,118 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
     expect(humanDeparture.stored().liveTranscript).toEqual({ active: false })
   })
 
+  it("stages active producer RTP cleanup before load normalization turns it Off", async () => {
+    const invalidations: Array<{
+      name: string
+      mediaEnabled?: boolean
+      apply(room: Awaited<ReturnType<typeof harness>>): void
+    }> = [
+      {
+        name: "AGENT_MEDIA_ENABLED true-to-false",
+        mediaEnabled: false,
+        apply: () => undefined,
+      },
+      {
+        name: "provider association loss",
+        apply: (room) => {
+          delete room.stored().runtimeHostProviders[HOST_A]
+        },
+      },
+      {
+        name: "Host STT readiness loss",
+        apply: (room) => {
+          room.stored().runtimeHosts[HOST_A].speech.stt = false
+        },
+      },
+    ]
+
+    for (const invalidation of invalidations) {
+      const room = await harness()
+      await room.sendHuman("human", {
+        type: "live-transcript-start",
+        runtimeHostId: HOST_A,
+      })
+      const primary = room.store.get("room") as any
+      primary.participants.producer.media = {
+        sessionId: "producer-live-session",
+        muted: false,
+        fileChannelReady: false,
+        tracks: [],
+        agentSubscribedMids: ["live-mid-1", "live-mid-2"],
+      }
+      room.store.set("room", primary)
+      invalidation.apply(room)
+
+      // Simulate a DO eviction/restart: loadRoom() must durably stage the
+      // old mids before returning the normalized Off projection. The media
+      // master switch is deliberately absent only for that case.
+      const reloaded = new RoomSession(
+        room.ctx as never,
+        {
+          SFU_ROOM: {},
+          ...(invalidation.mediaEnabled === false
+            ? {}
+            : { AGENT_MEDIA_ENABLED: "true" }),
+        } as never
+      )
+      const response = await reloaded.fetch(
+        new Request("https://room/control", {
+          method: "POST",
+          body: JSON.stringify({ action: "room-info" }),
+        })
+      )
+      expect(response.status, invalidation.name).toBe(200)
+      expect(
+        ((await response.json()) as any).liveTranscript,
+        invalidation.name
+      ).toEqual({
+        active: false,
+      })
+      expect(room.stored().pendingMediaCleanup, invalidation.name).toEqual([
+        {
+          sessionId: "producer-live-session",
+          mids: ["live-mid-1", "live-mid-2"],
+        },
+      ])
+      expect(
+        (room.store.get("room") as any).participants.producer.media
+          .agentSubscribedMids,
+        invalidation.name
+      ).toEqual([])
+      expect(
+        (room.store.get("live-transcript") as any).liveTranscript,
+        invalidation.name
+      ).toEqual({ active: false })
+    }
+  })
+
   it("authorizes only the verified producer, appends safe shared context, and deduplicates", async () => {
     const room = await harness()
     await room.sendHuman("human", {
       type: "live-transcript-start",
       runtimeHostId: HOST_A,
+    })
+    const mediaAuthorize = await room.control({
+      action: "authorize",
+      participantId: "producer",
+      token: "producer-token",
+      purpose: "live-transcript",
+      remoteTrackCount: 1,
+    })
+    expect(mediaAuthorize).toMatchObject({
+      status: 200,
+      json: { ok: true, kind: "agent" },
+    })
+    const copiedMediaAuthorize = await room.control({
+      action: "authorize",
+      participantId: "copied-host",
+      token: "copied-host-token",
+      purpose: "live-transcript",
+      remoteTrackCount: 1,
+    })
+    expect(copiedMediaAuthorize).toMatchObject({
+      status: 403,
+      json: { error: "live_transcript_not_authorized" },
     })
     const copied = await room.append({
       participantId: "copied-host",

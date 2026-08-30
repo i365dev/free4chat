@@ -308,12 +308,42 @@ type HarnessMeetingTranscript struct {
 	Segments []HarnessTranscriptSegment `json:"segments"`
 }
 
+// LiveTranscriptInfo is the Room-wide Live Transcript control-plane state.
+// It is room-visible metadata only; it never carries media credentials.
+type LiveTranscriptInfo struct {
+	Active                      bool   `json:"active"`
+	ProducerRuntimeHostID       string `json:"producerRuntimeHostId,omitempty"`
+	StartedByHumanParticipantID string `json:"startedByHumanParticipantId,omitempty"`
+	Epoch                       int64  `json:"epoch,omitempty"`
+	StartedAt                   int64  `json:"startedAt,omitempty"`
+}
+
+// LiveTranscriptSegment is one committed Room-shared utterance. It is
+// bounded by the Room Durable Object and intentionally has no audio or media
+// identifiers.
+type LiveTranscriptSegment struct {
+	SegmentID     string `json:"segmentId"`
+	Epoch         int64  `json:"epoch"`
+	Sequence      int64  `json:"sequence"`
+	ParticipantID string `json:"participantId"`
+	Speaker       string `json:"speaker"`
+	Text          string `json:"text"`
+	CreatedAt     int64  `json:"createdAt"`
+}
+
+// HarnessLiveTranscript is the sanitized, bounded Room-wide snapshot
+// refreshed immediately before an addressed Harness turn.
+type HarnessLiveTranscript struct {
+	Segments []LiveTranscriptSegment `json:"segments"`
+}
+
 // HarnessTurnInput is the bounded, untrusted-safe context handed to the
 // Harness for one addressed turn. It never contains the participant handle.
 type HarnessTurnInput struct {
 	Room              RoomTurnContext           `json:"room"`
 	Events            []HarnessEvent            `json:"events"`
 	MeetingTranscript *HarnessMeetingTranscript `json:"meetingTranscript,omitempty"`
+	LiveTranscript    *HarnessLiveTranscript    `json:"liveTranscript,omitempty"`
 }
 
 // HarnessTurnResult is what the Harness produced for a turn.
@@ -395,6 +425,8 @@ type RoomInfo struct {
 	MeetingNotesMediaAvailable bool                       `json:"meetingNotesMediaAvailable"`
 	AgentVoice                 map[string]AgentVoiceGrant `json:"agentVoice"`
 	AgentVoiceMediaAvailable   bool                       `json:"agentVoiceMediaAvailable"`
+	LiveTranscript             LiveTranscriptInfo         `json:"liveTranscript"`
+	LiveTranscriptSegments     []LiveTranscriptSegment    `json:"liveTranscriptSegments,omitempty"`
 }
 
 // WaitResult is wait_for_events' long-poll result with the advanced cursor.
@@ -517,6 +549,13 @@ type Free4ChatClient interface {
 type RuntimeHostProviderClient interface {
 	JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *RuntimeHostProjection, providerClaimHash, runtimeProviderHandle string) (JoinResult, error)
 	UpdateRuntimeHostWithRuntimeProvider(participantHandle string, host RuntimeHostProjection, runtimeProviderHandle string) error
+}
+
+// LiveTranscriptAppendClient is an optional direct Room-control extension.
+// The opaque participant handle remains local to the runtime and is sent only
+// to the Free4Chat endpoint.
+type LiveTranscriptAppendClient interface {
+	AppendLiveTranscript(participantHandle string, epoch int64, segmentID, sourceParticipantID, text string) error
 }
 
 // AttachmentRead is read_attachment's normalized result: either an image

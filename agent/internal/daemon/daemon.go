@@ -33,24 +33,26 @@ type residentInstance struct {
 
 // Daemon hosts every resident Agent instance behind one Unix socket.
 type Daemon struct {
-	mu              sync.Mutex
-	instances       map[string]*residentInstance
-	listener        net.Listener
-	closed          chan struct{}
-	stopping        bool
-	finalized       bool
-	finishOnce      sync.Once
-	voiceGate       voice.Gate
-	providerHandles *runtime.ProviderHandleStore
+	mu                  sync.Mutex
+	instances           map[string]*residentInstance
+	listener            net.Listener
+	closed              chan struct{}
+	stopping            bool
+	finalized           bool
+	finishOnce          sync.Once
+	voiceGate           voice.Gate
+	providerHandles     *runtime.ProviderHandleStore
+	transcriptProducers *TranscriptProducerCoordinator
 }
 
 // New creates an idle daemon.
 func New() *Daemon {
 	return &Daemon{
-		instances:       make(map[string]*residentInstance),
-		closed:          make(chan struct{}),
-		voiceGate:       voice.NewGate(),
-		providerHandles: runtime.NewProviderHandleStore(),
+		instances:           make(map[string]*residentInstance),
+		closed:              make(chan struct{}),
+		voiceGate:           voice.NewGate(),
+		providerHandles:     runtime.NewProviderHandleStore(),
+		transcriptProducers: NewTranscriptProducerCoordinator(),
 	}
 }
 
@@ -426,14 +428,15 @@ func (d *Daemon) prepareRuntime(
 			TurnTimeoutMs: turnTimeoutMs,
 			CancelGraceMs: cancelGraceMs,
 		}),
-		Capabilities:    request.Capabilities,
-		SiteOrigin:      siteOrigin,
-		TranscriptPath:  transcriptPath,
-		Speech:          &speechConfig,
-		HostSeed:        hostSeed,
-		HostVoiceGate:   d.voiceGate,
-		ProviderClaim:   request.ProviderClaim,
-		ProviderHandles: d.providerHandles,
+		Capabilities:        request.Capabilities,
+		SiteOrigin:          siteOrigin,
+		TranscriptPath:      transcriptPath,
+		Speech:              &speechConfig,
+		HostSeed:            hostSeed,
+		HostVoiceGate:       d.voiceGate,
+		ProviderClaim:       request.ProviderClaim,
+		ProviderHandles:     d.providerHandles,
+		TranscriptProducers: d.transcriptProducers,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the
@@ -523,6 +526,7 @@ func (d *Daemon) unregister(instanceID string) {
 	d.mu.Lock()
 	delete(d.instances, instanceID)
 	d.mu.Unlock()
+	d.transcriptProducers.ReleaseInstance(instanceID)
 }
 
 // leave stops one instance and removes its workspace; unknown ids stay a
@@ -535,6 +539,7 @@ func (d *Daemon) leave(instanceID string) map[string]any {
 	}
 	d.mu.Unlock()
 	if ok {
+		d.transcriptProducers.ReleaseInstance(instanceID)
 		instance.runtime.Stop()
 		_ = os.RemoveAll(instance.workspace)
 	}
@@ -556,6 +561,7 @@ func (d *Daemon) beginStop() {
 
 	var wg sync.WaitGroup
 	for _, instance := range instances {
+		d.transcriptProducers.ReleaseInstance(instance.instanceID)
 		wg.Add(1)
 		go func(rt *runtime.ResidentRuntime, workspace string) {
 			defer wg.Done()

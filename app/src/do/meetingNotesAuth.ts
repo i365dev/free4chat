@@ -66,16 +66,19 @@ export function isAgentAuthorizedForVoice(
 export function isAgentAuthorizedForSharedMedia(
   meetingNotes: MeetingNotesState,
   agentVoice: AgentVoiceState,
-  agentParticipantId: string
+  agentParticipantId: string,
+  liveTranscriptAuthorized = false
 ): boolean {
   return (
     isAgentAuthorizedForMedia(meetingNotes, agentParticipantId) ||
-    isAgentAuthorizedForVoice(agentVoice, agentParticipantId)
+    isAgentAuthorizedForVoice(agentVoice, agentParticipantId) ||
+    liveTranscriptAuthorized
   )
 }
 
 export type AgentMediaPurpose =
   | "meeting-notes"
+  | "live-transcript"
   | "voice-reply"
   | "agent-transport"
 
@@ -97,13 +100,18 @@ export function resolveAgentPurposePermission(args: {
   if (args.involvesVideo) return { ok: false, error: "agent_video_forbidden" }
   if (
     args.purpose !== "meeting-notes" &&
+    args.purpose !== "live-transcript" &&
     args.purpose !== "voice-reply" &&
     args.purpose !== "agent-transport"
   )
     return { ok: false, error: "agent_media_purpose_required" }
   if (args.wantsLocalPublish && args.purpose !== "voice-reply")
     return { ok: false, error: "agent_media_direction_forbidden" }
-  if (args.wantsRemoteSubscribe && args.purpose !== "meeting-notes")
+  if (
+    args.wantsRemoteSubscribe &&
+    args.purpose !== "meeting-notes" &&
+    args.purpose !== "live-transcript"
+  )
     return { ok: false, error: "agent_media_direction_forbidden" }
   return { ok: true }
 }

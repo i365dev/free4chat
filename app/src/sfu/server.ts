@@ -880,6 +880,7 @@ export async function handleSfuRequest(
           token,
           sessionId,
           mids: remoteMids,
+          purpose: typeof body.purpose === "string" ? body.purpose : undefined,
         })
         if (!registerResponse.ok) {
           // TOCTOU (Blocker 2): the grant was revoked or reassigned between

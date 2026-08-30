@@ -79,9 +79,13 @@ type BridgeOptions struct {
 	CreateEngine EngineFactory
 	Events       BridgeEvents
 	// Publish configures the outbound voice track (nil = Meeting Notes only).
-	Publish        *PublishConfig
-	PollIntervalMs int
-	Log            func(event string, details map[string]string)
+	Publish *PublishConfig
+	// SubscribePurpose selects the scoped authorization for Human-audio
+	// subscriptions. It is sampled for every subscribe/renegotiate so a Live
+	// Transcript producer never reuses a Meeting Notes permission implicitly.
+	SubscribePurpose func() Purpose
+	PollIntervalMs   int
+	Log              func(event string, details map[string]string)
 	// Now is injectable for deterministic stats tests.
 	Now func() time.Time
 }
@@ -125,9 +129,9 @@ func subscriptionKey(participantID, sessionID, trackName string) string {
 }
 
 // Bridge owns the ONE shared Pion PeerConnection / Cloudflare Agent session
-// serving both grants. Meeting Notes controls Human-audio subscribe/input;
-// Agent Voice controls this Agent's local publish/output. Exactly one session
-// exists whenever EITHER grant is live.
+// serving the independent grants. Meeting Notes and Live Transcript control
+// Human-audio subscribe/input; Agent Voice controls this Agent's local
+// publish/output. Exactly one session exists whenever any grant is live.
 type Bridge struct {
 	options BridgeOptions
 	log     func(event string, details map[string]string)
@@ -375,14 +379,76 @@ func (b *Bridge) resetToStopped() {
 		engine.Close()
 	}
 	for _, sub := range subs {
-		if b.options.Events.OnTrackEnded != nil {
-			b.options.Events.OnTrackEnded(speech.AudioSource{
-				ParticipantID:   sub.participantID,
-				ParticipantName: sub.participantName,
-				TrackName:       sub.trackName,
-			})
+		// Stop is called by Runtime lifecycle paths that may be holding their
+		// own media mutex. Track-ended consumers are allowed to take that
+		// mutex, so teardown must never synchronously re-enter them and deadlock
+		// the leave/restart/shutdown path. The subscription has already been
+		// detached above; this is a best-effort lifecycle notification only.
+		b.notifyTrackEndedAsync(sub)
+	}
+}
+
+// ClearRemoteSubscriptions forgets only remote Human-audio subscriptions.
+// It deliberately leaves the shared PeerConnection and any Agent Voice
+// publication intact. The server closes Live Transcript subscriptions on a
+// Stop/revocation, so retaining their local reservation would suppress the
+// tracks/new call required by a later Live Transcript epoch on this same
+// shared bridge.
+func (b *Bridge) ClearRemoteSubscriptions() {
+	b.mu.Lock()
+	subs := make([]*subscription, 0, len(b.subs))
+	for _, sub := range b.subs {
+		subs = append(subs, sub)
+	}
+	b.subs = make(map[string]*subscription)
+	b.pending = make(map[string]*pendingTrack)
+	b.mu.Unlock()
+
+	for _, sub := range subs {
+		// Only a bound subscription can have started an STT track. Pending
+		// reservations still need clearing so they cannot suppress a retry,
+		// but have no TrackStarted counterpart to end.
+		if sub.mid != "" {
+			b.notifyTrackEnded(sub)
 		}
 	}
+}
+
+// RefreshRemoteSubscriptions performs an immediate discovery pass after a
+// remote-subscription epoch starts or rotates. The regular polling loop is a
+// fallback, not the correctness boundary for the first Live Transcript RTP
+// subscription of a new epoch.
+func (b *Bridge) RefreshRemoteSubscriptions() error {
+	b.mu.Lock()
+	running := !b.stopped && b.engine != nil && b.mySessionID != ""
+	b.mu.Unlock()
+	if !running {
+		return errors.New("bridge_not_running")
+	}
+	return b.poll()
+}
+
+func (b *Bridge) notifyTrackEnded(sub *subscription) {
+	if b.options.Events.OnTrackEnded == nil {
+		return
+	}
+	b.options.Events.OnTrackEnded(speech.AudioSource{
+		ParticipantID:   sub.participantID,
+		ParticipantName: sub.participantName,
+		TrackName:       sub.trackName,
+	})
+}
+
+func (b *Bridge) notifyTrackEndedAsync(sub *subscription) {
+	if b.options.Events.OnTrackEnded == nil {
+		return
+	}
+	source := speech.AudioSource{
+		ParticipantID:   sub.participantID,
+		ParticipantName: sub.participantName,
+		TrackName:       sub.trackName,
+	}
+	go b.options.Events.OnTrackEnded(source)
 }
 
 // Poll discovers Human media and subscribes every audio track exactly once
@@ -427,13 +493,7 @@ func (b *Bridge) reconcileEnded(participants []RoomMediaParticipant) {
 	}
 	b.mu.Unlock()
 	for _, sub := range ended {
-		if b.options.Events.OnTrackEnded != nil {
-			b.options.Events.OnTrackEnded(speech.AudioSource{
-				ParticipantID:   sub.participantID,
-				ParticipantName: sub.participantName,
-				TrackName:       sub.trackName,
-			})
-		}
+		b.notifyTrackEnded(sub)
 	}
 }
 
@@ -473,7 +533,11 @@ func (b *Bridge) subscribe(participant RoomMediaParticipant, trackName string) e
 	}
 	b.mu.Unlock()
 
-	offer, mid, err := b.rest.SubscribeTrack(sessionID, participant.SessionID, trackName, PurposeMeetingNotes)
+	purpose := PurposeMeetingNotes
+	if b.options.SubscribePurpose != nil {
+		purpose = b.options.SubscribePurpose()
+	}
+	offer, mid, err := b.rest.SubscribeTrack(sessionID, participant.SessionID, trackName, purpose)
 	if err != nil {
 		b.dropReservation(key)
 		return err
@@ -490,7 +554,7 @@ func (b *Bridge) subscribe(participant RoomMediaParticipant, trackName string) e
 		return err
 	}
 	if applied == "offer" && answer != nil {
-		if err := b.rest.Renegotiate(sessionID, *answer, PurposeMeetingNotes); err != nil {
+		if err := b.rest.Renegotiate(sessionID, *answer, purpose); err != nil {
 			b.dropReservation(key)
 			return err
 		}

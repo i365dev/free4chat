@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/i365dev/free4chat/agent/internal/media"
 	"github.com/i365dev/free4chat/agent/internal/speech"
@@ -40,49 +39,40 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 
 	previous := r.mediaController
 	r.mediaController = nil
-	previousTranscriber := r.transcriber
-	r.transcriber = nil
+	// A Bridge emits TrackEnded asynchronously during teardown. Invalidate
+	// this controller's callbacks before Stop so they cannot touch the fresh
+	// transcriber installed below after a reload/rejoin.
+	r.mediaGeneration++
+	mediaGeneration := r.mediaGeneration
 	if previous != nil {
 		previous.Stop()
 	}
-	if previousTranscriber != nil {
-		previousTranscriber.Close()
-	}
+	// We already hold mediaMu, so do not route this reset through the
+	// controller callback (which also acquires mediaMu).
+	r.mu.Lock()
+	r.liveTranscript = types.LiveTranscriptInfo{}
+	r.liveTranscriptProducing = false
+	r.mu.Unlock()
 	if siteOrigin == "" {
+		r.replaceTranscriberLocked(speech.Config{})
 		return
 	}
 	handle, err := media.DecodeParticipantHandle(participantHandle)
 	if err != nil {
+		r.replaceTranscriberLocked(speech.Config{})
 		r.log("media_controller_init_failed", map[string]string{
 			"error": "invalid_participant_handle",
 		})
 		return
 	}
 
-	// Transcriber exists only when speech is configured; otherwise Meeting
-	// Notes ingress runs without STT and the grant-activation notice tells
-	// the room once.
-	if speechConfig.STTEnabled {
-		provider := &doubao.SttProvider{APIKey: speechConfig.APIKey}
-		transcriber := speech.NewTranscriber(provider, func(event speech.AttributedSttEvent) {
-			switch event.Event.Type {
-			case "committed":
-				if r.transcript != nil {
-					r.transcript.Record(event.Source, event.Event.Text)
-				}
-				// Safe counter only: transcript TEXT is never logged.
-				r.log("stt_committed", map[string]string{
-					"chars": strconv.Itoa(len(event.Event.Text)),
-				})
-			case "error":
-				if event.Event.Error != nil {
-					r.log("stt_error", map[string]string{
-						"code": event.Event.Error.Code,
-					})
-				}
-			}
-		})
-		r.transcriber = transcriber
+	// One generation is used for both legacy Meeting Notes and Live
+	// Transcript STT. The callback decides the committed-text destination;
+	// it never duplicates a Live segment into the local Meeting Notes store.
+	r.replaceTranscriberLocked(speechConfig)
+	runtimeHostID := ""
+	if host := r.CurrentHostProjection(); host != nil {
+		runtimeHostID = host.RuntimeHostID
 	}
 
 	var voiceConfig *media.VoiceConfig
@@ -100,29 +90,50 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	}
 
 	controller := media.NewController(media.ControllerOptions{
-		Client:        client,
-		RoomID:        roomID,
-		ParticipantID: handle.ParticipantID,
-		SiteOrigin:    siteOrigin,
-		Handle:        handle,
-		Log:           r.log,
+		Client:                    client,
+		RoomID:                    roomID,
+		ParticipantID:             handle.ParticipantID,
+		SiteOrigin:                siteOrigin,
+		Handle:                    handle,
+		RuntimeHostID:             runtimeHostID,
+		RuntimeInstanceID:         r.options.InstanceID,
+		LiveTranscriptCoordinator: r.options.TranscriptProducers,
+		CanProduceLiveTranscript: func() bool {
+			return runtimeHostID != "" && r.providerHandles.Get(roomID, runtimeHostID) != ""
+		},
+		Log: r.log,
 		OnAudioFrame: func(source speech.AudioSource, frame speech.AudioFrame) {
-			if r.transcriber != nil {
-				r.transcriber.AcceptAudio(source, frame)
-			}
+			r.withCurrentMediaGeneration(mediaGeneration, func() {
+				if r.transcriber != nil {
+					r.transcriber.AcceptAudio(source, frame)
+				}
+			})
 		},
 		OnTrackStarted: func(source speech.AudioSource) {
-			if r.transcriber != nil {
-				r.transcriber.TrackStarted(source)
-			}
+			r.withCurrentMediaGeneration(mediaGeneration, func() {
+				if r.transcriber != nil {
+					r.transcriber.TrackStarted(source)
+				}
+			})
 		},
 		OnTrackEnded: func(source speech.AudioSource) {
-			if r.transcriber != nil {
-				r.transcriber.TrackEnded(source)
-			}
+			r.withCurrentMediaGeneration(mediaGeneration, func() {
+				if r.transcriber != nil {
+					r.transcriber.TrackEnded(source)
+				}
+			})
 		},
 		OnGrantActivated: func(kind media.GrantKind) {
-			r.notifySpeechPrerequisite(kind)
+			if r.isCurrentMediaGeneration(mediaGeneration) {
+				r.notifySpeechPrerequisite(kind)
+			}
+		},
+		OnLiveTranscriptState: func(state types.LiveTranscriptInfo, producing bool) {
+			r.setLiveTranscriptProducerForMediaGeneration(
+				mediaGeneration,
+				state,
+				producing,
+			)
 		},
 		Voice: voiceConfig,
 	})
@@ -131,6 +142,23 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	// Non-blocking like the frozen Node reference: the first grant poll must
 	// never gate join()/create() on a room_info round trip.
 	go controller.Start(context.Background())
+}
+
+func (r *ResidentRuntime) withCurrentMediaGeneration(
+	generation uint64,
+	callback func(),
+) {
+	r.mediaMu.Lock()
+	defer r.mediaMu.Unlock()
+	if r.mediaGeneration == generation {
+		callback()
+	}
+}
+
+func (r *ResidentRuntime) isCurrentMediaGeneration(generation uint64) bool {
+	r.mediaMu.Lock()
+	defer r.mediaMu.Unlock()
+	return r.mediaGeneration == generation
 }
 
 // notifySpeechPrerequisite tells the room ONCE per grant activation edge

@@ -52,13 +52,41 @@ function roomFixture(): RoomRecord {
 
 function harness(initial: RoomRecord = roomFixture()) {
   let room = clone(initial)
+  let transcript = {
+    liveTranscript: room.liveTranscript,
+    liveTranscriptSegments: room.liveTranscriptSegments,
+    nextLiveTranscriptEpoch: room.nextLiveTranscriptEpoch,
+    nextTranscriptSequence: room.nextTranscriptSequence,
+  }
+  delete (room as Partial<RoomRecord>).liveTranscript
+  delete (room as Partial<RoomRecord>).liveTranscriptSegments
+  delete (room as Partial<RoomRecord>).nextLiveTranscriptEpoch
+  delete (room as Partial<RoomRecord>).nextTranscriptSequence
   const writes: RoomRecord[] = []
+  const readRoom = (): RoomRecord => clone({ ...room, ...transcript })
+  const replace = (next: RoomRecord) => {
+    const copied = clone(next)
+    transcript = {
+      liveTranscript: copied.liveTranscript,
+      liveTranscriptSegments: copied.liveTranscriptSegments,
+      nextLiveTranscriptEpoch: copied.nextLiveTranscriptEpoch,
+      nextTranscriptSequence: copied.nextTranscriptSequence,
+    }
+    delete (copied as Partial<RoomRecord>).liveTranscript
+    delete (copied as Partial<RoomRecord>).liveTranscriptSegments
+    delete (copied as Partial<RoomRecord>).nextLiveTranscriptEpoch
+    delete (copied as Partial<RoomRecord>).nextTranscriptSequence
+    room = copied
+  }
   const ctx = {
     storage: {
-      get: async () => clone(room),
-      put: async (_key: string, value: RoomRecord) => {
-        room = clone(value)
-        writes.push(clone(value))
+      get: async (key: string) =>
+        clone(key === "live-transcript" ? transcript : room),
+      put: async (key: string, value: unknown) => {
+        if (key === "live-transcript")
+          transcript = clone(value) as typeof transcript
+        else room = clone(value) as typeof room
+        writes.push(readRoom())
       },
       delete: async () => undefined,
       setAlarm: async () => undefined,
@@ -79,10 +107,8 @@ function harness(initial: RoomRecord = roomFixture()) {
   return {
     session,
     writes,
-    room: () => clone(room),
-    replaceRoom: (next: RoomRecord) => {
-      room = clone(next)
-    },
+    room: readRoom,
+    replaceRoom: replace,
   }
 }
 

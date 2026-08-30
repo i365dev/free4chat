@@ -35,6 +35,54 @@ export async function handleRoomRequest(
   // POST-only with participant credentials in headers (never query strings);
   // the DO enforces membership and exact snapshotId match.
   const pathname = new URL(request.url).pathname
+  // Runtime-only control transport for a committed STT result. This is not
+  // an MCP tool and accepts no media identifiers, speaker labels, provider
+  // payloads, or raw audio: the authenticated RoomSession action derives the
+  // speaker from sourceParticipantId and applies epoch/dedup authorization.
+  if (pathname === "/api/room/live-transcript/append") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    let body: {
+      epoch?: unknown
+      segmentId?: unknown
+      sourceParticipantId?: unknown
+      text?: unknown
+    }
+    try {
+      body = (await request.json()) as typeof body
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (
+      typeof body.epoch !== "number" ||
+      !Number.isSafeInteger(body.epoch) ||
+      body.epoch <= 0 ||
+      typeof body.segmentId !== "string" ||
+      typeof body.sourceParticipantId !== "string" ||
+      typeof body.text !== "string"
+    )
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "agent-live-transcript-append",
+        participantId,
+        token,
+        epoch: body.epoch,
+        segmentId: body.segmentId,
+        sourceParticipantId: body.sourceParticipantId,
+        text: body.text,
+      }),
+    })
+  }
+
   if (pathname === "/api/room/surfaces/read") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)

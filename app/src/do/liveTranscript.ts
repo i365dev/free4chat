@@ -8,6 +8,11 @@ import type {
 
 export const NO_LIVE_TRANSCRIPT: LiveTranscriptState = { active: false }
 export const MAX_LIVE_TRANSCRIPT_SEGMENTS = 500
+// Legacy KV-backed Durable Objects limit an individual value to 128 KiB.
+// Committed context lives in its own value, so use a conservative UTF-8
+// serialized budget rather than an unsafe JavaScript character count.
+export const MAX_LIVE_TRANSCRIPT_STORAGE_BYTES = 96 * 1024
+// Compatibility export only; it is not the persistence safety boundary.
 export const MAX_LIVE_TRANSCRIPT_TEXT_CHARS = 64 * 1024
 export const MAX_LIVE_TRANSCRIPT_SEGMENT_TEXT_CHARS = 4_000
 export const MAX_LIVE_TRANSCRIPT_SEGMENT_ID_LENGTH = 128
@@ -82,21 +87,44 @@ function sameSegments(
   )
 }
 
+export function liveTranscriptStorageByteLength({
+  liveTranscript,
+  liveTranscriptSegments,
+  nextLiveTranscriptEpoch,
+  nextTranscriptSequence,
+}: {
+  liveTranscript: LiveTranscriptState
+  liveTranscriptSegments: LiveTranscriptSegment[]
+  nextLiveTranscriptEpoch: number
+  nextTranscriptSequence: number
+}): number {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      liveTranscript,
+      liveTranscriptSegments,
+      nextLiveTranscriptEpoch,
+      nextTranscriptSequence,
+    })
+  ).byteLength
+}
+
 export function boundLiveTranscriptSegments(
-  segments: LiveTranscriptSegment[]
+  segments: LiveTranscriptSegment[],
+  liveTranscript: LiveTranscriptState = NO_LIVE_TRANSCRIPT,
+  nextLiveTranscriptEpoch = 1,
+  nextTranscriptSequence = 1
 ): LiveTranscriptSegment[] {
   const bounded = [...segments]
-  let textLength = bounded.reduce(
-    (total, segment) => total + segment.text.length,
-    0
-  )
   while (
     bounded.length > MAX_LIVE_TRANSCRIPT_SEGMENTS ||
-    textLength > MAX_LIVE_TRANSCRIPT_TEXT_CHARS
+    liveTranscriptStorageByteLength({
+      liveTranscript,
+      liveTranscriptSegments: bounded,
+      nextLiveTranscriptEpoch,
+      nextTranscriptSequence,
+    }) > MAX_LIVE_TRANSCRIPT_STORAGE_BYTES
   ) {
-    const evicted = bounded.shift()
-    if (!evicted) break
-    textLength -= evicted.text.length
+    if (!bounded.shift()) break
   }
   return bounded
 }
@@ -146,12 +174,8 @@ export function normalizeStoredLiveTranscript({
     seenSequences.add(segment.sequence)
     return true
   })
-  const bounded = boundLiveTranscriptSegments(deduplicated)
-  if (!sameSegments(bounded, rawSegments as LiveTranscriptSegment[]))
-    changed = true
-
   const maxEpoch = state.active ? state.epoch : 0
-  const maxSequence = bounded.at(-1)?.sequence ?? 0
+  const maxSequence = deduplicated.at(-1)?.sequence ?? 0
   const normalizedNextEpoch = isSafePositiveInteger(nextLiveTranscriptEpoch)
     ? Math.max(nextLiveTranscriptEpoch, maxEpoch + 1)
     : Math.max(1, maxEpoch + 1)
@@ -160,6 +184,14 @@ export function normalizeStoredLiveTranscript({
     : Math.max(1, maxSequence + 1)
   if (nextLiveTranscriptEpoch !== normalizedNextEpoch) changed = true
   if (nextTranscriptSequence !== normalizedNextSequence) changed = true
+  const bounded = boundLiveTranscriptSegments(
+    deduplicated,
+    state,
+    normalizedNextEpoch,
+    normalizedNextSequence
+  )
+  if (!sameSegments(bounded, rawSegments as LiveTranscriptSegment[]))
+    changed = true
 
   return {
     liveTranscript: state,
@@ -389,10 +421,14 @@ export function appendLiveTranscriptSegment({
   return {
     ok: true,
     duplicate: false,
-    liveTranscriptSegments: boundLiveTranscriptSegments([
-      ...liveTranscriptSegments,
-      segment,
-    ]),
+    liveTranscriptSegments: boundLiveTranscriptSegments(
+      [...liveTranscriptSegments, segment],
+      liveTranscript,
+      // Bound against the exact counter values persisted with this new
+      // segment, before RoomSession mutates the Durable Object state.
+      liveTranscript.epoch + 1,
+      nextTranscriptSequence + 1
+    ),
     nextTranscriptSequence: nextTranscriptSequence + 1,
     segment,
   }

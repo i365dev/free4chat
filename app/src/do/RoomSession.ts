@@ -125,6 +125,9 @@ const MAX_AGENT_SUBSCRIBED_MIDS = 64
 // otherwise dominate scheduleNextAlarm(), since a stuck pending cleanup
 // means RTP may still be flowing to a revoked Agent.
 const MEDIA_CLEANUP_RETRY_MS = 30 * 1000
+// Transcript context is intentionally a separate, bounded legacy-KV value.
+// The primary Room record remains small even in multilingual spoken Rooms.
+const LIVE_TRANSCRIPT_STORAGE_KEY = "live-transcript"
 
 const ROOM_CAPABILITIES: RoomCapabilities = {
   text: true,
@@ -232,6 +235,13 @@ interface StoredRoom
   pendingMediaCleanup?: PendingMediaCleanup[]
   runtimeHostProviders?: unknown
   runtimeHostProviderClaims?: unknown
+}
+
+interface StoredLiveTranscript {
+  liveTranscript?: unknown
+  liveTranscriptSegments?: unknown
+  nextLiveTranscriptEpoch?: unknown
+  nextTranscriptSequence?: unknown
 }
 
 interface AgentWaiter {
@@ -462,6 +472,7 @@ type ControlRequest =
       token: string
       sessionId: string
       mids: string[]
+      purpose?: unknown
     }
   | {
       // Hand-off for the /api/sfu/tracks TOCTOU close-on-reject path
@@ -591,8 +602,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private async loadRoom(): Promise<RoomRecord | null> {
     const stored = await this.ctx.storage.get<StoredRoom>("room")
     if (!stored) return null
-    const normalized = this.normalizeRoom(stored)
-    if (normalized.changed) {
+    const storedTranscript = await this.ctx.storage.get<StoredLiveTranscript>(
+      LIVE_TRANSCRIPT_STORAGE_KEY
+    )
+    const normalized = this.normalizeRoom(stored, storedTranscript)
+    // #203 initially persisted transcript fields inside the primary Room
+    // value. Migrate even valid legacy data on normal load so real STT can
+    // never grow the Room value beyond the legacy KV value limit.
+    if (normalized.changed || !storedTranscript) {
       // A legacy-voice migration may have staged an already-flowing RTP mid.
       // Persist and arm the short cleanup retry before this normalized Room
       // state is ever returned to a caller; do not fetch here, because that
@@ -603,7 +620,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return normalized.room
   }
 
-  private normalizeRoom(stored: StoredRoom): {
+  private normalizeRoom(
+    stored: StoredRoom,
+    storedTranscript?: StoredLiveTranscript
+  ): {
     room: RoomRecord
     changed: boolean
   } {
@@ -755,14 +775,25 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // obsolete active producer closed if its Host/provider/Human lifecycle
     // is no longer genuinely valid. Meeting Notes is deliberately ignored.
     const normalizedLiveTranscript = normalizeStoredLiveTranscript({
-      liveTranscript: stored.liveTranscript,
-      liveTranscriptSegments: stored.liveTranscriptSegments,
-      nextLiveTranscriptEpoch: stored.nextLiveTranscriptEpoch,
-      nextTranscriptSequence: stored.nextTranscriptSequence,
+      liveTranscript: storedTranscript?.liveTranscript ?? stored.liveTranscript,
+      liveTranscriptSegments:
+        storedTranscript?.liveTranscriptSegments ??
+        stored.liveTranscriptSegments,
+      nextLiveTranscriptEpoch:
+        storedTranscript?.nextLiveTranscriptEpoch ??
+        stored.nextLiveTranscriptEpoch,
+      nextTranscriptSequence:
+        storedTranscript?.nextTranscriptSequence ??
+        stored.nextTranscriptSequence,
     })
     if (normalizedLiveTranscript.changed) changed = true
+    // Keep the still-active, storage-normalized state as the revocation
+    // source. `normalizeLiveTranscriptProducer` below can fail it closed;
+    // replacing it with Off before staging would orphan already-flowing RTP.
+    const liveTranscriptBeforeProducerNormalization =
+      normalizedLiveTranscript.liveTranscript
     const normalizedLiveProducer = normalizeLiveTranscriptProducer({
-      liveTranscript: normalizedLiveTranscript.liveTranscript,
+      liveTranscript: liveTranscriptBeforeProducerNormalization,
       participants: Object.values(participants),
       runtimeHosts,
       providers: normalizedRuntimeHostProviders.providers,
@@ -816,6 +847,31 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     })
     if (normalizedGrants.changed) changed = true
     const { meetingNotes, agentVoice } = normalizedGrants
+    if (
+      normalizedLiveProducer.changed &&
+      liveTranscriptBeforeProducerNormalization.active
+    ) {
+      // loadRoom() has no external I/O: stage the exact active producer's
+      // subscribed mids while its Host is still known, then return/persist
+      // Off. This covers AGENT_MEDIA_ENABLED changing true -> false and
+      // stored Host/provider/STT loss after a DO eviction. Meeting Notes may
+      // legitimately share the bridge, so preserve its independent remote
+      // subscription authorization exactly as explicit Stop does.
+      for (const participant of Object.values(participants)) {
+        if (
+          participant.kind === "agent" &&
+          participant.runtimeHostId ===
+            liveTranscriptBeforeProducerNormalization.producerRuntimeHostId &&
+          !isAgentAuthorizedForMedia(meetingNotes, participant.id)
+        ) {
+          pendingMediaCleanup = stageAgentMediaRevocation(
+            participant,
+            pendingMediaCleanup,
+            "subscribed"
+          )
+        }
+      }
+    }
     for (const participant of Object.values(participants)) {
       if (participant.kind !== "agent") continue
       const normalizedAgentMedia = normalizeAgentVoiceParticipantMedia(
@@ -881,7 +937,25 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private async saveRoom(room: RoomRecord): Promise<void> {
-    await this.ctx.storage.put("room", room)
+    const {
+      liveTranscript,
+      liveTranscriptSegments,
+      nextLiveTranscriptEpoch,
+      nextTranscriptSequence,
+      ...storedRoom
+    } = room
+    // Start both storage writes before awaiting. Durable Object storage input
+    // gates keep this mutation isolated, and the output gate withholds a
+    // success response until both bounded values are durable.
+    await Promise.all([
+      this.ctx.storage.put("room", storedRoom),
+      this.ctx.storage.put(LIVE_TRANSCRIPT_STORAGE_KEY, {
+        liveTranscript,
+        liveTranscriptSegments,
+        nextLiveTranscriptEpoch,
+        nextTranscriptSequence,
+      }),
+    ])
   }
 
   private validAttachment(value: unknown): value is RoomAttachment {
@@ -1056,8 +1130,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     room: RoomRecord,
     revocations: AgentMediaRevocationIntent[]
   ): void {
-    for (const { participantId, direction } of revocations)
+    for (const { participantId, direction } of revocations) {
+      const participant = room.participants[participantId]
+      // Legacy Meeting Notes and hidden Live Transcript can temporarily
+      // share one Agent bridge before PR3. Do not close a remote subscription
+      // that the current Live Transcript authorization still independently
+      // permits; Live Transcript stop/invalidation remains its revoker.
+      if (
+        participant &&
+        (direction === "subscribed" || direction === "both") &&
+        this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
+      ) {
+        if (direction === "both")
+          this.stageAgentMediaRevocation(room, participantId, "published")
+        continue
+      }
       this.stageAgentMediaRevocation(room, participantId, direction)
+    }
   }
 
   // A readiness ACK is intentionally conservative: it means at least one
@@ -1125,7 +1214,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.deleteAllSurfaceKeys()
     for (const attachment of room.attachments)
       await this.deleteAttachmentChunks(attachment)
-    await this.ctx.storage.delete("room")
+    await this.ctx.storage.delete(["room", LIVE_TRANSCRIPT_STORAGE_KEY])
     await executeMediaCloseEffects(
       this.env,
       snapshotMediaCloseEffects(pendingClose)
@@ -1226,7 +1315,52 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       providers: room.runtimeHostProviders,
       mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     })
-    if (normalized.changed) room.liveTranscript = normalized.liveTranscript
+    if (normalized.changed) {
+      this.stageLiveTranscriptMediaRevocation(room, room.liveTranscript)
+      room.liveTranscript = normalized.liveTranscript
+    }
+  }
+
+  // The active producer is a Runtime Host, while an SFU session belongs to a
+  // particular Agent participant. On a stop/invalidation, close every
+  // currently tracked Agent session for that Host. In normal operation the
+  // daemon's host lease means exactly one has mids; including every host peer
+  // is deliberately defensive and harmless for members without subscriptions.
+  private stageLiveTranscriptMediaRevocation(
+    room: RoomRecord,
+    liveTranscript = room.liveTranscript
+  ): void {
+    if (!liveTranscript.active) return
+    for (const participant of Object.values(room.participants)) {
+      if (
+        participant.kind === "agent" &&
+        participant.runtimeHostId === liveTranscript.producerRuntimeHostId &&
+        // A deliberately concurrent legacy Meeting Notes grant may use the
+        // same shared bridge while PR3 has not removed that product path.
+        // Its independently authorized subscription must survive a Live
+        // Transcript stop; a later Meeting Notes stop still closes it.
+        !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
+      )
+        this.stageAgentMediaRevocation(room, participant.id, "subscribed")
+    }
+  }
+
+  // Live Transcript admission is intentionally separate from the legacy
+  // Meeting Notes note-taker grant. A public Runtime Host id is never enough:
+  // require this exact authenticated Agent to be a current verified member of
+  // the selected Host's private Human↔Host provider association.
+  private isAgentAuthorizedForLiveTranscriptMedia(
+    room: RoomRecord,
+    participant: RoomParticipant
+  ): boolean {
+    return canAgentAppendLiveTranscript({
+      liveTranscript: room.liveTranscript,
+      caller: participant,
+      participants: Object.values(room.participants),
+      runtimeHosts: room.runtimeHosts,
+      providers: room.runtimeHostProviders,
+      mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+    })
   }
 
   // A true Human departure (explicit leave or expiry) revokes its Room-only
@@ -2143,9 +2277,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
     if (request.action === "agent-media-admit") {
       // #83 review: admission probe for the ONE shared Agent SFU session.
-      // Authorizes on meetingNotes OR voiceReply naming THIS connected
-      // agent; deliberately returns no room/media state — Human media
-      // discovery stays agent-room-media-only (Meeting Notes grant).
+      // Authorizes on Meeting Notes, Agent Voice, OR the exact Live
+      // Transcript producer naming THIS connected agent; deliberately
+      // returns no room/media state — Human media discovery stays
+      // agent-room-media-only.
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
       const participant = this.findParticipant(
@@ -2156,11 +2291,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      const liveTranscriptAuthorized =
+        this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
       if (
         !isAgentAuthorizedForSharedMedia(
           room.meetingNotes,
           room.agentVoice,
-          participant.id
+          participant.id,
+          liveTranscriptAuthorized
         )
       )
         return this.json({ error: "agent_media_not_authorized" }, 403)
@@ -2181,20 +2319,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      const liveTranscriptAuthorized =
+        this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
       // Round 5 (P1): the Worker's authorize() check before creating this
       // Cloudflare session (agent-room-media, in the "agent-session"
       // route) is not enough on its own — that /sessions/new call is
       // external I/O, during which the Human could Stop or reassign
-      // Meeting Notes. Re-check the CURRENT grant here and refuse to
+      // Meeting Notes/Live Transcript. Re-check the CURRENT grant here and refuse to
       // attach — never mutate the participant into a new active media
       // session — if it's no longer valid. #83 review: the shared session
-      // is admissible under EITHER independent grant (meetingNotes OR
-      // voiceReply) naming this agent; this check admits transport only.
+      // is admissible under any independent Meeting Notes, Agent Voice, or
+      // Live Transcript grant naming this agent; this check admits transport only.
       if (
         !isAgentAuthorizedForSharedMedia(
           room.meetingNotes,
           room.agentVoice,
-          participant.id
+          participant.id,
+          liveTranscriptAuthorized
         )
       )
         return this.json({ error: "meeting_notes_not_authorized" }, 403)
@@ -2241,18 +2382,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
-      // The real authorization boundary: this agent must be the one
-      // Human-selected note-taker for an *active* Meeting Notes grant on
-      // this room. Holding a valid agent participant token is necessary
-      // but never sufficient — an ordinary text-only agent that joined
-      // the room but was never granted the Meeting Notes role is rejected
-      // here even though its token is perfectly valid. AGENT_MEDIA_ENABLED
+      // The real authorization boundary: this agent must be the
+      // Human-selected Meeting Notes note-taker OR the exact verified
+      // Runtime Host producer for active Live Transcript. Holding a valid
+      // agent participant token is necessary but never sufficient — an
+      // ordinary text-only agent that joined the room is rejected here even
+      // though its token is perfectly valid. AGENT_MEDIA_ENABLED
       // (sfu/server.ts) is an additional, coarser master switch on top of
       // this — off, it blocks everyone regardless of any room grant; on,
       // it still requires this per-room, per-agent grant to actually see
       // Human media. Setting it alone was never meant to be sufficient.
-      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
-        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (
+        !isAgentAuthorizedForMedia(room.meetingNotes, participant.id) &&
+        !this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
+      )
+        return this.json({ error: "agent_media_not_authorized" }, 403)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -2296,8 +2440,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
-      if (!isAgentAuthorizedForMedia(room.meetingNotes, participant.id))
-        return this.json({ error: "meeting_notes_not_authorized" }, 403)
+      if (
+        request.purpose !== "meeting-notes" &&
+        request.purpose !== "live-transcript"
+      )
+        return this.json({ error: "agent_media_purpose_required" }, 403)
+      const liveTranscriptAuthorized =
+        this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
+      if (
+        (request.purpose === "meeting-notes" &&
+          !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)) ||
+        (request.purpose === "live-transcript" && !liveTranscriptAuthorized)
+      )
+        return this.json({ error: "agent_media_not_authorized" }, 403)
       if (!participant.media)
         return this.json({ error: "media_unavailable" }, 400)
       const mids = request.mids.filter(
@@ -2460,6 +2615,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant,
       })
       this.stageMediaGrantRevocations(room, grantTransition.revocations)
+      if (
+        room.liveTranscript.active &&
+        participant.runtimeHostId === room.liveTranscript.producerRuntimeHostId
+      )
+        this.stageAgentMediaRevocation(room, participant.id, "subscribed")
       const departingSurface = participant.surface
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
@@ -2513,6 +2673,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // subscriptions via cached identifiers after Stop/reassignment. Human
       // authorization is completely unaffected.
       if (participant.kind === "agent") {
+        const liveTranscriptAuthorized =
+          this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
         // #83 fail-closed direction matrix: every agent media request must
         // carry an explicit narrow purpose; meeting-notes unlocks ONLY
         // remote Human-audio subscribe, voice-reply ONLY local single
@@ -2543,6 +2705,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           !isAgentAuthorizedForMedia(room.meetingNotes, participant.id)
         )
           return this.json({ error: "meeting_notes_not_authorized" }, 403)
+        if (request.purpose === "live-transcript" && !liveTranscriptAuthorized)
+          return this.json({ error: "live_transcript_not_authorized" }, 403)
         if (
           request.purpose === "voice-reply" &&
           !isAgentAuthorizedForVoice(room.agentVoice, participant.id)
@@ -2557,7 +2721,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           !isAgentAuthorizedForSharedMedia(
             room.meetingNotes,
             room.agentVoice,
-            participant.id
+            participant.id,
+            liveTranscriptAuthorized
           )
         )
           return this.json({ error: "agent_media_not_authorized" }, 403)
@@ -3157,6 +3322,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "leave") {
       this.clearAgentVoiceReadiness(room)
+      if (
+        room.liveTranscript.active &&
+        room.liveTranscript.startedByHumanParticipantId === participant.id
+      )
+        this.stageLiveTranscriptMediaRevocation(room)
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
@@ -3164,6 +3334,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.saveRoom(room)
       await this.broadcastState(room)
       await this.scheduleNextAlarm(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
       socket.close(1000, "Left room")
       return
     }
@@ -3242,10 +3413,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "live-transcript-stop") {
       // Privacy failsafe: every authenticated current Human may stop the
       // Room-wide transcript, regardless of producer ownership/readiness.
+      this.stageLiveTranscriptMediaRevocation(room)
       room.liveTranscript = stopLiveTranscript(room.liveTranscript)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
+      await this.attemptCleanupNow(room.pendingMediaCleanup)
       return
     }
     if (message.type === "meeting-notes-start") {
@@ -3834,6 +4007,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           participant,
         })
         this.stageMediaGrantRevocations(room, grantTransition.revocations)
+        if (
+          expiredAgent &&
+          room.liveTranscript.active &&
+          participant.runtimeHostId ===
+            room.liveTranscript.producerRuntimeHostId
+        )
+          this.stageAgentMediaRevocation(room, participant.id, "subscribed")
+        if (
+          expiredHuman &&
+          room.liveTranscript.active &&
+          room.liveTranscript.startedByHumanParticipantId === participant.id
+        )
+          this.stageLiveTranscriptMediaRevocation(room)
         // #111: lease-expired agents lose their surface with them; chunk
         // deletion happens after the sweep is persisted (below).
         if (participant.surface)

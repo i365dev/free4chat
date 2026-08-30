@@ -226,6 +226,7 @@ type fakeRest struct {
 	roomMediaReturn        []RoomMediaParticipant
 	roomMediaErr           error
 	subscribeKeys          []string
+	subscribePurposes      []Purpose
 	subscribeDesc          Description
 	subscribeMid           string
 	midSequence            []string
@@ -278,6 +279,7 @@ func (f *fakeRest) RoomMedia() ([]RoomMediaParticipant, error) {
 func (f *fakeRest) SubscribeTrack(sessionID, remoteSessionID, trackName string, purpose Purpose) (Description, string, error) {
 	f.mu.Lock()
 	f.subscribeKeys = append(f.subscribeKeys, remoteSessionID+":"+trackName)
+	f.subscribePurposes = append(f.subscribePurposes, purpose)
 	mid := f.subscribeMid
 	if len(f.midSequence) > 0 {
 		mid = f.midSequence[0]
@@ -326,6 +328,12 @@ func (f *fakeRest) snapshotSubscribes() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.subscribeKeys...)
+}
+
+func (f *fakeRest) snapshotSubscribePurposes() []Purpose {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Purpose(nil), f.subscribePurposes...)
 }
 
 func (f *fakeRest) snapshotRoomMediaCalls() int {
@@ -593,6 +601,57 @@ func TestBridgeReconcileEndedEmitsTrackEnded(t *testing.T) {
 	rest.mu.Unlock()
 	if err := bridge.poll(); err != nil {
 		t.Fatalf("poll: %v", err)
+	}
+}
+
+func TestBridgeStopWithActiveSubscriptionDoesNotSynchronouslyBlockTrackEndConsumer(t *testing.T) {
+	engine := newFakeEngine()
+	rest := newFakeRest()
+	rest.roomMediaReturn = []RoomMediaParticipant{{
+		ParticipantID: "human", Name: "Ada", SessionID: "human-session",
+		Tracks: []RoomTrack{{TrackName: "mic", Kind: "audio"}},
+	}}
+	var mediaMu sync.Mutex
+	trackEnded := make(chan struct{}, 1)
+	options := testBridgeOptions(engine, rest, nil)
+	options.Events.OnTrackEnded = func(speech.AudioSource) {
+		// This mirrors ResidentRuntime's TrackEnded callback: it takes the
+		// media lifecycle mutex. Stop must not synchronously re-enter it.
+		mediaMu.Lock()
+		defer mediaMu.Unlock()
+		trackEnded <- struct{}{}
+	}
+	bridge := NewBridge(options)
+	if err := bridge.Start(t.Context()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer bridge.Stop()
+	waitController(t, time.Second, func() bool {
+		return len(rest.snapshotSubscribes()) == 1
+	}, "active Human subscription")
+	// Bind the subscription so teardown genuinely emits TrackEnded.
+	engine.emitTrack("0", CodecInfo{MimeType: "audio/opus", ClockRate: 48000, Channels: 2})
+
+	mediaMu.Lock()
+	stopped := make(chan struct{})
+	go func() {
+		bridge.Stop()
+		close(stopped)
+	}()
+	completed := false
+	select {
+	case <-stopped:
+		completed = true
+	case <-time.After(time.Second):
+	}
+	mediaMu.Unlock()
+	if !completed {
+		t.Fatal("Bridge.Stop synchronously blocked on OnTrackEnded")
+	}
+	select {
+	case <-trackEnded:
+	case <-time.After(time.Second):
+		t.Fatal("active subscription did not emit TrackEnded after teardown")
 	}
 }
 
