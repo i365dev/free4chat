@@ -42,8 +42,8 @@ describe("buildAgentInvitePrompt bootstrap contract", () => {
     )
   })
 
-  it("keeps provider-claim bootstrap dormant until its Runtime release activates", () => {
-    expect(RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED).toBe(false)
+  it("enables provider-claim bootstrap after its Runtime release activates", () => {
+    expect(RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED).toBe(true)
     const ordinary = buildAgentInvitePrompt("room-176")
     expect(ordinary).not.toContain("--provider-claim")
 
