@@ -354,6 +354,122 @@ describe("useSfuChatRoom room attachments (#123)", () => {
     return rendered
   }
 
+  function publishAgentVoice(
+    ws: RecordingWebSocket,
+    sessionId = "agent-session"
+  ) {
+    act(() =>
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "trackPublished",
+          participant: {
+            id: "agent-b",
+            name: "Agent B",
+            kind: "agent",
+            sessionId,
+            track: { trackName: "agent-voice", kind: "audio" },
+          },
+        }),
+      })
+    )
+  }
+
+  function resyncAgentVoice(ws: RecordingWebSocket, sessionId?: string) {
+    act(() =>
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 0,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: sessionId
+              ? [
+                  {
+                    id: "agent-b",
+                    name: "Agent B",
+                    kind: "agent",
+                    connected: true,
+                    joinedAt: 0,
+                    lastSeenAt: 0,
+                    media: {
+                      sessionId,
+                      muted: false,
+                      fileChannelReady: false,
+                      tracks: [{ trackName: "agent-voice", kind: "audio" }],
+                    },
+                  },
+                ]
+              : [],
+            messages: [],
+            meetingNotes: { active: false },
+            meetingNotesMediaAvailable: true,
+            agentVoice: sessionId
+              ? { "agent-b": { enabled: true, enabledAt: 1 } }
+              : {},
+            agentVoiceMediaAvailable: true,
+          },
+        }),
+      })
+    )
+  }
+
+  function remoteTrackCallCount() {
+    return fetchMock.mock.calls.filter(([input, init]) => {
+      if (!String(input).endsWith("/api/sfu/tracks")) return false
+      const body = JSON.parse((init?.body as string | undefined) ?? "{}") as {
+        tracks?: Array<{ location?: string }>
+      }
+      return body.tracks?.[0]?.location === "remote"
+    }).length
+  }
+
+  function readyMessages(ws: RecordingWebSocket) {
+    return ws.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .filter((message) => message.type === "agent-voice-ready")
+  }
+
+  function installAgentVoiceTrackResponses(responses: Array<object>) {
+    let attempts = 0
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks")) {
+          const body = JSON.parse(
+            (init?.body as string | undefined) ?? "{}"
+          ) as { tracks?: Array<{ location?: string }> }
+          if (body.tracks?.[0]?.location === "remote") {
+            const response = responses[attempts] ?? responses.at(-1) ?? {}
+            attempts += 1
+            return jsonResponse(response)
+          }
+        }
+        return jsonResponse({})
+      }
+    )
+    return () => attempts
+  }
+
+  const usableAgentVoiceTrackResponse = {
+    requiresImmediateRenegotiation: true,
+    sessionDescription: { type: "offer", sdp: "fake-sfu-offer" },
+    tracks: [{ mid: "7", trackName: "agent-voice" }],
+  }
+
+  const noSdpAgentVoiceTrackResponse = {
+    requiresImmediateRenegotiation: false,
+    tracks: [{ mid: "7", trackName: "agent-voice" }],
+  }
+
   function makeLogFile() {
     return new File(["line"], "app.log", { type: "" })
   }
@@ -832,6 +948,228 @@ describe("useSfuChatRoom room attachments (#123)", () => {
     expect(JSON.stringify(diagnostics)).not.toContain(
       "secret-sdp-fetch-failure"
     )
+    unmount()
+  })
+
+  it("retries a successful no-SDP Agent audio response and ACKs once after negotiation", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined)
+    const trackAttempts = installAgentVoiceTrackResponses([
+      noSdpAgentVoiceTrackResponse,
+      usableAgentVoiceTrackResponse,
+    ])
+    const { unmount } = await connect("room-agent-no-sdp-retry")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+
+    publishAgentVoice(ws)
+    await waitFor(() => expect(trackAttempts()).toBe(1))
+    expect(readyMessages(ws)).toEqual([])
+
+    await waitFor(() => expect(trackAttempts()).toBe(2))
+    expect(remoteTrackCallCount()).toBe(2)
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/sfu/renegotiate")
+      )
+    ).toHaveLength(1)
+    expect(readyMessages(ws)).toHaveLength(1)
+    expect(readyMessages(ws)[0]).toMatchObject({
+      agentParticipantId: "agent-b",
+      sessionId: "agent-session",
+      trackName: "agent-voice",
+    })
+    expect(
+      info.mock.calls.map(([message]) => String(message)).join("\n")
+    ).toContain("agent_audio_subscription_retry_scheduled")
+    unmount()
+  })
+
+  it("cancels a pending no-SDP retry when the Agent publication disappears", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined)
+    const trackAttempts = installAgentVoiceTrackResponses([
+      noSdpAgentVoiceTrackResponse,
+      usableAgentVoiceTrackResponse,
+    ])
+    const { unmount } = await connect("room-agent-no-sdp-disappear")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+
+    publishAgentVoice(ws)
+    await waitFor(() => expect(trackAttempts()).toBe(1))
+
+    resyncAgentVoice(ws)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(trackAttempts()).toBe(1)
+    expect(readyMessages(ws)).toEqual([])
+    expect(
+      info.mock.calls.map(([message]) => String(message)).join("\n")
+    ).toContain("agent_audio_subscription_retry_cancelled")
+    unmount()
+  })
+
+  it("cancels P1's pending retry when P2 replaces the Agent audio publication", async () => {
+    const trackAttempts = installAgentVoiceTrackResponses([
+      noSdpAgentVoiceTrackResponse,
+      usableAgentVoiceTrackResponse,
+    ])
+    const { unmount } = await connect("room-agent-no-sdp-replacement")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+
+    publishAgentVoice(ws, "agent-session-p1")
+    await waitFor(() => expect(trackAttempts()).toBe(1))
+
+    publishAgentVoice(ws, "agent-session-p2")
+    await waitFor(() => expect(trackAttempts()).toBe(2))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    expect(trackAttempts()).toBe(2)
+    expect(readyMessages(ws)).toHaveLength(1)
+    expect(readyMessages(ws)[0]).toMatchObject({
+      sessionId: "agent-session-p2",
+    })
+    unmount()
+  })
+
+  it("keeps one no-SDP retry chain while Room state resyncs", async () => {
+    const trackAttempts = installAgentVoiceTrackResponses([
+      noSdpAgentVoiceTrackResponse,
+      usableAgentVoiceTrackResponse,
+    ])
+    const { unmount } = await connect("room-agent-no-sdp-dedup")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+
+    publishAgentVoice(ws)
+    await waitFor(() => expect(trackAttempts()).toBe(1))
+
+    resyncAgentVoice(ws, "agent-session")
+    expect(trackAttempts()).toBe(1)
+    await waitFor(() => expect(trackAttempts()).toBe(2))
+
+    expect(trackAttempts()).toBe(2)
+    expect(readyMessages(ws)).toHaveLength(1)
+    unmount()
+  })
+
+  it("leaves exhausted Agent audio retry state recoverable by a later resync", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined)
+    const trackAttempts = installAgentVoiceTrackResponses([
+      noSdpAgentVoiceTrackResponse,
+      noSdpAgentVoiceTrackResponse,
+      noSdpAgentVoiceTrackResponse,
+      usableAgentVoiceTrackResponse,
+    ])
+    const { unmount } = await connect("room-agent-no-sdp-exhausted")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const ws = RecordingWebSocket.instances.at(-1)!
+
+    publishAgentVoice(ws)
+    await waitFor(() => expect(trackAttempts()).toBe(3))
+
+    expect(trackAttempts()).toBe(3)
+    expect(readyMessages(ws)).toEqual([])
+    expect(
+      info.mock.calls.map(([message]) => String(message)).join("\n")
+    ).toContain("agent_audio_subscription_retry_exhausted")
+
+    resyncAgentVoice(ws, "agent-session")
+    await waitFor(() => expect(trackAttempts()).toBe(4))
+    expect(readyMessages(ws)).toHaveLength(1)
+    unmount()
+  })
+
+  it("drops an in-flight retry from a stale Human media session before ACKing", async () => {
+    let sessionAttempts = 0
+    let remoteTrackAttempts = 0
+    const remoteSubscriberSessionIds: string[] = []
+    let resolveRetryTracks!: (response: Response) => void
+    const pendingRetryTracks = new Promise<Response>((resolve) => {
+      resolveRetryTracks = resolve
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session")) {
+          sessionAttempts += 1
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: `human-session-${sessionAttempts}`,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        }
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks")) {
+          const body = JSON.parse(
+            (init?.body as string | undefined) ?? "{}"
+          ) as {
+            sessionId?: string
+            tracks?: Array<{ location?: string }>
+          }
+          if (body.tracks?.[0]?.location !== "remote") return jsonResponse({})
+          remoteTrackAttempts += 1
+          remoteSubscriberSessionIds.push(body.sessionId ?? "")
+          if (remoteTrackAttempts === 1)
+            return jsonResponse(noSdpAgentVoiceTrackResponse)
+          if (remoteTrackAttempts === 2) return pendingRetryTracks
+          return jsonResponse(usableAgentVoiceTrackResponse)
+        }
+        return jsonResponse({})
+      }
+    )
+
+    const { unmount } = await connect("room-agent-no-sdp-stale-media")
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
+    )
+    const oldPc = FakePeerConnection.instances.at(-1)!
+    const oldSetRemoteDescription = vi.spyOn(oldPc, "setRemoteDescription")
+    const oldWs = RecordingWebSocket.instances.at(-1)!
+
+    publishAgentVoice(oldWs)
+    await waitFor(() => expect(remoteTrackAttempts).toBe(2))
+
+    oldPc.connectionState = "disconnected"
+    act(() => oldPc.onconnectionstatechange?.())
+    await waitFor(() => expect(sessionAttempts).toBe(2))
+
+    // The reconnect's local publication is queued behind the old retry, so
+    // resolve the latter only after the new Human session has replaced it.
+    resolveRetryTracks(await jsonResponse(usableAgentVoiceTrackResponse))
+    await waitFor(() =>
+      expect(RecordingWebSocket.instances.length).toBeGreaterThan(1)
+    )
+    const newWs = RecordingWebSocket.instances.at(-1)!
+
+    expect(oldSetRemoteDescription).not.toHaveBeenCalled()
+    expect(readyMessages(newWs)).toEqual([])
+
+    resyncAgentVoice(newWs, "agent-session")
+    await waitFor(() => expect(remoteTrackAttempts).toBe(3))
+    await waitFor(() => expect(readyMessages(newWs)).toHaveLength(1))
+
+    expect(remoteSubscriberSessionIds).toEqual([
+      "human-session-1",
+      "human-session-1",
+      "human-session-2",
+    ])
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/sfu/renegotiate")
+      )
+    ).toHaveLength(1)
     unmount()
   })
 
