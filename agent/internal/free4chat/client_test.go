@@ -160,6 +160,52 @@ func TestJoinRoomAndLifecycleCalls(t *testing.T) {
 	}
 }
 
+func TestRuntimeProviderCredentialsStayOnPrivateMCPWire(t *testing.T) {
+	const claimHash = "KPvm-f4hBdYhSjdaYF_67xqPZx7BiiAXvMo1U_8l44w"
+	const providerHandle = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+	var captured []map[string]any
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		switch toolNameOf(body) {
+		case "":
+			respondToolsList(w)
+		case "join_room":
+			captured = append(captured, toolArgs(body))
+			writeJSON(w, callResult(map[string]any{
+				"participantHandle":     "participant-handle",
+				"participant":           map[string]any{"id": "agent"},
+				"cursor":                float64(0),
+				"expiresAt":             float64(99),
+				"runtimeProviderHandle": providerHandle,
+			}))
+		case "update_runtime_host":
+			captured = append(captured, toolArgs(body))
+			writeJSON(w, callResult(map[string]any{"ok": true}))
+		default:
+			writeJSON(w, callResult(map[string]any{}))
+		}
+	})
+	host := types.RuntimeHostProjection{RuntimeHostID: "host-176-provider", Speech: types.HostSpeechReadiness{STT: true}}
+	joined, err := client.JoinRoomWithRuntimeProvider("room-176", "Pi", nil, &host, claimHash, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.RuntimeProviderHandle != providerHandle {
+		t.Fatal("provider handle was not parsed privately")
+	}
+	if err := client.UpdateRuntimeHostWithRuntimeProvider(joined.ParticipantHandle, host, providerHandle); err != nil {
+		t.Fatal(err)
+	}
+	if len(captured) != 2 || captured[0]["providerClaimHash"] != claimHash {
+		t.Fatalf("claim hash missing from private join wire: %#v", captured)
+	}
+	if _, present := captured[0]["runtimeProviderHandle"]; present {
+		t.Fatal("claim redemption must not send an existing provider handle")
+	}
+	if captured[1]["runtimeProviderHandle"] != providerHandle {
+		t.Fatal("provider proof missing from update wire")
+	}
+}
+
 // #165: explicit targets ride the existing send_text tool arguments only
 // when present; the ordinary unaddressed payload must stay byte-compatible.
 func TestSendTextCarriesExplicitTargets(t *testing.T) {

@@ -14,7 +14,10 @@ import HumanCapabilitiesEditor from "./HumanCapabilitiesEditor"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
-import { buildAgentInvitePrompt } from "../common/agentInvite"
+import {
+  buildAgentInvitePrompt,
+  RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED,
+} from "../common/agentInvite"
 import { createCollabAnalyticsTracker } from "../common/collabAnalytics"
 import type { UserInfo } from "../common/types"
 import {
@@ -151,6 +154,7 @@ export default function RoomContent({
     stopMeetingNotes,
     agentVoiceMediaAvailable,
     setAgentVoice,
+    createRuntimeProviderClaim,
     localParticipantId,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
@@ -463,8 +467,14 @@ export default function RoomContent({
 
   const copyAgentInvite = () => {
     if (typeof window === "undefined") return
-    void navigator.clipboard
-      .writeText(buildAgentInvitePrompt(roomName))
+    void (
+      RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED
+        ? createRuntimeProviderClaim().then(({ providerClaimSecret }) =>
+            buildAgentInvitePrompt(roomName, { providerClaimSecret })
+          )
+        : Promise.resolve(buildAgentInvitePrompt(roomName))
+    )
+      .then((invite) => navigator.clipboard.writeText(invite))
       .then(() => {
         trackAnalyticsEvent("AgentInviteCopied", {
           surface: "room",

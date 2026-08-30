@@ -6,6 +6,7 @@ import {
   validateRoomAttachmentRead,
   validateUploadedRoomAttachment,
 } from "@common/roomAttachments"
+import { createRuntimeProviderClaim as createRuntimeProviderCredential } from "@common/runtimeProviderCredential"
 import { ActionType, Message, UserInfo } from "@common/types"
 import {
   MAX_COLLAB_ATTACHMENT_REFS,
@@ -223,6 +224,7 @@ interface SfuServerMessage {
     | "message"
     | "expired"
     | "error"
+    | "runtime-provider-claim-created"
   state?: SfuRoomState
   participant?: Partial<SfuParticipant> & {
     track?: SfuTrack
@@ -232,6 +234,8 @@ interface SfuServerMessage {
   }
   message?: SfuMessage
   error?: string
+  requestId?: string
+  expiresAt?: number
 }
 
 const roomMessageToMessage = (
@@ -307,6 +311,17 @@ export function useSfuChatRoom(
   // without issuing a second tracks/new request. In-flight or failed keys
   // never enter this set and therefore can never ACK early.
   const readySubscribedTracksRef = useRef(new Set<string>())
+  const pendingRuntimeProviderClaimsRef = useRef(
+    new Map<
+      string,
+      {
+        providerClaimSecret: string
+        resolve: (value: { providerClaimSecret: string }) => void
+        reject: (error: Error) => void
+        timeout: ReturnType<typeof setTimeout>
+      }
+    >()
+  )
   const pendingRemoteTrackRef = useRef<{
     peerId: string
     kind: "audio" | "video"
@@ -1348,11 +1363,35 @@ export function useSfuChatRoom(
         )
         setConnectionStatus("failed")
       } else if (message.type === "error") {
+        // A provider-claim request has no optimistic success path. Reject
+        // any pending private claim immediately instead of letting its raw
+        // browser-local secret sit around until the timeout.
+        for (const pending of pendingRuntimeProviderClaimsRef.current.values()) {
+          clearTimeout(pending.timeout)
+          pending.reject(new Error("Room provider claim was rejected"))
+        }
+        pendingRuntimeProviderClaimsRef.current.clear()
         setError(message.error || "SFU room error")
+      } else if (
+        message.type === "runtime-provider-claim-created" &&
+        message.requestId
+      ) {
+        const pending = pendingRuntimeProviderClaimsRef.current.get(
+          message.requestId
+        )
+        if (!pending) return
+        pendingRuntimeProviderClaimsRef.current.delete(message.requestId)
+        clearTimeout(pending.timeout)
+        pending.resolve({ providerClaimSecret: pending.providerClaimSecret })
       }
     }
     socket.onerror = () => socket.close()
     socket.onclose = () => {
+      for (const pending of pendingRuntimeProviderClaimsRef.current.values()) {
+        clearTimeout(pending.timeout)
+        pending.reject(new Error("Room control connection closed"))
+      }
+      pendingRuntimeProviderClaimsRef.current.clear()
       if (closingRef.current) return
       if (socket !== websocketRef.current) return
       setConnectionStatus("reconnecting")
@@ -1910,6 +1949,42 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // Phase B stays dormant in production until the matching Runtime release is
+  // activated. When enabled, create the raw secret locally, send only its
+  // derived claim hash via the authenticated Room WebSocket, and release the
+  // raw value to the explicit invite solely after the Room ACKs it.
+  const createRuntimeProviderClaim = useCallback(async (): Promise<{
+    providerClaimSecret: string
+  }> => {
+    const credential = await createRuntimeProviderCredential(roomName)
+    const requestId = crypto.randomUUID()
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        const pending = pendingRuntimeProviderClaimsRef.current.get(requestId)
+        if (!pending) return
+        pendingRuntimeProviderClaimsRef.current.delete(requestId)
+        reject(new Error("Room provider claim was not acknowledged"))
+      }, 5_000)
+      pendingRuntimeProviderClaimsRef.current.set(requestId, {
+        providerClaimSecret: credential.providerClaimSecret,
+        resolve,
+        reject,
+        timeout,
+      })
+      if (
+        !sendSocketMessage({
+          type: "runtime-provider-claim-create",
+          requestId,
+          providerClaimHash: credential.providerClaimHash,
+        })
+      ) {
+        pendingRuntimeProviderClaimsRef.current.delete(requestId)
+        clearTimeout(timeout)
+        reject(new Error("Room control connection is unavailable"))
+      }
+    })
+  }, [roomName, sendSocketMessage])
+
   const sendFileMessage = useCallback(
     async (file: File) => {
       const send = async () => {
@@ -2049,5 +2124,6 @@ export function useSfuChatRoom(
     agentVoice,
     agentVoiceMediaAvailable,
     setAgentVoice,
+    createRuntimeProviderClaim,
   }
 }

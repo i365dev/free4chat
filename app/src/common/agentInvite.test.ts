@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 
-import { buildAgentInvitePrompt } from "./agentInvite"
+import {
+  buildAgentInvitePrompt,
+  RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED,
+} from "./agentInvite"
 
 describe("buildAgentInvitePrompt bootstrap contract", () => {
   it("requires exact local version matching before a fresh Invite joins", () => {
@@ -37,5 +40,19 @@ describe("buildAgentInvitePrompt bootstrap contract", () => {
     expect(buildAgentInvitePrompt("room-169")).toContain(
       "Replacing an on-disk binary does not replace an already-running old daemon"
     )
+  })
+
+  it("keeps provider-claim bootstrap dormant until its Runtime release activates", () => {
+    expect(RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED).toBe(false)
+    const ordinary = buildAgentInvitePrompt("room-176")
+    expect(ordinary).not.toContain("--provider-claim")
+
+    const claim = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    const activated = buildAgentInvitePrompt("room-176", {
+      providerClaimSecret: claim,
+    })
+    expect(activated).toContain("--provider-claim")
+    expect(activated).toContain(JSON.stringify(claim))
+    expect(activated).toContain("never log, display")
   })
 })

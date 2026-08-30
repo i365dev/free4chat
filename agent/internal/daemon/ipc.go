@@ -48,14 +48,17 @@ func NewID() string {
 
 // IpcRequest is one newline-delimited IPC operation.
 type IpcRequest struct {
-	Op                  string            `json:"op"`
-	Room                string            `json:"room,omitempty"`
-	Name                string            `json:"name,omitempty"`
-	Agent               string            `json:"agent,omitempty"`
-	AgentCommand        string            `json:"agentCommand,omitempty"`
-	AgentArgs           []string          `json:"agentArgs,omitempty"`
-	InstanceID          string            `json:"instanceId,omitempty"`
-	Capabilities        []string          `json:"capabilities,omitempty"`
+	Op           string   `json:"op"`
+	Room         string   `json:"room,omitempty"`
+	Name         string   `json:"name,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
+	AgentCommand string   `json:"agentCommand,omitempty"`
+	AgentArgs    []string `json:"agentArgs,omitempty"`
+	InstanceID   string   `json:"instanceId,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	// ProviderClaim is a one-time opaque 256-bit capability accepted only by
+	// join. It is never copied into a response, status, workspace, or log.
+	ProviderClaim       string            `json:"providerClaim,omitempty"`
 	TargetParticipantID string            `json:"targetParticipantId,omitempty"`
 	RequestID           string            `json:"requestId,omitempty"`
 	Decision            string            `json:"decision,omitempty"`

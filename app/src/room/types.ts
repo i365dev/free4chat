@@ -49,6 +49,29 @@ export interface RuntimeHostProjection {
   speech: { stt: boolean; tts: boolean }
 }
 
+// #176 Phase B: private durable verification material for the explicit
+// Human-to-Runtime-Host association. This is RoomRecord-only storage; never
+// send it in RoomState, room_info, Harness context, logs, or diagnostics.
+export interface RuntimeHostProviderAssociation {
+  humanParticipantId: string
+  claimedAt: number
+  providerHandleHash: string
+}
+
+// Browser-safe projection for future Human-facing feature admission. Both ids
+// are already Room-scoped/public; neither a claim nor provider capability is.
+export interface RuntimeHostProviderPublicAssociation {
+  humanParticipantId: string
+  claimedAt: number
+}
+
+// One-time claim bookkeeping only. `claimHash` is the map key and remains
+// server-private because it is redemption-capable until consumed or expired.
+export interface PendingRuntimeHostProviderClaim {
+  humanParticipantId: string
+  expiresAt: number
+}
+
 export interface AgentCapabilities {
   text: true
   // #106 Phase A: the capability tokens this Agent explicitly chose to
@@ -217,6 +240,9 @@ export interface RoomState {
   // #176 Phase A: one readiness projection per Runtime Host id (see
   // RoomRecord.runtimeHosts).
   runtimeHosts?: Record<string, RuntimeHostProjection>
+  // #176 Phase B: explicit Room-scoped Human ↔ Runtime Host associations.
+  // The corresponding claim/provider-handle material is server-private.
+  runtimeHostProviders?: Record<string, RuntimeHostProviderPublicAssociation>
   messages: RoomMessage[]
   meetingNotes: MeetingNotesState
   // Whether the server-side Meeting Notes media capability (the
@@ -250,6 +276,11 @@ export interface RoomRecord {
   // Runtime Host id, shared by all same-host Agents. Garbage-collected when
   // no participant references the host anymore.
   runtimeHosts?: Record<string, RuntimeHostProjection>
+  // Server-private Phase B authorization state. `runtimeHostProviders`
+  // retains only a one-way provider handle hash; claims are hash-keyed and
+  // short-lived. Neither is copied into RoomState.
+  runtimeHostProviders?: Record<string, RuntimeHostProviderAssociation>
+  runtimeHostProviderClaims?: Record<string, PendingRuntimeHostProviderClaim>
   messages: RoomMessage[]
   attachments: RoomAttachment[]
   nextMessageSequence: number

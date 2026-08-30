@@ -15,6 +15,7 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/daemon"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
+	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
 const maxAttachmentBytes = attachments.MaxAttachmentBytes
@@ -24,8 +25,8 @@ const mcpEndpointDefault = "https://www.free4.chat/mcp"
 
 func usageText() string {
 	return `Usage:
-  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
-  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
+  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
+  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
   free4chat-agent create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
   free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
@@ -141,18 +142,23 @@ func run(args []string) error {
 		name := option(rest, "--name")
 		agent := option(rest, "--agent")
 		agentCommand := option(rest, "--agent-command")
+		providerClaim := option(rest, "--provider-claim")
+		if providerClaim != "" && !types.ValidRuntimeProviderCredential(providerClaim) {
+			return errors.New("invalid runtime provider claim")
+		}
 		if room == "" || name == "" || (agent == "" && agentCommand == "") ||
 			(agent != "" && agentCommand != "") {
 			return errUsage()
 		}
 		return runViaDaemon(&daemon.IpcRequest{
-			Op:           "join",
-			Room:         room,
-			Name:         name,
-			Agent:        agent,
-			AgentCommand: agentCommand,
-			AgentArgs:    repeatedOption(rest, "--agent-arg"),
-			Capabilities: repeatedOption(rest, "--capability"),
+			Op:            "join",
+			Room:          room,
+			Name:          name,
+			Agent:         agent,
+			AgentCommand:  agentCommand,
+			AgentArgs:     repeatedOption(rest, "--agent-arg"),
+			Capabilities:  repeatedOption(rest, "--capability"),
+			ProviderClaim: providerClaim,
 		})
 
 	case "create":
