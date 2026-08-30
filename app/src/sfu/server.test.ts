@@ -881,6 +881,74 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     })
   })
 
+  it("compensates the exact newly-created local Agent Voice mid when post-create registration is rejected", async () => {
+    const closeBodies: Array<Record<string, unknown>> = []
+    fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (String(url).endsWith("/tracks/close")) {
+        closeBodies.push(JSON.parse(init?.body as string))
+        return new Response("", { status: 200 })
+      }
+      return Response.json({ tracks: [{ mid: "local-mid" }] })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const actions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      actions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      if (body.action === "agent-track-published")
+        return { status: 403, body: { error: "voice_reply_not_authorized" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const response = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+
+    expect(response.status).toBe(403)
+    expect(closeBodies).toEqual([
+      { tracks: [{ mid: "local-mid" }], force: true },
+    ])
+    expect(
+      actions.some((action) => action.action === "agent-media-cleanup-pending")
+    ).toBe(false)
+  })
+
+  it("hands off the exact local Agent Voice mid for durable cleanup when compensation cannot confirm", async () => {
+    fetchMock = vi.fn(async (url: unknown) => {
+      if (String(url).endsWith("/tracks/close"))
+        return new Response("", { status: 500 })
+      return Response.json({ tracks: [{ mid: "local-mid" }] })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    const actions: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      actions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      if (body.action === "agent-track-published")
+        return { status: 403, body: { error: "voice_reply_not_authorized" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const response = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(voiceReplyTracksBody([localAudio])),
+      }),
+      env
+    )
+
+    expect(response.status).toBe(403)
+    expect(actions).toContainEqual({
+      action: "agent-media-cleanup-pending",
+      sessionId: "sess-1",
+      mids: ["local-mid"],
+    })
+  })
+
   it("confirms an already-booked Agent publication only after Cloudflare reports it active", async () => {
     const roomActions: Array<Record<string, unknown>> = []
     fetchMock.mockResolvedValueOnce(

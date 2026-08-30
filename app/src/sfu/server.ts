@@ -1,7 +1,7 @@
 import type { SfuSessionResponse, SfuTrack } from "./types"
 import { isAllowedOrigin } from "../common/origin"
+import { compensateUnacceptedAgentMedia } from "../do/mediaEffects"
 import { resolveAgentPurposePermission } from "../do/meetingNotesAuth"
-import { closeRealtimeTracks } from "../do/realtimeMedia"
 import type { RoomSession } from "../do/RoomSession"
 
 const MAX_ROOM_LENGTH = 64
@@ -839,16 +839,17 @@ export async function handleSfuRequest(
           announce: false,
         })
         if (!registered.ok) {
-          const closed = await closeRealtimeTracks(env, sessionId, [
-            publishedMid,
-          ])
-          if (!closed) {
-            await roomControl(env, room, {
-              action: "agent-media-cleanup-pending",
-              sessionId,
-              mids: [publishedMid],
-            })
-          }
+          await compensateUnacceptedAgentMedia(
+            env,
+            { sessionId, mids: [publishedMid] },
+            async (effect) => {
+              await roomControl(env, room, {
+                action: "agent-media-cleanup-pending",
+                sessionId: effect.sessionId,
+                mids: effect.mids,
+              })
+            }
+          )
           return registered
         }
       }
@@ -886,28 +887,26 @@ export async function handleSfuRequest(
           // created the subscription upstream, so it must be actively
           // closed rather than left untracked and unrevocable. Never report
           // the original upstream success to the Agent in this case.
-          const closed = await closeRealtimeTracks(env, sessionId, remoteMids)
-          if (!closed) {
-            // The abort-path close itself didn't confirm — hand the mids to
-            // RoomSession's pending-cleanup/retry mechanism rather than
-            // losing track of them. Its result is not ignored: a failure
-            // here means this specific untracked subscription may never
-            // get retried, which is worth surfacing even though the Agent
-            // still correctly receives the original registration failure
-            // either way (never the stale Cloudflare success).
-            const queued = await roomControl(env, room, {
-              action: "agent-media-cleanup-pending",
-              sessionId,
-              mids: remoteMids,
-            })
-            if (!queued.ok) {
-              console.error(
-                "meeting_notes_cleanup_handoff_failed",
-                room,
-                sessionId
-              )
+          await compensateUnacceptedAgentMedia(
+            env,
+            { sessionId, mids: remoteMids },
+            async (effect) => {
+              // The abort-path close itself didn't confirm — hand only its
+              // unresolved mids to RoomSession's durable retry authority.
+              const queued = await roomControl(env, room, {
+                action: "agent-media-cleanup-pending",
+                sessionId: effect.sessionId,
+                mids: effect.mids,
+              })
+              if (!queued.ok) {
+                console.error(
+                  "meeting_notes_cleanup_handoff_failed",
+                  room,
+                  effect.sessionId
+                )
+              }
             }
-          }
+          )
           return registerResponse
         }
       }
