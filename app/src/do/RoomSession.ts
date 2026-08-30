@@ -13,19 +13,27 @@ import {
   type CollabEventInput,
 } from "./collab"
 import {
+  normalizeAgentVoiceParticipantMedia,
+  normalizeMediaGrants,
+  transitionAgentVoiceForRuntimeHostUpdate,
+  transitionAgentVoiceSet,
+  transitionMediaGrantsForParticipantDeparture,
+  transitionMeetingNotesStart,
+  transitionMeetingNotesStop,
+  type AgentMediaRevocationIntent,
+} from "./mediaGrantTransitions"
+export { normalizeAgentVoiceParticipantMedia as normalizeAgentParticipantMedia } from "./mediaGrantTransitions"
+import {
   agentMediaPermissions,
-  clearGrantIfParticipantDeparting,
   isAgentAuthorizedForMedia,
   isAgentAuthorizedForSharedMedia,
   isAgentAuthorizedForVoice,
   NO_MEETING_NOTES,
   resolveAgentPurposePermission,
-  startMeetingNotes,
 } from "./meetingNotesAuth"
 import {
   closeRealtimeTracks,
   isHumanAudioTrackTarget,
-  MAX_PENDING_CLEANUP_ENTRIES,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
   removeConfirmedMids,
@@ -38,8 +46,6 @@ import {
   normalizeRuntimeHosts,
   projectRuntimeHosts,
   registerRuntimeHost,
-  runtimeHostForParticipant,
-  runtimeHostParticipantIds,
   updateRuntimeHost,
   validateRuntimeHost,
 } from "./runtimeHost"
@@ -54,7 +60,6 @@ import {
 } from "./surface"
 import type {
   AgentCapabilities,
-  AgentVoiceState,
   AgentEvent,
   RoomCapabilities,
   RoomAttachment,
@@ -478,45 +483,6 @@ type ClientMessage =
       trackName: string
     }
 
-/** Storage hygiene for one Agent participant's published voice media. A
- * current per-participant grant is required to retain its revocation handle;
- * every other shape is stripped fail closed on load. */
-export function normalizeAgentParticipantMedia(
-  media: RoomParticipant["media"],
-  agentVoice: AgentVoiceState,
-  participantId: string
-): { media: RoomParticipant["media"]; changed: boolean } {
-  if (!media) return { media, changed: false }
-  const tracks = Array.isArray(media.tracks) ? media.tracks : []
-  const publishedMid =
-    typeof media.agentPublishedMid === "string" &&
-    media.agentPublishedMid.length > 0
-      ? media.agentPublishedMid
-      : undefined
-  const pendingTrackName =
-    typeof media.agentPublishedTrackName === "string" &&
-    media.agentPublishedTrackName.length > 0
-      ? media.agentPublishedTrackName
-      : undefined
-  const authorized =
-    isAgentAuthorizedForVoice(agentVoice, participantId) &&
-    publishedMid !== undefined &&
-    ((tracks.length === 1 && tracks[0]!.kind === "audio") ||
-      (tracks.length === 0 && pendingTrackName !== undefined))
-  if (authorized) return { media, changed: false }
-  if (
-    tracks.length === 0 &&
-    publishedMid === undefined &&
-    pendingTrackName === undefined
-  )
-    return { media, changed: false }
-  const next: RoomParticipant["media"] = { ...media, tracks: [] }
-  if (publishedMid !== undefined) delete next.agentPublishedMid
-  if (pendingTrackName !== undefined) delete next.agentPublishedTrackName
-  delete next.agentVoiceReady
-  return { media: next, changed: true }
-}
-
 export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
   // short-lived reservation while the request refreshes its lease.
@@ -712,25 +678,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       : []
     if (!Array.isArray(stored.attachments)) changed = true
 
-    let meetingNotes: MeetingNotesState
-    if (this.validMeetingNotes(stored.meetingNotes)) {
-      meetingNotes = stored.meetingNotes
-    } else {
-      meetingNotes = NO_MEETING_NOTES
-      changed = true
-    }
-    if (
-      meetingNotes.active &&
-      (!meetingNotes.agentParticipantId ||
-        participants[meetingNotes.agentParticipantId]?.kind !== "agent")
-    ) {
-      // The selected note-taker no longer exists (left, expired, or the
-      // stored grant was pointing at a participant that was never an
-      // agent) — a stale grant must not silently keep authorizing media.
-      meetingNotes = NO_MEETING_NOTES
-      changed = true
-    }
-
     let pendingMediaCleanup: PendingMediaCleanup[]
     if (this.validPendingMediaCleanup(stored.pendingMediaCleanup)) {
       pendingMediaCleanup = stored.pendingMediaCleanup
@@ -761,16 +708,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         changed = true
       }
     }
-    const normalizedAgentVoice = this.normalizeAgentVoice(
-      stored.agentVoice,
+    const normalizedGrants = normalizeMediaGrants({
+      meetingNotes: stored.meetingNotes,
+      agentVoice: stored.agentVoice,
       participants,
-      runtimeHosts
-    )
-    if (normalizedAgentVoice.changed) changed = true
-    const agentVoice = normalizedAgentVoice.agentVoice
+      runtimeHosts,
+    })
+    if (normalizedGrants.changed) changed = true
+    const { meetingNotes, agentVoice } = normalizedGrants
     for (const participant of Object.values(participants)) {
       if (participant.kind !== "agent") continue
-      const normalizedAgentMedia = normalizeAgentParticipantMedia(
+      const normalizedAgentMedia = normalizeAgentVoiceParticipantMedia(
         participant.media,
         agentVoice,
         participant.id
@@ -796,56 +744,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       },
       changed,
     }
-  }
-
-  private validMeetingNotes(value: unknown): value is MeetingNotesState {
-    if (!value || typeof value !== "object") return false
-    const candidate = value as Partial<MeetingNotesState>
-    if (typeof candidate.active !== "boolean") return false
-    if (!candidate.active) return true
-    return (
-      typeof candidate.agentParticipantId === "string" &&
-      candidate.agentParticipantId.length > 0 &&
-      typeof candidate.startedAt === "number"
-    )
-  }
-
-  private normalizeAgentVoice(
-    value: unknown,
-    participants: Record<string, RoomParticipant>,
-    runtimeHosts: Record<string, RuntimeHostProjection>
-  ): { agentVoice: AgentVoiceState; changed: boolean } {
-    const raw =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, unknown>)
-        : {}
-    let changed = raw !== value
-    const agentVoice: AgentVoiceState = {}
-    for (const [participantId, rawGrant] of Object.entries(raw)) {
-      const participant = participants[participantId]
-      const host = participant
-        ? runtimeHostForParticipant(runtimeHosts, participant)
-        : undefined
-      const grant = rawGrant as Partial<AgentVoiceState[string]> | null
-      const valid =
-        participant?.kind === "agent" &&
-        participant.connected &&
-        host?.speech.tts === true &&
-        Boolean(grant) &&
-        grant?.enabled === true &&
-        typeof grant.enabledAt === "number" &&
-        Number.isFinite(grant.enabledAt) &&
-        grant.enabledAt > 0
-      if (!valid) {
-        changed = true
-        continue
-      }
-      agentVoice[participantId] = {
-        enabled: true,
-        enabledAt: grant.enabledAt!,
-      }
-    }
-    return { agentVoice, changed }
   }
 
   private legacyVoiceParticipantId(value: unknown): string | undefined {
@@ -1035,6 +933,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       room.pendingMediaCleanup,
       direction
     )
+  }
+
+  // The media-grant domain decides *which* participant/direction must be
+  // revoked. RoomSession remains the sole owner of the established staging
+  // bookkeeping and its persist-before-effect ordering.
+  private stageMediaGrantRevocations(
+    room: RoomRecord,
+    revocations: AgentMediaRevocationIntent[]
+  ): void {
+    for (const { participantId, direction } of revocations)
+      this.stageAgentMediaRevocation(room, participantId, direction)
   }
 
   // A readiness ACK is intentionally conservative: it means at least one
@@ -1681,9 +1590,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
       const host = validated.runtimeHost
       // Canonical Room model (#176): upsert ONE readiness projection per host
-      // id, shared by all same-host Agents. The domain transition supplies
-      // the previous projection; Voice revocation remains an effect owned by
-      // this RoomSession command path.
+      // id, shared by all same-host Agents. Agent Voice consumes the
+      // resulting Runtime Host transition as an explicit pure grant decision.
       const runtimeHostTransition = updateRuntimeHost(
         room.runtimeHosts,
         Object.values(room.participants),
@@ -1692,28 +1600,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       room.runtimeHosts = runtimeHostTransition.runtimeHosts
       participant.runtimeHostId = host.runtimeHostId
-      const revokeVoice = (candidate: RoomParticipant) => {
-        if (!room.agentVoice[candidate.id]) return
-        delete room.agentVoice[candidate.id]
-        this.stageAgentMediaRevocation(room, candidate.id, "published")
-      }
-      if (
-        runtimeHostTransition.previousHostId &&
-        runtimeHostTransition.previousHostId !== host.runtimeHostId
-      )
-        revokeVoice(participant)
-      if (
-        runtimeHostTransition.previousProjection?.speech.tts === true &&
-        host.speech.tts === false
-      )
-        for (const candidateId of runtimeHostParticipantIds(
-          Object.values(room.participants),
-          host.runtimeHostId,
-          participant.id
-        )) {
-          const candidate = room.participants[candidateId]
-          if (candidate?.kind === "agent") revokeVoice(candidate)
-        }
+      const voiceTransition = transitionAgentVoiceForRuntimeHostUpdate({
+        agentVoice: room.agentVoice,
+        participants: Object.values(room.participants),
+        participant,
+        currentHost: host,
+        previousHostId: runtimeHostTransition.previousHostId,
+        previousProjection: runtimeHostTransition.previousProjection,
+      })
+      room.agentVoice = voiceTransition.agentVoice
+      this.stageMediaGrantRevocations(room, voiceTransition.revocations)
       // Re-projection may move this participant to a new host id: collect
       // the previously referenced host if nothing else uses it.
       room.runtimeHosts = garbageCollectRuntimeHosts(
@@ -2202,18 +2098,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // attempted (round 4) — stage the mutation, persist it, then only
       // afterward attempt the actual close against a fresh reload. See
       // stageAgentMediaRevocation/attemptCleanupNow's own comments.
-      this.stageAgentMediaRevocation(room, participant.id)
+      const grantTransition = transitionMediaGrantsForParticipantDeparture({
+        meetingNotes: room.meetingNotes,
+        agentVoice: room.agentVoice,
+        participant,
+      })
+      this.stageMediaGrantRevocations(room, grantTransition.revocations)
       const departingSurface = participant.surface
       delete room.participants[participant.id]
       room.runtimeHosts = garbageCollectRuntimeHosts(
         room.runtimeHosts,
         Object.values(room.participants)
       )
-      room.meetingNotes = clearGrantIfParticipantDeparting(
-        room.meetingNotes,
-        participant.id
-      )
-      delete room.agentVoice[participant.id]
+      room.meetingNotes = grantTransition.meetingNotes
+      room.agentVoice = grantTransition.agentVoice
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       // #111: no surface history survives departure — chunks die after the
@@ -2616,16 +2514,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ ok: true })
     }
 
+    const grantTransition = transitionMediaGrantsForParticipantDeparture({
+      meetingNotes: room.meetingNotes,
+      agentVoice: room.agentVoice,
+      participant,
+    })
     delete room.participants[participant.id]
     room.runtimeHosts = garbageCollectRuntimeHosts(
       room.runtimeHosts,
       Object.values(room.participants)
     )
-    room.meetingNotes = clearGrantIfParticipantDeparting(
-      room.meetingNotes,
-      participant.id
-    )
-    delete room.agentVoice[participant.id]
+    room.meetingNotes = grantTransition.meetingNotes
+    room.agentVoice = grantTransition.agentVoice
     this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
     await this.broadcastState(room)
@@ -2900,65 +2800,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     if (message.type === "meeting-notes-start") {
-      // The room-visible grant must never be able to claim "active" in an
-      // environment where the master switch is off — every actual Runtime
-      // media request would 403 regardless, and the browser must not show
-      // "Listening" for a capability that cannot possibly be delivered.
-      if (this.env.AGENT_MEDIA_ENABLED !== "true") {
-        socket.send(
-          JSON.stringify({
-            type: "error",
-            error: "meeting_notes_media_disabled",
-          })
-        )
+      const transition = transitionMeetingNotesStart({
+        meetingNotes: room.meetingNotes,
+        participants: room.participants,
+        pendingMediaCleanup: room.pendingMediaCleanup,
+        agentMediaEnabled: this.env.AGENT_MEDIA_ENABLED === "true",
+        agentParticipantId: message.agentParticipantId,
+        now: Date.now(),
+      })
+      if (transition.ok === false) {
+        socket.send(JSON.stringify({ type: "error", error: transition.error }))
         return
       }
-      const agent = room.participants[message.agentParticipantId]
-      if (!agent || agent.kind !== "agent" || !agent.connected) {
-        socket.send(
-          JSON.stringify({ type: "error", error: "agent_not_in_room" })
-        )
-        return
-      }
-      // Idempotence hardening (round 5): a duplicate/replayed Start for the
-      // *same* agent that is already the active note-taker must not
-      // generate a new grant epoch (MeetingNotesState.startedAt) —
-      // MeetingNotesController (agent-runtime) treats an epoch change as
-      // "the server already closed the previous session, tear down and
-      // rebuild the bridge", so a spurious epoch bump here would cause an
-      // unnecessary teardown/restart even though nothing actually changed.
-      // A genuine Stop -> Start for the same agent still gets a fresh
-      // epoch below, since meetingNotes.active is false in between. Reuses
-      // isAgentAuthorizedForMedia's exact predicate — "is this agent
-      // already the active grant holder" is the same question either way.
-      if (isAgentAuthorizedForMedia(room.meetingNotes, agent.id)) {
+      // A duplicate/replayed Start for the active note-taker preserves its
+      // original grant epoch, so the Runtime keeps its existing bridge.
+      if (transition.idempotent) {
         socket.send(
           JSON.stringify({ type: "state", state: this.stateFor(room) })
         )
         return
       }
-      // Refuse *new* Agent media work while the cleanup backlog is already
-      // at capacity (round 4) — see agent-track-subscribed's own comment.
-      if (room.pendingMediaCleanup.length >= MAX_PENDING_CLEANUP_ENTRIES) {
-        socket.send(
-          JSON.stringify({
-            type: "error",
-            error: "agent_media_cleanup_backlog",
-          })
-        )
-        return
-      }
-      const previousAgentId = room.meetingNotes.agentParticipantId
-      room.meetingNotes = startMeetingNotes(agent.id, Date.now())
-      // Reassignment (A -> B): A's already-established Human->Agent
-      // subscriptions must be torn down, not merely left to expire on its
-      // own lease — but only those: A may still hold an independent active
-      // voiceReply grant whose publication must survive this trigger.
-      // Revocation must be durable *before* any Cloudflare fetch is
-      // attempted — stage, persist, only then attempt the close against a
-      // fresh reload.
-      if (previousAgentId && previousAgentId !== agent.id)
-        this.stageAgentMediaRevocation(room, previousAgentId, "subscribed")
+      room.meetingNotes = transition.meetingNotes
+      this.stageMediaGrantRevocations(room, transition.revocations)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -2966,13 +2829,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     if (message.type === "meeting-notes-stop") {
-      const previousAgentId = room.meetingNotes.agentParticipantId
-      room.meetingNotes = NO_MEETING_NOTES
-      // Directional revocation (#83): a Meeting Notes stop closes only the
-      // stopped grant's Human->Agent subscriptions — never an independent
-      // voiceReply publication the same agent may still hold.
-      if (previousAgentId)
-        this.stageAgentMediaRevocation(room, previousAgentId, "subscribed")
+      const transition = transitionMeetingNotesStop(room.meetingNotes)
+      room.meetingNotes = transition.meetingNotes
+      this.stageMediaGrantRevocations(room, transition.revocations)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
@@ -3032,54 +2891,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         socket.send(JSON.stringify({ type: "error", error: "human_only" }))
         return
       }
-      const agent = room.participants[message.agentParticipantId]
-      if (message.enabled) {
-        const host = agent
-          ? runtimeHostForParticipant(room.runtimeHosts, agent)
-          : undefined
-        if (
-          this.env.AGENT_MEDIA_ENABLED !== "true" ||
-          !agent ||
-          agent.kind !== "agent" ||
-          !agent.connected ||
-          host?.speech.tts !== true
-        ) {
-          socket.send(
-            JSON.stringify({ type: "error", error: "voice_unavailable" })
-          )
-          return
-        }
-        // Idempotent enable preserves the epoch and avoids an unnecessary
-        // Runtime publication restart.
-        if (!isAgentAuthorizedForVoice(room.agentVoice, agent.id)) {
-          // Fast-fail before giving the Runtime a new local publication
-          // authorization. The /tracks authorize preflight below is the
-          // authoritative TOCTOU check immediately before Cloudflare work;
-          // this control-path check simply keeps a backpressured Room muted.
-          const sessionId = agent.media?.sessionId ?? ""
-          if (
-            !pendingCleanupHasCapacity(room.pendingMediaCleanup, sessionId, 1)
-          ) {
-            socket.send(
-              JSON.stringify({
-                type: "error",
-                error: "agent_media_cleanup_backlog",
-              })
-            )
-            return
-          }
-          room.agentVoice[agent.id] = { enabled: true, enabledAt: Date.now() }
-        }
-      } else if (room.agentVoice[message.agentParticipantId]) {
-        delete room.agentVoice[message.agentParticipantId]
-        // Stop only this Agent's outbound publication; Meeting Notes and
-        // every other Agent's independent voice authorization survive.
-        this.stageAgentMediaRevocation(
-          room,
-          message.agentParticipantId,
-          "published"
-        )
+      const transition = transitionAgentVoiceSet({
+        agentVoice: room.agentVoice,
+        participants: room.participants,
+        runtimeHosts: room.runtimeHosts,
+        pendingMediaCleanup: room.pendingMediaCleanup,
+        agentMediaEnabled: this.env.AGENT_MEDIA_ENABLED === "true",
+        agentParticipantId: message.agentParticipantId,
+        enabled: message.enabled,
+        now: Date.now(),
+      })
+      if (transition.ok === false) {
+        socket.send(JSON.stringify({ type: "error", error: transition.error }))
+        return
       }
+      room.agentVoice = transition.agentVoice
+      this.stageMediaGrantRevocations(room, transition.revocations)
       // This is presence/authorization state only: no RoomMessage, sequence
       // increment, or Agent waiter wakeup.
       await this.saveRoom(room)
@@ -3552,7 +3379,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (expiredHuman || expiredAgent) {
         // Synchronous staging only here — no Cloudflare fetch is attempted
         // until after this whole sweep is persisted below (round 4).
-        if (expiredAgent) this.stageAgentMediaRevocation(room, id)
+        const grantTransition = transitionMediaGrantsForParticipantDeparture({
+          meetingNotes: room.meetingNotes,
+          agentVoice: room.agentVoice,
+          participant,
+        })
+        this.stageMediaGrantRevocations(room, grantTransition.revocations)
         // #111: lease-expired agents lose their surface with them; chunk
         // deletion happens after the sweep is persisted (below).
         if (participant.surface)
@@ -3565,11 +3397,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           room.runtimeHosts,
           Object.values(room.participants)
         )
-        room.meetingNotes = clearGrantIfParticipantDeparting(
-          room.meetingNotes,
-          id
-        )
-        delete room.agentVoice[id]
+        room.meetingNotes = grantTransition.meetingNotes
+        room.agentVoice = grantTransition.agentVoice
         changed = true
         const waiter = this.agentWaiters.get(id)
         if (waiter) {
