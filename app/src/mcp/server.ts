@@ -31,6 +31,9 @@ const runtimeHostSchema = z.object({
     .regex(/^[A-Za-z0-9._:-]{8,64}$/),
   speech: z.object({ stt: z.boolean(), tts: z.boolean() }),
 })
+// 256-bit base64url opaque capability values. The MCP boundary validates the
+// shape but never logs, projects, or includes either value in room_info.
+const runtimeProviderCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
 
 const MCP_HOSTNAMES = [
   "free4.chat",
@@ -205,9 +208,18 @@ function createMcpServer(context: McpRequestContext) {
           .max(MAX_CAPABILITIES)
           .optional(),
         runtimeHost: runtimeHostSchema.optional(),
+        providerClaimHash: runtimeProviderCredentialSchema.optional(),
+        runtimeProviderHandle: runtimeProviderCredentialSchema.optional(),
       },
     },
-    async ({ roomId, name, capabilities, runtimeHost }) => {
+    async ({
+      roomId,
+      name,
+      capabilities,
+      runtimeHost,
+      providerClaimHash,
+      runtimeProviderHandle,
+    }) => {
       if (!(await allowJoin(env, context.requestInfo)))
         return toolError("rate_limited")
       const participantId = crypto.randomUUID()
@@ -228,6 +240,8 @@ function createMcpServer(context: McpRequestContext) {
             ...(normalized.length > 0 ? { advertised: normalized } : {}),
           },
           ...(runtimeHost ? { runtimeHost } : {}),
+          ...(providerClaimHash ? { providerClaimHash } : {}),
+          ...(runtimeProviderHandle ? { runtimeProviderHandle } : {}),
         },
       })
       if (!result.ok)
@@ -236,6 +250,14 @@ function createMcpServer(context: McpRequestContext) {
             ? "invalid_capabilities"
             : controlError(result)
         )
+      const returnedProviderHandle = runtimeProviderCredentialSchema.safeParse(
+        result.data.runtimeProviderHandle
+      )
+      if (
+        result.data.runtimeProviderHandle !== undefined &&
+        returnedProviderHandle.success === false
+      )
+        return toolError("runtime_provider_handle_invalid")
       return toolResult({
         participant: result.data.participant,
         participantHandle: encodeHandle({
@@ -245,6 +267,9 @@ function createMcpServer(context: McpRequestContext) {
         }),
         cursor: result.data.cursor,
         expiresAt: result.data.expiresAt,
+        ...(returnedProviderHandle.success
+          ? { runtimeProviderHandle: returnedProviderHandle.data }
+          : {}),
       })
     }
   )
@@ -370,9 +395,10 @@ function createMcpServer(context: McpRequestContext) {
       inputSchema: {
         participantHandle: z.string().min(1),
         runtimeHost: runtimeHostSchema,
+        runtimeProviderHandle: runtimeProviderCredentialSchema.optional(),
       },
     },
-    async ({ participantHandle, runtimeHost }) => {
+    async ({ participantHandle, runtimeHost, runtimeProviderHandle }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
       const result = await roomControl(env, handle.room, {
@@ -380,6 +406,7 @@ function createMcpServer(context: McpRequestContext) {
         participantId: handle.participantId,
         token: handle.participantToken,
         runtimeHost,
+        ...(runtimeProviderHandle ? { runtimeProviderHandle } : {}),
       })
       return result.ok
         ? toolResult(result.data)

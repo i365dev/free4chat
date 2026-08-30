@@ -53,6 +53,16 @@ import {
   validateRuntimeHost,
 } from "./runtimeHost"
 import {
+  createRuntimeHostProviderClaim,
+  garbageCollectRuntimeHostProviders,
+  markRuntimeHostProviderMember,
+  normalizeRuntimeHostProviders,
+  projectRuntimeHostProviders,
+  redeemRuntimeHostProviderClaim,
+  removeRuntimeHostProviderForHuman,
+  verifyRuntimeHostProviderProof,
+} from "./runtimeHostProvider"
+import {
   SURFACE_CHUNK_SIZE,
   SURFACE_KEY_PREFIX,
   deleteSurfaceChunksBestEffort,
@@ -61,6 +71,11 @@ import {
   surfaceChunkKey,
   swapSurfaceAfterPersist,
 } from "./surface"
+import {
+  createRuntimeProviderHandle,
+  hashRuntimeProviderHandle,
+  isRuntimeProviderClaimHash,
+} from "../common/runtimeProviderCredential"
 import type {
   AgentCapabilities,
   AgentEvent,
@@ -185,6 +200,8 @@ interface StoredRoom
     | "meetingNotes"
     | "agentVoice"
     | "pendingMediaCleanup"
+    | "runtimeHostProviders"
+    | "runtimeHostProviderClaims"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
@@ -195,6 +212,8 @@ interface StoredRoom
   voiceReply?: unknown
   agentVoice?: unknown
   pendingMediaCleanup?: PendingMediaCleanup[]
+  runtimeHostProviders?: unknown
+  runtimeHostProviderClaims?: unknown
 }
 
 interface AgentWaiter {
@@ -288,7 +307,12 @@ type ControlRequest =
       participant: Omit<
         RoomParticipant,
         "connected" | "lastSeenAt" | "runtimeHostId"
-      > & { runtimeHost?: RuntimeHostProjection }
+      > & {
+        runtimeHost?: RuntimeHostProjection
+        // Private registration material; never persisted on the participant.
+        providerClaimHash?: string
+        runtimeProviderHandle?: string
+      }
     }
   | {
       // #51: atomic CREATE-ONLY room creation. The DO refuses when any room
@@ -337,6 +361,7 @@ type ControlRequest =
       participantId: string
       token: string
       runtimeHost: RuntimeHostProjection
+      runtimeProviderHandle?: string
     }
   | {
       // #106 Phase B: one structured collaboration envelope. The request kind
@@ -484,6 +509,14 @@ type ClientMessage =
       agentParticipantId: string
       sessionId: string
       trackName: string
+    }
+  | {
+      // Browser-generated raw claim secrets never enter this message. The
+      // server stores only the derived hash after authenticating the Human
+      // from the WebSocket attachment.
+      type: "runtime-provider-claim-create"
+      requestId: string
+      providerClaimHash: string
     }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
@@ -672,6 +705,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const participantId of normalizedRuntimeHosts.danglingParticipantIds)
       delete participants[participantId].runtimeHostId
     if (normalizedRuntimeHosts.changed) changed = true
+    // #176 Phase B: provider claims/handles are separate from Phase-A
+    // discovery projection. Loading deterministically expires claims and
+    // drops bindings whose Human or Host no longer exists, never exposing
+    // their private hash material to a Room projection.
+    const normalizedRuntimeHostProviders = normalizeRuntimeHostProviders({
+      providers: stored.runtimeHostProviders,
+      pendingClaims: stored.runtimeHostProviderClaims,
+      runtimeHosts,
+      participants: Object.values(participants),
+      now: Date.now(),
+    })
+    if (normalizedRuntimeHostProviders.changed) changed = true
 
     if (stored.nextMessageSequence !== nextMessageSequence) changed = true
     const attachments = Array.isArray(stored.attachments)
@@ -738,6 +783,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         expiresAt: stored.expiresAt,
         participants,
         runtimeHosts,
+        runtimeHostProviders: normalizedRuntimeHostProviders.providers,
+        runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
         attachments,
         nextMessageSequence,
@@ -873,6 +920,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         }),
       // #176 Phase A: one readiness projection per Runtime Host id.
       runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
+      // #176 Phase B: only the Human ↔ Host association is browser-visible;
+      // claim hashes and provider-handle hashes remain in RoomRecord only.
+      runtimeHostProviders: projectRuntimeHostProviders(
+        room.runtimeHostProviders
+      ),
       messages: room.messages,
       meetingNotes: room.meetingNotes,
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
@@ -1082,7 +1134,40 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // long the room happens to stay quiet.
     if (room.pendingMediaCleanup.length > 0)
       deadlines.push(Date.now() + MEDIA_CLEANUP_RETRY_MS)
+    for (const claim of Object.values(room.runtimeHostProviderClaims ?? {}))
+      deadlines.push(claim.expiresAt)
     await this.ctx.storage.setAlarm(Math.min(...deadlines))
+  }
+
+  // Runtime Host projection garbage collection and provider-association
+  // garbage collection are coupled deliberately: a provider capability for a
+  // Host that no longer exists must never survive to authorize a future host.
+  private garbageCollectRuntimeHostAuthorization(room: RoomRecord): void {
+    room.runtimeHosts = garbageCollectRuntimeHosts(
+      room.runtimeHosts,
+      Object.values(room.participants)
+    )
+    room.runtimeHostProviders = garbageCollectRuntimeHostProviders({
+      providers: room.runtimeHostProviders ?? {},
+      runtimeHosts: room.runtimeHosts,
+      participants: Object.values(room.participants),
+    })
+  }
+
+  // A true Human departure (explicit leave or expiry) revokes its Room-only
+  // provider associations and unredeemed claims. A WebSocket reconnect keeps
+  // the participant record, therefore intentionally does not call this.
+  private removeRuntimeHostProviderAuthorizationForHuman(
+    room: RoomRecord,
+    humanParticipantId: string
+  ): void {
+    const next = removeRuntimeHostProviderForHuman({
+      providers: room.runtimeHostProviders ?? {},
+      pendingClaims: room.runtimeHostProviderClaims ?? {},
+      humanParticipantId,
+    })
+    room.runtimeHostProviders = next.providers
+    room.runtimeHostProviderClaims = next.pendingClaims
   }
 
   private findParticipant(
@@ -1325,6 +1410,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           : [],
         // #176 Phase A: one readiness projection per Runtime Host id.
         runtimeHosts: projectRuntimeHosts(room?.runtimeHosts),
+        // #176 Phase B intentionally projects only the Room-visible
+        // Human-to-Host association. Claim hashes and provider-handle hashes
+        // never leave durable Room state.
+        runtimeHostProviders: projectRuntimeHostProviders(
+          room?.runtimeHostProviders
+        ),
         capabilities: ROOM_CAPABILITIES,
         // Room-visible state, not a capability secret — the same
         // agentParticipantId is already visible in `participants` above.
@@ -1346,6 +1437,59 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
     if (request.action === "register" || request.action === "agent-register") {
       const now = Date.now()
+      const isAgent = request.action === "agent-register"
+      // Complete local validation and the WebCrypto digest before loading
+      // RoomRecord. The subsequent load → consume → save section has no
+      // external await, so a claim can be redeemed atomically without ever
+      // retaining a stale RoomRecord across asynchronous crypto work.
+      let registeredRuntimeHost: RuntimeHostProjection | undefined
+      if (isAgent && request.participant.runtimeHost !== undefined) {
+        const validatedHost = validateRuntimeHost(
+          request.participant.runtimeHost
+        )
+        if (validatedHost.ok && validatedHost.runtimeHost)
+          registeredRuntimeHost = validatedHost.runtimeHost
+      }
+      const providerClaimHash = isAgent
+        ? request.participant.providerClaimHash
+        : undefined
+      const runtimeProviderHandle = isAgent
+        ? request.participant.runtimeProviderHandle
+        : undefined
+      if (
+        providerClaimHash !== undefined &&
+        !isRuntimeProviderClaimHash(providerClaimHash)
+      )
+        return this.json({ error: "invalid_runtime_provider_claim" }, 400)
+      if (
+        runtimeProviderHandle !== undefined &&
+        !isRuntimeProviderClaimHash(runtimeProviderHandle)
+      )
+        return this.json({ error: "runtime_provider_handle_invalid" }, 400)
+      if (providerClaimHash && runtimeProviderHandle)
+        return this.json({ error: "invalid_runtime_provider_claim" }, 400)
+      if (
+        (providerClaimHash || runtimeProviderHandle) &&
+        !registeredRuntimeHost
+      )
+        return this.json({ error: "runtime_provider_host_required" }, 400)
+
+      let providerHandleForResponse: string | undefined
+      let providerHandleHash: string | undefined
+      if (providerClaimHash && registeredRuntimeHost) {
+        providerHandleForResponse = createRuntimeProviderHandle()
+        providerHandleHash = await hashRuntimeProviderHandle(
+          this.ctx.id.toString(),
+          registeredRuntimeHost.runtimeHostId,
+          providerHandleForResponse
+        )
+      } else if (runtimeProviderHandle && registeredRuntimeHost) {
+        providerHandleHash = await hashRuntimeProviderHandle(
+          this.ctx.id.toString(),
+          registeredRuntimeHost.runtimeHostId,
+          runtimeProviderHandle
+        )
+      }
       let room = await this.loadRoom()
       if (room && this.isExpired(room)) {
         await this.expireRoom(room)
@@ -1363,9 +1507,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           meetingNotes: NO_MEETING_NOTES,
           agentVoice: {},
           pendingMediaCleanup: [],
+          runtimeHostProviders: {},
+          runtimeHostProviderClaims: {},
         }
       }
-      const isAgent = request.action === "agent-register"
       if (room.participants[request.participant.id])
         return this.json({ error: "participant_exists" }, 409)
       if (
@@ -1379,18 +1524,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // capability list chosen by its Runtime/Harness. Invalid input rejects
       // the join — never repaired silently (see do/collab.ts).
       let registeredCapabilities: AgentCapabilities = { text: true }
-      // #176 Phase A (canonical Room model, #178 review fix 5): the
-      // optional Runtime Host projection is Agent-only and ADDITIVE — a
-      // malformed payload is dropped (no host stored) and the text join
-      // proceeds; the Runtime re-projects via agent-update-runtime-host.
-      let registeredRuntimeHost: RuntimeHostProjection | undefined
-      if (isAgent && request.participant.runtimeHost !== undefined) {
-        const validatedHost = validateRuntimeHost(
-          request.participant.runtimeHost
-        )
-        if (validatedHost.ok && validatedHost.runtimeHost)
-          registeredRuntimeHost = validatedHost.runtimeHost
-      }
       if (isAgent) {
         const validated = validateAdvertisedCapabilities(
           request.participant.capabilities?.advertised ?? []
@@ -1404,8 +1537,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       // The raw projection object never persists — only the canonical
       // runtimeHostId on the participant and the map entry below.
-      const { runtimeHost: _hostPayload, ...participantWire } =
-        request.participant
+      const participantWire = {
+        ...request.participant,
+      } as Omit<RoomParticipant, "connected" | "lastSeenAt" | "runtimeHostId">
+      // Private Phase-B wire fields never become participant state. Use
+      // explicit deletes instead of destructuring because this branch also
+      // accepts the Human registration wire shape.
+      delete (participantWire as Record<string, unknown>).runtimeHost
+      delete (participantWire as Record<string, unknown>).providerClaimHash
+      delete (participantWire as Record<string, unknown>).runtimeProviderHandle
       const participant: RoomParticipant = {
         ...participantWire,
         connected: isAgent,
@@ -1420,6 +1560,30 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             }
           : {}),
       }
+      if (registeredRuntimeHost && providerClaimHash && providerHandleHash) {
+        const redemption = redeemRuntimeHostProviderClaim({
+          providers: room.runtimeHostProviders ?? {},
+          pendingClaims: room.runtimeHostProviderClaims ?? {},
+          participants: Object.values(room.participants),
+          runtimeHost: registeredRuntimeHost,
+          claimHash: providerClaimHash,
+          providerHandleHash,
+          verifiedParticipantId: participant.id,
+          now,
+        })
+        if (redemption.ok === false)
+          return this.json({ error: redemption.error }, 403)
+        room.runtimeHostProviders = redemption.providers
+        room.runtimeHostProviderClaims = redemption.pendingClaims
+      } else if (registeredRuntimeHost) {
+        const proof = verifyRuntimeHostProviderProof({
+          providers: room.runtimeHostProviders ?? {},
+          runtimeHostId: registeredRuntimeHost.runtimeHostId,
+          providerHandleHash,
+        })
+        if (proof.ok === false) return this.json({ error: proof.error }, 403)
+      }
+
       room.participants[participant.id] = participant
       if (registeredRuntimeHost)
         // Canonical Room model (#176): ONE readiness projection per host id,
@@ -1428,6 +1592,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           room.runtimeHosts,
           registeredRuntimeHost
         )
+      if (registeredRuntimeHost && providerHandleHash)
+        room.runtimeHostProviders = markRuntimeHostProviderMember({
+          providers: room.runtimeHostProviders ?? {},
+          runtimeHostId: registeredRuntimeHost.runtimeHostId,
+          participantId: participant.id,
+        })
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -1437,6 +1607,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           participant: this.participantForInfo(participant),
           cursor: room.nextMessageSequence,
           expiresAt: room.expiresAt,
+          ...(providerHandleForResponse
+            ? { runtimeProviderHandle: providerHandleForResponse }
+            : {}),
         })
       }
       return this.json({
@@ -1478,6 +1651,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         meetingNotes: NO_MEETING_NOTES,
         agentVoice: {},
         pendingMediaCleanup: [],
+        runtimeHostProviders: {},
+        runtimeHostProviderClaims: {},
       }
       const participant: RoomParticipant = {
         ...request.participant,
@@ -1566,6 +1741,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (request.action === "agent-update-runtime-host") {
+      // Validate and hash private proof before reading RoomRecord. Once we
+      // load it, proof verification and projection update are a storage-only
+      // transaction with no external await/stale-record window.
+      const validated = validateRuntimeHost(request.runtimeHost)
+      if (!validated.ok)
+        return this.json(
+          { error: validated.error, reason: validated.reason },
+          400
+        )
+      const host = validated.runtimeHost
+      let providerHandleHash: string | undefined
+      if (request.runtimeProviderHandle !== undefined) {
+        if (!isRuntimeProviderClaimHash(request.runtimeProviderHandle))
+          return this.json({ error: "runtime_provider_handle_invalid" }, 400)
+        providerHandleHash = await hashRuntimeProviderHandle(
+          this.ctx.id.toString(),
+          host.runtimeHostId,
+          request.runtimeProviderHandle
+        )
+      }
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
       const participant = this.findParticipant(
@@ -1576,15 +1771,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
-      // #176 Phase A: loud-failure validation, then a presence/discovery
-      // broadcast only — no messages, no sequence numbers, no waiter wake.
-      const validated = validateRuntimeHost(request.runtimeHost)
-      if (!validated.ok)
-        return this.json(
-          { error: validated.error, reason: validated.reason },
-          400
-        )
-      const host = validated.runtimeHost
+      // Discovery remains available for unbound Hosts. A Host that a Human
+      // explicitly bound can only update its readiness while proving the
+      // private handle for this exact Host id.
+      const providerProof = verifyRuntimeHostProviderProof({
+        providers: room.runtimeHostProviders ?? {},
+        runtimeHostId: host.runtimeHostId,
+        providerHandleHash,
+      })
+      if (providerProof.ok === false)
+        return this.json({ error: providerProof.error }, 403)
       // Canonical Room model (#176): upsert ONE readiness projection per host
       // id, shared by all same-host Agents. Agent Voice consumes the
       // resulting Runtime Host transition as an explicit pure grant decision.
@@ -1596,6 +1792,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       room.runtimeHosts = runtimeHostTransition.runtimeHosts
       participant.runtimeHostId = host.runtimeHostId
+      if (providerHandleHash)
+        room.runtimeHostProviders = markRuntimeHostProviderMember({
+          providers: room.runtimeHostProviders ?? {},
+          runtimeHostId: host.runtimeHostId,
+          participantId: participant.id,
+        })
       const voiceTransition = transitionAgentVoiceForRuntimeHostUpdate({
         agentVoice: room.agentVoice,
         participants: Object.values(room.participants),
@@ -1608,10 +1810,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.stageMediaGrantRevocations(room, voiceTransition.revocations)
       // Re-projection may move this participant to a new host id: collect
       // the previously referenced host if nothing else uses it.
-      room.runtimeHosts = garbageCollectRuntimeHosts(
-        room.runtimeHosts,
-        Object.values(room.participants)
-      )
+      this.garbageCollectRuntimeHostAuthorization(room)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -2102,10 +2301,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.stageMediaGrantRevocations(room, grantTransition.revocations)
       const departingSurface = participant.surface
       delete room.participants[participant.id]
-      room.runtimeHosts = garbageCollectRuntimeHosts(
-        room.runtimeHosts,
-        Object.values(room.participants)
-      )
+      this.garbageCollectRuntimeHostAuthorization(room)
       room.meetingNotes = grantTransition.meetingNotes
       room.agentVoice = grantTransition.agentVoice
       this.applyEmptyRoomExpiry(room, Date.now())
@@ -2515,11 +2711,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       agentVoice: room.agentVoice,
       participant,
     })
+    this.stageMediaGrantRevocations(room, grantTransition.revocations)
+    if (participant.kind === "human")
+      this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
     delete room.participants[participant.id]
-    room.runtimeHosts = garbageCollectRuntimeHosts(
-      room.runtimeHosts,
-      Object.values(room.participants)
-    )
+    this.garbageCollectRuntimeHostAuthorization(room)
     room.meetingNotes = grantTransition.meetingNotes
     room.agentVoice = grantTransition.agentVoice
     this.applyEmptyRoomExpiry(room, Date.now())
@@ -2761,13 +2957,48 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       socket.send(JSON.stringify({ type: "state", state: this.stateFor(room) }))
       return
     }
+    if (message.type === "runtime-provider-claim-create") {
+      // The raw 256-bit secret is browser-local and copied only through an
+      // explicit invite. This authenticated WebSocket receives its derived
+      // hash, which is one-time and private in RoomRecord until redemption.
+      if (
+        typeof message.requestId !== "string" ||
+        message.requestId.length === 0 ||
+        !isRuntimeProviderClaimHash(message.providerClaimHash)
+      ) {
+        socket.send(JSON.stringify({ type: "error", error: "invalid_request" }))
+        return
+      }
+      const claim = createRuntimeHostProviderClaim({
+        pendingClaims: room.runtimeHostProviderClaims ?? {},
+        participants: Object.values(room.participants),
+        humanParticipantId: participant.id,
+        claimHash: message.providerClaimHash,
+        now: Date.now(),
+      })
+      if (claim.ok === false) {
+        socket.send(JSON.stringify({ type: "error", error: claim.error }))
+        return
+      }
+      room.runtimeHostProviderClaims = claim.pendingClaims
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      // This is a private request/response acknowledgement: it deliberately
+      // creates no Room message, sequence number, broadcast, or waiter wake.
+      socket.send(
+        JSON.stringify({
+          type: "runtime-provider-claim-created",
+          requestId: message.requestId,
+          expiresAt: claim.expiresAt,
+        })
+      )
+      return
+    }
     if (message.type === "leave") {
       this.clearAgentVoiceReadiness(room)
+      this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
       delete room.participants[participant.id]
-      room.runtimeHosts = garbageCollectRuntimeHosts(
-        room.runtimeHosts,
-        Object.values(room.participants)
-      )
+      this.garbageCollectRuntimeHostAuthorization(room)
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       await this.broadcastState(room)
@@ -3388,11 +3619,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             participantId: id,
             surface: participant.surface,
           })
+        if (expiredHuman)
+          this.removeRuntimeHostProviderAuthorizationForHuman(room, id)
         delete room.participants[id]
-        room.runtimeHosts = garbageCollectRuntimeHosts(
-          room.runtimeHosts,
-          Object.values(room.participants)
-        )
+        this.garbageCollectRuntimeHostAuthorization(room)
         room.meetingNotes = grantTransition.meetingNotes
         room.agentVoice = grantTransition.agentVoice
         changed = true

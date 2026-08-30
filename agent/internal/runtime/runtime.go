@@ -73,6 +73,13 @@ type Options struct {
 	// HostVoiceGate is daemon-owned and shared by every resident Runtime on
 	// this local Runtime Host. It serializes full TTS+publication operations.
 	HostVoiceGate voice.Gate
+	// ProviderClaim is a one-time raw Human-created Room capability. It is
+	// copied out of Options at construction and cleared immediately after a
+	// successful redemption; it never reaches Status or a Harness.
+	ProviderClaim string
+	// ProviderHandles is daemon-owned volatile storage shared by residents of
+	// the same local Runtime Host. It is intentionally never persisted.
+	ProviderHandles *ProviderHandleStore
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
@@ -101,6 +108,8 @@ type ResidentRuntime struct {
 	advertisedCaps      []string
 	roster              []types.ParticipantRosterEntry
 	resolvedRoomID      string
+	providerClaim       string
+	providerHandles     *ProviderHandleStore
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -158,7 +167,27 @@ func (r *ResidentRuntime) projectRuntimeHost(handle string) {
 	// #178 review fix 5: additive and bounded. A rejected or failed
 	// projection never blocks text behavior; diagnostics carry no seed,
 	// handle, or credential material.
-	if err := r.options.Client.UpdateRuntimeHost(handle, *host); err != nil {
+	var err error
+	if providerClient, ok := r.options.Client.(types.RuntimeHostProviderClient); ok {
+		providerHandle := r.providerHandles.Get(r.activeRoomID(), host.RuntimeHostID)
+		if providerHandle != "" {
+			err = providerClient.UpdateRuntimeHostWithRuntimeProvider(handle, *host, providerHandle)
+			// A true Human departure revokes the Room association but an
+			// already-running daemon still has its volatile proof. Drop only a
+			// server-confirmed stale handle, then retry this one projection as
+			// ordinary unbound Phase-A discovery. Do not downgrade proof_required
+			// or transient failures: those must remain visible diagnostics.
+			if free4chat.CodeOf(err) == free4chat.CodeRuntimeProviderHandleInvalid {
+				r.providerHandles.Delete(r.activeRoomID(), host.RuntimeHostID)
+				err = r.options.Client.UpdateRuntimeHost(handle, *host)
+			}
+		} else {
+			err = r.options.Client.UpdateRuntimeHost(handle, *host)
+		}
+	} else {
+		err = r.options.Client.UpdateRuntimeHost(handle, *host)
+	}
+	if err != nil {
 		r.log("runtime_host_projection_failed", map[string]string{
 			"reason": string(free4chat.CodeOf(err)),
 		})
@@ -192,15 +221,23 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 	if options.Speech != nil {
 		speechConfig = *options.Speech
 	}
+	providerClaim := options.ProviderClaim
+	options.ProviderClaim = ""
+	providerHandles := options.ProviderHandles
+	if providerHandles == nil {
+		providerHandles = NewProviderHandleStore()
+	}
 	return &ResidentRuntime{
-		options:        options,
-		log:            options.Log,
-		state:          StateStarting,
-		eventBuffer:    NewEventBuffer(0, 0),
-		advertisedCaps: append([]string(nil), options.Capabilities...),
-		stopCh:         make(chan struct{}),
-		resolvedRoomID: options.RoomID,
-		speechConfig:   speechConfig,
+		options:         options,
+		log:             options.Log,
+		state:           StateStarting,
+		eventBuffer:     NewEventBuffer(0, 0),
+		advertisedCaps:  append([]string(nil), options.Capabilities...),
+		stopCh:          make(chan struct{}),
+		resolvedRoomID:  options.RoomID,
+		speechConfig:    speechConfig,
+		providerClaim:   providerClaim,
+		providerHandles: providerHandles,
 	}
 }
 
@@ -357,10 +394,57 @@ func (r *ResidentRuntime) advertisedCopy() []string {
 func (r *ResidentRuntime) join() error {
 	// #176 Phase A: every (re)join re-projects this Runtime's own host
 	// identity — a reconnect can never inherit another host's state.
-	joined, err := r.options.Client.JoinRoom(
-		r.activeRoomID(), r.options.Name, r.advertisedCopy(), r.hostProjectionFor(r.activeRoomID()))
+	roomID := r.activeRoomID()
+	host := r.hostProjectionFor(roomID)
+	r.mu.Lock()
+	providerClaim := r.providerClaim
+	r.mu.Unlock()
+	if providerClaim != "" && host == nil {
+		return errors.New("runtime provider claim requires a Runtime Host identity")
+	}
+
+	providerHandle := ""
+	if host != nil {
+		providerHandle = r.providerHandles.Get(roomID, host.RuntimeHostID)
+	}
+	var joined types.JoinResult
+	var err error
+	if providerClient, ok := r.options.Client.(types.RuntimeHostProviderClient); ok && host != nil && (providerClaim != "" || providerHandle != "") {
+		claimHash := ""
+		if providerClaim != "" {
+			claimHash, err = types.DeriveRuntimeProviderClaimHash(roomID, providerClaim)
+			if err != nil {
+				return err
+			}
+			providerHandle = ""
+		}
+		joined, err = providerClient.JoinRoomWithRuntimeProvider(
+			roomID, r.options.Name, r.advertisedCopy(), host, claimHash, providerHandle,
+		)
+		// A true Human departure removes the association. An old daemon-memory
+		// handle must not keep the Runtime from retaining text residency, so
+		// discard it and rejoin without a Host projection on that exact failure.
+		if err != nil && providerHandle != "" && free4chat.CodeOf(err) == free4chat.CodeRuntimeProviderHandleInvalid {
+			r.providerHandles.Delete(roomID, host.RuntimeHostID)
+			joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), nil)
+		}
+	} else {
+		joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), host)
+		// If a daemon restarted after a claim was redeemed, it has no private
+		// proof by design. Preserve text-only residency rather than pretending
+		// the public Host projection is authorized.
+		if err != nil && host != nil && providerClaim == "" && free4chat.CodeOf(err) == free4chat.CodeRuntimeProviderProofRequired {
+			joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), nil)
+		}
+	}
 	if err != nil {
 		return err
+	}
+	if host != nil && joined.RuntimeProviderHandle != "" {
+		r.providerHandles.Put(roomID, host.RuntimeHostID, joined.RuntimeProviderHandle)
+		r.mu.Lock()
+		r.providerClaim = ""
+		r.mu.Unlock()
 	}
 	r.adoptJoin(joined)
 	return nil

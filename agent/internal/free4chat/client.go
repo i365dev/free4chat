@@ -349,18 +349,49 @@ func parseJoinLike(result map[string]any) (types.JoinResult, error) {
 			Code:    CodeToolError,
 		}
 	}
-	return types.JoinResult{
+	joined := types.JoinResult{
 		ParticipantID:     participantID,
 		ParticipantHandle: handle,
 		Cursor:            cursor,
 		ExpiresAt:         expiresAt,
-	}, nil
+	}
+	if providerHandle, present := result["runtimeProviderHandle"]; present {
+		value, ok := providerHandle.(string)
+		if !ok || !types.ValidRuntimeProviderCredential(value) {
+			return types.JoinResult{}, &Error{
+				Message: "Free4Chat returned an invalid provider result",
+				Code:    CodeToolError,
+			}
+		}
+		joined.RuntimeProviderHandle = value
+	}
+	return joined, nil
 }
 
 // JoinRoom joins an existing room and returns the new capability set.
 // host optionally carries the #176 Phase A Runtime Host projection; the
 // payload omits it entirely for legacy callers.
 func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
+	return c.joinRoom(roomID, name, capabilities, host, "", "")
+}
+
+// JoinRoomWithRuntimeProvider sends the one-time claim hash or an existing
+// daemon-memory provider handle only to the private MCP tool call. Neither
+// value is logged, returned to a Harness, or put in diagnostics.
+func (c *Client) JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
+	if providerClaimHash != "" && !types.ValidRuntimeProviderCredential(providerClaimHash) {
+		return types.JoinResult{}, &Error{Message: "runtime provider claim is malformed", Code: CodeToolError}
+	}
+	if runtimeProviderHandle != "" && !types.ValidRuntimeProviderCredential(runtimeProviderHandle) {
+		return types.JoinResult{}, &Error{Message: "runtime provider handle is malformed", Code: CodeToolError}
+	}
+	if providerClaimHash != "" && runtimeProviderHandle != "" {
+		return types.JoinResult{}, &Error{Message: "runtime provider credentials conflict", Code: CodeToolError}
+	}
+	return c.joinRoom(roomID, name, capabilities, host, providerClaimHash, runtimeProviderHandle)
+}
+
+func (c *Client) joinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
 	args := map[string]any{"roomId": roomID, "name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
@@ -369,6 +400,12 @@ func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *type
 	// is omitted (never repaired, never blocks the text join).
 	if host != nil && host.Valid() {
 		args["runtimeHost"] = *host
+	}
+	if providerClaimHash != "" {
+		args["providerClaimHash"] = providerClaimHash
+	}
+	if runtimeProviderHandle != "" {
+		args["runtimeProviderHandle"] = runtimeProviderHandle
 	}
 	result, err := c.callTool("join_room", args)
 	if err != nil {
@@ -414,10 +451,27 @@ func (c *Client) CreateRoom(name string, capabilities []string) (types.CreateRoo
 // UpdateRuntimeHost re-projects the #176 Phase A Runtime Host capability
 // projection for this participant (speech hot reload path).
 func (c *Client) UpdateRuntimeHost(participantHandle string, host types.RuntimeHostProjection) error {
-	_, err := c.callTool("update_runtime_host", map[string]any{
+	return c.updateRuntimeHost(participantHandle, host, "")
+}
+
+// UpdateRuntimeHostWithRuntimeProvider proves an already-bound Host update
+// with its private daemon-memory handle.
+func (c *Client) UpdateRuntimeHostWithRuntimeProvider(participantHandle string, host types.RuntimeHostProjection, runtimeProviderHandle string) error {
+	if !types.ValidRuntimeProviderCredential(runtimeProviderHandle) {
+		return &Error{Message: "runtime provider handle is malformed", Code: CodeToolError}
+	}
+	return c.updateRuntimeHost(participantHandle, host, runtimeProviderHandle)
+}
+
+func (c *Client) updateRuntimeHost(participantHandle string, host types.RuntimeHostProjection, runtimeProviderHandle string) error {
+	args := map[string]any{
 		"participantHandle": participantHandle,
 		"runtimeHost":       host,
-	})
+	}
+	if runtimeProviderHandle != "" {
+		args["runtimeProviderHandle"] = runtimeProviderHandle
+	}
+	_, err := c.callTool("update_runtime_host", args)
 	return err
 }
 

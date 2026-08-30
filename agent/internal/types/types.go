@@ -9,9 +9,34 @@ package types
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 )
+
+const runtimeProviderClaimDomain = "free4chat-runtime-provider-v1"
+
+// ValidRuntimeProviderCredential accepts an opaque 256-bit base64url value.
+// It is deliberately distinct from the public Runtime Host id grammar.
+func ValidRuntimeProviderCredential(value string) bool {
+	if len(value) != 43 {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
+}
+
+// DeriveRuntimeProviderClaimHash is the cross-language Phase-B claim
+// derivation. The raw secret is used only in the local Runtime, never in
+// Room state, status, diagnostics, or a Harness prompt.
+func DeriveRuntimeProviderClaimHash(roomID, secret string) (string, error) {
+	if roomID == "" || len(roomID) > 64 || !ValidRuntimeProviderCredential(secret) {
+		return "", errors.New("runtime provider claim is malformed")
+	}
+	material := runtimeProviderClaimDomain + "\x00" + roomID + "\x00" + secret
+	digest := sha256.Sum256([]byte(material))
+	return base64.RawURLEncoding.EncodeToString(digest[:]), nil
+}
 
 // LauncherMaturity mirrors the Node launcher maturity classification.
 type LauncherMaturity string
@@ -322,8 +347,11 @@ type HarnessAdapter interface {
 type JoinResult struct {
 	ParticipantID     string
 	ParticipantHandle string // secret; never logged, prompted, or surfaced
-	Cursor            int64
-	ExpiresAt         int64
+	// RuntimeProviderHandle is a second private bearer returned only when a
+	// one-time Human provider claim was redeemed. It stays daemon-memory only.
+	RuntimeProviderHandle string
+	Cursor                int64
+	ExpiresAt             int64
 }
 
 // RoomInviteDescriptorV1 is the portable public invite descriptor (#51).
@@ -481,6 +509,14 @@ type Free4ChatClient interface {
 	ReadSurface(participantHandle, sourceParticipantID, snapshotID string) (SurfaceReadResult, error)
 	LeaveRoom(participantHandle string) error
 	Close() error
+}
+
+// RuntimeHostProviderClient is an optional extension so existing test and
+// adapter clients retain the small Phase-A interface. The production MCP
+// client implements it; both values are private bearer material.
+type RuntimeHostProviderClient interface {
+	JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *RuntimeHostProjection, providerClaimHash, runtimeProviderHandle string) (JoinResult, error)
+	UpdateRuntimeHostWithRuntimeProvider(participantHandle string, host RuntimeHostProjection, runtimeProviderHandle string) error
 }
 
 // AttachmentRead is read_attachment's normalized result: either an image
