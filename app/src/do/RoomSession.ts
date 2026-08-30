@@ -13,6 +13,11 @@ import {
   type CollabEventInput,
 } from "./collab"
 import {
+  executeMediaCloseEffects,
+  reconcileMediaCloseResults,
+  snapshotMediaCloseEffects,
+} from "./mediaEffects"
+import {
   normalizeAgentVoiceParticipantMedia,
   normalizeMediaGrants,
   transitionAgentVoiceForRuntimeHostUpdate,
@@ -32,11 +37,9 @@ import {
   resolveAgentPurposePermission,
 } from "./meetingNotesAuth"
 import {
-  closeRealtimeTracks,
   isHumanAudioTrackTarget,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
-  removeConfirmedMids,
   stageAgentMediaRevocation,
   type AgentMediaRevocationDirection,
 } from "./realtimeMedia"
@@ -957,37 +960,29 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
-  // Steps 6-7 of the revocation sequence (round 4): the actual Cloudflare
-  // tracks/close attempt(s), performed strictly *after* the caller has
-  // already persisted the revocation (stageAgentMediaRevocation + saveRoom
-  // + scheduleNextAlarm + broadcastState). Takes a read-only snapshot of
-  // the entries to attempt — it never touches the RoomRecord that snapshot
-  // came from. Once every fetch settles, it re-reads the *current*
-  // persisted room fresh and merges in only the specific mids that were
-  // just confirmed closed (removeConfirmedMids), so a concurrent request
-  // that wrote newer state during these fetches is never overwritten with
-  // stale data. Shared by every revocation trigger (Stop, reassignment,
-  // Agent leave, lease expiry) and by alarm()'s periodic retry of whatever
-  // is still outstanding.
+  // The sole Room-side media-effect lifecycle. Every caller has already
+  // staged the revocation and persisted that authoritative state before it
+  // reaches here. This method then has exactly one temporal shape:
+  //
+  // persisted Room decision -> read-only exact effect snapshot -> Cloudflare
+  // close -> fresh Room reload -> narrow confirmed-mid reconciliation.
+  //
+  // It never saves the pre-effect RoomRecord. That is what preserves any
+  // participant, grant, session, or cleanup mutation interleaved while the
+  // external request was in flight. Shared by every Agent revocation path
+  // and by alarm() retries.
   private async attemptCleanupNow(
     entries: PendingMediaCleanup[]
   ): Promise<void> {
-    if (entries.length === 0) return
-    const confirmed: PendingMediaCleanup[] = []
-    for (const entry of entries) {
-      const closed = await closeRealtimeTracks(
-        this.env,
-        entry.sessionId,
-        entry.mids
-      )
-      if (closed) confirmed.push(entry)
-    }
-    if (confirmed.length === 0) return
+    const effects = snapshotMediaCloseEffects(entries)
+    if (effects.length === 0) return
+    const results = await executeMediaCloseEffects(this.env, effects)
+    if (!results.some((result) => result.confirmedMids.length > 0)) return
     const fresh = await this.loadRoom()
     if (!fresh) return // room expired/deleted while these fetches were in flight
-    fresh.pendingMediaCleanup = removeConfirmedMids(
+    fresh.pendingMediaCleanup = reconcileMediaCloseResults(
       fresh.pendingMediaCleanup,
-      confirmed
+      results
     )
     await this.saveRoom(fresh)
     await this.scheduleNextAlarm(fresh)
@@ -1020,9 +1015,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const attachment of room.attachments)
       await this.deleteAttachmentChunks(attachment)
     await this.ctx.storage.delete("room")
-    for (const entry of pendingClose) {
-      await closeRealtimeTracks(this.env, entry.sessionId, entry.mids)
-    }
+    await executeMediaCloseEffects(
+      this.env,
+      snapshotMediaCloseEffects(pendingClose)
+    )
     for (const waiter of this.agentWaiters.values()) {
       if (!waiter) continue
       clearTimeout(waiter.timer)

@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
-  closeRealtimeTracks,
+  executeMediaCloseEffect,
+  reconcileMediaCloseResults,
+} from "./mediaEffects"
+import {
   isHumanAudioTrackTarget,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
-  removeConfirmedMids,
   stageAgentMediaRevocation,
 } from "./realtimeMedia"
 import type { RoomParticipant } from "../room/types"
@@ -58,7 +60,7 @@ function human(): RoomParticipant {
   }
 }
 
-describe("closeRealtimeTracks — fail-closed contract", () => {
+describe("executeMediaCloseEffect — fail-closed external effect contract", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -70,7 +72,12 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
       return new Response("", { status: 200 })
     })
     vi.stubGlobal("fetch", fetchMock)
-    await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(true)
+    await expect(
+      executeMediaCloseEffect(env, { sessionId: "sess-1", mids: ["1"] })
+    ).resolves.toEqual({
+      effect: { sessionId: "sess-1", mids: ["1"] },
+      confirmedMids: ["1"],
+    })
     expect(requestedUrl).toBe(
       "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/sess-1/tracks/close"
     )
@@ -81,7 +88,9 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
       "fetch",
       vi.fn(async () => new Response("", { status: 401 }))
     )
-    await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
+    await expect(
+      executeMediaCloseEffect(env, { sessionId: "sess-1", mids: ["1"] })
+    ).resolves.toMatchObject({ confirmedMids: [] })
   })
 
   it("a 429 response is not treated as success", async () => {
@@ -89,7 +98,9 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
       "fetch",
       vi.fn(async () => new Response("", { status: 429 }))
     )
-    await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
+    await expect(
+      executeMediaCloseEffect(env, { sessionId: "sess-1", mids: ["1"] })
+    ).resolves.toMatchObject({ confirmedMids: [] })
   })
 
   it("a 500 response is not treated as success", async () => {
@@ -97,7 +108,9 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
       "fetch",
       vi.fn(async () => new Response("", { status: 500 }))
     )
-    await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
+    await expect(
+      executeMediaCloseEffect(env, { sessionId: "sess-1", mids: ["1"] })
+    ).resolves.toMatchObject({ confirmedMids: [] })
   })
 
   it("a network failure (fetch throws) is not treated as success", async () => {
@@ -107,18 +120,30 @@ describe("closeRealtimeTracks — fail-closed contract", () => {
         throw new Error("network down")
       })
     )
-    await expect(closeRealtimeTracks(env, "sess-1", ["1"])).resolves.toBe(false)
+    await expect(
+      executeMediaCloseEffect(env, { sessionId: "sess-1", mids: ["1"] })
+    ).resolves.toMatchObject({ confirmedMids: [] })
   })
 
   it("missing SFU credentials with real mids to close is not treated as success", async () => {
     const fetchMock = vi.fn(async () => new Response("", { status: 200 }))
     vi.stubGlobal("fetch", fetchMock)
-    await expect(closeRealtimeTracks({}, "sess-1", ["1"])).resolves.toBe(false)
+    await expect(
+      executeMediaCloseEffect({}, { sessionId: "sess-1", mids: ["1"] })
+    ).resolves.toMatchObject({ confirmedMids: [] })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("an empty mids array is trivially successful (nothing to close) even without credentials", async () => {
-    await expect(closeRealtimeTracks({}, "sess-1", [])).resolves.toBe(true)
+  it("does not issue an external request for an empty effect", async () => {
+    const fetchMock = vi.fn(async () => new Response("", { status: 200 }))
+    vi.stubGlobal("fetch", fetchMock)
+    await expect(
+      executeMediaCloseEffect({}, { sessionId: "sess-1", mids: [] })
+    ).resolves.toEqual({
+      effect: { sessionId: "sess-1", mids: [] },
+      confirmedMids: [],
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 
@@ -208,25 +233,45 @@ describe("pendingCleanupHasCapacity — the actual bound-enforcement point", () 
   })
 })
 
-describe("removeConfirmedMids — the narrow, merge-only-the-result half of the fetch-then-reload pattern", () => {
+describe("reconcileMediaCloseResults — the narrow, merge-only-the-result half of the fetch-then-reload pattern", () => {
   it("tracks/close 2xx (success) removes exactly the confirmed mids", () => {
     const entries = [{ sessionId: "sess-1", mids: ["1"] }]
     expect(
-      removeConfirmedMids(entries, [{ sessionId: "sess-1", mids: ["1"] }])
+      reconcileMediaCloseResults(entries, [
+        {
+          effect: { sessionId: "sess-1", mids: ["1"] },
+          confirmedMids: ["1"],
+        },
+      ])
     ).toEqual([])
   })
 
   it("an entry that was never confirmed is left untouched — mids retained", () => {
     const entries = [{ sessionId: "sess-1", mids: ["1"] }]
-    expect(removeConfirmedMids(entries, [])).toEqual(entries)
+    expect(reconcileMediaCloseResults(entries, [])).toEqual(entries)
   })
 
   it("only removes the confirmed subset of an entry's mids, keeping the rest", () => {
     const entries = [{ sessionId: "sess-1", mids: ["1", "2", "3"] }]
-    const result = removeConfirmedMids(entries, [
-      { sessionId: "sess-1", mids: ["2"] },
+    const result = reconcileMediaCloseResults(entries, [
+      {
+        effect: { sessionId: "sess-1", mids: ["1", "2", "3"] },
+        confirmedMids: ["2"],
+      },
     ])
     expect(result).toEqual([{ sessionId: "sess-1", mids: ["1", "3"] }])
+  })
+
+  it("never removes a mid outside the exact effect even if a result claims it", () => {
+    const entries = [{ sessionId: "sess-1", mids: ["1", "2"] }]
+    expect(
+      reconcileMediaCloseResults(entries, [
+        {
+          effect: { sessionId: "sess-1", mids: ["1"] },
+          confirmedMids: ["1", "2", "unrelated"],
+        },
+      ])
+    ).toEqual([{ sessionId: "sess-1", mids: ["2"] }])
   })
 
   it("a mixed result only drops the entries that actually got confirmed", () => {
@@ -234,18 +279,24 @@ describe("removeConfirmedMids — the narrow, merge-only-the-result half of the 
       { sessionId: "sess-1", mids: ["1"] },
       { sessionId: "sess-2", mids: ["2"] },
     ]
-    const result = removeConfirmedMids(entries, [
-      { sessionId: "sess-1", mids: ["1"] },
+    const result = reconcileMediaCloseResults(entries, [
+      {
+        effect: { sessionId: "sess-1", mids: ["1"] },
+        confirmedMids: ["1"],
+      },
     ])
     expect(result).toEqual([{ sessionId: "sess-2", mids: ["2"] }])
   })
 
   it("retry-then-success eventually clears an entry that first failed", () => {
     let entries = [{ sessionId: "sess-1", mids: ["1"] }]
-    entries = removeConfirmedMids(entries, []) // first attempt: nothing confirmed
+    entries = reconcileMediaCloseResults(entries, []) // first attempt: nothing confirmed
     expect(entries).toHaveLength(1)
-    entries = removeConfirmedMids(entries, [
-      { sessionId: "sess-1", mids: ["1"] },
+    entries = reconcileMediaCloseResults(entries, [
+      {
+        effect: { sessionId: "sess-1", mids: ["1"] },
+        confirmedMids: ["1"],
+      },
     ]) // retry succeeds
     expect(entries).toHaveLength(0)
   })
@@ -267,7 +318,12 @@ describe("removeConfirmedMids — the narrow, merge-only-the-result half of the 
       { sessionId: "sess-1", mids: ["mid-a"] },
       { sessionId: "sess-2", mids: ["mid-b"] },
     ]
-    const merged = removeConfirmedMids(freshAfterInterleave, preFetchSnapshot)
+    const merged = reconcileMediaCloseResults(freshAfterInterleave, [
+      {
+        effect: preFetchSnapshot[0]!,
+        confirmedMids: ["mid-a"],
+      },
+    ])
     expect(merged).toEqual([{ sessionId: "sess-2", mids: ["mid-b"] }])
   })
 
@@ -278,7 +334,12 @@ describe("removeConfirmedMids — the narrow, merge-only-the-result half of the 
     const freshAfterInterleave = [
       { sessionId: "sess-1", mids: ["mid-a", "mid-b"] },
     ]
-    const merged = removeConfirmedMids(freshAfterInterleave, preFetchSnapshot)
+    const merged = reconcileMediaCloseResults(freshAfterInterleave, [
+      {
+        effect: preFetchSnapshot[0]!,
+        confirmedMids: ["mid-a"],
+      },
+    ])
     expect(merged).toEqual([{ sessionId: "sess-1", mids: ["mid-b"] }])
   })
 })
