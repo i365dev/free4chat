@@ -3,10 +3,10 @@ export function serializeOpaqueRoomId(roomId: string): string {
   return JSON.stringify(roomId).replaceAll("`", "\\u0060")
 }
 
-// Kept false until the Phase-B Runtime release has shipped and production
-// bootstrap is intentionally activated in a tiny follow-up PR. The code path
-// exists now so that activation cannot accidentally invent a second protocol.
-export const RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED = false
+// Enabled only after the matching Phase-B Runtime release is published. Keep
+// this explicit rollout gate so a future release can stage its bootstrap
+// activation separately from the server-side protocol implementation.
+export const RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED = true
 
 export function buildAgentInvitePrompt(
   roomId: string,

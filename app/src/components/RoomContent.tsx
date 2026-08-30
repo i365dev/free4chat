@@ -101,6 +101,11 @@ export default function RoomContent({
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
   const [agentInviteCopied, setAgentInviteCopied] = useState(false)
+  const [preparedAgentInvite, setPreparedAgentInvite] = useState<string | null>(
+    null
+  )
+  const [agentInvitePreparing, setAgentInvitePreparing] = useState(false)
+  const [agentInviteError, setAgentInviteError] = useState("")
   const [meetingNotesPickerOpen, setMeetingNotesPickerOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<
     {
@@ -465,25 +470,63 @@ export default function RoomContent({
     }
   }
 
-  const copyAgentInvite = () => {
-    if (typeof window === "undefined") return
-    void (
-      RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED
-        ? createRuntimeProviderClaim().then(({ providerClaimSecret }) =>
-            buildAgentInvitePrompt(roomName, { providerClaimSecret })
-          )
-        : Promise.resolve(buildAgentInvitePrompt(roomName))
-    )
-      .then((invite) => navigator.clipboard.writeText(invite))
+  const writeAgentInvite = (invite: string) => {
+    // This function is intentionally called directly from a click handler.
+    // Firefox and Safari require transient user activation for clipboard
+    // writes, so never move this call behind an asynchronous Room round-trip.
+    if (!navigator.clipboard?.writeText) {
+      setAgentInviteError(
+        "Clipboard access is unavailable. Copy invite is not supported here."
+      )
+      return
+    }
+    void navigator.clipboard
+      .writeText(invite)
       .then(() => {
         trackAnalyticsEvent("AgentInviteCopied", {
           surface: "room",
           roomType: resolvedRoomType,
         })
+        setPreparedAgentInvite(null)
+        setAgentInviteError("")
         setAgentInviteCopied(true)
         setTimeout(() => setAgentInviteCopied(false), 2000)
       })
-      .catch(() => undefined)
+      .catch(() => {
+        setAgentInviteError(
+          "Clipboard access was blocked. Click Copy invite to try again."
+        )
+      })
+  }
+
+  const copyAgentInvite = () => {
+    if (typeof window === "undefined") return
+    if (preparedAgentInvite) {
+      writeAgentInvite(preparedAgentInvite)
+      return
+    }
+    if (!RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED) {
+      writeAgentInvite(buildAgentInvitePrompt(roomName))
+      return
+    }
+    setAgentInviteCopied(false)
+    setAgentInvitePreparing(true)
+    setAgentInviteError("")
+    void createRuntimeProviderClaim()
+      .then(({ providerClaimSecret }) => {
+        // The raw claim becomes browser-memory-only invite content only after
+        // the authenticated Room acknowledgement. A second explicit click
+        // then writes it while its transient user activation is still valid.
+        setPreparedAgentInvite(
+          buildAgentInvitePrompt(roomName, { providerClaimSecret })
+        )
+      })
+      .catch(() => {
+        setAgentInviteError("Unable to prepare the Agent invite. Try again.")
+      })
+      .then(() => {
+        setAgentInvitePreparing(false)
+      })
   }
 
   if (connectionStatus === "failed") {
@@ -583,11 +626,27 @@ export default function RoomContent({
           <button
             type="button"
             onClick={copyAgentInvite}
+            disabled={agentInvitePreparing}
             className="rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-xs text-blue-200 hover:bg-blue-800/50"
-            title="Copy Agent invite prompt"
+            title={
+              preparedAgentInvite
+                ? "Copy prepared Agent invite prompt"
+                : "Copy Agent invite prompt"
+            }
           >
-            {agentInviteCopied ? "Copied!" : "Invite Agent"}
+            {agentInviteCopied
+              ? "Copied!"
+              : agentInvitePreparing
+              ? "Preparing invite..."
+              : preparedAgentInvite
+              ? "Copy invite"
+              : "Invite Agent"}
           </button>
+          {agentInviteError && (
+            <span role="status" className="text-xs text-rose-300">
+              {agentInviteError}
+            </span>
+          )}
           {meetingNotes.active ? (
             <button
               type="button"
