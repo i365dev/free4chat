@@ -184,7 +184,7 @@ function createMcpServer(context: McpRequestContext) {
     "room_info",
     {
       description:
-        "Inspect a Free4Chat room without joining. Returns sanitized participants and capabilities, never room history or media identifiers.",
+        "Inspect a Free4Chat room without joining. Returns sanitized participants, capabilities, and the bounded shared Live Transcript context when present; never ordinary room history, provider proof, or media identifiers.",
       inputSchema: {
         roomId: z.string().trim().min(1).max(MAX_ROOM_LENGTH),
       },
