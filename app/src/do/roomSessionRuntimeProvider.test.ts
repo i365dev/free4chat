@@ -123,6 +123,25 @@ describe("RoomSession Runtime Host provider authorization (#176 Phase B)", () =>
       providerHandle
     )
 
+    const provenSameHost = await room.control({
+      action: "agent-register",
+      participant: {
+        id: "codex",
+        name: "Codex",
+        kind: "agent",
+        joinedAt: Date.now(),
+        token: "codex-token",
+        capabilities: { text: true },
+        runtimeHost: host,
+        runtimeProviderHandle: providerHandle,
+      },
+    })
+    expect(provenSameHost.status).toBe(200)
+    expect(
+      (room.store.get("room") as any).runtimeHostProviders[host.runtimeHostId]
+        .verifiedParticipantIds
+    ).toEqual(["pi", "codex"])
+
     const copiedHostId = await room.control({
       action: "agent-register",
       participant: {
@@ -208,5 +227,78 @@ describe("RoomSession Runtime Host provider authorization (#176 Phase B)", () =>
     const stored = room.store.get("room") as any
     expect(stored.runtimeHostProviders).toEqual({})
     expect(stored.runtimeHostProviderClaims).toEqual({})
+  })
+
+  it("does not let a pre-binding copied Host id keep a provider association alive", async () => {
+    const room = harness()
+    // Before a Human claim is redeemed, discovery remains Phase-A compatible:
+    // a second Runtime can advertise the same public Host id without proving
+    // a capability. It must never become a provider member by doing so.
+    const copiedBeforeBinding = await room.control({
+      action: "agent-register",
+      participant: {
+        id: "spoofed",
+        name: "Spoofed host",
+        kind: "agent",
+        joinedAt: Date.now(),
+        token: "spoofed-token",
+        capabilities: { text: true },
+        runtimeHost: host,
+      },
+    })
+    expect(copiedBeforeBinding.status).toBe(200)
+
+    const claimHash = await deriveRuntimeProviderClaimHash(
+      "room-176-provider",
+      claimSecret
+    )
+    await room.sendHuman("human", {
+      type: "runtime-provider-claim-create",
+      requestId: "claim-proof-membership",
+      providerClaimHash: claimHash,
+    })
+    const redeemed = await room.control({
+      action: "agent-register",
+      participant: {
+        id: "legitimate",
+        name: "Legitimate host",
+        kind: "agent",
+        joinedAt: Date.now(),
+        token: "legitimate-token",
+        capabilities: { text: true },
+        runtimeHost: host,
+        providerClaimHash: claimHash,
+      },
+    })
+    expect(redeemed.status).toBe(200)
+    const storedAfterRedeem = room.store.get("room") as any
+    expect(
+      storedAfterRedeem.runtimeHostProviders[host.runtimeHostId]
+        .verifiedParticipantIds
+    ).toEqual(["legitimate"])
+
+    const leave = await room.control({
+      action: "agent-leave",
+      participantId: "legitimate",
+      token: "legitimate-token",
+    })
+    expect(leave.status).toBe(200)
+    const storedAfterLeave = room.store.get("room") as any
+    // The public Host projection survives because the spoofing participant is
+    // still in the room, but the Human provider association does not.
+    expect(storedAfterLeave.runtimeHosts).toHaveProperty(host.runtimeHostId)
+    expect(storedAfterLeave.runtimeHostProviders).toEqual({})
+
+    // The remaining Phase-A participant may hot-reload ordinary discovery,
+    // but it cannot revive the revoked Human provider association.
+    const ordinaryProjection = await room.control({
+      action: "agent-update-runtime-host",
+      participantId: "spoofed",
+      token: "spoofed-token",
+      runtimeHost: { ...host, speech: { stt: false, tts: true } },
+    })
+    expect(ordinaryProjection.status).toBe(200)
+    const info = await room.control({ action: "room-info" })
+    expect((info.json as any).runtimeHostProviders).toEqual({})
   })
 })

@@ -56,6 +56,11 @@ export interface RuntimeHostProviderAssociation {
   humanParticipantId: string
   claimedAt: number
   providerHandleHash: string
+  // Server-private proof membership. A Runtime Host id is public discovery
+  // metadata, so an association remains live only while at least one current
+  // Agent on this Host has actually proved possession of the private handle.
+  // Never project these ids to RoomState or room_info.
+  verifiedParticipantIds: string[]
 }
 
 // Browser-safe projection for future Human-facing feature admission. Both ids

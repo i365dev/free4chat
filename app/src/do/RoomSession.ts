@@ -55,6 +55,7 @@ import {
 import {
   createRuntimeHostProviderClaim,
   garbageCollectRuntimeHostProviders,
+  markRuntimeHostProviderMember,
   normalizeRuntimeHostProviders,
   projectRuntimeHostProviders,
   redeemRuntimeHostProviderClaim,
@@ -1149,6 +1150,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     room.runtimeHostProviders = garbageCollectRuntimeHostProviders({
       providers: room.runtimeHostProviders ?? {},
       runtimeHosts: room.runtimeHosts,
+      participants: Object.values(room.participants),
     })
   }
 
@@ -1566,6 +1568,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           runtimeHost: registeredRuntimeHost,
           claimHash: providerClaimHash,
           providerHandleHash,
+          verifiedParticipantId: participant.id,
           now,
         })
         if (redemption.ok === false)
@@ -1589,6 +1592,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           room.runtimeHosts,
           registeredRuntimeHost
         )
+      if (registeredRuntimeHost && providerHandleHash)
+        room.runtimeHostProviders = markRuntimeHostProviderMember({
+          providers: room.runtimeHostProviders ?? {},
+          runtimeHostId: registeredRuntimeHost.runtimeHostId,
+          participantId: participant.id,
+        })
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -1783,6 +1792,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       room.runtimeHosts = runtimeHostTransition.runtimeHosts
       participant.runtimeHostId = host.runtimeHostId
+      if (providerHandleHash)
+        room.runtimeHostProviders = markRuntimeHostProviderMember({
+          providers: room.runtimeHostProviders ?? {},
+          runtimeHostId: host.runtimeHostId,
+          participantId: participant.id,
+        })
       const voiceTransition = transitionAgentVoiceForRuntimeHostUpdate({
         agentVoice: room.agentVoice,
         participants: Object.values(room.participants),

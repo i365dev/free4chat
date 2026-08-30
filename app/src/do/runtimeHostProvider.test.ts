@@ -26,6 +26,14 @@ const humans = [
   { id: "dawei", kind: "human" as const, connected: true },
   { id: "alice", kind: "human" as const, connected: true },
 ]
+const verifiedAgents = [
+  { id: "pi", kind: "agent" as const, runtimeHostId: hostA.runtimeHostId },
+  {
+    id: "hermes",
+    kind: "agent" as const,
+    runtimeHostId: hostB.runtimeHostId,
+  },
+]
 
 describe("Runtime Host provider authorization", () => {
   it("redeems one Human-created claim exactly once into one host association", () => {
@@ -45,6 +53,7 @@ describe("Runtime Host provider authorization", () => {
       runtimeHost: hostA,
       claimHash: claimA,
       providerHandleHash: handleA,
+      verifiedParticipantId: "pi",
       now: now + 1,
     })
     expect(redeemed).toMatchObject({
@@ -53,6 +62,7 @@ describe("Runtime Host provider authorization", () => {
         [hostA.runtimeHostId]: {
           humanParticipantId: "dawei",
           providerHandleHash: handleA,
+          verifiedParticipantIds: ["pi"],
         },
       },
       pendingClaims: {},
@@ -66,6 +76,7 @@ describe("Runtime Host provider authorization", () => {
         runtimeHost: hostB,
         claimHash: claimA,
         providerHandleHash: handleA,
+        verifiedParticipantId: "pi",
         now: now + 2,
       })
     ).toEqual({ ok: false, error: "runtime_provider_claim_not_found" })
@@ -80,6 +91,7 @@ describe("Runtime Host provider authorization", () => {
         runtimeHost: hostA,
         claimHash: claimA,
         providerHandleHash: handleA,
+        verifiedParticipantId: "pi",
         now,
       })
     ).toEqual({ ok: false, error: "runtime_provider_claim_not_found" })
@@ -93,6 +105,7 @@ describe("Runtime Host provider authorization", () => {
         runtimeHost: hostA,
         claimHash: claimA,
         providerHandleHash: handleA,
+        verifiedParticipantId: "pi",
         now,
       })
     ).toEqual({ ok: false, error: "runtime_provider_claim_expired" })
@@ -107,6 +120,7 @@ describe("Runtime Host provider authorization", () => {
         runtimeHost: hostA,
         claimHash: claimA,
         providerHandleHash: handleA,
+        verifiedParticipantId: "pi",
         now,
       })
     ).toEqual({ ok: false, error: "runtime_provider_claim_human_invalid" })
@@ -118,6 +132,7 @@ describe("Runtime Host provider authorization", () => {
         humanParticipantId: "dawei",
         claimedAt: now,
         providerHandleHash: handleA,
+        verifiedParticipantIds: ["pi"],
       },
     }
     expect(
@@ -156,11 +171,13 @@ describe("Runtime Host provider authorization", () => {
         humanParticipantId: "dawei",
         claimedAt: now,
         providerHandleHash: handleA,
+        verifiedParticipantIds: ["pi"],
       },
       [hostB.runtimeHostId]: {
         humanParticipantId: "alice",
         claimedAt: now,
         providerHandleHash: claimB,
+        verifiedParticipantIds: ["hermes"],
       },
     }
     const runtimeHosts = {
@@ -169,7 +186,7 @@ describe("Runtime Host provider authorization", () => {
     }
     expect(
       canHumanUseRuntimeHost({
-        participants: humans,
+        participants: [...humans, ...verifiedAgents],
         runtimeHosts,
         providers,
         humanParticipantId: "dawei",
@@ -179,7 +196,7 @@ describe("Runtime Host provider authorization", () => {
     ).toBe(true)
     expect(
       canHumanUseRuntimeHost({
-        participants: humans,
+        participants: [...humans, ...verifiedAgents],
         runtimeHosts,
         providers,
         humanParticipantId: "dawei",
@@ -200,8 +217,53 @@ describe("Runtime Host provider authorization", () => {
       garbageCollectRuntimeHostProviders({
         providers,
         runtimeHosts: { [hostA.runtimeHostId]: hostA },
+        participants: [...humans, ...verifiedAgents],
       })
     ).toEqual({ [hostA.runtimeHostId]: providers[hostA.runtimeHostId] })
+  })
+
+  it("does not keep a Human binding alive through an unproved copied host id", () => {
+    const providers = {
+      [hostA.runtimeHostId]: {
+        humanParticipantId: "dawei",
+        claimedAt: now,
+        providerHandleHash: handleA,
+        // Only the claim redeemer proved the private handle. The other Agent
+        // copied the public Host id before this binding existed.
+        verifiedParticipantIds: ["legitimate"],
+      },
+    }
+    const runtimeHosts = { [hostA.runtimeHostId]: hostA }
+    const afterRedeemerLeaves = garbageCollectRuntimeHostProviders({
+      providers,
+      runtimeHosts,
+      participants: [
+        ...humans,
+        {
+          id: "spoofed",
+          kind: "agent" as const,
+          runtimeHostId: hostA.runtimeHostId,
+        },
+      ],
+    })
+    expect(afterRedeemerLeaves).toEqual({})
+    expect(
+      canHumanUseRuntimeHost({
+        participants: [
+          ...humans,
+          {
+            id: "spoofed",
+            kind: "agent" as const,
+            runtimeHostId: hostA.runtimeHostId,
+          },
+        ],
+        runtimeHosts,
+        providers: afterRedeemerLeaves,
+        humanParticipantId: "dawei",
+        runtimeHostId: hostA.runtimeHostId,
+        requiredSpeech: "stt",
+      })
+    ).toBe(false)
   })
 
   it("bounds pending claim admission without producing Room messages", () => {

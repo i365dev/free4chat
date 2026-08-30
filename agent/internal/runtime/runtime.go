@@ -172,6 +172,15 @@ func (r *ResidentRuntime) projectRuntimeHost(handle string) {
 		providerHandle := r.providerHandles.Get(r.activeRoomID(), host.RuntimeHostID)
 		if providerHandle != "" {
 			err = providerClient.UpdateRuntimeHostWithRuntimeProvider(handle, *host, providerHandle)
+			// A true Human departure revokes the Room association but an
+			// already-running daemon still has its volatile proof. Drop only a
+			// server-confirmed stale handle, then retry this one projection as
+			// ordinary unbound Phase-A discovery. Do not downgrade proof_required
+			// or transient failures: those must remain visible diagnostics.
+			if free4chat.CodeOf(err) == free4chat.CodeRuntimeProviderHandleInvalid {
+				r.providerHandles.Delete(r.activeRoomID(), host.RuntimeHostID)
+				err = r.options.Client.UpdateRuntimeHost(handle, *host)
+			}
 		} else {
 			err = r.options.Client.UpdateRuntimeHost(handle, *host)
 		}

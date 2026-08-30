@@ -16,6 +16,7 @@ export interface RuntimeHostProviderParticipant {
   id: string
   kind: ParticipantKind
   connected?: boolean
+  runtimeHostId?: string
 }
 
 export type RuntimeHostProviderMap = Record<
@@ -82,8 +83,34 @@ function validProviderAssociation(
     typeof candidate.claimedAt === "number" &&
     Number.isSafeInteger(candidate.claimedAt) &&
     candidate.claimedAt > 0 &&
-    isRuntimeProviderClaimHash(candidate.providerHandleHash)
+    isRuntimeProviderClaimHash(candidate.providerHandleHash) &&
+    Array.isArray(candidate.verifiedParticipantIds) &&
+    candidate.verifiedParticipantIds.every(
+      (participantId) =>
+        typeof participantId === "string" && participantId.length > 0
+    )
   )
+}
+
+function liveVerifiedParticipantIds(
+  association: RuntimeHostProviderAssociation,
+  runtimeHostId: string,
+  participants: Iterable<RuntimeHostProviderParticipant>
+): string[] {
+  const currentParticipants = new Map(
+    Array.from(participants).map((participant) => [participant.id, participant])
+  )
+  return [
+    ...new Set(
+      association.verifiedParticipantIds.filter((participantId) => {
+        const participant = currentParticipants.get(participantId)
+        return (
+          participant?.kind === "agent" &&
+          participant.runtimeHostId === runtimeHostId
+        )
+      })
+    ),
+  ]
 }
 
 export function normalizeRuntimeHostProviders({
@@ -117,7 +144,28 @@ export function normalizeRuntimeHostProviders({
         changed = true
         continue
       }
-      normalizedProviders[hostId] = association
+      const verifiedParticipantIds = liveVerifiedParticipantIds(
+        association,
+        hostId,
+        participantList
+      )
+      if (verifiedParticipantIds.length === 0) {
+        changed = true
+        continue
+      }
+      if (
+        verifiedParticipantIds.length !==
+          association.verifiedParticipantIds.length ||
+        verifiedParticipantIds.some(
+          (participantId, index) =>
+            participantId !== association.verifiedParticipantIds[index]
+        )
+      )
+        changed = true
+      normalizedProviders[hostId] = {
+        ...association,
+        verifiedParticipantIds,
+      }
     }
   } else if (providers !== undefined) {
     changed = true
@@ -218,6 +266,7 @@ export function redeemRuntimeHostProviderClaim({
   runtimeHost,
   claimHash,
   providerHandleHash,
+  verifiedParticipantId,
   now,
 }: {
   providers: RuntimeHostProviderMap
@@ -226,6 +275,7 @@ export function redeemRuntimeHostProviderClaim({
   runtimeHost: RuntimeHostProjection
   claimHash: string
   providerHandleHash: string
+  verifiedParticipantId: string
   now: number
 }):
   | {
@@ -245,11 +295,14 @@ export function redeemRuntimeHostProviderClaim({
     return { ok: false, error: "runtime_host_provider_already_bound" }
   if (!isRuntimeProviderClaimHash(providerHandleHash))
     return { ok: false, error: "runtime_provider_handle_invalid" }
+  if (!verifiedParticipantId)
+    return { ok: false, error: "runtime_provider_handle_invalid" }
 
   const association: RuntimeHostProviderAssociation = {
     humanParticipantId: claim.humanParticipantId,
     claimedAt: now,
     providerHandleHash,
+    verifiedParticipantIds: [verifiedParticipantId],
   }
   const { [claimHash]: _consumed, ...remainingClaims } = pendingClaims
   return {
@@ -260,6 +313,34 @@ export function redeemRuntimeHostProviderClaim({
     },
     pendingClaims: remainingClaims,
     association,
+  }
+}
+
+// A successful proof on registration or hot projection adds the current
+// Agent as a member. The server never derives membership from a public host
+// id alone: every member has presented the Host-specific private handle.
+export function markRuntimeHostProviderMember({
+  providers,
+  runtimeHostId,
+  participantId,
+}: {
+  providers: RuntimeHostProviderMap
+  runtimeHostId: string
+  participantId: string
+}): RuntimeHostProviderMap {
+  const association = providers[runtimeHostId]
+  if (!association || !participantId) return providers
+  if (association.verifiedParticipantIds.includes(participantId))
+    return providers
+  return {
+    ...providers,
+    [runtimeHostId]: {
+      ...association,
+      verifiedParticipantIds: [
+        ...association.verifiedParticipantIds,
+        participantId,
+      ],
+    },
   }
 }
 
@@ -324,13 +405,26 @@ export function removeRuntimeHostProviderForHuman({
 export function garbageCollectRuntimeHostProviders({
   providers,
   runtimeHosts,
+  participants,
 }: {
   providers: RuntimeHostProviderMap
   runtimeHosts: RuntimeHostMap | undefined
+  participants: Iterable<RuntimeHostProviderParticipant>
 }): RuntimeHostProviderMap {
   const next: RuntimeHostProviderMap = {}
-  for (const [hostId, association] of Object.entries(providers))
-    if (runtimeHosts?.[hostId]) next[hostId] = association
+  for (const [hostId, association] of Object.entries(providers)) {
+    if (!runtimeHosts?.[hostId]) continue
+    const verifiedParticipantIds = liveVerifiedParticipantIds(
+      association,
+      hostId,
+      participants
+    )
+    if (verifiedParticipantIds.length === 0) continue
+    next[hostId] = {
+      ...association,
+      verifiedParticipantIds,
+    }
+  }
   return next
 }
 
@@ -369,6 +463,9 @@ export function canHumanUseRuntimeHost({
   const association = providers?.[runtimeHostId]
   return (
     Boolean(host?.speech[requiredSpeech]) &&
-    association?.humanParticipantId === humanParticipantId
+    association?.humanParticipantId === humanParticipantId &&
+    association !== undefined &&
+    liveVerifiedParticipantIds(association, runtimeHostId, participants)
+      .length > 0
   )
 }
