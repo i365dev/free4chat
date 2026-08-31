@@ -450,6 +450,13 @@ func (d *Daemon) prepareRuntime(
 			d.unregister(instanceID)
 			return os.RemoveAll(workspace)
 		},
+		// A Runtime only invokes this after its own authenticated leave_room
+		// call succeeds. The daemon performs the blocking Stop/unregister/
+		// workspace cleanup asynchronously, after the active Harness turn can
+		// unwind; Stop waits on that same wait-loop goroutine.
+		OnSelfLeave: func() {
+			d.completeConfirmedSelfLeave(instanceID)
+		},
 	})
 	return residentRuntime, workspace, instanceID, nil
 }
@@ -600,6 +607,28 @@ func (d *Daemon) leave(instanceID string) map[string]any {
 		_ = os.RemoveAll(instance.workspace)
 	}
 	return map[string]any{"instanceId": instanceID, "state": "stopped"}
+}
+
+// completeConfirmedSelfLeave is the host-owned second half of a Harness
+// self-leave. Unlike operator leave(), it is called only after the Runtime's
+// own leave_room call succeeded, so removing the resident is truthful. It
+// must hand Stop to another goroutine: the current turn still occupies the
+// Runtime wait-loop goroutine that Stop waits for.
+func (d *Daemon) completeConfirmedSelfLeave(instanceID string) {
+	go func() {
+		d.mu.Lock()
+		instance, ok := d.instances[instanceID]
+		if ok {
+			delete(d.instances, instanceID)
+		}
+		d.mu.Unlock()
+		if !ok {
+			return
+		}
+		d.transcriptProducers.ReleaseInstance(instanceID)
+		instance.runtime.Stop()
+		_ = os.RemoveAll(instance.workspace)
+	}()
 }
 
 // beginStop stops every resident now and prevents new admissions; the actual

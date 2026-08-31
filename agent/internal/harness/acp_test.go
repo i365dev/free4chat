@@ -462,6 +462,8 @@ func TestRenderUntrustedRoomTurnInvariants(t *testing.T) {
 		"do not call mcp or free4chat tools",
 		"do not ask for or invent room identity",
 		"respond with a brief conversational reply",
+		"[[free4chat:lifecycle leave]]",
+		"host owns room participation",
 	} {
 		if !strings.Contains(lowerRendered, fragment) {
 			t.Fatalf("ordinary-mode rule missing (%s):\n%s", fragment, rendered)

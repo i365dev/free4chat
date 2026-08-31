@@ -346,15 +346,29 @@ type HarnessTurnInput struct {
 	LiveTranscript    *HarnessLiveTranscript    `json:"liveTranscript,omitempty"`
 }
 
+// LifecycleIntent is the closed, local Harness-to-Runtime control result.
+// It never travels over the Room/MCP protocol and deliberately contains only
+// the one bounded action the Runtime may currently honor.
+type LifecycleIntent string
+
+const (
+	LifecycleIntentNone  LifecycleIntent = ""
+	LifecycleIntentLeave LifecycleIntent = "leave"
+)
+
 // HarnessTurnResult is what the Harness produced for a turn.
 //
 // TargetParticipantIDs is the outbound addressing contract (#165): explicit
 // structured targets the Harness decided for its reply, derived ONLY from a
 // strict machine envelope — never inferred from the visible prose. Empty for
 // ordinary unaddressed replies (plain-text-only Harnesses are unaffected).
+// LifecycleIntent is a separate, strict local control intent. It is never a
+// Room message, is mutually exclusive with targets, and must be structurally
+// authorized by the Runtime before it can affect participation.
 type HarnessTurnResult struct {
 	Text                 string
 	TargetParticipantIDs []string
+	LifecycleIntent      LifecycleIntent
 }
 
 // AdapterFailureHandler is invoked when the Harness process dies unexpectedly.

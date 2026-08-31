@@ -121,6 +121,8 @@ type fakeClient struct {
 	hostsSeen   []*types.RuntimeHostProjection
 	hostUpdates []types.RuntimeHostProjection
 	leftRoom    bool
+	leaveCalls  int
+	leaveErr    error
 	closed      bool
 	capsSeen    [][]string
 	script      []waitStep
@@ -317,8 +319,12 @@ func (*fakeClient) ReadSurface(string, string, string) (types.SurfaceReadResult,
 
 func (c *fakeClient) LeaveRoom(string) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.leaveCalls++
+	if c.leaveErr != nil {
+		return c.leaveErr
+	}
 	c.leftRoom = true
-	c.mu.Unlock()
 	return nil
 }
 
@@ -339,6 +345,9 @@ type fakeAdapter struct {
 	// turnTargets scripts TargetParticipantIDs per turn (#165); nil entries
 	// keep the reply unaddressed.
 	turnTargets [][]string
+	// turnResults scripts complete Harness results for lifecycle tests. When
+	// absent, the legacy reply-N/turnTargets behavior stays unchanged.
+	turnResults []types.HarnessTurnResult
 	onFail      func(error)
 	sessions    int
 	stopped     bool
@@ -380,6 +389,12 @@ func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput) (types.HarnessTurnRe
 	a.mu.Lock()
 	a.turnDtls = append(a.turnDtls, combined)
 	count := a.sessions
+	if count > 0 && len(a.turnResults) >= count {
+		result := a.turnResults[count-1]
+		result.TargetParticipantIDs = append([]string(nil), result.TargetParticipantIDs...)
+		a.mu.Unlock()
+		return result, nil
+	}
 	var targets []string
 	if count > 0 && len(a.turnTargets) >= count {
 		targets = append([]string(nil), a.turnTargets[count-1]...)
@@ -553,6 +568,145 @@ func TestUnaddressedReplyKeepsNoTargets(t *testing.T) {
 	}
 }
 
+func TestHumanAddressedLifecycleLeaveIsConfirmedBeforeDaemonCleanup(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+		// A replay/stale later wait result must never produce a second leave or
+		// a second reply after the first confirmed self-leave stops the loop.
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+	}
+	adapter := &fakeAdapter{name: "pi", turnResults: []types.HarnessTurnResult{{
+		Text:            "I left the Room and will not return.",
+		LifecycleIntent: types.LifecycleIntentLeave,
+	}}}
+	cleanupDone := make(chan struct{})
+	var rt *ResidentRuntime
+	rt = NewResidentRuntime(Options{
+		InstanceID: "inst-self-leave", RoomID: "test", Name: "Pi",
+		Client: client, Adapter: adapter, WaitSeconds: 1,
+		OnSelfLeave: func() {
+			// This mirrors the daemon handoff: Stop runs after this turn can
+			// return, so it never waits on its own loopWG goroutine.
+			go func() {
+				rt.Stop()
+				close(cleanupDone)
+			}()
+		},
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	select {
+	case <-cleanupDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("confirmed lifecycle leave deadlocked during cleanup")
+	}
+
+	if !client.leftRoomFlag() || client.leaveCallCount() != 1 {
+		t.Fatalf("leave must be confirmed exactly once: left=%v calls=%d", client.leftRoomFlag(), client.leaveCallCount())
+	}
+	if sent := client.snapshotSent(); len(sent) != 0 {
+		t.Fatalf("arbitrary Harness success body must never publish before leave: %v", sent)
+	}
+	if got := adapter.sessionsInt(); got != 1 || !adapter.closeConfirmed() {
+		t.Fatalf("stale turn or adapter cleanup mismatch: turns=%d closed=%v", got, adapter.closeConfirmed())
+	}
+	if status := rt.Status(); status.State != StateStopped || status.ParticipantID != "" {
+		t.Fatalf("confirmed leave must be terminal and clear public participation: %+v", status)
+	}
+	if joins := client.joinCount(); joins != 1 {
+		t.Fatalf("intentional leave must not rejoin, got %d joins", joins)
+	}
+}
+
+func TestLifecycleLeaveRequiresAddressedHumanAndNeverPublishesHarnessClaim(t *testing.T) {
+	client := &fakeClient{}
+	humanContext := roomEvent(1, false)
+	agentAddress := roomEvent(2, true)
+	agentAddress.Participant = types.ParticipantIdentity{ID: "agent-peer", Name: "Hermes", Kind: types.KindAgent}
+	client.script = []waitStep{{events: []types.RoomEvent{humanContext, agentAddress}}}
+	adapter := &fakeAdapter{name: "pi", turnResults: []types.HarnessTurnResult{{
+		Text:            "I left the Room.",
+		LifecycleIntent: types.LifecycleIntentLeave,
+	}}}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-ineligible", RoomID: "test", Name: "Pi",
+		Client: client, Adapter: adapter, WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotSent()) == 1 }, "truthful lifecycle rejection")
+	if client.leaveCallCount() != 0 || client.leftRoomFlag() {
+		t.Fatalf("Agent-authored/non-addressed context must not invoke leave: calls=%d left=%v", client.leaveCallCount(), client.leftRoomFlag())
+	}
+	if sent := client.snapshotSent(); len(sent) != 1 || sent[0] != lifecycleLeaveFailureText {
+		t.Fatalf("ineligible lifecycle must replace model claim with fixed truth: %v", sent)
+	}
+	if rt.Status().State == StateStopped {
+		t.Fatal("ineligible lifecycle must leave the resident recoverable")
+	}
+	rt.Stop()
+}
+
+func TestLifecycleLeaveFailureKeepsResidentAndReportsFixedTruth(t *testing.T) {
+	client := &fakeClient{leaveErr: errors.New("leave transport failed")}
+	client.script = []waitStep{{events: []types.RoomEvent{roomEvent(1, true)}}}
+	adapter := &fakeAdapter{name: "pi", turnResults: []types.HarnessTurnResult{{
+		Text:            "Goodbye, I have disconnected.",
+		LifecycleIntent: types.LifecycleIntentLeave,
+	}}}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-leave-failure", RoomID: "test", Name: "Pi",
+		Client: client, Adapter: adapter, WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotSent()) == 1 }, "truthful lifecycle failure")
+	if client.leaveCallCount() != 1 || client.leftRoomFlag() {
+		t.Fatalf("failed self-leave must not be treated as success: calls=%d left=%v", client.leaveCallCount(), client.leftRoomFlag())
+	}
+	if sent := client.snapshotSent(); len(sent) != 1 || sent[0] != lifecycleLeaveFailureText {
+		t.Fatalf("failure must not publish Harness success wording: %v", sent)
+	}
+	if status := rt.Status(); status.State == StateStopped || status.ParticipantID == "" {
+		t.Fatalf("failed leave must remain a live recoverable resident: %+v", status)
+	}
+	if adapter.closeConfirmed() {
+		t.Fatal("failed leave must not tear down the Harness")
+	}
+	// Restore normal fake transport so test teardown remains the existing
+	// best-effort operator Stop path rather than another failed self-leave.
+	client.mu.Lock()
+	client.leaveErr = nil
+	client.mu.Unlock()
+	rt.Stop()
+}
+
+func TestLifecycleLeaveRejectsAmbiguousTargetsEvenFromCustomAdapter(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{{events: []types.RoomEvent{roomEvent(1, true)}}}
+	adapter := &fakeAdapter{name: "pi", turnResults: []types.HarnessTurnResult{{
+		Text:                 "I left and handed off.",
+		TargetParticipantIDs: []string{"agent-peer"},
+		LifecycleIntent:      types.LifecycleIntentLeave,
+	}}}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-ambiguous", RoomID: "test", Name: "Pi",
+		Client: client, Adapter: adapter, WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return len(client.snapshotSent()) == 1 }, "ambiguous lifecycle rejection")
+	if client.leaveCallCount() != 0 || client.snapshotSent()[0] != lifecycleLeaveFailureText {
+		t.Fatalf("ambiguous lifecycle result must fail closed: leaves=%d sent=%v", client.leaveCallCount(), client.snapshotSent())
+	}
+	rt.Stop()
+}
+
 func TestUnaddressedTextWakesNothing(t *testing.T) {
 	client := &fakeClient{}
 	client.script = []waitStep{
@@ -669,6 +823,12 @@ func (c *fakeClient) leftRoomFlag() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.leftRoom
+}
+
+func (c *fakeClient) leaveCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.leaveCalls
 }
 
 func (c *fakeClient) closedFlag() bool {

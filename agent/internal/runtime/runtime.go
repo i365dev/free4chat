@@ -54,6 +54,11 @@ type Options struct {
 	// OnRoomExpired is invoked after a natural room expiry has released
 	// the runtime resources.
 	OnRoomExpired func() error
+	// OnSelfLeave is the daemon/host-owned asynchronous cleanup handoff after
+	// this Runtime has already confirmed leave_room successfully. It must not
+	// synchronously call Stop: the current addressed turn is running inside
+	// the wait-loop goroutine that Stop waits for.
+	OnSelfLeave func()
 	// SiteOrigin is the SFU REST origin derived from the MCP URL (media).
 	SiteOrigin string
 	// TranscriptPath is the per-instance local transcript file; empty
@@ -681,6 +686,13 @@ func (r *ResidentRuntime) drainTurns() {
 		r.mu.Lock()
 		r.harnessFailed = false
 		r.mu.Unlock()
+		// A lifecycle result is never ordinary reply text. Its body may contain
+		// an untruthful success claim, so consume the closed local intent before
+		// any SendText attempt. Confirmed leave hands cleanup to the daemon after
+		// this turn unwinds; rejected/failed intents use fixed truthful text.
+		if r.handleLifecycleIntent(input, result) {
+			return
+		}
 
 		text := strings.TrimSpace(result.Text)
 		if text == "" {
@@ -888,35 +900,45 @@ func (r *ResidentRuntime) PeerSurface(sourceParticipantID string) *types.RoomSur
 
 // cleanupAfterRoomExpiry performs the natural-expiry teardown once.
 func (r *ResidentRuntime) cleanupAfterRoomExpiry() {
-	r.cleanupOnce.Do(func() {
-		r.mu.Lock()
-		r.stopped = true
-		r.state = StateStopped
-		r.lastError = "room_expired"
-		r.mu.Unlock()
-		close(r.stopCh)
-		r.releaseResources()
-		if r.options.OnRoomExpired != nil {
-			if err := r.options.OnRoomExpired(); err != nil {
-				r.log("room_expiry_cleanup_failed", nil)
-			}
+	if !r.beginStop("room_expired") {
+		return
+	}
+	r.releaseResources()
+	if r.options.OnRoomExpired != nil {
+		if err := r.options.OnRoomExpired(); err != nil {
+			r.log("room_expiry_cleanup_failed", nil)
 		}
-	})
+	}
 }
 
 // Stop tears everything down: signal the loop, wait for the in-flight
 // bounded long-poll to unwind, best-effort cancel any running Harness turn,
 // release the room lease, close the ACP process, and close the client.
 func (r *ResidentRuntime) Stop() {
+	r.beginStop("")
+	r.releaseResources()
+	r.loopWG.Wait()
+}
+
+// beginStop transitions this Runtime to terminal local state exactly once and
+// wakes its wait/retry loop. Resource cleanup stays with the caller so the
+// daemon can schedule it outside an active Harness turn.
+func (r *ResidentRuntime) beginStop(lastError string) bool {
+	transitioned := false
 	r.cleanupOnce.Do(func() {
 		r.mu.Lock()
 		r.stopped = true
 		r.state = StateStopped
+		if lastError != "" {
+			r.lastError = lastError
+		}
+		r.pendingAddressed = nil
+		r.eventBuffer.Clear()
 		r.mu.Unlock()
 		close(r.stopCh)
+		transitioned = true
 	})
-	r.releaseResources()
-	r.loopWG.Wait()
+	return transitioned
 }
 
 // releaseResources mirrors the Node cleanupResources ordering: media first

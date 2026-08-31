@@ -636,11 +636,16 @@ func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput) (types.HarnessTurnRes
 	if response.Error != nil {
 		return types.HarnessTurnResult{}, fmt.Errorf("ACP session/prompt failed: %s", response.Error.Message)
 	}
-	// #165: the strict outbound addressing envelope is extracted here, at
-	// the Harness boundary, from the aggregated reply text — never from
-	// prose heuristics. Plain replies parse back unchanged.
-	body, targets := ParseOutboundTargets(text)
-	return types.HarnessTurnResult{Text: body, TargetParticipantIDs: targets}, nil
+	// Strict outbound controls are extracted here, at the Harness boundary,
+	// from the aggregated reply text — never from prose heuristics. A result
+	// may carry either existing outbound targets or the closed local leave
+	// intent, never both; plain replies parse back unchanged.
+	body, targets, lifecycle := ParseOutboundResult(text)
+	return types.HarnessTurnResult{
+		Text:                 body,
+		TargetParticipantIDs: targets,
+		LifecycleIntent:      lifecycle,
+	}, nil
 }
 
 // drainChunks snapshots and resets per-turn accumulation.

@@ -706,6 +706,143 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 	}
 }
 
+// TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident drives the exact
+// local ownership chain: a Human-addressed ACP turn emits the strict leave
+// envelope, Runtime confirms leave_room before accepting success, and the
+// daemon asynchronously Stop/unregisters/workspace-cleans after that turn
+// unwinds. The daemon remains usable with zero residents afterward.
+func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
+	d, _ := startDaemon(t)
+	// Harness subprocesses intentionally inherit only an allow-listed
+	// environment. Configure the fake through a short test-only launcher
+	// wrapper instead of weakening that production boundary for FAKE_* vars.
+	launcher := filepath.Join(t.TempDir(), "self-leave-agent")
+	script := "#!/bin/sh\n" +
+		"export FAKE_MODE=envelope\n" +
+		"export FAKE_REPLY_TEXT='I left the Room.\n[[free4chat:lifecycle leave]]'\n" +
+		"exec \"" + fakeAgentBinary + "\"\n"
+	if err := os.WriteFile(launcher, []byte(script), 0o700); err != nil {
+		t.Fatalf("write launcher failed: %v", err)
+	}
+
+	var mu sync.Mutex
+	leaveCalls := 0
+	var sentTexts []string
+	waitCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Cursor    float64        `json:"cursor"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body.Method {
+		case "tools/list":
+			writeModernMCPTools(w)
+		case "tools/call":
+			switch body.Params.Name {
+			case "join_room":
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"participantHandle": "secret-self-leave-handle",
+					"participant":       map[string]any{"id": "agent-self-leave"},
+					"cursor":            float64(0),
+					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
+				}))
+			case "wait_for_events":
+				mu.Lock()
+				waitCalls++
+				current := waitCalls
+				mu.Unlock()
+				if current == 1 {
+					writeJSONRPC(w, callToolResult(map[string]any{
+						"events": []any{map[string]any{
+							"sequence": float64(1), "type": "text",
+							"participant": map[string]any{
+								"id": "human-1", "name": "Ada", "kind": "human",
+							},
+							"text": "please leave now", "addressed": true,
+							"createdAt": float64(1700000000000),
+						}},
+						"cursor":    float64(1),
+						"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+					}))
+					return
+				}
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"events": []any{}, "cursor": body.Params.Cursor,
+					"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+				}))
+			case "leave_room":
+				mu.Lock()
+				leaveCalls++
+				mu.Unlock()
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			case "send_text":
+				text, _ := body.Params.Arguments["text"].(string)
+				mu.Lock()
+				sentTexts = append(sentTexts, text)
+				mu.Unlock()
+				writeJSONRPC(w, callToolResult(map[string]any{"sequence": float64(2)}))
+			default:
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("FREE4CHAT_MCP_URL", server.URL)
+
+	joined, err := SendIPC(&IpcRequest{
+		Op: "join", Room: "self-leave", Name: "Pi", AgentCommand: launcher,
+	})
+	if err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	var view struct {
+		InstanceID string `json:"instanceId"`
+	}
+	if err := json.Unmarshal(joined, &view); err != nil || view.InstanceID == "" {
+		t.Fatalf("join payload mismatch: %s", joined)
+	}
+	workspace := filepath.Join(WorkspacesRoot(), view.InstanceID)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		left := leaveCalls
+		mu.Unlock()
+		if left == 1 && d.InstanceCount() == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	left := leaveCalls
+	sent := append([]string(nil), sentTexts...)
+	mu.Unlock()
+	if left != 1 || d.InstanceCount() != 0 {
+		t.Fatalf("confirmed self-leave cleanup mismatch: leaveCalls=%d residents=%d", left, d.InstanceCount())
+	}
+	if len(sent) != 0 {
+		t.Fatalf("Harness success wording must not be published before leave: %v", sent)
+	}
+	if _, err := os.Stat(workspace); !os.IsNotExist(err) {
+		t.Fatalf("workspace survived confirmed self-leave: %v", err)
+	}
+	status, err := SendIPC(&IpcRequest{Op: "status"})
+	if err != nil {
+		t.Fatalf("daemon did not remain usable after self-leave: %v", err)
+	}
+	var residents []any
+	if err := json.Unmarshal(status, &residents); err != nil || len(residents) != 0 {
+		t.Fatalf("status must not retain a self-left resident: %s", status)
+	}
+}
+
 // callToolResult wraps one tool payload in the modern content-block envelope.
 func callToolResult(payload any) map[string]any {
 	text, _ := json.Marshal(payload)
