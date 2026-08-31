@@ -1811,23 +1811,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           now,
           graceMs: RECONNECT_GRACE_MS,
         })
-        if (reattached.ok === false) {
-          // A stale sessionStorage value must not make a Human unable to
-          // enter a Room after the old association has already expired or
-          // been explicitly removed. While a proof-bearing association is
-          // still live, however, reject every non-matching proof so a copied
-          // or unrelated value can never be used as a silent re-pairing.
-          const hasLiveReattachCandidate = Object.values(
-            room.runtimeHostProviders ?? {}
-          ).some(
-            (association) =>
-              association.reattachProofHash !== undefined &&
-              (association.reattachExpiresAt === undefined ||
-                association.reattachExpiresAt > now)
-          )
-          if (hasLiveReattachCandidate)
-            return this.json({ error: reattached.error }, 403)
-        } else room.runtimeHostProviders = reattached.providers
+        if (reattached.ok === true) {
+          room.runtimeHostProviders = reattached.providers
+          // A same-browser refresh replaces only the exact Human binding it
+          // proved. Keep a currently active producer in its epoch: moving
+          // this ownership atomically with the provider association avoids a
+          // later lifecycle normalization treating the old Human id as an
+          // invalid producer and stopping transcription.
+          if (
+            room.liveTranscript.active &&
+            room.liveTranscript.producerRuntimeHostId ===
+              reattached.runtimeHostId &&
+            room.liveTranscript.startedByHumanParticipantId ===
+              reattached.previousHumanParticipantId
+          ) {
+            room.liveTranscript = {
+              ...room.liveTranscript,
+              startedByHumanParticipantId: participant.id,
+            }
+          }
+        } else if (
+          reattached.ok === false &&
+          // A proof that names an *active* bound Human is a takeover attempt
+          // and must fail. Any no-match is merely stale/unrelated
+          // sessionStorage (including another Human's browser secret), so it
+          // falls through to ordinary Human registration.
+          reattached.error === "runtime_provider_claim_human_invalid"
+        )
+          return this.json({ error: reattached.error }, 403)
       }
       if (registeredRuntimeHost && providerClaimHash && providerHandleHash) {
         const redemption = redeemRuntimeHostProviderClaim({

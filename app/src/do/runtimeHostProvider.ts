@@ -358,7 +358,12 @@ export function reattachRuntimeHostProvider({
   now: number
   graceMs: number
 }):
-  | { ok: true; providers: RuntimeHostProviderMap; runtimeHostId: string }
+  | {
+      ok: true
+      providers: RuntimeHostProviderMap
+      runtimeHostId: string
+      previousHumanParticipantId: string
+    }
   | { ok: false; error: RuntimeHostProviderError } {
   if (!isRuntimeProviderClaimHash(reattachProofHash))
     return { ok: false, error: "invalid_runtime_provider_claim" }
@@ -397,6 +402,7 @@ export function reattachRuntimeHostProvider({
     return {
       ok: true,
       runtimeHostId,
+      previousHumanParticipantId: association.humanParticipantId,
       providers: {
         ...providers,
         [runtimeHostId]: {

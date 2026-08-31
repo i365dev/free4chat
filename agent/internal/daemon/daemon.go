@@ -489,23 +489,42 @@ func (d *Daemon) dispatchConnect(request *IpcRequest) (any, error) {
 		return nil, errors.New("runtime provider claim is malformed")
 	}
 	d.mu.Lock()
-	var match *residentInstance
+	matches := make([]*residentInstance, 0)
 	for _, instance := range d.instances {
 		if instance.roomID != request.Room {
 			continue
 		}
-		if request.InstanceID != "" && instance.instanceID != request.InstanceID {
-			continue
-		}
-		if match != nil {
-			d.mu.Unlock()
-			return nil, errors.New("multiple resident instances for this Room; pass --instance")
-		}
-		match = instance
+		matches = append(matches, instance)
 	}
 	d.mu.Unlock()
-	if match == nil {
+	if len(matches) == 0 {
 		return nil, errors.New("no resident Runtime is connected to this Room")
+	}
+
+	// A Runtime Host is daemon-owned, not Agent-owned: Pi, Codex, and Hermes
+	// residents under this daemon may all share one Host identity and one
+	// daemon-memory provider handle. Pick one resident internally and redeem
+	// once. If an invariant violation somehow yields different Host ids for the
+	// same daemon+Room, fail closed rather than asking a Human to choose an
+	// internal instance id or binding an ambiguous machine.
+	var match *residentInstance
+	var runtimeHostID string
+	for _, instance := range matches {
+		host := instance.runtime.CurrentHostProjection()
+		if host == nil {
+			return nil, errors.New("resident Runtime has no Runtime Host identity")
+		}
+		if runtimeHostID == "" {
+			runtimeHostID = host.RuntimeHostID
+			match = instance
+			continue
+		}
+		if host.RuntimeHostID != runtimeHostID {
+			return nil, errors.New("resident Runtimes for this Room have different Runtime Host identities")
+		}
+	}
+	if match == nil {
+		return nil, errors.New("no resident Runtime has a Runtime Host identity")
 	}
 	if err := match.runtime.ConnectProviderClaim(request.ProviderClaim); err != nil {
 		return nil, err

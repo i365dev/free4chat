@@ -419,37 +419,6 @@ function createMcpServer(context: McpRequestContext) {
   )
 
   server.registerTool(
-    "connect_runtime_provider",
-    {
-      description:
-        "Bind this already-resident Runtime Host to a Human-created Room connection claim. The existing Agent participant remains the sole Runtime participant; only the private local provider handle is returned.",
-      inputSchema: {
-        participantHandle: z.string().min(1),
-        runtimeHost: runtimeHostSchema,
-        providerClaimHash: runtimeProviderCredentialSchema,
-      },
-    },
-    async ({ participantHandle, runtimeHost, providerClaimHash }) => {
-      const handle = decodeHandle(participantHandle)
-      if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
-        action: "agent-connect-runtime-provider",
-        participantId: handle.participantId,
-        token: handle.participantToken,
-        runtimeHost,
-        providerClaimHash,
-      })
-      if (!result.ok) return toolError(controlError(result))
-      const providerHandle = runtimeProviderCredentialSchema.safeParse(
-        result.data.runtimeProviderHandle
-      )
-      if (!providerHandle.success)
-        return toolError("runtime_provider_handle_invalid")
-      return toolResult({ runtimeProviderHandle: providerHandle.data })
-    }
-  )
-
-  server.registerTool(
     "wait_for_events",
     {
       description:

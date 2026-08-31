@@ -232,3 +232,73 @@ describe("Live Transcript Runtime append gate", () => {
     expect(response.status).toBe(400)
   })
 })
+
+describe("Runtime provider connection gate", () => {
+  it("forwards only an authenticated Runtime connection control payload", async () => {
+    const captured: CapturedControl[] = []
+    const request = new Request(
+      "https://www.free4.chat/api/room/runtime-provider/connect",
+      {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "Content-Type": "application/json",
+          "X-Room-Id": "test-room",
+          "X-Room-Participant-Id": "agent-1",
+          "X-Room-Participant-Token": "private-token",
+        },
+        body: JSON.stringify({
+          runtimeHost: {
+            runtimeHostId: "host-176-provider",
+            speech: { stt: true, tts: false },
+          },
+          providerClaimHash: "KPvm-f4hBdYhSjdaYF_67xqPZx7BiiAXvMo1U_8l44w",
+          runtimeProviderHandle: "must-not-cross-this-boundary",
+        }),
+      }
+    )
+    const response = await handleRoomRequest(
+      request,
+      liveTranscriptEnv(captured)
+    )
+    expect(response.status).toBe(200)
+    expect(captured).toEqual([
+      {
+        contentType: "application/json",
+        body: {
+          action: "agent-connect-runtime-provider",
+          participantId: "agent-1",
+          token: "private-token",
+          runtimeHost: {
+            runtimeHostId: "host-176-provider",
+            speech: { stt: true, tts: false },
+          },
+          providerClaimHash: "KPvm-f4hBdYhSjdaYF_67xqPZx7BiiAXvMo1U_8l44w",
+        },
+      },
+    ])
+  })
+
+  it("rejects a malformed provider connection before contacting the Room", async () => {
+    const request = new Request(
+      "https://www.free4.chat/api/room/runtime-provider/connect",
+      {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "Content-Type": "application/json",
+          "X-Room-Id": "test-room",
+          "X-Room-Participant-Id": "agent-1",
+          "X-Room-Participant-Token": "private-token",
+        },
+        body: JSON.stringify({
+          runtimeHost: { runtimeHostId: "copied", speech: { stt: true } },
+          providerClaimHash: "not-a-claim",
+        }),
+      }
+    )
+    const env = liveTranscriptEnv([])
+    const response = await handleRoomRequest(request, env)
+    expect(response.status).toBe(400)
+  })
+})

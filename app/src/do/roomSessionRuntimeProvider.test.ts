@@ -30,7 +30,7 @@ function human(id: string) {
   }
 }
 
-function harness() {
+function harness(mediaEnabled = false) {
   const store = new Map<string, unknown>([
     [
       "room",
@@ -60,7 +60,13 @@ function harness() {
     },
     getWebSockets: () => [] as WebSocket[],
   }
-  const session = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
+  const session = new RoomSession(
+    ctx as never,
+    {
+      SFU_ROOM: {},
+      ...(mediaEnabled ? { AGENT_MEDIA_ENABLED: "true" } : {}),
+    } as never
+  )
   vi.spyOn(session as any, "broadcastState").mockResolvedValue(undefined)
   vi.spyOn(session as any, "scheduleNextAlarm").mockResolvedValue(undefined)
   vi.spyOn(session as any, "attemptCleanupNow").mockResolvedValue(undefined)
@@ -338,7 +344,7 @@ describe("RoomSession Runtime Host provider authorization (#176 Phase B)", () =>
       })
     )
 
-    const spoofed = await room.control({
+    const unrelatedStaleProof = await room.control({
       action: "register",
       participant: {
         id: "spoofed-refresh",
@@ -355,7 +361,157 @@ describe("RoomSession Runtime Host provider authorization (#176 Phase B)", () =>
         runtimeProviderReattachProofHash: claimHash,
       },
     })
-    expect(spoofed.status).toBe(403)
+    // A non-matching sessionStorage proof belongs to another browser or an
+    // old Room association. It must not prevent this unrelated Human from
+    // entering merely because a different Human currently has a Host binding.
+    expect(unrelatedStaleProof.status).toBe(200)
+  })
+
+  it("does not let another Human's reattach proof block a normal refresh", async () => {
+    const room = harness()
+    const claimHash = await deriveRuntimeProviderClaimHash(
+      "room-176-provider",
+      claimSecret
+    )
+    const reattachProofHash = await deriveRuntimeProviderReattachHash(
+      "room-176-provider",
+      "AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    )
+    const unrelatedProofHash = await deriveRuntimeProviderReattachHash(
+      "room-176-provider",
+      "AgECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    )
+    await room.sendHuman("human", {
+      type: "runtime-provider-claim-create",
+      requestId: "claim-a",
+      providerClaimHash: claimHash,
+      reattachProofHash,
+    })
+    const registered = await room.control({
+      action: "agent-register",
+      participant: {
+        id: "pi",
+        name: "Pi",
+        kind: "agent",
+        joinedAt: Date.now(),
+        token: "pi-token",
+        capabilities: { text: true },
+      },
+    })
+    expect(registered.status).toBe(200)
+    const connected = await room.control({
+      action: "agent-connect-runtime-provider",
+      participantId: "pi",
+      token: "pi-token",
+      runtimeHost: host,
+      providerClaimHash: claimHash,
+    })
+    expect(connected.status).toBe(200)
+
+    const refreshedOtherHuman = await room.control({
+      action: "register",
+      participant: {
+        id: "other-refresh",
+        name: "other",
+        kind: "human",
+        joinedAt: Date.now(),
+        token: "other-refresh-token",
+        media: {
+          sessionId: "other-refresh-session",
+          muted: false,
+          fileChannelReady: false,
+          tracks: [],
+        },
+        runtimeProviderReattachProofHash: unrelatedProofHash,
+      },
+    })
+    expect(refreshedOtherHuman.status).toBe(200)
+    expect(
+      (room.store.get("room") as any).runtimeHostProviders[host.runtimeHostId]
+    ).toEqual(expect.objectContaining({ humanParticipantId: "human" }))
+  })
+
+  it("keeps an active transcript in the same epoch across its exact Human refresh", async () => {
+    const room = harness(true)
+    const claimHash = await deriveRuntimeProviderClaimHash(
+      "room-176-provider",
+      claimSecret
+    )
+    const reattachProofHash = await deriveRuntimeProviderReattachHash(
+      "room-176-provider",
+      "AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    )
+    await room.sendHuman("human", {
+      type: "runtime-provider-claim-create",
+      requestId: "claim-active",
+      providerClaimHash: claimHash,
+      reattachProofHash,
+    })
+    const registered = await room.control({
+      action: "agent-register",
+      participant: {
+        id: "pi",
+        name: "Pi",
+        kind: "agent",
+        joinedAt: Date.now(),
+        token: "pi-token",
+        capabilities: { text: true },
+      },
+    })
+    expect(registered.status).toBe(200)
+    const connected = await room.control({
+      action: "agent-connect-runtime-provider",
+      participantId: "pi",
+      token: "pi-token",
+      runtimeHost: host,
+      providerClaimHash: claimHash,
+    })
+    expect(connected.status).toBe(200)
+
+    const stored = room.store.get("room") as any
+    const activeTranscript = {
+      active: true,
+      producerRuntimeHostId: host.runtimeHostId,
+      startedByHumanParticipantId: "human",
+      epoch: 7,
+      startedAt: 1234,
+    }
+    room.store.set("live-transcript", {
+      liveTranscript: activeTranscript,
+      liveTranscriptSegments: [],
+      nextLiveTranscriptEpoch: 8,
+      nextTranscriptSequence: 1,
+    })
+    stored.participants.human.connected = false
+    stored.runtimeHostProviders[host.runtimeHostId].reattachExpiresAt =
+      Date.now() + 30_000
+
+    const refreshed = await room.control({
+      action: "register",
+      participant: {
+        id: "human-after-refresh",
+        name: "human",
+        kind: "human",
+        joinedAt: Date.now(),
+        token: "human-after-refresh-token",
+        media: {
+          sessionId: "human-after-refresh-session",
+          muted: false,
+          fileChannelReady: false,
+          tracks: [],
+        },
+        runtimeProviderReattachProofHash: reattachProofHash,
+      },
+    })
+    expect(refreshed.status).toBe(200)
+    const info = await room.control({ action: "room-info" })
+    expect((info.json as any).liveTranscript).toEqual({
+      active: true,
+      producerRuntimeHostId: host.runtimeHostId,
+      startedByHumanParticipantId: "human-after-refresh",
+      epoch: 7,
+      startedAt: 1234,
+    })
   })
 
   it("does not let a pre-binding copied Host id keep a provider association alive", async () => {
