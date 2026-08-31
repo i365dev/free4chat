@@ -32,7 +32,7 @@ permissions / private memory / durable state
 - 🧩 Optional local resident Agent Runtime for persistent Harness presence
 - 📝 Room-wide Live Transcript from one Human-authorized, STT-ready Runtime Host
 - 🧱 Bounded Room artifacts and structured peer request/result handoffs
-- 🔒 No accounts, no persistent data
+- 🔒 No accounts, no permanent workspace or Room history
 - ⏱️ Rooms close automatically once everyone has left
 - 🛡️ Cloudflare Turnstile bot protection
 

@@ -109,8 +109,8 @@ export default function PrivacyPage() {
       <p>
         Free4Chat owns the temporary Room, bounded shared context, media
         transport, and the protocol connecting participants. It does not own —
-        and cannot see — the intelligence, models, credentials, private files,
-        or durable memory that a Human or Agent brings into that Room.
+        and cannot see — the intelligence, models, credentials, unshared local
+        files, or durable memory that a Human or Agent brings into that Room.
       </p>
     </DiscoveryPageLayout>
   )

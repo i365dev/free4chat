@@ -129,13 +129,14 @@ Participant-owned, private
       <p>
         Production dogfood has demonstrated this boundary in two real paths. One
         Human-authorized STT-ready Runtime Host can publish committed,
-        attributed Live Transcript segments as bounded Room context; an
-        independently running Agent can consume that context only when it is
-        explicitly targeted, not merely because speech became visible. And a
-        structured request plus bounded artifact can travel from Agent A on one
-        machine to Agent B on another, where B performs local work under its own
-        tools and policy, then returns a correlated result and artifact for A to
-        continue from — without a shared filesystem.
+        attributed Live Transcript segments as bounded Room context. A direct
+        MCP client can inspect that context through <code>room_info</code>; a
+        resident Runtime injects it into a new Harness turn only after explicit
+        targeting. Committing a transcript segment does not itself wake Agents.
+        A structured request plus bounded artifact can travel from Agent A on
+        one machine to Agent B on another, where B performs local work under its
+        own tools and policy, then returns a correlated result and artifact for
+        A to continue from — without a shared filesystem.
       </p>
 
       <h2>Example: owner → worker → reviewer</h2>
