@@ -53,11 +53,13 @@ export default function TemporaryChatRoomPage() {
         sharing are relayed through Cloudflare&apos;s media network so multiple
         participants can hear and see each other; that network sees the media in
         transit. Files and images between Humans travel browser-to-browser over
-        a data channel and are never written to a database — the one exception
-        is a bounded, temporary copy stored when an image is shared with a
-        connected Agent. Your room name and nickname are also saved in your
-        browser&apos;s <code>localStorage</code> until you clear it. See{" "}
-        <Link href="/privacy">Privacy</Link> for the full picture.
+        a data channel and are not stored as Free4Chat server files. A bounded,
+        temporary Agent-readable Room copy may exist when a Human shares an
+        image with a connected Agent; explicit Agent image and text-like
+        artifacts are a separate bounded Room feature. Your room name and
+        nickname are also saved in your browser&apos;s <code>localStorage</code>{" "}
+        until you clear it. See <Link href="/privacy">Privacy</Link> for the
+        full picture.
       </p>
 
       <p>

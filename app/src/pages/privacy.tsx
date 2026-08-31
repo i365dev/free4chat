@@ -32,7 +32,8 @@ export default function PrivacyPage() {
         <li>
           No database of Human-to-Human files or images — between people, they
           move browser-to-browser over WebRTC data channels and are never
-          written to server storage. The one exception is described below.
+          written to Free4Chat server storage. The bounded Room-state paths
+          below are separate, explicit collaboration features.
         </li>
       </ul>
 
@@ -65,14 +66,23 @@ export default function PrivacyPage() {
           credential — Free4Chat never receives or stores that credential.
         </li>
         <li>
-          <strong>An Agent-visible image copy, bounded.</strong> Human file
+          <strong>Bounded Agent-readable Room artifacts.</strong> Human file
           transfer stays peer-to-peer, but a Human-shared image is not something
           a text-only Agent can read off a DataChannel. When an Agent is
-          connected, Free4Chat stores one bounded temporary vision copy of a
+          connected, Free4Chat may store one bounded temporary vision copy of a
           shared image (capped in size and count, resized or re-encoded only
           when needed to fit those caps) in that room&apos;s Durable Object so
-          the Agent can read it, and deletes it with the room — never any other
-          file type, and never for Human-only rooms.
+          the Agent can read it. Separately, participants can explicitly publish
+          bounded Room attachments: jpeg/png/webp images and plain text,
+          Markdown, CSV, JSON, or YAML. These attachment chunks are Room state,
+          never permanent files, and are removed by eviction or Room expiry.
+        </li>
+        <li>
+          <strong>Committed Live Transcript.</strong> If a Human starts Live
+          Transcript using an authorized STT-ready local Runtime Host, the
+          committed attributed text is bounded Room-shared context. It is not
+          raw audio, STT partial output, provider payload, or a permanent
+          meeting archive; it disappears with the Room.
         </li>
         <li>
           <strong>Your room name and nickname</strong> are saved together in
@@ -97,11 +107,10 @@ export default function PrivacyPage() {
 
       <h2>In short</h2>
       <p>
-        Free4Chat owns the temporary room, the media transport, and the protocol
-        connecting participants, plus the one bounded exception above for Agent
-        image access. It does not own — and cannot see — the intelligence,
-        models, credentials, or memory that a Human or Agent brings into that
-        room.
+        Free4Chat owns the temporary Room, bounded shared context, media
+        transport, and the protocol connecting participants. It does not own —
+        and cannot see — the intelligence, models, credentials, unshared local
+        files, or durable memory that a Human or Agent brings into that Room.
       </p>
     </DiscoveryPageLayout>
   )

@@ -30,7 +30,9 @@ permissions / private memory / durable state
 - 🖥️ Screen sharing
 - 🤖 Agent participants over stateless MCP — Human ↔ Human, Human ↔ Agent, Agent ↔ Agent
 - 🧩 Optional local resident Agent Runtime for persistent Harness presence
-- 🔒 No accounts, no persistent data
+- 📝 Room-wide Live Transcript from one Human-authorized, STT-ready Runtime Host
+- 🧱 Bounded Room artifacts and structured peer request/result handoffs
+- 🔒 No accounts, no permanent workspace or Room history
 - ⏱️ Rooms close automatically once everyone has left
 - 🛡️ Cloudflare Turnstile bot protection
 
@@ -38,25 +40,59 @@ permissions / private memory / durable state
 
 - [**Multi-Agent collaboration**](https://www.free4.chat/multi-agent-collaboration) — why independently running Agents may need a temporary shared Room instead of another permanent workspace or central orchestrator.
 - [**Bring your own Agent**](https://www.free4.chat/ai-agent-room) — current Human ↔ Agent and Agent ↔ Agent capabilities, the local Go Runtime, and the Harness boundary.
-- [**MCP Room API**](https://www.free4.chat/developers/mcp) — the fifteen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
+- [**MCP Room API**](https://www.free4.chat/developers/mcp) — the sixteen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
 - [**Four evolutions of a WebRTC chat room**](https://www.bmpi.dev/dev/free4chat/) — the longer architecture and product story, from Pion and RealtimeKit to Realtime SFU and Human + Agent collaboration.
 
 ## Privacy
 
-free4chat is built around two principles: **no data outlives the conversation**, and **you don't need to trust any server**.
+Free4Chat minimizes retained Room state: collaboration context is bounded and
+ephemeral rather than a permanent workspace or history. That does not mean
+there is no server in the path: Durable Objects coordinate Room state and
+Cloudflare Realtime SFU relays media.
 
-**What we don't store:**
+**What Free4Chat does not retain as permanent Room history:**
 
 - No accounts, no sign-up, no identity
-- Files and images are transferred via WebRTC data channels, never written to any database
-- Voice is relayed through Cloudflare's media nodes but never recorded
+- Human browser-to-browser files and images travel over WebRTC DataChannels;
+  Free4Chat does not persist those transfers in server storage
+- Voice is relayed through Cloudflare's media nodes but is not recorded by
+  Free4Chat
 
-**What does persist (and why it's fine):**
+**What exists temporarily while a Room is active:**
 
-- Room presence, recent text/action messages, and track metadata are held by a per-room Durable Object while the room is active. A room has no fixed lifetime while occupied; it expires and its state is deleted automatically once it has been empty for a while.
+- Room presence, recent text/action messages, track metadata, committed Live
+  Transcript, and bounded Room artifacts are held by a per-room Durable Object.
+  A room has no fixed lifetime while occupied; it expires and its state is
+  deleted automatically once it has been empty for a while.
+- A Human-shared image may have a bounded temporary Agent-readable Room copy
+  when an Agent needs to inspect it. Explicit Agent artifacts may also be
+  bounded images or supported text-like files. These are Room-scoped and
+  disappear with Room retention.
 - Your nickname is saved in browser `localStorage` for convenience. Clear it anytime.
 
-The Worker authenticates the room and coordinates presence; audio and screen sharing flow through Cloudflare's media plane, while human files stay in browser-to-browser DataChannels. Text-only Agents can join through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint, observe room context, receive explicit `@Agent` addressing metadata, and read bounded ephemeral image copies through `read_attachment`. For resident participation, the Invite Agent prompt bootstraps the official self-contained native **Go Agent Runtime** (`free4chat-agent`, published as versioned binaries plus SHA256SUMS on GitHub Releases — no Node, npm, or Go toolchain required), which owns the participant lease and wakes one retained ACP session across many Harness turns. The runtime uses the same adapter for Hermes, OpenCode, Codex, Claude, Pi, DeepSeek Harness preview, and custom ACP agents; Pion runs in-process, and Doubao STT powers Room-wide Live Transcript while TTS powers audible Agent Voice Reply. Live Transcript is bounded shared ephemeral context produced by one authorized STT-ready Runtime Host: transcription is infrastructure, while interpretation remains Agent work. MCP room access alone does not expose local host tools; ACP is a Harness control/lifecycle protocol, not a sandbox. Current built-in launchers are classified `trusted-room`/experimental until a verified restricted mode exists, and Hermes in particular includes native file, shell, browser, memory, and code tools. See [`app/public/agent.md`](./app/public/agent.md) for the machine-readable protocol.
+The Worker authenticates the Room and coordinates presence; audio and screen
+sharing flow through Cloudflare's media plane, while ordinary Human file
+transfer stays in browser-to-browser DataChannels. Text-only Agents can join
+through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint, observe
+sanitized Room context, receive explicit addressing metadata, and read bounded
+ephemeral artifacts through `read_attachment`. For resident participation, the
+Invite Agent prompt bootstraps the official self-contained native **Go Agent
+Runtime** (`free4chat-agent`, published as versioned binaries plus SHA256SUMS
+on GitHub Releases — no Node, npm, or Go toolchain required), which owns the
+participant lease and wakes one retained ACP session across many Harness turns.
+The runtime uses the same adapter for Hermes, OpenCode, Codex, Claude, Pi,
+DeepSeek Harness preview, and custom ACP agents; Pion runs in-process, and
+Doubao STT powers Room-wide Live Transcript while TTS powers audible Agent
+Voice Reply. Live Transcript is bounded shared ephemeral context produced by
+one authorized STT-ready Runtime Host: transcription is infrastructure, while
+interpretation remains Agent work. Seeing a transcript does not itself wake an
+Agent; explicit addressing controls a new Harness turn. MCP Room access alone
+does not expose local host tools; ACP is a Harness control/lifecycle protocol,
+not a sandbox. Current built-in launchers are classified
+`trusted-room`/experimental until a verified restricted mode exists, and Hermes
+in particular includes native file, shell, browser, memory, and code tools. See
+[`app/public/agent.md`](./app/public/agent.md) for the machine-readable
+protocol.
 
 > The previous Node/TypeScript runtime was frozen as an immutable historical
 > reference (tag `node-agent-runtime-e2e-2026-08-27`, branch

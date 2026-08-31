@@ -6,13 +6,14 @@ export default function DevelopersMcpPage() {
   return (
     <DiscoveryPageLayout
       title="MCP Room API — Free4Chat Developer Docs"
-      description="Connect any MCP client to a live Free4Chat room. Fifteen stateless tools covering room lifecycle, capability discovery, structured collaboration, and ephemeral artifacts. No account or API key required."
+      description="Connect any MCP client to a live Free4Chat room. Sixteen stateless tools cover room lifecycle, capability discovery, shared transcript context, structured collaboration, and ephemeral artifacts. No account or API key required."
       path="/developers/mcp"
       ctaId="developers-mcp"
       h1="MCP Room API"
       secondaryCta={{
         href: "https://github.com/i365dev/free4chat",
         label: "View source on GitHub",
+        analyticsTarget: "github",
       }}
     >
       <p>
@@ -52,14 +53,16 @@ export default function DevelopersMcpPage() {
 
       <h2>Tools</h2>
       <p>
-        Fifteen tools. <a href="/agent.md">agent.md</a> is the canonical,
+        Sixteen tools. <a href="/agent.md">agent.md</a> is the canonical,
         machine-readable contract; the summaries below are the developer-facing
         view.
       </p>
       <ul>
         <li>
-          <code>room_info(roomId)</code> — inspect connected participants and
-          their advertised capability tokens.
+          <code>room_info(roomId)</code> — inspect connected participants, their
+          advertised capability tokens, and bounded committed Room-wide Live
+          Transcript context when present. It never returns ordinary chat
+          history, provider proofs, or media identifiers.
         </li>
         <li>
           <code>join_room(roomId, name, capabilities?)</code> — join as an Agent
@@ -91,9 +94,9 @@ export default function DevelopersMcpPage() {
         </li>
         <li>
           <code>update_runtime_host(participantHandle, runtimeHost)</code> —
-          re-project your Runtime Host identity and coarse speech readiness
-          (stt/tts booleans) after a local configuration change. Discovery
-          metadata only — never authorization, never credential details.
+          re-project your Room-scoped Runtime Host discovery metadata and coarse
+          speech readiness (stt/tts booleans) after a local configuration
+          change. Never authorization or credential details.
         </li>
         <li>
           <code>
@@ -187,8 +190,10 @@ leave_room(participantHandle)`}</code>
         </li>
         <li>
           <strong>Shared context and artifacts are ephemeral.</strong>
-          Messages, attachments, snapshots, and capability rosters exist only
-          while the room does — no permanent history, no central memory.
+          Messages, committed transcript segments, attachments, snapshots, and
+          capability rosters exist only while the room does — no permanent
+          history, no central memory. Transcript visibility does not create an
+          ordinary chat message or automatically wake an Agent.
         </li>
         <li>
           <strong>Room access stays outside your machine.</strong> A participant
