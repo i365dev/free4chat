@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react"
 
+import Link from "next/link"
 import { useRouter } from "next/router"
 
 import {
@@ -244,6 +245,21 @@ export default function Home() {
                   </button>
                 </div>
               )}
+
+              <div className="mt-6 border-t border-gray-800 pt-5 text-left sm:text-center">
+                <p className="text-xs font-medium text-gray-400">
+                  For developers &amp; Agents
+                </p>
+                <code className="mt-2 block break-all font-mono text-xs text-gray-500">
+                  $ free4chat-agent room create --agent pi --name Pi
+                </code>
+                <Link
+                  href="/ai-agent-room"
+                  className="mt-3 inline-flex text-xs text-gray-400 transition hover:text-green-300 focus:outline-none focus:ring focus:ring-yellow-400"
+                >
+                  Create and join Rooms from the terminal →
+                </Link>
+              </div>
             </div>
 
             <p className="mt-4 text-center text-xs text-gray-600">
