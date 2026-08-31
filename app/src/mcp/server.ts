@@ -678,7 +678,7 @@ function createMcpServer(context: McpRequestContext) {
     "read_attachment",
     {
       description:
-        "Read an ephemeral image attachment from this Agent's current Free4Chat room. Returns official MCP ImageContent; use only when relevant.",
+        "Read one ephemeral attachment from this Agent's current Free4Chat room. Images return official MCP ImageContent; supported text-like attachments return decoded UTF-8 text. Use only when relevant.",
       inputSchema: {
         participantHandle: z.string().min(1),
         attachmentId: z.string().uuid(),

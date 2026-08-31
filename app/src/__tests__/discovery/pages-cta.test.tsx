@@ -53,4 +53,40 @@ describe("Discovery pages — CTA analytics", () => {
       unmount()
     }
   )
+
+  it.each([
+    {
+      Component: AiAgentRoomPage,
+      label: "Read the MCP docs",
+      page: "ai-agent-room",
+      target: "mcp-docs",
+    },
+    {
+      Component: MultiAgentCollaborationPage,
+      label: "Bring your Agent",
+      page: "multi-agent-collaboration",
+      target: "bring-agent",
+    },
+    {
+      Component: DevelopersMcpPage,
+      label: "View source on GitHub",
+      page: "developers-mcp",
+      target: "github",
+    },
+  ])(
+    "tracks a secondary discovery CTA with bounded page and target buckets",
+    ({ Component, label, page, target }) => {
+      const track = (
+        window as unknown as { umami: { track: ReturnType<typeof vi.fn> } }
+      ).umami.track
+      const { unmount } = render(<Component />)
+      screen.getByRole("link", { name: label }).click()
+
+      expect(track).toHaveBeenCalledTimes(1)
+      const [eventName, eventData] = track.mock.calls[0]
+      expect(eventName).toBe("DiscoverySecondaryCtaClicked")
+      expect(eventData).toEqual({ page, target })
+      unmount()
+    }
+  )
 })

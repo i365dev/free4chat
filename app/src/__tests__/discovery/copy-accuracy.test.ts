@@ -23,10 +23,13 @@ describe("Privacy copy accuracy", () => {
     expect(noDatabaseClaim!.toLowerCase()).toMatch(/human-to-human/)
   })
 
-  it("discloses the bounded Agent-image copy stored in the room Durable Object", () => {
+  it("distinguishes bounded Agent-readable images from explicit text-like Room artifacts", () => {
     expect(source.toLowerCase()).toMatch(/agent/)
     expect(source).toMatch(/Durable Object/)
     expect(source.toLowerCase()).toMatch(/bounded/)
+    expect(source).toMatch(/Markdown/)
+    expect(source).toMatch(/JSON/)
+    expect(source).not.toMatch(/never any other file type/i)
   })
 
   it("discloses that BOTH room name and nickname are saved in localStorage, until manually cleared", () => {

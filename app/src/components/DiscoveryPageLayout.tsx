@@ -17,8 +17,13 @@ export interface DiscoveryPageLayoutProps {
   ctaId: string
   h1: string
   children: ReactNode
-  /** Optional extra links shown next to the primary "Open a room" CTA. */
-  secondaryCta?: { href: string; label: string }
+  /** Optional extra link shown next to the primary "Open a room" CTA. */
+  secondaryCta?: {
+    href: string
+    label: string
+    /** Small, static destination bucket — never a URL or user-provided value. */
+    analyticsTarget: "mcp-docs" | "bring-agent" | "github"
+  }
 }
 
 export default function DiscoveryPageLayout({
@@ -55,6 +60,12 @@ export default function DiscoveryPageLayout({
             {secondaryCta && (
               <Link
                 href={secondaryCta.href}
+                onClick={() =>
+                  trackAnalyticsEvent("DiscoverySecondaryCtaClicked", {
+                    page: ctaId,
+                    target: secondaryCta.analyticsTarget,
+                  })
+                }
                 className="text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
               >
                 {secondaryCta.label}
