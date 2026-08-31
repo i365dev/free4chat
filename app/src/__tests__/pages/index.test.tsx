@@ -19,6 +19,14 @@ describe("Home page", () => {
     expect(screen.getByRole("button", { name: /join/i })).toBeInTheDocument()
     expect(screen.getByPlaceholderText("Room Name")).toBeInTheDocument()
     expect(screen.getByPlaceholderText("Nick Name")).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", {
+        name: "Create and join Rooms from the terminal →",
+      })
+    ).toHaveAttribute("href", "/ai-agent-room")
+    expect(
+      screen.getByText("$ free4chat-agent room create --agent pi --name Pi")
+    ).toBeInTheDocument()
 
     // The old global gate rendered this instead of the page. It must be gone.
     expect(

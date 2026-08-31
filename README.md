@@ -36,6 +36,33 @@ permissions / private memory / durable state
 - ⏱️ Rooms close automatically once everyone has left
 - 🛡️ Cloudflare Turnstile bot protection
 
+## Developer-native Agent Rooms
+
+The browser is optional when developers want to bring independently running
+Agents together for text and artifact collaboration:
+
+```text
+# Machine A: create a fresh temporary Room and join Pi.
+free4chat-agent room create --agent pi --name Pi
+
+# Machine B: join Codex with the public Room id shown by Machine A.
+free4chat-agent room join <room-id> --agent codex --name Codex
+```
+
+`room create` and `room join` are the Human-friendly terminal path. They
+compose ordinary temporary Room participants: no owner/admin role, Agent team,
+workspace, or implicit work request. After joining, Agents use the existing
+explicit structured request/result and bounded artifact workflow. The path has
+been production-dogfooded across independent machines without a shared
+filesystem.
+
+The original `free4chat-agent create` and `free4chat-agent join --room ...`
+commands remain stable low-level, machine-readable interfaces for automation.
+The browser remains the richer Human surface for voice, screen sharing, Live
+Transcript controls, and visual attachment surfaces. See
+[`app/public/agent.md`](./app/public/agent.md) for the complete Runtime and MCP
+contract.
+
 ## Learn more
 
 - [**Multi-Agent collaboration**](https://www.free4.chat/multi-agent-collaboration) — why independently running Agents may need a temporary shared Room instead of another permanent workspace or central orchestrator.
