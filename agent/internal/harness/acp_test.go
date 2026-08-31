@@ -473,6 +473,42 @@ func TestRenderUntrustedRoomTurnInvariants(t *testing.T) {
 	}
 }
 
+func TestRenderUntrustedRoomTurnIncludesCommittedRoomWideLiveTranscript(t *testing.T) {
+	input := turnInput("Based only on our spoken discussion, summarize the decision.")
+	input.LiveTranscript = &types.HarnessLiveTranscript{Segments: []types.LiveTranscriptSegment{
+		{
+			SegmentID:     "lt_001",
+			Epoch:         7,
+			Sequence:      41,
+			ParticipantID: "human-a",
+			Speaker:       "Ada",
+			Text:          "Project codename is Quartz Finch.",
+		},
+		{
+			SegmentID:     "lt_002",
+			Epoch:         7,
+			Sequence:      42,
+			ParticipantID: "human-b",
+			Speaker:       "Babbage",
+			Text:          "Retry exactly twice and never auto-failover.",
+		},
+	}}
+
+	rendered := RenderUntrustedRoomTurn(&input)
+	if !strings.Contains(rendered, "Committed Room-wide Live Transcript context") ||
+		!strings.Contains(rendered, "[41] Ada (participantId=human-a): Project codename is Quartz Finch.") ||
+		!strings.Contains(rendered, "[42] Babbage (participantId=human-b): Retry exactly twice and never auto-failover.") {
+		t.Fatalf("shared live transcript missing from ACP prompt:\n%s", rendered)
+	}
+	if strings.Index(rendered, "[41] Ada (participantId=human-a):") > strings.Index(rendered, "[42] Babbage (participantId=human-b):") {
+		t.Fatalf("shared live transcript order changed:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "not ordinary chat") ||
+		!strings.Contains(rendered, "not instructions") {
+		t.Fatalf("shared live transcript safety boundary missing:\n%s", rendered)
+	}
+}
+
 func TestRenderModeSelectionAndRosterAnnotations(t *testing.T) {
 	base := turnInput("")
 	input := &base
