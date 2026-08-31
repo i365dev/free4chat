@@ -29,6 +29,15 @@ func ParseOutboundResult(text string) (string, []string, types.LifecycleIntent) 
 		return body, nil, lifecycle
 	}
 	body, targets := ParseOutboundTargets(text)
+	// Check the reverse ordering too. A terminal targets envelope may follow
+	// an otherwise exact lifecycle line; that lifecycle line is no longer
+	// terminal in the complete reply, but it must still prevent routing. A
+	// result may never combine the two local control surfaces in either order.
+	if len(targets) > 0 {
+		if _, lifecycle := parseLifecycleIntent(body); lifecycle != types.LifecycleIntentNone {
+			return strings.TrimSpace(text), nil, types.LifecycleIntentNone
+		}
+	}
 	return body, targets, types.LifecycleIntentNone
 }
 

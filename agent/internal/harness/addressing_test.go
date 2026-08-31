@@ -304,6 +304,17 @@ func TestParseOutboundControlsRejectsTargetAndLifecycleCombination(t *testing.T)
 	}
 }
 
+// Regression (#169 review): control surfaces must fail closed irrespective of
+// their ordering. In particular, an earlier lifecycle line must not remain
+// visible prose while a later terminal targets line causes real routing.
+func TestParseOutboundControlsRejectsLifecycleThenTargetCombination(t *testing.T) {
+	text := "leave after this handoff\n[[free4chat:lifecycle leave]]\n[[free4chat:targets agent-b]]"
+	body, targets, lifecycle := ParseOutboundResult(text)
+	if body != text || targets != nil || lifecycle != types.LifecycleIntentNone {
+		t.Fatalf("combined controls must fail closed: body=%q targets=%v lifecycle=%q", body, targets, lifecycle)
+	}
+}
+
 func TestACPTurnParsesLifecycleLeaveEnvelope(t *testing.T) {
 	adapter, _ := newTestAdapter(t, scriptLauncher("envelope", map[string]string{
 		"FAKE_REPLY_TEXT": "I will now disappear.\n[[free4chat:lifecycle leave]]",
