@@ -95,7 +95,16 @@ function validProviderAssociation(
       isRuntimeProviderClaimHash(candidate.reattachProofHash)) &&
     (candidate.reattachExpiresAt === undefined ||
       (Number.isSafeInteger(candidate.reattachExpiresAt) &&
-        candidate.reattachExpiresAt > 0))
+        candidate.reattachExpiresAt > 0)) &&
+    (candidate.pendingReattach === undefined ||
+      (typeof candidate.pendingReattach === "object" &&
+        candidate.pendingReattach !== null &&
+        !Array.isArray(candidate.pendingReattach) &&
+        typeof candidate.pendingReattach.humanParticipantId === "string" &&
+        candidate.pendingReattach.humanParticipantId.length > 0 &&
+        typeof candidate.pendingReattach.expiresAt === "number" &&
+        Number.isSafeInteger(candidate.pendingReattach.expiresAt) &&
+        candidate.pendingReattach.expiresAt > 0))
   )
 }
 
@@ -118,6 +127,24 @@ function liveVerifiedParticipantIds(
       })
     ),
   ]
+}
+
+function hasLiveVerifiedMember(
+  association: RuntimeHostProviderAssociation,
+  runtimeHostId: string,
+  participants: Iterable<RuntimeHostProviderParticipant>
+): boolean {
+  const currentParticipants = new Map(
+    Array.from(participants).map((participant) => [participant.id, participant])
+  )
+  return association.verifiedParticipantIds.some((participantId) => {
+    const participant = currentParticipants.get(participantId)
+    return (
+      participant?.kind === "agent" &&
+      participant.connected === true &&
+      participant.runtimeHostId === runtimeHostId
+    )
+  })
 }
 
 export function normalizeRuntimeHostProviders({
@@ -169,9 +196,18 @@ export function normalizeRuntimeHostProviders({
         )
       )
         changed = true
+      const pendingReattach = association.pendingReattach
+      const hasValidPendingReattach =
+        pendingReattach !== undefined &&
+        pendingReattach.expiresAt > now &&
+        pendingReattach.humanParticipantId !== association.humanParticipantId &&
+        isCurrentHuman(participantList, pendingReattach.humanParticipantId)
+      if (pendingReattach !== undefined && !hasValidPendingReattach)
+        changed = true
       normalizedProviders[hostId] = {
         ...association,
         verifiedParticipantIds,
+        ...(hasValidPendingReattach ? { pendingReattach } : {}),
       }
     }
   } else if (providers !== undefined) {
@@ -385,20 +421,12 @@ export function reattachRuntimeHostProvider({
     if (!oldHuman || oldHuman.kind !== "human") continue
     if (oldHuman.connected === true)
       return { ok: false, error: "runtime_provider_claim_human_invalid" }
-    const hasLiveVerifiedMember = association.verifiedParticipantIds.some(
-      (participantId) => {
-        const member = list.find(
-          (participant) => participant.id === participantId
-        )
-        return (
-          member?.kind === "agent" &&
-          member.connected === true &&
-          member.runtimeHostId === runtimeHostId
-        )
-      }
-    )
-    if (!hasLiveVerifiedMember) continue
-    const { reattachExpiresAt: _reattachExpiresAt, ...reattached } = association
+    if (!hasLiveVerifiedMember(association, runtimeHostId, list)) continue
+    const {
+      reattachExpiresAt: _reattachExpiresAt,
+      pendingReattach: _pendingReattach,
+      ...reattached
+    } = association
     return {
       ok: true,
       runtimeHostId,
@@ -408,6 +436,83 @@ export function reattachRuntimeHostProvider({
         [runtimeHostId]: {
           ...reattached,
           humanParticipantId,
+        },
+      },
+    }
+  }
+  return { ok: false, error: "runtime_provider_claim_not_found" }
+}
+
+// A browser can start its replacement session before the old WebSocket close
+// arrives at this DO. Reserve only an exact proof while the current owner is
+// still connected; the reservation never changes ownership on its own and is
+// bounded by the ordinary reconnect grace window.
+export function deferRuntimeHostProviderReattach({
+  providers,
+  participants,
+  reattachProofHash,
+  humanParticipantId,
+  runtimeHosts,
+  now,
+  graceMs,
+}: {
+  providers: RuntimeHostProviderMap
+  participants: Iterable<RuntimeHostProviderParticipant>
+  reattachProofHash: string
+  humanParticipantId: string
+  runtimeHosts: RuntimeHostMap | undefined
+  now: number
+  graceMs: number
+}):
+  | {
+      ok: true
+      providers: RuntimeHostProviderMap
+      runtimeHostId: string
+      previousHumanParticipantId: string
+    }
+  | { ok: false; error: RuntimeHostProviderError } {
+  if (!isRuntimeProviderClaimHash(reattachProofHash))
+    return { ok: false, error: "invalid_runtime_provider_claim" }
+  if (!humanParticipantId)
+    return { ok: false, error: "runtime_provider_claim_human_invalid" }
+  const list = Array.from(participants)
+  for (const [runtimeHostId, association] of Object.entries(providers)) {
+    if (association.reattachProofHash !== reattachProofHash) continue
+    if (!runtimeHosts?.[runtimeHostId]) continue
+    if (association.reattachExpiresAt !== undefined) continue
+    const oldHuman = list.find(
+      (participant) => participant.id === association.humanParticipantId
+    )
+    if (oldHuman?.kind !== "human" || oldHuman.connected !== true) continue
+    if (!hasLiveVerifiedMember(association, runtimeHostId, list)) continue
+    const previousPending = association.pendingReattach
+    const previousPendingHuman = previousPending
+      ? list.find(
+          (participant) => participant.id === previousPending.humanParticipantId
+        )
+      : undefined
+    // A connected prior replacement is already entitled to the bounded
+    // handoff. Do not let a second registration with the same proof replace
+    // it; a not-yet-connected attempt may be superseded by the latest page.
+    if (
+      previousPending &&
+      previousPending.expiresAt > now &&
+      previousPendingHuman?.kind === "human" &&
+      previousPendingHuman.connected === true
+    )
+      return { ok: false, error: "runtime_provider_claim_human_invalid" }
+    return {
+      ok: true,
+      runtimeHostId,
+      previousHumanParticipantId: association.humanParticipantId,
+      providers: {
+        ...providers,
+        [runtimeHostId]: {
+          ...association,
+          pendingReattach: {
+            humanParticipantId,
+            expiresAt: now + Math.max(graceMs, 0),
+          },
         },
       },
     }
@@ -440,6 +545,78 @@ export function markRuntimeHostProviderDisconnected({
     }
   }
   return changed ? next : providers
+}
+
+// Complete the reservation made above only after the old owner has actually
+// disconnected. The replacement need not have opened its WebSocket yet: it
+// is already a newly registered Human and will itself expire through the
+// normal reconnect grace if the page never finishes connecting.
+export function completeDeferredRuntimeHostProviderReattach({
+  providers,
+  participants,
+  disconnectedHumanParticipantId,
+  runtimeHosts,
+  now,
+}: {
+  providers: RuntimeHostProviderMap
+  participants: Iterable<RuntimeHostProviderParticipant>
+  disconnectedHumanParticipantId: string
+  runtimeHosts: RuntimeHostMap | undefined
+  now: number
+}): {
+  providers: RuntimeHostProviderMap
+  reattached: Array<{
+    runtimeHostId: string
+    previousHumanParticipantId: string
+    humanParticipantId: string
+  }>
+} {
+  const list = Array.from(participants)
+  const next: RuntimeHostProviderMap = {}
+  const reattached: Array<{
+    runtimeHostId: string
+    previousHumanParticipantId: string
+    humanParticipantId: string
+  }> = []
+  for (const [runtimeHostId, association] of Object.entries(providers)) {
+    if (association.humanParticipantId !== disconnectedHumanParticipantId) {
+      next[runtimeHostId] = association
+      continue
+    }
+    const pendingReattach = association.pendingReattach
+    const replacement = pendingReattach
+      ? list.find(
+          (participant) => participant.id === pendingReattach.humanParticipantId
+        )
+      : undefined
+    if (
+      !pendingReattach ||
+      pendingReattach.expiresAt <= now ||
+      replacement?.kind !== "human" ||
+      !runtimeHosts?.[runtimeHostId] ||
+      !hasLiveVerifiedMember(association, runtimeHostId, list)
+    ) {
+      const { pendingReattach: _pendingReattach, ...withoutPending } =
+        association
+      next[runtimeHostId] = withoutPending
+      continue
+    }
+    const {
+      reattachExpiresAt: _reattachExpiresAt,
+      pendingReattach: _pendingReattach,
+      ...reattachedAssociation
+    } = association
+    next[runtimeHostId] = {
+      ...reattachedAssociation,
+      humanParticipantId: replacement.id,
+    }
+    reattached.push({
+      runtimeHostId,
+      previousHumanParticipantId: association.humanParticipantId,
+      humanParticipantId: replacement.id,
+    })
+  }
+  return { providers: next, reattached }
 }
 
 export function markRuntimeHostProviderConnected({
@@ -537,6 +714,15 @@ export function removeRuntimeHostProviderForHuman({
   const nextClaims: RuntimeHostProviderClaimMap = {}
   for (const [hostId, association] of Object.entries(providers)) {
     if (association.humanParticipantId === humanParticipantId) {
+      changed = true
+      continue
+    }
+    if (
+      association.pendingReattach?.humanParticipantId === humanParticipantId
+    ) {
+      const { pendingReattach: _pendingReattach, ...withoutPending } =
+        association
+      nextProviders[hostId] = withoutPending
       changed = true
       continue
     }

@@ -86,7 +86,7 @@ function harness(mediaEnabled = false) {
       { participantId: id, token: `${id}-token`, connectionNonce: "n" },
       message
     )
-  return { store, socket, control, sendHuman }
+  return { store, socket, session, control, sendHuman }
 }
 
 describe("RoomSession Runtime Host provider authorization (#176 Phase B)", () => {
@@ -509,6 +509,120 @@ describe("RoomSession Runtime Host provider authorization (#176 Phase B)", () =>
       active: true,
       producerRuntimeHostId: host.runtimeHostId,
       startedByHumanParticipantId: "human-after-refresh",
+      epoch: 7,
+      startedAt: 1234,
+    })
+  })
+
+  it("completes an exact refresh handoff when registration beats the old WebSocket close", async () => {
+    const room = harness(true)
+    const claimHash = await deriveRuntimeProviderClaimHash(
+      "room-176-provider",
+      claimSecret
+    )
+    const reattachProofHash = await deriveRuntimeProviderReattachHash(
+      "room-176-provider",
+      "AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    )
+    await room.sendHuman("human", {
+      type: "runtime-provider-claim-create",
+      requestId: "claim-refresh-race",
+      providerClaimHash: claimHash,
+      reattachProofHash,
+    })
+    const registered = await room.control({
+      action: "agent-register",
+      participant: {
+        id: "pi",
+        name: "Pi",
+        kind: "agent",
+        joinedAt: Date.now(),
+        token: "pi-token",
+        capabilities: { text: true },
+      },
+    })
+    expect(registered.status).toBe(200)
+    const connected = await room.control({
+      action: "agent-connect-runtime-provider",
+      participantId: "pi",
+      token: "pi-token",
+      runtimeHost: host,
+      providerClaimHash: claimHash,
+    })
+    expect(connected.status).toBe(200)
+
+    room.store.set("live-transcript", {
+      liveTranscript: {
+        active: true,
+        producerRuntimeHostId: host.runtimeHostId,
+        startedByHumanParticipantId: "human",
+        epoch: 7,
+        startedAt: 1234,
+      },
+      liveTranscriptSegments: [],
+      nextLiveTranscriptEpoch: 8,
+      nextTranscriptSequence: 1,
+    })
+
+    // Browser refresh can register the replacement before the old page's
+    // close event arrives at the DO. The old Human is deliberately still
+    // connected here; only the exact proof earns a bounded reservation.
+    const refreshed = await room.control({
+      action: "register",
+      participant: {
+        id: "human-refresh-race",
+        name: "human",
+        kind: "human",
+        joinedAt: Date.now(),
+        token: "human-refresh-race-token",
+        media: {
+          sessionId: "human-refresh-race-session",
+          muted: false,
+          fileChannelReady: false,
+          tracks: [],
+        },
+        runtimeProviderReattachProofHash: reattachProofHash,
+      },
+    })
+    expect(refreshed.status).toBe(200)
+    expect(
+      (room.store.get("room") as any).runtimeHostProviders[host.runtimeHostId]
+    ).toEqual(
+      expect.objectContaining({
+        humanParticipantId: "human",
+        pendingReattach: expect.objectContaining({
+          humanParticipantId: "human-refresh-race",
+        }),
+      })
+    )
+
+    await room.session.webSocketClose(
+      {
+        deserializeAttachment: () => ({
+          participantId: "human",
+          token: "human-token",
+          connectionNonce: undefined,
+        }),
+      } as WebSocket,
+      1000,
+      "refresh",
+      true
+    )
+
+    const stored = room.store.get("room") as any
+    expect(stored.runtimeHostProviders[host.runtimeHostId]).toEqual(
+      expect.objectContaining({
+        humanParticipantId: "human-refresh-race",
+      })
+    )
+    expect(
+      stored.runtimeHostProviders[host.runtimeHostId].pendingReattach
+    ).toBeUndefined()
+    const info = await room.control({ action: "room-info" })
+    expect((info.json as any).liveTranscript).toEqual({
+      active: true,
+      producerRuntimeHostId: host.runtimeHostId,
+      startedByHumanParticipantId: "human-refresh-race",
       epoch: 7,
       startedAt: 1234,
     })

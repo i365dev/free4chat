@@ -64,6 +64,8 @@ import {
 import {
   createRuntimeHostProviderClaim,
   canHumanUseRuntimeHost,
+  completeDeferredRuntimeHostProviderReattach,
+  deferRuntimeHostProviderReattach,
   garbageCollectRuntimeHostProviders,
   markRuntimeHostProviderMember,
   normalizeRuntimeHostProviders,
@@ -1298,7 +1300,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       deadlines.push(Date.now() + MEDIA_CLEANUP_RETRY_MS)
     for (const claim of Object.values(room.runtimeHostProviderClaims ?? {}))
       deadlines.push(claim.expiresAt)
+    for (const association of Object.values(room.runtimeHostProviders ?? {}))
+      if (association.pendingReattach)
+        deadlines.push(association.pendingReattach.expiresAt)
     await this.ctx.storage.setAlarm(Math.min(...deadlines))
+  }
+
+  // A same-browser refresh replaces only the exact Human binding it proved.
+  // Keep a currently active producer in its epoch: moving this ownership
+  // atomically with the provider association avoids lifecycle normalization
+  // treating the old Human id as an invalid producer and stopping speech.
+  private preserveLiveTranscriptOwnerAcrossRuntimeReattach(
+    room: RoomRecord,
+    runtimeHostId: string,
+    previousHumanParticipantId: string,
+    humanParticipantId: string
+  ): void {
+    if (
+      room.liveTranscript.active &&
+      room.liveTranscript.producerRuntimeHostId === runtimeHostId &&
+      room.liveTranscript.startedByHumanParticipantId ===
+        previousHumanParticipantId
+    )
+      room.liveTranscript = {
+        ...room.liveTranscript,
+        startedByHumanParticipantId: humanParticipantId,
+      }
   }
 
   // Runtime Host projection garbage collection and provider-association
@@ -1813,23 +1840,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         })
         if (reattached.ok === true) {
           room.runtimeHostProviders = reattached.providers
-          // A same-browser refresh replaces only the exact Human binding it
-          // proved. Keep a currently active producer in its epoch: moving
-          // this ownership atomically with the provider association avoids a
-          // later lifecycle normalization treating the old Human id as an
-          // invalid producer and stopping transcription.
-          if (
-            room.liveTranscript.active &&
-            room.liveTranscript.producerRuntimeHostId ===
-              reattached.runtimeHostId &&
-            room.liveTranscript.startedByHumanParticipantId ===
-              reattached.previousHumanParticipantId
-          ) {
-            room.liveTranscript = {
-              ...room.liveTranscript,
-              startedByHumanParticipantId: participant.id,
-            }
-          }
+          this.preserveLiveTranscriptOwnerAcrossRuntimeReattach(
+            room,
+            reattached.runtimeHostId,
+            reattached.previousHumanParticipantId,
+            participant.id
+          )
         } else if (
           reattached.ok === false &&
           // A proof that names an *active* bound Human is a takeover attempt
@@ -1839,6 +1855,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           reattached.error === "runtime_provider_claim_human_invalid"
         )
           return this.json({ error: reattached.error }, 403)
+        else {
+          // The replacement registration can arrive before the prior page's
+          // WebSocket close. Reserve only its exact proof and complete this
+          // bounded handoff when the old connection actually closes; do not
+          // retry /api/sfu/session because it creates an upstream SFU session
+          // before this Room registration is attempted.
+          const deferred = deferRuntimeHostProviderReattach({
+            providers: room.runtimeHostProviders ?? {},
+            participants: Object.values(room.participants),
+            reattachProofHash,
+            humanParticipantId: participant.id,
+            runtimeHosts: room.runtimeHosts,
+            now,
+            graceMs: RECONNECT_GRACE_MS,
+          })
+          if (deferred.ok === true)
+            room.runtimeHostProviders = deferred.providers
+          else if (deferred.error === "runtime_provider_claim_human_invalid")
+            return this.json({ error: deferred.error }, 403)
+        }
       }
       if (registeredRuntimeHost && providerClaimHash && providerHandleHash) {
         const redemption = redeemRuntimeHostProviderClaim({
@@ -4096,6 +4132,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       now: participant.lastSeenAt,
       graceMs: RECONNECT_GRACE_MS,
     })
+    const deferredReattach = completeDeferredRuntimeHostProviderReattach({
+      providers: room.runtimeHostProviders ?? {},
+      participants: Object.values(room.participants),
+      disconnectedHumanParticipantId: participant.id,
+      runtimeHosts: room.runtimeHosts,
+      now: participant.lastSeenAt,
+    })
+    room.runtimeHostProviders = deferredReattach.providers
+    for (const reattached of deferredReattach.reattached)
+      this.preserveLiveTranscriptOwnerAcrossRuntimeReattach(
+        room,
+        reattached.runtimeHostId,
+        reattached.previousHumanParticipantId,
+        reattached.humanParticipantId
+      )
     this.clearAgentVoiceReadiness(room)
     await this.saveRoom(room)
     await this.scheduleNextAlarm(room)
