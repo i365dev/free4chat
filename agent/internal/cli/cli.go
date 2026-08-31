@@ -514,7 +514,7 @@ func printRoomCreate(raw json.RawMessage, name string) error {
 		return errors.New("daemon create response omitted the public Room invite")
 	}
 	fmt.Printf("✓ Created temporary Room\n✓ %s joined\n\nRoom: %s\nHuman UI: %s\n",
-		name, response.Invite.RoomID, response.Invite.RoomURL)
+		terminalSafe(name), terminalSafe(response.Invite.RoomID), terminalSafe(response.Invite.RoomURL))
 	return nil
 }
 
@@ -531,8 +531,33 @@ func printRoomJoin(raw json.RawMessage, requestedRoom, name string) error {
 	if response.RoomID != requestedRoom {
 		return errors.New("daemon join response did not match the requested Room")
 	}
-	fmt.Printf("✓ %s joined\nRoom: %s\n", name, response.RoomID)
+	fmt.Printf("✓ %s joined\nRoom: %s\n", terminalSafe(name), terminalSafe(response.RoomID))
 	return nil
+}
+
+// terminalSafe renders terminal-control runes visibly rather than sending them
+// to the terminal. The Room remains opaque and unchanged for requests or JSON
+// automation; this applies only at the new human-facing display boundary.
+func terminalSafe(value string) string {
+	var output strings.Builder
+	for _, runeValue := range value {
+		switch runeValue {
+		case '\n':
+			output.WriteString(`\n`)
+		case '\r':
+			output.WriteString(`\r`)
+		case '\t':
+			output.WriteString(`\t`)
+		default:
+			if (runeValue >= 0 && runeValue <= 0x1f) || runeValue == 0x7f ||
+				(runeValue >= 0x80 && runeValue <= 0x9f) {
+				fmt.Fprintf(&output, `\x%02x`, runeValue)
+				continue
+			}
+			output.WriteRune(runeValue)
+		}
+	}
+	return output.String()
 }
 
 // runVersion reports the build version without contacting the daemon or any

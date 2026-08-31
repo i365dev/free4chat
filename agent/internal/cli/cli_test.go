@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/i365dev/free4chat/agent/internal/daemon"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
@@ -509,6 +510,61 @@ func TestRoomHumanOutputExcludesDaemonPrivateFields(t *testing.T) {
 				t.Fatalf("human-facing room output leaked %q: %q", private, output)
 			}
 		}
+	}
+}
+
+func TestTerminalSafeEscapesTerminalControls(t *testing.T) {
+	input := "safe\n\r\t\x00\x1b\x7f\u009b"
+	if got, want := terminalSafe(input), `safe\n\r\t\x00\x1b\x7f\x9b`; got != want {
+		t.Fatalf("terminal-safe output mismatch:\n got: %q\nwant: %q", got, want)
+	}
+	for _, runeValue := range terminalSafe(input) {
+		if unicode.IsControl(runeValue) {
+			t.Fatalf("terminal-safe output retained control rune %U", runeValue)
+		}
+	}
+}
+
+func TestRoomHumanOutputEscapesTerminalControls(t *testing.T) {
+	roomID := "safe\nFORGED\rROW\u009b2J"
+	name := "\x1b[31mPi\t"
+	createResult := json.RawMessage(`{
+  "invite":{"kind":"free4chat.room-invite","version":1,"roomId":"safe\nFORGED\rROW\u009b2J","roomUrl":"https://www.free4.chat/room?id=safe%0A\u001b]8;;https://attacker.example\u0007"}
+}`)
+	joinResult := json.RawMessage(`{"state":"waiting","roomId":"safe\nFORGED\rROW\u009b2J"}`)
+	fixture := roomFixture(t, createResult, joinResult)
+
+	createOutput, createCode := runCliWithFakeDaemon(t, fixture,
+		"room", "create", "--agent", "pi", "--name", name)
+	if createCode != 0 {
+		t.Fatalf("room create failed: %d %q", createCode, createOutput)
+	}
+	joinOutput, joinCode := runCliWithFakeDaemon(t, fixture,
+		"room", "join", roomID, "--agent", "codex", "--name", name)
+	if joinCode != 0 {
+		t.Fatalf("room join failed: %d %q", joinCode, joinOutput)
+	}
+
+	for _, output := range []string{createOutput, joinOutput} {
+		for _, runeValue := range []rune{'\x00', '\r', '\t', '\x1b', '\x7f', '\u009b'} {
+			if strings.ContainsRune(output, runeValue) {
+				t.Fatalf("human-facing room output retained control rune %U: %q", runeValue, output)
+			}
+		}
+		if strings.Contains(output, "safe\nFORGED") {
+			t.Fatalf("human-facing room output allowed a forged line: %q", output)
+		}
+	}
+	for _, expected := range []string{
+		"✓ \\x1b[31mPi\\t joined",
+		"Room: safe\\nFORGED\\rROW\\x9b2J",
+	} {
+		if !strings.Contains(createOutput, expected) || !strings.Contains(joinOutput, expected) {
+			t.Fatalf("room output omitted escaped public value %q:\ncreate: %q\njoin: %q", expected, createOutput, joinOutput)
+		}
+	}
+	if !strings.Contains(createOutput, "Human UI: https://www.free4.chat/room?id=safe%0A\\x1b]8;;https://attacker.example\\x07") {
+		t.Fatalf("room create did not escape the public Room URL: %q", createOutput)
 	}
 }
 
