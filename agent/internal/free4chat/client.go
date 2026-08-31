@@ -633,6 +633,27 @@ func (c *Client) UpdateRuntimeHostWithRuntimeProvider(participantHandle string, 
 	return c.updateRuntimeHost(participantHandle, host, runtimeProviderHandle)
 }
 
+// ConnectRuntimeProvider redeems a Human-created claim for an already
+// resident Agent. It never creates a second participant or returns the claim.
+func (c *Client) ConnectRuntimeProvider(participantHandle string, host types.RuntimeHostProjection, providerClaimHash string) (string, error) {
+	if !types.ValidRuntimeProviderCredential(providerClaimHash) {
+		return "", &Error{Message: "runtime provider claim is malformed", Code: CodeToolError}
+	}
+	result, err := c.callTool("connect_runtime_provider", map[string]any{
+		"participantHandle": participantHandle,
+		"runtimeHost":       host,
+		"providerClaimHash": providerClaimHash,
+	})
+	if err != nil {
+		return "", err
+	}
+	value, ok := result["runtimeProviderHandle"].(string)
+	if !ok || !types.ValidRuntimeProviderCredential(value) {
+		return "", &Error{Message: "Free4Chat returned an invalid provider result", Code: CodeToolError}
+	}
+	return value, nil
+}
+
 func (c *Client) updateRuntimeHost(participantHandle string, host types.RuntimeHostProjection, runtimeProviderHandle string) error {
 	args := map[string]any{
 		"participantHandle": participantHandle,

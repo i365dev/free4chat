@@ -67,7 +67,9 @@ const baseHookReturn = {
   liveTranscriptMediaAvailable: false,
   startLiveTranscript: vi.fn(),
   stopLiveTranscript: vi.fn(),
-  createRuntimeProviderClaim: vi.fn(),
+  connectLocalRuntime: vi.fn(),
+  runtimeConnectionStatus: "idle" as const,
+  leaveRoom: vi.fn(),
 }
 
 describe("RoomContent — Turnstile widget lifecycle", () => {
@@ -154,41 +156,22 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(container.querySelector('[id^="cf-chl-widget"]')).toBeNull()
   })
 
-  it("waits for the Room claim ACK before preparing an invite, then writes only from a second click", async () => {
-    let resolveClaim: (value: { providerClaimSecret: string }) => void
-    const claim = new Promise<{ providerClaimSecret: string }>((resolve) => {
-      resolveClaim = resolve
-    })
-    const createRuntimeProviderClaim = vi.fn(() => claim)
+  it("copies an ordinary Agent invite without creating a Runtime provider claim", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
-      createRuntimeProviderClaim,
     })
 
     render(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getByRole("button", { name: "Invite Agent" }))
-    expect(createRuntimeProviderClaim).toHaveBeenCalledTimes(1)
-    expect(writeText).not.toHaveBeenCalled()
-    expect(
-      screen.getByRole("button", { name: "Preparing invite..." })
-    ).toBeDisabled()
-
-    await act(async () => {
-      resolveClaim!({
-        providerClaimSecret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-      })
-      await claim
-    })
-    expect(screen.getByRole("button", { name: "Copy invite" })).toBeEnabled()
-    expect(writeText).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole("button", { name: "Copy invite" }))
     expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining("Join my temporary")
+    )
+    expect(writeText).not.toHaveBeenCalledWith(
       expect.stringContaining("--provider-claim")
     )
     await waitFor(() =>
@@ -196,28 +179,23 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
   })
 
-  it("keeps a prepared invite available and shows a retryable clipboard error", async () => {
+  it("shows a retryable clipboard error for an ordinary invite", async () => {
     const writeText = vi.fn().mockRejectedValue(new Error("blocked"))
     Object.assign(navigator, { clipboard: { writeText } })
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
-      createRuntimeProviderClaim: vi.fn().mockResolvedValue({
-        providerClaimSecret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-      }),
     })
 
     render(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getByRole("button", { name: "Invite Agent" }))
-    const copy = await screen.findByRole("button", { name: "Copy invite" })
-    fireEvent.click(copy)
 
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Clipboard access was blocked"
     )
-    expect(screen.getByRole("button", { name: "Copy invite" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Invite Agent" })).toBeEnabled()
   })
 
   it("uses the Room-wide Live Transcript control without replacing Agent Voice", () => {

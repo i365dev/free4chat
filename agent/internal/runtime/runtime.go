@@ -301,6 +301,37 @@ func (r *ResidentRuntime) CurrentCapabilities() []string {
 	return append([]string(nil), r.advertisedCaps...)
 }
 
+// ConnectProviderClaim binds this already-running resident Runtime Host to a
+// Human-created Room claim. The existing participant remains the sole Agent;
+// only the private daemon-memory provider handle is updated.
+func (r *ResidentRuntime) ConnectProviderClaim(providerClaim string) error {
+	if !types.ValidRuntimeProviderCredential(providerClaim) {
+		return errors.New("runtime provider claim is malformed")
+	}
+	handle, err := r.requireHandle()
+	if err != nil {
+		return err
+	}
+	host := r.CurrentHostProjection()
+	if host == nil {
+		return errors.New("runtime provider connection requires a Runtime Host identity")
+	}
+	providerClient, ok := r.options.Client.(types.RuntimeProviderConnector)
+	if !ok {
+		return errors.New("runtime provider connection is unavailable")
+	}
+	claimHash, err := types.DeriveRuntimeProviderClaimHash(r.activeRoomID(), providerClaim)
+	if err != nil {
+		return err
+	}
+	providerHandle, err := providerClient.ConnectRuntimeProvider(handle, *host, claimHash)
+	if err != nil {
+		return err
+	}
+	r.providerHandles.Put(r.activeRoomID(), host.RuntimeHostID, providerHandle)
+	return nil
+}
+
 // Status snapshots the lifecycle state. It never contains the handle.
 func (r *ResidentRuntime) Status() Status {
 	r.mu.Lock()

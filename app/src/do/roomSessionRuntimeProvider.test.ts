@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { RoomSession } from "./RoomSession"
-import { deriveRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
+import {
+  deriveRuntimeProviderClaimHash,
+  deriveRuntimeProviderReattachHash,
+} from "../common/runtimeProviderCredential"
 
 const host = {
   runtimeHostId: "host-176-provider",
@@ -227,6 +230,132 @@ describe("RoomSession Runtime Host provider authorization (#176 Phase B)", () =>
     const stored = room.store.get("room") as any
     expect(stored.runtimeHostProviders).toEqual({})
     expect(stored.runtimeHostProviderClaims).toEqual({})
+  })
+
+  it("connects an existing resident through a one-time claim and reattaches refreshes with browser proof", async () => {
+    const room = harness()
+    const claimHash = await deriveRuntimeProviderClaimHash(
+      "room-176-provider",
+      claimSecret
+    )
+    const reattachSecret = "AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+    const reattachProofHash = await deriveRuntimeProviderReattachHash(
+      "room-176-provider",
+      reattachSecret
+    )
+    await room.sendHuman("human", {
+      type: "runtime-provider-claim-create",
+      requestId: "claim-connect",
+      providerClaimHash: claimHash,
+      reattachProofHash,
+    })
+    const connected = await room.control({
+      action: "agent-connect-runtime-provider",
+      participantId: "pi",
+      token: "pi-token",
+      runtimeHost: host,
+      providerClaimHash: claimHash,
+    })
+    expect(connected.status).toBe(401)
+
+    // The claim can only be redeemed by an already resident, authenticated
+    // Agent. Register that resident first, then exercise the dedicated
+    // connect action without creating a second participant.
+    const registered = await room.control({
+      action: "agent-register",
+      participant: {
+        id: "pi",
+        name: "Pi",
+        kind: "agent",
+        joinedAt: Date.now(),
+        token: "pi-token",
+        capabilities: { text: true },
+      },
+    })
+    expect(registered.status).toBe(200)
+    const connectedAfterJoin = await room.control({
+      action: "agent-connect-runtime-provider",
+      participantId: "pi",
+      token: "pi-token",
+      runtimeHost: host,
+      providerClaimHash: claimHash,
+    })
+    expect(connectedAfterJoin.status).toBe(200)
+    expect((connectedAfterJoin.json as any).runtimeProviderHandle).toMatch(
+      /^[A-Za-z0-9_-]{43}$/
+    )
+    expect(
+      (room.store.get("room") as any).runtimeHostProviders[host.runtimeHostId]
+    ).toEqual(expect.objectContaining({ humanParticipantId: "human" }))
+
+    const stored = room.store.get("room") as any
+    stored.participants.human.connected = false
+    stored.runtimeHostProviders[host.runtimeHostId].reattachExpiresAt =
+      Date.now() + 30_000
+    const unproved = await room.control({
+      action: "register",
+      participant: {
+        id: "human-without-proof",
+        name: "unproved",
+        kind: "human",
+        joinedAt: Date.now(),
+        token: "human-without-proof-token",
+        media: {
+          sessionId: "human-without-proof-session",
+          muted: false,
+          fileChannelReady: false,
+          tracks: [],
+        },
+      },
+    })
+    expect(unproved.status).toBe(200)
+    expect(
+      (room.store.get("room") as any).runtimeHostProviders[host.runtimeHostId]
+    ).toEqual(expect.objectContaining({ humanParticipantId: "human" }))
+    const refreshed = await room.control({
+      action: "register",
+      participant: {
+        id: "human-after-refresh",
+        name: "human",
+        kind: "human",
+        joinedAt: Date.now(),
+        token: "human-after-refresh-token",
+        media: {
+          sessionId: "human-after-refresh-session",
+          muted: false,
+          fileChannelReady: false,
+          tracks: [],
+        },
+        runtimeProviderReattachProofHash: reattachProofHash,
+      },
+    })
+    expect(refreshed.status).toBe(200)
+    expect(
+      (room.store.get("room") as any).runtimeHostProviders[host.runtimeHostId]
+    ).toEqual(
+      expect.objectContaining({
+        humanParticipantId: "human-after-refresh",
+      })
+    )
+
+    const spoofed = await room.control({
+      action: "register",
+      participant: {
+        id: "spoofed-refresh",
+        name: "spoofed",
+        kind: "human",
+        joinedAt: Date.now(),
+        token: "spoofed-refresh-token",
+        media: {
+          sessionId: "spoofed-refresh-session",
+          muted: false,
+          fileChannelReady: false,
+          tracks: [],
+        },
+        runtimeProviderReattachProofHash: claimHash,
+      },
+    })
+    expect(spoofed.status).toBe(403)
   })
 
   it("does not let a pre-binding copied Host id keep a provider association alive", async () => {

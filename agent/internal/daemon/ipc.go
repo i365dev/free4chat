@@ -57,7 +57,7 @@ type IpcRequest struct {
 	InstanceID   string   `json:"instanceId,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	// ProviderClaim is a one-time opaque 256-bit capability accepted only by
-	// join. It is never copied into a response, status, workspace, or log.
+	// join/connect. It is never copied into a response, status, workspace, or log.
 	ProviderClaim       string            `json:"providerClaim,omitempty"`
 	TargetParticipantID string            `json:"targetParticipantId,omitempty"`
 	RequestID           string            `json:"requestId,omitempty"`

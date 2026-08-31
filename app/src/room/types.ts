@@ -61,6 +61,10 @@ export interface RuntimeHostProviderAssociation {
   // Agent on this Host has actually proved possession of the private handle.
   // Never project these ids to RoomState or room_info.
   verifiedParticipantIds: string[]
+  // Browser-owned refresh proof. Only the one-way hash is persisted; it is
+  // usable for a short grace window after the associated Human disconnects.
+  reattachProofHash?: string
+  reattachExpiresAt?: number
 }
 
 // Browser-safe projection for future Human-facing feature admission. Both ids
@@ -75,6 +79,7 @@ export interface RuntimeHostProviderPublicAssociation {
 export interface PendingRuntimeHostProviderClaim {
   humanParticipantId: string
   expiresAt: number
+  reattachProofHash?: string
 }
 
 export interface AgentCapabilities {

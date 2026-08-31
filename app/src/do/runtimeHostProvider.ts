@@ -68,7 +68,9 @@ function validPendingClaim(
     candidate.humanParticipantId.length > 0 &&
     typeof candidate.expiresAt === "number" &&
     Number.isSafeInteger(candidate.expiresAt) &&
-    candidate.expiresAt > 0
+    candidate.expiresAt > 0 &&
+    (candidate.reattachProofHash === undefined ||
+      isRuntimeProviderClaimHash(candidate.reattachProofHash))
   )
 }
 
@@ -88,7 +90,12 @@ function validProviderAssociation(
     candidate.verifiedParticipantIds.every(
       (participantId) =>
         typeof participantId === "string" && participantId.length > 0
-    )
+    ) &&
+    (candidate.reattachProofHash === undefined ||
+      isRuntimeProviderClaimHash(candidate.reattachProofHash)) &&
+    (candidate.reattachExpiresAt === undefined ||
+      (Number.isSafeInteger(candidate.reattachExpiresAt) &&
+        candidate.reattachExpiresAt > 0))
   )
 }
 
@@ -220,17 +227,24 @@ export function createRuntimeHostProviderClaim({
   participants,
   humanParticipantId,
   claimHash,
+  reattachProofHash,
   now,
 }: {
   pendingClaims: RuntimeHostProviderClaimMap
   participants: Iterable<RuntimeHostProviderParticipant>
   humanParticipantId: string
   claimHash: string
+  reattachProofHash?: string
   now: number
 }):
   | { ok: true; pendingClaims: RuntimeHostProviderClaimMap; expiresAt: number }
   | { ok: false; error: RuntimeHostProviderError } {
   if (!isRuntimeProviderClaimHash(claimHash))
+    return { ok: false, error: "invalid_runtime_provider_claim" }
+  if (
+    reattachProofHash !== undefined &&
+    !isRuntimeProviderClaimHash(reattachProofHash)
+  )
     return { ok: false, error: "invalid_runtime_provider_claim" }
   if (!isCurrentHuman(participants, humanParticipantId, true))
     return { ok: false, error: "runtime_provider_claim_human_invalid" }
@@ -253,7 +267,11 @@ export function createRuntimeHostProviderClaim({
     ok: true,
     pendingClaims: {
       ...pendingClaims,
-      [claimHash]: { humanParticipantId, expiresAt },
+      [claimHash]: {
+        humanParticipantId,
+        expiresAt,
+        ...(reattachProofHash ? { reattachProofHash } : {}),
+      },
     },
     expiresAt,
   }
@@ -303,6 +321,9 @@ export function redeemRuntimeHostProviderClaim({
     claimedAt: now,
     providerHandleHash,
     verifiedParticipantIds: [verifiedParticipantId],
+    ...(claim.reattachProofHash
+      ? { reattachProofHash: claim.reattachProofHash }
+      : {}),
   }
   const { [claimHash]: _consumed, ...remainingClaims } = pendingClaims
   return {
@@ -314,6 +335,129 @@ export function redeemRuntimeHostProviderClaim({
     pendingClaims: remainingClaims,
     association,
   }
+}
+
+// Reattach a refreshed Human to the same Host association without accepting a
+// public runtimeHostId as proof. The previous Human must already be absent,
+// the Host must still have a live verified Agent member, and the browser proof
+// must be inside the short disconnect grace window.
+export function reattachRuntimeHostProvider({
+  providers,
+  participants,
+  reattachProofHash,
+  humanParticipantId,
+  runtimeHosts,
+  now,
+  graceMs,
+}: {
+  providers: RuntimeHostProviderMap
+  participants: Iterable<RuntimeHostProviderParticipant>
+  reattachProofHash: string
+  humanParticipantId: string
+  runtimeHosts: RuntimeHostMap | undefined
+  now: number
+  graceMs: number
+}):
+  | { ok: true; providers: RuntimeHostProviderMap; runtimeHostId: string }
+  | { ok: false; error: RuntimeHostProviderError } {
+  if (!isRuntimeProviderClaimHash(reattachProofHash))
+    return { ok: false, error: "invalid_runtime_provider_claim" }
+  const list = Array.from(participants)
+  if (!humanParticipantId)
+    return { ok: false, error: "runtime_provider_claim_human_invalid" }
+  for (const [runtimeHostId, association] of Object.entries(providers)) {
+    if (association.reattachProofHash !== reattachProofHash) continue
+    if (!runtimeHosts?.[runtimeHostId]) continue
+    if (
+      association.reattachExpiresAt === undefined ||
+      association.reattachExpiresAt <= now ||
+      association.reattachExpiresAt > now + Math.max(graceMs, 0)
+    )
+      continue
+    const oldHuman = list.find(
+      (participant) => participant.id === association.humanParticipantId
+    )
+    if (!oldHuman || oldHuman.kind !== "human") continue
+    if (oldHuman.connected === true)
+      return { ok: false, error: "runtime_provider_claim_human_invalid" }
+    const hasLiveVerifiedMember = association.verifiedParticipantIds.some(
+      (participantId) => {
+        const member = list.find(
+          (participant) => participant.id === participantId
+        )
+        return (
+          member?.kind === "agent" &&
+          member.connected === true &&
+          member.runtimeHostId === runtimeHostId
+        )
+      }
+    )
+    if (!hasLiveVerifiedMember) continue
+    const { reattachExpiresAt: _reattachExpiresAt, ...reattached } = association
+    return {
+      ok: true,
+      runtimeHostId,
+      providers: {
+        ...providers,
+        [runtimeHostId]: {
+          ...reattached,
+          humanParticipantId,
+        },
+      },
+    }
+  }
+  return { ok: false, error: "runtime_provider_claim_not_found" }
+}
+
+export function markRuntimeHostProviderDisconnected({
+  providers,
+  humanParticipantId,
+  now,
+  graceMs,
+}: {
+  providers: RuntimeHostProviderMap
+  humanParticipantId: string
+  now: number
+  graceMs: number
+}): RuntimeHostProviderMap {
+  let changed = false
+  const next: RuntimeHostProviderMap = {}
+  for (const [runtimeHostId, association] of Object.entries(providers)) {
+    if (association.humanParticipantId !== humanParticipantId) {
+      next[runtimeHostId] = association
+      continue
+    }
+    changed = true
+    next[runtimeHostId] = {
+      ...association,
+      reattachExpiresAt: now + graceMs,
+    }
+  }
+  return changed ? next : providers
+}
+
+export function markRuntimeHostProviderConnected({
+  providers,
+  humanParticipantId,
+}: {
+  providers: RuntimeHostProviderMap
+  humanParticipantId: string
+}): RuntimeHostProviderMap {
+  let changed = false
+  const next: RuntimeHostProviderMap = {}
+  for (const [runtimeHostId, association] of Object.entries(providers)) {
+    if (
+      association.humanParticipantId !== humanParticipantId ||
+      association.reattachExpiresAt === undefined
+    ) {
+      next[runtimeHostId] = association
+      continue
+    }
+    const { reattachExpiresAt: _reattachExpiresAt, ...connected } = association
+    next[runtimeHostId] = connected
+    changed = true
+  }
+  return changed ? next : providers
 }
 
 // A successful proof on registration or hot projection adds the current

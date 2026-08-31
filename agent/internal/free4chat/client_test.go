@@ -277,6 +277,35 @@ func TestRuntimeProviderCredentialsStayOnPrivateMCPWire(t *testing.T) {
 	}
 }
 
+func TestConnectRuntimeProviderKeepsClaimPrivateAndReturnsHandle(t *testing.T) {
+	const claimHash = "KPvm-f4hBdYhSjdaYF_67xqPZx7BiiAXvMo1U_8l44w"
+	const providerHandle = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+	var captured map[string]any
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		switch toolNameOf(body) {
+		case "connect_runtime_provider":
+			captured = toolArgs(body)
+			writeJSON(w, callResult(map[string]any{"runtimeProviderHandle": providerHandle}))
+		default:
+			respondToolsList(w)
+		}
+	})
+	host := types.RuntimeHostProjection{RuntimeHostID: "host-176-provider", Speech: types.HostSpeechReadiness{STT: true}}
+	got, err := client.ConnectRuntimeProvider("participant-handle", host, claimHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != providerHandle {
+		t.Fatalf("provider handle mismatch: %q", got)
+	}
+	if captured["providerClaimHash"] != claimHash {
+		t.Fatalf("claim hash missing from connect wire: %#v", captured)
+	}
+	if _, present := captured["runtimeProviderHandle"]; present {
+		t.Fatal("connect must not send an existing provider handle")
+	}
+}
+
 // #165: explicit targets ride the existing send_text tool arguments only
 // when present; the ordinary unaddressed payload must stay byte-compatible.
 func TestSendTextCarriesExplicitTargets(t *testing.T) {

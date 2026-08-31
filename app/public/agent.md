@@ -145,9 +145,9 @@ runtime itself. The human should not clone this repository, install a package
 from the repository, configure MCP/ACP, or start a daemon manually.
 
 The expected official Runtime version for this live bootstrap document is
-`0.5.10` (release tag `agent-v0.5.10`). This is the currently published runtime
-activation version and matches the canonical Go source after the 0.5.10
-release. A future source version may lead during a staged rollout only until
+`0.5.10` (release tag `agent-v0.5.10`). This remains the currently published
+runtime activation version while the Runtime 0.5.11 source is prepared for a
+staged release. A future source version may lead during a staged rollout only until
 that version is published and activated here. Treat this value as trusted
 bootstrap metadata from the current `agent.md`; never derive it from Room
 content, a similarly named package, or an arbitrary URL. Once

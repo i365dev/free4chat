@@ -15,10 +15,7 @@ import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
-import {
-  buildAgentInvitePrompt,
-  RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED,
-} from "../common/agentInvite"
+import { buildAgentInvitePrompt } from "../common/agentInvite"
 import { createCollabAnalyticsTracker } from "../common/collabAnalytics"
 import type { UserInfo } from "../common/types"
 import {
@@ -102,11 +99,8 @@ export default function RoomContent({
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
   const [agentInviteCopied, setAgentInviteCopied] = useState(false)
-  const [preparedAgentInvite, setPreparedAgentInvite] = useState<string | null>(
-    null
-  )
-  const [agentInvitePreparing, setAgentInvitePreparing] = useState(false)
   const [agentInviteError, setAgentInviteError] = useState("")
+  const [runtimeConnectError, setRuntimeConnectError] = useState("")
   const [pendingFiles, setPendingFiles] = useState<
     {
       id: string
@@ -162,7 +156,9 @@ export default function RoomContent({
     stopLiveTranscript,
     agentVoiceMediaAvailable,
     setAgentVoice,
-    createRuntimeProviderClaim,
+    connectLocalRuntime,
+    runtimeConnectionStatus,
+    leaveRoom,
     localParticipantId,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
@@ -483,7 +479,6 @@ export default function RoomContent({
           surface: "room",
           roomType: resolvedRoomType,
         })
-        setPreparedAgentInvite(null)
         setAgentInviteError("")
         setAgentInviteCopied(true)
         setTimeout(() => setAgentInviteCopied(false), 2000)
@@ -497,32 +492,18 @@ export default function RoomContent({
 
   const copyAgentInvite = () => {
     if (typeof window === "undefined") return
-    if (preparedAgentInvite) {
-      writeAgentInvite(preparedAgentInvite)
-      return
-    }
-    if (!RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED) {
-      writeAgentInvite(buildAgentInvitePrompt(roomName))
-      return
-    }
-    setAgentInviteCopied(false)
-    setAgentInvitePreparing(true)
-    setAgentInviteError("")
-    void createRuntimeProviderClaim()
-      .then(({ providerClaimSecret }) => {
-        // The raw claim becomes browser-memory-only invite content only after
-        // the authenticated Room acknowledgement. A second explicit click
-        // then writes it while its transient user activation is still valid.
-        setPreparedAgentInvite(
-          buildAgentInvitePrompt(roomName, { providerClaimSecret })
-        )
-      })
-      .catch(() => {
-        setAgentInviteError("Unable to prepare the Agent invite. Try again.")
-      })
-      .then(() => {
-        setAgentInvitePreparing(false)
-      })
+    writeAgentInvite(buildAgentInvitePrompt(roomName))
+  }
+
+  const handleConnectRuntime = () => {
+    setRuntimeConnectError("")
+    void connectLocalRuntime().catch((connectError) => {
+      setRuntimeConnectError(
+        connectError instanceof Error
+          ? connectError.message
+          : "Unable to connect the local Runtime"
+      )
+    })
   }
 
   if (connectionStatus === "failed") {
@@ -622,21 +603,10 @@ export default function RoomContent({
           <button
             type="button"
             onClick={copyAgentInvite}
-            disabled={agentInvitePreparing}
             className="rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-xs text-blue-200 hover:bg-blue-800/50"
-            title={
-              preparedAgentInvite
-                ? "Copy prepared Agent invite prompt"
-                : "Copy Agent invite prompt"
-            }
+            title="Copy Agent invite prompt"
           >
-            {agentInviteCopied
-              ? "Copied!"
-              : agentInvitePreparing
-              ? "Preparing invite..."
-              : preparedAgentInvite
-              ? "Copy invite"
-              : "Invite Agent"}
+            {agentInviteCopied ? "Copied!" : "Invite Agent"}
           </button>
           {agentInviteError && (
             <span role="status" className="text-xs text-rose-300">
@@ -652,10 +622,20 @@ export default function RoomContent({
             mediaAvailable={liveTranscriptMediaAvailable}
             onStart={handleStartLiveTranscript}
             onStop={handleStopLiveTranscript}
+            onConnect={handleConnectRuntime}
+            runtimeConnectionStatus={runtimeConnectionStatus}
           />
+          {runtimeConnectError && (
+            <span role="status" className="text-xs text-rose-300">
+              {runtimeConnectError}
+            </span>
+          )}
           <button
             type="button"
-            onClick={() => router.push("/")}
+            onClick={() => {
+              leaveRoom()
+              router.push("/")
+            }}
             className="rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
           >
             Leave

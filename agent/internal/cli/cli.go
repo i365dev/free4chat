@@ -27,6 +27,7 @@ func usageText() string {
 	return `Usage:
   free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
   free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
+  free4chat-agent connect --room <room-id> --provider-claim <opaque-secret> [--instance <id>]
   free4chat-agent create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
   free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
@@ -159,6 +160,19 @@ func run(args []string) error {
 			AgentArgs:     repeatedOption(rest, "--agent-arg"),
 			Capabilities:  repeatedOption(rest, "--capability"),
 			ProviderClaim: providerClaim,
+		})
+
+	case "connect":
+		room := option(rest, "--room")
+		providerClaim := option(rest, "--provider-claim")
+		if room == "" || providerClaim == "" || !types.ValidRuntimeProviderCredential(providerClaim) {
+			return errUsage()
+		}
+		return runViaDaemon(&daemon.IpcRequest{
+			Op:            "connect",
+			Room:          room,
+			ProviderClaim: providerClaim,
+			InstanceID:    option(rest, "--instance"),
 		})
 
 	case "create":
@@ -433,7 +447,7 @@ func runVersion(args []string) error {
 // runViaDaemon performs the version-checked daemon handshake for join, then
 // sends the IPC request and pretty-prints the result.
 func runViaDaemon(request *daemon.IpcRequest) error {
-	if request.Op == "join" {
+	if request.Op == "join" || request.Op == "connect" {
 		if err := daemon.EnsureDaemonVersion(doctor.Version); err != nil {
 			return err
 		}

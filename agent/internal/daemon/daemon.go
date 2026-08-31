@@ -163,6 +163,11 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 			return nil, err
 		}
 		return d.dispatchJoin(request)
+	case "connect":
+		if err := d.rejectIfStopping(); err != nil {
+			return nil, err
+		}
+		return d.dispatchConnect(request)
 	case "create":
 		if err := d.rejectIfStopping(); err != nil {
 			return nil, err
@@ -474,6 +479,38 @@ func (d *Daemon) dispatchJoin(request *IpcRequest) (any, error) {
 		return nil, startErr
 	}
 	return statusView(residentRuntime), nil
+}
+
+func (d *Daemon) dispatchConnect(request *IpcRequest) (any, error) {
+	if request.Room == "" || request.ProviderClaim == "" {
+		return nil, errors.New("connect requires room and provider claim")
+	}
+	if !types.ValidRuntimeProviderCredential(request.ProviderClaim) {
+		return nil, errors.New("runtime provider claim is malformed")
+	}
+	d.mu.Lock()
+	var match *residentInstance
+	for _, instance := range d.instances {
+		if instance.roomID != request.Room {
+			continue
+		}
+		if request.InstanceID != "" && instance.instanceID != request.InstanceID {
+			continue
+		}
+		if match != nil {
+			d.mu.Unlock()
+			return nil, errors.New("multiple resident instances for this Room; pass --instance")
+		}
+		match = instance
+	}
+	d.mu.Unlock()
+	if match == nil {
+		return nil, errors.New("no resident Runtime is connected to this Room")
+	}
+	if err := match.runtime.ConnectProviderClaim(request.ProviderClaim); err != nil {
+		return nil, err
+	}
+	return statusView(match.runtime), nil
 }
 
 func (d *Daemon) dispatchCreate(request *IpcRequest) (any, error) {

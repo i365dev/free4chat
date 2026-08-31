@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 
@@ -23,6 +23,8 @@ interface LiveTranscriptControlProps {
   mediaAvailable: boolean
   onStart: (runtimeHostId: string) => void
   onStop: () => void
+  onConnect?: () => void
+  runtimeConnectionStatus?: "idle" | "preparing" | "copied"
 }
 
 interface LiveTranscriptSegmentsProps {
@@ -76,6 +78,8 @@ export function LiveTranscriptControl({
   mediaAvailable = false,
   onStart,
   onStop,
+  onConnect,
+  runtimeConnectionStatus = "idle",
 }: LiveTranscriptControlProps) {
   const [chooserOpen, setChooserOpen] = useState(false)
   const authorizedHosts = mediaAvailable
@@ -114,12 +118,41 @@ export function LiveTranscriptControl({
   }
 
   const unavailable = authorizedHosts.length === 0
+  if (unavailable && onConnect) {
+    return (
+      <div
+        className="relative flex items-center gap-2"
+        aria-label="Live Transcript controls"
+      >
+        <span className="text-xs text-gray-300">Live Transcript</span>
+        <span className="hidden text-xs text-gray-500 sm:inline">
+          No transcription Runtime connected
+        </span>
+        <button
+          type="button"
+          onClick={onConnect}
+          disabled={runtimeConnectionStatus === "preparing"}
+          className="rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-wait disabled:opacity-50"
+          title="Connect the Runtime installed on this computer"
+        >
+          {runtimeConnectionStatus === "preparing"
+            ? "Connecting..."
+            : runtimeConnectionStatus === "copied"
+            ? "Connection command copied"
+            : "Connect local Runtime"}
+        </button>
+      </div>
+    )
+  }
   return (
     <div
       className="relative flex items-center gap-2"
       aria-label="Live Transcript controls"
     >
       <span className="text-xs text-gray-300">Live Transcript</span>
+      <span className="hidden text-xs text-gray-500 sm:inline">
+        Local Runtime ready
+      </span>
       <button
         type="button"
         onClick={() => {
@@ -163,17 +196,56 @@ export function LiveTranscriptControl({
 export function LiveTranscriptSegments({
   segments = [],
 }: LiveTranscriptSegmentsProps) {
-  if (segments.length === 0) return null
-  const ordered = [...segments].sort(
-    (left, right) => left.sequence - right.sequence
+  const ordered = useMemo(
+    () => [...segments].sort((left, right) => left.sequence - right.sequence),
+    [segments]
   )
+  const latestSequence = ordered[ordered.length - 1]?.sequence
+  const listRef = useRef<HTMLOListElement>(null)
+  const nearBottomRef = useRef(true)
+  const [showNew, setShowNew] = useState(false)
+
+  useEffect(() => {
+    const list = listRef.current
+    if (!list) return
+    if (nearBottomRef.current) {
+      list.scrollTop = list.scrollHeight
+      setShowNew(false)
+    } else {
+      setShowNew(true)
+    }
+  }, [ordered.length, latestSequence])
+
+  const onScroll = () => {
+    const list = listRef.current
+    if (!list) return
+    nearBottomRef.current =
+      list.scrollHeight - list.scrollTop - list.clientHeight <= 24
+    if (nearBottomRef.current) setShowNew(false)
+  }
+
+  const jumpToLatest = () => {
+    const list = listRef.current
+    if (!list) return
+    nearBottomRef.current = true
+    list.scrollTop = list.scrollHeight
+    setShowNew(false)
+  }
+
+  if (segments.length === 0) return null
+
   return (
     <section
       className="mx-4 mt-1 flex flex-none flex-col rounded border border-emerald-700/40 bg-emerald-950/20 px-4 py-2"
       aria-label="Live Transcript"
     >
       <h2 className="text-sm font-medium text-emerald-100">Live Transcript</h2>
-      <ol className="mt-1 max-h-40 space-y-1 overflow-y-auto text-sm text-gray-200">
+      <ol
+        ref={listRef}
+        onScroll={onScroll}
+        className="mt-1 max-h-40 space-y-1 overflow-y-auto text-sm text-gray-200"
+        aria-live="polite"
+      >
         {ordered.map((segment) => (
           <li
             key={segment.segmentId}
@@ -186,6 +258,15 @@ export function LiveTranscriptSegments({
           </li>
         ))}
       </ol>
+      {showNew && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="mt-1 self-end rounded border border-emerald-700/50 px-2 py-0.5 text-xs text-emerald-200 hover:bg-emerald-900/40"
+        >
+          New transcript · Jump to latest
+        </button>
+      )}
     </section>
   )
 }
