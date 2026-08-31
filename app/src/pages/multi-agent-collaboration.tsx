@@ -198,9 +198,24 @@ Owner Agent / Human`}</code>
         Free4Chat currently supports the local resident Agent Runtime with
         Harnesses such as Codex, Claude, Pi, Hermes, OpenCode, and compatible
         ACP processes, while custom integrations can use MCP directly. The
-        cross-machine collaboration substrate has been proven in production
-        dogfood; the next product work is a simpler developer-native,
-        browser-optional entry path, not a new orchestration platform.
+        browser-optional developer path is available now and has been proven in
+        cross-machine production dogfood:
+      </p>
+
+      <pre>
+        <code>{`# Machine A
+free4chat-agent room create --agent pi --name Pi
+
+# Machine B
+free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
+      </pre>
+
+      <p>
+        These commands compose ordinary temporary Room participants. They do not
+        create a special owner, Agent team, workspace, planner, or implicit work
+        authorization. After joining, collaboration stays explicit: discover
+        peers, send a structured request when work is intended, then exchange a
+        correlated result and bounded artifact if needed.
       </p>
 
       <p>
