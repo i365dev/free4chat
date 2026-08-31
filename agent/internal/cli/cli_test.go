@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"syscall"
@@ -185,6 +186,118 @@ func runCli(t *testing.T, args ...string) (string, int) {
 	return out, -1
 }
 
+// fakeDaemon is a small IPC-only fixture for CLI composition tests. It speaks
+// the existing daemon envelope and records operations, so these tests prove
+// the room namespace does not invent a second daemon protocol.
+type fakeDaemon struct {
+	dir      string
+	listener net.Listener
+	requests chan daemon.IpcRequest
+	response func(daemon.IpcRequest) daemon.IpcResponse
+}
+
+func newFakeDaemon(t *testing.T, response func(daemon.IpcRequest) daemon.IpcResponse) *fakeDaemon {
+	t.Helper()
+	// Unix socket paths on macOS have a small fixed maximum. t.TempDir()
+	// includes the full test name, which can exceed it; use the same short
+	// temporary-directory pattern as the subprocess helper above.
+	dir, err := os.MkdirTemp("", "fcagent-fake-")
+	if err != nil {
+		t.Fatalf("fake daemon temp directory failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	listener, err := net.Listen("unix", filepath.Join(dir, "daemon.sock"))
+	if err != nil {
+		t.Fatalf("fake daemon listen failed: %v", err)
+	}
+	fixture := &fakeDaemon{
+		dir:      dir,
+		listener: listener,
+		requests: make(chan daemon.IpcRequest, 16),
+		response: response,
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go fixture.serve()
+	return fixture
+}
+
+func (d *fakeDaemon) serve() {
+	for {
+		conn, err := d.listener.Accept()
+		if err != nil {
+			return
+		}
+		go d.serveOne(conn)
+	}
+}
+
+func (d *fakeDaemon) serveOne(conn net.Conn) {
+	defer conn.Close()
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return
+	}
+	request, err := daemon.DecodeRequest([]byte(strings.TrimSpace(line)))
+	if err != nil {
+		return
+	}
+	d.requests <- *request
+	response, err := json.Marshal(d.response(*request))
+	if err == nil {
+		_, _ = conn.Write(append(response, '\n'))
+	}
+}
+
+func runCliWithFakeDaemon(t *testing.T, fixture *fakeDaemon, args ...string) (string, int) {
+	t.Helper()
+	cmd := exec.Command(binaryPath, args...)
+	cmd.Env = append(os.Environ(),
+		"FREE4CHAT_AGENT_DIR="+fixture.dir,
+		"FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE=1",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, err := cmd.Output()
+	output := string(stdout) + stderr.String()
+	if err == nil {
+		return output, 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return output, exitErr.ExitCode()
+	}
+	t.Fatalf("CLI run against fake daemon failed: %v", err)
+	return output, -1
+}
+
+func nextFakeRequest(t *testing.T, fixture *fakeDaemon) daemon.IpcRequest {
+	t.Helper()
+	select {
+	case request := <-fixture.requests:
+		return request
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for fake daemon request")
+		return daemon.IpcRequest{}
+	}
+}
+
+func roomFixture(t *testing.T, createResult, joinResult json.RawMessage) *fakeDaemon {
+	t.Helper()
+	return newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+		switch request.Op {
+		case "status":
+			return daemon.IpcResponse{OK: true, Result: []any{}}
+		case "daemon-info":
+			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
+		case "create":
+			return daemon.IpcResponse{OK: true, Result: createResult}
+		case "join":
+			return daemon.IpcResponse{OK: true, Result: joinResult}
+		default:
+			return daemon.IpcResponse{OK: false, Error: "unexpected fake daemon operation"}
+		}
+	})
+}
+
 // TestTestDaemonStopIsScopedAndDeterministic pins the reclaim contract the
 // whole suite relies on: the daemon's own stop op tears down the socket and
 // then the process, without any signal or pattern kill, and nothing else is
@@ -267,6 +380,191 @@ func TestCreateRejectsRoomFlagAndMissingLauncher(t *testing.T) {
 		if !strings.Contains(output, "free4chat-agent create") {
 			t.Fatalf("usage text must mention the command: %q", output)
 		}
+	}
+}
+
+func TestRoomCommandsReuseCreateAndJoinDaemonOperations(t *testing.T) {
+	createResult := json.RawMessage(`{
+  "state":"waiting",
+  "roomId":"room-created",
+  "name":"Pi",
+  "invite":{"kind":"free4chat.room-invite","version":1,"roomId":"room-created","roomUrl":"https://www.free4.chat/room?id=room-created"}
+}`)
+	joinResult := json.RawMessage(`{
+  "state":"waiting",
+  "roomId":"room-created",
+  "name":"Codex"
+}`)
+	fixture := roomFixture(t, createResult, joinResult)
+
+	createOutput, createCode := runCliWithFakeDaemon(t, fixture,
+		"room", "create", "--agent", "pi", "--name", "Pi", "--capability", "code.edit")
+	if createCode != 0 {
+		t.Fatalf("room create failed: %d %q", createCode, createOutput)
+	}
+	if !strings.Contains(createOutput, "Created temporary Room") ||
+		!strings.Contains(createOutput, "Pi joined") ||
+		!strings.Contains(createOutput, "Room: room-created") ||
+		!strings.Contains(createOutput, "Human UI: https://www.free4.chat/room?id=room-created") {
+		t.Fatalf("room create human output mismatch: %q", createOutput)
+	}
+	if request := nextFakeRequest(t, fixture); request.Op != "status" {
+		t.Fatalf("room create must retain normal daemon readiness check, got %+v", request)
+	}
+	createRequest := nextFakeRequest(t, fixture)
+	if createRequest.Op != "create" || createRequest.Room != "" ||
+		createRequest.Agent != "pi" || createRequest.Name != "Pi" ||
+		!reflect.DeepEqual(createRequest.Capabilities, []string{"code.edit"}) {
+		t.Fatalf("room create must submit the legacy create request, got %+v", createRequest)
+	}
+
+	joinOutput, joinCode := runCliWithFakeDaemon(t, fixture,
+		"room", "join", "room-created", "--agent", "codex", "--name", "Codex", "--capability", "shell")
+	if joinCode != 0 {
+		t.Fatalf("room join failed: %d %q", joinCode, joinOutput)
+	}
+	if !strings.Contains(joinOutput, "Codex joined") ||
+		!strings.Contains(joinOutput, "Room: room-created") {
+		t.Fatalf("room join human output mismatch: %q", joinOutput)
+	}
+	if request := nextFakeRequest(t, fixture); request.Op != "daemon-info" {
+		t.Fatalf("room join must retain daemon version handshake, got %+v", request)
+	}
+	joinRequest := nextFakeRequest(t, fixture)
+	if joinRequest.Op != "join" || joinRequest.Room != "room-created" ||
+		joinRequest.Agent != "codex" || joinRequest.Name != "Codex" ||
+		!reflect.DeepEqual(joinRequest.Capabilities, []string{"shell"}) {
+		t.Fatalf("room join must submit the legacy join request, got %+v", joinRequest)
+	}
+}
+
+func TestRoomJoinPreservesCustomLauncherAndAllowsMultipleLocalResidents(t *testing.T) {
+	joinResult := json.RawMessage(`{"state":"waiting","roomId":"shared-room"}`)
+	fixture := roomFixture(t, json.RawMessage(`{}`), joinResult)
+
+	for _, command := range [][]string{
+		{"room", "join", "shared-room", "--agent-command", "custom-acp", "--agent-arg", "--stdio", "--agent-arg", "json", "--name", "Custom"},
+		{"room", "join", "shared-room", "--agent", "hermes", "--name", "Hermes"},
+	} {
+		output, code := runCliWithFakeDaemon(t, fixture, command...)
+		if code != 0 {
+			t.Fatalf("%v failed: %d %q", command, code, output)
+		}
+		if request := nextFakeRequest(t, fixture); request.Op != "daemon-info" {
+			t.Fatalf("room join must use the existing daemon handshake, got %+v", request)
+		}
+		request := nextFakeRequest(t, fixture)
+		if request.Op != "join" || request.Room != "shared-room" {
+			t.Fatalf("room join must not impose a team/group restriction, got %+v", request)
+		}
+		if request.AgentCommand == "custom-acp" && !reflect.DeepEqual(request.AgentArgs, []string{"--stdio", "json"}) {
+			t.Fatalf("custom launcher arguments changed: %+v", request)
+		}
+	}
+}
+
+func TestRoomHumanOutputExcludesDaemonPrivateFields(t *testing.T) {
+	createResult := json.RawMessage(`{
+  "roomId":"safe-room",
+  "participantId":"participant-visible-but-unneeded",
+  "participantHandle":"participant-handle-private",
+  "participantToken":"participant-token-private",
+  "runtimeProviderHandle":"provider-handle-private",
+  "providerClaim":"provider-claim-private",
+  "runtimeProviderProof":"provider-proof-private",
+  "sfuSessionId":"sfu-session-private",
+  "internalSecret":"internal-secret-private",
+  "invite":{"kind":"free4chat.room-invite","version":1,"roomId":"safe-room","roomUrl":"https://www.free4.chat/room?id=safe-room"}
+}`)
+	joinResult := json.RawMessage(`{
+  "roomId":"safe-room",
+  "participantId":"participant-visible-but-unneeded",
+  "participantHandle":"participant-handle-private",
+  "participantToken":"participant-token-private",
+  "runtimeProviderHandle":"provider-handle-private",
+  "providerClaim":"provider-claim-private",
+  "runtimeProviderProof":"provider-proof-private",
+  "sfuSessionId":"sfu-session-private",
+  "internalSecret":"internal-secret-private"
+}`)
+	fixture := roomFixture(t, createResult, joinResult)
+
+	createOutput, createCode := runCliWithFakeDaemon(t, fixture,
+		"room", "create", "--agent", "pi", "--name", "Pi")
+	if createCode != 0 {
+		t.Fatalf("room create failed: %d %q", createCode, createOutput)
+	}
+	joinOutput, joinCode := runCliWithFakeDaemon(t, fixture,
+		"room", "join", "safe-room", "--agent", "codex", "--name", "Codex")
+	if joinCode != 0 {
+		t.Fatalf("room join failed: %d %q", joinCode, joinOutput)
+	}
+	for _, output := range []string{createOutput, joinOutput} {
+		for _, private := range []string{
+			"participant-handle-private", "participant-token-private", "provider-handle-private",
+			"provider-claim-private", "provider-proof-private", "sfu-session-private", "internal-secret-private",
+			"participant-visible-but-unneeded", "{\"roomId\"",
+		} {
+			if strings.Contains(output, private) {
+				t.Fatalf("human-facing room output leaked %q: %q", private, output)
+			}
+		}
+	}
+}
+
+func TestRoomCommandsKeepLegacyMachineReadableOutput(t *testing.T) {
+	createResult := json.RawMessage(`{"state":"waiting","roomId":"legacy-room","name":"Pi","instanceId":"instance-a","participantId":"participant-a","invite":{"kind":"free4chat.room-invite","version":1,"roomId":"legacy-room","roomUrl":"https://www.free4.chat/room?id=legacy-room"}}`)
+	joinResult := json.RawMessage(`{"state":"waiting","roomId":"legacy-room","name":"Codex","instanceId":"instance-b","participantId":"participant-b"}`)
+	fixture := roomFixture(t, createResult, joinResult)
+
+	for _, test := range []struct {
+		args     []string
+		expected json.RawMessage
+	}{
+		{[]string{"create", "--agent", "pi", "--name", "Pi"}, createResult},
+		{[]string{"join", "--room", "legacy-room", "--agent", "codex", "--name", "Codex"}, joinResult},
+	} {
+		output, code := runCliWithFakeDaemon(t, fixture, test.args...)
+		if code != 0 {
+			t.Fatalf("legacy %v failed: %d %q", test.args, code, output)
+		}
+		var got, want any
+		if err := json.Unmarshal([]byte(output), &got); err != nil {
+			t.Fatalf("legacy %v stopped returning JSON: %v (%q)", test.args, err, output)
+		}
+		if err := json.Unmarshal(test.expected, &want); err != nil {
+			t.Fatalf("bad expected fixture: %v", err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("legacy %v response changed:\n got: %#v\nwant: %#v", test.args, got, want)
+		}
+	}
+}
+
+func TestRoomRejectsInvalidCommandShapesAndMalformedDaemonOutput(t *testing.T) {
+	for _, args := range [][]string{
+		{"room"},
+		{"room", "create", "--room", "not-allowed", "--agent", "pi", "--name", "Pi"},
+		{"room", "join", "--room", "not-allowed", "--agent", "pi", "--name", "Pi"},
+		{"room", "join", "safe-room", "--room", "not-allowed", "--agent", "pi", "--name", "Pi"},
+		{"room", "join", "safe-room", "--name", "Pi"},
+		{"room", "unknown"},
+	} {
+		output, code := runCli(t, args...)
+		if code != 2 || !strings.Contains(output, "free4chat-agent room") {
+			t.Fatalf("room %v must usage-exit without a daemon request: code=%d output=%q", args, code, output)
+		}
+	}
+
+	fixture := roomFixture(t,
+		json.RawMessage(`{"participantHandle":"malformed-response-private"}`),
+		json.RawMessage(`{"participantHandle":"malformed-response-private"}`),
+	)
+	output, code := runCliWithFakeDaemon(t, fixture,
+		"room", "create", "--agent", "pi", "--name", "Pi")
+	if code != 1 || !strings.Contains(output, "omitted the public Room invite") ||
+		strings.Contains(output, "malformed-response-private") {
+		t.Fatalf("malformed create response must fail closed without echoing private fields: code=%d output=%q", code, output)
 	}
 }
 

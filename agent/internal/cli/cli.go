@@ -25,6 +25,10 @@ const mcpEndpointDefault = "https://www.free4.chat/mcp"
 
 func usageText() string {
 	return `Usage:
+  free4chat-agent room create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
+  free4chat-agent room create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
+  free4chat-agent room join <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
+  free4chat-agent room join <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
   free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
   free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
   free4chat-agent connect --room <room-id> --provider-claim <opaque-secret>
@@ -138,29 +142,15 @@ func run(args []string) error {
 	case "daemon":
 		return daemon.New().Run()
 
+	case "room":
+		return runRoom(rest)
+
 	case "join":
-		room := option(rest, "--room")
-		name := option(rest, "--name")
-		agent := option(rest, "--agent")
-		agentCommand := option(rest, "--agent-command")
-		providerClaim := option(rest, "--provider-claim")
-		if providerClaim != "" && !types.ValidRuntimeProviderCredential(providerClaim) {
-			return errors.New("invalid runtime provider claim")
+		request, err := joinRequest(rest)
+		if err != nil {
+			return err
 		}
-		if room == "" || name == "" || (agent == "" && agentCommand == "") ||
-			(agent != "" && agentCommand != "") {
-			return errUsage()
-		}
-		return runViaDaemon(&daemon.IpcRequest{
-			Op:            "join",
-			Room:          room,
-			Name:          name,
-			Agent:         agent,
-			AgentCommand:  agentCommand,
-			AgentArgs:     repeatedOption(rest, "--agent-arg"),
-			Capabilities:  repeatedOption(rest, "--capability"),
-			ProviderClaim: providerClaim,
-		})
+		return runViaDaemon(request)
 
 	case "connect":
 		room := option(rest, "--room")
@@ -175,23 +165,11 @@ func run(args []string) error {
 		})
 
 	case "create":
-		name := option(rest, "--name")
-		agent := option(rest, "--agent")
-		agentCommand := option(rest, "--agent-command")
-		// Create-only command shape: no --room exists here by design — the
-		// room id is generated server-side and returned inside the invite.
-		if hasFlag(rest, "--room") || name == "" ||
-			(agent == "" && agentCommand == "") || (agent != "" && agentCommand != "") {
-			return errUsage()
+		request, err := createRequest(rest)
+		if err != nil {
+			return err
 		}
-		return runViaDaemon(&daemon.IpcRequest{
-			Op:           "create",
-			Name:         name,
-			Agent:        agent,
-			AgentCommand: agentCommand,
-			AgentArgs:    repeatedOption(rest, "--agent-arg"),
-			Capabilities: repeatedOption(rest, "--capability"),
-		})
+		return runViaDaemon(request)
 
 	case "capabilities":
 		request := &daemon.IpcRequest{Op: "update-capabilities", InstanceID: option(rest, "--instance")}
@@ -426,6 +404,137 @@ func run(args []string) error {
 	}
 }
 
+// joinRequest keeps the low-level join parsing shared with the developer
+// convenience command, so both paths always submit the same daemon operation.
+func joinRequest(rest []string) (*daemon.IpcRequest, error) {
+	room := option(rest, "--room")
+	name := option(rest, "--name")
+	agent := option(rest, "--agent")
+	agentCommand := option(rest, "--agent-command")
+	providerClaim := option(rest, "--provider-claim")
+	if providerClaim != "" && !types.ValidRuntimeProviderCredential(providerClaim) {
+		return nil, errors.New("invalid runtime provider claim")
+	}
+	if room == "" || name == "" || (agent == "" && agentCommand == "") ||
+		(agent != "" && agentCommand != "") {
+		return nil, errUsage()
+	}
+	return &daemon.IpcRequest{
+		Op:            "join",
+		Room:          room,
+		Name:          name,
+		Agent:         agent,
+		AgentCommand:  agentCommand,
+		AgentArgs:     repeatedOption(rest, "--agent-arg"),
+		Capabilities:  repeatedOption(rest, "--capability"),
+		ProviderClaim: providerClaim,
+	}, nil
+}
+
+// createRequest keeps the low-level create parsing shared with the developer
+// convenience command. Create has no --room because the server generates the
+// Room and returns its public invite descriptor.
+func createRequest(rest []string) (*daemon.IpcRequest, error) {
+	name := option(rest, "--name")
+	agent := option(rest, "--agent")
+	agentCommand := option(rest, "--agent-command")
+	if hasFlag(rest, "--room") || name == "" ||
+		(agent == "" && agentCommand == "") || (agent != "" && agentCommand != "") {
+		return nil, errUsage()
+	}
+	return &daemon.IpcRequest{
+		Op:           "create",
+		Name:         name,
+		Agent:        agent,
+		AgentCommand: agentCommand,
+		AgentArgs:    repeatedOption(rest, "--agent-arg"),
+		Capabilities: repeatedOption(rest, "--capability"),
+	}, nil
+}
+
+// runRoom is the developer-facing composition layer for the existing create
+// and join lifecycle. It deliberately sends only the legacy daemon operations
+// and prints a small safe projection instead of the low-level JSON response.
+func runRoom(args []string) error {
+	if len(args) == 0 {
+		return errUsage()
+	}
+
+	subcommand, rest := args[0], args[1:]
+	switch subcommand {
+	case "create":
+		request, err := createRequest(rest)
+		if err != nil {
+			return err
+		}
+		result, err := executeDaemonRequest(request)
+		if err != nil {
+			return err
+		}
+		return printRoomCreate(result, request.Name)
+
+	case "join":
+		if len(rest) == 0 || rest[0] == "" || strings.HasPrefix(rest[0], "--") ||
+			hasFlag(rest[1:], "--room") {
+			return errUsage()
+		}
+		request, err := joinRequest(append([]string{"--room", rest[0]}, rest[1:]...))
+		if err != nil {
+			return err
+		}
+		result, err := executeDaemonRequest(request)
+		if err != nil {
+			return err
+		}
+		return printRoomJoin(result, request.Room, request.Name)
+
+	default:
+		return errUsage()
+	}
+}
+
+type roomCreateResponse struct {
+	Invite *types.RoomInviteDescriptorV1 `json:"invite"`
+}
+
+type roomJoinResponse struct {
+	RoomID string `json:"roomId"`
+}
+
+// printRoomCreate exposes only the public invite the server returned. It must
+// never print the daemon's raw response because that contract may grow private
+// resident fields over time.
+func printRoomCreate(raw json.RawMessage, name string) error {
+	var response roomCreateResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return errors.New("daemon create response was invalid")
+	}
+	if response.Invite == nil || strings.TrimSpace(response.Invite.RoomID) == "" ||
+		strings.TrimSpace(response.Invite.RoomURL) == "" {
+		return errors.New("daemon create response omitted the public Room invite")
+	}
+	fmt.Printf("✓ Created temporary Room\n✓ %s joined\n\nRoom: %s\nHuman UI: %s\n",
+		name, response.Invite.RoomID, response.Invite.RoomURL)
+	return nil
+}
+
+// printRoomJoin confirms that the existing daemon join lifecycle returned the
+// requested Room, without exposing participant or Runtime-private metadata.
+func printRoomJoin(raw json.RawMessage, requestedRoom, name string) error {
+	var response roomJoinResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return errors.New("daemon join response was invalid")
+	}
+	if response.RoomID == "" {
+		return errors.New("daemon join response omitted the Room id")
+	}
+	if response.RoomID != requestedRoom {
+		return errors.New("daemon join response did not match the requested Room")
+	}
+	fmt.Printf("✓ %s joined\nRoom: %s\n", name, response.RoomID)
+	return nil
+}
+
 // runVersion reports the build version without contacting the daemon or any
 // network service. The JSON form is the stable local bootstrap contract.
 func runVersion(args []string) error {
@@ -443,21 +552,31 @@ func runVersion(args []string) error {
 	return nil
 }
 
-// runViaDaemon performs the version-checked daemon handshake for join, then
-// sends the IPC request and pretty-prints the result.
+// runViaDaemon preserves the stable low-level CLI contract: it performs the
+// version-checked daemon handshake, then emits the daemon result as JSON.
 func runViaDaemon(request *daemon.IpcRequest) error {
-	if request.Op == "join" || request.Op == "connect" {
-		if err := daemon.EnsureDaemonVersion(doctor.Version); err != nil {
-			return err
-		}
-	} else if err := daemon.EnsureDaemon(); err != nil {
-		return err
-	}
-	result, err := daemon.SendIPC(request)
+	result, err := executeDaemonRequest(request)
 	if err != nil {
 		return err
 	}
 	return printJSONRaw(result)
+}
+
+// executeDaemonRequest is the shared daemon lifecycle boundary for the raw
+// automation commands and the human-friendly room namespace.
+func executeDaemonRequest(request *daemon.IpcRequest) (json.RawMessage, error) {
+	if request.Op == "join" || request.Op == "connect" {
+		if err := daemon.EnsureDaemonVersion(doctor.Version); err != nil {
+			return nil, err
+		}
+	} else if err := daemon.EnsureDaemon(); err != nil {
+		return nil, err
+	}
+	result, err := daemon.SendIPC(request)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // runPeers queries room_info directly — read-only discovery works with or
