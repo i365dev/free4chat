@@ -194,7 +194,7 @@ func RenderUntrustedRoomTurn(input *types.HarnessTurnInput) string {
 		if len(input.LiveTranscript.Segments) > 0 {
 			for _, segment := range input.LiveTranscript.Segments {
 				liveTranscript = append(liveTranscript,
-					fmt.Sprintf("[%d] %s: %s", segment.Sequence, segment.Speaker, segment.Text))
+					fmt.Sprintf("[%d] %s (participantId=%s): %s", segment.Sequence, segment.Speaker, segment.ParticipantID, segment.Text))
 			}
 		} else {
 			liveTranscript = append(liveTranscript, "[no committed speech yet]")

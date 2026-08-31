@@ -496,11 +496,11 @@ func TestRenderUntrustedRoomTurnIncludesCommittedRoomWideLiveTranscript(t *testi
 
 	rendered := RenderUntrustedRoomTurn(&input)
 	if !strings.Contains(rendered, "Committed Room-wide Live Transcript context") ||
-		!strings.Contains(rendered, "[41] Ada: Project codename is Quartz Finch.") ||
-		!strings.Contains(rendered, "[42] Babbage: Retry exactly twice and never auto-failover.") {
+		!strings.Contains(rendered, "[41] Ada (participantId=human-a): Project codename is Quartz Finch.") ||
+		!strings.Contains(rendered, "[42] Babbage (participantId=human-b): Retry exactly twice and never auto-failover.") {
 		t.Fatalf("shared live transcript missing from ACP prompt:\n%s", rendered)
 	}
-	if strings.Index(rendered, "[41] Ada:") > strings.Index(rendered, "[42] Babbage:") {
+	if strings.Index(rendered, "[41] Ada (participantId=human-a):") > strings.Index(rendered, "[42] Babbage (participantId=human-b):") {
 		t.Fatalf("shared live transcript order changed:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "not ordinary chat") ||
