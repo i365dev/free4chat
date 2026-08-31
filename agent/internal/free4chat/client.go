@@ -438,6 +438,29 @@ type roomControlHandle struct {
 	ParticipantToken string `json:"participantToken"`
 }
 
+func parseRoomControlHandle(participantHandle string) (roomControlHandle, error) {
+	rawHandle, err := base64.RawURLEncoding.DecodeString(participantHandle)
+	if err != nil {
+		return roomControlHandle{}, &Error{Message: "invalid participant handle", Code: CodeToolError}
+	}
+	var handle roomControlHandle
+	if err := json.Unmarshal(rawHandle, &handle); err != nil ||
+		!validBoundedText(handle.Room, 256) || !validBoundedText(handle.ParticipantID, 256) || handle.ParticipantToken == "" {
+		return roomControlHandle{}, &Error{Message: "invalid participant handle", Code: CodeToolError}
+	}
+	return handle, nil
+}
+
+func (c *Client) roomControlEndpoint(path string) (*url.URL, error) {
+	endpoint, err := url.Parse(c.Endpoint)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return nil, &Error{Message: "invalid room endpoint", Code: CodeToolError}
+	}
+	endpoint.Path = path
+	endpoint.RawQuery = ""
+	return endpoint, nil
+}
+
 // AppendLiveTranscript commits a completed STT segment directly to the
 // authenticated Room control endpoint. It intentionally bypasses MCP: this
 // is a narrow Runtime-owned media side channel, never a Harness tool.
@@ -447,21 +470,14 @@ func (c *Client) AppendLiveTranscript(participantHandle string, epoch int64, seg
 		strings.TrimSpace(text) != text || !validBoundedText(text, 4000) {
 		return &Error{Message: "invalid live transcript segment", Code: CodeToolError}
 	}
-	rawHandle, err := base64.RawURLEncoding.DecodeString(participantHandle)
+	handle, err := parseRoomControlHandle(participantHandle)
 	if err != nil {
-		return &Error{Message: "invalid participant handle", Code: CodeToolError}
+		return err
 	}
-	var handle roomControlHandle
-	if err := json.Unmarshal(rawHandle, &handle); err != nil ||
-		!validBoundedText(handle.Room, 256) || !validBoundedText(handle.ParticipantID, 256) || handle.ParticipantToken == "" {
-		return &Error{Message: "invalid participant handle", Code: CodeToolError}
+	endpoint, err := c.roomControlEndpoint("/api/room/live-transcript/append")
+	if err != nil {
+		return err
 	}
-	endpoint, err := url.Parse(c.Endpoint)
-	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
-		return &Error{Message: "invalid room endpoint", Code: CodeToolError}
-	}
-	endpoint.Path = "/api/room/live-transcript/append"
-	endpoint.RawQuery = ""
 	payload, err := json.Marshal(map[string]any{
 		"epoch":               epoch,
 		"segmentId":           segmentID,
@@ -631,6 +647,59 @@ func (c *Client) UpdateRuntimeHostWithRuntimeProvider(participantHandle string, 
 		return &Error{Message: "runtime provider handle is malformed", Code: CodeToolError}
 	}
 	return c.updateRuntimeHost(participantHandle, host, runtimeProviderHandle)
+}
+
+// ConnectRuntimeProvider redeems a Human-created claim for an already
+// resident Agent. It never creates a second participant or returns the claim.
+func (c *Client) ConnectRuntimeProvider(participantHandle string, host types.RuntimeHostProjection, providerClaimHash string) (string, error) {
+	if !types.ValidRuntimeProviderCredential(providerClaimHash) {
+		return "", &Error{Message: "runtime provider claim is malformed", Code: CodeToolError}
+	}
+	handle, err := parseRoomControlHandle(participantHandle)
+	if err != nil {
+		return "", err
+	}
+	endpoint, err := c.roomControlEndpoint("/api/room/runtime-provider/connect")
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"runtimeHost":       host,
+		"providerClaimHash": providerClaimHash,
+	})
+	if err != nil {
+		return "", &Error{Message: "encode runtime provider connection", Code: CodeTransient}
+	}
+	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return "", &Error{Message: "create runtime provider request", Code: CodeTransient}
+	}
+	request.Header.Set("Content-Type", headerContentType)
+	request.Header.Set("Accept", headerContentType)
+	request.Header.Set("User-Agent", defaultUserAgent)
+	request.Header.Set("Origin", endpoint.Scheme+"://"+endpoint.Host)
+	request.Header.Set("X-Room-Id", handle.Room)
+	request.Header.Set("X-Room-Participant-Id", handle.ParticipantID)
+	request.Header.Set("X-Room-Participant-Token", handle.ParticipantToken)
+	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return "", &Error{Message: "runtime provider request failed", Code: CodeTransient}
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+		return "", &Error{Message: "runtime provider temporarily unavailable", Code: CodeTransient}
+	}
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return "", &Error{Message: "runtime provider connection rejected", Code: CodeToolError}
+	}
+	var result struct {
+		RuntimeProviderHandle string `json:"runtimeProviderHandle"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil ||
+		!types.ValidRuntimeProviderCredential(result.RuntimeProviderHandle) {
+		return "", &Error{Message: "Free4Chat returned an invalid provider result", Code: CodeToolError}
+	}
+	return result.RuntimeProviderHandle, nil
 }
 
 func (c *Client) updateRuntimeHost(participantHandle string, host types.RuntimeHostProjection, runtimeProviderHandle string) error {

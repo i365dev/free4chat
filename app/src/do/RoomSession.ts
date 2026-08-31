@@ -64,10 +64,15 @@ import {
 import {
   createRuntimeHostProviderClaim,
   canHumanUseRuntimeHost,
+  completeDeferredRuntimeHostProviderReattach,
+  deferRuntimeHostProviderReattach,
   garbageCollectRuntimeHostProviders,
   markRuntimeHostProviderMember,
   normalizeRuntimeHostProviders,
   projectRuntimeHostProviders,
+  markRuntimeHostProviderDisconnected,
+  markRuntimeHostProviderConnected,
+  reattachRuntimeHostProvider,
   redeemRuntimeHostProviderClaim,
   removeRuntimeHostProviderForHuman,
   verifyRuntimeHostProviderProof,
@@ -257,6 +262,7 @@ type ControlRequest =
       participant: Omit<RoomParticipant, "connected" | "lastSeenAt"> & {
         // Humans never project a Runtime Host; any payload is dropped.
         runtimeHost?: RuntimeHostProjection
+        runtimeProviderReattachProofHash?: string
       }
     }
   | {
@@ -402,6 +408,15 @@ type ControlRequest =
       token: string
       runtimeHost: RuntimeHostProjection
       runtimeProviderHandle?: string
+    }
+  | {
+      // Re-prove an existing resident Runtime Host against a Human-created
+      // one-time claim without creating a second Agent participant.
+      action: "agent-connect-runtime-provider"
+      participantId: string
+      token: string
+      runtimeHost: RuntimeHostProjection
+      providerClaimHash: string
     }
   | {
       // #106 Phase B: one structured collaboration envelope. The request kind
@@ -560,6 +575,7 @@ type ClientMessage =
       type: "runtime-provider-claim-create"
       requestId: string
       providerClaimHash: string
+      reattachProofHash?: string
     }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
@@ -1284,7 +1300,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       deadlines.push(Date.now() + MEDIA_CLEANUP_RETRY_MS)
     for (const claim of Object.values(room.runtimeHostProviderClaims ?? {}))
       deadlines.push(claim.expiresAt)
+    for (const association of Object.values(room.runtimeHostProviders ?? {}))
+      if (association.pendingReattach)
+        deadlines.push(association.pendingReattach.expiresAt)
     await this.ctx.storage.setAlarm(Math.min(...deadlines))
+  }
+
+  // A same-browser refresh replaces only the exact Human binding it proved.
+  // Keep a currently active producer in its epoch: moving this ownership
+  // atomically with the provider association avoids lifecycle normalization
+  // treating the old Human id as an invalid producer and stopping speech.
+  private preserveLiveTranscriptOwnerAcrossRuntimeReattach(
+    room: RoomRecord,
+    runtimeHostId: string,
+    previousHumanParticipantId: string,
+    humanParticipantId: string
+  ): void {
+    if (
+      room.liveTranscript.active &&
+      room.liveTranscript.producerRuntimeHostId === runtimeHostId &&
+      room.liveTranscript.startedByHumanParticipantId ===
+        previousHumanParticipantId
+    )
+      room.liveTranscript = {
+        ...room.liveTranscript,
+        startedByHumanParticipantId: humanParticipantId,
+      }
   }
 
   // Runtime Host projection garbage collection and provider-association
@@ -1737,6 +1778,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ) {
         return this.json({ error: "invalid_participant_kind" }, 400)
       }
+      const reattachProofHash = !isAgent
+        ? request.participant.runtimeProviderReattachProofHash
+        : undefined
+      if (
+        reattachProofHash !== undefined &&
+        !isRuntimeProviderClaimHash(reattachProofHash)
+      )
+        return this.json({ error: "invalid_runtime_provider_reattach" }, 400)
       // #106 Phase A: a joining agent may advertise an explicit bounded
       // capability list chosen by its Runtime/Harness. Invalid input rejects
       // the join — never repaired silently (see do/collab.ts).
@@ -1763,6 +1812,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       delete (participantWire as Record<string, unknown>).runtimeHost
       delete (participantWire as Record<string, unknown>).providerClaimHash
       delete (participantWire as Record<string, unknown>).runtimeProviderHandle
+      delete (participantWire as Record<string, unknown>)
+        .runtimeProviderReattachProofHash
       const participant: RoomParticipant = {
         ...participantWire,
         connected: isAgent,
@@ -1776,6 +1827,54 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                 : {}),
             }
           : {}),
+      }
+      if (!isAgent && reattachProofHash) {
+        const reattached = reattachRuntimeHostProvider({
+          providers: room.runtimeHostProviders ?? {},
+          participants: Object.values(room.participants),
+          reattachProofHash,
+          humanParticipantId: participant.id,
+          runtimeHosts: room.runtimeHosts,
+          now,
+          graceMs: RECONNECT_GRACE_MS,
+        })
+        if (reattached.ok === true) {
+          room.runtimeHostProviders = reattached.providers
+          this.preserveLiveTranscriptOwnerAcrossRuntimeReattach(
+            room,
+            reattached.runtimeHostId,
+            reattached.previousHumanParticipantId,
+            participant.id
+          )
+        } else if (
+          reattached.ok === false &&
+          // A proof that names an *active* bound Human is a takeover attempt
+          // and must fail. Any no-match is merely stale/unrelated
+          // sessionStorage (including another Human's browser secret), so it
+          // falls through to ordinary Human registration.
+          reattached.error === "runtime_provider_claim_human_invalid"
+        )
+          return this.json({ error: reattached.error }, 403)
+        else {
+          // The replacement registration can arrive before the prior page's
+          // WebSocket close. Reserve only its exact proof and complete this
+          // bounded handoff when the old connection actually closes; do not
+          // retry /api/sfu/session because it creates an upstream SFU session
+          // before this Room registration is attempted.
+          const deferred = deferRuntimeHostProviderReattach({
+            providers: room.runtimeHostProviders ?? {},
+            participants: Object.values(room.participants),
+            reattachProofHash,
+            humanParticipantId: participant.id,
+            runtimeHosts: room.runtimeHosts,
+            now,
+            graceMs: RECONNECT_GRACE_MS,
+          })
+          if (deferred.ok === true)
+            room.runtimeHostProviders = deferred.providers
+          else if (deferred.error === "runtime_provider_claim_human_invalid")
+            return this.json({ error: deferred.error }, 403)
+        }
       }
       if (registeredRuntimeHost && providerClaimHash && providerHandleHash) {
         const redemption = redeemRuntimeHostProviderClaim({
@@ -2114,6 +2213,59 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({
         runtimeHost: host,
         runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
+        expiresAt: room.expiresAt,
+      })
+    }
+
+    if (request.action === "agent-connect-runtime-provider") {
+      const validated = validateRuntimeHost(request.runtimeHost)
+      if (!validated.ok)
+        return this.json(
+          { error: validated.error, reason: validated.reason },
+          400
+        )
+      if (!isRuntimeProviderClaimHash(request.providerClaimHash))
+        return this.json({ error: "invalid_runtime_provider_claim" }, 400)
+      const host = validated.runtimeHost
+      const providerHandle = createRuntimeProviderHandle()
+      const providerHandleHash = await hashRuntimeProviderHandle(
+        this.ctx.id.toString(),
+        host.runtimeHostId,
+        providerHandle
+      )
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      const redemption = redeemRuntimeHostProviderClaim({
+        providers: room.runtimeHostProviders ?? {},
+        pendingClaims: room.runtimeHostProviderClaims ?? {},
+        participants: Object.values(room.participants),
+        runtimeHost: host,
+        claimHash: request.providerClaimHash,
+        providerHandleHash,
+        verifiedParticipantId: participant.id,
+        now: Date.now(),
+      })
+      if (redemption.ok === false)
+        return this.json({ error: redemption.error }, 403)
+      room.runtimeHostProviders = redemption.providers
+      room.runtimeHostProviderClaims = redemption.pendingClaims
+      room.runtimeHosts = registerRuntimeHost(room.runtimeHosts, host)
+      participant.runtimeHostId = host.runtimeHostId
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      return this.json({
+        runtimeProviderHandle: providerHandle,
+        runtimeHost: host,
         expiresAt: room.expiresAt,
       })
     }
@@ -3290,7 +3442,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (
         typeof message.requestId !== "string" ||
         message.requestId.length === 0 ||
-        !isRuntimeProviderClaimHash(message.providerClaimHash)
+        !isRuntimeProviderClaimHash(message.providerClaimHash) ||
+        (message.reattachProofHash !== undefined &&
+          !isRuntimeProviderClaimHash(message.reattachProofHash))
       ) {
         socket.send(JSON.stringify({ type: "error", error: "invalid_request" }))
         return
@@ -3300,6 +3454,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participants: Object.values(room.participants),
         humanParticipantId: participant.id,
         claimHash: message.providerClaimHash,
+        reattachProofHash: message.reattachProofHash,
         now: Date.now(),
       })
       if (claim.ok === false) {
@@ -3733,6 +3888,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.connected = true
       participant.connectionNonce = connectionNonce
       participant.lastSeenAt = Date.now()
+      room.runtimeHostProviders = markRuntimeHostProviderConnected({
+        providers: room.runtimeHostProviders ?? {},
+        humanParticipantId: participant.id,
+      })
       await this.saveRoom(room)
       this.ctx.acceptWebSocket(server)
       server.serializeAttachment({ participantId, token, connectionNonce })
@@ -3967,6 +4126,27 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant.connected = false
     participant.lastSeenAt = Date.now()
     participant.connectionNonce = undefined
+    room.runtimeHostProviders = markRuntimeHostProviderDisconnected({
+      providers: room.runtimeHostProviders ?? {},
+      humanParticipantId: participant.id,
+      now: participant.lastSeenAt,
+      graceMs: RECONNECT_GRACE_MS,
+    })
+    const deferredReattach = completeDeferredRuntimeHostProviderReattach({
+      providers: room.runtimeHostProviders ?? {},
+      participants: Object.values(room.participants),
+      disconnectedHumanParticipantId: participant.id,
+      runtimeHosts: room.runtimeHosts,
+      now: participant.lastSeenAt,
+    })
+    room.runtimeHostProviders = deferredReattach.providers
+    for (const reattached of deferredReattach.reattached)
+      this.preserveLiveTranscriptOwnerAcrossRuntimeReattach(
+        room,
+        reattached.runtimeHostId,
+        reattached.previousHumanParticipantId,
+        reattached.humanParticipantId
+      )
     this.clearAgentVoiceReadiness(room)
     await this.saveRoom(room)
     await this.scheduleNextAlarm(room)

@@ -277,6 +277,51 @@ func TestRuntimeProviderCredentialsStayOnPrivateMCPWire(t *testing.T) {
 	}
 }
 
+func TestConnectRuntimeProviderUsesPrivateRuntimeControlAndReturnsHandle(t *testing.T) {
+	const claimHash = "KPvm-f4hBdYhSjdaYF_67xqPZx7BiiAXvMo1U_8l44w"
+	const providerHandle = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+	var seenPath string
+	var seenHeaders http.Header
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenHeaders = r.Header.Clone()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(w, map[string]any{"runtimeProviderHandle": providerHandle})
+	}))
+	t.Cleanup(server.Close)
+	host := types.RuntimeHostProjection{RuntimeHostID: "host-176-provider", Speech: types.HostSpeechReadiness{STT: true}}
+	handleBytes, _ := json.Marshal(map[string]string{
+		"room": "room-176", "participantId": "agent-176", "participantToken": "private-token",
+	})
+	participantHandle := base64.RawURLEncoding.EncodeToString(handleBytes)
+	client := New(server.URL + "/mcp")
+	got, err := client.ConnectRuntimeProvider(participantHandle, host, claimHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != providerHandle {
+		t.Fatalf("provider handle mismatch: %q", got)
+	}
+	if seenPath != "/api/room/runtime-provider/connect" ||
+		seenHeaders.Get("X-Room-Id") != "room-176" ||
+		seenHeaders.Get("X-Room-Participant-Id") != "agent-176" ||
+		seenHeaders.Get("X-Room-Participant-Token") != "private-token" {
+		t.Fatalf("wrong private runtime control wire: path=%q headers=%v", seenPath, seenHeaders)
+	}
+	if seenHeaders.Get("Mcp-Method") != "" || seenHeaders.Get("Mcp-Name") != "" {
+		t.Fatalf("provider connection must not use the public MCP tool surface: %v", seenHeaders)
+	}
+	if captured["providerClaimHash"] != claimHash || captured["runtimeHost"] == nil {
+		t.Fatalf("provider control payload mismatch: %#v", captured)
+	}
+	if _, present := captured["runtimeProviderHandle"]; present {
+		t.Fatal("connect must not send an existing provider handle")
+	}
+}
+
 // #165: explicit targets ride the existing send_text tool arguments only
 // when present; the ordinary unaddressed payload must stay byte-compatible.
 func TestSendTextCarriesExplicitTargets(t *testing.T) {

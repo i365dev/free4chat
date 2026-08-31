@@ -5,6 +5,8 @@ import {
   canHumanUseRuntimeHost,
   createRuntimeHostProviderClaim,
   garbageCollectRuntimeHostProviders,
+  markRuntimeHostProviderDisconnected,
+  reattachRuntimeHostProvider,
   redeemRuntimeHostProviderClaim,
   removeRuntimeHostProviderForHuman,
   verifyRuntimeHostProviderProof,
@@ -296,5 +298,86 @@ describe("Runtime Host provider authorization", () => {
         now,
       })
     ).toEqual({ ok: false, error: "runtime_provider_claim_limit" })
+  })
+
+  it("reattaches only with the browser proof during disconnect grace", () => {
+    const proof = claimA
+    const providers = {
+      [hostA.runtimeHostId]: {
+        humanParticipantId: "dawei",
+        claimedAt: now,
+        providerHandleHash: handleA,
+        verifiedParticipantIds: ["pi"],
+        reattachProofHash: proof,
+      },
+    }
+    const participants = [
+      { id: "dawei", kind: "human" as const, connected: false },
+      {
+        id: "pi",
+        kind: "agent" as const,
+        connected: true,
+        runtimeHostId: hostA.runtimeHostId,
+      },
+    ]
+    const disconnected = markRuntimeHostProviderDisconnected({
+      providers,
+      humanParticipantId: "dawei",
+      now,
+      graceMs: 30_000,
+    })
+    const reattached = reattachRuntimeHostProvider({
+      providers: disconnected,
+      participants,
+      reattachProofHash: proof,
+      humanParticipantId: "new-human",
+      runtimeHosts: { [hostA.runtimeHostId]: hostA },
+      now: now + 1,
+      graceMs: 30_000,
+    })
+    expect(reattached).toMatchObject({
+      ok: true,
+      runtimeHostId: hostA.runtimeHostId,
+      providers: {
+        [hostA.runtimeHostId]: { humanParticipantId: "new-human" },
+      },
+    })
+    expect(
+      reattachRuntimeHostProvider({
+        providers: disconnected,
+        participants,
+        reattachProofHash: claimB,
+        humanParticipantId: "new-human",
+        runtimeHosts: { [hostA.runtimeHostId]: hostA },
+        now: now + 1,
+        graceMs: 30_000,
+      })
+    ).toEqual({ ok: false, error: "runtime_provider_claim_not_found" })
+    expect(
+      reattachRuntimeHostProvider({
+        providers: disconnected,
+        participants,
+        reattachProofHash: proof,
+        humanParticipantId: "new-human",
+        runtimeHosts: {},
+        now: now + 1,
+        graceMs: 30_000,
+      })
+    ).toEqual({ ok: false, error: "runtime_provider_claim_not_found" })
+    expect(
+      reattachRuntimeHostProvider({
+        providers: disconnected,
+        participants: participants.map((participant) =>
+          participant.id === "pi"
+            ? { ...participant, connected: false }
+            : participant
+        ),
+        reattachProofHash: proof,
+        humanParticipantId: "new-human",
+        runtimeHosts: { [hostA.runtimeHostId]: hostA },
+        now: now + 1,
+        graceMs: 30_000,
+      })
+    ).toEqual({ ok: false, error: "runtime_provider_claim_not_found" })
   })
 })

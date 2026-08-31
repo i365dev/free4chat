@@ -19,6 +19,7 @@ export default {
     if (
       pathname === "/api/room/attachments" ||
       pathname === "/api/room/live-transcript/append" ||
+      pathname === "/api/room/runtime-provider/connect" ||
       pathname === "/api/room/surfaces/read" ||
       pathname === "/api/room/attachments/read"
     ) {

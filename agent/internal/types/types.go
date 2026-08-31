@@ -551,6 +551,14 @@ type RuntimeHostProviderClient interface {
 	UpdateRuntimeHostWithRuntimeProvider(participantHandle string, host RuntimeHostProjection, runtimeProviderHandle string) error
 }
 
+// RuntimeProviderConnector is the optional control-plane extension used by
+// the Human-facing local Runtime connection flow. It is deliberately kept
+// separate from RuntimeHostProviderClient so older adapters and test doubles
+// that only support join/update proofing continue to retain their behavior.
+type RuntimeProviderConnector interface {
+	ConnectRuntimeProvider(participantHandle string, host RuntimeHostProjection, providerClaimHash string) (string, error)
+}
+
 // LiveTranscriptAppendClient is an optional direct Room-control extension.
 // The opaque participant handle remains local to the runtime and is sent only
 // to the Free4Chat endpoint.

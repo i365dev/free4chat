@@ -4,6 +4,8 @@
 export const RUNTIME_PROVIDER_CLAIM_DOMAIN = "free4chat-runtime-provider-v1"
 export const RUNTIME_PROVIDER_HANDLE_DOMAIN =
   "free4chat-runtime-provider-handle-v1"
+export const RUNTIME_PROVIDER_REATTACH_DOMAIN =
+  "free4chat-runtime-provider-reattach-v1"
 
 const RAW_SECRET_BYTES = 32
 const BASE64URL_256_PATTERN = /^[A-Za-z0-9_-]{43}$/
@@ -112,5 +114,19 @@ export async function hashRuntimeProviderHandle(
     roomId,
     runtimeHostId,
     runtimeProviderHandle,
+  ])
+}
+
+// Browser refresh recovery proof. The secret is kept only in sessionStorage;
+// Room state stores the derived hash and a short reattachment deadline.
+export async function deriveRuntimeProviderReattachHash(
+  roomId: string,
+  reattachSecret: string
+): Promise<string> {
+  if (!roomId || !isRuntimeProviderSecret(reattachSecret))
+    throw new Error("invalid_runtime_provider_reattach")
+  return sha256Base64Url(RUNTIME_PROVIDER_REATTACH_DOMAIN, [
+    roomId,
+    reattachSecret,
   ])
 }

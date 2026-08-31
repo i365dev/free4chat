@@ -33,6 +33,12 @@ context and disappears with the Room's retention.
    configured provider does not grant room media access: a Human explicitly
    starts the Room-wide transcript through an authorized STT-ready Runtime
    Host, and any Human may stop it.
+   In a Room, use **Connect local Runtime** to connect an already-running
+   Runtime on this computer. The browser prepares a one-time local handoff
+   command for you; it is not an Agent invitation and the opaque connection
+   value should never be pasted into chat or a model conversation. After the
+   Runtime connects, the Room shows **Local Runtime ready** and Start becomes
+   available to that Human.
 6. Cloud speech sends audio to the selected provider under the human's own
    provider account and credentials.
 7. Raw audio is not intended to be persisted by Free4Chat.
