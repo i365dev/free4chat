@@ -3,6 +3,8 @@ package harness
 import (
 	"strings"
 	"testing"
+
+	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
 // #165: the outbound addressing envelope is a strict machine contract with
@@ -224,5 +226,109 @@ func TestACPTurnPlainReplyStaysUnaddressed(t *testing.T) {
 	}
 	if result.TargetParticipantIDs != nil {
 		t.Fatalf("plain reply must carry no targets, got %v", result.TargetParticipantIDs)
+	}
+}
+
+func TestParseOutboundLifecycleLeave(t *testing.T) {
+	tests := []struct {
+		name          string
+		text          string
+		wantBody      string
+		wantLifecycle types.LifecycleIntent
+	}{
+		{
+			name:          "exact terminal leave intent",
+			text:          "Leaving the Room.\n[[free4chat:lifecycle leave]]",
+			wantBody:      "Leaving the Room.",
+			wantLifecycle: types.LifecycleIntentLeave,
+		},
+		{
+			name:          "envelope only",
+			text:          "[[free4chat:lifecycle leave]]",
+			wantBody:      "",
+			wantLifecycle: types.LifecycleIntentLeave,
+		},
+		{
+			name:     "missing delimiter remains prose",
+			text:     "reply\n[[free4chat:lifecycle leave]",
+			wantBody: "reply\n[[free4chat:lifecycle leave]",
+		},
+		{
+			name:     "extra space remains prose",
+			text:     "reply\n[[free4chat:lifecycle  leave]]",
+			wantBody: "reply\n[[free4chat:lifecycle  leave]]",
+		},
+		{
+			name:     "different action remains prose",
+			text:     "reply\n[[free4chat:lifecycle restart]]",
+			wantBody: "reply\n[[free4chat:lifecycle restart]]",
+		},
+		{
+			name:     "trailing text remains prose",
+			text:     "reply\n[[free4chat:lifecycle leave]] now",
+			wantBody: "reply\n[[free4chat:lifecycle leave]] now",
+		},
+		{
+			name:     "quoted example remains prose",
+			text:     "Use `[[free4chat:lifecycle leave]]` only when appropriate.",
+			wantBody: "Use `[[free4chat:lifecycle leave]]` only when appropriate.",
+		},
+		{
+			name:     "ordinary leave prose remains prose",
+			text:     "I will leave, exit, and say goodbye when appropriate.",
+			wantBody: "I will leave, exit, and say goodbye when appropriate.",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body, targets, lifecycle := ParseOutboundResult(tc.text)
+			if body != tc.wantBody || lifecycle != tc.wantLifecycle || targets != nil {
+				t.Fatalf("parsed result mismatch: body=%q targets=%v lifecycle=%q", body, targets, lifecycle)
+			}
+		})
+	}
+}
+
+func TestParseOutboundControlsRejectsTargetAndLifecycleCombination(t *testing.T) {
+	text := "handoff then leave\n[[free4chat:targets agent-b]]\n[[free4chat:lifecycle leave]]"
+	body, targets, lifecycle := ParseOutboundResult(text)
+	if body != text || targets != nil || lifecycle != types.LifecycleIntentNone {
+		t.Fatalf("combined controls must fail closed: body=%q targets=%v lifecycle=%q", body, targets, lifecycle)
+	}
+
+	// Existing targets parsing stays unchanged when no lifecycle envelope is
+	// present; this protects the established outbound addressing contract.
+	body, targets, lifecycle = ParseOutboundResult("handoff\n[[free4chat:targets agent-b]]")
+	if body != "handoff" || len(targets) != 1 || targets[0] != "agent-b" || lifecycle != types.LifecycleIntentNone {
+		t.Fatalf("targets behavior changed: body=%q targets=%v lifecycle=%q", body, targets, lifecycle)
+	}
+}
+
+// Regression (#169 review): control surfaces must fail closed irrespective of
+// their ordering. In particular, an earlier lifecycle line must not remain
+// visible prose while a later terminal targets line causes real routing.
+func TestParseOutboundControlsRejectsLifecycleThenTargetCombination(t *testing.T) {
+	text := "leave after this handoff\n[[free4chat:lifecycle leave]]\n[[free4chat:targets agent-b]]"
+	body, targets, lifecycle := ParseOutboundResult(text)
+	if body != text || targets != nil || lifecycle != types.LifecycleIntentNone {
+		t.Fatalf("combined controls must fail closed: body=%q targets=%v lifecycle=%q", body, targets, lifecycle)
+	}
+}
+
+func TestACPTurnParsesLifecycleLeaveEnvelope(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("envelope", map[string]string{
+		"FAKE_REPLY_TEXT": "I will now disappear.\n[[free4chat:lifecycle leave]]",
+	}), AdapterOptions{TurnTimeoutMs: 5000})
+	defer func() { _ = adapter.Close() }()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("EnsureSession failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("please leave"))
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Text != "I will now disappear." || result.LifecycleIntent != types.LifecycleIntentLeave || result.TargetParticipantIDs != nil {
+		t.Fatalf("lifecycle envelope parse mismatch: %+v", result)
 	}
 }
