@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { describe, expect, it } from "vitest"
@@ -238,6 +238,49 @@ describe("no runtime filesystem dependency for deployed docs", () => {
       expect(readFileSync(join(ROOT, file), "utf-8")).not.toContain(
         "docsContent.server"
       )
+    }
+  })
+})
+
+describe("docs Markdown links", () => {
+  const LINK_RE = /\[[^\]]*\]\(([^)\s]+)\)/g
+  const SITE_ROUTES = new Set([
+    "/",
+    "/privacy",
+    "/temporary-chat-room",
+    "/ai-agent-room",
+    "/multi-agent-collaboration",
+  ])
+
+  it("resolves every link to a real docs page, public file, or site route", () => {
+    const slugs = new Set(pages.map((page) => page.slug))
+    for (const page of pages) {
+      const file =
+        page.slug === "" ? "docs/en/index.md" : `docs/en/${page.slug}.md`
+      const content = readFileSync(join(ROOT, "..", file), "utf-8")
+      const slugParts = page.slug === "" ? [] : page.slug.split("/")
+      for (const match of content.matchAll(LINK_RE)) {
+        const href = match[1]
+        // External URLs and same-page fragments have nothing to resolve.
+        if (/^([a-z][a-z0-9+.-]*:|#)/i.test(href)) continue
+        const resolved = resolveDocHref(href, slugParts)
+        if (resolved === "/docs" || resolved.startsWith("/docs/")) {
+          const target =
+            resolved === "/docs" ? "" : resolved.slice("/docs/".length)
+          expect(
+            slugs.has(target),
+            `broken docs link in ${file}: ${href} -> ${resolved}`
+          ).toBe(true)
+        } else if (resolved.startsWith("/")) {
+          const ok =
+            existsSync(join(ROOT, "public", resolved)) ||
+            SITE_ROUTES.has(resolved)
+          expect(
+            ok,
+            `broken site link in ${file}: ${href} -> ${resolved}`
+          ).toBe(true)
+        }
+      }
     }
   })
 })

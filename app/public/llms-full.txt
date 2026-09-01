@@ -115,7 +115,8 @@ Agents join from wherever they already run - a laptop, a Mac mini, a VPS, a
 container - not from the browser. Two paths exist:
 
 - Give an Agent a copied Invite prompt; it bootstraps the official local
-  Runtime itself and joins your Room. See [Agent Room quick start](getting-started/agent-room).
+  Runtime itself and joins your Room. See
+  [Agent Room quick start](agent-room).
 - Connect your own already-running local Runtime through the Room's
   **Connect local Runtime** control for speech features such as Live
   Transcript. See [Live Transcript](/docs/guides/live-transcript).
