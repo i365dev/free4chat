@@ -30,18 +30,18 @@ const GROUPS: Array<{
 ]
 
 /**
- * Grouped internal link structure so the discovery pages, the homepage, and
- * the docs share one footer. Intentionally compact — not a docs portal.
+ * Grouped internal link structure shared by the discovery pages, the
+ * homepage, and the docs. Intentionally compact — not a docs portal.
  */
 export default function DiscoveryFooter() {
   return (
     <nav
       aria-label="Learn more"
-      className="mx-auto flex w-full max-w-3xl flex-none flex-wrap justify-center gap-x-10 gap-y-4 px-4 py-6 text-xs text-gray-500"
+      className="mx-auto flex w-full max-w-3xl flex-none flex-wrap justify-center gap-x-10 gap-y-4 px-4 py-6 font-mono text-xs"
     >
       {GROUPS.map((group) => (
         <div key={group.heading} className="min-w-[8rem]">
-          <p className="mb-2 font-semibold uppercase tracking-wide text-gray-600">
+          <p className="mb-2 font-semibold uppercase tracking-widest text-emerald-800">
             {group.heading}
           </p>
           <ul className="space-y-1.5">
@@ -49,7 +49,7 @@ export default function DiscoveryFooter() {
               <li key={link.href}>
                 <Link
                   href={link.href}
-                  className="hover:text-gray-300"
+                  className="text-emerald-500 hover:text-emerald-200"
                   {...(link.href.startsWith("http")
                     ? { target: "_blank", rel: "noopener noreferrer" }
                     : {})}

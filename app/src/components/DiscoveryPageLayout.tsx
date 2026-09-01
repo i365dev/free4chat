@@ -36,15 +36,20 @@ export default function DiscoveryPageLayout({
   secondaryCta,
 }: DiscoveryPageLayoutProps) {
   return (
-    <div className="flex min-h-screen flex-col bg-gray-900 text-white">
+    <div className="flex min-h-screen flex-col font-mono text-emerald-100">
       <SeoHead title={title} description={description} path={path} />
       <main className="flex-1 px-4 py-16">
         <div className="mx-auto max-w-3xl">
-          <Link href="/" className="text-sm text-gray-500 hover:text-gray-300">
+          <Link
+            href="/"
+            className="text-sm text-emerald-700 hover:text-emerald-300"
+          >
             ← Free4Chat
           </Link>
-          <h1 className="mt-4 text-3xl font-extrabold sm:text-4xl">{h1}</h1>
-          <div className="prose prose-invert mt-6 max-w-none text-gray-300 prose-headings:text-white prose-a:text-blue-400 prose-strong:text-white">
+          <h1 className="mt-4 text-3xl font-extrabold uppercase tracking-tight text-emerald-200 sm:text-4xl">
+            {h1}
+          </h1>
+          <div className="prose prose-invert mt-6 max-w-none font-mono text-emerald-300/90 prose-headings:text-emerald-100 prose-a:text-emerald-400 prose-strong:text-emerald-50 prose-code:text-emerald-300 prose-code:before:content-none prose-code:after:content-none">
             {children}
           </div>
           <div className="mt-10 flex flex-wrap items-center gap-4">
@@ -53,7 +58,7 @@ export default function DiscoveryPageLayout({
               onClick={() =>
                 trackAnalyticsEvent("DiscoveryCtaClicked", { page: ctaId })
               }
-              className="group flex items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
+              className="group flex items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300"
             >
               Open a room
             </Link>
@@ -66,7 +71,7 @@ export default function DiscoveryPageLayout({
                     target: secondaryCta.analyticsTarget,
                   })
                 }
-                className="text-sm text-gray-400 underline-offset-2 hover:text-gray-200 hover:underline"
+                className="font-mono text-sm text-emerald-600 underline-offset-4 hover:text-emerald-300 hover:underline"
               >
                 {secondaryCta.label}
               </Link>
