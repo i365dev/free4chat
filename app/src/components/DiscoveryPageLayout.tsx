@@ -42,7 +42,7 @@ export default function DiscoveryPageLayout({
         <div className="mx-auto max-w-3xl">
           <Link
             href="/"
-            className="text-sm text-emerald-700 hover:text-emerald-300"
+            className="text-sm text-emerald-500 hover:text-emerald-300"
           >
             ← Free4Chat
           </Link>

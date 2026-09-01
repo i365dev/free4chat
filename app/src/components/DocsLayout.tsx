@@ -32,14 +32,14 @@ function SidebarNav({
         className={
           activeHref === DOCS_ROOT_PATH
             ? "block text-emerald-100"
-            : "block text-emerald-600 hover:text-emerald-300"
+            : "block text-emerald-500 hover:text-emerald-300"
         }
       >
         {sidebar.home.title}
       </Link>
       {sidebar.sections.map((section: DocsNavSection) => (
         <div key={section.id}>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-800">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-600">
             {section.title}
           </p>
           <ul className="space-y-1">
@@ -53,7 +53,7 @@ function SidebarNav({
                     className={
                       activeHref === href
                         ? "block text-emerald-100"
-                        : "block text-emerald-600 hover:text-emerald-300"
+                        : "block text-emerald-500 hover:text-emerald-300"
                     }
                   >
                     {page.title}
@@ -65,7 +65,7 @@ function SidebarNav({
         </div>
       ))}
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-800">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-600">
           Reference
         </p>
         <ul className="space-y-1">
@@ -173,7 +173,7 @@ export default function DocsLayout(props: DocsPageProps) {
             href={GITHUB_REPO}
             target="_blank"
             rel="noopener noreferrer"
-            className="hidden text-xs text-emerald-700 hover:text-emerald-400 md:block"
+            className="hidden text-xs text-emerald-500 hover:text-emerald-400 md:block"
           >
             GitHub
           </a>
@@ -216,7 +216,7 @@ export default function DocsLayout(props: DocsPageProps) {
               <span />
             )}
           </div>
-          <div className="mt-6 font-mono text-xs text-emerald-800">
+          <div className="mt-6 font-mono text-xs text-emerald-500">
             <a href={githubEditUrl} target="_blank" rel="noopener noreferrer">
               Edit this page on GitHub
             </a>

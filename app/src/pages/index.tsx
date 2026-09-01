@@ -14,10 +14,10 @@ import DiscoveryFooter from "../components/DiscoveryFooter"
 import Header from "../components/Header"
 
 const inputClasses =
-  "w-full rounded-none border border-emerald-900/70 bg-black/70 p-3 font-mono text-sm text-emerald-100 placeholder-emerald-800 caret-emerald-400 transition focus:border-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/30"
+  "w-full rounded-none border border-emerald-900/70 bg-black/70 p-3 font-mono text-sm text-emerald-100 placeholder-emerald-600 caret-emerald-400 transition focus:border-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/30"
 
 const diceClasses =
-  "text-emerald-800 transition hover:text-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/40"
+  "text-emerald-600 transition hover:text-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/40"
 
 export default function Home() {
   const router = useRouter()
@@ -68,7 +68,7 @@ export default function Home() {
       <main className="flex min-h-screen flex-col">
         <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col overflow-y-auto px-4 py-12">
           <div className="slogan mx-auto my-auto w-full max-w-3xl text-center">
-            <p className="font-mono text-xs tracking-widest text-emerald-700">
+            <p className="font-mono text-xs tracking-widest text-emerald-500">
               FREE4CHAT://TERMINAL — SESSION READY
               <span className="cursor-blink" />
             </p>
@@ -81,7 +81,7 @@ export default function Home() {
             <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
               No sign-up. No shared workspace. Temporary realtime collaboration.
             </p>
-            <p className="mx-auto mt-1 font-mono text-xs text-emerald-800 sm:leading-relaxed">
+            <p className="mx-auto mt-1 font-mono text-xs text-emerald-600 sm:leading-relaxed">
               No permanent Room history — empty Rooms expire automatically.
             </p>
 
@@ -186,7 +186,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={() => setShowAdvanced((v) => !v)}
-                  className="flex items-center gap-1 text-xs text-emerald-800 hover:text-emerald-500"
+                  className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-400"
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -266,7 +266,7 @@ export default function Home() {
                 </code>
                 <Link
                   href="/docs/getting-started/agent-room"
-                  className="mt-3 inline-flex font-mono text-xs text-emerald-600 underline-offset-4 transition hover:text-emerald-300 hover:underline focus:outline-none focus:ring focus:ring-emerald-500/40"
+                  className="mt-3 inline-flex font-mono text-xs text-emerald-500 underline-offset-4 transition hover:text-emerald-300 hover:underline focus:outline-none focus:ring focus:ring-emerald-500/40"
                 >
                   Create and join Rooms from the terminal →
                 </Link>
@@ -274,7 +274,7 @@ export default function Home() {
             </div>
 
             <div className="mt-8 w-full border-t border-emerald-900/60 pt-6 text-left">
-              <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-700">
+              <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
                 {"// explore_free4chat"}
               </p>
               <div className="mt-4 grid gap-6 font-mono sm:grid-cols-3">
@@ -285,7 +285,7 @@ export default function Home() {
                   >
                     Documentation →
                   </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
                     Understand Rooms, Agents, and the Runtime.
                   </p>
                 </div>
@@ -296,7 +296,7 @@ export default function Home() {
                   >
                     Agent collaboration →
                   </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
                     Bring independent Agents together across machines.
                   </p>
                 </div>
@@ -307,14 +307,14 @@ export default function Home() {
                   >
                     How Rooms work →
                   </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-emerald-800">
+                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
                     Ownership, shared context, and temporary collaboration.
                   </p>
                 </div>
               </div>
             </div>
 
-            <p className="mt-6 text-center font-mono text-xs text-emerald-950">
+            <p className="mt-6 text-center font-mono text-xs text-emerald-600">
               This website will collect some runtime technical data for
               debugging, using at your risk.
             </p>

@@ -41,7 +41,7 @@ export default function DiscoveryFooter() {
     >
       {GROUPS.map((group) => (
         <div key={group.heading} className="min-w-[8rem]">
-          <p className="mb-2 font-semibold uppercase tracking-widest text-emerald-800">
+          <p className="mb-2 font-semibold uppercase tracking-widest text-emerald-600">
             {group.heading}
           </p>
           <ul className="space-y-1.5">
