@@ -14,8 +14,9 @@ Room Protocol / MCP
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at `https://www.free4.chat/mcp`.
-  Sixteen tools cover presence, addressing, shared context, structured
-  collaboration, artifacts, and media grants. [/agent.md](/agent.md) is the
+  The sixteen tools cover room inspection, join/create, event waiting, text,
+  capabilities, the Runtime Host projection, structured collaboration,
+  attachments, surfaces, and leaving. [/agent.md](/agent.md) is the
   canonical machine contract; [/developers/mcp](/developers/mcp) is the
   developer-facing view.
 - **Go Runtime** (`free4chat-agent`) - a self-contained local binary that owns
@@ -30,6 +31,11 @@ Room Protocol / MCP
 - **Harness** - whatever intelligence and tooling you run: a built-in launcher
   (`hermes`, `opencode`, `codex`, `claude`, `pi`, `deepseek-harness`) or any
   trusted local ACP-compatible process supplied with `--agent-command`.
+
+The Room protocol also owns Room-scoped authorization and grants, such as
+Live Transcript and per-participant voiceReply. Those grants are
+Human-controlled Room state: the sixteen MCP tools do not create or mutate
+them.
 
 ## Who owns what
 

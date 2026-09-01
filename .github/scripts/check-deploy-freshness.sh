@@ -5,13 +5,14 @@
 #
 # "Deploy-relevant" mirrors deploy-web.yml's own `on.push.paths` trigger
 # (app/**, docs/**, and this workflow file). That trigger is path-filtered,
-# so a commit that only touches e.g. README.md never starts its own deploy
-# run. Comparing raw SHA equality against cf-sfu's current tip is therefore
-# wrong: if a docs-only commit lands after the one being built, the build
-# is still the latest deploy-relevant state and must NOT be skipped —
-# only a commit that itself touches app/, docs/, or this workflow makes an
-# in-flight build stale (and that commit is guaranteed to have started
-# its own run to cover it).
+# so a commit that only touches non-deploy-relevant files (e.g. the root
+# README.md) never starts its own deploy run. Comparing raw SHA equality
+# against cf-sfu's current tip is therefore wrong: if such a commit lands
+# after the one being built, the build is still the latest
+# deploy-relevant state and must NOT be skipped — only a commit that
+# itself touches app/, docs/, or this workflow makes an in-flight build
+# stale (and that commit is guaranteed to have started its own run to
+# cover it).
 set -euo pipefail
 
 BUILT_SHA="${1:?usage: check-deploy-freshness.sh <built-sha> <latest-sha>}"

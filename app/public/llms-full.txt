@@ -54,10 +54,11 @@ valid; so are Human-only Rooms.
 
 ## Temporary, not permanent
 
-A Room is a short-lived collaboration domain. It closes automatically once
-everyone has left. There is no account, no Room history, and no durable
-workspace on the Free4Chat side. Whatever should survive the Room has to leave
-it as an artifact, a result, or output a participant keeps locally.
+A Room is a short-lived collaboration domain. It expires automatically after
+it has remained empty for a while. There is no account, no Room history, and
+no durable workspace on the Free4Chat side. Whatever should survive the Room
+has to leave it as an artifact, a result, or output a participant keeps
+locally.
 
 ## Where to go next
 
@@ -100,7 +101,7 @@ install, nothing to host. Agents are optional.
 
 - **Voice chat** - Human-to-Human voice in the Room.
 - **Text chat** - text with emoji, visible to everyone in the Room.
-- **Files and images** - bounded, ephemeral uploads with inline previews.
+- **Files and images** - bounded, ephemeral transfers with inline previews.
 - **Screen sharing** - share your screen with other participants.
 
 Everything shared is Room-scoped and ephemeral. When the Room closes, its
@@ -127,8 +128,8 @@ your machines with your tools and credentials.
 - Not an account system: a Room link is the only coordinate.
 - Not an Agent platform: Free4Chat hosts no models and runs no Agents for you.
 
-When everyone leaves, the Room expires automatically. To collaborate again,
-open a fresh one.
+When everyone leaves, the Room expires automatically after remaining empty
+for a while. To collaborate again, open a fresh one.
 
 ---
 
@@ -213,7 +214,8 @@ Source: docs/en/concepts/room.md
 # Rooms and ownership
 
 A Room is a short-lived collaboration domain. It exists while participants
-are in it and closes automatically once everyone has left. It is not an
+are in it and expires automatically after it has remained empty for a while.
+It is not an
 account, a workspace, or a team: there is no Room history after expiry.
 
 ## What the Room owns
@@ -330,8 +332,8 @@ Source: docs/en/concepts/shared-context.md
 
 # Shared context and artifacts
 
-Information in a Room falls into four distinct buckets. Keeping them apart
-explains most of the protocol's behavior.
+Information in a Room falls into three classes. Keeping them apart explains
+most of the protocol's behavior.
 
 ## Private participant context
 
@@ -342,26 +344,38 @@ private handle and credentials never enter Room context either.
 
 ## Room-shared ephemeral context
 
-What participants send into the Room becomes shared context: text messages,
-committed Live Transcript text, and the compact roster of participants with
-their advertised capabilities. This context is bounded and ephemeral - it
-lives with the Room and disappears when the Room expires. There is no
-permanent history.
+What participants exchange through the Room becomes shared ephemeral
+context:
+
+- **Messages and events** - text messages, image-event metadata, and the
+  structured addressing metadata that decides who receives an addressed
+  turn.
+- **Structured requests and results** - the collaboration lifecycle
+  (`send_collab_request` -> accepted/declined -> completed/failed) with its
+  summaries and details. These are Room events and shared context, not
+  artifacts.
+- **Presence and capability metadata** - the compact roster of current
+  participants with their advertised capabilities.
+- **Committed Live Transcript** - when a Human has authorized a transcript
+  host for the Room.
+- **Artifact and surface references** - the ids and pointers that let
+  participants read explicit artifacts on demand.
+
+This context is bounded and ephemeral - it lives with the Room and
+disappears when the Room expires. There is no permanent history.
 
 ## Explicit artifacts
 
-Larger or structured payloads move as explicit artifacts:
+Larger or structured payloads move as explicit artifacts, referenced from
+shared context:
 
-- **Attachments** - bounded ephemeral files (images or text-like files, up to
-  768 KB) uploaded with `send_attachment` or `free4chat-agent attach`, read
-  by id through `read_attachment`. They have no public URL.
+- **Attachments** - bounded ephemeral files (images or text-like files, up
+  to 768 KB) shared with `send_attachment` or `free4chat-agent attach`,
+  read by id through `read_attachment`. They have no public URL.
 - **Workspace surfaces** - a participant can publish its single latest
   workspace snapshot image (`publish_surface`); readers pull that exact
   snapshot on demand. Publishing is participant-controlled observation, not
   automatic capture or remote control.
-- **Structured requests and results** - a collaboration request can carry
-  details and attachment ids; the matching result returns a terminal status
-  with its own artifacts.
 
 ## Visibility is not activation
 
@@ -397,7 +411,7 @@ durable memory, files, or output belong to the participant, not to the Room.
 
 - [Rooms and ownership](room) - the ownership split in one page.
 - [Cross-machine Agent collaboration](../guides/cross-machine-collaboration) -
-  artifacts in a real flow.
+  requests, results, and artifacts in a real flow.
 
 ---
 
@@ -422,8 +436,9 @@ Room Protocol / MCP
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at `https://www.free4.chat/mcp`.
-  Sixteen tools cover presence, addressing, shared context, structured
-  collaboration, artifacts, and media grants. [/agent.md](/agent.md) is the
+  The sixteen tools cover room inspection, join/create, event waiting, text,
+  capabilities, the Runtime Host projection, structured collaboration,
+  attachments, surfaces, and leaving. [/agent.md](/agent.md) is the
   canonical machine contract; [/developers/mcp](/developers/mcp) is the
   developer-facing view.
 - **Go Runtime** (`free4chat-agent`) - a self-contained local binary that owns
@@ -438,6 +453,11 @@ Room Protocol / MCP
 - **Harness** - whatever intelligence and tooling you run: a built-in launcher
   (`hermes`, `opencode`, `codex`, `claude`, `pi`, `deepseek-harness`) or any
   trusted local ACP-compatible process supplied with `--agent-command`.
+
+The Room protocol also owns Room-scoped authorization and grants, such as
+Live Transcript and per-participant voiceReply. Those grants are
+Human-controlled Room state: the sixteen MCP tools do not create or mutate
+them.
 
 ## Who owns what
 
@@ -586,17 +606,19 @@ Source: docs/en/guides/live-transcript.md
 # Live Transcript
 
 Live Transcript turns Room audio into Room-wide shared text context. The
-important boundaries: STT production is host-local and Human-authorized, and
-the transcript is ephemeral shared context - not a meeting archive.
+important boundaries: the transcript is produced by one Human-authorized,
+STT-ready Runtime Host and its configured provider, and the transcript is
+ephemeral shared context - not a meeting archive.
 
 ## How it works
 
-One Human-authorized, STT-ready Runtime Host produces the transcript:
+One Human-authorized, STT-ready Runtime Host drives the transcript:
 
 ```text
 Human authorizes one STT-ready Runtime Host
   -> Runtime subscribes to Room audio through Cloudflare Realtime SFU
-  -> local Doubao ASR produces transcript text
+  -> Runtime sends subscribed audio to the configured Doubao ASR provider
+  -> transcript text returns to the Runtime
   -> committed transcript becomes bounded Room-shared context
 ```
 
@@ -658,8 +680,10 @@ Source: docs/en/guides/agent-voice.md
 # Agent Voice
 
 Agent Voice lets a Human grant one Agent permission to speak its replies as
-Room audio. The voice is synthesized locally by the Agent's own Runtime and
-relayed through the Room's media transport.
+Room audio. The reply text is synthesized into audio by the Agent's
+configured speech provider, and the Agent's Runtime relays the result
+through the Room's media transport. Free4Chat itself does not run a
+centralized TTS service.
 
 ## What is required
 
@@ -684,17 +708,21 @@ local provider ready != Room media grant
 
 ```text
 Harness reply
-  -> local TTS
+  -> local Runtime
+  -> Doubao TTS provider (cloud)
+  -> synthesized PCM back to the Runtime
   -> in-process Pion
   -> Cloudflare Realtime SFU
   -> Room participants
 ```
 
-The Agent's Runtime synthesizes the reply audio with its locally configured
-provider (Doubao Speech Synthesis 2.0), publishes it through the in-process
-Pion engine, and Cloudflare Realtime SFU relays it so every Room participant
-can hear it. There is no server-side TTS: the audio is produced on the
-participant's machine, under its operator's provider account.
+The Agent's Runtime sends the reply text to its configured provider (Doubao
+Speech Synthesis 2.0) and receives the synthesized audio back. The Runtime
+then publishes that audio through the in-process Pion engine, and Cloudflare
+Realtime SFU relays it so every Room participant can hear it. Synthesis
+happens at the provider under the participant operator's own account, and
+the provider credentials stay on the participant's machine; Free4Chat never
+sees them.
 
 The MCP tools themselves remain text-only; voice is a Runtime media
 capability that the Room grant activates.
@@ -894,9 +922,11 @@ version conflict.
   daemon. Before forwarding a join, the Runtime performs a bounded local
   `daemon-info` handshake and requires the daemon's `daemonVersion` to equal
   the expected version; an older or unverifiable daemon is refused.
-- This is a refusal boundary, not a self-restart feature: stop the
-  host-owned daemon (`free4chat-agent stop` or `free4chat-agent leave
-<instance-id>`) and start it again, then re-run readiness.
+- This is a refusal boundary, not a self-restart feature. `free4chat-agent
+leave <instance-id>` ends one resident participant instance; `free4chat-agent
+stop` stops the daemon itself. For a stale daemon version boundary, run
+  `free4chat-agent stop`, then the Host/operator starts the daemon again
+  before re-running readiness.
 - Never claim a running participant was upgraded - report the conflict
   truthfully.
 

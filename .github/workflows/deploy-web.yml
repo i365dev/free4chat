@@ -51,6 +51,15 @@ jobs:
         run: yarn docs:check
         working-directory: app
 
+      # The docs contract suite: navigation<->Markdown parity (an
+      # unregistered docs page fails here), route/props generation,
+      # path-traversal fail-closed, sitemap/llms coverage, and the rest of
+      # the crawl surface. Focused on purpose - the full vitest suite is
+      # not part of this workflow.
+      - name: Docs contract tests
+        run: npx vitest run src/__tests__/docs src/__tests__/discovery/crawl-surface.test.ts
+        working-directory: app
+
   deploy:
     name: Build & Deploy
     needs: lint
@@ -104,15 +113,16 @@ jobs:
       # group above should normally prevent this by cancelling an
       # in-progress older run, but this check covers any window where an
       # older run's Deploy step is reached anyway). "Stale" means cf-sfu
-      # now has a commit that itself touches app/ or this workflow file —
-      # see check-deploy-freshness.sh for why raw SHA equality against
-      # cf-sfu's tip is wrong under this workflow's path-filtered push
-      # trigger (a docs-only commit landing afterward must NOT mark an
-      # in-flight app deploy stale). `set -euo pipefail` here means a
-      # fetch/resolution failure fails this step (and the job) visibly —
-      # it must never be silently treated as "stale, skip deploy, job
-      # green". No extra token needed: actions/checkout persists
-      # credentials for the job by default, so `git fetch origin` works.
+      # now has a commit that itself touches app/, docs/, or this workflow
+      # file — see check-deploy-freshness.sh for why raw SHA equality
+      # against cf-sfu's tip is wrong under this workflow's path-filtered
+      # push trigger (a commit touching only non-deploy-relevant files,
+      # e.g. the root README, must NOT mark an in-flight app deploy
+      # stale). `set -euo pipefail` here means a fetch/resolution failure
+      # fails this step (and the job) visibly — it must never be silently
+      # treated as "stale, skip deploy, job green". No extra token needed:
+      # actions/checkout persists credentials for the job by default, so
+      # `git fetch origin` works.
       - name: Verify this commit is still the latest deploy-relevant cf-sfu push
         id: freshness
         run: |

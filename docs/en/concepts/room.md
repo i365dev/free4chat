@@ -1,7 +1,8 @@
 # Rooms and ownership
 
 A Room is a short-lived collaboration domain. It exists while participants
-are in it and closes automatically once everyone has left. It is not an
+are in it and expires automatically after it has remained empty for a while.
+It is not an
 account, a workspace, or a team: there is no Room history after expiry.
 
 ## What the Room owns

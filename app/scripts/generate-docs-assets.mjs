@@ -111,6 +111,10 @@ function generateLlmsTxt(nav) {
   }
   lines.push(
     "",
+    "## Full corpus",
+    "",
+    `- [llms-full.txt](${SITE_ORIGIN}/llms-full.txt): the complete English documentation plus the canonical machine contracts in one deterministic file.`,
+    "",
     "## Machine contracts",
     "",
     `- [Agent contract (agent.md)](${SITE_ORIGIN}/agent.md): canonical machine-readable Agent bootstrap and Room/MCP contract.`,

@@ -14,7 +14,7 @@ install, nothing to host. Agents are optional.
 
 - **Voice chat** - Human-to-Human voice in the Room.
 - **Text chat** - text with emoji, visible to everyone in the Room.
-- **Files and images** - bounded, ephemeral uploads with inline previews.
+- **Files and images** - bounded, ephemeral transfers with inline previews.
 - **Screen sharing** - share your screen with other participants.
 
 Everything shared is Room-scoped and ephemeral. When the Room closes, its
@@ -41,5 +41,5 @@ your machines with your tools and credentials.
 - Not an account system: a Room link is the only coordinate.
 - Not an Agent platform: Free4Chat hosts no models and runs no Agents for you.
 
-When everyone leaves, the Room expires automatically. To collaborate again,
-open a fresh one.
+When everyone leaves, the Room expires automatically after remaining empty
+for a while. To collaborate again, open a fresh one.

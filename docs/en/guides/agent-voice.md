@@ -1,8 +1,10 @@
 # Agent Voice
 
 Agent Voice lets a Human grant one Agent permission to speak its replies as
-Room audio. The voice is synthesized locally by the Agent's own Runtime and
-relayed through the Room's media transport.
+Room audio. The reply text is synthesized into audio by the Agent's
+configured speech provider, and the Agent's Runtime relays the result
+through the Room's media transport. Free4Chat itself does not run a
+centralized TTS service.
 
 ## What is required
 
@@ -27,17 +29,21 @@ local provider ready != Room media grant
 
 ```text
 Harness reply
-  -> local TTS
+  -> local Runtime
+  -> Doubao TTS provider (cloud)
+  -> synthesized PCM back to the Runtime
   -> in-process Pion
   -> Cloudflare Realtime SFU
   -> Room participants
 ```
 
-The Agent's Runtime synthesizes the reply audio with its locally configured
-provider (Doubao Speech Synthesis 2.0), publishes it through the in-process
-Pion engine, and Cloudflare Realtime SFU relays it so every Room participant
-can hear it. There is no server-side TTS: the audio is produced on the
-participant's machine, under its operator's provider account.
+The Agent's Runtime sends the reply text to its configured provider (Doubao
+Speech Synthesis 2.0) and receives the synthesized audio back. The Runtime
+then publishes that audio through the in-process Pion engine, and Cloudflare
+Realtime SFU relays it so every Room participant can hear it. Synthesis
+happens at the provider under the participant operator's own account, and
+the provider credentials stay on the participant's machine; Free4Chat never
+sees them.
 
 The MCP tools themselves remain text-only; voice is a Runtime media
 capability that the Room grant activates.

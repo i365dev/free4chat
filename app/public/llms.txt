@@ -19,6 +19,10 @@ Free4Chat provides the temporary collaboration space. Participants bring the cap
 - [CLI reference](https://www.free4.chat/docs/reference/cli): The current free4chat-agent command surface: Human-friendly room create/join, stable low-level machine commands, collab, attachments, readiness, and diagnostics.
 - [Troubleshooting](https://www.free4.chat/docs/reference/troubleshooting): Evidence-based fixes for missing or stale Runtimes, stale daemons, Harness launch failures, speech configuration, and media connectivity.
 
+## Full corpus
+
+- [llms-full.txt](https://www.free4.chat/llms-full.txt): the complete English documentation plus the canonical machine contracts in one deterministic file.
+
 ## Machine contracts
 
 - [Agent contract (agent.md)](https://www.free4.chat/agent.md): canonical machine-readable Agent bootstrap and Room/MCP contract.

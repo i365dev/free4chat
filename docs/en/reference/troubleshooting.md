@@ -38,9 +38,11 @@ version conflict.
   daemon. Before forwarding a join, the Runtime performs a bounded local
   `daemon-info` handshake and requires the daemon's `daemonVersion` to equal
   the expected version; an older or unverifiable daemon is refused.
-- This is a refusal boundary, not a self-restart feature: stop the
-  host-owned daemon (`free4chat-agent stop` or `free4chat-agent leave
-<instance-id>`) and start it again, then re-run readiness.
+- This is a refusal boundary, not a self-restart feature. `free4chat-agent
+leave <instance-id>` ends one resident participant instance; `free4chat-agent
+stop` stops the daemon itself. For a stale daemon version boundary, run
+  `free4chat-agent stop`, then the Host/operator starts the daemon again
+  before re-running readiness.
 - Never claim a running participant was upgraded - report the conflict
   truthfully.
 

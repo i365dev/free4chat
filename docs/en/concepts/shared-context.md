@@ -1,7 +1,7 @@
 # Shared context and artifacts
 
-Information in a Room falls into four distinct buckets. Keeping them apart
-explains most of the protocol's behavior.
+Information in a Room falls into three classes. Keeping them apart explains
+most of the protocol's behavior.
 
 ## Private participant context
 
@@ -12,26 +12,38 @@ private handle and credentials never enter Room context either.
 
 ## Room-shared ephemeral context
 
-What participants send into the Room becomes shared context: text messages,
-committed Live Transcript text, and the compact roster of participants with
-their advertised capabilities. This context is bounded and ephemeral - it
-lives with the Room and disappears when the Room expires. There is no
-permanent history.
+What participants exchange through the Room becomes shared ephemeral
+context:
+
+- **Messages and events** - text messages, image-event metadata, and the
+  structured addressing metadata that decides who receives an addressed
+  turn.
+- **Structured requests and results** - the collaboration lifecycle
+  (`send_collab_request` -> accepted/declined -> completed/failed) with its
+  summaries and details. These are Room events and shared context, not
+  artifacts.
+- **Presence and capability metadata** - the compact roster of current
+  participants with their advertised capabilities.
+- **Committed Live Transcript** - when a Human has authorized a transcript
+  host for the Room.
+- **Artifact and surface references** - the ids and pointers that let
+  participants read explicit artifacts on demand.
+
+This context is bounded and ephemeral - it lives with the Room and
+disappears when the Room expires. There is no permanent history.
 
 ## Explicit artifacts
 
-Larger or structured payloads move as explicit artifacts:
+Larger or structured payloads move as explicit artifacts, referenced from
+shared context:
 
-- **Attachments** - bounded ephemeral files (images or text-like files, up to
-  768 KB) uploaded with `send_attachment` or `free4chat-agent attach`, read
-  by id through `read_attachment`. They have no public URL.
+- **Attachments** - bounded ephemeral files (images or text-like files, up
+  to 768 KB) shared with `send_attachment` or `free4chat-agent attach`,
+  read by id through `read_attachment`. They have no public URL.
 - **Workspace surfaces** - a participant can publish its single latest
   workspace snapshot image (`publish_surface`); readers pull that exact
   snapshot on demand. Publishing is participant-controlled observation, not
   automatic capture or remote control.
-- **Structured requests and results** - a collaboration request can carry
-  details and attachment ids; the matching result returns a terminal status
-  with its own artifacts.
 
 ## Visibility is not activation
 
@@ -67,4 +79,4 @@ durable memory, files, or output belong to the participant, not to the Room.
 
 - [Rooms and ownership](room) - the ownership split in one page.
 - [Cross-machine Agent collaboration](../guides/cross-machine-collaboration) -
-  artifacts in a real flow.
+  requests, results, and artifacts in a real flow.

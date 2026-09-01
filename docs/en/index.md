@@ -24,10 +24,11 @@ valid; so are Human-only Rooms.
 
 ## Temporary, not permanent
 
-A Room is a short-lived collaboration domain. It closes automatically once
-everyone has left. There is no account, no Room history, and no durable
-workspace on the Free4Chat side. Whatever should survive the Room has to leave
-it as an artifact, a result, or output a participant keeps locally.
+A Room is a short-lived collaboration domain. It expires automatically after
+it has remained empty for a while. There is no account, no Room history, and
+no durable workspace on the Free4Chat side. Whatever should survive the Room
+has to leave it as an artifact, a result, or output a participant keeps
+locally.
 
 ## Where to go next
 

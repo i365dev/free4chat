@@ -1,17 +1,19 @@
 # Live Transcript
 
 Live Transcript turns Room audio into Room-wide shared text context. The
-important boundaries: STT production is host-local and Human-authorized, and
-the transcript is ephemeral shared context - not a meeting archive.
+important boundaries: the transcript is produced by one Human-authorized,
+STT-ready Runtime Host and its configured provider, and the transcript is
+ephemeral shared context - not a meeting archive.
 
 ## How it works
 
-One Human-authorized, STT-ready Runtime Host produces the transcript:
+One Human-authorized, STT-ready Runtime Host drives the transcript:
 
 ```text
 Human authorizes one STT-ready Runtime Host
   -> Runtime subscribes to Room audio through Cloudflare Realtime SFU
-  -> local Doubao ASR produces transcript text
+  -> Runtime sends subscribed audio to the configured Doubao ASR provider
+  -> transcript text returns to the Runtime
   -> committed transcript becomes bounded Room-shared context
 ```
 
