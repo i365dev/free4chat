@@ -11,9 +11,8 @@ description: Strict provenance-first SOP for real deployed Free4Chat Meeting Not
 > `scripts/media-e2e-preflight.sh` are gone, and Pion now runs **in-process**
 > inside the canonical Go runtime (`agent/`, released as the
 > `free4chat-agent` binary). The historical reproduction path is the frozen
-> tag `node-agent-runtime-e2e-2026-08-27` / branch `archive/node-agent-runtime`
-> and the frozen reference source `experiments/pion-cloudflare/`. Provenance
-> and safe-evidence discipline below still applies; the concrete
+> tag `node-agent-runtime-e2e-2026-08-27` / branch `archive/node-agent-runtime`.
+> Provenance and safe-evidence discipline below still applies; the concrete
 > build/provisioning steps are marked where they are frozen-era only.
 
 Use this skill for real browser/media experiments against a deployed Free4Chat

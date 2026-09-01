@@ -1,5 +1,5 @@
 // Package media owns the in-process realtime media plane: the Pion
-// PeerConnection engine (ported from the proven experiments/pion-cloudflare
+// PeerConnection engine (ported from the proven pre-Go Pion sidecar
 // implementation), the Cloudflare SFU REST client, the shared-session media
 // bridge, and the grant controller. ONE shared session serves both Meeting
 // Notes (Human audio ingress) and Voice Reply (Agent audio egress); the

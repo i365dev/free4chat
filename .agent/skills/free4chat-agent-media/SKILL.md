@@ -85,8 +85,6 @@ cd agent && go test ./... -count=1 -timeout 300s   # Go runtime tests, authorita
 cd app   && npm run type-check && npm test          # Worker/DO vitest
 ```
 
-Historical reference only: `experiments/pion-cloudflare/` (frozen
-implementation reference) and the Node runtime tag
-`node-agent-runtime-e2e-2026-08-27` / branch `archive/node-agent-runtime`
-document the pre-Go sidecar architecture; they are not a supported runtime
-path.
+The frozen Node runtime tag `node-agent-runtime-e2e-2026-08-27` / branch
+`archive/node-agent-runtime` document the pre-Go sidecar architecture; they
+are historical references, not a supported runtime path.
