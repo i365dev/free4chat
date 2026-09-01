@@ -151,5 +151,5 @@ Pushes to `cf-sfu` that touch `app/**` run lint, type-check, build, and deploy t
 - Do not place participant capabilities in query strings, logs, analytics, or copied Agent prompts.
 - Do not commit `.dev.vars`, generated secrets, or `*.tsbuildinfo`.
 - The canonical Agent Runtime is the Go binary under `agent/`; the frozen Node runtime is immutable history — do not reintroduce the npm runtime or Node↔Pion provisioning machinery.
-- `experiments/pion-cloudflare/` is historical experiment/reference source: preserve it, do not rewrite or delete it.
+- `experiments/pion-cloudflare/` was removed after the in-process Go Runtime reached parity. Do not restore the obsolete sidecar experiment to the canonical branch; historical provenance lives in the frozen tag and archive branch below.
 - Preserve the frozen tag `node-agent-runtime-e2e-2026-08-27` and archive branch `archive/node-agent-runtime`.

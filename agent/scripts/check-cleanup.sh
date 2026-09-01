@@ -66,11 +66,12 @@ elif ! bash -n app/public/install-agent.sh; then
   fail=1
 fi
 
-# Immutable historical references required by #128 are preserved.
-if [ ! -d experiments/pion-cloudflare ]; then
-  note "experiments/pion-cloudflare/ must be preserved" >&2
+# The obsolete Pion sidecar experiment must not return to the canonical tree.
+if [ -d experiments/pion-cloudflare ]; then
+  note "experiments/pion-cloudflare/ must remain removed" >&2
   fail=1
 fi
+# The frozen tag/archive branch are documented by this immutable reference.
 if [ ! -f docs/agent-runtime/node-reference.md ]; then
   note "docs/agent-runtime/node-reference.md must be preserved" >&2
   fail=1
