@@ -1,72 +1,163 @@
-# Free4Chat Speech Capability Handoff
+# Free4Chat Speech Capability Contract
 
-Speech configuration is local to the human's own `free4chat-agent` Runtime.
-Free4Chat does not receive or store speech-provider credentials, raw audio, or
-recordings. Committed Live Transcript text is bounded, Room-shared ephemeral
-context and disappears with the Room's retention.
+Speech capability belongs to a Human-controlled local `free4chat-agent`
+Runtime. Provider credentials stay on that host. Free4Chat does not use speech
+configuration as Room authorization.
 
-1. Run `free4chat-agent readiness --json` and inspect `speech.stt` /
-   `speech.tts`: `configured` reports whether the credential is present and
-   `ready` reports whether the capability is usable.
-2. Never ask the human to paste a speech-provider credential into the room,
-   model conversation, or an Agent-visible file.
-3. If setup is needed, the Agent runs the official local command itself:
+## Security and data flow
 
-   `free4chat-agent credential provision --provider doubao --purpose speech.stt`
+- Never ask a Human to paste a speech-provider credential into Room text, a
+  model conversation, an Agent-visible file, an attachment, or a shell
+  argument.
+- On macOS, the official provisioning flow stores the Doubao key in macOS
+  Keychain under the local Free4Chat namespace.
+- On headless Linux/automation hosts, use the local `DOUBAO_API_KEY`
+  environment variable.
+- Legacy `credentials.json` is read-only compatibility input. An explicit
+  `credential delete --provider doubao` may remove its old Doubao API key to
+  prevent fallback.
+- Cloudflare Realtime SFU relays Room audio. When Live Transcript is enabled,
+  the authorized local Runtime sends subscribed audio to the configured speech
+  provider under the Human's own provider account.
+- Free4Chat does not record Room audio. Committed Live Transcript text is
+  bounded Room-shared ephemeral context and disappears with Room retention.
 
-   On macOS it opens a Free4Chat-owned prompt with hidden input. The human
-   enters the key only in that local prompt. The value is saved in macOS
-   Keychain, never in a Room, Harness conversation, attachment, analytics,
-   or new plaintext config file. The legacy `speech setup --provider doubao`
-   terminal command remains for compatibility and also writes to Keychain.
-   The human may alternatively provide `DOUBAO_API_KEY` on their own runtime
-   process for headless Linux/automation. This version intentionally provides
-   no Linux/Windows native keyring prompt. Legacy `credentials.json` is
-   read-only compatibility input, except explicit `credential delete --provider
-   doubao`, which removes its old Doubao API key to prevent fallback.
-4. A successful provision asks an existing local daemon to reload speech for
-   its resident Rooms; it does not require leaving or rejoining. After setup,
-   run `free4chat-agent readiness --json` again. Claim readiness only when
-   the requested slot reports `ready: true`. Cancellation or setup failure
-   leaves ordinary text participation running.
-5. Live Transcript authorization is separate from provider configuration. A
-   configured provider does not grant room media access: a Human explicitly
-   starts the Room-wide transcript through an authorized STT-ready Runtime
-   Host, and any Human may stop it.
-   In a Room, use **Connect local Runtime** to connect an already-running
-   Runtime on this computer. The browser prepares a one-time local handoff
-   command for you; it is not an Agent invitation and the opaque connection
-   value should never be pasted into chat or a model conversation. After the
-   Runtime connects, the Room shows **Local Runtime ready** and Start becomes
-   available to that Human.
-6. Cloud speech sends audio to the selected provider under the human's own
-   provider account and credentials.
-7. Raw audio is not intended to be persisted by Free4Chat.
+Provider configuration and Room authorization are separate:
 
-Doubao Speech 2.0 is supported by the local Runtime for both capabilities:
+```text
+local provider ready != Room media grant
+visibility != activation
+transcription != interpretation
+```
 
-- **Streaming ASR 2.0** — Room-wide Live Transcript media ingress
-  (subscribe-only). Transcription is infrastructure; interpretation remains
-  Agent work over the committed shared context.
-- **Speech Synthesis 2.0 (TTS)** — outbound voice through the official V3
-  output-unidirectional interface (`X-Api-Key`, resource id `seed-tts-2.0`,
-  raw PCM s16le / 24 kHz / mono). The speaker is a 2.0 voice
-  (`zh_female_shuangkuaisisi_uranus_bigtts` by default) and can be
-  overridden locally with `DOUBAO_TTS_VOICE`.
+## Check readiness
 
-One console credential powers both: configure it lazily with
-`free4chat-agent credential provision --provider doubao --purpose speech.stt`
-(macOS local prompt) or the `DOUBAO_API_KEY` environment variable on the
-runtime process. The
-provider uses the current X-API-Key protocol rather than legacy
-AppId/AccessToken credentials. STT and TTS selections live in
-separate config slots (`speech.stt.provider` / `speech.tts.provider` in the
-runtime directory's `config.json`; override with `FREE4CHAT_STT_PROVIDER` /
-`FREE4CHAT_TTS_PROVIDER`) and never displace each other.
+Run:
 
-When a human enables the room's voiceReply grant for an Agent, the resident
-Runtime publishes synthesized replies over the shared Cloudflare SFU, making
-them audible to room participants. This uses the configured Doubao Speech
-Synthesis 2.0 provider and remains separate from the text-only MCP tools.
-Without both the current room grant and local TTS configuration, voice output
-is not activated.
+```text
+free4chat-agent readiness --json
+```
+
+For a specific Room/Harness:
+
+```text
+free4chat-agent readiness --room <room-id> --agent <harness> --json
+```
+
+Inspect `speech.stt` and `speech.tts`:
+
+- `configured` reports whether the required local provider configuration is
+  available.
+- `ready` reports whether that capability is currently usable.
+
+Claim readiness only when the requested slot reports `ready: true`.
+
+## Configure Doubao locally
+
+The supported Agent-triggerable provisioning command is:
+
+```text
+free4chat-agent credential provision --provider doubao --purpose speech.stt
+```
+
+`speech.tts` is also accepted as the purpose. One Doubao API key can power both
+STT and TTS.
+
+On macOS the command opens a Free4Chat-owned hidden-input prompt. The Human
+enters the key only in that local prompt. The Harness receives only the bounded
+command result and never the key.
+
+The compatibility command remains available:
+
+```text
+free4chat-agent speech setup --provider doubao
+```
+
+It also stores the key in the native credential store.
+
+On Linux/headless automation there is no native prompt. Configure
+`DOUBAO_API_KEY` on the local Runtime process instead.
+
+After successful provisioning, an already-running daemon receives a best-effort
+speech reload request. Resident Rooms do not need to leave or rejoin. Re-run
+readiness and continue only when the requested slot reports `ready: true`.
+Cancellation or provisioning failure leaves ordinary text collaboration
+running.
+
+## Live Transcript
+
+Live Transcript is Room-wide shared ephemeral context, but STT production is
+host-local:
+
+```text
+Human authorizes one STT-ready Runtime Host
+  -> Runtime subscribes to Room audio through Cloudflare Realtime SFU
+  -> Doubao ASR produces transcript text
+  -> committed transcript becomes bounded Room-shared context
+```
+
+A configured provider does not grant media access. A Human explicitly starts
+Live Transcript through an authorized STT-ready Runtime Host, and any Human may
+stop it.
+
+In the browser, **Connect local Runtime** connects an already-running Runtime
+on the same computer. The browser prepares a one-time local handoff command.
+That handoff value is not an Agent invitation and must not be pasted into Room
+chat or a model conversation.
+
+Seeing committed transcript context does not itself wake an Agent. Explicit
+addressing controls Harness activation.
+
+## Agent Voice
+
+When a Human grants `voiceReply` for an Agent:
+
+```text
+Harness reply
+  -> local Doubao TTS
+  -> in-process Pion
+  -> Cloudflare Realtime SFU
+  -> Room participants
+```
+
+Voice output requires both:
+
+1. a current Room `voiceReply` grant; and
+2. local TTS readiness.
+
+Without both, text collaboration continues but voice output is not activated.
+
+## Supported provider
+
+The local Runtime currently supports Doubao Speech 2.0:
+
+- Streaming ASR 2.0 for Live Transcript media ingress.
+- Speech Synthesis 2.0 for Agent Voice output through the V3
+  output-unidirectional interface using `X-Api-Key`, resource id
+  `seed-tts-2.0`, raw PCM s16le at 24 kHz mono.
+
+The default TTS voice is:
+
+```text
+zh_female_shuangkuaisisi_uranus_bigtts
+```
+
+Override it locally with:
+
+```text
+DOUBAO_TTS_VOICE
+```
+
+STT and TTS provider selections remain separate configuration slots:
+
+```text
+speech.stt.provider
+speech.tts.provider
+```
+
+They can also be overridden locally with:
+
+```text
+FREE4CHAT_STT_PROVIDER
+FREE4CHAT_TTS_PROVIDER
+```
