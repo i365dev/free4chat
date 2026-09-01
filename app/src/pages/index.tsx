@@ -13,6 +13,12 @@ import {
 import DiscoveryFooter from "../components/DiscoveryFooter"
 import Header from "../components/Header"
 
+const inputClasses =
+  "w-full rounded-none border border-emerald-900/70 bg-black/70 p-3 font-mono text-sm text-emerald-100 placeholder-emerald-800 caret-emerald-400 transition focus:border-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/30"
+
+const diceClasses =
+  "text-emerald-800 transition hover:text-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/40"
+
 export default function Home() {
   const router = useRouter()
   const [roomName, setRoomName] = useState<string>("")
@@ -57,21 +63,25 @@ export default function Home() {
   }
 
   return (
-    <div className="bg-gray-900">
+    <div className="retro-scope min-h-screen">
       <Header></Header>
-      <main className="flex h-screen flex-col bg-gray-900 text-white">
-        <div className="mx-auto max-w-screen-xl flex-1 overflow-y-auto px-4 py-12 lg:flex lg:items-center">
-          <div className="slogan mx-auto max-w-3xl text-center">
-            <h1 className="bg-gradient-to-r from-green-300 via-blue-500 to-purple-600 bg-clip-text text-3xl font-extrabold text-transparent sm:text-4xl">
+      <main className="flex min-h-screen flex-col">
+        <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col overflow-y-auto px-4 py-12">
+          <div className="slogan mx-auto my-auto w-full max-w-3xl text-center">
+            <p className="font-mono text-xs tracking-widest text-emerald-700">
+              FREE4CHAT://TERMINAL — SESSION READY
+              <span className="cursor-blink" />
+            </p>
+            <h1 className="psy-headline mt-5 bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-3xl font-extrabold uppercase tracking-tight text-transparent sm:text-4xl">
               Open a room.
               <br />
               Bring people and Agents together.
             </h1>
 
-            <p className="mx-auto mt-4 text-gray-400 sm:text-sm sm:leading-relaxed">
+            <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
               No sign-up. No shared workspace. Temporary realtime collaboration.
             </p>
-            <p className="mx-auto mt-1 text-gray-600 sm:text-xs sm:leading-relaxed">
+            <p className="mx-auto mt-1 font-mono text-xs text-emerald-800 sm:leading-relaxed">
               No permanent Room history — empty Rooms expire automatically.
             </p>
 
@@ -85,17 +95,17 @@ export default function Home() {
                   <input
                     type="text"
                     id="room"
-                    placeholder="Room Name"
+                    placeholder="room_name"
                     value={roomName}
                     onChange={(e) => setRoomName(e.target.value)}
-                    className="w-full rounded-md border border-gray-600 bg-gray-800 p-3 text-white placeholder-gray-400 shadow-sm transition focus:border-white focus:outline-none focus:ring focus:ring-yellow-400"
+                    className={inputClasses}
                   />
 
                   <span className="absolute inset-y-0 right-0 grid w-10 place-content-center">
                     <button
                       onClick={() => setRoomName(randomName())}
                       type="button"
-                      className="text-gray-400 hover:text-yellow-400"
+                      className={diceClasses}
                       title="Randomize room name"
                     >
                       <svg
@@ -120,19 +130,19 @@ export default function Home() {
                     type="text"
                     id="nickname"
                     value={nickName}
-                    placeholder="Nick Name"
+                    placeholder="nickname"
                     onChange={(e) => setNickName(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") go()
                     }}
-                    className="w-full rounded-md border border-gray-600 bg-gray-800 p-3 text-white placeholder-gray-400 shadow-sm transition focus:border-white focus:outline-none focus:ring focus:ring-yellow-400"
+                    className={inputClasses}
                   />
 
                   <span className="absolute inset-y-0 right-0 grid w-10 place-content-center">
                     <button
                       onClick={() => setNickName(randomName())}
                       type="button"
-                      className="text-gray-400 hover:text-yellow-400"
+                      className={diceClasses}
                       title="Randomize nickname"
                     >
                       <svg
@@ -151,9 +161,9 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={go}
-                  className="group flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 sm:w-auto"
+                  className="group flex w-full items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300 sm:w-auto"
                 >
-                  <span className="text-sm font-medium"> Join </span>
+                  <span> Join </span>
 
                   <svg
                     className="ml-3 h-5 w-5"
@@ -172,11 +182,11 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="mt-3 flex flex-col items-center">
+              <div className="mt-3 flex flex-col items-center font-mono">
                 <button
                   type="button"
                   onClick={() => setShowAdvanced((v) => !v)}
-                  className="flex items-center gap-1 text-xs text-gray-600 hover:text-gray-500"
+                  className="flex items-center gap-1 text-xs text-emerald-800 hover:text-emerald-500"
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -194,15 +204,15 @@ export default function Home() {
                       d="M9 5l7 7-7 7"
                     />
                   </svg>
-                  Advanced
+                  [+] Advanced
                 </button>
                 {showAdvanced && (
-                  <div className="mt-2 flex flex-col gap-2">
+                  <div className="mt-2 flex flex-col items-center gap-2">
                     <label
-                      className={`flex select-none items-center gap-2 text-xs ${
+                      className={`flex select-none items-center gap-2 font-mono text-xs ${
                         isDesktop
-                          ? "cursor-pointer text-gray-500"
-                          : "cursor-not-allowed text-gray-600"
+                          ? "cursor-pointer text-emerald-600"
+                          : "cursor-not-allowed text-emerald-900"
                       }`}
                     >
                       <input
@@ -210,11 +220,11 @@ export default function Home() {
                         checked={screenShare}
                         disabled={!isDesktop}
                         onChange={(e) => setScreenShare(e.target.checked)}
-                        className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-rose-600 focus:ring-rose-500 focus:ring-offset-gray-900 disabled:opacity-40"
+                        className="h-3.5 w-3.5 rounded-none border-emerald-900 bg-black text-emerald-500 focus:ring-emerald-500/40 focus:ring-offset-0 disabled:opacity-40"
                       />
                       Enable screen sharing
                       {!isDesktop && (
-                        <span className="text-gray-700">(desktop only)</span>
+                        <span className="text-emerald-900">(desktop only)</span>
                       )}
                     </label>
                   </div>
@@ -226,7 +236,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={copyRoomLink}
-                    className="flex items-center gap-1 rounded bg-gray-700 px-2 py-1 text-xs text-gray-300 hover:bg-gray-600"
+                    className="flex items-center gap-1 rounded-none border border-emerald-900 bg-black/60 px-2 py-1 font-mono text-xs text-emerald-500 hover:border-emerald-600 hover:text-emerald-300"
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -247,64 +257,64 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="mt-6 border-t border-gray-800 pt-5 text-left sm:text-center">
-                <p className="text-xs font-medium text-gray-400">
-                  For developers &amp; Agents
+              <div className="mt-8 w-full border border-emerald-900/60 bg-black/40 p-4 text-left">
+                <p className="font-mono text-xs font-bold uppercase tracking-widest text-amber-400">
+                  {"## for_developers & agents"}
                 </p>
-                <code className="mt-2 block break-all font-mono text-xs text-gray-500">
+                <code className="mt-2 block break-all font-mono text-xs text-emerald-400">
                   $ free4chat-agent room create --agent pi --name Pi
                 </code>
                 <Link
                   href="/docs/getting-started/agent-room"
-                  className="mt-3 inline-flex text-xs text-gray-400 transition hover:text-green-300 focus:outline-none focus:ring focus:ring-yellow-400"
+                  className="mt-3 inline-flex font-mono text-xs text-emerald-600 underline-offset-4 transition hover:text-emerald-300 hover:underline focus:outline-none focus:ring focus:ring-emerald-500/40"
                 >
                   Create and join Rooms from the terminal →
                 </Link>
               </div>
             </div>
 
-            <div className="mt-8 w-full border-t border-gray-800 pt-6 text-left">
-              <p className="text-center text-xs font-semibold uppercase tracking-wide text-gray-500">
-                Explore Free4Chat
+            <div className="mt-8 w-full border-t border-emerald-900/60 pt-6 text-left">
+              <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-700">
+                {"// explore_free4chat"}
               </p>
-              <div className="mt-4 grid gap-6 sm:grid-cols-3">
+              <div className="mt-4 grid gap-6 font-mono sm:grid-cols-3">
                 <div>
                   <Link
                     href="/docs"
-                    className="text-sm font-medium text-gray-300 transition hover:text-white"
+                    className="text-sm text-emerald-300 transition hover:text-white"
                   >
                     Documentation →
                   </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                  <p className="mt-1 text-xs leading-relaxed text-emerald-800">
                     Understand Rooms, Agents, and the Runtime.
                   </p>
                 </div>
                 <div>
                   <Link
                     href="/docs/getting-started/agent-room"
-                    className="text-sm font-medium text-gray-300 transition hover:text-white"
+                    className="text-sm text-emerald-300 transition hover:text-white"
                   >
                     Agent collaboration →
                   </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                  <p className="mt-1 text-xs leading-relaxed text-emerald-800">
                     Bring independent Agents together across machines.
                   </p>
                 </div>
                 <div>
                   <Link
                     href="/docs/concepts/room"
-                    className="text-sm font-medium text-gray-300 transition hover:text-white"
+                    className="text-sm text-emerald-300 transition hover:text-white"
                   >
                     How Rooms work →
                   </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                  <p className="mt-1 text-xs leading-relaxed text-emerald-800">
                     Ownership, shared context, and temporary collaboration.
                   </p>
                 </div>
               </div>
             </div>
 
-            <p className="mt-4 text-center text-xs text-gray-600">
+            <p className="mt-6 text-center font-mono text-xs text-emerald-950">
               This website will collect some runtime technical data for
               debugging, using at your risk.
             </p>

@@ -5,3 +5,80 @@
 html {
   @apply antialiased;
 }
+
+/* --- Retro terminal scope (homepage only) --- */
+
+.retro-scope {
+  position: relative;
+  isolation: isolate;
+  background-color: #020806;
+  background-image: linear-gradient(
+      rgba(16, 185, 129, 0.045) 1px,
+      transparent 1px
+    ),
+    linear-gradient(90deg, rgba(16, 185, 129, 0.045) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* CRT scanlines + vignette. Purely decorative: never intercept input. */
+.retro-scope::before,
+.retro-scope::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.retro-scope::before {
+  z-index: 40;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.16) 0px,
+    rgba(0, 0, 0, 0.16) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+.retro-scope::after {
+  z-index: 39;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 58%,
+    rgba(1, 10, 7, 0.55) 100%
+  );
+}
+
+/* Psychedelic mode: the headline gradient slowly cycles the full wheel. */
+.psy-headline {
+  animation: psy-hue 14s linear infinite;
+}
+
+@keyframes psy-hue {
+  from {
+    filter: hue-rotate(0deg) drop-shadow(0 0 10px rgba(52, 211, 153, 0.3));
+  }
+  to {
+    filter: hue-rotate(360deg) drop-shadow(0 0 10px rgba(52, 211, 153, 0.3));
+  }
+}
+
+.cursor-blink::after {
+  content: "▊";
+  margin-left: 0.3em;
+  animation: cursor-blink 1.1s steps(2, start) infinite;
+  color: rgba(52, 211, 153, 0.8);
+}
+
+@keyframes cursor-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .psy-headline,
+  .cursor-blink::after {
+    animation: none;
+  }
+}

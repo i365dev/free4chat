@@ -17,8 +17,8 @@ describe("Home page", () => {
       })
     ).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /join/i })).toBeInTheDocument()
-    expect(screen.getByPlaceholderText("Room Name")).toBeInTheDocument()
-    expect(screen.getByPlaceholderText("Nick Name")).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("room_name")).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("nickname")).toBeInTheDocument()
     expect(
       screen.getByRole("link", {
         name: "Create and join Rooms from the terminal →",
