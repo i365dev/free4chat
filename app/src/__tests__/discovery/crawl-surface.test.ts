@@ -103,9 +103,15 @@ describe("sitemap.xml", () => {
 })
 
 describe("_document.tsx", () => {
+  const source = readFileSync(join(ROOT, "src/pages/_document.tsx"), "utf-8")
+
   it("does not set a description meta tag (next/document renders unconditionally on every page and next/head does not dedupe plain <meta> tags, so a fallback here would duplicate each page's own description)", () => {
-    const source = readFileSync(join(ROOT, "src/pages/_document.tsx"), "utf-8")
     expect(source).not.toMatch(/name="description"/)
+  })
+
+  it("advertises the site-wide llms.txt through the standard describedby link relation", () => {
+    expect(source).toContain('rel="describedby"')
+    expect(source).toContain('href="https://www.free4.chat/llms.txt"')
   })
 })
 
