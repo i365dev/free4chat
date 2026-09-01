@@ -16,6 +16,42 @@
     <loc>https://www.free4.chat/privacy</loc>
   </url>
   <url>
-    <loc>https://www.free4.chat/developers/mcp</loc>
+    <loc>https://www.free4.chat/docs</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/getting-started/browser-room</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/getting-started/agent-room</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/concepts/room</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/concepts/humans-and-agents</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/concepts/shared-context</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/concepts/runtime-harness</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/guides/cross-machine-collaboration</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/guides/live-transcript</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/guides/agent-voice</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/reference/cli</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/reference/mcp</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/reference/troubleshooting</loc>
   </url>
 </urlset>

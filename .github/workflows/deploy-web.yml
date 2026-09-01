@@ -5,10 +5,12 @@ on:
   push:
     paths:
       - "app/**"
+      - "docs/**"
       - ".github/workflows/deploy-web.yml"
   pull_request:
     paths:
       - "app/**"
+      - "docs/**"
       - ".github/workflows/deploy-web.yml"
 
 jobs:
@@ -40,6 +42,22 @@ jobs:
 
       - name: Type check
         run: yarn type-check
+        working-directory: app
+
+      # Fails when app/public/llms*.txt or app/public/sitemap.xml drifted
+      # from docs/en/navigation.json + docs/en Markdown + the machine
+      # contracts; keeps docs URLs covered without running the test suite.
+      - name: Docs assets are fresh
+        run: yarn docs:check
+        working-directory: app
+
+      # The docs contract suite: navigation<->Markdown parity (an
+      # unregistered docs page fails here), route/props generation,
+      # path-traversal fail-closed, sitemap/llms coverage, and the rest of
+      # the crawl surface. Focused on purpose - the full vitest suite is
+      # not part of this workflow.
+      - name: Docs contract tests
+        run: npx vitest run src/__tests__/docs src/__tests__/discovery/crawl-surface.test.ts
         working-directory: app
 
   deploy:
@@ -77,6 +95,14 @@ jobs:
           # production test window is explicitly closed.
           NEXT_PUBLIC_TURNSTILE_DISABLED: "1"
 
+      # Copy prerendered pages (the /docs routes) into the Workers static
+      # assets bundle. The deploy job bypasses `opennextjs-cloudflare deploy`
+      # (raw `wrangler deploy` below), so the build's cache population must
+      # run explicitly. Local target = plain fs copy, no credentials needed.
+      - name: Populate static assets cache
+        run: npx opennextjs-cloudflare populateCache local
+        working-directory: app
+
       - name: Validate deployment variables
         run: test -n "$SFU_APP_ID" && test -n "$NEXT_PUBLIC_TURNSTILE_SITE_KEY"
         env:
@@ -87,15 +113,16 @@ jobs:
       # group above should normally prevent this by cancelling an
       # in-progress older run, but this check covers any window where an
       # older run's Deploy step is reached anyway). "Stale" means cf-sfu
-      # now has a commit that itself touches app/ or this workflow file —
-      # see check-deploy-freshness.sh for why raw SHA equality against
-      # cf-sfu's tip is wrong under this workflow's path-filtered push
-      # trigger (a docs-only commit landing afterward must NOT mark an
-      # in-flight app deploy stale). `set -euo pipefail` here means a
-      # fetch/resolution failure fails this step (and the job) visibly —
-      # it must never be silently treated as "stale, skip deploy, job
-      # green". No extra token needed: actions/checkout persists
-      # credentials for the job by default, so `git fetch origin` works.
+      # now has a commit that itself touches app/, docs/, or this workflow
+      # file — see check-deploy-freshness.sh for why raw SHA equality
+      # against cf-sfu's tip is wrong under this workflow's path-filtered
+      # push trigger (a commit touching only non-deploy-relevant files,
+      # e.g. the root README, must NOT mark an in-flight app deploy
+      # stale). `set -euo pipefail` here means a fetch/resolution failure
+      # fails this step (and the job) visibly — it must never be silently
+      # treated as "stale, skip deploy, job green". No extra token needed:
+      # actions/checkout persists credentials for the job by default, so
+      # `git fetch origin` works.
       - name: Verify this commit is still the latest deploy-relevant cf-sfu push
         id: freshness
         run: |
