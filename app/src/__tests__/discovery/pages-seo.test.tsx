@@ -27,7 +27,6 @@ vi.mock("../../components/DiscoveryPageLayout", () => ({
 }))
 
 import AiAgentRoomPage from "../../pages/ai-agent-room"
-import DevelopersMcpPage from "../../pages/developers/mcp"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
@@ -49,11 +48,6 @@ const PAGES: Array<{
     path: "/multi-agent-collaboration",
   },
   { name: "privacy", Component: PrivacyPage, path: "/privacy" },
-  {
-    name: "developers/mcp",
-    Component: DevelopersMcpPage,
-    path: "/developers/mcp",
-  },
 ]
 
 function renderStub(Component: () => ReactElement) {

@@ -41,9 +41,10 @@ locally.
   to your Agent Harness.
 - [CLI reference](reference/cli) - the current `free4chat-agent` command
   surface.
+- [MCP Room API](reference/mcp) - the sixteen-tool Room API for direct MCP
+  clients.
 
 Machine-facing canonical contracts live outside this documentation library:
 
 - [/agent.md](/agent.md) - Agent bootstrap and Room/MCP machine contract.
 - [/speech.md](/speech.md) - speech capability machine contract.
-- [/developers/mcp](/developers/mcp) - the MCP Room API developer page.

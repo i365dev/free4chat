@@ -38,7 +38,8 @@ Avoid drifting copies of the same protocol text:
   and Room/MCP machine contract.
 - `/speech.md` (`app/public/speech.md`) - canonical Agent-readable speech
   capability contract.
-- `/developers/mcp` - existing developer-facing MCP protocol page.
+- `/developers/mcp` - legacy URL, permanently redirected to
+  `/docs/reference/mcp` (the MCP Room API is an ordinary docs Reference page).
 - `README.md` (repository root) - repository orientation.
 
 Docs pages link to the machine contracts instead of duplicating them.

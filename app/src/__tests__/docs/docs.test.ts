@@ -151,11 +151,11 @@ describe("llms.txt", () => {
     )
   })
 
-  it("links the docs, the full corpus, the developer page, the machine contracts, and the repository", () => {
+  it("links the docs, the full corpus, the MCP reference, the machine contracts, and the repository", () => {
     for (const link of [
       `${SITE_ORIGIN}/docs`,
       `${SITE_ORIGIN}/llms-full.txt`,
-      `${SITE_ORIGIN}/developers/mcp`,
+      `${SITE_ORIGIN}/docs/reference/mcp`,
       `${SITE_ORIGIN}/agent.md`,
       `${SITE_ORIGIN}/speech.md`,
       "https://github.com/i365dev/free4chat",

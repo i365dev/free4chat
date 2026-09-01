@@ -79,6 +79,11 @@
           "description": "The current free4chat-agent command surface: Human-friendly room create/join, stable low-level machine commands, collab, attachments, readiness, and diagnostics."
         },
         {
+          "slug": "reference/mcp",
+          "title": "MCP Room API",
+          "description": "Connect any MCP client to a live Free4Chat Room: sixteen stateless tools, the 90-second lease, participant handles, targeting, structured collaboration, and bounded artifacts."
+        },
+        {
           "slug": "reference/troubleshooting",
           "title": "Troubleshooting",
           "description": "Evidence-based fixes for missing or stale Runtimes, stale daemons, Harness launch failures, speech configuration, and media connectivity."
@@ -87,11 +92,6 @@
     }
   ],
   "external": [
-    {
-      "title": "MCP Room API",
-      "href": "/developers/mcp",
-      "description": "Developer-facing view of the sixteen-tool MCP Room API."
-    },
     {
       "title": "Agent contract (agent.md)",
       "href": "/agent.md",

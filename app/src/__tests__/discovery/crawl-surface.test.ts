@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { describe, expect, it } from "vitest"
@@ -60,10 +60,14 @@ describe("sitemap.xml", () => {
         "https://www.free4.chat/ai-agent-room",
         "https://www.free4.chat/multi-agent-collaboration",
         "https://www.free4.chat/privacy",
-        "https://www.free4.chat/developers/mcp",
         ...docsUrls,
       ])
     )
+  })
+
+  it("treats /docs/reference/mcp as the canonical MCP URL, never the legacy /developers/mcp", () => {
+    expect(locs).not.toContain("https://www.free4.chat/developers/mcp")
+    expect(locs).toContain("https://www.free4.chat/docs/reference/mcp")
   })
 
   it("covers every docs navigation entry, so a new docs page without a sitemap entry fails here", () => {
@@ -116,5 +120,41 @@ describe("Future/unshipped discovery pages are not present", () => {
 
   it.each(unshippedRoutes)("src/pages/%s does not exist yet", (file) => {
     expect(existsSync(join(ROOT, "src/pages", file))).toBe(false)
+  })
+})
+
+describe("Legacy /developers/mcp migration", () => {
+  it("the old TSX page is gone, not kept alive behind the redirect", () => {
+    expect(existsSync(join(ROOT, "src/pages/developers/mcp.tsx"))).toBe(false)
+  })
+
+  it("next.config permanently redirects /developers/mcp to the canonical docs URL", () => {
+    const config = readFileSync(join(ROOT, "../app/next.config.js"), "utf-8")
+    expect(config).toContain('source: "/developers/mcp"')
+    expect(config).toContain('destination: "/docs/reference/mcp"')
+    expect(config).toContain("permanent: true")
+  })
+})
+
+describe("No stale immediate-expiry copy in public surfaces", () => {
+  const publicSources = [
+    ...readdirSync(join(ROOT, "src/pages"), { recursive: true })
+      .filter((f) => String(f).endsWith(".tsx"))
+      .map((f) => join(ROOT, "src/pages", String(f))),
+    ...readdirSync(join(ROOT, "../docs/en"), {
+      recursive: true,
+    })
+      .filter((f) => String(f).endsWith(".md"))
+      .map((f) => join(ROOT, "../docs/en", String(f))),
+  ]
+
+  it("rooms are never described as closing immediately once everyone has left", () => {
+    for (const file of publicSources) {
+      const source = readFileSync(file, "utf-8")
+      expect(
+        source,
+        `${file} contains stale immediate-expiry wording`
+      ).not.toMatch(/closes?\s+(?:automatically\s+)?once everyone has left/i)
+    }
   })
 })

@@ -70,8 +70,7 @@ export default function Home() {
               No sign-up. No shared workspace. Temporary realtime collaboration.
             </p>
             <p className="mx-auto mt-1 text-gray-600 sm:text-xs sm:leading-relaxed">
-              No permanent room history on our servers — rooms close
-              automatically once everyone has left.
+              No permanent Room history — empty Rooms expire automatically.
             </p>
 
             <div className="mx-auto mt-8 max-w-xl">
@@ -254,11 +253,52 @@ export default function Home() {
                   $ free4chat-agent room create --agent pi --name Pi
                 </code>
                 <Link
-                  href="/ai-agent-room"
+                  href="/docs/getting-started/agent-room"
                   className="mt-3 inline-flex text-xs text-gray-400 transition hover:text-green-300 focus:outline-none focus:ring focus:ring-yellow-400"
                 >
                   Create and join Rooms from the terminal →
                 </Link>
+              </div>
+            </div>
+
+            <div className="mt-10 w-full border-t border-gray-800 pt-6 text-left">
+              <p className="text-center text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Explore Free4Chat
+              </p>
+              <div className="mt-4 grid gap-6 sm:grid-cols-3">
+                <div>
+                  <Link
+                    href="/docs"
+                    className="text-sm font-medium text-gray-300 transition hover:text-white"
+                  >
+                    Documentation →
+                  </Link>
+                  <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                    Understand Rooms, Agents, and the Runtime.
+                  </p>
+                </div>
+                <div>
+                  <Link
+                    href="/docs/getting-started/agent-room"
+                    className="text-sm font-medium text-gray-300 transition hover:text-white"
+                  >
+                    Agent collaboration →
+                  </Link>
+                  <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                    Bring independent Agents together across machines.
+                  </p>
+                </div>
+                <div>
+                  <Link
+                    href="/docs/concepts/room"
+                    className="text-sm font-medium text-gray-300 transition hover:text-white"
+                  >
+                    How Rooms work →
+                  </Link>
+                  <p className="mt-1 text-xs leading-relaxed text-gray-500">
+                    Ownership, shared context, and temporary collaboration.
+                  </p>
+                </div>
               </div>
             </div>
 

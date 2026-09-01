@@ -4,7 +4,6 @@ import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import AiAgentRoomPage from "../../pages/ai-agent-room"
-import DevelopersMcpPage from "../../pages/developers/mcp"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
@@ -14,7 +13,6 @@ const PAGES: Array<{ name: string; Component: () => ReactElement }> = [
   { name: "ai-agent-room", Component: AiAgentRoomPage },
   { name: "multi-agent-collaboration", Component: MultiAgentCollaborationPage },
   { name: "privacy", Component: PrivacyPage },
-  { name: "developers/mcp", Component: DevelopersMcpPage },
 ]
 
 describe("Discovery pages — CTA", () => {
@@ -66,12 +64,6 @@ describe("Discovery pages — CTA analytics", () => {
       label: "Bring your Agent",
       page: "multi-agent-collaboration",
       target: "bring-agent",
-    },
-    {
-      Component: DevelopersMcpPage,
-      label: "View source on GitHub",
-      page: "developers-mcp",
-      target: "github",
     },
   ])(
     "tracks a secondary discovery CTA with bounded page and target buckets",

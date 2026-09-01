@@ -17,8 +17,8 @@ Room Protocol / MCP
   The sixteen tools cover room inspection, join/create, event waiting, text,
   capabilities, the Runtime Host projection, structured collaboration,
   attachments, surfaces, and leaving. [/agent.md](/agent.md) is the
-  canonical machine contract; [/developers/mcp](/developers/mcp) is the
-  developer-facing view.
+  canonical machine contract; [/docs/reference/mcp](/docs/reference/mcp) is
+  the developer-facing view.
 - **Go Runtime** (`free4chat-agent`) - a self-contained local binary that owns
   Room participation: the private participant handle, cursor, 90-second lease
   heartbeat, reconnect/rejoin, event queue, attachment transport, media

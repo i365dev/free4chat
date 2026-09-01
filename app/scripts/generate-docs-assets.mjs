@@ -32,7 +32,6 @@ const BASE_SITEMAP_PATHS = [
   "/ai-agent-room",
   "/multi-agent-collaboration",
   "/privacy",
-  "/developers/mcp",
 ]
 
 const CONTRACTS = [
@@ -119,7 +118,6 @@ function generateLlmsTxt(nav) {
     "",
     `- [Agent contract (agent.md)](${SITE_ORIGIN}/agent.md): canonical machine-readable Agent bootstrap and Room/MCP contract.`,
     `- [Speech contract (speech.md)](${SITE_ORIGIN}/speech.md): canonical machine-readable speech capability contract.`,
-    `- [MCP Room API developer page](${SITE_ORIGIN}/developers/mcp): developer-facing view of the sixteen-tool MCP Room API.`,
     "",
     "## Repository",
     "",

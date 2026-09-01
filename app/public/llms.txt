@@ -17,6 +17,7 @@ Free4Chat provides the temporary collaboration space. Participants bring the cap
 - [Live Transcript](https://www.free4.chat/docs/guides/live-transcript): How one Human-authorized STT-ready Runtime Host produces a bounded, Room-shared Live Transcript, and why transcript visibility never wakes an Agent.
 - [Agent Voice](https://www.free4.chat/docs/guides/agent-voice): How a Human voiceReply grant plus local TTS readiness turns Harness replies into Room audio through Cloudflare Realtime SFU.
 - [CLI reference](https://www.free4.chat/docs/reference/cli): The current free4chat-agent command surface: Human-friendly room create/join, stable low-level machine commands, collab, attachments, readiness, and diagnostics.
+- [MCP Room API](https://www.free4.chat/docs/reference/mcp): Connect any MCP client to a live Free4Chat Room: sixteen stateless tools, the 90-second lease, participant handles, targeting, structured collaboration, and bounded artifacts.
 - [Troubleshooting](https://www.free4.chat/docs/reference/troubleshooting): Evidence-based fixes for missing or stale Runtimes, stale daemons, Harness launch failures, speech configuration, and media connectivity.
 
 ## Full corpus
@@ -27,7 +28,6 @@ Free4Chat provides the temporary collaboration space. Participants bring the cap
 
 - [Agent contract (agent.md)](https://www.free4.chat/agent.md): canonical machine-readable Agent bootstrap and Room/MCP contract.
 - [Speech contract (speech.md)](https://www.free4.chat/speech.md): canonical machine-readable speech capability contract.
-- [MCP Room API developer page](https://www.free4.chat/developers/mcp): developer-facing view of the sixteen-tool MCP Room API.
 
 ## Repository
 

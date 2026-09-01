@@ -16,9 +16,6 @@
     <loc>https://www.free4.chat/privacy</loc>
   </url>
   <url>
-    <loc>https://www.free4.chat/developers/mcp</loc>
-  </url>
-  <url>
     <loc>https://www.free4.chat/docs</loc>
   </url>
   <url>
@@ -50,6 +47,9 @@
   </url>
   <url>
     <loc>https://www.free4.chat/docs/reference/cli</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/reference/mcp</loc>
   </url>
   <url>
     <loc>https://www.free4.chat/docs/reference/troubleshooting</loc>
