@@ -3,7 +3,20 @@ import { join } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
+import {
+  docsPathFromSlug,
+  flattenDocsPages,
+  type DocsNavigation,
+} from "../../common/docsNav"
+
 const ROOT = process.cwd()
+
+const docsNav = JSON.parse(
+  readFileSync(join(ROOT, "../docs/en/navigation.json"), "utf-8")
+) as DocsNavigation
+const docsUrls = flattenDocsPages(docsNav).map(
+  (page) => `https://www.free4.chat${docsPathFromSlug(page.slug)}`
+)
 
 describe("robots.txt", () => {
   const robots = readFileSync(join(ROOT, "public/robots.txt"), "utf-8")
@@ -39,7 +52,7 @@ describe("sitemap.xml", () => {
     expect(locs.length).toBeGreaterThan(0)
   })
 
-  it("lists exactly the shipped public/discovery pages", () => {
+  it("lists exactly the shipped public/discovery pages plus every docs route", () => {
     expect(new Set(locs)).toEqual(
       new Set([
         "https://www.free4.chat/",
@@ -48,13 +61,23 @@ describe("sitemap.xml", () => {
         "https://www.free4.chat/multi-agent-collaboration",
         "https://www.free4.chat/privacy",
         "https://www.free4.chat/developers/mcp",
+        ...docsUrls,
       ])
     )
   })
 
+  it("covers every docs navigation entry, so a new docs page without a sitemap entry fails here", () => {
+    expect(docsUrls.length).toBeGreaterThan(1)
+    for (const url of docsUrls) {
+      expect(locs).toContain(url)
+    }
+  })
+
   it("never includes ephemeral room URLs, query strings, or the raw MCP API endpoint", () => {
     for (const loc of locs) {
-      expect(loc).not.toMatch(/\/room\b/)
+      // Anchored to the site-root /room page: /docs/concepts/room is a
+      // legitimate static docs route, ephemeral room URLs are not.
+      expect(loc).not.toMatch(/^https:\/\/www\.free4\.chat\/room\b/)
       expect(loc).not.toContain("?")
       expect(loc).not.toBe("https://www.free4.chat/mcp")
     }

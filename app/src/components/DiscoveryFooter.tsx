@@ -4,6 +4,7 @@ const LINKS = [
   { href: "/temporary-chat-room", label: "Temporary rooms" },
   { href: "/ai-agent-room", label: "AI Agent rooms" },
   { href: "/multi-agent-collaboration", label: "Multi-Agent collaboration" },
+  { href: "/docs", label: "Docs" },
   { href: "/privacy", label: "Privacy" },
   { href: "/developers/mcp", label: "Developer integration" },
   { href: "https://github.com/i365dev/free4chat", label: "GitHub" },

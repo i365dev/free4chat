@@ -14,6 +14,8 @@
     "format": "prettier --write .",
     "lint": "eslint src --fix",
     "test": "vitest run",
+    "docs:generate": "node scripts/generate-docs-assets.mjs",
+    "docs:check": "node scripts/generate-docs-assets.mjs --check",
     "prepare": "husky"
   },
   "dependencies": {

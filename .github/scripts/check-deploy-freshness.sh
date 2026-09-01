@@ -4,12 +4,12 @@
 # Prints exactly "stale=true" or "stale=false" to stdout — nothing else.
 #
 # "Deploy-relevant" mirrors deploy-web.yml's own `on.push.paths` trigger
-# (app/** and this workflow file). That trigger is path-filtered, so a
-# commit that only touches e.g. README.md never starts its own deploy run.
-# Comparing raw SHA equality against cf-sfu's current tip is therefore
+# (app/**, docs/**, and this workflow file). That trigger is path-filtered,
+# so a commit that only touches e.g. README.md never starts its own deploy
+# run. Comparing raw SHA equality against cf-sfu's current tip is therefore
 # wrong: if a docs-only commit lands after the one being built, the build
 # is still the latest deploy-relevant state and must NOT be skipped —
-# only a commit that itself touches app/ or this workflow makes an
+# only a commit that itself touches app/, docs/, or this workflow makes an
 # in-flight build stale (and that commit is guaranteed to have started
 # its own run to cover it).
 set -euo pipefail
@@ -18,7 +18,7 @@ BUILT_SHA="${1:?usage: check-deploy-freshness.sh <built-sha> <latest-sha>}"
 LATEST_SHA="${2:?usage: check-deploy-freshness.sh <built-sha> <latest-sha>}"
 
 # Must match on.push.paths in deploy-web.yml exactly.
-DEPLOY_PATHS=("app" ".github/workflows/deploy-web.yml")
+DEPLOY_PATHS=("app" "docs" ".github/workflows/deploy-web.yml")
 
 if [ "$BUILT_SHA" = "$LATEST_SHA" ]; then
   echo "stale=false"

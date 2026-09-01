@@ -5,10 +5,12 @@ on:
   push:
     paths:
       - "app/**"
+      - "docs/**"
       - ".github/workflows/deploy-web.yml"
   pull_request:
     paths:
       - "app/**"
+      - "docs/**"
       - ".github/workflows/deploy-web.yml"
 
 jobs:
@@ -40,6 +42,13 @@ jobs:
 
       - name: Type check
         run: yarn type-check
+        working-directory: app
+
+      # Fails when app/public/llms*.txt or app/public/sitemap.xml drifted
+      # from docs/en/navigation.json + docs/en Markdown + the machine
+      # contracts; keeps docs URLs covered without running the test suite.
+      - name: Docs assets are fresh
+        run: yarn docs:check
         working-directory: app
 
   deploy:
@@ -76,6 +85,14 @@ jobs:
           # Re-enable this together with TURNSTILE_DISABLED below once the
           # production test window is explicitly closed.
           NEXT_PUBLIC_TURNSTILE_DISABLED: "1"
+
+      # Copy prerendered pages (the /docs routes) into the Workers static
+      # assets bundle. The deploy job bypasses `opennextjs-cloudflare deploy`
+      # (raw `wrangler deploy` below), so the build's cache population must
+      # run explicitly. Local target = plain fs copy, no credentials needed.
+      - name: Populate static assets cache
+        run: npx opennextjs-cloudflare populateCache local
+        working-directory: app
 
       - name: Validate deployment variables
         run: test -n "$SFU_APP_ID" && test -n "$NEXT_PUBLIC_TURNSTILE_SITE_KEY"
