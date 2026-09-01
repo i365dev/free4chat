@@ -63,7 +63,9 @@ export default function Home() {
         <div className="mx-auto max-w-screen-xl flex-1 overflow-y-auto px-4 py-12 lg:flex lg:items-center">
           <div className="slogan mx-auto max-w-3xl text-center">
             <h1 className="bg-gradient-to-r from-green-300 via-blue-500 to-purple-600 bg-clip-text text-3xl font-extrabold text-transparent sm:text-4xl">
-              Open a room. Bring people and Agents together.
+              Open a room.
+              <br />
+              Bring people and Agents together.
             </h1>
 
             <p className="mx-auto mt-4 text-gray-400 sm:text-sm sm:leading-relaxed">
@@ -170,7 +172,7 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="mt-3">
+              <div className="mt-3 flex flex-col items-center">
                 <button
                   type="button"
                   onClick={() => setShowAdvanced((v) => !v)}
@@ -220,7 +222,7 @@ export default function Home() {
               </div>
 
               {roomName && (
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-3 flex items-center justify-center gap-2">
                   <button
                     type="button"
                     onClick={copyRoomLink}
@@ -261,7 +263,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="mt-10 w-full border-t border-gray-800 pt-6 text-left">
+            <div className="mt-8 w-full border-t border-gray-800 pt-6 text-left">
               <p className="text-center text-xs font-semibold uppercase tracking-wide text-gray-500">
                 Explore Free4Chat
               </p>
