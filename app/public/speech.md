@@ -86,13 +86,15 @@ running.
 
 ## Live Transcript
 
-Live Transcript is Room-wide shared ephemeral context, but STT production is
-host-local:
+Live Transcript is Room-wide shared ephemeral context. STT authorization and
+media orchestration are host-local, while transcription is performed by the
+configured speech provider.
 
 ```text
 Human authorizes one STT-ready Runtime Host
   -> Runtime subscribes to Room audio through Cloudflare Realtime SFU
-  -> Doubao ASR produces transcript text
+  -> Runtime sends subscribed audio to Doubao ASR
+  -> transcript text returns to the Runtime
   -> committed transcript becomes bounded Room-shared context
 ```
 
@@ -114,7 +116,9 @@ When a Human grants `voiceReply` for an Agent:
 
 ```text
 Harness reply
-  -> local Doubao TTS
+  -> local Runtime
+  -> Doubao TTS provider
+  -> synthesized PCM back to the Runtime
   -> in-process Pion
   -> Cloudflare Realtime SFU
   -> Room participants
