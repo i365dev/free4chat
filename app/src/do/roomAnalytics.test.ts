@@ -13,9 +13,33 @@ import {
 import { hashRoom } from "../common/utils"
 
 const PARTICIPANTS = [
-  { id: "human-1", kind: "human" as const, name: "Human" },
-  { id: "agent-pi", kind: "agent" as const, name: "Pi" },
-  { id: "agent-codex", kind: "agent" as const, name: "Codex" },
+  {
+    id: "human-1",
+    kind: "human" as const,
+    name: "Human",
+    connected: true,
+    joinedAt: 1,
+    lastSeenAt: 1,
+    token: "tok-human",
+  },
+  {
+    id: "agent-pi",
+    kind: "agent" as const,
+    name: "Pi",
+    connected: true,
+    joinedAt: 1,
+    lastSeenAt: 1,
+    token: "tok-pi",
+  },
+  {
+    id: "agent-codex",
+    kind: "agent" as const,
+    name: "Codex",
+    connected: true,
+    joinedAt: 1,
+    lastSeenAt: 1,
+    token: "tok-codex",
+  },
 ]
 
 describe("room analytics builders (#228)", () => {
