@@ -2894,7 +2894,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       if (pendingDuration) this.trackRoomAnalytics([pendingDuration])
-      await this.saveRoom(room)
       // #111: no surface history survives departure — chunks die after the
       // metadata removal is durable, best-effort so departure always
       // continues to broadcast/scheduling/Meeting-Notes media cleanup.

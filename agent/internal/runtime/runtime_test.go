@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/i365dev/free4chat/agent/internal/speech"
@@ -1213,30 +1214,32 @@ func TestHarnessFailureClearsAfterSuccessfulTurn(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
-		return rt.Status().LastError == "harness exploded"
-	}, "harness failure recorded")
-
-	// Harness recovers: the next turn succeeds and clears its own error.
-	adapter.mu.Lock()
-	adapter.turnErr = nil
-	adapter.mu.Unlock()
-	t.Logf("turnErr cleared; adapter sessions so far: %d", adapter.sessionsInt())
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		rt.mu.Lock()
-		lastErr := rt.lastError
-		src := rt.lastErrorSource
-		rt.mu.Unlock()
-		adapter.mu.Lock()
-		terr := adapter.turnErr
-		adapter.mu.Unlock()
-		t.Logf("poll: lastError=%q source=%q turnErr=%v", lastErr, src, terr)
-		if lastErr == "" {
-			break
+	// Sequencing via the adapter hook: turn 1 runs with turnErr set and
+	// FAILS; the hook clears turnErr inside RunTurn so turn 2 (same drain)
+	// SUCCEEDS — deterministic fail->success without wall-clock polling.
+	// A bare LastError=="exploded" poll can miss the transient window
+	// because both events arrive in one poll step.
+	var sawFailure atomic.Bool
+	originalHook := adapterRunTurnHook
+	adapterRunTurnHook = func(a *fakeAdapter, input types.HarnessTurnInput) {
+		a.mu.Lock()
+		hadErr := a.turnErr != nil
+		a.turnErr = nil // only the FIRST turn fails
+		a.mu.Unlock()
+		if hadErr {
+			sawFailure.Store(true)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
+	defer func() { adapterRunTurnHook = originalHook }()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return sawFailure.Load() && adapter.sessionsInt() >= 2
+	}, "fail->success turn sequence executed")
+
+	// Turn 2 succeeded and must have cleared the harness-origin error.
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == ""
+	}, "successful turn clears harness-origin error")
 	rt.Stop()
 }
 
