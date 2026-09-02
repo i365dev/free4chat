@@ -319,6 +319,17 @@ export interface PendingMediaCleanup {
   mids: string[]
 }
 
+// #228: continuous 2+-participant collaboration interval state. Opened when
+// the Room's current participant count reaches 2, closed (and removed) when
+// it falls below 2. Duration is derived at close time — DO lifetime, Room
+// storage retention, and single-resident idle time are never counted.
+export interface CollaborationActivity {
+  startedAt: number
+  sawHuman: boolean
+  sawAgent: boolean
+  peakParticipantCount: number
+}
+
 export interface RoomRecord {
   createdAt: number
   expiresAt: number
@@ -327,6 +338,8 @@ export interface RoomRecord {
   // Runtime Host id, shared by all same-host Agents. Garbage-collected when
   // no participant references the host anymore.
   runtimeHosts?: Record<string, RuntimeHostProjection>
+  // #228: the currently OPEN 2+-participant collaboration interval, if any.
+  collaborationActivity?: CollaborationActivity
   // Server-private Phase B authorization state. `runtimeHostProviders`
   // retains only a one-way provider handle hash; claims are hash-keyed and
   // short-lived. Neither is copied into RoomState.

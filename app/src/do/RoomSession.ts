@@ -58,6 +58,9 @@ import {
   buildCollabRequestedEvent,
   importAnalyticsEvents,
   type RoomAnalyticsEvent,
+  transitionCollaborationActivity,
+  normalizeStoredCollaborationActivity,
+  buildCollaborationDurationEvent,
 } from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
@@ -772,6 +775,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(targets?.length ? { targets } : {}),
       })
     }
+    // #228: sanitize the persisted collaboration interval; an invalid one
+    // is dropped (worst case: a replacement duration interval opens later).
+    const collaborationActivity = normalizeStoredCollaborationActivity(
+      stored.collaborationActivity
+    )
+    if (
+      stored.collaborationActivity !== undefined &&
+      collaborationActivity === undefined
+    ) {
+      changed = true
+    }
+
     // #176 Phase A (canonical model) storage hygiene: keep ONE sanitized
     // readiness projection per Runtime Host id, then clear participant ids
     // that dangle after sanitization. The domain module owns both halves of
@@ -918,6 +933,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         expiresAt: stored.expiresAt,
         participants,
         runtimeHosts,
+        collaborationActivity,
         runtimeHostProviders: normalizedRuntimeHostProviders.providers,
         runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
@@ -1690,6 +1706,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  // #228: advance the OPEN 2+-participant collaboration interval after any
+  // participant add/remove mutation, and emit ONE CollaborationDuration if
+  // the interval closed. Best-effort, same no-op/no-delay contract.
+  private updateCollaborationActivity(room: RoomRecord): void {
+    const { activity, summary } = transitionCollaborationActivity(
+      Object.values(room.participants),
+      room.collaborationActivity,
+      Date.now()
+    )
+    room.collaborationActivity = activity
+    if (summary) {
+      this.trackRoomAnalytics([
+        buildCollaborationDurationEvent({
+          roomName: this.roomAnalyticsName(),
+          durationMs: summary.durationMs,
+          collaborationMode: summary.collaborationMode,
+          participantBucket: summary.participantBucket,
+        }),
+      ])
+    }
+  }
+
   private async handleControl(request: ControlRequest): Promise<Response> {
     if (request.action === "room-info") {
       const room = await this.activeRoom()
@@ -1944,6 +1982,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
 
       room.participants[participant.id] = participant
+      this.updateCollaborationActivity(room)
       if (registeredRuntimeHost)
         // Canonical Room model (#176): ONE readiness projection per host id,
         // shared by all same-host Agents.
@@ -2033,6 +2072,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         media: undefined,
       }
       room.participants[participant.id] = participant
+      this.updateCollaborationActivity(room)
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -2840,6 +2880,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const departingSurface = participant.surface
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
+      this.updateCollaborationActivity(room)
       room.meetingNotes = grantTransition.meetingNotes
       room.agentVoice = grantTransition.agentVoice
       this.applyEmptyRoomExpiry(room, Date.now())
@@ -3259,6 +3300,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
     delete room.participants[participant.id]
     this.garbageCollectRuntimeHostAuthorization(room)
+    this.updateCollaborationActivity(room)
     room.meetingNotes = grantTransition.meetingNotes
     room.agentVoice = grantTransition.agentVoice
     this.applyEmptyRoomExpiry(room, Date.now())
@@ -3580,6 +3622,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
+      this.updateCollaborationActivity(room)
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
       await this.broadcastState(room)
@@ -4306,6 +4349,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.removeRuntimeHostProviderAuthorizationForHuman(room, id)
         delete room.participants[id]
         this.garbageCollectRuntimeHostAuthorization(room)
+        this.updateCollaborationActivity(room)
         room.meetingNotes = grantTransition.meetingNotes
         room.agentVoice = grantTransition.agentVoice
         changed = true

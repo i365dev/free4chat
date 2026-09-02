@@ -31,8 +31,27 @@ export type RoomComposition =
 
 export type ResolvedParticipantKind = "human" | "agent" | "unknown"
 
+// #228: the currently OPEN 2+-participant collaboration interval state,
+// persisted alongside Room state (survives DO eviction/restart).
+export interface CollaborationActivity {
+  startedAt: number
+  sawHuman: boolean
+  sawAgent: boolean
+  peakParticipantCount: number
+}
+
+export interface CollaborationDurationSummary {
+  durationMs: number
+  collaborationMode: "human-only" | "agent-only" | "human-agent"
+  participantBucket: "1" | "2-3" | "4-9" | "10+"
+}
+
 export interface RoomAnalyticsEvent {
-  name: "AgentJoined" | "CollabRequested" | "CollabOutcome"
+  name:
+    | "AgentJoined"
+    | "CollabRequested"
+    | "CollabOutcome"
+    | "CollaborationDuration"
   properties: Record<string, unknown>
 }
 
@@ -164,12 +183,112 @@ export function buildCollabOutcomeEvent(args: {
   }
 }
 
+export function buildCollaborationDurationEvent(args: {
+  roomName: string
+  durationMs: number
+  collaborationMode: "human-only" | "agent-only" | "human-agent"
+  participantBucket: "1" | "2-3" | "4-9" | "10+"
+}): RoomAnalyticsEvent {
+  return {
+    name: "CollaborationDuration",
+    properties: {
+      durationMs: args.durationMs,
+      roomType: "unknown",
+      collaborationMode: args.collaborationMode,
+      participantBucket: args.participantBucket,
+    },
+  }
+}
+
+/**
+ * Advance the OPEN 2+-participant collaboration interval (#228 extension).
+ * Count is the number of CURRENT canonical participants in the Room record.
+ * - count reaches 2 with no open interval -> interval opens at `now`.
+ * - open interval and count stays >= 2 -> sawHuman/sawAgent/peak update;
+ *   no duration event (composition changes never manufacture one).
+ * - count falls below 2 with an open interval -> interval closes and ONE
+ *   duration summary is returned (retention time after the closing
+ *   departure is never counted).
+ * Eviction/restart survives because the state rides persisted Room state.
+ */
+export function transitionCollaborationActivity(
+  participants: Iterable<Pick<RoomParticipant, "id" | "kind">>,
+  existing: CollaborationActivity | undefined,
+  now: number
+): {
+  activity: CollaborationActivity | undefined
+  summary: CollaborationDurationSummary | null
+} {
+  const list = Array.from(participants)
+  const count = list.length
+  const sawHuman =
+    (existing?.sawHuman ?? false) || list.some((p) => p.kind === "human")
+  const sawAgent =
+    (existing?.sawAgent ?? false) || list.some((p) => p.kind === "agent")
+  const peak = Math.max(existing?.peakParticipantCount ?? 0, count)
+
+  if (count >= 2) {
+    const startedAt = existing?.startedAt ?? now
+    return {
+      activity: {
+        startedAt,
+        sawHuman,
+        sawAgent,
+        peakParticipantCount: Math.max(2, peak),
+      },
+      summary: null,
+    }
+  }
+  if (!existing) return { activity: undefined, summary: null }
+  const collaborationMode =
+    sawHuman && sawAgent
+      ? "human-agent"
+      : sawAgent
+      ? "agent-only"
+      : "human-only"
+  return {
+    activity: undefined,
+    summary: {
+      durationMs: Math.max(0, now - existing.startedAt),
+      collaborationMode,
+      participantBucket: participantsBucket(existing.peakParticipantCount),
+    },
+  }
+}
+
+export function normalizeStoredCollaborationActivity(
+  input: unknown
+): CollaborationActivity | undefined {
+  if (typeof input !== "object" || input === null) return undefined
+  const candidate = input as Record<string, unknown>
+  const startedAt = candidate.startedAt
+  if (typeof startedAt !== "number" || !(startedAt > 0)) return undefined
+  if (typeof candidate.sawHuman !== "boolean") return undefined
+  if (typeof candidate.sawAgent !== "boolean") return undefined
+  const peak = candidate.peakParticipantCount
+  if (typeof peak !== "number" || !(peak >= 2) || !(peak <= 999)) {
+    return undefined
+  }
+  return {
+    startedAt,
+    sawHuman: candidate.sawHuman as boolean,
+    sawAgent: candidate.sawAgent as boolean,
+    peakParticipantCount: peak,
+  }
+}
+
 /** The only properties each event may carry (#228 schema freeze). */
 export const APPROVED_ANALYTICS_PROPERTIES: Record<
   RoomAnalyticsEvent["name"],
   readonly string[]
 > = {
   AgentJoined: ["roomType", "roomHash", "participantBucket", "roomComposition"],
+  CollaborationDuration: [
+    "durationMs",
+    "roomType",
+    "collaborationMode",
+    "participantBucket",
+  ],
   CollabRequested: [
     "roomType",
     "roomHash",
