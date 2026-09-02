@@ -4,6 +4,7 @@ import {
   buildAgentJoinedEvent,
   buildCollabRequestedEvent,
   buildCollabOutcomeEvent,
+  buildCollaborationDurationEvent,
   importAnalyticsEvents,
   mixpanelImportRow,
   hashRoom as hashRoomServer,
