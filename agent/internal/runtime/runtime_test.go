@@ -1112,3 +1112,69 @@ func TestRuntimeWithoutSeedJoinsWithoutHostProjection(t *testing.T) {
 	}
 	rt.Stop()
 }
+
+// #228: a recovered transient wait error must not linger in status, and
+// participation age survives transient retries and lease recovery.
+func TestTransientWaitErrorClearsAfterRecovery(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{err: errors.New("Connection closed: this Durable Object instance is no longer active.")},
+	}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-lasterr",
+		RoomID:      "test-lasterr",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		return rt.Status().LastError != ""
+	}, "transient wait error recorded")
+
+	// Recovery: the next successful wait clears the stale error and keeps
+	// the participation timestamp.
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == ""
+	}, "recovered transient wait error cleared")
+
+	since := rt.Status().ParticipatingSince
+	if since <= 0 {
+		t.Fatalf("participatingSince must be set after join: %d", since)
+	}
+	rt.Stop()
+}
+
+// #228: participatingSince is set once per lifecycle and preserved across
+// adoptJoin (lease-expiry reconnects reuse it).
+func TestParticipatingSinceSetOncePerLifecycle(t *testing.T) {
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-age",
+		RoomID:     "test-age",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    &fakeAdapter{name: "pi"},
+	})
+	joined := types.JoinResult{
+		ParticipantID:     "agent-1",
+		ParticipantHandle: "secret-1",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	}
+	rt.adoptJoin(joined)
+	first := rt.Status().ParticipatingSince
+	if first <= 0 {
+		t.Fatalf("participatingSince must be set on first join")
+	}
+	time.Sleep(5 * time.Millisecond)
+	rt.adoptJoin(joined)
+	second := rt.Status().ParticipatingSince
+	if second != first {
+		t.Fatalf("participatingSince must be preserved across reconnects: %d vs %d", first, second)
+	}
+}

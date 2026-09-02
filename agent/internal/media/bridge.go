@@ -1117,6 +1117,16 @@ func bootstrapErrorClass(err error) string {
 	}
 }
 
+// isHumanMediaDiscoveryDenied recognizes the stable Voice-only discovery
+// denial across Worker generations (#228): the pre-Live-Transcript code
+// (meeting_notes_not_authorized) and the Live-Transcript-era expansion
+// (agent_media_not_authorized) both mean "shared session admitted, Human
+// media discovery intentionally denied" — never a bootstrap failure.
 func isHumanMediaDiscoveryDenied(err error) bool {
-	return err != nil && strings.Contains(err.Error(), HumanMediaDiscoveryDenied)
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, HumanMediaDiscoveryDenied) ||
+		strings.Contains(message, AgentMediaDiscoveryDenied)
 }

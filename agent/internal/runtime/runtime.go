@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/media"
@@ -33,6 +34,11 @@ type Status struct {
 	State         State  `json:"state"`
 	ParticipantID string `json:"participantId,omitempty"`
 	LastError     string `json:"lastError,omitempty"`
+	// ParticipatingSince is the epoch-ms timestamp of the resident's first
+	// successful join/create for the CURRENT lifecycle (#228). Preserved
+	// across transient retries/reconnects; a new resident lifecycle starts
+	// a new timestamp. Room participation age, not socket uptime.
+	ParticipatingSince int64 `json:"participatingSince,omitempty"`
 }
 
 // Options configures one ResidentRuntime.
@@ -75,6 +81,9 @@ type Options struct {
 	HostSeed string
 	// Voice configures outbound Voice Reply (nil = Meeting Notes only).
 	Voice *media.VoiceConfig
+	// participatingSince is set once on the lifecycle's first successful
+	// adoptJoin and preserved across transient retries/reconnects (#228).
+	participatingSince int64
 	// HostVoiceGate is daemon-owned and shared by every resident Runtime on
 	// this local Runtime Host. It serializes full TTS+publication operations.
 	HostVoiceGate voice.Gate
@@ -117,8 +126,11 @@ type ResidentRuntime struct {
 	advertisedCaps      []string
 	roster              []types.ParticipantRosterEntry
 	resolvedRoomID      string
-	providerClaim       string
-	providerHandles     *ProviderHandleStore
+	// participatingSince is set once on the lifecycle's first successful
+	// adoptJoin and preserved across transient retries/reconnects (#228).
+	participatingSince int64
+	providerClaim      string
+	providerHandles    *ProviderHandleStore
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -342,13 +354,14 @@ func (r *ResidentRuntime) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return Status{
-		InstanceID:    r.options.InstanceID,
-		RoomID:        r.activeRoomID(),
-		Name:          r.options.Name,
-		Adapter:       r.options.Adapter.Name(),
-		State:         r.state,
-		ParticipantID: r.participantID,
-		LastError:     r.lastError,
+		InstanceID:         r.options.InstanceID,
+		RoomID:             r.activeRoomID(),
+		Name:               r.options.Name,
+		Adapter:            r.options.Adapter.Name(),
+		State:              r.state,
+		ParticipantID:      r.participantID,
+		LastError:          r.lastError,
+		ParticipatingSince: r.participatingSince,
 	}
 }
 
@@ -515,6 +528,11 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.pendingAddressed = nil
 	r.state = StateWaiting
 	r.lastError = ""
+	// #228: participation age starts at the lifecycle's first successful
+	// create/join and survives transient retries and lease recovery.
+	if r.participatingSince == 0 {
+		r.participatingSince = time.Now().UnixMilli()
+	}
 	r.mu.Unlock()
 	// Media controller (re)build happens OUTSIDE the runtime lock: it may
 	// stop the previous bridge, create a transcriber, and poll room_info —
@@ -585,6 +603,12 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	if result.Cursor > r.cursor {
 		r.cursor = result.Cursor
 	}
+	// #228: a successful long-poll proves the Room connection recovered.
+	// A transient wait error (e.g. a Durable Object interruption during a
+	// Worker deploy) is no longer the CURRENT condition and must not
+	// linger in status. Unrelated failures are unaffected: every lastError
+	// setter lives on this wait loop, so the next failure re-sets it.
+	r.lastError = ""
 	r.expiresAt = result.ExpiresAt
 	if len(result.Participants) > 0 {
 		r.roster = append([]types.ParticipantRosterEntry(nil), result.Participants...)

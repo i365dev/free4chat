@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/attachments"
 	"github.com/i365dev/free4chat/agent/internal/daemon"
@@ -50,6 +51,7 @@ func usageText() string {
   free4chat-agent credential provision --provider doubao [--purpose speech.stt|speech.tts]
   free4chat-agent credential delete --provider doubao
   free4chat-agent speech setup --provider doubao
+  free4chat-agent logs [--instance <id>] [--tail 200]
   free4chat-agent status
   free4chat-agent leave <instance-id>
   free4chat-agent stop`
@@ -388,7 +390,23 @@ func run(args []string) error {
 		return runVersion(rest)
 
 	case "status":
-		return runViaDaemon(&daemon.IpcRequest{Op: "status"})
+		return runStatusCommand()
+
+	case "logs":
+		instance := option(rest, "--instance")
+		tailRaw := option(rest, "--tail")
+		tail := 200
+		if tailRaw != "" {
+			parsed := 0
+			for _, ch := range tailRaw {
+				if ch < '0' || ch > '9' {
+					return errUsage()
+				}
+				parsed = parsed*10 + int(ch-'0')
+			}
+			tail = parsed
+		}
+		return runLogsCommand(instance, tail)
 
 	case "leave":
 		if len(rest) == 0 || rest[0] == "" || strings.HasPrefix(rest[0], "--") {
@@ -619,6 +637,75 @@ func runPeers(room string) error {
 	}
 	_ = client.Close()
 	return printJSON(info)
+}
+
+// runLogsCommand prints recent bounded daemon log lines, optionally
+// filtered to one resident instance (#228). Read-only: the file lives under
+// the local Runtime directory.
+func runLogsCommand(instance string, tail int) error {
+	log := daemon.NewBoundedLog(daemon.RuntimeDirectory())
+	lines := log.Tail(tail, "")
+	if instance != "" {
+		tag := "[" + instance + "]"
+		var scoped []string
+		for _, line := range lines {
+			if strings.Contains(line, tag) {
+				scoped = append(scoped, line)
+			}
+		}
+		lines = scoped
+	}
+	if len(lines) == 0 {
+		fmt.Println("(no daemon log lines)")
+		return nil
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	return nil
+}
+
+// runStatusCommand prints daemon status with a human-readable
+// "participating" duration derived from each resident's participatingSince
+// (#228). Room participation age, not socket uptime.
+func runStatusCommand() error {
+	if err := daemon.EnsureDaemon(); err != nil {
+		return err
+	}
+	result, err := daemon.SendIPC(&daemon.IpcRequest{Op: "status"})
+	if err != nil {
+		return err
+	}
+	var residents []map[string]any
+	if err := json.Unmarshal(result, &residents); err != nil {
+		// Unexpected shape: fall back to the raw envelope.
+		return printJSONRaw(result)
+	}
+	now := time.Now().UnixMilli()
+	for _, resident := range residents {
+		if since, ok := resident["participatingSince"].(float64); ok && since > 0 {
+			resident["participating"] = formatParticipation(now - int64(since))
+		}
+	}
+	return printJSON(residents)
+}
+
+// formatParticipation renders a duration as a compact human string
+// (e.g. "1h 17m", "5m 12s", "42s").
+func formatParticipation(millis int64) string {
+	if millis < 0 {
+		millis = 0
+	}
+	seconds := int(millis / 1000)
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds%60)
+	}
+	hours := minutes / 60
+	return fmt.Sprintf("%dh %dm", hours, minutes%60)
 }
 
 func printJSON(value any) error {

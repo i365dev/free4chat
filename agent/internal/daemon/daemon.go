@@ -33,14 +33,16 @@ type residentInstance struct {
 
 // Daemon hosts every resident Agent instance behind one Unix socket.
 type Daemon struct {
-	mu                  sync.Mutex
-	instances           map[string]*residentInstance
-	listener            net.Listener
-	closed              chan struct{}
-	stopping            bool
-	finalized           bool
-	finishOnce          sync.Once
-	voiceGate           voice.Gate
+	mu         sync.Mutex
+	instances  map[string]*residentInstance
+	listener   net.Listener
+	closed     chan struct{}
+	stopping   bool
+	finalized  bool
+	finishOnce sync.Once
+	voiceGate  voice.Gate
+	// hostLog is the bounded shared diagnostic log (#228).
+	hostLog             *BoundedLog
 	providerHandles     *runtime.ProviderHandleStore
 	transcriptProducers *TranscriptProducerCoordinator
 }
@@ -51,6 +53,7 @@ func New() *Daemon {
 		instances:           make(map[string]*residentInstance),
 		closed:              make(chan struct{}),
 		voiceGate:           voice.NewGate(),
+		hostLog:             NewBoundedLog(RuntimeDirectory()),
 		providerHandles:     runtime.NewProviderHandleStore(),
 		transcriptProducers: NewTranscriptProducerCoordinator(),
 	}
@@ -428,7 +431,13 @@ func (d *Daemon) prepareRuntime(
 		InstanceID: instanceID,
 		RoomID:     request.Room, // empty for the create-first lifecycle
 		Name:       request.Name,
-		Client:     free4chat.New(mcpURL),
+		// #228: bounded local diagnostic history. Events are already
+		// secret-free by the Runtime logging contract; the instance tag
+		// associates lines with this resident.
+		Log: func(event string, details map[string]string) {
+			d.hostLog.Appendf("[%s] %s %v", instanceID, event, details)
+		},
+		Client: free4chat.New(mcpURL),
 		Adapter: harness.NewACPAdapter(launcher, workspace, harness.AdapterOptions{
 			TurnTimeoutMs: turnTimeoutMs,
 			CancelGraceMs: cancelGraceMs,

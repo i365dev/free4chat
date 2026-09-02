@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	"github.com/i365dev/free4chat/agent/internal/speech"
+	"time"
 )
 
 // Sink is the outbound audio destination (the shared media bridge in
@@ -40,8 +41,14 @@ type Options struct {
 	MaxChunkChars   int
 	// Gate spans provider synthesis through final audible flush. A nil gate
 	// gives a direct/test Runtime its own gate.
-	Gate    Gate
-	OnEvent func(SpeakerEvent)
+	Gate Gate
+	// GateHoldDeadline bounds ONE complete gate-held audible turn
+	// (#228 D): acquisition → synthesis → publication writes → flush. When
+	// the deadline fires the speaker cancels the current turn (invalidating
+	// stale callbacks/audio) so the gate is released and the next turn can
+	// proceed. Zero = default (120s).
+	GateHoldDeadline time.Duration
+	OnEvent          func(SpeakerEvent)
 }
 
 // Speaker is the runtime-owned bridge between response text and the
@@ -62,6 +69,7 @@ type Speaker struct {
 	maxChunkChars   int
 	onEvent         func(SpeakerEvent)
 	gate            Gate
+	gateHold        time.Duration
 
 	mu             sync.Mutex
 	pending        []string
@@ -92,6 +100,10 @@ func NewSpeaker(options Options) *Speaker {
 		onEvent = func(SpeakerEvent) {}
 	}
 	gate := options.Gate
+	gateHold := options.GateHoldDeadline
+	if gateHold <= 0 {
+		gateHold = 120 * time.Second
+	}
 	if gate == nil {
 		gate = NewGate()
 	}
@@ -102,6 +114,7 @@ func NewSpeaker(options Options) *Speaker {
 		maxChunkChars:   options.MaxChunkChars,
 		onEvent:         onEvent,
 		gate:            gate,
+		gateHold:        gateHold,
 	}
 }
 
@@ -270,7 +283,21 @@ func (s *Speaker) drain(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	defer release()
+	// #228 D: Runtime-owned deadline for one complete gate-held turn
+	// (acquisition → synthesis → publication writes → flush). When the
+	// deadline fires, Cancel() invalidates the in-flight turn (stale
+	// callbacks/audio) and the gate is released immediately so the next
+	// turn can acquire it — a hung provider/sink can never monopolize the
+	// host. The gate release is once-guarded: the stuck drain's own exit
+	// becomes a no-op.
+	var releaseOnce sync.Once
+	releaseGate := func() { releaseOnce.Do(release) }
+	defer releaseGate()
+	watchdog := time.AfterFunc(s.gateHold, func() {
+		s.Cancel()
+		releaseGate()
+	})
+	defer watchdog.Stop()
 	s.mu.Lock()
 	epoch := s.epoch
 	s.mu.Unlock()

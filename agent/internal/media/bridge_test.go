@@ -506,6 +506,33 @@ func TestBridgeBootstrapRemoteOfferProducesAnswerAndRenegotiates(t *testing.T) {
 	}
 }
 
+// #228: the Live-Transcript-era Worker denies Human-media discovery with
+// agent_media_not_authorized; the bridge must tolerate it exactly like the
+// legacy meeting_notes_not_authorized code.
+func TestBridgeVoiceOnlyRoomToleratesAgentMediaDenialCode(t *testing.T) {
+	engine := newFakeEngine()
+	rest := newFakeRest()
+	rest.roomMediaErr = errors.New(AgentMediaDiscoveryDenied)
+	bridge := NewBridge(testBridgeOptions(engine, rest, nil))
+	if err := bridge.Start(t.Context()); err != nil {
+		t.Fatalf("voice-only bootstrap must tolerate agent_media_not_authorized: %v", err)
+	}
+	defer bridge.Stop()
+
+	rest.roomMediaErr = nil
+	rest.roomMediaReturn = []RoomMediaParticipant{{
+		ParticipantID: "human-1", Name: "Ada", SessionID: "hsess",
+		Tracks: []RoomTrack{{TrackName: "mic", Kind: "audio"}},
+	}}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(rest.snapshotSubscribes()) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(rest.snapshotSubscribes()) != 1 {
+		t.Fatalf("post-grant subscription missing after tolerated denial")
+	}
+}
+
 func TestBridgeVoiceOnlyRoomToleratesDiscoveryDenial(t *testing.T) {
 	engine := newFakeEngine()
 	rest := newFakeRest()

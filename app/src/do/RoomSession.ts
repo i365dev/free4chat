@@ -52,6 +52,13 @@ import {
   stageAgentMediaRevocation,
   type AgentMediaRevocationDirection,
 } from "./realtimeMedia"
+import {
+  buildAgentJoinedEvent,
+  buildCollabOutcomeEvent,
+  buildCollabRequestedEvent,
+  importAnalyticsEvents,
+  type RoomAnalyticsEvent,
+} from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
   garbageCollectRuntimeHosts,
@@ -193,6 +200,10 @@ export interface RoomSessionEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   AGENT_MEDIA_ENABLED?: string
+  // #228: preconfigured production Worker secret for Room-authoritative
+  // collaboration analytics (direct Mixpanel /import). Absent in
+  // local/test environments: analytics safely no-ops.
+  MIXPANEL_PROJECT_TOKEN?: string
 }
 
 interface ConnectionAttachment {
@@ -1647,6 +1658,38 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  // #228: Room-authoritative collaboration analytics are best-effort:
+  // never fail or delay the Room mutation they observe.
+  // The DO instance name is the room name: every room is addressed via
+  // idFromName(room), so this is the exact string the browser-side hash
+  // convention hashes.
+  private roomAnalyticsName(): string {
+    try {
+      const name = (this.ctx as { id?: { name?: unknown } }).id?.name
+      return typeof name === "string" ? name : ""
+    } catch {
+      return ""
+    }
+  }
+
+  private trackRoomAnalytics(events: RoomAnalyticsEvent[]): void {
+    if (events.length === 0) return
+    const token = this.env.MIXPANEL_PROJECT_TOKEN
+    if (!token) return
+    try {
+      this.ctx.waitUntil(
+        importAnalyticsEvents(
+          events,
+          token,
+          globalThis.fetch.bind(globalThis),
+          Date.now()
+        )
+      )
+    } catch {
+      // Bounded diagnostics only; never Room behavior.
+    }
+  }
+
   private async handleControl(request: ControlRequest): Promise<Response> {
     if (request.action === "room-info") {
       const room = await this.activeRoom()
@@ -1919,6 +1962,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.scheduleNextAlarm(room)
       if (isAgent) {
         await this.broadcastState(room)
+        // Canonical admission transition (#228): exactly one AgentJoined per
+        // accepted agent-register; duplicate ids are rejected 409 above.
+        this.trackRoomAnalytics([
+          buildAgentJoinedEvent({
+            roomName: this.roomAnalyticsName(),
+            participants: Object.values(room.participants),
+          }),
+        ])
         return this.json({
           participant: this.participantForInfo(participant),
           cursor: room.nextMessageSequence,
@@ -1986,6 +2037,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
+      // Canonical admission transition (#228).
+      this.trackRoomAnalytics([
+        buildAgentJoinedEvent({
+          roomName: this.roomAnalyticsName(),
+          participants: Object.values(room.participants),
+        }),
+      ])
       return this.json({
         participant: this.participantForInfo(participant),
         cursor: room.nextMessageSequence,
@@ -2548,7 +2606,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         !isAgentAuthorizedForMedia(room.meetingNotes, participant.id) &&
         !this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
       )
-        return this.json({ error: "agent_media_not_authorized" }, 403)
+        // #228: STABLE Voice-only discovery-denial contract. This denial
+        // intentionally persists across the Live Transcript authorization
+        // expansion, and the deployed Runtime generation recognizes the
+        // legacy meeting_notes_not_authorized code as the EXPECTED
+        // Voice-only refusal (shared session admitted, Human-media
+        // discovery denied). Changing this string re-breaks every deployed
+        // Runtime's voice bootstrap.
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -3300,6 +3365,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.scheduleNextAlarm(room)
     await this.broadcast({ type: "message", message: roomMessage })
     this.resolveAgentWaiters(room)
+    // Canonical terminal transition (#228): declined/completed/failed emit
+    // exactly one CollabOutcome with ORIGINAL requester/target topology
+    // (the registry reverses direction on outcome envelopes); accepted
+    // never emits; "duplicate" replays never reach this emit.
+    if (
+      event.kind === "declined" ||
+      event.kind === "completed" ||
+      event.kind === "failed"
+    ) {
+      this.trackRoomAnalytics([
+        buildCollabOutcomeEvent({
+          roomName: this.roomAnalyticsName(),
+          participants: Object.values(room.participants),
+          kind: event.kind,
+          fromParticipantId: event.fromParticipantId,
+          targetParticipantId: event.targetParticipantId,
+          attachmentIds: event.attachmentIds,
+        }),
+      ])
+    }
     return {
       status: "recorded",
       sequence: roomMessage.sequence,
@@ -3372,6 +3457,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // Addressed-event semantics unchanged: only the targeted resident
     // Runtime wakes; other Agents see a non-addressed context event.
     this.resolveAgentWaiters(room)
+    // Canonical request transition (#228): registry precheck already
+    // deduplicated; "duplicate" outcomes never reach this emit.
+    this.trackRoomAnalytics([
+      buildCollabRequestedEvent({
+        roomName: this.roomAnalyticsName(),
+        participants: Object.values(room.participants),
+        fromParticipantId: validated.event.fromParticipantId,
+        targetParticipantId: validated.event.targetParticipantId,
+      }),
+    ])
     return {
       status: "recorded",
       sequence: roomMessage.sequence,
