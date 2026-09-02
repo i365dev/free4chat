@@ -431,10 +431,12 @@ func (d *Daemon) prepareRuntime(
 		InstanceID: instanceID,
 		RoomID:     request.Room, // empty for the create-first lifecycle
 		Name:       request.Name,
-		// #228: bounded local diagnostic history. Events are already
-		// secret-free by the Runtime logging contract; the instance tag
-		// associates lines with this resident.
+		// #228: bounded local diagnostic history, TEE'd with the stderr
+		// DefaultLog so foreground/dev output is preserved. Events are
+		// already secret-free by the Runtime logging contract; the
+		// instance tag associates lines with this resident.
 		Log: func(event string, details map[string]string) {
+			runtime.DefaultLog(event, details)
 			d.hostLog.Appendf("[%s] %s %v", instanceID, event, details)
 		},
 		Client: free4chat.New(mcpURL),

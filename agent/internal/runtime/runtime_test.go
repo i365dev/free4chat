@@ -1149,6 +1149,41 @@ func TestTransientWaitErrorClearsAfterRecovery(t *testing.T) {
 	rt.Stop()
 }
 
+// #228 review: a WAIT-origin error is cleared by a successful wait, but a
+// Harness/turn/send failure must REMAIN in status across successful waits
+// — a healthy Room connection does not prove the turn pipeline recovered.
+func TestHarnessFailureSurvivesSuccessfulWait(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+	}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("harness exploded")}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-harness",
+		RoomID:      "test-harness",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == "harness exploded"
+	}, "turn-origin error recorded")
+
+	// Subsequent successful long-polls must NOT erase the turn failure.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if rt.Status().LastError != "harness exploded" {
+			t.Fatalf("successful wait must not clear a turn-origin failure")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	rt.Stop()
+}
+
 // #228: participatingSince is set once per lifecycle and preserved across
 // adoptJoin (lease-expiry reconnects reuse it).
 func TestParticipatingSinceSetOncePerLifecycle(t *testing.T) {

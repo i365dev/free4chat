@@ -724,11 +724,11 @@ export default function RoomContent({
                 </div>
               </>
             ) : (
-              <div className="scrollbar-thin flex h-full flex-wrap content-start items-stretch gap-2 overflow-y-auto p-3">
+              <div className="scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
                 {participants.map((p) => (
                   <div
                     key={p.peerId}
-                    className="flex h-full flex-col items-center gap-1"
+                    className="flex flex-col items-center gap-1"
                   >
                     <UserCard
                       peerId={p.peerId}

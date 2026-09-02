@@ -2,10 +2,12 @@ import { cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 /**
  * #228 participant-card visual consistency: in the NORMAL participant grid,
- * Human and Agent cards share the same stretch/height contract so Agent
- * controls (Request work + Voice) do not make Agent cards taller than Human
- * cards. jsdom cannot measure layout; this pins the class contract that
- * produces equal heights (items-stretch grid + h-full/flex-1 card roots).
+ * every UserCard root carries the SAME uniform min-height contract, so
+ * Agent-only controls (Request work + Voice) live inside a shared reserved
+ * card height instead of stretching Agent cards taller than Human cards.
+ * jsdom cannot measure layout; this pins the class contract that produces
+ * equal heights (uniform min-height on every normal card root). Visual
+ * confirmation happens in the production regression pass.
  */
 
 vi.mock("next/router", () => ({
@@ -86,17 +88,17 @@ describe("participant card equal-height contract (#228)", () => {
       <RoomContent roomName="test-room" nickName="Hannah" roomType="audio" />
     )
 
-    // Every normal-grid participant card root carries the stretch contract.
-    const roots = document.querySelectorAll("[data-peer]")
-    expect(roots.length).toBe(3)
-    roots.forEach((root) => {
-      const className = root.className
-      expect(className).toContain("h-full")
-      expect(className).toContain("flex-1")
-    })
+    // Every normal-grid participant card root carries the SAME uniform
+    // min-height — Human self, Agents with controls, remote Humans.
+    const cards = Array.from(
+      document.querySelectorAll("div.rounded-xl.border-gray-700")
+    ).filter((el) => el.className.includes("min-h-[196px]"))
+    expect(cards.length).toBe(3)
 
-    // The grid container stretches items instead of top-aligning them.
-    const grid = document.querySelector(".flex-wrap.items-stretch")
+    // The grid top-aligns rows; no full-panel-height stretching remains.
+    const grid = document.querySelector(".flex-wrap.items-start")
     expect(grid).toBeTruthy()
+    expect(document.querySelector(".flex-wrap.items-stretch")).toBeNull()
+    expect(document.querySelectorAll("[data-peer]").length).toBe(0)
   })
 })

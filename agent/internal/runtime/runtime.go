@@ -81,9 +81,6 @@ type Options struct {
 	HostSeed string
 	// Voice configures outbound Voice Reply (nil = Meeting Notes only).
 	Voice *media.VoiceConfig
-	// participatingSince is set once on the lifecycle's first successful
-	// adoptJoin and preserved across transient retries/reconnects (#228).
-	participatingSince int64
 	// HostVoiceGate is daemon-owned and shared by every resident Runtime on
 	// this local Runtime Host. It serializes full TTS+publication operations.
 	HostVoiceGate voice.Gate
@@ -129,8 +126,12 @@ type ResidentRuntime struct {
 	// participatingSince is set once on the lifecycle's first successful
 	// adoptJoin and preserved across transient retries/reconnects (#228).
 	participatingSince int64
-	providerClaim      string
-	providerHandles    *ProviderHandleStore
+	// lastErrorIsWaitOrigin marks lastError as a wait/network-origin
+	// transient error (#228): only such errors are cleared by a successful
+	// long-poll. Harness/turn/send failures stay visible until resolved.
+	lastErrorIsWaitOrigin bool
+	providerClaim         string
+	providerHandles       *ProviderHandleStore
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -528,6 +529,7 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.pendingAddressed = nil
 	r.state = StateWaiting
 	r.lastError = ""
+	r.lastErrorIsWaitOrigin = false
 	// #228: participation age starts at the lifecycle's first successful
 	// create/join and survives transient retries and lease recovery.
 	if r.participatingSince == 0 {
@@ -580,7 +582,14 @@ func (r *ResidentRuntime) waitLoop() {
 			default:
 				retryAttempt++
 				delay := RetryDelay(retryAttempt - 1)
-				r.setStateLastError(StateReconnecting, err.Error())
+				// #228: wait-origin transient error — a later successful
+				// long-poll clears exactly this class (never turn/send
+				// failures, which must remain visible until resolved).
+				r.mu.Lock()
+				r.state = StateReconnecting
+				r.lastError = err.Error()
+				r.lastErrorIsWaitOrigin = true
+				r.mu.Unlock()
 				r.log("wait_retry", map[string]string{"delayMs": strconv.FormatInt(delay.Milliseconds(), 10)})
 				if !r.sleep(delay) {
 					return
@@ -604,11 +613,14 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 		r.cursor = result.Cursor
 	}
 	// #228: a successful long-poll proves the Room connection recovered.
-	// A transient wait error (e.g. a Durable Object interruption during a
-	// Worker deploy) is no longer the CURRENT condition and must not
-	// linger in status. Unrelated failures are unaffected: every lastError
-	// setter lives on this wait loop, so the next failure re-sets it.
-	r.lastError = ""
+	// Only a WAIT-origin transient error is cleared — the exact class a
+	// successful wait proves resolved. Unrelated current failures (Harness
+	// RunTurn, requireHandle, SendText) recorded by drainTurns must remain
+	// visible in status until their own recovery.
+	if r.lastErrorIsWaitOrigin {
+		r.lastError = ""
+		r.lastErrorIsWaitOrigin = false
+	}
 	r.expiresAt = result.ExpiresAt
 	if len(result.Participants) > 0 {
 		r.roster = append([]types.ParticipantRosterEntry(nil), result.Participants...)
@@ -703,7 +715,11 @@ func (r *ResidentRuntime) drainTurns() {
 
 		result, err := r.options.Adapter.RunTurn(*input)
 		if err != nil {
-			r.setStateLastError(StateReconnecting, err.Error())
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorIsWaitOrigin = false // turn-origin failure: not cleared by a later wait
+			r.state = StateReconnecting
+			r.mu.Unlock()
 			r.log("turn_failed", nil)
 			return
 		}
@@ -724,13 +740,21 @@ func (r *ResidentRuntime) drainTurns() {
 		}
 		handle, err := r.requireHandle()
 		if err != nil {
-			r.setStateLastError(StateReconnecting, err.Error())
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorIsWaitOrigin = false // not cleared by a successful wait
+			r.state = StateReconnecting
+			r.mu.Unlock()
 			r.log("turn_failed", nil)
 			return
 		}
 		sent, err := r.options.Client.SendText(handle, text, result.TargetParticipantIDs)
 		if err != nil {
-			r.setStateLastError(StateReconnecting, err.Error())
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorIsWaitOrigin = false // not cleared by a successful wait
+			r.state = StateReconnecting
+			r.mu.Unlock()
 			r.log("turn_failed", nil)
 			return
 		}

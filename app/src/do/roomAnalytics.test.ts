@@ -169,3 +169,22 @@ describe("Mixpanel /import ingestion (#228)", () => {
     expect(body[0].event).toBe("AgentJoined")
   })
 })
+
+describe("CollaborationDuration event (#228 extension)", () => {
+  it("carries roomHash plus the approved property set", () => {
+    const event = buildCollaborationDurationEvent({
+      roomName: "test",
+      durationMs: 240_000,
+      collaborationMode: "human-agent",
+      participantBucket: "2-3",
+    })
+    expect(event.name).toBe("CollaborationDuration")
+    expect(event.properties.roomHash).toBe(hashRoom("test"))
+    expect(event.properties.durationMs).toBe(240_000)
+    expect(event.properties.collaborationMode).toBe("human-agent")
+    expect(event.properties.participantBucket).toBe("2-3")
+    expect(Object.keys(event.properties).sort()).toEqual(
+      [...APPROVED_ANALYTICS_PROPERTIES.CollaborationDuration].sort()
+    )
+  })
+})

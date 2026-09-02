@@ -194,6 +194,7 @@ export function buildCollaborationDurationEvent(args: {
     properties: {
       durationMs: args.durationMs,
       roomType: "unknown",
+      roomHash: hashRoom(args.roomName),
       collaborationMode: args.collaborationMode,
       participantBucket: args.participantBucket,
     },
@@ -286,6 +287,7 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
   CollaborationDuration: [
     "durationMs",
     "roomType",
+    "roomHash",
     "collaborationMode",
     "participantBucket",
   ],
