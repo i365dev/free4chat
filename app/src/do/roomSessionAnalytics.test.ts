@@ -101,7 +101,7 @@ function makeRoomSession(
 }
 
 function mixpanelBodies(
-  calls: typeof fetchCalls
+  calls: Array<{ url: string; init: RequestInit }>
 ): Array<Record<string, unknown>> {
   return calls
     .filter((c) => c.url.includes("api.mixpanel.com"))
