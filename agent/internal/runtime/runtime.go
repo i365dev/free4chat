@@ -126,12 +126,14 @@ type ResidentRuntime struct {
 	// participatingSince is set once on the lifecycle's first successful
 	// adoptJoin and preserved across transient retries/reconnects (#228).
 	participatingSince int64
-	// lastErrorIsWaitOrigin marks lastError as a wait/network-origin
-	// transient error (#228): only such errors are cleared by a successful
-	// long-poll. Harness/turn/send failures stay visible until resolved.
-	lastErrorIsWaitOrigin bool
-	providerClaim         string
-	providerHandles       *ProviderHandleStore
+	// lastErrorSource records WHICH runtime subsystem produced the current
+	// lastError (#228): wait, harness (RunTurn/requireHandle), or send
+	// (SendText). A subsystem's successful operation clears ONLY its own
+	// error — a successful wait never hides an unresolved Harness or send
+	// failure. Empty = no current unresolved condition.
+	lastErrorSource string
+	providerClaim   string
+	providerHandles *ProviderHandleStore
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -529,7 +531,7 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.pendingAddressed = nil
 	r.state = StateWaiting
 	r.lastError = ""
-	r.lastErrorIsWaitOrigin = false
+	r.lastErrorSource = ""
 	// #228: participation age starts at the lifecycle's first successful
 	// create/join and survives transient retries and lease recovery.
 	if r.participatingSince == 0 {
@@ -588,7 +590,7 @@ func (r *ResidentRuntime) waitLoop() {
 				r.mu.Lock()
 				r.state = StateReconnecting
 				r.lastError = err.Error()
-				r.lastErrorIsWaitOrigin = true
+				r.lastErrorSource = "wait"
 				r.mu.Unlock()
 				r.log("wait_retry", map[string]string{"delayMs": strconv.FormatInt(delay.Milliseconds(), 10)})
 				if !r.sleep(delay) {
@@ -614,12 +616,11 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	}
 	// #228: a successful long-poll proves the Room connection recovered.
 	// Only a WAIT-origin transient error is cleared — the exact class a
-	// successful wait proves resolved. Unrelated current failures (Harness
-	// RunTurn, requireHandle, SendText) recorded by drainTurns must remain
-	// visible in status until their own recovery.
-	if r.lastErrorIsWaitOrigin {
+	// successful wait proves resolved. Harness/turn/send failures recorded
+	// by drainTurns must remain visible in status until their own recovery.
+	if r.lastErrorSource == "wait" {
 		r.lastError = ""
-		r.lastErrorIsWaitOrigin = false
+		r.lastErrorSource = ""
 	}
 	r.expiresAt = result.ExpiresAt
 	if len(result.Participants) > 0 {
@@ -717,7 +718,7 @@ func (r *ResidentRuntime) drainTurns() {
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
-			r.lastErrorIsWaitOrigin = false // turn-origin failure: not cleared by a later wait
+			r.lastErrorSource = "harness"
 			r.state = StateReconnecting
 			r.mu.Unlock()
 			r.log("turn_failed", nil)
@@ -725,6 +726,12 @@ func (r *ResidentRuntime) drainTurns() {
 		}
 		r.mu.Lock()
 		r.harnessFailed = false
+		// #228: a successful turn proves the Harness recovered — clear ONLY
+		// the harness-origin error (a concurrent wait/send failure stays).
+		if r.lastErrorSource == "harness" {
+			r.lastError = ""
+			r.lastErrorSource = ""
+		}
 		r.mu.Unlock()
 		// A lifecycle result is never ordinary reply text. Its body may contain
 		// an untruthful success claim, so consume the closed local intent before
@@ -742,7 +749,7 @@ func (r *ResidentRuntime) drainTurns() {
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
-			r.lastErrorIsWaitOrigin = false // not cleared by a successful wait
+			r.lastErrorSource = "harness"
 			r.state = StateReconnecting
 			r.mu.Unlock()
 			r.log("turn_failed", nil)
@@ -752,12 +759,20 @@ func (r *ResidentRuntime) drainTurns() {
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
-			r.lastErrorIsWaitOrigin = false // not cleared by a successful wait
+			r.lastErrorSource = "send"
 			r.state = StateReconnecting
 			r.mu.Unlock()
 			r.log("turn_failed", nil)
 			return
 		}
+		r.mu.Lock()
+		// #228: a successful send proves delivery recovered — clear ONLY the
+		// send-origin error (a concurrent wait/harness failure stays).
+		if r.lastErrorSource == "send" {
+			r.lastError = ""
+			r.lastErrorSource = ""
+		}
+		r.mu.Unlock()
 		r.log("message_persisted", map[string]string{
 			"sequence": strconv.FormatInt(sent.Sequence, 10),
 		})

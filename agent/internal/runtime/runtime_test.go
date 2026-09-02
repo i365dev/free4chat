@@ -129,6 +129,9 @@ type fakeClient struct {
 	defaultOK   bool
 	// sendHook observes every SendText in order (tests may inject).
 	sendHook func(text string)
+	// sendFailuresRemaining makes the NEXT N SendText calls fail (#228:
+	// deterministic send-failure scripting).
+	sendFailuresRemaining int
 }
 
 type transcriptClient struct {
@@ -274,7 +277,12 @@ func (c *fakeClient) WaitForEvents(handle string, cursor int64, timeoutSeconds i
 
 func (c *fakeClient) SendText(_ string, text string, targets []string) (types.SendTextResult, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.sendFailuresRemaining > 0 {
+		c.sendFailuresRemaining--
+		c.mu.Unlock()
+		return types.SendTextResult{}, errors.New("send failed")
+	}
+	c.mu.Unlock()
 	c.sent = append(c.sent, text)
 	c.sentTargets = append(c.sentTargets, append([]string(nil), targets...))
 	if c.sendHook != nil {
@@ -1149,9 +1157,10 @@ func TestTransientWaitErrorClearsAfterRecovery(t *testing.T) {
 	rt.Stop()
 }
 
-// #228 review: a WAIT-origin error is cleared by a successful wait, but a
-// Harness/turn/send failure must REMAIN in status across successful waits
-// — a healthy Room connection does not prove the turn pipeline recovered.
+// #228 (review round 3): lastError provenance — each subsystem's SUCCESS
+// clears only its OWN error. A successful wait never hides a Harness/send
+// failure; a successful turn/send clears exactly its own source.
+
 func TestHarnessFailureSurvivesSuccessfulWait(t *testing.T) {
 	client := &fakeClient{}
 	client.script = []waitStep{
@@ -1171,16 +1180,140 @@ func TestHarnessFailureSurvivesSuccessfulWait(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, func() bool {
 		return rt.Status().LastError == "harness exploded"
-	}, "turn-origin error recorded")
+	}, "harness-origin error recorded")
 
-	// Subsequent successful long-polls must NOT erase the turn failure.
+	// Successful long-polls must NOT erase the harness failure.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if rt.Status().LastError != "harness exploded" {
-			t.Fatalf("successful wait must not clear a turn-origin failure")
+			t.Fatalf("successful wait must not clear a harness-origin failure")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	rt.Stop()
+}
+
+func TestHarnessFailureClearsAfterSuccessfulTurn(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{
+			roomEvent(1, true),
+			roomEvent(2, true),
+		}},
+	}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("harness exploded")}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-h2",
+		RoomID:      "test-h2",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == "harness exploded"
+	}, "harness failure recorded")
+
+	// Harness recovers: the next turn succeeds and clears its own error.
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	t.Logf("turnErr cleared; adapter sessions so far: %d", adapter.sessionsInt())
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rt.mu.Lock()
+		lastErr := rt.lastError
+		src := rt.lastErrorSource
+		rt.mu.Unlock()
+		adapter.mu.Lock()
+		terr := adapter.turnErr
+		adapter.mu.Unlock()
+		t.Logf("poll: lastError=%q source=%q turnErr=%v", lastErr, src, terr)
+		if lastErr == "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	rt.Stop()
+}
+
+func TestSendFailureSurvivesSuccessfulWait(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+	}
+	client.sendFailuresRemaining = 1
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-send",
+		RoomID:      "test-send",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     &fakeAdapter{name: "pi"},
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rt.mu.Lock()
+		lastErr := rt.lastError
+		src := rt.lastErrorSource
+		sends := len(client.snapshotSent())
+		rt.mu.Unlock()
+		t.Logf("send poll: lastError=%q src=%q sends=%d", lastErr, src, sends)
+		if lastErr == "send failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Successful long-polls must NOT erase the send failure.
+	keepDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(keepDeadline) {
+		if rt.Status().LastError != "send failed" {
+			t.Fatalf("successful wait must not clear a send-origin failure")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	rt.Stop()
+}
+
+func TestSendFailureClearsAfterSuccessfulSend(t *testing.T) {
+	client := &fakeClient{}
+	// Two steps with a GATE between them: the first event's send fails, the
+	// test asserts the failure is recorded, then opens the gate so the
+	// second event's send succeeds and clears the error — deterministically
+	// ordered, no racy intermediate window.
+	gate := make(chan struct{})
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+		{events: []types.RoomEvent{roomEvent(2, true)}, gate: gate},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-send2",
+		RoomID:      "test-send2",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     &fakeAdapter{name: "pi"},
+		WaitSeconds: 1,
+	})
+	client.sendFailuresRemaining = 1
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == "send failed"
+	}, "send-origin error recorded")
+
+	// The gate blocks event 2's delivery until the test opens it.
+	close(gate)
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == ""
+	}, "successful send clears send-origin error")
 	rt.Stop()
 }
 
