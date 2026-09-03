@@ -209,6 +209,10 @@ export interface RoomAttachment {
   id: string
   senderId: string
   senderName: string
+  // #234: kind of the AUTHENTICATED uploader, captured at upload time (never
+  // accepted from the client). Persisted so artifacts stay truthfully
+  // classified — and Agent artifacts stay visible — after the sender leaves.
+  senderKind: ParticipantKind
   mimeType: AgentAttachmentMimeType
   fileName: string
   size: number
@@ -228,10 +232,10 @@ export interface RoomAttachmentProjection {
   id: string
   senderId: string
   senderName: string
-  // Resolved server-side from the sender's participant record at projection
-  // time; "unknown" means the sender has left the Room (bounded artifact
-  // retained for current members, never rendered as standalone).
-  senderKind: ParticipantKind | "unknown"
+  // The kind persisted on the attachment record at upload time — the sender
+  // may have left the Room; the artifact classification does not depend on
+  // the live roster.
+  senderKind: ParticipantKind
   fileName: string
   mimeType: AgentAttachmentMimeType
   size: number

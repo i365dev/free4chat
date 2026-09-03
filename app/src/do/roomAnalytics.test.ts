@@ -2,6 +2,8 @@ import { describe, expect, it, vi, afterEach } from "vitest"
 
 import {
   buildAgentJoinedEvent,
+  buildRoomCreatedEvent,
+  classifyRoomCreationSource,
   buildTargetedMessageEvent,
   buildCollabRequestedEvent,
   buildCollabOutcomeEvent,
@@ -272,5 +274,68 @@ describe("TargetedMessage analytics (#234)", () => {
       targetParticipantIds: ["agent-pi"],
     })
     expect(event.properties.senderKind).toBe("unknown")
+  })
+})
+
+describe("RoomCreated analytics (#234)", () => {
+  it("carries exactly the approved coarse properties and server identity", () => {
+    const event = buildRoomCreatedEvent({
+      roomName: "test",
+      creatorKind: "agent",
+      creationSource: "agent-runtime",
+    })
+    expect(event.name).toBe("RoomCreated")
+    expect(Object.keys(event.properties).sort()).toEqual(
+      [...APPROVED_ANALYTICS_PROPERTIES.RoomCreated].sort()
+    )
+    expect(event.properties.roomHash).toBe(hashRoom("test"))
+    expect(event.properties.creatorKind).toBe("agent")
+    expect(event.properties.creationSource).toBe("agent-runtime")
+
+    const row = mixpanelImportRow(event, 1234, "insert-1")
+    const props = row.properties as Record<string, unknown>
+    expect(props.distinct_id).toBe("server:free4chat")
+    expect(props.ip).toBe(0)
+    const serialized = JSON.stringify(row)
+    expect(serialized.includes("participantId")).toBe(false)
+    expect(serialized.includes("token")).toBe(false)
+    expect(serialized.includes("test")).toBe(false)
+  })
+
+  it("supports the full creator-kind and source matrix", () => {
+    for (const creatorKind of ["human", "agent"] as const) {
+      for (const creationSource of [
+        "browser",
+        "agent-runtime",
+        "mcp",
+      ] as const) {
+        const event = buildRoomCreatedEvent({
+          roomName: "test",
+          creatorKind,
+          creationSource,
+        })
+        expect(event.properties.creatorKind).toBe(creatorKind)
+        expect(event.properties.creationSource).toBe(creationSource)
+      }
+    }
+  })
+})
+
+describe("creationSource classification (#234)", () => {
+  it("classifies the official Runtime User-Agent as agent-runtime", () => {
+    expect(classifyRoomCreationSource("free4chat-agent/0.5.17")).toBe(
+      "agent-runtime"
+    )
+    expect(
+      classifyRoomCreationSource(
+        "free4chat-agent/0.5.17 (darwin/arm64) node/v22"
+      )
+    ).toBe("agent-runtime")
+  })
+
+  it("classifies anything else as mcp and is case/absence tolerant", () => {
+    expect(classifyRoomCreationSource("")).toBe("mcp")
+    expect(classifyRoomCreationSource("curl/8.0")).toBe("mcp")
+    expect(classifyRoomCreationSource("SuperAgent/1.0")).toBe("mcp")
   })
 })

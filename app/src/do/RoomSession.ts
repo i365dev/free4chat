@@ -59,9 +59,10 @@ import {
   type RoomAnalyticsEvent,
   transitionCollaborationActivity,
   normalizeStoredCollaborationActivity,
-  resolveParticipantKind,
   buildCollaborationDurationEvent,
   buildTargetedMessageEvent,
+  buildRoomCreatedEvent,
+  type RoomCreationSource,
 } from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
@@ -162,6 +163,12 @@ const ROOM_CAPABILITIES: RoomCapabilities = {
 // unaddressed message instead of failing the send. excludeId lets the
 // Agent path drop a target before the bound so a self-echo can never
 // consume one of the slots.
+// #234: ordinary text targeting addresses any CURRENT Room participant —
+// Human or Agent — by explicit participant id. Targeting is attention and
+// routing metadata only, never authorization: it decides who receives an
+// addressed turn/cue and never grants or invokes anything. Malformed and
+// stale ids are dropped; the optional excludeId (the sender) protects
+// Agents from self-target reply loops.
 function normalizeChatTargets(
   room: RoomRecord,
   rawTargets: unknown,
@@ -171,16 +178,16 @@ function normalizeChatTargets(
     ...new Set(
       (Array.isArray(rawTargets) ? rawTargets : [])
         .filter((id): id is string => typeof id === "string")
-        .filter((id) => room.participants[id]?.kind === "agent")
+        .filter((id) => id in room.participants)
         .filter((id) => id !== excludeId)
     ),
   ].slice(0, MAX_TARGETS)
 }
 
 // Agent-originated send_text targets: the same Room addressing semantics as
-// the Human chat path, plus one loop guard — an Agent can never target
-// itself, so a Harness echoing its own participantId cannot wake itself
-// into a reply loop.
+// the Human chat path (any current participant may be targeted), plus one
+// loop guard — an Agent can never target itself, so a Harness echoing its
+// own participantId cannot wake itself into a reply loop.
 function agentTextTargets(
   rawTargets: unknown,
   senderId: string,
@@ -280,6 +287,10 @@ type ControlRequest =
         runtimeHost?: RuntimeHostProjection
         runtimeProviderReattachProofHash?: string
       }
+      // #234: coarse internal entry-path telemetry classified by the caller
+      // from request context (browser session vs User-Agent). Analytics
+      // only — never authentication, authorization, or Room behavior.
+      creationSource?: RoomCreationSource
     }
   | {
       action: "authorize"
@@ -363,6 +374,8 @@ type ControlRequest =
         providerClaimHash?: string
         runtimeProviderHandle?: string
       }
+      // #234: coarse internal entry-path telemetry (see "register").
+      creationSource?: RoomCreationSource
     }
   | {
       // #51: atomic CREATE-ONLY room creation. The DO refuses when any room
@@ -375,6 +388,8 @@ type ControlRequest =
       // Room-scoped id is derived from the final server-generated roomId
       // after creation and pushed via agent-update-runtime-host.
       participant: Omit<RoomParticipant, "connected" | "lastSeenAt">
+      // #234: coarse internal entry-path telemetry (see "register").
+      creationSource?: RoomCreationSource
     }
   | {
       action: "agent-wait"
@@ -388,10 +403,11 @@ type ControlRequest =
       participantId: string
       token: string
       text: string
-      // #165: optional explicit addressing carried by the same Room
+      // #165/#234: optional explicit addressing carried by the same Room
       // primitive the Human chat path uses. Participant IDs only — the DO
-      // normalizes, drops non-Agent/self targets, and persists at most
-      // MAX_TARGETS; targeting controls wakeup only, never authorization.
+      // normalizes, drops malformed/stale/self targets, and persists at most
+      // MAX_TARGETS; targeting controls attention/wakeup only, never
+      // authorization, and may name Human or Agent participants.
       targetParticipantIds?: unknown
     }
   | {
@@ -810,12 +826,30 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (normalizedLiveProducer.changed) changed = true
 
     if (stored.nextMessageSequence !== nextMessageSequence) changed = true
-    const attachments = Array.isArray(stored.attachments)
-      ? stored.attachments.filter((attachment) =>
-          this.validAttachment(attachment)
-        )
-      : []
-    if (!Array.isArray(stored.attachments)) changed = true
+    // #234: senderKind is part of the attachment record. Pre-release records
+    // without it are resolved once from the still-known sender participant
+    // (rooms are ephemeral — no migration framework); a record whose sender
+    // is already gone is dropped rather than mislabeled.
+    let attachments: RoomAttachment[] = []
+    if (Array.isArray(stored.attachments)) {
+      for (const raw of stored.attachments) {
+        if (!this.validAttachment(raw)) continue
+        const storedKind = (raw as { senderKind?: ParticipantKind }).senderKind
+        if (storedKind === undefined) {
+          const kind = participants[raw.senderId]?.kind
+          if (kind === undefined) {
+            changed = true
+            continue
+          }
+          attachments.push({ ...raw, senderKind: kind })
+          changed = true
+          continue
+        }
+        attachments.push(raw)
+      }
+    } else {
+      changed = true
+    }
 
     let pendingMediaCleanup: PendingMediaCleanup[]
     if (this.validPendingMediaCleanup(stored.pendingMediaCleanup)) {
@@ -970,10 +1004,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private validAttachment(value: unknown): value is RoomAttachment {
     if (!value || typeof value !== "object") return false
     const attachment = value as Partial<RoomAttachment>
+    // senderKind may be absent ONLY for pre-release records; the load pass
+    // resolves or drops them (see normalizeRoom). The upload path always
+    // persists an authenticated kind.
     return (
       typeof attachment.id === "string" &&
       typeof attachment.senderId === "string" &&
       typeof attachment.senderName === "string" &&
+      (attachment.senderKind === "human" ||
+        attachment.senderKind === "agent" ||
+        attachment.senderKind === undefined) &&
       (attachment.mimeType === "image/jpeg" ||
         attachment.mimeType === "image/png" ||
         attachment.mimeType === "image/webp" ||
@@ -1034,20 +1074,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   // #234: bounded standalone-attachment metadata projection for the Human
   // timeline. Bytes stay in DO chunk storage; only safe metadata crosses
-  // RoomState. senderKind is resolved server-side from the CURRENT sender
-  // participant record at projection time (a departed sender resolves
-  // unknown and is never presented as a standalone Agent artifact, so a
-  // lingering copy of a Human browser file can never be mislabeled or
-  // double-rendered).
+  // RoomState. senderKind is the PERSISTED kind captured from the
+  // authenticated sender at upload time, so an Agent artifact stays visible
+  // (and truthfully classified) after the sender leaves the Room, until the
+  // bounded attachment eviction or Room expiry.
   private projectRoomAttachments(room: RoomRecord): RoomAttachmentProjection[] {
     return room.attachments.map((attachment) => ({
       id: attachment.id,
       senderId: attachment.senderId,
       senderName: attachment.senderName,
-      senderKind: resolveParticipantKind(
-        Object.values(room.participants),
-        attachment.senderId
-      ),
+      senderKind: attachment.senderKind,
       fileName: attachment.fileName,
       mimeType: attachment.mimeType,
       size: attachment.size,
@@ -1490,17 +1526,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
-  private toAttachmentEvent(
-    attachment: RoomAttachment,
-    senderKind: ParticipantKind
-  ): AgentEvent {
+  private toAttachmentEvent(attachment: RoomAttachment): AgentEvent {
     return {
       sequence: attachment.sequence,
       type: "image",
       participant: {
         id: attachment.senderId,
         name: attachment.senderName,
-        kind: senderKind,
+        kind: attachment.senderKind,
       },
       attachment: {
         id: attachment.id,
@@ -1533,10 +1566,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })),
       ...room.attachments.map((attachment) => ({
         sequence: attachment.sequence,
-        event: this.toAttachmentEvent(
-          attachment,
-          room.participants[attachment.senderId]?.kind ?? "human"
-        ),
+        event: this.toAttachmentEvent(attachment),
         peerId: attachment.senderId,
       })),
     ].sort((left, right) => left.sequence - right.sequence)
@@ -1846,7 +1876,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         await this.expireRoom(room)
         return this.json({ error: "room_expired" }, 410)
       }
+      // #234: exactly ONE RoomCreated per canonical Room generation — the
+      // registration that materializes a previously-nonexistent Room. Joins
+      // of existing Rooms never reach this branch.
+      let roomGenerationCreated = false
       if (!room) {
+        roomGenerationCreated = true
         this.resetCollabTracking()
         room = {
           createdAt: now,
@@ -2021,6 +2056,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // accepted agent-register; duplicate ids are rejected 409 above.
         // Emitted only AFTER the Room state has been persisted above.
         const events: RoomAnalyticsEvent[] = []
+        if (roomGenerationCreated) {
+          events.push(
+            buildRoomCreatedEvent({
+              roomName: this.roomAnalyticsName(),
+              creatorKind: participant.kind,
+              creationSource:
+                request.creationSource ??
+                (participant.kind === "human" ? "browser" : "mcp"),
+            })
+          )
+        }
         if (pendingAgentJoined) events.push(pendingAgentJoined)
         events.push(
           buildAgentJoinedEvent({
@@ -2037,6 +2083,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             ? { runtimeProviderHandle: providerHandleForResponse }
             : {}),
         })
+      }
+      // #234: browser-generated Rooms are Human creations — one canonical
+      // RoomCreated after the generation has been persisted.
+      if (roomGenerationCreated) {
+        this.trackRoomAnalytics([
+          buildRoomCreatedEvent({
+            roomName: this.roomAnalyticsName(),
+            creatorKind: participant.kind,
+            creationSource:
+              request.creationSource ??
+              (participant.kind === "human" ? "browser" : "mcp"),
+          }),
+        ])
       }
       return this.json({
         state: this.stateFor(room),
@@ -2098,8 +2157,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
       // Canonical admission transition (#228). Emitted only AFTER the Room
-      // state has been persisted.
+      // state has been persisted. #234: the create-only gate guarantees this
+      // IS a fresh generation, so exactly one RoomCreated accompanies it;
+      // failed/collision attempts returned above never reach this emit.
       const events: RoomAnalyticsEvent[] = [
+        buildRoomCreatedEvent({
+          roomName: this.roomAnalyticsName(),
+          creatorKind: participant.kind,
+          creationSource: request.creationSource ?? "mcp",
+        }),
         buildAgentJoinedEvent({
           roomName: this.roomAnalyticsName(),
           participants: Object.values(room.participants),
@@ -2209,11 +2275,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         kind: participant.kind,
         type: "text",
         text: text.slice(0, 4000),
-        // #165: Agent-originated explicit addressing reuses the exact Room
-        // target semantics of the Human chat path (dedupe, current-Agent
-        // filter, MAX_TARGETS). Self-targets are dropped so an Agent can
-        // never wake itself into a loop; malformed entries can only ever
-        // degrade to an ordinary unaddressed message.
+        // #165/#234: Agent-originated explicit addressing reuses the exact
+        // Room target semantics of the Human chat path (dedupe, current
+        // participant filter, MAX_TARGETS). Self-targets are dropped so an
+        // Agent can never wake itself into a loop; malformed or stale
+        // entries can only ever degrade to an ordinary unaddressed message.
+        // Human targets are addressed attention for that Human — they never
+        // create a Human workflow/task concept.
         ...agentTextTargets(request.targetParticipantIds, participant.id, room),
         createdAt: Date.now(),
       })
@@ -3945,8 +4013,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })
       await this.saveRoom(room)
       // #234: one server-authoritative TargetedMessage per canonical
-      // targeted text message; Human browser targeting only ever resolves
-      // to current Agents (see normalizeChatTargets).
+      // targeted text message; the message's targets are the validated
+      // current participant ids persisted on roomMessage.
       this.trackTargetedMessage(room, roomMessage)
       await this.broadcast({ type: "message", message: roomMessage })
       this.resolveAgentWaiters(room)
@@ -4165,6 +4233,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       id,
       senderId: participant.id,
       senderName: participant.name,
+      // #234: sender kind is derived from the authenticated participant
+      // record at upload time — never accepted from the client — so the
+      // artifact stays truthfully classified even after the sender leaves.
+      senderKind: participant.kind,
       mimeType: mimeType as AgentAttachmentMimeType,
       fileName,
       size: bytes.byteLength,

@@ -32,7 +32,7 @@ function buildStoredRoom() {
         connected: true,
         joinedAt: 1,
         lastSeenAt: Date.now(),
-        token: "tok-pi",
+        token: "tok-agent-pi",
       },
       "agent-codex": {
         id: "agent-codex",
@@ -41,7 +41,7 @@ function buildStoredRoom() {
         connected: true,
         joinedAt: 1,
         lastSeenAt: Date.now(),
-        token: "tok-codex",
+        token: "tok-agent-codex",
       },
     },
     messages: [],
@@ -101,7 +101,10 @@ function makeRoomSession(
         body: JSON.stringify(body),
       })
     )
-    return response.status
+    return {
+      status: response.status,
+      json: (await response.json()) as Record<string, unknown>,
+    }
   }
   const sendHuman = (message: object) =>
     (
@@ -117,7 +120,15 @@ function makeRoomSession(
       { participantId: "human-1", token: "tok-human", connectionNonce: "n" },
       message
     )
-  return { control, sendHuman, fetchCalls }
+  const agentWait = async (participantId: string, cursor = 0) =>
+    control({
+      action: "agent-wait",
+      participantId,
+      token: `tok-${participantId}`,
+      cursor,
+      timeoutSeconds: 0,
+    })
+  return { control, sendHuman, agentWait, fetchCalls }
 }
 
 function mixpanelBodies(
@@ -185,11 +196,11 @@ describe("TargetedMessage Room-authoritative analytics (#234)", () => {
     const sent = await control({
       action: "agent-send-text",
       participantId: "agent-pi",
-      token: "tok-pi",
+      token: "tok-agent-pi",
       text: "please review fib.py",
       targetParticipantIds: ["agent-codex"],
     })
-    expect(sent).toBe(200)
+    expect(sent.status).toBe(200)
     await flushMicrotasks()
 
     const rows = mixpanelBodies(calls).filter(
@@ -216,7 +227,7 @@ describe("TargetedMessage Room-authoritative analytics (#234)", () => {
     await control({
       action: "agent-send-text",
       participantId: "agent-pi",
-      token: "tok-pi",
+      token: "tok-agent-pi",
       text: "multi target",
       targetParticipantIds: ["agent-codex", "agent-pi"],
     })
@@ -245,6 +256,106 @@ describe("TargetedMessage Room-authoritative analytics (#234)", () => {
     ).toBe(1)
   })
 
+  it("Agent→Human targeted text emits exactly one TargetedMessage with targetKind human", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const { control } = makeRoomSession(calls, "project-token")
+    const sent = await control({
+      action: "agent-send-text",
+      participantId: "agent-pi",
+      token: "tok-agent-pi",
+      text: "please review this for me",
+      targetParticipantIds: ["human-1"],
+    })
+    expect(sent.status).toBe(200)
+    await flushMicrotasks()
+
+    const rows = mixpanelBodies(calls).filter(
+      (row) => row.event === "TargetedMessage"
+    )
+    expect(rows.length).toBe(1)
+    expect((rows[0].properties as Record<string, unknown>).senderKind).toBe(
+      "agent"
+    )
+    expect((rows[0].properties as Record<string, unknown>).targetKind).toBe(
+      "human"
+    )
+  })
+
+  it("Agent→Human+Agent mixed targets emit exactly ONE TargetedMessage with targetKind mixed", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const { control } = makeRoomSession(calls, "project-token")
+    const sent = await control({
+      action: "agent-send-text",
+      participantId: "agent-pi",
+      token: "tok-agent-pi",
+      text: "to both kinds",
+      targetParticipantIds: ["human-1", "agent-codex"],
+    })
+    expect(sent.status).toBe(200)
+    await flushMicrotasks()
+
+    const rows = mixpanelBodies(calls).filter(
+      (row) => row.event === "TargetedMessage"
+    )
+    expect(rows.length).toBe(1)
+    expect((rows[0].properties as Record<string, unknown>).targetKind).toBe(
+      "mixed"
+    )
+    expect(
+      (rows[0].properties as Record<string, unknown>).targetCountBucket
+    ).toBe("2-3")
+  })
+
+  it("Agent self-target is removed and stale participant ids are removed", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const { control } = makeRoomSession(calls, "project-token")
+    const sent = await control({
+      action: "agent-send-text",
+      participantId: "agent-pi",
+      token: "tok-agent-pi",
+      text: "self and stale targets",
+      targetParticipantIds: ["agent-pi", "ghost-agent", "human-1"],
+    })
+    expect(sent.status).toBe(200)
+    await flushMicrotasks()
+
+    const rows = mixpanelBodies(calls).filter(
+      (row) => row.event === "TargetedMessage"
+    )
+    expect(rows.length).toBe(1)
+    expect((rows[0].properties as Record<string, unknown>).targetKind).toBe(
+      "human"
+    )
+    expect(
+      (rows[0].properties as Record<string, unknown>).targetCountBucket
+    ).toBe("1")
+  })
+
+  it("targeting only a Human wakes no Agent waiter (attention, not activation)", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const { control, agentWait } = makeRoomSession(calls, "project-token")
+    await control({
+      action: "agent-send-text",
+      participantId: "agent-pi",
+      token: "tok-agent-pi",
+      text: "for the Human only",
+      targetParticipantIds: ["human-1"],
+    })
+    const waited = await agentWait("agent-codex", 0)
+    expect(waited.status).toBe(200)
+    const events = waited.json.events as Array<{
+      addressed: boolean
+      text?: string
+    }>
+    const messageEvent = events.find(
+      (event) => event.text === "for the Human only"
+    )
+    // The message is visible to the Agent as ordinary context...
+    expect(messageEvent).toBeTruthy()
+    // ...but it is NOT an addressed wake for that Agent.
+    expect(messageEvent?.addressed).toBe(false)
+  })
+
   it("unaddressed text emits zero TargetedMessage", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
     const { control, sendHuman } = makeRoomSession(calls, "project-token")
@@ -252,7 +363,7 @@ describe("TargetedMessage Room-authoritative analytics (#234)", () => {
     await control({
       action: "agent-send-text",
       participantId: "agent-pi",
-      token: "tok-pi",
+      token: "tok-agent-pi",
       text: "unaddressed note",
     })
     await flushMicrotasks()
@@ -267,14 +378,14 @@ describe("TargetedMessage Room-authoritative analytics (#234)", () => {
     const sent = await control({
       action: "agent-send-collab",
       participantId: "agent-pi",
-      token: "tok-pi",
+      token: "tok-agent-pi",
       event: {
         kind: "request",
         targetParticipantId: "agent-codex",
         summary: "please review",
       },
     })
-    expect(sent).toBe(200)
+    expect(sent.status).toBe(200)
     await flushMicrotasks()
 
     const rows = mixpanelBodies(calls)
@@ -292,11 +403,11 @@ describe("TargetedMessage Room-authoritative analytics (#234)", () => {
     const sent = await control({
       action: "agent-send-text",
       participantId: "agent-pi",
-      token: "tok-pi",
+      token: "tok-agent-pi",
       text: "targeted",
       targetParticipantIds: ["agent-codex"],
     })
-    expect(sent).toBe(200)
+    expect(sent.status).toBe(200)
     await flushMicrotasks()
     expect(calls.filter((c) => c.url.includes("mixpanel")).length).toBe(0)
   })
@@ -311,11 +422,11 @@ describe("TargetedMessage Room-authoritative analytics (#234)", () => {
     const sent = await control({
       action: "agent-send-text",
       participantId: "agent-pi",
-      token: "tok-pi",
+      token: "tok-agent-pi",
       text: "targeted despite analytics failure",
       targetParticipantIds: ["agent-codex"],
     })
-    expect(sent).toBe(200)
+    expect(sent.status).toBe(200)
     const persisted = mixpanelBodies(calls)
     void persisted
   })

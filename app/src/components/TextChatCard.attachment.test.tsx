@@ -40,15 +40,6 @@ const HUMAN_ATTACHMENT: RoomAttachmentProjection = {
   sequence: 3,
 }
 
-const UNKNOWN_ATTACHMENT: RoomAttachmentProjection = {
-  ...AGENT_ATTACHMENT,
-  id: "att-gone",
-  senderId: "gone-agent",
-  senderName: "Gone",
-  senderKind: "unknown",
-  sequence: 5,
-}
-
 function message(sequence: number, text: string): Message {
   return {
     peerId: "human-h",
@@ -101,11 +92,8 @@ describe("buildRoomTimeline (#234)", () => {
     expect(timeline[1].attachment?.id).toBe("att-fib")
   })
 
-  it("excludes Human and unknown-sender attachments (no duplicate file bubbles)", () => {
-    const timeline = buildRoomTimeline(
-      [],
-      [HUMAN_ATTACHMENT, UNKNOWN_ATTACHMENT, AGENT_ATTACHMENT]
-    )
+  it("excludes Human-originated attachment copies (no duplicate file bubbles) while keeping Agent artifacts", () => {
+    const timeline = buildRoomTimeline([], [HUMAN_ATTACHMENT, AGENT_ATTACHMENT])
     expect(timeline).toHaveLength(1)
     expect(timeline[0].attachment?.id).toBe("att-fib")
   })

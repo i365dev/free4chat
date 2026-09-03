@@ -49,11 +49,25 @@ export interface CollaborationDurationSummary {
 export interface RoomAnalyticsEvent {
   name:
     | "AgentJoined"
+    | "RoomCreated"
     | "TargetedMessage"
     | "CollabRequested"
     | "CollabOutcome"
     | "CollaborationDuration"
   properties: Record<string, unknown>
+}
+
+export type RoomCreatedCreatorKind = "human" | "agent"
+export type RoomCreationSource = "browser" | "agent-runtime" | "mcp"
+
+/** Coarse analytics classification of the entry path that generated the
+ * Room. Pure telemetry — never authentication, authorization, or room
+ * behavior. A User-Agent can be imitated; that is acceptable for coarse
+ * analytics only. */
+export function classifyRoomCreationSource(
+  userAgent: string
+): RoomCreationSource {
+  return /free4chat-agent\//i.test(userAgent) ? "agent-runtime" : "mcp"
 }
 
 // Same 32-bit FNV-1a over UTF-16 code units as the browser's shared
@@ -122,6 +136,26 @@ export function buildAgentJoinedEvent(args: {
       roomHash: hashRoom(args.roomName),
       participantBucket: participantsBucket(args.participants.length),
       roomComposition: roomComposition(args.participants),
+    },
+  }
+}
+
+// #234: exactly one RoomCreated per canonical Room generation. creatorKind
+// is the kind of the participant whose registration materialized the Room;
+// creationSource is classified from the entry path (browser session,
+// official Runtime User-Agent, or other MCP caller). Coarse telemetry only —
+// it never affects authentication, authorization, or Room behavior.
+export function buildRoomCreatedEvent(args: {
+  roomName: string
+  creatorKind: RoomCreatedCreatorKind
+  creationSource: RoomCreationSource
+}): RoomAnalyticsEvent {
+  return {
+    name: "RoomCreated",
+    properties: {
+      roomHash: hashRoom(args.roomName),
+      creatorKind: args.creatorKind,
+      creationSource: args.creationSource,
     },
   }
 }
@@ -328,6 +362,7 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
   readonly string[]
 > = {
   AgentJoined: ["roomType", "roomHash", "participantBucket", "roomComposition"],
+  RoomCreated: ["roomHash", "creatorKind", "creationSource"],
   TargetedMessage: [
     "roomType",
     "roomHash",

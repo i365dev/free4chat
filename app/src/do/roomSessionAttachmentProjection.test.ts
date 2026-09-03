@@ -154,4 +154,53 @@ describe("standalone attachment state projection (#234)", () => {
     expect(attachments).toHaveLength(1)
     expect(attachments[0].senderKind).toBe("human")
   })
+
+  it("Agent attachment survives the sender leaving: still visible with senderKind=agent and readable (#234)", async () => {
+    const { rs, upload, resync, store } = makeRoom()
+    const response = await upload(
+      { id: "agent-pi", token: "tok-pi" },
+      "print('fib')"
+    )
+    expect(response.status).toBe(200)
+    const meta = (await response.json()) as { attachment: { id?: string } }
+
+    // The agent leaves; the participant record is deleted.
+    const left = await rs.fetch(
+      new Request("https://room/control", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "agent-leave",
+          participantId: "agent-pi",
+          token: "tok-pi",
+        }),
+      })
+    )
+    expect(left.status).toBe(200)
+    const room = store.get("room") as { participants: Record<string, unknown> }
+    expect(room.participants["agent-pi"]).toBeUndefined()
+
+    // A Human resync still projects the attachment — persisted senderKind,
+    // not the live roster.
+    const state = await resync()
+    const attachments = state.state.attachments ?? []
+    expect(attachments).toHaveLength(1)
+    expect(attachments[0].id).toBe(meta.attachment.id)
+    expect(attachments[0].senderKind).toBe("agent")
+
+    // Preview/read still works through the authenticated read path.
+    const read = await rs.fetch(
+      new Request("https://room/control", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "human-read-attachment",
+          participantId: "human-1",
+          token: "tok-human",
+          attachmentId: meta.attachment.id,
+        }),
+      })
+    )
+    expect(read.status).toBe(200)
+    const readBody = (await read.json()) as { data?: string }
+    expect(readBody.data).toBe(btoa("print('fib')"))
+  })
 })
