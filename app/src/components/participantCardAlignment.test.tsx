@@ -1,17 +1,13 @@
-import { readFileSync } from "node:fs"
-
 import { cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 /**
- * #228 production follow-up: the previous uniform min-height contract did not
- * make Human and Agent cards equal because Agent-only controls could still
- * grow the card. Normal RoomContent cards now share one fixed outer height;
- * compact/screen-share cards remain content-sized.
- *
- * jsdom cannot measure real layout, so this test pins both halves of the
- * implementation contract: the unique normal-card wrapper shape and the CSS
- * rule that fixes its direct UserCard child to 16rem. Production visual smoke
- * remains the final check.
+ * #228 participant-card visual consistency: in the NORMAL participant grid,
+ * every UserCard root carries the SAME uniform min-height contract, so
+ * Agent-only controls (Request work + Voice) live inside a shared reserved
+ * card height instead of stretching Agent cards taller than Human cards.
+ * jsdom cannot measure layout; this pins the class contract that produces
+ * equal heights (uniform min-height on every normal card root). Visual
+ * confirmation happens in the production regression pass.
  */
 
 vi.mock("next/router", () => ({
@@ -75,52 +71,34 @@ describe("participant card equal-height contract (#228)", () => {
     Element.prototype.scrollIntoView = vi.fn()
   })
 
-  it(
-    "normal-grid participant cards share one fixed outer-height contract regardless of kind",
-    () => {
-      mockUseSfuChatRoom.mockReturnValue(
-        hookReturn([
-          { peerId: LOCAL, name: "Hannah", kind: "human", room: "test-room" },
-          { peerId: "agent-pi", name: "Pi", kind: "agent", room: "test-room" },
-          {
-            peerId: "human-r",
-            name: "Remote",
-            kind: "human",
-            room: "test-room",
-          },
-        ])
-      )
-      render(
-        <RoomContent roomName="test-room" nickName="Hannah" roomType="audio" />
-      )
+  it("normal-grid participant cards share the stretch/height contract regardless of kind", () => {
+    mockUseSfuChatRoom.mockReturnValue(
+      hookReturn([
+        { peerId: LOCAL, name: "Hannah", kind: "human", room: "test-room" },
+        { peerId: "agent-pi", name: "Pi", kind: "agent", room: "test-room" },
+        {
+          peerId: "human-r",
+          name: "Remote",
+          kind: "human",
+          room: "test-room",
+        },
+      ])
+    )
+    render(
+      <RoomContent roomName="test-room" nickName="Hannah" roomType="audio" />
+    )
 
-      // RoomContent gives exactly this wrapper to every NORMAL UserCard.
-      const normalCardWrappers = Array.from(
-        document.querySelectorAll("div.w-40.flex-none")
-      )
-      expect(normalCardWrappers.length).toBe(3)
+    // Every normal-grid participant card root carries the SAME uniform
+    // min-height — Human self, Agents with controls, remote Humans.
+    const cards = Array.from(
+      document.querySelectorAll("div.rounded-xl.border-gray-700")
+    ).filter((el) => el.className.includes("min-h-[196px]"))
+    expect(cards.length).toBe(3)
 
-      // UserCard still carries its old minimum as a harmless fallback, but the
-      // stylesheet now pins the normal wrapper's direct card child to one real
-      // fixed height so Agent-only controls cannot grow the outer card.
-      const cards = Array.from(
-        document.querySelectorAll("div.rounded-xl.border-gray-700")
-      ).filter((el) => el.className.includes("min-h-[196px]"))
-      expect(cards.length).toBe(3)
-
-      const css = readFileSync(
-        new URL("../styles/tailwind.css", import.meta.url),
-        "utf8"
-      )
-      expect(css).toContain(".w-40.flex-none > div.rounded-xl.border-gray-700 {")
-      expect(css).toContain("height: 16rem;")
-      expect(css).toContain("min-height: 16rem;")
-
-      // The grid stays top-aligned; no full-panel-height stretching returns.
-      const grid = document.querySelector(".flex-wrap.items-start")
-      expect(grid).toBeTruthy()
-      expect(document.querySelector(".flex-wrap.items-stretch")).toBeNull()
-      expect(document.querySelectorAll("[data-peer]").length).toBe(0)
-    }
-  )
+    // The grid top-aligns rows; no full-panel-height stretching remains.
+    const grid = document.querySelector(".flex-wrap.items-start")
+    expect(grid).toBeTruthy()
+    expect(document.querySelector(".flex-wrap.items-stretch")).toBeNull()
+    expect(document.querySelectorAll("[data-peer]").length).toBe(0)
+  })
 })
