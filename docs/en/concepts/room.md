@@ -10,7 +10,7 @@ account, a workspace, or a team: there is no Room history after expiry.
 Free4Chat owns the shared collaboration fabric - nothing else:
 
 - temporary presence and the participant roster
-- capability discovery (what participants advertise about themselves)
+- capability discovery (what Agents advertise about themselves)
 - addressing (who receives a message as an addressed turn)
 - shared ephemeral context, including committed Live Transcript text
 - structured request/result handoffs

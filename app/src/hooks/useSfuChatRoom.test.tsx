@@ -404,9 +404,10 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     expect(
       socket.sent.map((message) => JSON.parse(message).type)
     ).not.toContain("message")
+    // #234: no structured-collab envelope is part of the transcript flow.
     expect(
       socket.sent.map((message) => JSON.parse(message).type)
-    ).not.toContain("collab-request")
+    ).not.toContain("collab-response")
     unmount()
   })
 
@@ -671,85 +672,6 @@ describe("useSfuChatRoom room attachments (#123)", () => {
     requiresImmediateRenegotiation: false,
     tracks: [{ mid: "7", trackName: "agent-voice" }],
   }
-
-  function makeLogFile() {
-    return new File(["line"], "app.log", { type: "" })
-  }
-
-  it("uploads .log text artifacts with the authoritative MIME from agentTextMime", async () => {
-    const { result, unmount } = await connect("room-attach-a")
-    const uploaded = await waitFor(() =>
-      result.current.uploadRoomAttachment(makeLogFile())
-    )
-    expect(uploaded.id).toBe("att-123")
-    const attachCall = fetchMock.mock.calls.find(([input]) =>
-      String(input).endsWith("/api/room/attachments")
-    )
-    const headers = attachCall![1].headers as Record<string, string>
-    expect(headers["Content-Type"]).toBe("text/plain")
-    unmount()
-  })
-
-  it("wires upload metadata id into sendCollabRequest attachmentIds over an open socket", async () => {
-    const { result, unmount } = await connect("room-attach-b")
-    await waitFor(() =>
-      expect(RecordingWebSocket.instances.length).toBeGreaterThan(0)
-    )
-    const uploaded = await waitFor(() =>
-      result.current.uploadRoomAttachment(makeLogFile())
-    )
-    const requestId = result.current.sendCollabRequest(
-      "agent-b",
-      "Check the logs",
-      [uploaded.id]
-    )
-    expect(requestId).not.toBe("")
-    const ws = RecordingWebSocket.instances.at(-1)!
-    const envelopes = ws.sent.map(
-      (raw) => JSON.parse(raw) as Record<string, unknown>
-    )
-    const envelope = envelopes.find((m) => m.type === "collab-request")
-    expect(envelope).toBeTruthy()
-    expect(envelope?.["attachmentIds"]).toEqual([uploaded.id])
-    expect(envelope?.["targetParticipantId"]).toBe("agent-b")
-    unmount()
-  })
-
-  it("sends nothing when the WebSocket is not open", async () => {
-    class ClosedSocket extends RecordingWebSocket {
-      readyState = 3
-    }
-    ;(global as unknown as { WebSocket: unknown }).WebSocket = ClosedSocket
-    RecordingWebSocket.instances.length = 0
-    const { result, unmount } = await connect("room-attach-c")
-    expect(result.current.sendCollabRequest("agent-b", "hi")).toBe("")
-    const ws = RecordingWebSocket.instances.at(-1)!
-    expect(ws.sent).toEqual([])
-    unmount()
-  })
-
-  it("surfaces upload failures from the shared response path", async () => {
-    const { result, unmount } = await connect("room-attach-d")
-    fetchMock.mockImplementation((input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString()
-      if (url.endsWith("/api/room/attachments")) {
-        return jsonResponse({ error: "unsupported_attachment_type" }, 415)
-      }
-      if (url.endsWith("/api/sfu/session")) {
-        return jsonResponse({
-          participantId: "participant-1",
-          participantToken: "participant-token",
-          sessionId: "session-1",
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        })
-      }
-      return jsonResponse({})
-    })
-    await expect(
-      result.current.uploadRoomAttachment(makeLogFile())
-    ).rejects.toThrow("unsupported_attachment_type")
-    unmount()
-  })
 
   it("includes the authoritative media kind in remote Agent subscriptions", async () => {
     fetchMock.mockImplementation((input: RequestInfo | URL) => {

@@ -13,12 +13,6 @@ interface UserCardProps extends UserInfo {
   onToggleScreenShare?: () => void
   screenshareAllowed?: boolean
   compact?: boolean
-  /** #113: present only for REMOTE connected Agents — enables the Human
-   * "Request work" entry point. Never rendered for Humans or self. */
-  onRequestWork?: () => void
-  /** #119: present ONLY for the LOCAL Human self — opens the capability
-   * editor. Never rendered on remote Humans or Agent cards. */
-  onEditCapabilities?: () => void
   /** Room-wide publish authorization for this eligible Agent only. */
   voiceAvailable?: boolean
   voiceEnabled?: boolean
@@ -127,15 +121,6 @@ export default function UserCard(user: UserCardProps) {
               {user.voiceEnabled ? "🔊" : "🔇"}
             </button>
           )}
-          {user.kind === "agent" && user.onRequestWork && !isSelf && (
-            <button
-              type="button"
-              onClick={user.onRequestWork}
-              className="mt-1 rounded-full bg-blue-600/80 px-2 py-0.5 text-[9px] text-white hover:bg-blue-500"
-            >
-              Request work
-            </button>
-          )}
           {(user.capabilities ?? []).slice(0, 2).map((capability) => (
             <span
               key={capability}
@@ -145,15 +130,6 @@ export default function UserCard(user: UserCardProps) {
               {capability}
             </span>
           ))}
-          {user.kind === "human" && isSelf && user.onEditCapabilities && (
-            <button
-              type="button"
-              onClick={user.onEditCapabilities}
-              className="mt-1 rounded-full border border-gray-500 px-1.5 py-0.5 text-[8px] text-gray-300 hover:bg-gray-800"
-            >
-              Capabilities
-            </button>
-          )}
           {isSelf && (
             <div className="mt-1 flex gap-1">
               <button
@@ -307,15 +283,6 @@ export default function UserCard(user: UserCardProps) {
               +{(user.capabilities?.length ?? 0) - 3}
             </span>
           )}
-          {user.kind === "agent" && user.onRequestWork && !isSelf && (
-            <button
-              type="button"
-              onClick={user.onRequestWork}
-              className="rounded-full bg-blue-600/80 px-2 py-0.5 text-[10px] text-white hover:bg-blue-500"
-            >
-              Request work
-            </button>
-          )}
           {user.kind === "agent" && (
             <button
               type="button"
@@ -338,15 +305,6 @@ export default function UserCard(user: UserCardProps) {
               className="min-h-7 rounded-full border border-gray-500 px-2 text-[10px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {user.voiceEnabled ? "🔊 Voice" : "🔇 Voice"}
-            </button>
-          )}
-          {isSelf && user.kind === "human" && user.onEditCapabilities && (
-            <button
-              type="button"
-              onClick={user.onEditCapabilities}
-              className="rounded-full border border-gray-500 px-2 py-0.5 text-[9px] text-gray-300 hover:bg-gray-800"
-            >
-              Capabilities
             </button>
           )}
         </div>

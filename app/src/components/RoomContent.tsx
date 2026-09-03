@@ -3,14 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/router"
 
 import { LOCAL_PEER_ID } from "@common/consts"
-import {
-  MAX_ADVERTISED_CAPABILITIES,
-  MAX_COLLAB_SUMMARY_LENGTH,
-  MAX_CAPABILITY_LENGTH,
-} from "@do/collab"
 
-import AgentWorkRequestComposer from "./AgentWorkRequestComposer"
-import HumanCapabilitiesEditor from "./HumanCapabilitiesEditor"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
@@ -131,15 +124,13 @@ export default function RoomContent({
     participants,
     getLocalRoomAuth,
     messages,
+    attachments,
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,
-    sendCollabRequest,
-    uploadRoomAttachment,
     sendCollabResponse,
     readRoomAttachment,
     sendCollabResult,
-    updateHumanCapabilities,
     muteSelf,
     toggleScreenShare,
     retryVerification,
@@ -164,18 +155,6 @@ export default function RoomContent({
   })
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
-
-  // #113: Human → Agent structured work request entry point. The callback is
-  // passed ONLY for remote connected Agents; Humans and self never get it.
-  const [workRequestTarget, setWorkRequestTarget] = useState<UserInfo | null>(
-    null
-  )
-  // #119: local-Human capability editor target (self only).
-  const [capabilitiesEditorOpen, setCapabilitiesEditorOpen] = useState(false)
-  const requestWorkFor = (p: UserInfo) =>
-    setWorkRequestTarget(
-      p.kind === "agent" && p.peerId !== LOCAL_PEER_ID ? p : null
-    )
 
   const toggleAgentVoice = (participant: UserInfo) => {
     if (!participant.voiceAvailable) return
@@ -710,7 +689,6 @@ export default function RoomContent({
                         onMuteSelf={muteSelf}
                         onToggleScreenShare={wrappedToggleScreenShare}
                         screenshareAllowed={screenshareAllowed}
-                        onRequestWork={() => requestWorkFor(p)}
                         voiceAvailable={
                           p.voiceAvailable && agentVoiceMediaAvailable
                         }
@@ -741,18 +719,12 @@ export default function RoomContent({
                       screenShareEnabled={p.screenShareEnabled}
                       onMuteSelf={muteSelf}
                       onToggleScreenShare={wrappedToggleScreenShare}
-                      onRequestWork={() => requestWorkFor(p)}
                       voiceAvailable={
                         p.voiceAvailable && agentVoiceMediaAvailable
                       }
                       voiceEnabled={p.voiceEnabled}
                       onToggleAgentVoice={() => toggleAgentVoice(p)}
                       screenshareAllowed={screenshareAllowed}
-                      onEditCapabilities={
-                        p.kind === "human" && p.peerId === LOCAL_PEER_ID
-                          ? () => setCapabilitiesEditorOpen(true)
-                          : undefined
-                      }
                       className="w-40 flex-none"
                     />
                     {p.peerId === LOCAL_PEER_ID && (
@@ -799,6 +771,7 @@ export default function RoomContent({
             room={roomName}
             nickName={nickName}
             messages={messages}
+            attachments={attachments}
             participants={participants}
             pendingFiles={pendingFiles}
             onSendText={wrappedSendText}
@@ -815,50 +788,6 @@ export default function RoomContent({
           />
         </div>
       </div>
-
-      {workRequestTarget && (
-        <AgentWorkRequestComposer
-          agentName={workRequestTarget.name}
-          capabilities={workRequestTarget.capabilities}
-          maxLength={MAX_COLLAB_SUMMARY_LENGTH}
-          onCancel={() => setWorkRequestTarget(null)}
-          onSubmit={async (summary, files) => {
-            // Sequential upload of each artifact through the existing
-            // authenticated Room attachment endpoint.
-            const attachmentIds: string[] = []
-            for (const file of files) {
-              const meta = await uploadRoomAttachment(file)
-              attachmentIds.push(meta.id)
-            }
-            // sendCollabRequest returns "" when the WS is closed or local
-            // validation fails; propagate that so the composer stays open.
-            const requestId = sendCollabRequest(
-              workRequestTarget.peerId,
-              summary,
-              attachmentIds.length > 0 ? attachmentIds : undefined
-            )
-            if (!requestId) return false
-            setWorkRequestTarget(null)
-            return true
-          }}
-        />
-      )}
-
-      {capabilitiesEditorOpen && (
-        <HumanCapabilitiesEditor
-          initialCapabilities={(
-            participants.find((p) => p.peerId === LOCAL_PEER_ID)
-              ?.capabilities ?? []
-          ).filter((token): token is string => typeof token === "string")}
-          maxLength={MAX_CAPABILITY_LENGTH}
-          maxTokens={MAX_ADVERTISED_CAPABILITIES}
-          onCancel={() => setCapabilitiesEditorOpen(false)}
-          onSave={(capabilities) => {
-            updateHumanCapabilities(capabilities)
-            setCapabilitiesEditorOpen(false)
-          }}
-        />
-      )}
     </main>
   )
 }

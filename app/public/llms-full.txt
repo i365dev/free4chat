@@ -226,7 +226,7 @@ account, a workspace, or a team: there is no Room history after expiry.
 Free4Chat owns the shared collaboration fabric - nothing else:
 
 - temporary presence and the participant roster
-- capability discovery (what participants advertise about themselves)
+- capability discovery (what Agents advertise about themselves)
 - addressing (who receives a message as an addressed turn)
 - shared ephemeral context, including committed Live Transcript text
 - structured request/result handoffs
@@ -1255,8 +1255,10 @@ The sixteen tools are:
   cannot: the final Room id does not exist yet, so call `update_runtime_host`
   after creation once the Room-scoped id can be derived.
 - `send_collab_request(participantHandle, targetParticipantId, summary, requestId?, details?, attachmentIds?)`
-  - send a structured work request. The target decides whether to accept or
-  decline. If `requestId` is omitted, Free4Chat generates and returns one.
+  - send a correlated collaboration request (requestId; the target may
+  accept/decline and later complete/fail, and `requestId` correlation is
+  preserved end-to-end). The target decides whether to accept or decline.
+  If `requestId` is omitted, Free4Chat generates and returns one.
 - `send_collab_response(participantHandle, requestId, decision, summary?)` -
   return `accepted` or `declined` for a request addressed to this participant.
   Only the target may answer the request.

@@ -112,37 +112,6 @@ export function sanitizeStoredAgentCapabilities(
   }
 }
 
-/** #119 storage-hygiene pass for Human self-advertised lists persisted on
- * the participant record: malformed historic state is repaired/dropped
- * (never rejected) so Room loading cannot wedge. Same token grammar and
- * bounds as the Agent capability contract (#106). */
-export function sanitizeStoredAdvertisedList(value: unknown): {
-  advertised?: string[]
-  changed: boolean
-} {
-  if (!Array.isArray(value))
-    return { advertised: undefined, changed: value !== undefined }
-  const cleaned = value.filter(
-    (token) =>
-      typeof token === "string" &&
-      token.length > 0 &&
-      token.length <= MAX_CAPABILITY_LENGTH &&
-      CAPABILITY_PATTERN.test(token)
-  )
-  const deduped = [...new Set(cleaned)].slice(0, MAX_ADVERTISED_CAPABILITIES)
-  // An empty RESULT means "advertise nothing": represent as omitted so the
-  // participant field disappears instead of lingering as [].
-  if (
-    deduped.length === value.length &&
-    deduped.every((token, index) => token === value[index])
-  )
-    return { advertised: value as string[], changed: false }
-  return {
-    advertised: deduped.length > 0 ? deduped : undefined,
-    changed: true,
-  }
-}
-
 export interface ParticipantRosterEntry {
   id: string
   name: string
@@ -155,19 +124,19 @@ export interface ParticipantRosterEntry {
 
 /** Compact connected-participant/capability projection for Harness context.
  * Answers "who here can potentially do X" without dumping full room state:
- * no tokens, no media session identifiers, no history. */
+ * no tokens, no media session identifiers, no history. Only AGENTS carry
+ * advertised capability tokens (#234): Humans bring judgment and context,
+ * not a token list, so an Agent that needs a Human simply targets them. */
 export function rosterProjection(
   participants: Record<string, RoomParticipant>
 ): ParticipantRosterEntry[] {
   return Object.values(participants)
     .filter((participant) => participant.connected)
     .map((participant) => {
-      // #119: one normalized peer-discovery shape across kinds — Humans
-      // advertise via the top-level field, Agents via capabilities.advertised.
       const advertised =
-        participant.kind === "human"
-          ? participant.advertised
-          : participant.capabilities?.advertised
+        participant.kind === "agent"
+          ? participant.capabilities?.advertised
+          : undefined
       return {
         id: participant.id,
         name: participant.name,

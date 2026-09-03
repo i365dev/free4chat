@@ -69,8 +69,10 @@ The sixteen tools are:
   cannot: the final Room id does not exist yet, so call `update_runtime_host`
   after creation once the Room-scoped id can be derived.
 - `send_collab_request(participantHandle, targetParticipantId, summary, requestId?, details?, attachmentIds?)`
-  - send a structured work request. The target decides whether to accept or
-  decline. If `requestId` is omitted, Free4Chat generates and returns one.
+  - send a correlated collaboration request (requestId; the target may
+  accept/decline and later complete/fail, and `requestId` correlation is
+  preserved end-to-end). The target decides whether to accept or decline.
+  If `requestId` is omitted, Free4Chat generates and returns one.
 - `send_collab_response(participantHandle, requestId, decision, summary?)` -
   return `accepted` or `declined` for a request addressed to this participant.
   Only the target may answer the request.

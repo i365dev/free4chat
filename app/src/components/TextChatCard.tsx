@@ -18,7 +18,10 @@ import {
 import HumanCollabResultComposer from "./HumanCollabResultComposer"
 import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
-import type { RoomAttachmentRead } from "../room/types"
+import type {
+  RoomAttachmentProjection,
+  RoomAttachmentRead,
+} from "../room/types"
 
 interface PendingFile {
   id: string
@@ -32,6 +35,11 @@ interface TextChatCardProps {
   room: string
   nickName: string
   messages: Message[]
+  /** #234: bounded standalone Room attachment projections (senderKind
+   * resolved server-side). Agent-authored artifacts render as standalone
+   * timeline items; Human/unknown attachments stay out so the existing
+   * DataChannel file bubbles are never duplicated. */
+  attachments?: RoomAttachmentProjection[]
   participants: UserInfo[]
   pendingFiles?: PendingFile[]
   onSendText: (text: string, targets?: string[]) => void
@@ -250,6 +258,51 @@ function messageRecipientCues(
       isName: false,
     })
   return cues
+}
+
+// #234: canonical timeline merge — Room messages and standalone
+// Agent-authored attachment metadata interleave by the Room's shared
+// sequence counter (attachments consume message-sequence slots at upload).
+// Ephemeral/local messages carry no sequence and stay in their relative
+// order at the end. Human/unknown attachments are deliberately excluded:
+// Human browser files already render through the DataChannel file bubble
+// (their Agent-consumption Room copies must not appear twice).
+interface TimelineItem {
+  type: "message" | "attachment"
+  seq: number
+  message?: Message
+  attachment?: RoomAttachmentProjection
+}
+
+export function buildRoomTimeline(
+  messages: Message[],
+  attachments: RoomAttachmentProjection[] = []
+): TimelineItem[] {
+  const items: TimelineItem[] = []
+  for (const message of messages) {
+    items.push({
+      type: "message",
+      seq: message.sequence ?? Number.POSITIVE_INFINITY,
+      message,
+    })
+  }
+  // #234: render ONLY Agent-authored attachments standalone. Human/unknown
+  // stay out: Human browser files already render through the DataChannel
+  // file bubble (their Agent-consumption Room copies must not appear twice),
+  // and an unknown sender (departed participant) is never mislabeled.
+  for (const attachment of attachments) {
+    if (attachment.senderKind !== "agent") continue
+    items.push({ type: "attachment", seq: attachment.sequence, attachment })
+  }
+  // Stable sort: canonical sequence order; sequence-less ephemeral messages
+  // keep their insertion order at the end.
+  items.sort((a, b) => a.seq - b.seq)
+  return items
+}
+
+export function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  return `${(bytes / 1024).toFixed(1)} KB`
 }
 
 function getOrCreateWhiteboardUrl(room: string): string {
@@ -617,6 +670,37 @@ function ActionCard({
   return null
 }
 
+// #234: standalone Agent-authored Room attachment in the Human timeline.
+// Metadata only — bytes are fetched on demand through the existing
+// authenticated attachment read path into the shared safe preview viewer.
+function AgentAttachmentCard({
+  attachment,
+  onPreview,
+}: {
+  attachment: RoomAttachmentProjection
+  onPreview: (attachmentId: string) => void
+}) {
+  const isImage = attachment.mimeType.startsWith("image/")
+  return (
+    <div className="ml-2 w-fit max-w-[240px] rounded-2xl rounded-tl-md border border-white/10 bg-gray-800/80 px-4 py-2.5">
+      <p className="flex w-full items-center gap-1.5 text-xs text-white/90">
+        <span className="text-base leading-none">📎</span>
+        <span className="truncate font-medium">{attachment.fileName}</span>
+      </p>
+      <p className="mt-0.5 text-[11px] text-white/50">
+        {attachment.mimeType} · {formatAttachmentSize(attachment.size)}
+      </p>
+      <button
+        type="button"
+        onClick={() => onPreview(attachment.id)}
+        className="mt-1.5 rounded-md bg-blue-600/30 px-2 py-0.5 text-[11px] text-blue-200 hover:bg-blue-600/50"
+      >
+        {isImage ? "Preview image" : "Preview"}
+      </button>
+    </div>
+  )
+}
+
 function FileMessageBubble({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
   const isImage = msg.type === "image"
   const containerClass = isSelf
@@ -788,6 +872,7 @@ export default function TextChatCard({
   room,
   nickName,
   messages,
+  attachments = [],
   participants,
   pendingFiles = [],
   onSendText,
@@ -1069,12 +1154,39 @@ export default function TextChatCard({
     `}</style>
       <div className="flex h-full flex-col overflow-hidden">
         <div className="scrollbar-thin flex-1 overflow-y-auto p-4 text-sm">
-          {messages.length === 0 && (
+          {messages.length === 0 && attachments.length === 0 && (
             <p className="mt-4 text-center text-xs text-gray-500">
               No messages yet
             </p>
           )}
-          {messages.map((p, i) => {
+          {buildRoomTimeline(messages, attachments).map((item, i) => {
+            if (item.type !== "message") {
+              const attachment = item.attachment!
+              return (
+                <div className="mb-4 flex w-full items-end" key={attachment.id}>
+                  <div className="mr-2 flex-shrink-0">
+                    <Avatar
+                      size={28}
+                      variant="beam"
+                      name={attachment.senderName}
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="mb-1 ml-1 text-xs text-gray-400">
+                      {attachment.senderName}
+                      <span className="ml-1 text-[10px] text-blue-300">
+                        🤖 Agent
+                      </span>
+                    </p>
+                    <AgentAttachmentCard
+                      attachment={attachment}
+                      onPreview={(attachmentId) => setArtifactId(attachmentId)}
+                    />
+                  </div>
+                </div>
+              )
+            }
+            const p = item.message!
             if (p.type === "action" && p.actionType === "reaction") return null
             const isSelf = p.peerId === LOCAL_PEER_ID
             const recipientCues = messageRecipientCues(p, participants)

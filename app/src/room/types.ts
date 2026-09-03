@@ -131,10 +131,6 @@ export interface RoomParticipant {
   connectionNonce?: string
   token: string
   capabilities?: AgentCapabilities
-  // #119: Human self-advertised capability tokens (discovery metadata only —
-  // never authorization). Top-level field for Humans; Agents keep the nested
-  // `capabilities.advertised` representation for backward compatibility.
-  advertised?: string[]
   // #111 Observable Agent Workspace v0: metadata for this Agent's single
   // latest explicitly-published workspace snapshot. Metadata only — bytes
   // live in bounded DO chunk storage under surface:* keys and are readable
@@ -221,6 +217,28 @@ export interface RoomAttachment {
   sequence: number
 }
 
+// #234: browser-safe standalone Room attachment projection. Bounded metadata
+// only — bytes stay in DO chunk storage and are read exclusively through the
+// authenticated attachment read path (never a public URL). senderKind is
+// resolved server-side from the sender's participant record at projection
+// time; the browser renders Agent-authored artifacts standalone in the
+// timeline while Human browser files keep their existing DataChannel bubble
+// (their Agent-consumption copies are never duplicated as separate items).
+export interface RoomAttachmentProjection {
+  id: string
+  senderId: string
+  senderName: string
+  // Resolved server-side from the sender's participant record at projection
+  // time; "unknown" means the sender has left the Room (bounded artifact
+  // retained for current members, never rendered as standalone).
+  senderKind: ParticipantKind | "unknown"
+  fileName: string
+  mimeType: AgentAttachmentMimeType
+  size: number
+  sequence: number
+  createdAt: number
+}
+
 // Room-scoped Meeting Notes media-listening grant (#82). Visible to every
 // participant via room state — never a capability secret. `active: false`
 // is the only state that carries no `agentParticipantId`/`startedAt`;
@@ -290,6 +308,11 @@ export interface RoomState {
   // The corresponding claim/provider-handle material is server-private.
   runtimeHostProviders?: Record<string, RuntimeHostProviderPublicAssociation>
   messages: RoomMessage[]
+  // #234: bounded standalone Room attachment metadata for the Human
+  // timeline, with server-resolved sender kind. Optional in the wire
+  // contract so older browser clients that cached the prior state shape
+  // keep decoding RoomState safely.
+  attachments?: RoomAttachmentProjection[]
   // Present on every current RoomSession projection. Optional in the wire
   // contract so older browser clients that cached the prior state shape keep
   // decoding RoomState safely.

@@ -49,6 +49,7 @@ export interface CollaborationDurationSummary {
 export interface RoomAnalyticsEvent {
   name:
     | "AgentJoined"
+    | "TargetedMessage"
     | "CollabRequested"
     | "CollabOutcome"
     | "CollaborationDuration"
@@ -201,6 +202,49 @@ export function buildCollaborationDurationEvent(args: {
   }
 }
 
+// #234: natural-collaboration topology. One canonical accepted TEXT message
+// with explicit Room targets emits exactly one TargetedMessage (never one
+// per recipient); unaddressed text and structured collab action envelopes
+// emit none (CollabRequested/Outcome stay authoritative for the correlated
+// lifecycle). The Room append already validated every target as a CURRENT
+// participant ID (normalizeChatTargets/agentTextTargets keep only present
+// Agent participants), so kind resolution below is exact today; if a target
+// ever resolves unknown (possible only if the invariant broadens), it is
+// treated conservatively as agent — the protocol's current target universe —
+// rather than inventing a new kind.
+export function buildTargetedMessageEvent(args: {
+  roomName: string
+  participants: RoomParticipant[]
+  senderParticipantId: string
+  targetParticipantIds: string[]
+}): RoomAnalyticsEvent {
+  const kinds = new Set(
+    args.targetParticipantIds.map((id) =>
+      resolveParticipantKind(args.participants, id)
+    )
+  )
+  const targetKind: "human" | "agent" | "mixed" =
+    kinds.has("human") && kinds.has("agent")
+      ? "mixed"
+      : kinds.has("human")
+      ? "human"
+      : "agent"
+  return {
+    name: "TargetedMessage",
+    properties: {
+      roomType: "unknown",
+      roomHash: hashRoom(args.roomName),
+      senderKind: resolveParticipantKind(
+        args.participants,
+        args.senderParticipantId
+      ),
+      targetKind,
+      targetCountBucket: participantsBucket(args.targetParticipantIds.length),
+      roomComposition: roomComposition(args.participants),
+    },
+  }
+}
+
 /**
  * Advance the OPEN 2+-participant collaboration interval (#228 extension).
  * Count is the number of CURRENT canonical participants in the Room record.
@@ -284,6 +328,14 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
   readonly string[]
 > = {
   AgentJoined: ["roomType", "roomHash", "participantBucket", "roomComposition"],
+  TargetedMessage: [
+    "roomType",
+    "roomHash",
+    "senderKind",
+    "targetKind",
+    "targetCountBucket",
+    "roomComposition",
+  ],
   CollaborationDuration: [
     "durationMs",
     "roomType",

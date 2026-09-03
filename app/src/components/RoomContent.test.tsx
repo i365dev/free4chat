@@ -49,7 +49,6 @@ const baseHookReturn = {
   sendFileMessage: vi.fn(),
   sendActionMessage: vi.fn(),
   getLocalRoomAuth: vi.fn(() => null),
-  sendCollabRequest: vi.fn(() => ""),
   sendCollabResponse: vi.fn(() => true),
   localParticipantId: "human-local",
   muteSelf: vi.fn(),

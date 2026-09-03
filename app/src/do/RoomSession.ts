@@ -6,7 +6,6 @@ import {
   COLLAB_ACTION_TYPE,
   MAX_COLLAB_SUMMARY_LENGTH,
   rosterProjection,
-  sanitizeStoredAdvertisedList,
   sanitizeStoredAgentCapabilities,
   validateAdvertisedCapabilities,
   validateCollabEvent,
@@ -60,7 +59,9 @@ import {
   type RoomAnalyticsEvent,
   transitionCollaborationActivity,
   normalizeStoredCollaborationActivity,
+  resolveParticipantKind,
   buildCollaborationDurationEvent,
+  buildTargetedMessageEvent,
 } from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
@@ -106,6 +107,7 @@ import type {
   AgentEvent,
   RoomCapabilities,
   RoomAttachment,
+  RoomAttachmentProjection,
   MeetingNotesState,
   PendingMediaCleanup,
   RoomMediaTrack,
@@ -523,16 +525,6 @@ type ClientMessage =
       actionPayload?: Record<string, string>
     }
   | {
-      // #113: Human-originated structured work request. Sender identity is
-      // derived from the authenticated WebSocket attachment, never the
-      // payload. Same CollabEvent/CollabRegistry path as Agent→Agent.
-      type: "collab-request"
-      requestId: string
-      targetParticipantId: string
-      summary: string
-      attachmentIds?: string[]
-    }
-  | {
       // #115: Human accepted/declined for an Agent-originated request whose
       // target was THIS Human. Responder identity/routing derive from the
       // authenticated attachment + CollabRegistry correlation.
@@ -550,13 +542,6 @@ type ClientMessage =
       requestId: string
       status: "completed" | "failed"
       summary: string
-    }
-  | {
-      // #119: Human self-advertised capability list replacement (discovery
-      // metadata only). Identity from the authenticated attachment; payload
-      // carries ONLY the capability tokens.
-      type: "human-update-capabilities"
-      capabilities: string[]
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
@@ -722,25 +707,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         delete participant.fileChannelReady
         delete participant.tracks
         changed = true
-      }
-      // #119 storage hygiene: malformed persisted Human advertised lists are
-      // repaired/dropped (never rejected) so room loading cannot wedge.
-      if (participant.kind === "human") {
-        const sanitizedAdvertised = sanitizeStoredAdvertisedList(
-          participant.advertised
-        )
-        if (sanitizedAdvertised.changed) {
-          if (sanitizedAdvertised.advertised)
-            participant.advertised = sanitizedAdvertised.advertised
-          else delete participant.advertised
-          changed = true
-        } else if (
-          sanitizedAdvertised.advertised &&
-          sanitizedAdvertised.advertised.length === 0
-        ) {
-          delete participant.advertised
-          changed = true
-        }
       }
       participants[id] = participant
     }
@@ -1066,6 +1032,30 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
   }
 
+  // #234: bounded standalone-attachment metadata projection for the Human
+  // timeline. Bytes stay in DO chunk storage; only safe metadata crosses
+  // RoomState. senderKind is resolved server-side from the CURRENT sender
+  // participant record at projection time (a departed sender resolves
+  // unknown and is never presented as a standalone Agent artifact, so a
+  // lingering copy of a Human browser file can never be mislabeled or
+  // double-rendered).
+  private projectRoomAttachments(room: RoomRecord): RoomAttachmentProjection[] {
+    return room.attachments.map((attachment) => ({
+      id: attachment.id,
+      senderId: attachment.senderId,
+      senderName: attachment.senderName,
+      senderKind: resolveParticipantKind(
+        Object.values(room.participants),
+        attachment.senderId
+      ),
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      sequence: attachment.sequence,
+      createdAt: attachment.createdAt,
+    }))
+  }
+
   private stateFor(room: RoomRecord): RoomState {
     return {
       createdAt: room.createdAt,
@@ -1100,6 +1090,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room.runtimeHostProviders
       ),
       messages: room.messages,
+      // #234: standalone Room attachment metadata (senderKind-resolved) so
+      // the Human Browser can render Agent-authored artifacts directly.
+      attachments: this.projectRoomAttachments(room),
       liveTranscript: room.liveTranscript,
       liveTranscriptSegments: room.liveTranscriptSegments,
       meetingNotes: room.meetingNotes,
@@ -1706,6 +1699,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  // #234: one TargetedMessage per canonical accepted TEXT message that
+  // carries explicit Room targets. Structured collab action messages never
+  // reach this helper (CollabRequested/Outcome remain authoritative for the
+  // correlated lifecycle). The append already validated every target as a
+  // current participant ID, so kind resolution here is exact; an unresolved
+  // target would conservatively fall back to the protocol's agent-only
+  // invariant rather than inventing a kind.
+  private trackTargetedMessage(
+    room: RoomRecord,
+    message: Pick<RoomMessage, "peerId" | "targets">
+  ): void {
+    if (!message.targets || message.targets.length === 0) return
+    this.trackRoomAnalytics([
+      buildTargetedMessageEvent({
+        roomName: this.roomAnalyticsName(),
+        participants: Object.values(room.participants),
+        senderParticipantId: message.peerId,
+        targetParticipantIds: message.targets,
+      }),
+    ])
+  }
+
   // #228: advance the OPEN 2+-participant collaboration interval after any
   // participant add/remove mutation. Pure Room-state update: returns the
   // pending CollaborationDuration event (interval just closed) for the
@@ -2203,6 +2218,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         createdAt: Date.now(),
       })
       await this.saveRoom(room)
+      // #234: one server-authoritative TargetedMessage per canonical
+      // targeted text message (targets are already validated current
+      // participant IDs at this point; unaddressed text emits nothing).
+      this.trackTargetedMessage(room, roomMessage)
       await this.scheduleNextAlarm(room)
       await this.broadcast({ type: "message", message: roomMessage })
       this.resolveAgentWaiters(room)
@@ -3842,43 +3861,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
 
-    // #113: Human-originated structured work request. The sender is the
-    // authenticated WebSocket attachment — payload never carries identity.
-    if (message.type === "collab-request") {
-      const reject = (error: string) =>
-        socket.send(JSON.stringify({ type: "error", error }))
-      if (participant.kind !== "human") {
-        reject("collab_sender_not_human")
-        return
-      }
-      const target = room.participants[message.targetParticipantId] ?? null
-      if (!target || !target.connected) {
-        reject("collab_target_not_in_room")
-        return
-      }
-      if (target.kind !== "agent") {
-        reject("collab_target_not_agent")
-        return
-      }
-      const ingest = await this.ingestCollabWorkRequest(room, participant, {
-        requestId: message.requestId,
-        targetParticipantId: message.targetParticipantId,
-        summary: message.summary,
-        attachmentIds: message.attachmentIds,
-      })
-      if (ingest.status === "rejected") {
-        reject(ingest.error)
-        return
-      }
-      if (ingest.status === "duplicate") {
-        reject("collab_duplicate_request_id")
-        return
-      }
-      // The canonical RoomMessage was already broadcast; the Human UI learns
-      // of it through the ordinary message path (no optimistic echo here).
-      return
-    }
-
     // #115: Human accepted/declined for an Agent-originated request. The
     // responder is the authenticated Human attachment; routing comes from
     // CollabRegistry correlation. v0 permits ONLY accepted/declined —
@@ -3905,29 +3887,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       // Canonical RoomMessage already broadcast (duplicate retries append
       // nothing and wake nothing); the UI learns state via the ordinary path.
-      return
-    }
-
-    // #119: Human capability advertisement is presence/discovery state.
-    // Fail closed on invalid input (no mutation/persist/broadcast); valid
-    // updates replace the entire advertised list atomically and NEVER touch
-    // messages, sequence numbers, collab state, or Agent waiters.
-    if (message.type === "human-update-capabilities") {
-      if (participant.kind !== "human") {
-        socket.send(JSON.stringify({ type: "error", error: "human_only" }))
-        return
-      }
-      const validated = validateAdvertisedCapabilities(message.capabilities)
-      if (validated.ok === false) {
-        socket.send(JSON.stringify({ type: "error", error: validated.error }))
-        return
-      }
-      participant.lastSeenAt = Date.now()
-      if (validated.capabilities.length === 0) delete participant.advertised
-      else participant.advertised = validated.capabilities
-      await this.saveRoom(room)
-      // Presence/discovery broadcast only — deliberately no waiter wake.
-      await this.broadcastState(room)
       return
     }
 
@@ -3985,6 +3944,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         createdAt: Date.now(),
       })
       await this.saveRoom(room)
+      // #234: one server-authoritative TargetedMessage per canonical
+      // targeted text message; Human browser targeting only ever resolves
+      // to current Agents (see normalizeChatTargets).
+      this.trackTargetedMessage(room, roomMessage)
       await this.broadcast({ type: "message", message: roomMessage })
       this.resolveAgentWaiters(room)
       return
@@ -4225,6 +4188,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
+      // #234: live standalone-attachment projection so connected Human
+      // browsers render the Agent artifact immediately (late joiners get
+      // the full list from stateFor).
+      const projected = this.projectRoomAttachments(room).find(
+        (entry) => entry.id === attachment.id
+      )
+      if (projected)
+        await this.broadcast({ type: "attachment", attachment: projected })
       for (const oldAttachment of evicted)
         await this.deleteAttachmentChunks(oldAttachment)
       await this.scheduleNextAlarm(room)
