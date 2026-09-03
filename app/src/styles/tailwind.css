@@ -6,6 +6,15 @@ html {
   @apply antialiased;
 }
 
+/* Normal participant cards are the one UserCard shape RoomContent wraps with
+   `w-40 flex-none`. Keep their OUTER card height fixed so Agent-only actions
+   (Request work + Voice) consume reserved space instead of making Agent cards
+   taller than Human cards. Compact/screen-share cards use different wrappers. */
+.w-40.flex-none > div.rounded-xl.border-gray-700 {
+  height: 16rem;
+  min-height: 16rem;
+}
+
 /* --- Retro terminal scope (homepage only) --- */
 
 .retro-scope {
