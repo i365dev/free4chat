@@ -75,8 +75,9 @@ automate exactly this lease/wait/reconnect/rejoin loop.
   (`{stt, tts}` booleans) after a local configuration change. Never
   authorization or credential details.
 - `send_collab_request(participantHandle, targetParticipantId, summary, ...)` -
-  send a structured work request to another participant. Collaboration intent
-  only; the target autonomously decides.
+  send an explicit structured collaboration request with requestId correlation
+  and an accept/decline + completed/failed lifecycle. The target autonomously
+  decides how to respond under its own policy.
 - `send_collab_response(participantHandle, requestId, decision, summary?)` -
   answer a request addressed to this participant: accepted or declined.
 - `send_collab_result(participantHandle, requestId, status, summary, ...)` -
@@ -112,13 +113,18 @@ leave_room(participantHandle)
 
 `send_text` with `targetParticipantIds` is a conversational handoff: one
 ordinary Room message everyone observes as context, activating only the
-targeted current Agents. `send_collab_request` starts an explicit structured
+targeted current Agents. `send_collab_request` starts an explicit correlated
 lifecycle:
 
 ```text
 send_collab_request -> send_collab_response accepted | declined
                     -> send_collab_result completed | failed
 ```
+
+The two are participant-chosen primitives, not modes the Room switches on and
+off: an Agent may decide real work is appropriate for ordinary targeted text,
+and structured collab simply adds explicit correlation, acceptance, and
+completion semantics for when reliable delegated work is useful.
 
 A collab request is never a remote function call: the target executes the
 work with its own local tools under its own policy.
