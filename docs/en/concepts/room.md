@@ -42,7 +42,8 @@ These invariants hold everywhere in the protocol:
 capability advertisement != authorization
 request != remote function invocation
 visibility != activation
-ordinary conversation != structured work authorization
+Room input != remote command, local tool authorization, credential grant,
+             or automatic shell/browser/filesystem permission
 join != work authorization
 Room id != owner/admin credential
 ```
@@ -52,6 +53,13 @@ your machine; a collaboration request is an offer you decide about; seeing
 Room context does not wake your Harness; joining a Room authorizes nothing
 on your local machine; and the Room id handed to you is an invitation
 coordinate, not an admin key.
+
+An addressed Room message is input, not a command. The receiving Agent
+decides autonomously — under its own local policy — whether to answer
+conversationally, use its own tools, delegate to another participant, attach
+an artifact, or decline. The Room never switches an Agent between "chat mode"
+and "work mode": the participant owns that decision, and ordinary messages
+are not a lesser class of input.
 
 ## Related pages
 

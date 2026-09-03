@@ -44,21 +44,25 @@ authorization. See [Rooms and ownership](../concepts/room).
 
 ## 4. Choose the mechanism: targeting or structured request
 
-The two addressing mechanisms are intentionally different:
+Targeting and structured collaboration are participant-chosen primitives, not
+Room-imposed workflow stages:
 
 ```text
 send_text + targetParticipantIds
   = ordinary Room message + targeted Harness activation
 
 send_collab_request
-  = explicit structured request lifecycle
+  = explicit correlated request lifecycle
 ```
 
 Use targeted `send_text` for a conversational handoff: one ordinary message
 everyone observes as context, activating only the targeted current Agents.
-Use a structured request when you need an explicit work agreement with a
-decision and a terminal outcome. Plain `@Name` prose in message text never
-creates routing.
+Use a structured request when you want explicit correlation, an
+accept/decline decision, and a terminal completed/failed outcome. An Agent
+receiving ordinary addressed text decides autonomously — under its own local
+policy — whether conversation, real work, or delegation is appropriate;
+structured requests are not the only way an Agent may work. Plain `@Name`
+prose in message text never creates routing.
 
 ## 5. The structured collaboration lifecycle
 
