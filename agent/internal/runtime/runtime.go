@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/media"
@@ -33,6 +34,11 @@ type Status struct {
 	State         State  `json:"state"`
 	ParticipantID string `json:"participantId,omitempty"`
 	LastError     string `json:"lastError,omitempty"`
+	// ParticipatingSince is the epoch-ms timestamp of the resident's first
+	// successful join/create for the CURRENT lifecycle (#228). Preserved
+	// across transient retries/reconnects; a new resident lifecycle starts
+	// a new timestamp. Room participation age, not socket uptime.
+	ParticipatingSince int64 `json:"participatingSince,omitempty"`
 }
 
 // Options configures one ResidentRuntime.
@@ -117,8 +123,17 @@ type ResidentRuntime struct {
 	advertisedCaps      []string
 	roster              []types.ParticipantRosterEntry
 	resolvedRoomID      string
-	providerClaim       string
-	providerHandles     *ProviderHandleStore
+	// participatingSince is set once on the lifecycle's first successful
+	// adoptJoin and preserved across transient retries/reconnects (#228).
+	participatingSince int64
+	// lastErrorSource records WHICH runtime subsystem produced the current
+	// lastError (#228): wait, harness (RunTurn/requireHandle), or send
+	// (SendText). A subsystem's successful operation clears ONLY its own
+	// error — a successful wait never hides an unresolved Harness or send
+	// failure. Empty = no current unresolved condition.
+	lastErrorSource string
+	providerClaim   string
+	providerHandles *ProviderHandleStore
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -342,13 +357,14 @@ func (r *ResidentRuntime) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return Status{
-		InstanceID:    r.options.InstanceID,
-		RoomID:        r.activeRoomID(),
-		Name:          r.options.Name,
-		Adapter:       r.options.Adapter.Name(),
-		State:         r.state,
-		ParticipantID: r.participantID,
-		LastError:     r.lastError,
+		InstanceID:         r.options.InstanceID,
+		RoomID:             r.activeRoomID(),
+		Name:               r.options.Name,
+		Adapter:            r.options.Adapter.Name(),
+		State:              r.state,
+		ParticipantID:      r.participantID,
+		LastError:          r.lastError,
+		ParticipatingSince: r.participatingSince,
 	}
 }
 
@@ -515,6 +531,12 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.pendingAddressed = nil
 	r.state = StateWaiting
 	r.lastError = ""
+	r.lastErrorSource = ""
+	// #228: participation age starts at the lifecycle's first successful
+	// create/join and survives transient retries and lease recovery.
+	if r.participatingSince == 0 {
+		r.participatingSince = time.Now().UnixMilli()
+	}
 	r.mu.Unlock()
 	// Media controller (re)build happens OUTSIDE the runtime lock: it may
 	// stop the previous bridge, create a transcriber, and poll room_info —
@@ -562,7 +584,14 @@ func (r *ResidentRuntime) waitLoop() {
 			default:
 				retryAttempt++
 				delay := RetryDelay(retryAttempt - 1)
-				r.setStateLastError(StateReconnecting, err.Error())
+				// #228: wait-origin transient error — a later successful
+				// long-poll clears exactly this class (never turn/send
+				// failures, which must remain visible until resolved).
+				r.mu.Lock()
+				r.state = StateReconnecting
+				r.lastError = err.Error()
+				r.lastErrorSource = "wait"
+				r.mu.Unlock()
 				r.log("wait_retry", map[string]string{"delayMs": strconv.FormatInt(delay.Milliseconds(), 10)})
 				if !r.sleep(delay) {
 					return
@@ -584,6 +613,14 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	r.mu.Lock()
 	if result.Cursor > r.cursor {
 		r.cursor = result.Cursor
+	}
+	// #228: a successful long-poll proves the Room connection recovered.
+	// Only a WAIT-origin transient error is cleared — the exact class a
+	// successful wait proves resolved. Harness/turn/send failures recorded
+	// by drainTurns must remain visible in status until their own recovery.
+	if r.lastErrorSource == "wait" {
+		r.lastError = ""
+		r.lastErrorSource = ""
 	}
 	r.expiresAt = result.ExpiresAt
 	if len(result.Participants) > 0 {
@@ -679,12 +716,22 @@ func (r *ResidentRuntime) drainTurns() {
 
 		result, err := r.options.Adapter.RunTurn(*input)
 		if err != nil {
-			r.setStateLastError(StateReconnecting, err.Error())
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorSource = "harness"
+			r.state = StateReconnecting
+			r.mu.Unlock()
 			r.log("turn_failed", nil)
 			return
 		}
 		r.mu.Lock()
 		r.harnessFailed = false
+		// #228: a successful turn proves the Harness recovered — clear ONLY
+		// the harness-origin error (a concurrent wait/send failure stays).
+		if r.lastErrorSource == "harness" {
+			r.lastError = ""
+			r.lastErrorSource = ""
+		}
 		r.mu.Unlock()
 		// A lifecycle result is never ordinary reply text. Its body may contain
 		// an untruthful success claim, so consume the closed local intent before
@@ -700,16 +747,32 @@ func (r *ResidentRuntime) drainTurns() {
 		}
 		handle, err := r.requireHandle()
 		if err != nil {
-			r.setStateLastError(StateReconnecting, err.Error())
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorSource = "harness"
+			r.state = StateReconnecting
+			r.mu.Unlock()
 			r.log("turn_failed", nil)
 			return
 		}
 		sent, err := r.options.Client.SendText(handle, text, result.TargetParticipantIDs)
 		if err != nil {
-			r.setStateLastError(StateReconnecting, err.Error())
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorSource = "send"
+			r.state = StateReconnecting
+			r.mu.Unlock()
 			r.log("turn_failed", nil)
 			return
 		}
+		r.mu.Lock()
+		// #228: a successful send proves delivery recovered — clear ONLY the
+		// send-origin error (a concurrent wait/harness failure stays).
+		if r.lastErrorSource == "send" {
+			r.lastError = ""
+			r.lastErrorSource = ""
+		}
+		r.mu.Unlock()
 		r.log("message_persisted", map[string]string{
 			"sequence": strconv.FormatInt(sent.Sequence, 10),
 		})

@@ -16,7 +16,6 @@ import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
-import { createCollabAnalyticsTracker } from "../common/collabAnalytics"
 import type { UserInfo } from "../common/types"
 import {
   umamiEvent,
@@ -302,51 +301,13 @@ export default function RoomContent({
   // silent) and keeps page-lifetime dedup sets, so state refresh, resync
   // replay, reconnect, and re-render never re-count the same Agent or the
   // same canonical collab requestId.
-  const collabAnalyticsRef = useRef<ReturnType<
-    typeof createCollabAnalyticsTracker
-  > | null>(null)
-  if (!collabAnalyticsRef.current) {
-    collabAnalyticsRef.current = createCollabAnalyticsTracker()
-  }
 
-  useEffect(() => {
-    const tracker = collabAnalyticsRef.current
-    if (!tracker) return
-    const context = {
-      roomType: resolvedRoomType,
-      roomHash: hashRoom(roomName),
-      participants,
-      selfPeerId: LOCAL_PEER_ID,
-      selfParticipantId: localParticipantId,
-      presenceBaseline: connectionStatus === "connected",
-    }
-    for (const properties of tracker.observePresence(context)) {
-      trackAnalyticsEvent("AgentJoined", properties)
-    }
-  }, [
-    connectionStatus,
-    participants,
-    roomName,
-    resolvedRoomType,
-    localParticipantId,
-  ])
-
-  useEffect(() => {
-    const tracker = collabAnalyticsRef.current
-    if (!tracker) return
-    const context = {
-      roomType: resolvedRoomType,
-      roomHash: hashRoom(roomName),
-      participants,
-      selfPeerId: LOCAL_PEER_ID,
-      selfParticipantId: localParticipantId,
-    }
-    messages.forEach((m) => {
-      if (m.actionType !== "collab" || !m.collab) return
-      const emitted = tracker.observeCollabEvent(context, m.collab, m.createdAt)
-      if (emitted) trackAnalyticsEvent(emitted.name, emitted.properties)
-    })
-  }, [messages, participants, roomName, resolvedRoomType, localParticipantId])
+  // #228: collaboration-truth analytics (AgentJoined / CollabRequested /
+  // CollabOutcome) are Room/DO-authoritative now. The browser observers
+  // were removed in the same rollout so a connected Human browser can
+  // never double count canonical transitions. Acquisition / Human intent /
+  // UI events (Pageview, invites, voice/notes/transcript controls) remain
+  // browser-side.
 
   useEffect(() => {
     messages.forEach((m) => {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/i365dev/free4chat/agent/internal/speech"
@@ -129,6 +130,9 @@ type fakeClient struct {
 	defaultOK   bool
 	// sendHook observes every SendText in order (tests may inject).
 	sendHook func(text string)
+	// sendFailuresRemaining makes the NEXT N SendText calls fail (#228:
+	// deterministic send-failure scripting).
+	sendFailuresRemaining int
 }
 
 type transcriptClient struct {
@@ -274,7 +278,12 @@ func (c *fakeClient) WaitForEvents(handle string, cursor int64, timeoutSeconds i
 
 func (c *fakeClient) SendText(_ string, text string, targets []string) (types.SendTextResult, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.sendFailuresRemaining > 0 {
+		c.sendFailuresRemaining--
+		c.mu.Unlock()
+		return types.SendTextResult{}, errors.New("send failed")
+	}
+	c.mu.Unlock()
 	c.sent = append(c.sent, text)
 	c.sentTargets = append(c.sentTargets, append([]string(nil), targets...))
 	if c.sendHook != nil {
@@ -1111,4 +1120,232 @@ func TestRuntimeWithoutSeedJoinsWithoutHostProjection(t *testing.T) {
 		t.Fatal("seedless runtime must project nothing")
 	}
 	rt.Stop()
+}
+
+// #228: a recovered transient wait error must not linger in status, and
+// participation age survives transient retries and lease recovery.
+func TestTransientWaitErrorClearsAfterRecovery(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{err: errors.New("Connection closed: this Durable Object instance is no longer active.")},
+	}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-lasterr",
+		RoomID:      "test-lasterr",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		return rt.Status().LastError != ""
+	}, "transient wait error recorded")
+
+	// Recovery: the next successful wait clears the stale error and keeps
+	// the participation timestamp.
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == ""
+	}, "recovered transient wait error cleared")
+
+	since := rt.Status().ParticipatingSince
+	if since <= 0 {
+		t.Fatalf("participatingSince must be set after join: %d", since)
+	}
+	rt.Stop()
+}
+
+// #228 (review round 3): lastError provenance — each subsystem's SUCCESS
+// clears only its OWN error. A successful wait never hides a Harness/send
+// failure; a successful turn/send clears exactly its own source.
+
+func TestHarnessFailureSurvivesSuccessfulWait(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+	}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("harness exploded")}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-harness",
+		RoomID:      "test-harness",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == "harness exploded"
+	}, "harness-origin error recorded")
+
+	// Successful long-polls must NOT erase the harness failure.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if rt.Status().LastError != "harness exploded" {
+			t.Fatalf("successful wait must not clear a harness-origin failure")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	rt.Stop()
+}
+
+func TestHarnessFailureClearsAfterSuccessfulTurn(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{
+			roomEvent(1, true),
+			roomEvent(2, true),
+		}},
+	}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("harness exploded")}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-h2",
+		RoomID:      "test-h2",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     adapter,
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	// Sequencing via the adapter hook: turn 1 runs with turnErr set and
+	// FAILS; the hook clears turnErr inside RunTurn so turn 2 (same drain)
+	// SUCCEEDS — deterministic fail->success without wall-clock polling.
+	// A bare LastError=="exploded" poll can miss the transient window
+	// because both events arrive in one poll step.
+	var sawFailure atomic.Bool
+	originalHook := adapterRunTurnHook
+	adapterRunTurnHook = func(a *fakeAdapter, input types.HarnessTurnInput) {
+		a.mu.Lock()
+		hadErr := a.turnErr != nil
+		a.turnErr = nil // only the FIRST turn fails
+		a.mu.Unlock()
+		if hadErr {
+			sawFailure.Store(true)
+		}
+	}
+	defer func() { adapterRunTurnHook = originalHook }()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return sawFailure.Load() && adapter.sessionsInt() >= 2
+	}, "fail->success turn sequence executed")
+
+	// Turn 2 succeeded and must have cleared the harness-origin error.
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == ""
+	}, "successful turn clears harness-origin error")
+	rt.Stop()
+}
+
+func TestSendFailureSurvivesSuccessfulWait(t *testing.T) {
+	client := &fakeClient{}
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+	}
+	client.sendFailuresRemaining = 1
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-send",
+		RoomID:      "test-send",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     &fakeAdapter{name: "pi"},
+		WaitSeconds: 1,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rt.mu.Lock()
+		lastErr := rt.lastError
+		src := rt.lastErrorSource
+		sends := len(client.snapshotSent())
+		rt.mu.Unlock()
+		t.Logf("send poll: lastError=%q src=%q sends=%d", lastErr, src, sends)
+		if lastErr == "send failed" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Successful long-polls must NOT erase the send failure.
+	keepDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(keepDeadline) {
+		if rt.Status().LastError != "send failed" {
+			t.Fatalf("successful wait must not clear a send-origin failure")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	rt.Stop()
+}
+
+func TestSendFailureClearsAfterSuccessfulSend(t *testing.T) {
+	client := &fakeClient{}
+	// Two steps with a GATE between them: the first event's send fails, the
+	// test asserts the failure is recorded, then opens the gate so the
+	// second event's send succeeds and clears the error — deterministically
+	// ordered, no racy intermediate window.
+	gate := make(chan struct{})
+	client.script = []waitStep{
+		{events: []types.RoomEvent{roomEvent(1, true)}},
+		{events: []types.RoomEvent{roomEvent(2, true)}, gate: gate},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID:  "inst-send2",
+		RoomID:      "test-send2",
+		Name:        "Pi",
+		Client:      client,
+		Adapter:     &fakeAdapter{name: "pi"},
+		WaitSeconds: 1,
+	})
+	client.sendFailuresRemaining = 1
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == "send failed"
+	}, "send-origin error recorded")
+
+	// The gate blocks event 2's delivery until the test opens it.
+	close(gate)
+	waitFor(t, 5*time.Second, func() bool {
+		return rt.Status().LastError == ""
+	}, "successful send clears send-origin error")
+	rt.Stop()
+}
+
+// #228: participatingSince is set once per lifecycle and preserved across
+// adoptJoin (lease-expiry reconnects reuse it).
+func TestParticipatingSinceSetOncePerLifecycle(t *testing.T) {
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-age",
+		RoomID:     "test-age",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    &fakeAdapter{name: "pi"},
+	})
+	joined := types.JoinResult{
+		ParticipantID:     "agent-1",
+		ParticipantHandle: "secret-1",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	}
+	rt.adoptJoin(joined)
+	first := rt.Status().ParticipatingSince
+	if first <= 0 {
+		t.Fatalf("participatingSince must be set on first join")
+	}
+	time.Sleep(5 * time.Millisecond)
+	rt.adoptJoin(joined)
+	second := rt.Status().ParticipatingSince
+	if second != first {
+		t.Fatalf("participatingSince must be preserved across reconnects: %d vs %d", first, second)
+	}
 }

@@ -52,6 +52,16 @@ import {
   stageAgentMediaRevocation,
   type AgentMediaRevocationDirection,
 } from "./realtimeMedia"
+import {
+  buildAgentJoinedEvent,
+  buildCollabOutcomeEvent,
+  buildCollabRequestedEvent,
+  importAnalyticsEvents,
+  type RoomAnalyticsEvent,
+  transitionCollaborationActivity,
+  normalizeStoredCollaborationActivity,
+  buildCollaborationDurationEvent,
+} from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
 import {
   garbageCollectRuntimeHosts,
@@ -193,6 +203,10 @@ export interface RoomSessionEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   AGENT_MEDIA_ENABLED?: string
+  // #228: preconfigured production Worker secret for Room-authoritative
+  // collaboration analytics (direct Mixpanel /import). Absent in
+  // local/test environments: analytics safely no-ops.
+  MIXPANEL_PROJECT_TOKEN?: string
 }
 
 interface ConnectionAttachment {
@@ -761,6 +775,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(targets?.length ? { targets } : {}),
       })
     }
+    // #228: sanitize the persisted collaboration interval; an invalid one
+    // is dropped (worst case: a replacement duration interval opens later).
+    const collaborationActivity = normalizeStoredCollaborationActivity(
+      stored.collaborationActivity
+    )
+    if (
+      stored.collaborationActivity !== undefined &&
+      collaborationActivity === undefined
+    ) {
+      changed = true
+    }
+
     // #176 Phase A (canonical model) storage hygiene: keep ONE sanitized
     // readiness projection per Runtime Host id, then clear participant ids
     // that dangle after sanitization. The domain module owns both halves of
@@ -907,6 +933,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         expiresAt: stored.expiresAt,
         participants,
         runtimeHosts,
+        collaborationActivity,
         runtimeHostProviders: normalizedRuntimeHostProviders.providers,
         runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
@@ -1647,6 +1674,61 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  // #228: Room-authoritative collaboration analytics are best-effort:
+  // never fail or delay the Room mutation they observe.
+  // The DO instance name is the room name: every room is addressed via
+  // idFromName(room), so this is the exact string the browser-side hash
+  // convention hashes.
+  private roomAnalyticsName(): string {
+    try {
+      const name = (this.ctx as { id?: { name?: unknown } }).id?.name
+      return typeof name === "string" ? name : ""
+    } catch {
+      return ""
+    }
+  }
+
+  private trackRoomAnalytics(events: RoomAnalyticsEvent[]): void {
+    if (events.length === 0) return
+    const token = this.env.MIXPANEL_PROJECT_TOKEN
+    if (!token) return
+    try {
+      this.ctx.waitUntil(
+        importAnalyticsEvents(
+          events,
+          token,
+          globalThis.fetch.bind(globalThis),
+          Date.now()
+        )
+      )
+    } catch {
+      // Bounded diagnostics only; never Room behavior.
+    }
+  }
+
+  // #228: advance the OPEN 2+-participant collaboration interval after any
+  // participant add/remove mutation. Pure Room-state update: returns the
+  // pending CollaborationDuration event (interval just closed) for the
+  // CALLER to emit only AFTER the Room mutation is persisted — an
+  // uncommitted transition must never reach analytics.
+  private updateCollaborationActivity(
+    room: RoomRecord
+  ): RoomAnalyticsEvent | undefined {
+    const { activity, summary } = transitionCollaborationActivity(
+      Object.values(room.participants),
+      room.collaborationActivity,
+      Date.now()
+    )
+    room.collaborationActivity = activity
+    if (!summary) return undefined
+    return buildCollaborationDurationEvent({
+      roomName: this.roomAnalyticsName(),
+      durationMs: summary.durationMs,
+      collaborationMode: summary.collaborationMode,
+      participantBucket: summary.participantBucket,
+    })
+  }
+
   private async handleControl(request: ControlRequest): Promise<Response> {
     if (request.action === "room-info") {
       const room = await this.activeRoom()
@@ -1901,6 +1983,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
 
       room.participants[participant.id] = participant
+      const pendingAgentJoined = this.updateCollaborationActivity(room)
       if (registeredRuntimeHost)
         // Canonical Room model (#176): ONE readiness projection per host id,
         // shared by all same-host Agents.
@@ -1919,6 +2002,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.scheduleNextAlarm(room)
       if (isAgent) {
         await this.broadcastState(room)
+        // Canonical admission transition (#228): exactly one AgentJoined per
+        // accepted agent-register; duplicate ids are rejected 409 above.
+        // Emitted only AFTER the Room state has been persisted above.
+        const events: RoomAnalyticsEvent[] = []
+        if (pendingAgentJoined) events.push(pendingAgentJoined)
+        events.push(
+          buildAgentJoinedEvent({
+            roomName: this.roomAnalyticsName(),
+            participants: Object.values(room.participants),
+          })
+        )
+        this.trackRoomAnalytics(events)
         return this.json({
           participant: this.participantForInfo(participant),
           cursor: room.nextMessageSequence,
@@ -1982,10 +2077,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         media: undefined,
       }
       room.participants[participant.id] = participant
+      const pendingDuration = this.updateCollaborationActivity(room)
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
+      // Canonical admission transition (#228). Emitted only AFTER the Room
+      // state has been persisted.
+      const events: RoomAnalyticsEvent[] = [
+        buildAgentJoinedEvent({
+          roomName: this.roomAnalyticsName(),
+          participants: Object.values(room.participants),
+        }),
+      ]
+      if (pendingDuration) events.push(pendingDuration)
+      this.trackRoomAnalytics(events)
       return this.json({
         participant: this.participantForInfo(participant),
         cursor: room.nextMessageSequence,
@@ -2548,7 +2654,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         !isAgentAuthorizedForMedia(room.meetingNotes, participant.id) &&
         !this.isAgentAuthorizedForLiveTranscriptMedia(room, participant)
       )
-        return this.json({ error: "agent_media_not_authorized" }, 403)
+        // #228: STABLE Voice-only discovery-denial contract. This denial
+        // intentionally persists across the Live Transcript authorization
+        // expansion, and the deployed Runtime generation recognizes the
+        // legacy meeting_notes_not_authorized code as the EXPECTED
+        // Voice-only refusal (shared session admitted, Human-media
+        // discovery denied). Changing this string re-breaks every deployed
+        // Runtime's voice bootstrap.
+        return this.json({ error: "meeting_notes_not_authorized" }, 403)
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -2775,10 +2888,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const departingSurface = participant.surface
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
+      const pendingDuration = this.updateCollaborationActivity(room)
       room.meetingNotes = grantTransition.meetingNotes
       room.agentVoice = grantTransition.agentVoice
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
+      if (pendingDuration) this.trackRoomAnalytics([pendingDuration])
       // #111: no surface history survives departure — chunks die after the
       // metadata removal is durable, best-effort so departure always
       // continues to broadcast/scheduling/Meeting-Notes media cleanup.
@@ -3194,10 +3309,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
     delete room.participants[participant.id]
     this.garbageCollectRuntimeHostAuthorization(room)
+    const pendingDuration = this.updateCollaborationActivity(room)
     room.meetingNotes = grantTransition.meetingNotes
     room.agentVoice = grantTransition.agentVoice
     this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
+    if (pendingDuration) this.trackRoomAnalytics([pendingDuration])
     await this.broadcastState(room)
     await this.scheduleNextAlarm(room)
     return this.json({ ok: true })
@@ -3300,6 +3417,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.scheduleNextAlarm(room)
     await this.broadcast({ type: "message", message: roomMessage })
     this.resolveAgentWaiters(room)
+    // Canonical terminal transition (#228): declined/completed/failed emit
+    // exactly one CollabOutcome with ORIGINAL requester/target topology
+    // (the registry reverses direction on outcome envelopes); accepted
+    // never emits; "duplicate" replays never reach this emit.
+    if (
+      event.kind === "declined" ||
+      event.kind === "completed" ||
+      event.kind === "failed"
+    ) {
+      this.trackRoomAnalytics([
+        buildCollabOutcomeEvent({
+          roomName: this.roomAnalyticsName(),
+          participants: Object.values(room.participants),
+          kind: event.kind,
+          fromParticipantId: event.fromParticipantId,
+          targetParticipantId: event.targetParticipantId,
+          attachmentIds: event.attachmentIds,
+        }),
+      ])
+    }
     return {
       status: "recorded",
       sequence: roomMessage.sequence,
@@ -3372,6 +3509,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // Addressed-event semantics unchanged: only the targeted resident
     // Runtime wakes; other Agents see a non-addressed context event.
     this.resolveAgentWaiters(room)
+    // Canonical request transition (#228): registry precheck already
+    // deduplicated; "duplicate" outcomes never reach this emit.
+    this.trackRoomAnalytics([
+      buildCollabRequestedEvent({
+        roomName: this.roomAnalyticsName(),
+        participants: Object.values(room.participants),
+        fromParticipantId: validated.event.fromParticipantId,
+        targetParticipantId: validated.event.targetParticipantId,
+      }),
+    ])
     return {
       status: "recorded",
       sequence: roomMessage.sequence,
@@ -3485,8 +3632,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
+      const pendingDuration = this.updateCollaborationActivity(room)
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
+      if (pendingDuration) this.trackRoomAnalytics([pendingDuration])
       await this.broadcastState(room)
       await this.scheduleNextAlarm(room)
       await this.attemptCleanupNow(room.pendingMediaCleanup)
@@ -4170,6 +4319,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participantId: string
       surface: RoomSurfaceV1
     }> = []
+    const pendingDurations: RoomAnalyticsEvent[] = []
     for (const [id, participant] of Object.entries(room.participants)) {
       const expiredHuman =
         participant.kind === "human" &&
@@ -4211,6 +4361,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.removeRuntimeHostProviderAuthorizationForHuman(room, id)
         delete room.participants[id]
         this.garbageCollectRuntimeHostAuthorization(room)
+        const pendingDuration = this.updateCollaborationActivity(room)
+        if (pendingDuration) pendingDurations.push(pendingDuration)
         room.meetingNotes = grantTransition.meetingNotes
         room.agentVoice = grantTransition.agentVoice
         changed = true
@@ -4234,6 +4386,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.broadcastState(room)
+      if (pendingDurations.length > 0) this.trackRoomAnalytics(pendingDurations)
     }
     // #111: chunk deletion after persistence — no surface outlives its
     // lease-expired owner. Best-effort: the sweep must continue to

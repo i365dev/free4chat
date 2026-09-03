@@ -208,7 +208,7 @@ export default function UserCard(user: UserCardProps) {
   return (
     <div className={user.className}>
       <div
-        className="flex w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3"
+        className="flex min-h-[196px] w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3"
         style={{ backgroundColor: strToBgColor(user.name) }}
       >
         <div className="flex flex-1 flex-col items-center justify-center gap-2">

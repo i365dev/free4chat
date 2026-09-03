@@ -69,6 +69,11 @@ const (
 	PurposeVoiceReply     Purpose = "voice-reply"
 )
 
+// AgentMediaDiscoveryDenied is the agent-room-media denial code introduced
+// by the Live Transcript authorization expansion (#177). The stable
+// Voice-only contract (#228) tolerates BOTH codes below.
+const AgentMediaDiscoveryDenied = "agent_media_not_authorized"
+
 // HumanMediaDiscoveryDenied is the DO's agent-room-media denial for an agent
 // whose room has no active Meeting Notes grant — expected and tolerated at
 // bootstrap when the shared session was admitted under Agent Voice only.
