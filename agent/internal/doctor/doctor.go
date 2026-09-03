@@ -16,7 +16,7 @@ import (
 // Version identifies the Go Agent Runtime build line (post-freeze rewrite).
 // It is a build-overridable var: release builds inject the agent-vX.Y.Z tag
 // version via -ldflags "-X github.com/i365dev/free4chat/agent/internal/doctor.Version=X.Y.Z".
-var Version = "0.5.16"
+var Version = "0.5.17"
 
 // PackageName mirrors the Node product identity in doctor output.
 const PackageName = "free4chat-agent"
