@@ -1319,10 +1319,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // no storage backend assumption is needed here.
     await this.ctx.storage.deleteAlarm()
     await this.ctx.storage.deleteAll()
-    await executeMediaCloseEffects(
-      this.env,
-      snapshotMediaCloseEffects(pendingClose)
-    )
     for (const waiter of expiringWaiters) {
       if (!waiter) continue
       waiter.resolve(
@@ -1342,6 +1338,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         // A socket may already be closed while the room is expiring.
       }
     }
+    // The Room is already durably expired. Do not make the bounded
+    // wait_for_events response wait for best-effort external media cleanup.
+    await executeMediaCloseEffects(
+      this.env,
+      snapshotMediaCloseEffects(pendingClose)
+    )
   }
 
   private async broadcast(message: unknown, except?: WebSocket): Promise<void> {

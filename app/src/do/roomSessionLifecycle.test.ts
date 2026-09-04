@@ -179,7 +179,7 @@ function agentEventRoom(): RoomRecord {
 describe("RoomSession expiry cleanup", () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it("deletes the alarm and all storage after snapshotting cleanup effects", async () => {
+  it("notifies expiry recipients before external media cleanup", async () => {
     const { session, room, store, order, socket } = lifecycleHarness()
     const closeFetch = vi.fn(async () => {
       expect(store.size).toBe(0)
@@ -216,7 +216,8 @@ describe("RoomSession expiry cleanup", () => {
     expect(order.indexOf("mediaClose")).toBeGreaterThan(
       order.indexOf("deleteAll")
     )
-    expect(order.indexOf("waiter")).toBeGreaterThan(order.indexOf("mediaClose"))
+    expect(order.indexOf("waiter")).toBeGreaterThan(order.indexOf("deleteAll"))
+    expect(order.indexOf("waiter")).toBeLessThan(order.indexOf("mediaClose"))
     expect(closeFetch).toHaveBeenCalledOnce()
     expect(JSON.parse(await waiterResponse!.text())).toMatchObject({
       expired: true,
@@ -390,19 +391,20 @@ describe("RoomSession expiry cleanup", () => {
     expect(freshConnection.status).toBe(101)
     expect(sockets).toContain(freshSocket)
 
-    mediaClose.resolve(new Response(null, { status: 204 }))
-    await expiry
-
-    expect(oldWaiterResponse).toBeDefined()
-    expect(JSON.parse(await oldWaiterResponse!.text())).toMatchObject({
-      expired: true,
-      cursor: oldRoom.nextMessageSequence,
-    })
+    await vi.waitFor(() => expect(oldWaiterResponse).toBeDefined())
     expect(oldSocket.closed).toContainEqual({
       code: 4001,
       reason: "Room expired",
     })
     expect(freshSocket.closed).toEqual([])
+
+    mediaClose.resolve(new Response(null, { status: 204 }))
+    await expiry
+
+    expect(JSON.parse(await oldWaiterResponse!.text())).toMatchObject({
+      expired: true,
+      cursor: oldRoom.nextMessageSequence,
+    })
     expect(freshSocket.sent.some((value) => value.includes('"expired"'))).toBe(
       false
     )
