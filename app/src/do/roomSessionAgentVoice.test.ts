@@ -74,6 +74,7 @@ function harness() {
       deleteAlarm: async () => undefined,
       getAlarm: async () => undefined,
     },
+    getWebSockets: () => [] as WebSocket[],
   }
   const session = new RoomSession(
     ctx as never,

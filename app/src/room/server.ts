@@ -5,6 +5,7 @@ import { validateRuntimeHost } from "../do/runtimeHost"
 
 const MAX_ROOM_LENGTH = 64
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
+const AGENT_EVENT_PATH = "/api/room/agent-events"
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -30,13 +31,51 @@ export async function handleRoomRequest(
   request: Request,
   env: RoomProtocolEnv
 ): Promise<Response> {
-  if (!isAllowedOrigin(request.headers.get("Origin")))
+  const pathname = new URL(request.url).pathname
+  const isAgentEventSocket = pathname === AGENT_EVENT_PATH
+  // The resident Runtime is a native client and normally has no browser
+  // Origin. Its existing participant capability remains the authorization
+  // boundary; a present Origin is still checked so another website cannot
+  // use the endpoint as a cross-origin browser transport.
+  if (
+    !isAllowedOrigin(request.headers.get("Origin")) &&
+    !(isAgentEventSocket && request.headers.get("Origin") === null)
+  )
     return json({ error: "forbidden_origin" }, 403)
 
   // #111: Human-browser read path for Observable Agent Workspace snapshots.
   // POST-only with participant credentials in headers (never query strings);
   // the DO enforces membership and exact snapshotId match.
-  const pathname = new URL(request.url).pathname
+  if (isAgentEventSocket) {
+    if (request.method !== "GET")
+      return json({ error: "method_not_allowed" }, 405)
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+      return json({ error: "websocket_upgrade_required" }, 426)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId =
+      request.headers.get("X-Room-Participant-Id")?.trim() ?? ""
+    const headerToken = request.headers.get("X-Room-Participant-Token") ?? ""
+    const authorization = request.headers.get("Authorization") ?? ""
+    const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1] ?? ""
+    if (headerToken && bearerToken && headerToken !== bearerToken)
+      return json({ error: "unauthorized" }, 401)
+    const token = bearerToken || headerToken
+    const rawCursor = request.headers.get("X-Room-Cursor") ?? ""
+    const cursor = Number(rawCursor)
+    if (
+      !room ||
+      room.length > MAX_ROOM_LENGTH ||
+      !participantId ||
+      !token ||
+      !Number.isSafeInteger(cursor) ||
+      cursor < 0
+    )
+      return json({ error: "missing_room_capability" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    const doRequest = new Request("https://room/agent-events", request)
+    return stub.fetch(doRequest)
+  }
+
   // Runtime-only control transport for a committed STT result. This is not
   // an MCP tool and accepts no media identifiers, speaker labels, provider
   // payloads, or raw audio: the authenticated RoomSession action derives the

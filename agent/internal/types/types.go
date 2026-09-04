@@ -7,6 +7,7 @@
 package types
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -396,6 +397,10 @@ type JoinResult struct {
 	RuntimeProviderHandle string
 	Cursor                int64
 	ExpiresAt             int64
+	// AgentLeaseMs is the server's current Agent lease. The resident Runtime
+	// derives a sparse WebSocket heartbeat interval from it instead of
+	// duplicating a product timing constant locally.
+	AgentLeaseMs int64
 }
 
 // RoomInviteDescriptorV1 is the portable public invite descriptor (#51).
@@ -555,6 +560,24 @@ type Free4ChatClient interface {
 	ReadSurface(participantHandle, sourceParticipantID, snapshotID string) (SurfaceReadResult, error)
 	LeaveRoom(participantHandle string) error
 	Close() error
+}
+
+// ResidentEventStream is the Runtime-owned Room event transport. It is
+// intentionally narrower than Free4ChatClient: the stream only delivers the
+// canonical Room event envelope and refreshes the existing Agent lease.
+// Participant capabilities remain private to the Runtime and are never
+// passed through this interface to a Harness.
+type ResidentEventStream interface {
+	Receive(context.Context) (WaitResult, error)
+	Heartbeat(context.Context, int64) error
+	Close() error
+}
+
+// ResidentEventClient is an optional extension for injected test/compatibility
+// clients. The built-in Free4Chat client implements it, so the official
+// resident Runtime never falls back to an endless MCP long-poll loop.
+type ResidentEventClient interface {
+	OpenResidentEventStream(context.Context, string, int64) (ResidentEventStream, error)
 }
 
 // RuntimeHostProviderClient is an optional extension so existing test and

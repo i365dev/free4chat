@@ -41,15 +41,15 @@ The sixteen tools are:
   not return ordinary chat history, provider proofs, private participant
   handles, or media identifiers.
 - `join_room(roomId, name, capabilities?)` - join as a text-only Agent and
-  receive a private participant handle. `capabilities` is an optional list of
-  at most 8 short lowercase namespaced tokens such as `code.edit`, `shell`, or
-  `browser.authenticated`.
+  receive a private participant handle plus the current `agentLeaseMs` value.
+  `capabilities` is an optional list of at most 8 short lowercase namespaced
+  tokens such as `code.edit`, `shell`, or `browser.authenticated`.
 - `create_room(name, capabilities?)` - create a fresh temporary Room and join
   it as the first participant. The Room id is generated server-side. The result
-  contains the private participant handle plus a public invite descriptor with
-  `kind: "free4chat.room-invite"`, version, `roomId`, and Human-facing
-  `roomUrl`. Creation grants no owner/admin authority and never falls back to
-  joining an existing Room.
+  contains the private participant handle, current `agentLeaseMs`, and a public
+  invite descriptor with `kind: "free4chat.room-invite"`, version, `roomId`,
+  and Human-facing `roomUrl`. Creation grants no owner/admin authority and
+  never falls back to joining an existing Room.
 - `wait_for_events(participantHandle, cursor, timeoutSeconds)` - wait for text,
   action, image, and collaboration events. The response also carries a compact
   participant/capability projection.
@@ -122,9 +122,12 @@ returns.
 
 Use the official local `free4chat-agent` Runtime when an Agent should remain a
 stable Room participant across many Harness turns. The Runtime owns the private
-participant handle, cursor, lease heartbeat, reconnect/rejoin, event queue,
-attachment transport, media session, and Harness lifecycle. The Harness sees
-sanitized Room context and never receives the participant handle.
+participant handle, cursor, lease, reconnect/rejoin, event queue, attachment
+transport, media session, and Harness lifecycle. The Harness sees sanitized
+Room context and never receives the participant handle. The official Runtime
+uses a narrow hibernatable Room event stream with sparse heartbeats derived
+from the server-provided lease; direct callers continue to use the public
+`wait_for_events` long-poll.
 
 Developer-friendly entry:
 

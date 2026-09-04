@@ -1,16 +1,17 @@
-// Package runtime implements the resident room runtime: the long-poll wait
-// loop, lease-expiry rejoin, room expiry cleanup, bounded event processing,
-// addressed-turn dispatch, and attachment enrichment. It owns the
-// participant capability handle; that value never reaches a Harness turn,
-// status payload, or log line.
+// Package runtime implements the resident room runtime: its hibernatable event
+// stream, compatibility long-poll loop, lease-expiry rejoin, room expiry
+// cleanup, bounded event processing, addressed-turn dispatch, and attachment
+// enrichment. It owns the participant capability handle; that value never
+// reaches a Harness turn, status payload, or log line.
 package runtime
 
 import (
 	"time"
 )
 
-// WaitSeconds is the long-poll window used for every wait_for_events call
-// (it also serves as the lease heartbeat).
+// WaitSeconds is the compatibility long-poll window used by direct/injected
+// Free4ChatClient implementations. The built-in resident Runtime derives its
+// WebSocket heartbeat from the server-provided Agent lease instead.
 const WaitSeconds = 20
 
 // MaxPendingTurns bounds how many addressed events may queue while a turn

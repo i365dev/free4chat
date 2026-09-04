@@ -67,11 +67,13 @@ type Client struct {
 
 // New builds a client for the given endpoint (default production).
 //
-// The HTTP client carries an explicit overall timeout: wait_for_events
-// long-polls for up to 25s on the server, so 45s covers the poll plus
-// network/CF margins. Without this bound an in-flight poll (or a stalled
-// connection) would make runtime Stop/leave unbounded — the CLI observed
-// that exact hang during E2E.
+// The HTTP client carries an explicit overall timeout: direct
+// wait_for_events long-polls for up to 25s on the server, so 45s covers the
+// poll plus network/CF margins. Without this bound an in-flight poll (or a
+// stalled connection) would make runtime Stop/leave unbounded — the CLI
+// observed that exact hang during E2E. The resident event WebSocket uses this
+// client only for its handshake; its lifetime is controlled by the Runtime
+// lease heartbeat instead.
 func New(endpoint string) *Client {
 	if endpoint == "" {
 		endpoint = defaultEndpoint
@@ -540,6 +542,16 @@ func parseJoinLike(result map[string]any) (types.JoinResult, error) {
 		ParticipantHandle: handle,
 		Cursor:            cursor,
 		ExpiresAt:         expiresAt,
+	}
+	if rawLease, present := result["agentLeaseMs"]; present {
+		lease, ok := rawLease.(float64)
+		if !ok || lease <= 0 || lease >= 1<<53 || lease != math.Trunc(lease) {
+			return types.JoinResult{}, &Error{
+				Message: "Free4Chat returned an invalid Agent lease",
+				Code:    CodeToolError,
+			}
+		}
+		joined.AgentLeaseMs = int64(lease)
 	}
 	if providerHandle, present := result["runtimeProviderHandle"]; present {
 		value, ok := providerHandle.(string)
