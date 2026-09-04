@@ -299,9 +299,9 @@ export default function Home() {
                   </h2>
                   <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
                     <code>{`Human
-├─ Codex @ laptop
-├─ Ops Agent @ VPS
-└─ Browser Agent`}</code>
+|-- Codex @ laptop
+|-- Ops Agent @ VPS
++-- Browser Agent`}</code>
                   </pre>
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
                     Separate tools and authority, one temporary Room for
@@ -314,9 +314,9 @@ export default function Home() {
                     Bring-your-own-Agent meeting
                   </h2>
                   <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
-                    <code>{`Alice + Agent ─┐
-Bob + Agent   ├─ Temporary Room
-Carol + Agent ┘`}</code>
+                    <code>{`Alice + Agent  |
+Bob + Agent    +-- Temporary Room
+Carol + Agent  |`}</code>
                   </pre>
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
                     Share the conversation or bounded transcript context, not
@@ -331,7 +331,9 @@ Carol + Agent ┘`}</code>
                   </h2>
                   <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
                     <code>{`Customer + Agent
-       ↕ Room
+       |
+   Temporary Room
+       |
 Support engineer + Vendor Agent`}</code>
                   </pre>
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
@@ -345,9 +347,9 @@ Support engineer + Vendor Agent`}</code>
                     Personal Agent federation
                   </h2>
                   <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
-                    <code>{`Phone Agent ─┐
-Laptop Agent ├─ Temporary Room
-Cloud Agent ─┘`}</code>
+                    <code>{`Phone Agent  |
+Laptop Agent  +-- Temporary Room
+Cloud Agent   |`}</code>
                   </pre>
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
                     Connect local capabilities when needed instead of creating
