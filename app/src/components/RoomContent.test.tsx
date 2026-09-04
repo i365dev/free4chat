@@ -396,12 +396,21 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
 
     // Unavailable Live Transcript setup copy points new Humans at the
-    // Agent-first path and cross-opens the invite popover.
+    // Agent-first path. Cross-opening is one-feature-at-a-time: the Live
+    // Transcript dialog closes FIRST, then the Invite Agent dialog opens.
     fireEvent.click(screen.getByRole("button", { name: "Live Transcript" }))
+    expect(
+      screen.getByRole("dialog", { name: "Live Transcript" })
+    ).toBeInTheDocument()
     fireEvent.click(
       screen.getByRole("button", { name: "Start with Invite Agent" })
     )
-    expect(screen.getByText("Invite an Agent")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("dialog", { name: "Live Transcript" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("dialog", { name: "Invite an Agent" })
+    ).toBeInTheDocument()
     expect(
       screen.getByRole("button", { name: "Copy invite prompt" })
     ).toBeTruthy()

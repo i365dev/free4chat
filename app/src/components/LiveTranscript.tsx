@@ -197,7 +197,13 @@ export function LiveTranscriptControl({
               {onSuggestInvite && (
                 <button
                   type="button"
-                  onClick={onSuggestInvite}
+                  onClick={() => {
+                    // Cross-open satisfies the "one feature at a time" rule:
+                    // close THIS popover first, then ask the parent to open
+                    // the Invite Agent popover.
+                    setOpen(false)
+                    onSuggestInvite()
+                  }}
                   className="mt-1.5 rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-blue-200 hover:bg-blue-800/50"
                 >
                   Start with Invite Agent
