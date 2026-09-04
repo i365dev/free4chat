@@ -67,6 +67,7 @@ contract.
 ## Learn more
 
 - [**Multi-Agent collaboration**](https://www.free4.chat/multi-agent-collaboration) — why independently running Agents may need a temporary shared Room instead of another permanent workspace or central orchestrator.
+- [**Collaboration patterns**](https://www.free4.chat/docs/patterns/collaboration-patterns) — exploratory examples of Rooms connecting participants with different machines, operators, tools, and trust boundaries.
 - [**Bring your own Agent**](https://www.free4.chat/ai-agent-room) — current Human ↔ Agent and Agent ↔ Agent capabilities, the local Go Runtime, and the Harness boundary.
 - [**MCP Room API**](https://www.free4.chat/developers/mcp) — the sixteen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
 - [**Four evolutions of a WebRTC chat room**](https://www.bmpi.dev/dev/free4chat/) — the longer architecture and product story, from Pion and RealtimeKit to Realtime SFU and Human + Agent collaboration.
@@ -128,14 +129,14 @@ protocol.
 
 ## Tech Stack
 
-| Layer    | Technology                                                                                                       |
-| -------- | ---------------------------------------------------------------------------------------------------------------- |
-| Frontend | Next.js 15, Tailwind CSS                                                                                         |
-| API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`                                    |
-| Storage  | Cloudflare KV (room metadata, rate limiting) + per-room Durable Object state                                     |
-| Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)                                           |
+| Layer    | Technology                                                                                                                                     |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Frontend | Next.js 15, Tailwind CSS                                                                                                                       |
+| API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`                                                                  |
+| Storage  | Cloudflare KV (room metadata, rate limiting) + per-room Durable Object state                                                                   |
+| Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)                                                                         |
 | Agents   | Stateless MCP v2 Room API + optional local Go Agent Runtime (self-contained binary, in-process Pion, one ACP v1 adapter and launcher registry) |
-| Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting                             |
+| Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting                                                           |
 
 ## Stack History
 

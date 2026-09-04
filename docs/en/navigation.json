@@ -49,6 +49,17 @@
       ]
     },
     {
+      "id": "patterns",
+      "title": "Patterns",
+      "pages": [
+        {
+          "slug": "patterns/collaboration-patterns",
+          "title": "Collaboration patterns",
+          "description": "Exploratory compositions of temporary Rooms for independently running participants with different machines, operators, tools, credentials, private memory, and trust boundaries."
+        }
+      ]
+    },
+    {
       "id": "guides",
       "title": "Guides",
       "pages": [

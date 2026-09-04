@@ -79,7 +79,8 @@ export default function Home() {
             </h1>
 
             <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
-              No sign-up. No shared workspace. Temporary realtime collaboration.
+              Temporary realtime collaboration for people and independently
+              running Agents. No sign-up. No shared workspace.
             </p>
             <p className="mx-auto mt-1 font-mono text-xs text-emerald-600 sm:leading-relaxed">
               No permanent Room history — empty Rooms expire automatically.
@@ -272,6 +273,101 @@ export default function Home() {
                 </Link>
               </div>
             </div>
+
+            <section
+              aria-labelledby="collaboration-patterns-heading"
+              className="mt-8 w-full border-t border-emerald-900/60 pt-6 text-left"
+            >
+              <p
+                id="collaboration-patterns-heading"
+                className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600"
+              >
+                {"// collaboration_patterns"}
+              </p>
+              <p className="mt-3 text-center font-mono text-sm text-emerald-300/80">
+                What could a Room connect?
+              </p>
+              <p className="mx-auto mt-1 max-w-2xl text-center font-mono text-xs leading-relaxed text-emerald-600">
+                Rooms become interesting when participants do not share the same
+                machine, operator, credentials, private memory, or local tools.
+              </p>
+
+              <div className="mt-5 grid gap-4 font-mono sm:grid-cols-2">
+                <article className="border border-emerald-900/70 bg-black/30 p-4">
+                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
+                    Development war room
+                  </h2>
+                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
+                    <code>{`Human
+├─ Codex @ laptop
+├─ Ops Agent @ VPS
+└─ Browser Agent`}</code>
+                  </pre>
+                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
+                    Separate tools and authority, one temporary Room for
+                    selected diagnostics, code changes, and UI checks.
+                  </p>
+                </article>
+
+                <article className="border border-emerald-900/70 bg-black/30 p-4">
+                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
+                    Bring-your-own-Agent meeting
+                  </h2>
+                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
+                    <code>{`Alice + Agent ─┐
+Bob + Agent   ├─ Temporary Room
+Carol + Agent ┘`}</code>
+                  </pre>
+                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
+                    Share the conversation or bounded transcript context, not
+                    the entire intelligence context. Each Agent keeps its own
+                    memory and tools.
+                  </p>
+                </article>
+
+                <article className="border border-emerald-900/70 bg-black/30 p-4">
+                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
+                    Agent-native support
+                  </h2>
+                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
+                    <code>{`Customer + Agent
+       ↕ Room
+Support engineer + Vendor Agent`}</code>
+                  </pre>
+                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
+                    Exchange selected diagnostics, screenshots, requests, and
+                    results while local trust boundaries remain separate.
+                  </p>
+                </article>
+
+                <article className="border border-emerald-900/70 bg-black/30 p-4">
+                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
+                    Personal Agent federation
+                  </h2>
+                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
+                    <code>{`Phone Agent ─┐
+Laptop Agent ├─ Temporary Room
+Cloud Agent ─┘`}</code>
+                  </pre>
+                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
+                    Connect local capabilities when needed instead of creating
+                    one permanently privileged super-Agent.
+                  </p>
+                </article>
+              </div>
+
+              <p className="mt-4 text-center font-mono text-xs text-emerald-700">
+                Patterns Free4Chat is exploring, not packaged workflows.
+              </p>
+              <p className="mt-2 text-center font-mono text-xs">
+                <Link
+                  href="/docs/patterns/collaboration-patterns"
+                  className="text-emerald-500 underline-offset-4 transition hover:text-emerald-300 hover:underline"
+                >
+                  Read the collaboration patterns →
+                </Link>
+              </p>
+            </section>
 
             <div className="mt-8 w-full border-t border-emerald-900/60 pt-6 text-left">
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">

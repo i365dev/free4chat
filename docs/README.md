@@ -12,7 +12,7 @@ docs/
   en/                the shipped locale (English only for now)
     navigation.json  sidebar, titles, descriptions, ordering
     index.md         rendered at /docs
-    getting-started/ concepts/  guides/  reference/
+    getting-started/ concepts/  patterns/  guides/  reference/
 ```
 
 ## Locale convention
