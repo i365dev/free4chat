@@ -1275,6 +1275,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private async expireRoom(room: RoomRecord): Promise<void> {
+    // Snapshot and detach the expiring generation's in-memory recipients
+    // before the first external await. Storage deletion does not isolate the
+    // live DO instance: a recycled room name can create a new generation
+    // while media cleanup is in flight. Keep the old generation's waiter and
+    // socket notifications scoped to these snapshots so expiry can never
+    // close the new generation's recipients.
+    const expiringWaiters = [...this.agentWaiters.values()]
+    this.agentWaiters.clear()
+    for (const waiter of expiringWaiters) {
+      if (waiter) clearTimeout(waiter.timer)
+    }
+    const expiringSockets = [...this.ctx.getWebSockets()]
+
     // A recycled room name must not inherit collaboration bookkeeping from
     // the expired generation (stale requestIds could suppress new ones).
     this.resetCollabTracking()
@@ -1310,9 +1323,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.env,
       snapshotMediaCloseEffects(pendingClose)
     )
-    for (const waiter of this.agentWaiters.values()) {
+    for (const waiter of expiringWaiters) {
       if (!waiter) continue
-      clearTimeout(waiter.timer)
       waiter.resolve(
         this.json({
           events: [],
@@ -1322,8 +1334,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         })
       )
     }
-    this.agentWaiters.clear()
-    for (const socket of this.ctx.getWebSockets()) {
+    for (const socket of expiringSockets) {
       try {
         socket.send(JSON.stringify({ type: "expired" }))
         socket.close(4001, "Room expired")
