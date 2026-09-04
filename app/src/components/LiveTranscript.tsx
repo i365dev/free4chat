@@ -28,6 +28,9 @@ interface LiveTranscriptControlProps {
   /** #236: feature-specific setup error shown INSIDE the Live Transcript
    * popover; it never expands the Room header. */
   runtimeConnectError?: string
+  /** #236 follow-up: opens the Invite Agent popover (shared RoomContent
+   * state) so the setup copy can point new Humans at the Agent-first path. */
+  onSuggestInvite?: () => void
 }
 
 interface LiveTranscriptSegmentsProps {
@@ -89,6 +92,7 @@ export function LiveTranscriptControl({
   onConnect,
   runtimeConnectionStatus = "idle",
   runtimeConnectError = "",
+  onSuggestInvite,
 }: LiveTranscriptControlProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -181,20 +185,43 @@ export function LiveTranscriptControl({
                 Turn room audio into shared text.
               </p>
               <p className="mt-1 text-gray-400">
-                A local Free4Chat Runtime with transcription is needed to start.
+                Live Transcript needs transcription support from your local
+                Free4Chat setup.
+              </p>
+              {onSuggestInvite && (
+                <p className="mt-1 text-gray-400">
+                  If you haven&apos;t connected an Agent yet, start with Invite
+                  Agent.
+                </p>
+              )}
+              {onSuggestInvite && (
+                <button
+                  type="button"
+                  onClick={onSuggestInvite}
+                  className="mt-1.5 rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-blue-200 hover:bg-blue-800/50"
+                >
+                  Start with Invite Agent
+                </button>
+              )}
+              <p className="mt-1.5 text-gray-400">
+                Already have Free4Chat running locally?
               </p>
               <button
                 type="button"
                 onClick={onConnect}
                 disabled={connecting}
-                className="mt-2 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-gray-200 hover:bg-gray-700 disabled:cursor-wait disabled:opacity-50"
-                title="Copy the command for the computer where Free4Chat Runtime is running"
+                className="mt-1.5 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-gray-200 hover:bg-gray-700 disabled:cursor-wait disabled:opacity-50"
+                title="Copy the connection command for the computer where Free4Chat is running"
               >
-                {connecting ? "Preparing…" : "Copy setup command"}
+                {connecting ? "Preparing…" : "Copy connection command"}
               </button>
+              <p className="mt-1.5 text-gray-400">
+                Run this command in the terminal where Free4Chat is running. Do
+                not paste it into an Agent chat.
+              </p>
               {copied && (
                 <p role="status" className="mt-2 text-emerald-300">
-                  ✓ Setup command copied. Run it in your terminal.
+                  ✓ Connection command copied. Run it in your terminal.
                 </p>
               )}
               {runtimeConnectError && (

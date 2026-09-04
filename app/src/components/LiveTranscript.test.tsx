@@ -86,6 +86,7 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
 
   it("keeps a single compact header control with setup inside the popover when no Host is authorized", () => {
     const onConnect = vi.fn()
+    const onSuggestInvite = vi.fn()
     render(
       <LiveTranscriptControl
         liveTranscript={{ active: false }}
@@ -95,6 +96,7 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         onStart={vi.fn()}
         onStop={vi.fn()}
         onConnect={onConnect}
+        onSuggestInvite={onSuggestInvite}
       />
     )
 
@@ -114,11 +116,31 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     ).toBeInTheDocument()
     expect(
       screen.getByText(
-        "A local Free4Chat Runtime with transcription is needed to start."
+        "Live Transcript needs transcription support from your local Free4Chat setup."
       )
     ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Copy setup command" }))
+    // #236 follow-up: the setup copy points new Humans at the Agent-first
+    // path and never introduces unexplained Runtime jargon.
+    expect(
+      screen.getByText(/If you haven't connected an Agent yet/)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Start with Invite Agent" })
+    ).toBeTruthy()
+    expect(
+      screen.getByRole("button", { name: "Copy connection command" })
+    ).toBeTruthy()
+    expect(
+      screen.getByText(/Do not paste it into an Agent chat/)
+    ).toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy connection command" })
+    )
     expect(onConnect).toHaveBeenCalledTimes(1)
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start with Invite Agent" })
+    )
+    expect(onSuggestInvite).toHaveBeenCalledTimes(1)
     expect(
       screen.queryByText(/provider claim|runtimeHostId/i)
     ).not.toBeInTheDocument()
@@ -139,7 +161,9 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
       />
     )
     openControl()
-    fireEvent.click(screen.getByRole("button", { name: "Copy setup command" }))
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy connection command" })
+    )
 
     rerender(
       <LiveTranscriptControl
@@ -157,12 +181,12 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     // "Connection command copied"; success is a separate status line.
     expect(screen.getByRole("button", { name: "Live Transcript" })).toBeTruthy()
     expect(
-      screen.getByRole("button", { name: "Copy setup command" })
+      screen.getByRole("button", { name: "Copy connection command" })
     ).toBeTruthy()
     expect(
       screen.queryByText("Connection command copied")
     ).not.toBeInTheDocument()
-    expect(screen.getByText(/Setup command copied/i)).toBeInTheDocument()
+    expect(screen.getByText(/Connection command copied/i)).toBeInTheDocument()
   })
 
   it("disables the setup action truthfully while the claim is preparing", () => {
@@ -344,17 +368,17 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     )
     openControl()
     expect(
-      screen.getByText(/A local Free4Chat Runtime with transcription/)
+      screen.getByText(/Live Transcript needs transcription support/)
     ).toBeInTheDocument()
     fireEvent.keyDown(document, { key: "Escape" })
     expect(
-      screen.queryByText(/A local Free4Chat Runtime with transcription/)
+      screen.queryByText(/Live Transcript needs transcription support/)
     ).not.toBeInTheDocument()
 
     openControl()
     fireEvent.mouseDown(document.body)
     expect(
-      screen.queryByText(/A local Free4Chat Runtime with transcription/)
+      screen.queryByText(/Live Transcript needs transcription support/)
     ).not.toBeInTheDocument()
   })
 

@@ -4,6 +4,7 @@ import { useRouter } from "next/router"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 
+import AgentInviteControl from "./AgentInviteControl"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
@@ -90,9 +91,10 @@ export default function RoomContent({
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
-  const [agentInviteCopied, setAgentInviteCopied] = useState(false)
-  const [agentInviteError, setAgentInviteError] = useState("")
   const [runtimeConnectError, setRuntimeConnectError] = useState("")
+  // #236 follow-up: shared popover state so the Live Transcript setup copy
+  // can cross-open the Invite Agent popover (no routing machinery).
+  const [agentInviteOpen, setAgentInviteOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<
     {
       id: string
@@ -402,39 +404,6 @@ export default function RoomContent({
     }
   }
 
-  const writeAgentInvite = (invite: string) => {
-    // This function is intentionally called directly from a click handler.
-    // Firefox and Safari require transient user activation for clipboard
-    // writes, so never move this call behind an asynchronous Room round-trip.
-    if (!navigator.clipboard?.writeText) {
-      setAgentInviteError(
-        "Clipboard access is unavailable. Copy invite is not supported here."
-      )
-      return
-    }
-    void navigator.clipboard
-      .writeText(invite)
-      .then(() => {
-        trackAnalyticsEvent("AgentInviteCopied", {
-          surface: "room",
-          roomType: resolvedRoomType,
-        })
-        setAgentInviteError("")
-        setAgentInviteCopied(true)
-        setTimeout(() => setAgentInviteCopied(false), 2000)
-      })
-      .catch(() => {
-        setAgentInviteError(
-          "Clipboard access was blocked. Click Copy invite to try again."
-        )
-      })
-  }
-
-  const copyAgentInvite = () => {
-    if (typeof window === "undefined") return
-    writeAgentInvite(buildAgentInvitePrompt(roomName))
-  }
-
   const handleConnectRuntime = () => {
     setRuntimeConnectError("")
     void connectLocalRuntime().catch((connectError) => {
@@ -515,69 +484,87 @@ export default function RoomContent({
         </div>
       )}
 
-      <div className="flex flex-none flex-wrap items-center gap-2 border-b border-gray-800 px-4 py-3">
-        <h1 className="min-w-0 truncate text-lg font-medium">#{roomName}</h1>
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-          <button
-            type="button"
-            onClick={copyRoomLink}
-            className="flex items-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700"
-            title="Copy room link"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-3.5 w-3.5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-              />
-            </svg>
-            {roomLinkCopied ? "Copied!" : "Copy link"}
-          </button>
-          <button
-            type="button"
-            onClick={copyAgentInvite}
-            className="rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-xs text-blue-200 hover:bg-blue-800/50"
-            title="Copy Agent invite prompt"
-          >
-            {agentInviteCopied ? "Copied!" : "Invite Agent"}
-          </button>
-          {agentInviteError && (
-            <span role="status" className="text-xs text-rose-300">
-              {agentInviteError}
-            </span>
-          )}
-          <LiveTranscriptControl
-            liveTranscript={liveTranscript}
-            runtimeHosts={runtimeHosts}
-            runtimeHostProviders={runtimeHostProviders}
-            localParticipantId={localParticipantId}
-            participants={participants}
-            mediaAvailable={liveTranscriptMediaAvailable}
-            onStart={handleStartLiveTranscript}
-            onStop={handleStopLiveTranscript}
-            onConnect={handleConnectRuntime}
-            runtimeConnectionStatus={runtimeConnectionStatus}
-            runtimeConnectError={runtimeConnectError}
-          />
+      <header className="flex flex-none flex-col gap-2 border-b border-gray-800 px-4 py-3 lg:flex-row lg:items-center">
+        <div
+          data-testid="room-header-identity"
+          className="flex min-w-0 items-center gap-2"
+        >
+          <h1 className="min-w-0 flex-1 truncate text-lg font-medium lg:flex-none">
+            #{roomName}
+          </h1>
           <button
             type="button"
             onClick={() => {
               leaveRoom()
               router.push("/")
             }}
-            className="rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
+            className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:hidden"
           >
             Leave
           </button>
         </div>
-      </div>
+        <div
+          data-testid="room-header-features"
+          className="flex flex-none flex-col gap-2 lg:ml-auto lg:flex-row lg:items-center lg:gap-2"
+        >
+          <div className="grid grid-cols-3 gap-2 lg:flex lg:items-center">
+            <button
+              type="button"
+              onClick={copyRoomLink}
+              className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700"
+              title="Copy room link"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                className="h-3.5 w-3.5 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                />
+              </svg>
+              <span className="truncate">
+                {roomLinkCopied ? "Copied!" : "Copy link"}
+              </span>
+            </button>
+            <AgentInviteControl
+              roomType={resolvedRoomType}
+              invitePrompt={buildAgentInvitePrompt(roomName)}
+              open={agentInviteOpen}
+              onOpenChange={setAgentInviteOpen}
+            />
+            <LiveTranscriptControl
+              liveTranscript={liveTranscript}
+              runtimeHosts={runtimeHosts}
+              runtimeHostProviders={runtimeHostProviders}
+              localParticipantId={localParticipantId}
+              participants={participants}
+              mediaAvailable={liveTranscriptMediaAvailable}
+              onStart={handleStartLiveTranscript}
+              onStop={handleStopLiveTranscript}
+              onConnect={handleConnectRuntime}
+              runtimeConnectionStatus={runtimeConnectionStatus}
+              runtimeConnectError={runtimeConnectError}
+              onSuggestInvite={() => setAgentInviteOpen(true)}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              leaveRoom()
+              router.push("/")
+            }}
+            className="hidden shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:inline-flex"
+          >
+            Leave
+          </button>
+        </div>
+      </header>
 
       {error !== "" && (
         <div
