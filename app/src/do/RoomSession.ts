@@ -1340,9 +1340,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     // The Room is already durably expired. Do not make the bounded
     // wait_for_events response wait for best-effort external media cleanup.
-    await executeMediaCloseEffects(
-      this.env,
-      snapshotMediaCloseEffects(pendingClose)
+    this.ctx.waitUntil(
+      executeMediaCloseEffects(
+        this.env,
+        snapshotMediaCloseEffects(pendingClose)
+      )
     )
   }
 

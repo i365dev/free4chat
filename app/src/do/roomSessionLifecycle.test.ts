@@ -96,6 +96,7 @@ function lifecycleHarness() {
       },
     },
     getWebSockets: () => [socket],
+    waitUntil: (promise: Promise<unknown>) => void promise,
   }
   const session = new RoomSession(
     ctx as never,
@@ -304,6 +305,7 @@ describe("RoomSession expiry cleanup", () => {
         sockets.push(socket)
         socketTags.set(socket, tags)
       }),
+      waitUntil: (promise: Promise<unknown>) => void promise,
     }
     const session = new RoomSession(
       ctx as never,
@@ -410,6 +412,47 @@ describe("RoomSession expiry cleanup", () => {
     )
     const freshRoom = store.get("room") as RoomRecord
     expect(freshRoom.participants[freshAgent.id]).toBeDefined()
+  })
+
+  it("returns room_expired when the wait request triggers expiry", async () => {
+    const { session, store } = lifecycleHarness()
+    const mediaClose = deferred<Response>()
+    const fetchMock = vi.fn(() => mediaClose.promise)
+    vi.stubGlobal("fetch", fetchMock)
+
+    const responsePromise = session.fetch(
+      new Request("https://room/control", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "agent-wait",
+          participantId: "agent",
+          token: "agent-token",
+          cursor: 0,
+          timeoutSeconds: 25,
+        }),
+      })
+    )
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    expect(store.has("room")).toBe(false)
+
+    let expiryTimeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      const response = await Promise.race([
+        responsePromise,
+        new Promise<Response>((_, reject) => {
+          expiryTimeout = setTimeout(
+            () => reject(new Error("expiry response timed out")),
+            100
+          )
+        }),
+      ])
+      expect(response.status).toBe(410)
+      expect(await response.json()).toEqual({ error: "room_expired" })
+    } finally {
+      if (expiryTimeout) clearTimeout(expiryTimeout)
+      mediaClose.resolve(new Response(null, { status: 204 }))
+      await responsePromise
+    }
   })
 
   it("authenticates, reconnects, and delivers canonical events on the hibernatable socket", async () => {
