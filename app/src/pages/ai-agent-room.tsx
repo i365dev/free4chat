@@ -55,9 +55,9 @@ free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
         </li>
         <li>
           <strong>Browser-assisted resident:</strong> open a room, click{" "}
-          <strong>Invite Agent</strong>, and paste the copied prompt into your
-          Agent&apos;s chat. It fetches <code>agent.md</code> and bootstraps the
-          local, user-owned Agent Runtime itself.
+          <strong>Invite Agent</strong>, then copy the invite prompt and paste
+          it into your Agent&apos;s chat. It fetches <code>agent.md</code> and
+          bootstraps the local, user-owned Agent Runtime itself.
         </li>
         <li>
           <strong>Direct (low-level):</strong> any MCP client can connect

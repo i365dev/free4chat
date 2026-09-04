@@ -1,14 +1,30 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("next/router", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
 
+// Observe the long-lived analytics calls (AgentInviteCopied,
+// LiveTranscriptStarted/Stopped) without changing any other utility behavior.
+vi.mock("@common/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@common/utils")>()
+  return { ...actual, trackAnalyticsEvent: vi.fn() }
+})
+
 const mockUseSfuChatRoom = vi.fn()
 vi.mock("../hooks/useSfuChatRoom", () => ({
   useSfuChatRoom: (...args: unknown[]) => mockUseSfuChatRoom(...args),
 }))
+
+import { trackAnalyticsEvent } from "@common/utils"
 
 import RoomContent from "./RoomContent"
 
@@ -155,9 +171,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(container.querySelector('[id^="cf-chl-widget"]')).toBeNull()
   })
 
-  it("copies an ordinary Agent invite without creating a Runtime provider claim", async () => {
+  it("copies the ordinary Agent invite only through the popover action, without a provider claim", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
+    vi.mocked(trackAnalyticsEvent).mockClear()
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
@@ -166,7 +183,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     render(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
+    // Opening the popover copies NOTHING and emits NOTHING.
     fireEvent.click(screen.getByRole("button", { name: "Invite Agent" }))
+    expect(screen.getByText("Invite an Agent")).toBeInTheDocument()
+    expect(writeText).not.toHaveBeenCalled()
+    expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+      "AgentInviteCopied",
+      expect.anything()
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy invite prompt" }))
     expect(writeText).toHaveBeenCalledWith(
       expect.stringContaining("Join my temporary")
     )
@@ -174,13 +200,24 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect.stringContaining("--provider-claim")
     )
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Copied!" })).toBeEnabled()
+      expect(trackAnalyticsEvent).toHaveBeenCalledWith("AgentInviteCopied", {
+        surface: "room",
+        roomType: "audio",
+      })
     )
+    // Feedback stays inside the popover; the header button never becomes
+    // "Copied!".
+    expect(
+      await screen.findByText(/✓ Invite prompt copied\./)
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Copied!" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Invite Agent" })).toBeTruthy()
   })
 
-  it("shows a retryable clipboard error for an ordinary invite", async () => {
+  it("shows a retryable clipboard error inside the invite popover", async () => {
     const writeText = vi.fn().mockRejectedValue(new Error("blocked"))
     Object.assign(navigator, { clipboard: { writeText } })
+    vi.mocked(trackAnalyticsEvent).mockClear()
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
@@ -190,9 +227,14 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getByRole("button", { name: "Invite Agent" }))
+    fireEvent.click(screen.getByRole("button", { name: "Copy invite prompt" }))
 
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "Clipboard access was blocked"
+      "Clipboard access was blocked. Try again."
+    )
+    expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+      "AgentInviteCopied",
+      expect.anything()
     )
     expect(screen.getByRole("button", { name: "Invite Agent" })).toBeEnabled()
   })
@@ -275,7 +317,9 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     // appears once as a feature button — never as a status strip.
     expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Invite Agent" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Leave" })).toBeTruthy()
+    expect(
+      screen.getAllByRole("button", { name: "Leave" }).length
+    ).toBeGreaterThan(0)
     expect(screen.getAllByText("Live Transcript").length).toBeGreaterThan(0)
     expect(
       screen.queryByText("No transcription Runtime connected")
@@ -284,5 +328,137 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       screen.queryByText("Connection command copied")
     ).not.toBeInTheDocument()
     expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
+  })
+
+  it("uses the intentional two-row mobile header layout with a truncating Room id", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      liveTranscriptMediaAvailable: false,
+      agentVoiceMediaAvailable: false,
+      runtimeHosts: {},
+      runtimeHostProviders: {},
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+
+    // Row 1: Room identity (truncating, min-width-safe container) plus the
+    // Leave lifecycle action on the same row.
+    const identity = within(screen.getByTestId("room-header-identity"))
+    expect(identity.getByText("#test-room")).toBeTruthy()
+    expect(identity.getByRole("button", { name: "Leave" })).toBeTruthy()
+
+    // Row 2: exactly the three feature actions. No plumbing labels.
+    const features = within(screen.getByTestId("room-header-features"))
+    expect(features.getByRole("button", { name: "Copy link" })).toBeTruthy()
+    expect(features.getByRole("button", { name: "Invite Agent" })).toBeTruthy()
+    expect(
+      features.getByRole("button", { name: "Live Transcript" })
+    ).toBeTruthy()
+    expect(
+      screen.queryByText("No transcription Runtime connected")
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
+  })
+
+  it("opens the Invite Agent popover from the Live Transcript setup copy", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      liveTranscriptMediaAvailable: false,
+      agentVoiceMediaAvailable: false,
+      runtimeHosts: {},
+      runtimeHostProviders: {},
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+
+    // Unavailable Live Transcript setup copy points new Humans at the
+    // Agent-first path. Cross-opening is one-feature-at-a-time: the Live
+    // Transcript dialog closes FIRST, then the Invite Agent dialog opens.
+    fireEvent.click(screen.getByRole("button", { name: "Live Transcript" }))
+    expect(
+      screen.getByRole("dialog", { name: "Live Transcript" })
+    ).toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start with Invite Agent" })
+    )
+    expect(
+      screen.queryByRole("dialog", { name: "Live Transcript" })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("dialog", { name: "Invite an Agent" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Copy invite prompt" })
+    ).toBeTruthy()
+  })
+
+  it("emits LiveTranscriptStarted only on actual Start, never on popover open", () => {
+    vi.mocked(trackAnalyticsEvent).mockClear()
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      liveTranscriptMediaAvailable: true,
+      agentVoiceMediaAvailable: true,
+      runtimeHosts: {
+        "host-a": {
+          runtimeHostId: "host-a",
+          speech: { stt: true, tts: true },
+        },
+      },
+      runtimeHostProviders: {
+        "host-a": { humanParticipantId: "human-local", claimedAt: 1 },
+      },
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+
+    // Opening the popover and viewing readiness emits nothing.
+    fireEvent.click(screen.getByRole("button", { name: "Live Transcript" }))
+    expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+      "LiveTranscriptStarted",
+      expect.anything()
+    )
+
+    // Actual Start emits exactly the existing event.
+    fireEvent.click(screen.getByRole("button", { name: "Start" }))
+    expect(trackAnalyticsEvent).toHaveBeenCalledTimes(1)
+    expect(trackAnalyticsEvent).toHaveBeenCalledWith("LiveTranscriptStarted", {
+      roomType: "audio",
+    })
   })
 })
