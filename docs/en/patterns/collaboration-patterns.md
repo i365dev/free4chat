@@ -42,10 +42,10 @@ Room. It is what they do not share.
 
 ```
 Human
- ├─ Codex @ laptop
- ├─ Ops Agent @ VPS
- └─ Browser-capable Agent
-          │
+|-- Codex @ laptop
+|-- Ops Agent @ VPS
++-- Browser-capable Agent
+          |
      Temporary Room
 ```
 
@@ -66,7 +66,7 @@ incident workflow.
 Alice + Alice's Agent
 Bob + Bob's Agent
 Carol + Carol's Agent
-          │
+          |
      Temporary Room
 ```
 
@@ -87,9 +87,9 @@ domains:
 
 ```
 Customer + Customer Agent
-          ↕
+          |
      Temporary Room
-          ↕
+          |
 Support engineer + Vendor Agent
 ```
 
@@ -104,9 +104,9 @@ as a selected-information exchange point.
 ## Pattern 4 - Personal Agent federation
 
 ```
-Phone Agent ─┐
-Laptop Agent ├─ Temporary Room
-Mac mini    ─┘
+Phone Agent  |
+Laptop Agent +-- Temporary Room
+Mac mini     |
 ```
 
 A person may eventually have Agents on a phone, laptop, Mac mini or home
