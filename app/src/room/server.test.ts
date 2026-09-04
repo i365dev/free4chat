@@ -162,6 +162,75 @@ describe("room attachment upload gate", () => {
   })
 })
 
+describe("Resident Agent event transport gate", () => {
+  it("forwards a header-authenticated WebSocket request without secrets in the URL", async () => {
+    let forwarded: Request | undefined
+    const env = {
+      SFU_ROOM: {
+        idFromName: (name: string) => ({ name }),
+        get: () => ({
+          fetch: (request: Request) => {
+            forwarded = request
+            return Promise.resolve(Response.json({ ok: true }))
+          },
+        }),
+      },
+    } as unknown as RoomProtocolEnv
+    const response = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/agent-events", {
+        method: "GET",
+        headers: {
+          Upgrade: "websocket",
+          "X-Room-Id": "room-239",
+          "X-Room-Participant-Id": "agent-1",
+          Authorization: "Bearer private-token",
+          "X-Room-Cursor": "7",
+        },
+      }),
+      env
+    )
+    expect(response.status).toBe(200)
+    expect(forwarded?.url).toBe("https://room/agent-events")
+    expect(forwarded?.url).not.toContain("private-token")
+    expect(forwarded?.headers.get("Authorization")).toBe("Bearer private-token")
+    expect(forwarded?.headers.get("X-Room-Cursor")).toBe("7")
+  })
+
+  it("accepts a native request without Origin but rejects a present invalid Origin", async () => {
+    const env = makeEnv(() => Response.json({ ok: true }))
+    const withoutOrigin = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/agent-events", {
+        method: "GET",
+        headers: {
+          Upgrade: "websocket",
+          "X-Room-Id": "room-239",
+          "X-Room-Participant-Id": "agent-1",
+          "X-Room-Participant-Token": "private-token",
+          "X-Room-Cursor": "0",
+        },
+      }),
+      env
+    )
+    expect(withoutOrigin.status).toBe(200)
+
+    const invalidOrigin = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/agent-events", {
+        method: "GET",
+        headers: {
+          Origin: "https://evil.example",
+          Upgrade: "websocket",
+          "X-Room-Id": "room-239",
+          "X-Room-Participant-Id": "agent-1",
+          "X-Room-Participant-Token": "private-token",
+          "X-Room-Cursor": "0",
+        },
+      }),
+      env
+    )
+    expect(invalidOrigin.status).toBe(403)
+  })
+})
+
 describe("Live Transcript Runtime append gate", () => {
   it("forwards only the narrow authenticated segment control payload", async () => {
     const captured: CapturedControl[] = []

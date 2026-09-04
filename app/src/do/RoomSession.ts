@@ -130,6 +130,13 @@ const MAX_AGENT_ATTACHMENTS = 8
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
+// The resident event stream is intentionally one bounded frame. The 2 MiB
+// cap covers the retained 100-message/8-attachment event window (including
+// worst-case UTF-8 text), plus JSON, roster, and Runtime Host overhead; the
+// serialized-byte check below is the final authority rather than an estimate.
+// An over-cap Room state gets a deterministic protocol error, never a
+// same-cursor reconnect loop.
+const RESIDENT_EVENT_MAX_BYTES = 2 << 20
 // Bounded per-agent scratch state for server-side revocation (finding #3):
 // one mid per Human audio track the note-taker Agent is currently
 // subscribed to. Not a general media-session database — cleared to empty
@@ -222,6 +229,13 @@ interface ConnectionAttachment {
   participantId: string
   token: string
   connectionNonce: string
+}
+
+interface AgentEventSocketAttachment {
+  kind: "agent-event"
+  participantId: string
+  connectionNonce: string
+  cursor: number
 }
 
 interface StoredParticipant extends RoomParticipant {
@@ -1276,7 +1290,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // way, so there's nothing to gain from ordering it before the delete,
     // and doing it after keeps the deletion itself uncontested by an
     // in-flight fetch.
-    let pendingClose: PendingMediaCleanup[] = []
+    let pendingClose: PendingMediaCleanup[] = room.pendingMediaCleanup
     if (room.meetingNotes.active && room.meetingNotes.agentParticipantId) {
       this.stageAgentMediaRevocation(room, room.meetingNotes.agentParticipantId)
       pendingClose = room.pendingMediaCleanup
@@ -1286,7 +1300,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.deleteAllSurfaceKeys()
     for (const attachment of room.attachments)
       await this.deleteAttachmentChunks(attachment)
-    await this.ctx.storage.delete(["room", LIVE_TRANSCRIPT_STORAGE_KEY])
+    // The explicit `deleteAlarm()` is required for the current pre-2026-02-24
+    // compatibility date. `deleteAll()` is the final full-storage and
+    // unknown-key backstop for this legacy new_classes-backed RoomSession;
+    // no storage backend assumption is needed here.
+    await this.ctx.storage.deleteAlarm()
+    await this.ctx.storage.deleteAll()
     await executeMediaCloseEffects(
       this.env,
       snapshotMediaCloseEffects(pendingClose)
@@ -1318,6 +1337,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const encoded = JSON.stringify(message)
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === except) continue
+      // Resident Agent event sockets have their own envelope contract. They
+      // must never receive browser state/chat frames; those would be parsed
+      // as stream data and tear down the narrow event transport.
+      if (this.deserializeAgentEventAttachment(socket)) continue
       try {
         socket.send(encoded)
       } catch {
@@ -1336,6 +1359,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         { type: "state", state: this.stateFor(current) },
         except
       )
+      // Roster and Runtime Host changes do not necessarily advance the Room
+      // message sequence. Resident sockets therefore receive a small
+      // current-state envelope on every state broadcast as well as on event
+      // sequence changes.
+      this.pushAgentEventSockets(current, true, except)
     }
   }
 
@@ -1613,6 +1641,263 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
       }
     }
+    this.pushAgentEventSockets(room)
+  }
+
+  private agentEventSocketTag(participantId: string): string {
+    return `agent-event:${participantId}`
+  }
+
+  private deserializeAgentEventAttachment(
+    socket: WebSocket
+  ): AgentEventSocketAttachment | null {
+    try {
+      const attachment =
+        socket.deserializeAttachment() as Partial<AgentEventSocketAttachment> | null
+      if (
+        attachment?.kind !== "agent-event" ||
+        typeof attachment.participantId !== "string" ||
+        typeof attachment.connectionNonce !== "string" ||
+        typeof attachment.cursor !== "number" ||
+        !Number.isSafeInteger(attachment.cursor) ||
+        attachment.cursor < 0
+      )
+        return null
+      return attachment as AgentEventSocketAttachment
+    } catch {
+      return null
+    }
+  }
+
+  private pushAgentEventSocket(
+    room: RoomRecord,
+    socket: WebSocket,
+    force: boolean
+  ): void {
+    const attachment = this.deserializeAgentEventAttachment(socket)
+    if (!attachment) return
+    const participant = room.participants[attachment.participantId]
+    if (
+      !participant ||
+      participant.kind !== "agent" ||
+      participant.connectionNonce !== attachment.connectionNonce
+    ) {
+      try {
+        socket.close(4003, "Unauthorized")
+      } catch {
+        // A stale socket may already be closed.
+      }
+      return
+    }
+    const result = this.agentEvents(
+      room,
+      attachment.participantId,
+      attachment.cursor
+    )
+    if (
+      !force &&
+      result.events.length === 0 &&
+      result.cursor <= attachment.cursor &&
+      !result.truncated
+    )
+      return
+    try {
+      const encoded = JSON.stringify({
+        type: "events",
+        ...result,
+        participants: rosterProjection(room.participants),
+        runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
+      })
+      if (
+        new TextEncoder().encode(encoded).byteLength > RESIDENT_EVENT_MAX_BYTES
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "event_envelope_too_large",
+          })
+        )
+        socket.close(1009, "Event envelope too large")
+        return
+      }
+      socket.send(encoded)
+      // This is delivery progress, not a Room mutation. Keeping it on the
+      // hibernation attachment avoids a second durable event cursor and lets
+      // reconnect catch up from the Runtime-owned cursor.
+      attachment.cursor = result.cursor
+      socket.serializeAttachment(attachment)
+    } catch {
+      try {
+        socket.close(1011, "Event delivery failed")
+      } catch {
+        // The socket may have failed between send and close.
+      }
+    }
+  }
+
+  private pushAgentEventSockets(
+    room: RoomRecord,
+    force = false,
+    except?: WebSocket
+  ): void {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === except) continue
+      this.pushAgentEventSocket(room, socket, force)
+    }
+  }
+
+  private closeAgentEventSockets(
+    participantId: string,
+    code: number,
+    reason: string
+  ): void {
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(participantId)
+    )) {
+      try {
+        socket.close(code, reason)
+      } catch {
+        // A socket may already be closed.
+      }
+    }
+  }
+
+  private async handleAgentEventMessage(
+    socket: WebSocket,
+    attachment: AgentEventSocketAttachment,
+    raw: string | ArrayBuffer
+  ): Promise<void> {
+    if (typeof raw !== "string") {
+      socket.close(1003, "Text messages only")
+      return
+    }
+    let message: { type?: unknown; cursor?: unknown }
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      message = parsed && typeof parsed === "object" ? parsed : {}
+    } catch {
+      socket.close(1003, "Invalid message")
+      return
+    }
+    if (message.type !== "heartbeat") {
+      socket.close(1008, "Unsupported message")
+      return
+    }
+    const room = await this.activeRoom()
+    if (!room) {
+      socket.close(4001, "Room expired")
+      return
+    }
+    const participant = room.participants[attachment.participantId]
+    if (
+      !participant ||
+      participant.kind !== "agent" ||
+      participant.connectionNonce !== attachment.connectionNonce
+    ) {
+      socket.close(4003, "Unauthorized")
+      return
+    }
+    const requestedCursor =
+      message.cursor === undefined ? attachment.cursor : message.cursor
+    if (
+      typeof requestedCursor !== "number" ||
+      !Number.isSafeInteger(requestedCursor) ||
+      requestedCursor < 0
+    ) {
+      socket.close(1008, "Invalid cursor")
+      return
+    }
+    participant.connected = true
+    participant.lastSeenAt = Date.now()
+    attachment.cursor = Math.min(requestedCursor, room.nextMessageSequence)
+    await this.saveRoom(room)
+    await this.scheduleNextAlarm(room)
+    socket.serializeAttachment(attachment)
+    // A heartbeat is only liveness and optional cursor catch-up: it never
+    // appends a Room message, wakes a Harness by itself, or emits analytics.
+    this.pushAgentEventSockets(room)
+  }
+
+  private async handleAgentEventClose(
+    _socket: WebSocket,
+    attachment: AgentEventSocketAttachment
+  ): Promise<void> {
+    const room = await this.activeRoom()
+    if (!room) return
+    const participant = room.participants[attachment.participantId]
+    if (
+      !participant ||
+      participant.kind !== "agent" ||
+      participant.connectionNonce !== attachment.connectionNonce
+    )
+      return
+    participant.connected = false
+    participant.connectionNonce = undefined
+    participant.lastSeenAt = Date.now()
+    await this.saveRoom(room)
+    await this.scheduleNextAlarm(room)
+    await this.broadcastState(room)
+  }
+
+  private async handleAgentEventConnection(
+    request: Request
+  ): Promise<Response> {
+    if (request.method !== "GET")
+      return this.json({ error: "method_not_allowed" }, 405)
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
+      return this.json({ error: "websocket_upgrade_required" }, 426)
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const headerToken = request.headers.get("X-Room-Participant-Token") ?? ""
+    const authorization = request.headers.get("Authorization") ?? ""
+    const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1] ?? ""
+    if (headerToken && bearerToken && headerToken !== bearerToken)
+      return this.json({ error: "unauthorized" }, 401)
+    const token = bearerToken || headerToken
+    const rawCursor = request.headers.get("X-Room-Cursor") ?? ""
+    const cursor = Number(rawCursor)
+    if (!participantId || !token || !Number.isSafeInteger(cursor) || cursor < 0)
+      return this.json({ error: "unauthorized" }, 401)
+
+    const room = await this.activeRoom()
+    if (!room) return this.json({ error: "room_expired" }, 410)
+    const participant = this.findParticipant(room, participantId, token)
+    if (!participant || participant.kind !== "agent")
+      return this.json({ error: "unauthorized" }, 401)
+    // A reconnect may reuse the same participant only while its existing
+    // lease is still valid. After that point the Runtime follows the normal
+    // MCP rejoin lifecycle and gets a fresh participant capability.
+    if (participant.lastSeenAt + AGENT_LEASE_MS <= Date.now())
+      return this.json({ error: "unauthorized" }, 401)
+
+    for (const previous of this.ctx.getWebSockets(
+      this.agentEventSocketTag(participant.id)
+    )) {
+      try {
+        previous.close(4000, "Replaced")
+      } catch {
+        // A reconnect can race the old socket's close handshake.
+      }
+    }
+    const wasConnected = participant.connected
+    const connectionNonce = crypto.randomUUID()
+    participant.connected = true
+    participant.connectionNonce = connectionNonce
+    participant.lastSeenAt = Date.now()
+    await this.saveRoom(room)
+    await this.scheduleNextAlarm(room)
+
+    const pair = new WebSocketPair()
+    const [client, server] = Object.values(pair) as [WebSocket, WebSocket]
+    this.ctx.acceptWebSocket(server, [this.agentEventSocketTag(participant.id)])
+    server.serializeAttachment({
+      kind: "agent-event",
+      participantId: participant.id,
+      connectionNonce,
+      cursor: Math.min(cursor, room.nextMessageSequence),
+    } satisfies AgentEventSocketAttachment)
+    this.pushAgentEventSocket(room, server, true)
+    if (!wasConnected) await this.broadcastState(room, server)
+    return new Response(null, { status: 101, webSocket: client })
   }
 
   private async waitForAgent(
@@ -2079,6 +2364,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           participant: this.participantForInfo(participant),
           cursor: room.nextMessageSequence,
           expiresAt: room.expiresAt,
+          agentLeaseMs: AGENT_LEASE_MS,
           ...(providerHandleForResponse
             ? { runtimeProviderHandle: providerHandleForResponse }
             : {}),
@@ -2177,6 +2463,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant: this.participantForInfo(participant),
         cursor: room.nextMessageSequence,
         expiresAt: room.expiresAt,
+        agentLeaseMs: AGENT_LEASE_MS,
       })
     }
 
@@ -2980,6 +3267,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       room.agentVoice = grantTransition.agentVoice
       this.applyEmptyRoomExpiry(room, Date.now())
       await this.saveRoom(room)
+      this.closeAgentEventSockets(participant.id, 1000, "Left room")
       if (pendingDuration) this.trackRoomAnalytics([pendingDuration])
       // #111: no surface history survives departure — chunks die after the
       // metadata removal is durable, best-effort so departure always
@@ -3401,6 +3689,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     room.agentVoice = grantTransition.agentVoice
     this.applyEmptyRoomExpiry(room, Date.now())
     await this.saveRoom(room)
+    if (participant.kind === "agent")
+      this.closeAgentEventSockets(participant.id, 1000, "Left room")
     if (pendingDuration) this.trackRoomAnalytics([pendingDuration])
     await this.broadcastState(room)
     await this.scheduleNextAlarm(room)
@@ -4044,6 +4334,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.handleAttachmentUpload(request)
     if (request.method === "POST" && url.pathname === "/surface")
       return this.handleSurfaceUpload(request)
+    if (url.pathname === "/agent-events")
+      return this.handleAgentEventConnection(request)
     if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
       if (request.method !== "GET")
         return this.json({ error: "method_not_allowed" }, 405)
@@ -4283,6 +4575,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     socket: WebSocket,
     raw: string | ArrayBuffer
   ): Promise<void> {
+    const agentAttachment = this.deserializeAgentEventAttachment(socket)
+    if (agentAttachment)
+      return this.handleAgentEventMessage(socket, agentAttachment, raw)
     if (typeof raw !== "string") return
     const attachment =
       socket.deserializeAttachment() as ConnectionAttachment | null
@@ -4304,6 +4599,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     _reason: string,
     _wasClean: boolean
   ): Promise<void> {
+    const agentAttachment = this.deserializeAgentEventAttachment(socket)
+    if (agentAttachment) {
+      await this.handleAgentEventClose(socket, agentAttachment)
+      return
+    }
     const attachment =
       socket.deserializeAttachment() as ConnectionAttachment | null
     if (!attachment) return

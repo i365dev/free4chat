@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -102,8 +103,9 @@ type Options struct {
 // reaches a Harness turn, status payload, or log line.
 //
 // Shutdown semantics mirror the Node reference: Stop signals the loop and
-// waits for the in-flight bounded long-poll (<= ~25s) to unwind before
-// releasing resources — bounded shutdown without cancelling live HTTP calls.
+// closes the hibernatable event stream before releasing resources. The public
+// MCP long-poll remains available to direct callers and compatibility test
+// clients, but is not the transport used by the built-in resident Runtime.
 type ResidentRuntime struct {
 	options             Options
 	log                 LogFunc
@@ -112,6 +114,7 @@ type ResidentRuntime struct {
 	participantID       string
 	cursor              int64
 	expiresAt           int64
+	agentLeaseMs        int64
 	state               State
 	lastError           string
 	stopped             bool
@@ -138,6 +141,8 @@ type ResidentRuntime struct {
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
 	stopCh      chan struct{}
+	residentMu  sync.Mutex
+	resident    types.ResidentEventStream
 
 	mediaController *media.Controller
 	mediaMu         sync.Mutex
@@ -388,6 +393,13 @@ func (r *ResidentRuntime) Start() error {
 // a stopped runtime.
 func (r *ResidentRuntime) StartLoop() {
 	r.loopWG.Add(1)
+	if resident, ok := r.options.Client.(types.ResidentEventClient); ok {
+		go r.residentWaitLoop(resident)
+		return
+	}
+	// Keep the old loop for injected clients that intentionally implement only
+	// the public Free4ChatClient interface. The production Client implements
+	// ResidentEventClient, so this is not an official-runtime fallback.
 	go r.waitLoop()
 }
 
@@ -527,6 +539,7 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.cursor = joined.Cursor
 	r.lastHarnessSequence = joined.Cursor
 	r.expiresAt = joined.ExpiresAt
+	r.agentLeaseMs = joined.AgentLeaseMs
 	r.eventBuffer.Clear()
 	r.pendingAddressed = nil
 	r.state = StateWaiting
@@ -609,6 +622,192 @@ func (r *ResidentRuntime) waitLoop() {
 	}
 }
 
+// residentWaitLoop is the official Runtime event loop. It uses one narrow
+// hibernatable WebSocket for server-pushed Room envelopes and sends only
+// sparse lease heartbeats. All Room mutations still use the ordinary
+// authenticated client methods, and the participant handle never leaves this
+// object.
+func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
+	defer r.loopWG.Done()
+	retryAttempt := 0
+	for {
+		if r.isStopped() {
+			return
+		}
+		handle := r.currentHandle()
+		if handle == "" {
+			return
+		}
+		dialCtx, cancelDial := context.WithCancel(context.Background())
+		// A WebSocket handshake can still be in flight when Stop is called.
+		// Tie the handshake to the Runtime lifecycle as well as the established
+		// stream, so shutdown cannot inherit the HTTP client's 45s timeout.
+		go func() {
+			select {
+			case <-r.stopCh:
+				cancelDial()
+			case <-dialCtx.Done():
+			}
+		}()
+		stream, err := client.OpenResidentEventStream(
+			dialCtx, handle, r.currentCursor(),
+		)
+		cancelDial()
+		if err == nil {
+			if !r.setResidentStream(stream) {
+				_ = stream.Close()
+				return
+			}
+			err = r.consumeResidentEventStream(stream)
+			r.clearResidentStream(stream)
+			_ = stream.Close()
+		}
+
+		if r.isStopped() {
+			return
+		}
+		if err == nil {
+			// A clean server close is still a reconnect boundary. The stream
+			// itself does not carry an HTTP lease, so use the same bounded
+			// backoff as every other transport failure.
+			err = &free4chat.Error{
+				Message: "resident event stream closed",
+				Code:    free4chat.CodeTransient,
+			}
+		}
+		switch free4chat.CodeOf(err) {
+		case free4chat.CodeInvalidParticipantHandle:
+			if !r.rejoinAfterExpiry() {
+				return
+			}
+			retryAttempt = 0
+			continue
+		case free4chat.CodeRoomExpired:
+			r.cleanupAfterRoomExpiry()
+			return
+		case free4chat.CodeToolError:
+			// A malformed or over-cap application frame is deterministic. Do
+			// not reconnect with the same cursor forever; leave the Room and
+			// surface a terminal local error instead.
+			if r.beginStop("resident event protocol error") {
+				r.releaseResources()
+			}
+			return
+		default:
+			retryAttempt++
+			delay := RetryDelay(retryAttempt - 1)
+			r.mu.Lock()
+			r.state = StateReconnecting
+			r.lastError = err.Error()
+			r.lastErrorSource = "wait"
+			r.mu.Unlock()
+			r.log("resident_event_retry", map[string]string{
+				"delayMs": strconv.FormatInt(delay.Milliseconds(), 10),
+			})
+			if !r.sleep(delay) {
+				return
+			}
+			r.restoreStateAfterRetry()
+		}
+	}
+}
+
+func (r *ResidentRuntime) consumeResidentEventStream(
+	stream types.ResidentEventStream,
+) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	heartbeatErrors := make(chan error, 1)
+	interval := r.residentHeartbeatInterval()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := stream.Heartbeat(ctx, r.currentCursor()); err != nil {
+					select {
+					case heartbeatErrors <- err:
+					default:
+					}
+					cancel()
+					_ = stream.Close()
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	for {
+		result, err := stream.Receive(ctx)
+		if err != nil {
+			select {
+			case heartbeatErr := <-heartbeatErrors:
+				return heartbeatErr
+			default:
+			}
+			if r.isStopped() {
+				return nil
+			}
+			return err
+		}
+		r.advanceFromWait(result)
+		if len(r.pendingAddressedSnapshot()) > 0 && !r.isStopped() {
+			r.drainTurns()
+		}
+	}
+}
+
+func (r *ResidentRuntime) setResidentStream(
+	stream types.ResidentEventStream,
+) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return false
+	}
+	r.residentMu.Lock()
+	r.resident = stream
+	r.residentMu.Unlock()
+	return true
+}
+
+func (r *ResidentRuntime) clearResidentStream(
+	stream types.ResidentEventStream,
+) {
+	r.residentMu.Lock()
+	if r.resident == stream {
+		r.resident = nil
+	}
+	r.residentMu.Unlock()
+}
+
+func (r *ResidentRuntime) closeResidentStream() {
+	r.residentMu.Lock()
+	stream := r.resident
+	r.resident = nil
+	r.residentMu.Unlock()
+	if stream != nil {
+		_ = stream.Close()
+	}
+}
+
+func (r *ResidentRuntime) residentHeartbeatInterval() time.Duration {
+	r.mu.Lock()
+	leaseMs := r.agentLeaseMs
+	r.mu.Unlock()
+	if leaseMs <= 0 || leaseMs > int64((24*time.Hour)/time.Millisecond) {
+		leaseMs = int64(free4chat.DefaultAgentLeaseDuration() / time.Millisecond)
+	}
+	interval := time.Duration(leaseMs) * time.Millisecond / 3
+	if interval <= 0 {
+		interval = free4chat.DefaultAgentLeaseDuration() / 3
+	}
+	return interval
+}
+
 func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	r.mu.Lock()
 	if result.Cursor > r.cursor {
@@ -623,7 +822,7 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 		r.lastErrorSource = ""
 	}
 	r.expiresAt = result.ExpiresAt
-	if len(result.Participants) > 0 {
+	if result.Participants != nil {
 		r.roster = append([]types.ParticipantRosterEntry(nil), result.Participants...)
 	}
 	r.mu.Unlock()
@@ -974,9 +1173,9 @@ func (r *ResidentRuntime) cleanupAfterRoomExpiry() {
 	}
 }
 
-// Stop tears everything down: signal the loop, wait for the in-flight
-// bounded long-poll to unwind, best-effort cancel any running Harness turn,
-// release the room lease, close the ACP process, and close the client.
+// Stop tears everything down: signal the loop, close the resident event
+// stream, best-effort cancel any running Harness turn, release the room lease,
+// close the ACP process, and close the client.
 func (r *ResidentRuntime) Stop() {
 	r.beginStop("")
 	r.releaseResources()
@@ -999,6 +1198,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 		r.eventBuffer.Clear()
 		r.mu.Unlock()
 		close(r.stopCh)
+		r.closeResidentStream()
 		transitioned = true
 	})
 	return transitioned

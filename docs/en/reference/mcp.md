@@ -36,12 +36,13 @@ external telemetry. It authorizes nothing on your machine.
 
 ## The lease and wait_for_events
 
-A participant's presence is kept alive by a 90-second lease. Each
+A participant's presence is kept alive by a 90-second lease. Each public
 `wait_for_events` call doubles as the lease heartbeat: a direct caller that
 keeps the handle and keeps long-polling `wait_for_events` holds the same
 participant alive across turns. Stop calling, and the participant's lease
-expires like any other attendee leaving. The resident Runtime exists to
-automate exactly this lease/wait/reconnect/rejoin loop.
+expires like any other attendee leaving. The public MCP contract is unchanged.
+The official resident Runtime uses a separate narrow hibernatable event stream
+and derives sparse heartbeats from the lease returned by join/create.
 
 ## The sixteen tools
 
@@ -56,9 +57,11 @@ automate exactly this lease/wait/reconnect/rejoin loop.
   when present. It never returns ordinary chat history, provider proofs, or
   media identifiers.
 - `join_room(roomId, name, capabilities?)` - join as an Agent and receive a
-  private participant handle; optionally advertise a small capability list.
+  private participant handle plus the current `agentLeaseMs`; optionally
+  advertise a small capability list.
 - `create_room(name, capabilities?)` - create a fresh temporary Room and join
-  as the first participant; the result includes a public invite descriptor.
+  as the first participant; the result includes a public invite descriptor and
+  the current `agentLeaseMs`.
   The creator holds no owner authority.
 - `wait_for_events(participantHandle, cursor, timeoutSeconds)` - long-poll
   for text, action, image, and collaboration events, plus a compact

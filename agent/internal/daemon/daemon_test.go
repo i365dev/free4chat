@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
@@ -14,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/runtime"
 	"github.com/i365dev/free4chat/agent/internal/speech"
@@ -527,7 +530,7 @@ func TestJoinFailureCleanupGhostFree(t *testing.T) {
 }
 
 // TestFullVerticalSliceLocalE2E drives the entire Go pipeline locally:
-// daemon -> runtime long-poll -> ACP fake Harness -> send_text back.
+// daemon -> resident event WebSocket -> ACP fake Harness -> send_text back.
 // The MCP layer is a scripted in-process HTTP server; the Harness is the
 // same nd-json fake agent binary the harness package tests use.
 func TestFullVerticalSliceLocalE2E(t *testing.T) {
@@ -542,6 +545,21 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 
 	waitCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveResidentEventSocket(w, r, map[string]any{
+			"type": "events",
+			"events": []any{map[string]any{
+				"sequence": float64(1), "type": "text",
+				"participant": map[string]any{
+					"id": "human-1", "name": "Ada", "kind": "human",
+				},
+				"text": "hello there", "addressed": true,
+				"createdAt": float64(1700000000000),
+			}},
+			"cursor":    float64(1),
+			"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+		}) {
+			return
+		}
 		var body struct {
 			Method string `json:"method"`
 			Params struct {
@@ -560,7 +578,7 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 			switch body.Params.Name {
 			case "join_room":
 				writeJSONRPC(w, callToolResult(map[string]any{
-					"participantHandle": "secret-e2e-handle",
+					"participantHandle": residentTestHandle("vertical-e2e", "agent-1", "secret-e2e-token"),
 					"participant":       map[string]any{"id": "agent-1"},
 					"cursor":            float64(0),
 					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
@@ -568,34 +586,8 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 			case "wait_for_events":
 				mu.Lock()
 				waitCalls++
-				current := waitCalls
-				cursor := body.Params.Cursor
 				mu.Unlock()
-				if current == 1 {
-					writeJSONRPC(w, callToolResult(map[string]any{
-						"events": []any{map[string]any{
-							"sequence": float64(1),
-							"type":     "text",
-							"participant": map[string]any{
-								"id":   "human-1",
-								"name": "Ada",
-								"kind": "human",
-							},
-							"text":      "hello there",
-							"addressed": true,
-							"createdAt": float64(1700000000000),
-						}},
-						"cursor":    float64(1),
-						"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
-					}))
-					return
-				}
-				time.Sleep(30 * time.Millisecond)
-				writeJSONRPC(w, callToolResult(map[string]any{
-					"events":    []any{},
-					"cursor":    cursor,
-					"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
-				}))
+				http.Error(w, "resident Runtime must use the event stream", http.StatusInternalServerError)
 			case "send_text":
 				text, _ := body.Params.Arguments["text"].(string)
 				mu.Lock()
@@ -640,7 +632,7 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 	}
 
 	// Wait for the addressed turn to be answered through the whole chain.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		count := len(sentTexts)
@@ -652,7 +644,11 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 	}
 	mu.Lock()
 	texts := append([]sentRecord(nil), sentTexts...)
+	waits := waitCalls
 	mu.Unlock()
+	if waits != 0 {
+		t.Fatalf("official resident Runtime used public wait_for_events %d times", waits)
+	}
 	if len(texts) != 1 || texts[0].Text != "reply-1" {
 		mu.Lock()
 		lr := leftRoom
@@ -730,6 +726,21 @@ func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
 	var sentTexts []string
 	waitCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveResidentEventSocket(w, r, map[string]any{
+			"type": "events",
+			"events": []any{map[string]any{
+				"sequence": float64(1), "type": "text",
+				"participant": map[string]any{
+					"id": "human-1", "name": "Ada", "kind": "human",
+				},
+				"text": "please leave now", "addressed": true,
+				"createdAt": float64(1700000000000),
+			}},
+			"cursor":    float64(1),
+			"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+		}) {
+			return
+		}
 		var body struct {
 			Method string `json:"method"`
 			Params struct {
@@ -746,7 +757,7 @@ func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
 			switch body.Params.Name {
 			case "join_room":
 				writeJSONRPC(w, callToolResult(map[string]any{
-					"participantHandle": "secret-self-leave-handle",
+					"participantHandle": residentTestHandle("self-leave", "agent-self-leave", "secret-self-leave-token"),
 					"participant":       map[string]any{"id": "agent-self-leave"},
 					"cursor":            float64(0),
 					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
@@ -754,27 +765,8 @@ func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
 			case "wait_for_events":
 				mu.Lock()
 				waitCalls++
-				current := waitCalls
 				mu.Unlock()
-				if current == 1 {
-					writeJSONRPC(w, callToolResult(map[string]any{
-						"events": []any{map[string]any{
-							"sequence": float64(1), "type": "text",
-							"participant": map[string]any{
-								"id": "human-1", "name": "Ada", "kind": "human",
-							},
-							"text": "please leave now", "addressed": true,
-							"createdAt": float64(1700000000000),
-						}},
-						"cursor":    float64(1),
-						"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
-					}))
-					return
-				}
-				writeJSONRPC(w, callToolResult(map[string]any{
-					"events": []any{}, "cursor": body.Params.Cursor,
-					"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
-				}))
+				http.Error(w, "resident Runtime must use the event stream", http.StatusInternalServerError)
 			case "leave_room":
 				mu.Lock()
 				leaveCalls++
@@ -810,7 +802,7 @@ func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
 	}
 	workspace := filepath.Join(WorkspacesRoot(), view.InstanceID)
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		left := leaveCalls
@@ -823,7 +815,11 @@ func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
 	mu.Lock()
 	left := leaveCalls
 	sent := append([]string(nil), sentTexts...)
+	waits := waitCalls
 	mu.Unlock()
+	if waits != 0 {
+		t.Fatalf("official resident Runtime used public wait_for_events %d times", waits)
+	}
 	if left != 1 || d.InstanceCount() != 0 {
 		t.Fatalf("confirmed self-leave cleanup mismatch: leaveCalls=%d residents=%d", left, d.InstanceCount())
 	}
@@ -859,6 +855,32 @@ func writeJSONRPC(w http.ResponseWriter, envelope any) {
 	_ = json.NewEncoder(w).Encode(envelope)
 }
 
+// serveResidentEventSocket is the local E2E peer for the native Runtime's
+// narrow event transport. It deliberately does not expose an MCP wait route;
+// the tests prove the production path can receive the canonical event
+// envelope over WebSocket.
+func serveResidentEventSocket(w http.ResponseWriter, r *http.Request, payload any) bool {
+	if r.URL.Path != "/api/room/agent-events" {
+		return false
+	}
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return true
+	}
+	encoded, _ := json.Marshal(payload)
+	_ = conn.Write(context.Background(), websocket.MessageText, encoded)
+	return true
+}
+
+func residentTestHandle(roomID, participantID, participantToken string) string {
+	payload, _ := json.Marshal(map[string]string{
+		"room":             roomID,
+		"participantId":    participantID,
+		"participantToken": participantToken,
+	})
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
 // TestRoomExpiryRemovesResidentAndWorkspace pins the Node reference's
 // onRoomExpired semantics: after the server reports room_expired, the
 // resident leaves the registry AND its workspace is cleaned up immediately —
@@ -867,6 +889,12 @@ func TestRoomExpiryRemovesResidentAndWorkspace(t *testing.T) {
 	d, _ := startDaemon(t)
 
 	expiryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveResidentEventSocket(w, r, map[string]any{
+			"type":    "expired",
+			"expired": true,
+		}) {
+			return
+		}
 		var body struct {
 			Method string `json:"method"`
 			Params struct {
@@ -881,22 +909,14 @@ func TestRoomExpiryRemovesResidentAndWorkspace(t *testing.T) {
 			switch body.Params.Name {
 			case "join_room":
 				writeJSONRPC(w, callToolResult(map[string]any{
-					"participantHandle": "expiry-handle",
+					"participantHandle": residentTestHandle("doomed-room", "agent-expiring", "expiry-token"),
 					"participant":       map[string]any{"id": "agent-expiring"},
 					"cursor":            float64(0),
 					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
 				}))
 			case "wait_for_events":
-				// First long-poll reports the natural room expiry.
-				writeJSONRPC(w, map[string]any{
-					"jsonrpc": "2.0", "id": 1,
-					"result": map[string]any{
-						"isError": true,
-						"content": []any{map[string]any{
-							"type": "text", "text": `{"error":"room_expired"}`,
-						}},
-					},
-				})
+				// The official Runtime must not use the public long-poll.
+				http.Error(w, "resident Runtime must use the event stream", http.StatusInternalServerError)
 			case "leave_room":
 				writeJSONRPC(w, callToolResult(map[string]any{}))
 			default:
@@ -926,9 +946,9 @@ func TestRoomExpiryRemovesResidentAndWorkspace(t *testing.T) {
 		t.Fatalf("join view mismatch: %s", joined)
 	}
 
-	// The runtime's wait loop must notice room_expired and release itself
+	// The runtime's event stream must notice room_expired and release itself
 	// through the daemon callback: registry entry gone, workspace removed.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && d.InstanceCount() != 0 {
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -955,14 +975,20 @@ func TestRoomExpiryRemovesResidentAndWorkspace(t *testing.T) {
 }
 
 // TestCreateImmediateRoomExpiryLeavesNoGhost pins the create-lifecycle
-// registration race: create_room succeeds, the FIRST wait_for_events already
+// registration race: create_room succeeds, the FIRST event stream already
 // reports room_expired. Because the daemon registers the resident BEFORE the
-// wait loop starts, the expiry cleanup must unregister it and remove its
+// event stream starts, the expiry cleanup must unregister it and remove its
 // workspace — never re-register a ghost whose workspace is already gone.
 func TestCreateImmediateRoomExpiryLeavesNoGhost(t *testing.T) {
 	d, _ := startDaemon(t)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveResidentEventSocket(w, r, map[string]any{
+			"type":    "expired",
+			"expired": true,
+		}) {
+			return
+		}
 		var body struct {
 			Method string `json:"method"`
 			Params struct {
@@ -977,7 +1003,7 @@ func TestCreateImmediateRoomExpiryLeavesNoGhost(t *testing.T) {
 			switch body.Params.Name {
 			case "create_room":
 				writeJSONRPC(w, callToolResult(map[string]any{
-					"participantHandle": "create-expiry-handle",
+					"participantHandle": residentTestHandle("doomed-created-room", "agent-created", "create-expiry-token"),
 					"participant":       map[string]any{"id": "agent-created"},
 					"cursor":            float64(0),
 					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
@@ -989,16 +1015,8 @@ func TestCreateImmediateRoomExpiryLeavesNoGhost(t *testing.T) {
 					},
 				}))
 			case "wait_for_events":
-				// The very first long-poll reports natural room expiry.
-				writeJSONRPC(w, map[string]any{
-					"jsonrpc": "2.0", "id": 1,
-					"result": map[string]any{
-						"isError": true,
-						"content": []any{map[string]any{
-							"type": "text", "text": `{"error":"room_expired"}`,
-						}},
-					},
-				})
+				// The official Runtime must not use the public long-poll.
+				http.Error(w, "resident Runtime must use the event stream", http.StatusInternalServerError)
 			case "leave_room":
 				writeJSONRPC(w, callToolResult(map[string]any{}))
 			default:
@@ -1030,9 +1048,9 @@ func TestCreateImmediateRoomExpiryLeavesNoGhost(t *testing.T) {
 		t.Fatalf("create payload mismatch: %s", createdPayload)
 	}
 
-	// The post-admission wait loop must observe the immediate expiry and
+	// The post-admission event stream must observe the immediate expiry and
 	// release the resident through the daemon callback: no ghost instance.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) && d.InstanceCount() != 0 {
 		time.Sleep(25 * time.Millisecond)
 	}
