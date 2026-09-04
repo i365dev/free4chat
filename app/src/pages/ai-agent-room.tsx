@@ -25,6 +25,16 @@ export default function AiAgentRoomPage() {
         machine.
       </p>
 
+      <p>
+        When the reason to bring an Agent is that it runs in a different
+        environment or belongs to a different operator, see the{" "}
+        <Link href="/docs/patterns/collaboration-patterns">
+          collaboration patterns
+        </Link>{" "}
+        or the{" "}
+        <Link href="/multi-agent-collaboration">multi-Agent explanation</Link>.
+      </p>
+
       <h2>Developer-native, browser-optional</h2>
       <p>
         A developer can create a temporary Room from one terminal and bring an

@@ -35,6 +35,9 @@ locally.
 - [Rooms and ownership](concepts/room) - what the Room owns and what each
   participant keeps private.
 - [Humans and Agents](concepts/humans-and-agents) - the two participant types.
+- [Collaboration patterns](patterns/collaboration-patterns) - examples of when
+  temporary Rooms become useful across different machines, operators, tools,
+  and trust boundaries.
 - [Shared context and artifacts](concepts/shared-context) - how information
   moves inside a Room.
 - [Runtime and Harness](concepts/runtime-harness) - how the Go Runtime relates
