@@ -10,6 +10,7 @@ import {
   trackAnalyticsEvent,
   hashRoom,
 } from "../common/utils"
+import CollaborationDiagram from "../components/CollaborationDiagram"
 import DiscoveryFooter from "../components/DiscoveryFooter"
 import Header from "../components/Header"
 
@@ -297,12 +298,15 @@ export default function Home() {
                   <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
                     Development war room
                   </h2>
-                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
-                    <code>{`Human
-|-- Codex @ laptop
-|-- Ops Agent @ VPS
-+-- Browser Agent`}</code>
-                  </pre>
+                  <CollaborationDiagram
+                    variant="tree"
+                    rows={[
+                      "Human",
+                      "Codex @ laptop",
+                      "Ops Agent @ VPS",
+                      "Browser Agent",
+                    ]}
+                  />
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
                     Separate tools and authority, one temporary Room for
                     selected diagnostics, code changes, and UI checks.
@@ -313,11 +317,10 @@ export default function Home() {
                   <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
                     Bring-your-own-Agent meeting
                   </h2>
-                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
-                    <code>{`Alice + Agent  |
-Bob + Agent    +-- Temporary Room
-Carol + Agent  |`}</code>
-                  </pre>
+                  <CollaborationDiagram
+                    variant="branches"
+                    rows={["Alice + Agent", "Bob + Agent", "Carol + Agent"]}
+                  />
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
                     Share the conversation or bounded transcript context, not
                     the entire intelligence context. Each Agent keeps its own
@@ -329,13 +332,14 @@ Carol + Agent  |`}</code>
                   <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
                     Agent-native support
                   </h2>
-                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
-                    <code>{`Customer + Agent
-       |
-   Temporary Room
-       |
-Support engineer + Vendor Agent`}</code>
-                  </pre>
+                  <CollaborationDiagram
+                    variant="stack"
+                    rows={[
+                      "Customer + Agent",
+                      "Support engineer + Vendor Agent",
+                    ]}
+                    target="Temporary Room"
+                  />
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
                     Exchange selected diagnostics, screenshots, requests, and
                     results while local trust boundaries remain separate.
@@ -346,11 +350,10 @@ Support engineer + Vendor Agent`}</code>
                   <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
                     Personal Agent federation
                   </h2>
-                  <pre className="mt-3 overflow-x-auto text-[11px] leading-relaxed text-cyan-300">
-                    <code>{`Phone Agent  |
-Laptop Agent  +-- Temporary Room
-Cloud Agent   |`}</code>
-                  </pre>
+                  <CollaborationDiagram
+                    variant="branches"
+                    rows={["Phone Agent", "Laptop Agent", "Cloud Agent"]}
+                  />
                   <p className="mt-3 text-xs leading-relaxed text-emerald-600">
                     Connect local capabilities when needed instead of creating
                     one permanently privileged super-Agent.
