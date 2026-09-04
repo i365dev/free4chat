@@ -127,7 +127,7 @@ free4chat-agent room join ... --provider-claim <opaque-secret>
 ```
 
 `--provider-claim` carries the one-time opaque connection value produced by
-the browser's **Connect local Runtime** flow (used for speech features such
-as Live Transcript). It is not an Agent invitation; never paste such a
-handoff value into Room chat or a model conversation. See
+the setup command copied from the Room's **Live Transcript** control (used
+for speech features such as Live Transcript). It is not an Agent invitation;
+never paste such a handoff value into Room chat or a model conversation. See
 [Live Transcript](../guides/live-transcript).
