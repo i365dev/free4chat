@@ -25,6 +25,9 @@ interface LiveTranscriptControlProps {
   onStop: () => void
   onConnect?: () => void
   runtimeConnectionStatus?: "idle" | "preparing" | "copied"
+  /** #236: feature-specific setup error shown INSIDE the Live Transcript
+   * popover; it never expands the Room header. */
+  runtimeConnectError?: string
 }
 
 interface LiveTranscriptSegmentsProps {
@@ -69,6 +72,11 @@ function providerName({
   return provider?.name ?? "a Room participant"
 }
 
+// #236: the Room header exposes exactly ONE Live Transcript control. All
+// setup/readiness/provider detail lives inside the anchored feature popover
+// so the toolbar never turns into a Runtime diagnostics strip. The
+// interaction, authorization, claim security, epoch/start/stop semantics and
+// #206 refresh recovery are unchanged — this is presentation only.
 export function LiveTranscriptControl({
   liveTranscript = { active: false },
   runtimeHosts,
@@ -80,8 +88,10 @@ export function LiveTranscriptControl({
   onStop,
   onConnect,
   runtimeConnectionStatus = "idle",
+  runtimeConnectError = "",
 }: LiveTranscriptControlProps) {
-  const [chooserOpen, setChooserOpen] = useState(false)
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
   const authorizedHosts = mediaAvailable
     ? authorizedLiveTranscriptHosts({
         runtimeHosts,
@@ -90,103 +100,148 @@ export function LiveTranscriptControl({
       })
     : []
 
-  if (liveTranscript.active) {
-    return (
-      <div
-        className="flex items-center gap-2"
-        aria-label="Live Transcript controls"
-      >
-        <span className="text-xs text-emerald-200">● Live Transcript</span>
-        <span className="text-xs text-gray-400">
-          Provided by{" "}
-          {providerName({
-            liveTranscript,
-            participants,
-            localParticipantId,
-          })}
-        </span>
-        <button
-          type="button"
-          onClick={onStop}
-          className="rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-1 text-xs text-rose-200 hover:bg-rose-800/50"
-          title="Stop Live Transcript for everyone in this room"
-        >
-          Stop
-        </button>
-      </div>
-    )
-  }
+  // Popover lifetime: click-outside and Escape close it, matching the
+  // existing room UI conventions; the underlying control semantics never
+  // depend on popover state.
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("mousedown", onPointerDown)
+    document.addEventListener("keydown", onKeyDown)
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown)
+      document.removeEventListener("keydown", onKeyDown)
+    }
+  }, [open])
 
   const unavailable = authorizedHosts.length === 0
-  if (unavailable && onConnect) {
-    return (
-      <div
-        className="relative flex items-center gap-2"
-        aria-label="Live Transcript controls"
-      >
-        <span className="text-xs text-gray-300">Live Transcript</span>
-        <span className="hidden text-xs text-gray-500 sm:inline">
-          No transcription Runtime connected
-        </span>
-        <button
-          type="button"
-          onClick={onConnect}
-          disabled={runtimeConnectionStatus === "preparing"}
-          className="rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-wait disabled:opacity-50"
-          title="Connect the Runtime installed on this computer"
-        >
-          {runtimeConnectionStatus === "preparing"
-            ? "Connecting..."
-            : runtimeConnectionStatus === "copied"
-            ? "Connection command copied"
-            : "Connect local Runtime"}
-        </button>
-      </div>
-    )
-  }
+  const connecting = runtimeConnectionStatus === "preparing"
+  const copied = runtimeConnectionStatus === "copied"
+  const active = liveTranscript.active
+
   return (
     <div
-      className="relative flex items-center gap-2"
+      ref={containerRef}
+      className="relative"
       aria-label="Live Transcript controls"
     >
-      <span className="text-xs text-gray-300">Live Transcript</span>
-      <span className="hidden text-xs text-gray-500 sm:inline">
-        Local Runtime ready
-      </span>
       <button
         type="button"
-        onClick={() => {
-          if (authorizedHosts.length === 1) onStart(authorizedHosts[0][0])
-          else if (authorizedHosts.length > 1) setChooserOpen((open) => !open)
-        }}
-        disabled={unavailable}
-        className="rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
-        title={
-          unavailable
-            ? "No authorized transcription Runtime is available"
-            : "Start Live Transcript"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-label="Live Transcript"
+        className={
+          active
+            ? "flex items-center gap-1 rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-800/50"
+            : "rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
         }
       >
-        Start
+        {active ? "● Live Transcript" : "Live Transcript"}
       </button>
-      {chooserOpen && authorizedHosts.length > 1 && (
-        <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-md border border-gray-700 bg-gray-800 py-1 shadow-lg">
-          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
-            Choose a Runtime
-          </p>
-          {authorizedHosts.map(([runtimeHostId], index) => (
-            <button
-              key={runtimeHostId}
-              type="button"
-              onClick={() => {
-                onStart(runtimeHostId)
-                setChooserOpen(false)
-              }}
-              className="block w-full px-3 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-700"
-            >
-              Your STT-ready Runtime {index + 1}
-            </button>
-          ))}
+
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Live Transcript"
+          className="absolute right-0 top-full z-20 mt-1 w-72 rounded-md border border-gray-700 bg-gray-800 p-3 text-xs text-gray-200 shadow-lg"
+        >
+          {active ? (
+            <>
+              <p className="font-medium text-emerald-200">
+                Live Transcript is on
+              </p>
+              <p className="mt-1 text-gray-400">
+                Provided by{" "}
+                {providerName({
+                  liveTranscript,
+                  participants,
+                  localParticipantId,
+                })}
+              </p>
+              <button
+                type="button"
+                onClick={onStop}
+                className="mt-2 rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-1 text-xs text-rose-200 hover:bg-rose-800/50"
+                title="Stop Live Transcript for everyone in this room"
+              >
+                Stop
+              </button>
+            </>
+          ) : unavailable && onConnect ? (
+            <>
+              <p className="font-medium text-gray-100">Live Transcript</p>
+              <p className="mt-1 text-gray-400">
+                Turn room audio into shared text.
+              </p>
+              <p className="mt-1 text-gray-400">
+                A local Free4Chat Runtime with transcription is needed to start.
+              </p>
+              <button
+                type="button"
+                onClick={onConnect}
+                disabled={connecting}
+                className="mt-2 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-gray-200 hover:bg-gray-700 disabled:cursor-wait disabled:opacity-50"
+                title="Copy the command for the computer where Free4Chat Runtime is running"
+              >
+                {connecting ? "Preparing…" : "Copy setup command"}
+              </button>
+              {copied && (
+                <p role="status" className="mt-2 text-emerald-300">
+                  ✓ Setup command copied. Run it in your terminal.
+                </p>
+              )}
+              {runtimeConnectError && (
+                <p role="status" className="mt-2 text-rose-300">
+                  {runtimeConnectError}
+                </p>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="font-medium text-gray-100">Live Transcript</p>
+              {authorizedHosts.length === 0 ? (
+                <p className="mt-1 text-gray-400">
+                  Transcription is unavailable in this room right now.
+                </p>
+              ) : authorizedHosts.length === 1 ? (
+                <>
+                  <p className="mt-1 text-emerald-200">Ready to start.</p>
+                  <button
+                    type="button"
+                    onClick={() => onStart(authorizedHosts[0][0])}
+                    className="mt-2 rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-emerald-200 hover:bg-emerald-800/50"
+                  >
+                    Start
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="mt-1 text-gray-400">
+                    Choose a transcription Runtime
+                  </p>
+                  <div className="mt-1.5 flex flex-col gap-1">
+                    {authorizedHosts.map(([runtimeHostId], index) => (
+                      <button
+                        key={runtimeHostId}
+                        type="button"
+                        onClick={() => onStart(runtimeHostId)}
+                        className="w-full rounded-md bg-gray-700/60 px-2 py-1.5 text-left text-gray-200 hover:bg-gray-700"
+                      >
+                        Your STT-ready Runtime {index + 1}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

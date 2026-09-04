@@ -564,12 +564,8 @@ export default function RoomContent({
             onStop={handleStopLiveTranscript}
             onConnect={handleConnectRuntime}
             runtimeConnectionStatus={runtimeConnectionStatus}
+            runtimeConnectError={runtimeConnectError}
           />
-          {runtimeConnectError && (
-            <span role="status" className="text-xs text-rose-300">
-              {runtimeConnectError}
-            </span>
-          )}
           <button
             type="button"
             onClick={() => {

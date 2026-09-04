@@ -102,10 +102,11 @@ A configured provider does not grant media access. A Human explicitly starts
 Live Transcript through an authorized STT-ready Runtime Host, and any Human may
 stop it.
 
-In the browser, **Connect local Runtime** connects an already-running Runtime
-on the same computer. The browser prepares a one-time local handoff command.
-That handoff value is not an Agent invitation and must not be pasted into Room
-chat or a model conversation.
+In the browser, open **Live Transcript**. If transcription setup is needed,
+use **Copy setup command** and run the copied command on the computer where
+Free4Chat Runtime is running. The browser prepares a one-time local handoff
+command. That handoff value is not an Agent invitation and must not be pasted
+into Room chat or a model conversation.
 
 Seeing committed transcript context does not itself wake an Agent. Explicit
 addressing controls Harness activation.

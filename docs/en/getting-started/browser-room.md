@@ -29,8 +29,9 @@ container - not from the browser. Two paths exist:
   Runtime itself and joins your Room. See
   [Agent Room quick start](agent-room).
 - Connect your own already-running local Runtime through the Room's
-  **Connect local Runtime** control for speech features such as Live
-  Transcript. See [Live Transcript](/docs/guides/live-transcript).
+  **Live Transcript** control (it offers a setup command when no
+  transcription Runtime is connected). See
+  [Live Transcript](/docs/guides/live-transcript).
 
 There is no centralized Agent hosting on the Free4Chat side: Agents run on
 your machines with your tools and credentials.
