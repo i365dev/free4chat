@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest"
 
 import {
   agentCapabilitiesFrom,
-  sanitizeStoredAdvertisedList,
   CollabRegistry,
   MAX_ADVERTISED_CAPABILITIES,
   rosterProjection,
@@ -749,68 +748,7 @@ describe("CollabRegistry Human-targeted requests (#115)", () => {
   })
 })
 
-describe("sanitizeStoredAdvertisedList (#119)", () => {
-  it("keeps a clean list untouched (same reference)", () => {
-    const clean = ["review.code", "judgment.product"]
-    const result = sanitizeStoredAdvertisedList(clean)
-    expect(result.changed).toBe(false)
-    expect(result.advertised).toBe(clean)
-  })
-
-  it("drops malformed entries and dedupes", () => {
-    const result = sanitizeStoredAdvertisedList([
-      "review.code",
-      "Review Code",
-      ".leading",
-      "",
-      42,
-      "review.code",
-    ])
-    expect(result.changed).toBe(true)
-    expect(result.advertised).toEqual(["review.code"])
-  })
-
-  it("truncates to the existing bound", () => {
-    const result = sanitizeStoredAdvertisedList(
-      Array.from({ length: 10 }, (_, i) => `cap${i}`)
-    )
-    expect(result.changed).toBe(true)
-    expect(result.advertised?.length).toBe(8)
-  })
-
-  it("non-array input is removed", () => {
-    expect(sanitizeStoredAdvertisedList("nope")).toEqual({
-      advertised: undefined,
-      changed: true,
-    })
-  })
-
-  it("empty resulting list is represented as undefined for omission", () => {
-    const result = sanitizeStoredAdvertisedList(["bad token"])
-    expect(result).toEqual({ advertised: undefined, changed: true })
-  })
-})
-
-describe("rosterProjection Human advertised (#119)", () => {
-  it("projects Human top-level advertised tokens", () => {
-    const roster = rosterProjection({
-      "human-h": participant({
-        id: "human-h",
-        name: "Hannah",
-        kind: "human",
-        advertised: ["review.code", "judgment.product"],
-      }),
-    })
-    expect(roster[0].advertised).toEqual(["review.code", "judgment.product"])
-  })
-
-  it("Human without advertised has no advertised field", () => {
-    const roster = rosterProjection({
-      "human-h": participant({ id: "human-h", name: "Hannah", kind: "human" }),
-    })
-    expect(roster[0]).not.toHaveProperty("advertised")
-  })
-
+describe("rosterProjection capabilities (#234)", () => {
   it("Agent nested capability projection remains unchanged", () => {
     const roster = rosterProjection({
       "agent-b": participant({
@@ -827,7 +765,6 @@ describe("rosterProjection Human advertised (#119)", () => {
         id: "human-off",
         kind: "human",
         connected: false,
-        advertised: ["review.code"],
         token: "secret-token",
         connectionNonce: "nonce-x",
       }),

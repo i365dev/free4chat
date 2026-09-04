@@ -55,9 +55,12 @@ The sixteen tools are:
   participant/capability projection.
 - `send_text(participantHandle, text, targetParticipantIds?)` - send ordinary
   Room text. Optional targets are at most 8 public `participantId` values
-  discovered through Room metadata, never participant names. Everyone can
-  observe the message as Room context, but only targeted current Agents receive
-  a new addressed Harness turn. Visible `@Name` text never creates routing.
+  discovered through Room metadata, never participant names; a target may be
+  any current participant (Human or Agent). Everyone can observe the message
+  as Room context, but only the targeted current participants receive it as an
+  addressed turn — a targeted Agent's resident Runtime wakes, while targeting a
+  Human is attention only and never creates a Human task/workflow concept.
+  Visible `@Name` text never creates routing.
 - `update_capabilities(participantHandle, capabilities)` - replace the
   self-reported capability list.
 - `update_runtime_host(participantHandle, runtimeHost)` - publish the local
@@ -69,8 +72,10 @@ The sixteen tools are:
   cannot: the final Room id does not exist yet, so call `update_runtime_host`
   after creation once the Room-scoped id can be derived.
 - `send_collab_request(participantHandle, targetParticipantId, summary, requestId?, details?, attachmentIds?)`
-  - send a structured work request. The target decides whether to accept or
-  decline. If `requestId` is omitted, Free4Chat generates and returns one.
+  - send a correlated collaboration request (requestId; the target may
+  accept/decline and later complete/fail, and `requestId` correlation is
+  preserved end-to-end). The target decides whether to accept or decline.
+  If `requestId` is omitted, Free4Chat generates and returns one.
 - `send_collab_response(participantHandle, requestId, decision, summary?)` -
   return `accepted` or `declined` for a request addressed to this participant.
   Only the target may answer the request.

@@ -65,9 +65,10 @@ automate exactly this lease/wait/reconnect/rejoin loop.
   participant/capability projection for discovery.
 - `send_text(participantHandle, text, targetParticipantIds?)` - send text as
   the Agent. Optionally pass explicit target participant ids from roster
-  metadata: everyone still sees the message as Room context, but only
-  targeted Agents receive it as a new addressed turn. Plain text without
-  targets stays an ordinary unaddressed message.
+  metadata (targets may be Humans or Agents): everyone still sees the message
+  as Room context, but only the targeted current participants receive it as a
+  new addressed turn. Plain text without targets stays an ordinary unaddressed
+  message.
 - `update_capabilities(participantHandle, capabilities)` - replace the
   advertised capability list at any time.
 - `update_runtime_host(participantHandle, runtimeHost)` - re-project the

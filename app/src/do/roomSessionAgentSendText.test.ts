@@ -156,7 +156,7 @@ describe("RoomSession agent-send-text structured addressing (#165)", () => {
     expect(overflow).not.toContain("agent-10")
   })
 
-  it("drops malformed, human, unknown, and self targets deterministically", async () => {
+  it("drops malformed, stale, and self targets while keeping Human targets (#234)", async () => {
     const room = makeRoomSession(buildStoredRoom())
 
     await room.sendText("agent-a", "mixed", [
@@ -168,15 +168,22 @@ describe("RoomSession agent-send-text structured addressing (#165)", () => {
       "agent-a",
       "agent-b",
     ])
-    // Only the current, non-self Agent target survives; everything else
-    // degrades instead of manufacturing activation.
-    expect(room.storedMessages()[0].targets).toEqual(["agent-b"])
+    // Current participants of ANY kind survive (human-1 is a valid Human
+    // target); malformed ids, a stale id, and the agent's own id drop.
+    expect(room.storedMessages()[0].targets).toEqual(["human-1", "agent-b"])
 
     await room.sendText("agent-a", "self only", ["agent-a"])
     expect(room.storedMessages()[1].targets).toBeUndefined()
 
     await room.sendText("agent-a", "names are not ids", ["Hermes Agent"])
     expect(room.storedMessages()[2].targets).toBeUndefined()
+  })
+
+  it("Agent→Human targeting persists the Human target and addresses that Human", async () => {
+    const room = makeRoomSession(buildStoredRoom())
+
+    await room.sendText("agent-a", "for the Human", ["human-1"])
+    expect(room.storedMessages()[0].targets).toEqual(["human-1"])
   })
 
   it("projects addressed=true only to targeted Agents; others see context with addressed=false", async () => {

@@ -1,10 +1,10 @@
 import { cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 /**
- * #228 participant-card visual consistency: in the NORMAL participant grid,
- * every UserCard root carries the SAME uniform min-height contract, so
- * Agent-only controls (Request work + Voice) live inside a shared reserved
- * card height instead of stretching Agent cards taller than Human cards.
+ * #228/#234 participant-card visual consistency: in the NORMAL participant
+ * grid, every UserCard root carries the SAME uniform min-height contract, so
+ * Agent-only controls (Voice) live inside a shared reserved card height
+ * instead of stretching Agent cards taller than Human cards.
  * jsdom cannot measure layout; this pins the class contract that produces
  * equal heights (uniform min-height on every normal card root). Visual
  * confirmation happens in the production regression pass.
@@ -41,10 +41,8 @@ function hookReturn(participants: Array<Record<string, unknown>>) {
     sendTextMessage: vi.fn(),
     sendFileMessage: vi.fn(),
     sendActionMessage: vi.fn(),
-    sendCollabRequest: vi.fn(() => ""),
     sendCollabResponse: vi.fn(),
     sendCollabResult: vi.fn(),
-    updateHumanCapabilities: vi.fn(),
     readRoomAttachment: vi.fn(),
     muteSelf: vi.fn(),
     toggleScreenShare: vi.fn(),
@@ -52,14 +50,7 @@ function hookReturn(participants: Array<Record<string, unknown>>) {
     error: "",
     connectionStatus: "connected",
     resolvedRoomType: "audio" as const,
-    meetingNotes: { active: false },
-    meetingNotesMediaAvailable: true,
-    startMeetingNotes: vi.fn(),
-    stopMeetingNotes: vi.fn(),
-    agentVoice: {},
     agentVoiceMediaAvailable: true,
-    startVoiceReply: vi.fn(),
-    stopVoiceReply: vi.fn(),
     localParticipantId: LOCAL,
   }
 }

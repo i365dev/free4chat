@@ -1,11 +1,11 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 /**
- * #113/#119 production wiring proof: RoomContent must derive the Human
- * self-only capability editor entry from the canonical Room participant
- * state (not local editor state), pass the safe public participant id, and
- * keep the editor away from remote Humans and Agent cards.
+ * #234 production wiring proof: after the Request-work modal and the Human
+ * self-capability editor were removed, RoomContent must never render either
+ * entry point, and Agent advertised capability chips still surface from the
+ * canonical Room participant state.
  */
 
 vi.mock("next/router", () => ({
@@ -34,7 +34,7 @@ function connectedParticipants() {
       name: "tester",
       kind: "human" as const,
       room: "test-room",
-      capabilities: ["review.code"],
+      capabilities: [],
     },
     {
       peerId: "agent-b",
@@ -51,25 +51,22 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
 })
 
-describe("Human capability advertisement wiring (#113/#115/#119)", () => {
-  it("self Human card shows Capabilities; Agent card shows Request work only; Save sends full list via hook", async () => {
-    const sendCollabRequest = vi.fn(() => "")
-    const updateHumanCapabilities = vi.fn()
+describe("simplified Human/Agent room wiring (#234)", () => {
+  it("Agent cards no longer expose Request work and no Human capability editor exists", async () => {
     mockUseSfuChatRoom.mockReturnValue({
       participants: connectedParticipants(),
       messages: [],
+      attachments: [],
       sendTextMessage: vi.fn(),
       sendFileMessage: vi.fn(),
       sendActionMessage: vi.fn(),
-      sendCollabRequest,
       sendCollabResponse: vi.fn(),
-      updateHumanCapabilities,
+      readRoomAttachment: vi.fn(),
       getLocalRoomAuth: vi.fn(() => ({
         roomId: "test-room",
         participantId: LOCAL_PEER,
         token: "tok",
       })),
-      readRoomAttachment: vi.fn(),
       muteSelf: vi.fn(),
       toggleScreenShare: vi.fn(),
       retryVerification: vi.fn(),
@@ -89,25 +86,15 @@ describe("Human capability advertisement wiring (#113/#115/#119)", () => {
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
 
-    // Self Human: Capabilities entry present; no Request work on own card.
-    expect(screen.getByText("Capabilities")).toBeTruthy()
+    // Removed #234 entry points never render.
+    expect(screen.queryByText("Request work")).toBeNull()
+    expect(screen.queryByText("Capabilities")).toBeNull()
 
-    // Remote Agent card: Request work present.
-    const requestButtons = screen.getAllByText(/Request work/)
-    expect(requestButtons.length).toBe(1)
-
-    // Open the editor via the self card and save a replacement list.
-    fireEvent.click(screen.getByText("Capabilities"))
-    const input = screen.getByPlaceholderText("Add capability…")
-    fireEvent.change(input, { target: { value: "judgment.product" } })
-    fireEvent.click(screen.getByText("Add"))
-    fireEvent.click(screen.getByTestId("save-capabilities"))
-    expect(updateHumanCapabilities).toHaveBeenCalledTimes(1)
-    // Editor initialized from canonical Room state (["review.code"]) and
-    // Save sends the FULL replacement list including the added token.
-    expect(updateHumanCapabilities).toHaveBeenCalledWith([
-      "review.code",
-      "judgment.product",
-    ])
+    // The ordinary @-mention composer is the Human→Agent path and the Agent
+    // card still renders as an Agent card.
+    expect(
+      screen.getByPlaceholderText(/Message the room or @ an Agent/)
+    ).toBeTruthy()
+    expect(screen.getAllByText(/🤖 Agent/).length).toBeGreaterThan(0)
   })
 })

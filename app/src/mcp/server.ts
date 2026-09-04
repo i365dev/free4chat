@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import { buildRoomInvite } from "./invite"
 import { imageToolResult } from "./toolResults"
+import { classifyRoomCreationSource } from "../do/roomAnalytics"
 import type { RoomSession } from "../do/RoomSession"
 
 const MAX_ROOM_LENGTH = 64
@@ -227,8 +228,16 @@ function createMcpServer(context: McpRequestContext) {
       const normalized = (capabilities ?? []).map((capability) =>
         capability.trim().toLowerCase()
       )
+      // #234: coarse internal entry-path telemetry from request context
+      // (the official Runtime identifies itself via its User-Agent). This
+      // classification is analytics-only and never affects admission,
+      // authorization, or Room behavior.
+      const creationSource = classifyRoomCreationSource(
+        context.requestInfo.headers.get("user-agent") ?? ""
+      )
       const result = await roomControl(env, roomId, {
         action: "agent-register",
+        creationSource,
         participant: {
           id: participantId,
           name,
@@ -307,10 +316,15 @@ function createMcpServer(context: McpRequestContext) {
       // existing room and no old invite can be repointed at a new generation.
       let created: Record<string, unknown> | null = null
       let roomId = ""
+      // #234: coarse internal entry-path telemetry (see join_room).
+      const creationSource = classifyRoomCreationSource(
+        context.requestInfo.headers.get("user-agent") ?? ""
+      )
       for (let attempt = 0; attempt < 3; attempt += 1) {
         roomId = crypto.randomUUID()
         const result = await roomControl(env, roomId, {
           action: "agent-create-room",
+          creationSource,
           participant: {
             id: participantId,
             name,
@@ -449,7 +463,7 @@ function createMcpServer(context: McpRequestContext) {
     "send_text",
     {
       description:
-        "Send one text message to the room as the joined Agent. Optionally pass explicit target participant IDs (from room_info/wait_for_events roster metadata) to address the message: every participant still sees it as room context, but only targeted Agents receive it as a new addressed turn. Targeting decides attention only — never authorization. Plain text without targets stays an ordinary unaddressed message.",
+        "Send one text message to the room as the joined Agent. Optionally pass explicit target participant IDs (from room_info/wait_for_events roster metadata) to address the message: every participant still sees it as room context, but only the targeted current participants receive it as a new addressed turn — targets may be Humans or Agents. Targeting decides attention only — never authorization. Plain text without targets stays an ordinary unaddressed message.",
       inputSchema: {
         participantHandle: z.string().min(1),
         text: z.string().trim().min(1).max(MAX_TEXT_LENGTH),

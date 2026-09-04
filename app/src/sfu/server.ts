@@ -473,6 +473,8 @@ export async function handleSfuRequest(
         })
       : await roomControl(env, room, {
           action: "register",
+          // #234: browser entry path — coarse analytics-only telemetry.
+          creationSource: "browser",
           participant: {
             id: participantId,
             name,

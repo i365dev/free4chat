@@ -2,25 +2,19 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
-import {
-  validateRoomAttachmentRead,
-  validateUploadedRoomAttachment,
-} from "@common/roomAttachments"
+import { validateRoomAttachmentRead } from "@common/roomAttachments"
 import {
   createRuntimeProviderClaim as createRuntimeProviderCredential,
   createRuntimeProviderSecret,
   deriveRuntimeProviderReattachHash,
 } from "@common/runtimeProviderCredential"
 import { ActionType, Message, UserInfo } from "@common/types"
-import {
-  MAX_COLLAB_ATTACHMENT_REFS,
-  MAX_COLLAB_SUMMARY_LENGTH,
-  validateAdvertisedCapabilities,
-} from "@do/collab"
+import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import type {
   LiveTranscriptSegment,
   LiveTranscriptState,
+  RoomAttachmentProjection,
   RoomAttachmentRead,
   RuntimeHostProjection,
   RuntimeHostProviderPublicAssociation,
@@ -303,10 +297,12 @@ interface SfuServerMessage {
     | "trackPublished"
     | "participantUpdated"
     | "message"
+    | "attachment"
     | "expired"
     | "error"
     | "runtime-provider-claim-created"
   state?: SfuRoomState
+  attachment?: RoomAttachmentProjection
   participant?: Partial<SfuParticipant> & {
     track?: SfuTrack
     sessionId?: string
@@ -358,6 +354,7 @@ export function useSfuChatRoom(
   const { enabled = true, getTurnstileToken } = options
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
+  const [attachments, setAttachments] = useState<RoomAttachmentProjection[]>([])
   const [error, setError] = useState("")
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
@@ -496,7 +493,7 @@ export function useSfuChatRoom(
         capabilities:
           participant.kind === "agent"
             ? participant.capabilities?.advertised
-            : participant.advertised,
+            : undefined,
         surface: participant.kind === "agent" ? participant.surface : undefined,
         runtimeHostId:
           participant.kind === "agent" ? participant.runtimeHostId : undefined,
@@ -1452,6 +1449,7 @@ export function useSfuChatRoom(
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
+      setAttachments(state.attachments ?? [])
       const agentAudioTrackCount = state.participants.reduce(
         (count, participant) =>
           count +
@@ -1722,6 +1720,12 @@ export function useSfuChatRoom(
         const localParticipantId = sessionRef.current?.participantId
         appendRoomMessage(
           roomMessageToMessage(message.message, localParticipantId)
+        )
+      } else if (message.type === "attachment" && message.attachment) {
+        setAttachments((current) =>
+          current.some((entry) => entry.id === message.attachment!.id)
+            ? current
+            : [...current, message.attachment!]
         )
       } else if (message.type === "expired") {
         setError(
@@ -2195,114 +2199,6 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
-  // #119: replace THIS Human's advertised capability list (discovery
-  // metadata only). Local guard uses the same shared validator as the
-  // server; the authoritative list comes back via Room state broadcast.
-  // Returns true when the envelope was sent.
-  const updateHumanCapabilities = useCallback(
-    (capabilities: string[]): boolean => {
-      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
-      const validated = validateAdvertisedCapabilities(capabilities)
-      if (!validated.ok) return false
-      sendSocketMessage({
-        type: "human-update-capabilities",
-        capabilities: validated.capabilities,
-      })
-      return true
-    },
-    [sendSocketMessage]
-  )
-
-  // #113: Human-originated structured work request to a connected Agent.
-  // Returns the generated requestId (empty string when rejected locally).
-  // The canonical RoomMessage arrives via the ordinary broadcast — no
-  // optimistic echo here.
-  const sendCollabRequest = useCallback(
-    (
-      targetParticipantId: string,
-      summary: string,
-      attachmentIds?: string[]
-    ): string => {
-      const trimmed = summary.trim()
-      if (
-        !targetParticipantId ||
-        !trimmed ||
-        trimmed.length > MAX_COLLAB_SUMMARY_LENGTH
-      )
-        return ""
-      // Local guard: attachmentIds must be absent or a non-empty array of at
-      // most MAX_COLLAB_ATTACHMENT_REFS non-empty bounded strings with no
-      // duplicates. The server remains authoritative.
-      if (attachmentIds !== undefined) {
-        const ids = attachmentIds
-        if (!Array.isArray(ids)) return ""
-        for (const id of ids)
-          if (typeof id !== "string" || id.length === 0 || id.length > 64)
-            return ""
-        if (new Set(ids).size !== ids.length) return ""
-        if (ids.length > MAX_COLLAB_ATTACHMENT_REFS) return ""
-      }
-      if (websocketRef.current?.readyState !== WebSocket.OPEN) return ""
-      const requestId = crypto.randomUUID()
-      sendSocketMessage({
-        type: "collab-request",
-        requestId,
-        targetParticipantId,
-        summary: trimmed,
-        ...(attachmentIds && attachmentIds.length > 0 ? { attachmentIds } : {}),
-      })
-      return requestId
-    },
-    [sendSocketMessage]
-  )
-
-  // #123: upload one file as an ephemeral Room artifact for collab context.
-  // Returns safe public metadata including the attachmentId needed to
-  // reference it in a collab request.
-  const uploadRoomAttachment = useCallback(
-    async (
-      file: File
-    ): Promise<{
-      id: string
-      fileName: string
-      mimeType: string
-      size: number
-    }> => {
-      const session = sessionRef.current
-      if (!session) throw new Error("Not connected to the room")
-      const response = await fetch("/api/room/attachments", {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            agentTextMime(file) ?? (file.type || "application/octet-stream"),
-          "X-Room-Id": session.room,
-          "X-Room-Participant-Id": session.participantId,
-          "X-Room-Participant-Token": session.participantToken,
-          "X-File-Name": encodeURIComponent(file.name),
-        },
-        body: file,
-      })
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as {
-          error?: unknown
-        }
-        throw new Error(
-          typeof payload.error === "string"
-            ? payload.error
-            : `attachment_upload_failed_${response.status}`
-        )
-      }
-      // Upload responses are UNTRUSTED here too: metadata is re-checked
-      // against the shared limits before its id may be referenced.
-      const uploaded = validateUploadedRoomAttachment(
-        await response.json().catch(() => null)
-      )
-      if (!uploaded) throw new Error("invalid_attachment_payload")
-      return uploaded
-    },
-    []
-  )
-
   const startLiveTranscript = useCallback(
     (runtimeHostId: string) => {
       sendSocketMessage({
@@ -2529,14 +2425,12 @@ export function useSfuChatRoom(
     participants,
     getLocalRoomAuth,
     messages,
+    attachments,
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,
-    sendCollabRequest,
-    uploadRoomAttachment,
     sendCollabResponse,
     sendCollabResult,
-    updateHumanCapabilities,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
     muteSelf,

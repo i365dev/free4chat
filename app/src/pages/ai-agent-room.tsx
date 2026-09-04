@@ -73,8 +73,8 @@ free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
           Agent Runtime.
         </li>
         <li>
-          Capability discovery: participants advertise small, honest capability
-          lists — discovery metadata, never authorization.
+          Capability discovery: Agents advertise small, honest capability lists
+          — discovery metadata, never authorization.
         </li>
         <li>
           Structured collaboration: request, autonomous accept/decline, and a

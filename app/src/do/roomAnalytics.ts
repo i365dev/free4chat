@@ -49,10 +49,25 @@ export interface CollaborationDurationSummary {
 export interface RoomAnalyticsEvent {
   name:
     | "AgentJoined"
+    | "RoomCreated"
+    | "TargetedMessage"
     | "CollabRequested"
     | "CollabOutcome"
     | "CollaborationDuration"
   properties: Record<string, unknown>
+}
+
+export type RoomCreatedCreatorKind = "human" | "agent"
+export type RoomCreationSource = "browser" | "agent-runtime" | "mcp"
+
+/** Coarse analytics classification of the entry path that generated the
+ * Room. Pure telemetry — never authentication, authorization, or room
+ * behavior. A User-Agent can be imitated; that is acceptable for coarse
+ * analytics only. */
+export function classifyRoomCreationSource(
+  userAgent: string
+): RoomCreationSource {
+  return /free4chat-agent\//i.test(userAgent) ? "agent-runtime" : "mcp"
 }
 
 // Same 32-bit FNV-1a over UTF-16 code units as the browser's shared
@@ -121,6 +136,26 @@ export function buildAgentJoinedEvent(args: {
       roomHash: hashRoom(args.roomName),
       participantBucket: participantsBucket(args.participants.length),
       roomComposition: roomComposition(args.participants),
+    },
+  }
+}
+
+// #234: exactly one RoomCreated per canonical Room generation. creatorKind
+// is the kind of the participant whose registration materialized the Room;
+// creationSource is classified from the entry path (browser session,
+// official Runtime User-Agent, or other MCP caller). Coarse telemetry only —
+// it never affects authentication, authorization, or Room behavior.
+export function buildRoomCreatedEvent(args: {
+  roomName: string
+  creatorKind: RoomCreatedCreatorKind
+  creationSource: RoomCreationSource
+}): RoomAnalyticsEvent {
+  return {
+    name: "RoomCreated",
+    properties: {
+      roomHash: hashRoom(args.roomName),
+      creatorKind: args.creatorKind,
+      creationSource: args.creationSource,
     },
   }
 }
@@ -197,6 +232,49 @@ export function buildCollaborationDurationEvent(args: {
       roomHash: hashRoom(args.roomName),
       collaborationMode: args.collaborationMode,
       participantBucket: args.participantBucket,
+    },
+  }
+}
+
+// #234: natural-collaboration topology. One canonical accepted TEXT message
+// with explicit Room targets emits exactly one TargetedMessage (never one
+// per recipient); unaddressed text and structured collab action envelopes
+// emit none (CollabRequested/Outcome stay authoritative for the correlated
+// lifecycle). The Room append already validated every target as a CURRENT
+// participant ID (normalizeChatTargets/agentTextTargets keep only present
+// Agent participants), so kind resolution below is exact today; if a target
+// ever resolves unknown (possible only if the invariant broadens), it is
+// treated conservatively as agent — the protocol's current target universe —
+// rather than inventing a new kind.
+export function buildTargetedMessageEvent(args: {
+  roomName: string
+  participants: RoomParticipant[]
+  senderParticipantId: string
+  targetParticipantIds: string[]
+}): RoomAnalyticsEvent {
+  const kinds = new Set(
+    args.targetParticipantIds.map((id) =>
+      resolveParticipantKind(args.participants, id)
+    )
+  )
+  const targetKind: "human" | "agent" | "mixed" =
+    kinds.has("human") && kinds.has("agent")
+      ? "mixed"
+      : kinds.has("human")
+      ? "human"
+      : "agent"
+  return {
+    name: "TargetedMessage",
+    properties: {
+      roomType: "unknown",
+      roomHash: hashRoom(args.roomName),
+      senderKind: resolveParticipantKind(
+        args.participants,
+        args.senderParticipantId
+      ),
+      targetKind,
+      targetCountBucket: participantsBucket(args.targetParticipantIds.length),
+      roomComposition: roomComposition(args.participants),
     },
   }
 }
@@ -284,6 +362,15 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
   readonly string[]
 > = {
   AgentJoined: ["roomType", "roomHash", "participantBucket", "roomComposition"],
+  RoomCreated: ["roomHash", "creatorKind", "creationSource"],
+  TargetedMessage: [
+    "roomType",
+    "roomHash",
+    "senderKind",
+    "targetKind",
+    "targetCountBucket",
+    "roomComposition",
+  ],
   CollaborationDuration: [
     "durationMs",
     "roomType",

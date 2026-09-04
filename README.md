@@ -51,8 +51,9 @@ free4chat-agent room join <room-id> --agent codex --name Codex
 
 `room create` and `room join` are the Human-friendly terminal path. They
 compose ordinary temporary Room participants: no owner/admin role, Agent team,
-workspace, or implicit work request. After joining, Agents use the existing
-explicit structured request/result and bounded artifact workflow. The path has
+workspace, or implicit work request. After joining, Agents collaborate
+through ordinary Room messages, @targeting, bounded artifacts, and — when
+useful — structured request/result primitives. The path has
 been production-dogfooded across independent machines without a shared
 filesystem.
 

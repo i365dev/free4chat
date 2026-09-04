@@ -2,6 +2,9 @@ import { describe, expect, it, vi, afterEach } from "vitest"
 
 import {
   buildAgentJoinedEvent,
+  buildRoomCreatedEvent,
+  classifyRoomCreationSource,
+  buildTargetedMessageEvent,
   buildCollabRequestedEvent,
   buildCollabOutcomeEvent,
   buildCollaborationDurationEvent,
@@ -187,5 +190,152 @@ describe("CollaborationDuration event (#228 extension)", () => {
     expect(Object.keys(event.properties).sort()).toEqual(
       [...APPROVED_ANALYTICS_PROPERTIES.CollaborationDuration].sort()
     )
+  })
+})
+
+describe("TargetedMessage analytics (#234)", () => {
+  const room = { roomName: "test", participants: PARTICIPANTS }
+
+  it("Human→Agent single target: senderKind human, targetKind agent, bucket 1", () => {
+    const event = buildTargetedMessageEvent({
+      ...room,
+      senderParticipantId: "human-1",
+      targetParticipantIds: ["agent-pi"],
+    })
+    expect(event.name).toBe("TargetedMessage")
+    expect(event.properties).toEqual({
+      roomType: "unknown",
+      roomHash: hashRoom("test"),
+      senderKind: "human",
+      targetKind: "agent",
+      targetCountBucket: "1",
+      roomComposition: "mixed",
+    })
+  })
+
+  it("Agent→Agent: senderKind agent, targetKind agent", () => {
+    const event = buildTargetedMessageEvent({
+      ...room,
+      senderParticipantId: "agent-pi",
+      targetParticipantIds: ["agent-codex"],
+    })
+    expect(event.properties.senderKind).toBe("agent")
+    expect(event.properties.targetKind).toBe("agent")
+    expect(event.properties.targetCountBucket).toBe("1")
+  })
+
+  it("multi-target text uses exactly one event with a count bucket, never N", () => {
+    const event = buildTargetedMessageEvent({
+      ...room,
+      senderParticipantId: "human-1",
+      targetParticipantIds: ["agent-pi", "agent-codex"],
+    })
+    expect(event.properties.targetCountBucket).toBe("2-3")
+    // One event per canonical message is enforced at the mutation boundary;
+    // the builder itself produces a single event object.
+    expect(event.name).toBe("TargetedMessage")
+  })
+
+  it("mixed Human+Agent targets resolve to mixed targetKind (protocol invariant today)", () => {
+    const event = buildTargetedMessageEvent({
+      ...room,
+      senderParticipantId: "human-1",
+      targetParticipantIds: ["agent-pi", "human-1"],
+    })
+    expect(event.properties.targetKind).toBe("mixed")
+  })
+
+  it("resolved targets only use approved properties and keep server identity", () => {
+    const event = buildTargetedMessageEvent({
+      ...room,
+      senderParticipantId: "agent-pi",
+      targetParticipantIds: ["agent-codex"],
+    })
+    expect(Object.keys(event.properties).sort()).toEqual(
+      [...APPROVED_ANALYTICS_PROPERTIES.TargetedMessage].sort()
+    )
+    const row = mixpanelImportRow(event, 1234, "insert-1")
+    const props = row.properties as Record<string, unknown>
+    expect(row.event).toBe("TargetedMessage")
+    expect(props.distinct_id).toBe("server:free4chat")
+    expect(props.$insert_id).toBe("insert-1")
+    expect(props.ip).toBe(0)
+    // No participant ids/names, message text, or content can ride the row.
+    const serialized = JSON.stringify(row)
+    expect(serialized.includes("agent-pi")).toBe(false)
+    expect(serialized.includes("Pi")).toBe(false)
+    expect(serialized.includes("token")).toBe(false)
+  })
+
+  it("unresolved sender stays unknown without inventing a kind", () => {
+    const event = buildTargetedMessageEvent({
+      ...room,
+      senderParticipantId: "gone-participant",
+      targetParticipantIds: ["agent-pi"],
+    })
+    expect(event.properties.senderKind).toBe("unknown")
+  })
+})
+
+describe("RoomCreated analytics (#234)", () => {
+  it("carries exactly the approved coarse properties and server identity", () => {
+    const event = buildRoomCreatedEvent({
+      roomName: "test",
+      creatorKind: "agent",
+      creationSource: "agent-runtime",
+    })
+    expect(event.name).toBe("RoomCreated")
+    expect(Object.keys(event.properties).sort()).toEqual(
+      [...APPROVED_ANALYTICS_PROPERTIES.RoomCreated].sort()
+    )
+    expect(event.properties.roomHash).toBe(hashRoom("test"))
+    expect(event.properties.creatorKind).toBe("agent")
+    expect(event.properties.creationSource).toBe("agent-runtime")
+
+    const row = mixpanelImportRow(event, 1234, "insert-1")
+    const props = row.properties as Record<string, unknown>
+    expect(props.distinct_id).toBe("server:free4chat")
+    expect(props.ip).toBe(0)
+    const serialized = JSON.stringify(row)
+    expect(serialized.includes("participantId")).toBe(false)
+    expect(serialized.includes("token")).toBe(false)
+    expect(serialized.includes("test")).toBe(false)
+  })
+
+  it("supports the full creator-kind and source matrix", () => {
+    for (const creatorKind of ["human", "agent"] as const) {
+      for (const creationSource of [
+        "browser",
+        "agent-runtime",
+        "mcp",
+      ] as const) {
+        const event = buildRoomCreatedEvent({
+          roomName: "test",
+          creatorKind,
+          creationSource,
+        })
+        expect(event.properties.creatorKind).toBe(creatorKind)
+        expect(event.properties.creationSource).toBe(creationSource)
+      }
+    }
+  })
+})
+
+describe("creationSource classification (#234)", () => {
+  it("classifies the official Runtime User-Agent as agent-runtime", () => {
+    expect(classifyRoomCreationSource("free4chat-agent/0.5.17")).toBe(
+      "agent-runtime"
+    )
+    expect(
+      classifyRoomCreationSource(
+        "free4chat-agent/0.5.17 (darwin/arm64) node/v22"
+      )
+    ).toBe("agent-runtime")
+  })
+
+  it("classifies anything else as mcp and is case/absence tolerant", () => {
+    expect(classifyRoomCreationSource("")).toBe("mcp")
+    expect(classifyRoomCreationSource("curl/8.0")).toBe("mcp")
+    expect(classifyRoomCreationSource("SuperAgent/1.0")).toBe("mcp")
   })
 })
