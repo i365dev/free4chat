@@ -237,6 +237,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
     )
 
+    // #236: one feature-first header control; Start lives inside its popover.
+    fireEvent.click(screen.getByRole("button", { name: "Live Transcript" }))
     fireEvent.click(screen.getByRole("button", { name: "Start" }))
     expect(startLiveTranscript).toHaveBeenCalledWith("host-a")
     expect(screen.queryByText(/Meeting Notes/i)).not.toBeInTheDocument()
@@ -244,5 +246,43 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(
       screen.getByRole("button", { name: "Enable voice for Codex" })
     ).toBeEnabled()
+  })
+
+  it("keeps the Room header to user goals — no Runtime plumbing labels (#236)", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      liveTranscriptMediaAvailable: false,
+      agentVoiceMediaAvailable: false,
+      runtimeHosts: {},
+      runtimeHostProviders: {},
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+
+    // The toolbar exposes exactly the primary controls, and Live Transcript
+    // appears once as a feature button — never as a status strip.
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Invite Agent" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Leave" })).toBeTruthy()
+    expect(screen.getAllByText("Live Transcript").length).toBeGreaterThan(0)
+    expect(
+      screen.queryByText("No transcription Runtime connected")
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText("Connection command copied")
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
   })
 })

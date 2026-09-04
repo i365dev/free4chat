@@ -33,8 +33,8 @@ one-time local handoff command for you; it is not an Agent invitation, and
 the connection value must never be pasted into Room chat or a model
 conversation.
 
-After the Runtime connects, the Room shows **Local Runtime ready** and the
-transcript Start control becomes available.
+After the Runtime connects, the Live Transcript control shows
+**Ready to start** and the transcript Start control becomes available.
 
 ## Transcript visibility never wakes an Agent
 
