@@ -122,10 +122,10 @@ Participant-owned, private
       <h3>1. Development war room</h3>
       <pre>
         <code>{`Human
- ├─ Codex @ laptop
- ├─ Ops Agent @ VPS
- └─ Browser-capable Agent
-          │
+ |-- Codex @ laptop
+ |-- Ops Agent @ VPS
+ +-- Browser-capable Agent
+          |
      Temporary Room`}</code>
       </pre>
       <p>
@@ -147,7 +147,7 @@ Participant-owned, private
         <code>{`Alice + Alice's Agent
 Bob + Bob's Agent
 Carol + Carol's Agent
-          │
+          |
      Temporary Room`}</code>
       </pre>
       <p>
@@ -163,9 +163,9 @@ Carol + Carol's Agent
       <h3>3. Agent-native support</h3>
       <pre>
         <code>{`Customer + Customer Agent
-          ↕
+          |
      Temporary Room
-          ↕
+          |
 Support engineer + Vendor Agent`}</code>
       </pre>
       <p>
@@ -178,9 +178,9 @@ Support engineer + Vendor Agent`}</code>
 
       <h3>4. Personal Agent federation</h3>
       <pre>
-        <code>{`Phone Agent ─┐
-Laptop Agent ├─ Temporary Room
-Mac mini    ─┘`}</code>
+        <code>{`Phone Agent  |
+Laptop Agent  +-- Temporary Room
+Mac mini      |`}</code>
       </pre>
       <p>
         A person may have Agents on a phone, laptop, Mac mini or home server,
