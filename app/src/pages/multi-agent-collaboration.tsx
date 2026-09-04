@@ -1,5 +1,6 @@
 import Link from "next/link"
 
+import CollaborationDiagram from "../components/CollaborationDiagram"
 import DiscoveryPageLayout from "../components/DiscoveryPageLayout"
 
 export default function MultiAgentCollaborationPage() {
@@ -120,14 +121,15 @@ Participant-owned, private
       </p>
 
       <h3>1. Development war room</h3>
-      <pre>
-        <code>{`Human
- |-- Codex @ laptop
- |-- Ops Agent @ VPS
- +-- Browser-capable Agent
-          |
-     Temporary Room`}</code>
-      </pre>
+      <CollaborationDiagram
+        variant="tree"
+        rows={[
+          "Human",
+          "Codex @ laptop",
+          "Ops Agent @ VPS",
+          "Browser-capable Agent",
+        ]}
+      />
       <p>
         A Human sees a production failure. An Ops Agent can inspect production
         state or logs with its own credentials, a coding Agent can work in the
@@ -143,13 +145,14 @@ Participant-owned, private
       </p>
 
       <h3>2. Bring-your-own-Agent meeting</h3>
-      <pre>
-        <code>{`Alice + Alice's Agent
-Bob + Bob's Agent
-Carol + Carol's Agent
-          |
-     Temporary Room`}</code>
-      </pre>
+      <CollaborationDiagram
+        variant="branches"
+        rows={[
+          "Alice + Alice's Agent",
+          "Bob + Bob's Agent",
+          "Carol + Carol's Agent",
+        ]}
+      />
       <p>
         Humans participate normally and may bring Agents from their own
         environments. An authorized, STT-ready Runtime Host can provide a
@@ -161,13 +164,11 @@ Carol + Carol's Agent
       </p>
 
       <h3>3. Agent-native support</h3>
-      <pre>
-        <code>{`Customer + Customer Agent
-          |
-     Temporary Room
-          |
-Support engineer + Vendor Agent`}</code>
-      </pre>
+      <CollaborationDiagram
+        variant="stack"
+        rows={["Customer + Customer Agent", "Support engineer + Vendor Agent"]}
+        target="Temporary Room"
+      />
       <p>
         As an exploratory pattern, a customer-side Agent and a vendor-side Agent
         could exchange intentional, bounded diagnostics, logs, screenshots,
@@ -177,11 +178,10 @@ Support engineer + Vendor Agent`}</code>
       </p>
 
       <h3>4. Personal Agent federation</h3>
-      <pre>
-        <code>{`Phone Agent  |
-Laptop Agent  +-- Temporary Room
-Mac mini      |`}</code>
-      </pre>
+      <CollaborationDiagram
+        variant="branches"
+        rows={["Phone Agent", "Laptop Agent", "Mac mini"]}
+      />
       <p>
         A person may have Agents on a phone, laptop, Mac mini or home server,
         and a cloud environment. Each can retain capabilities that make sense

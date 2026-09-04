@@ -104,9 +104,9 @@ as a selected-information exchange point.
 ## Pattern 4 - Personal Agent federation
 
 ```
-Phone Agent  |
-Laptop Agent +-- Temporary Room
-Mac mini     |
+Phone Agent   |
+Laptop Agent  +-- Temporary Room
+Mac mini      |
 ```
 
 A person may eventually have Agents on a phone, laptop, Mac mini or home
