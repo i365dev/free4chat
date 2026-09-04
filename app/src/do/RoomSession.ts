@@ -130,6 +130,13 @@ const MAX_AGENT_ATTACHMENTS = 8
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
+// The resident event stream is intentionally one bounded frame. The 2 MiB
+// cap covers the retained 100-message/8-attachment event window (including
+// worst-case UTF-8 text), plus JSON, roster, and Runtime Host overhead; the
+// serialized-byte check below is the final authority rather than an estimate.
+// An over-cap Room state gets a deterministic protocol error, never a
+// same-cursor reconnect loop.
+const RESIDENT_EVENT_MAX_BYTES = 2 << 20
 // Bounded per-agent scratch state for server-side revocation (finding #3):
 // one mid per Human audio track the note-taker Agent is currently
 // subscribed to. Not a general media-session database — cleared to empty
@@ -1293,12 +1300,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.deleteAllSurfaceKeys()
     for (const attachment of room.attachments)
       await this.deleteAttachmentChunks(attachment)
-    // `deleteAll()` is the final storage backstop: it removes unknown keys
-    // and internal SQLite metadata left by future/partial writes as well as
-    // the known Room, transcript, surface, and attachment values. The
-    // explicit `deleteAlarm()` is required on this pre-2026-04-07
-    // compatibility date even though newer runtimes may make deleteAll()
-    // remove the alarm as well.
+    // The explicit `deleteAlarm()` is required for the current pre-2026-02-24
+    // compatibility date. `deleteAll()` is the final full-storage and
+    // unknown-key backstop for this legacy new_classes-backed RoomSession;
+    // no storage backend assumption is needed here.
     await this.ctx.storage.deleteAlarm()
     await this.ctx.storage.deleteAll()
     await executeMediaCloseEffects(
@@ -1697,14 +1702,25 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
       return
     try {
-      socket.send(
-        JSON.stringify({
-          type: "events",
-          ...result,
-          participants: rosterProjection(room.participants),
-          runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
-        })
-      )
+      const encoded = JSON.stringify({
+        type: "events",
+        ...result,
+        participants: rosterProjection(room.participants),
+        runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
+      })
+      if (
+        new TextEncoder().encode(encoded).byteLength > RESIDENT_EVENT_MAX_BYTES
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "event_envelope_too_large",
+          })
+        )
+        socket.close(1009, "Event envelope too large")
+        return
+      }
+      socket.send(encoded)
       // This is delivery progress, not a Room mutation. Keeping it on the
       // hibernation attachment avoids a second durable event cursor and lets
       // reconnect catch up from the Runtime-owned cursor.

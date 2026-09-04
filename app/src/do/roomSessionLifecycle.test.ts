@@ -387,4 +387,92 @@ describe("RoomSession expiry cleanup", () => {
     current = store.get("room") as RoomRecord
     expect(current.participants.agent.connected).toBe(false)
   })
+
+  it("rejects an over-cap resident event envelope deterministically", async () => {
+    const NativeResponse = Response
+    class UpgradeResponse extends NativeResponse {
+      constructor(
+        body?: BodyInit | null,
+        init?: ResponseInit & { webSocket?: unknown }
+      ) {
+        if (init?.status === 101) {
+          super(null, { status: 200 })
+          Object.defineProperty(this, "status", { value: 101 })
+          ;(this as unknown as { webSocket?: unknown }).webSocket =
+            init.webSocket
+          return
+        }
+        super(body, init)
+      }
+    }
+    vi.stubGlobal("Response", UpgradeResponse)
+
+    const room = agentEventRoom()
+    room.messages = Array.from({ length: 100 }, (_, index) => ({
+      id: `message-${index}`,
+      peerId: "human",
+      name: "Human",
+      kind: "human" as const,
+      type: "action" as const,
+      actionType: "bounded-test-action",
+      actionPayload: { data: "x".repeat(30_000) },
+      createdAt: Date.now(),
+      sequence: index + 1,
+    }))
+    room.nextMessageSequence = room.messages.length
+    const store = new Map<string, unknown>([["room", room]])
+    const socket = new TestAgentEventSocket()
+    const tags: string[] = []
+    const ctx = {
+      storage: {
+        get: async (key: string) => store.get(key),
+        put: async (key: string, value: unknown) => void store.set(key, value),
+        delete: async (keys: string | string[]) => {
+          for (const key of Array.isArray(keys) ? keys : [keys])
+            store.delete(key)
+        },
+        list: async () => new Map(),
+        setAlarm: async () => undefined,
+        deleteAlarm: async () => undefined,
+        getAlarm: async () => undefined,
+        deleteAll: async () => store.clear(),
+      },
+      getWebSockets: () => [],
+      acceptWebSocket: vi.fn(
+        (_server: TestAgentEventSocket, socketTags: string[]) => {
+          tags.push(...socketTags)
+        }
+      ),
+    }
+    const session = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
+    const pair = { 0: new TestAgentEventSocket(), 1: socket }
+    vi.stubGlobal("WebSocketPair", vi.fn().mockReturnValue(pair))
+
+    const response = await (
+      session as unknown as {
+        handleAgentEventConnection: (request: Request) => Promise<Response>
+      }
+    ).handleAgentEventConnection(
+      new Request("https://room/agent-events", {
+        method: "GET",
+        headers: {
+          Upgrade: "websocket",
+          "X-Room-Participant-Id": "agent",
+          Authorization: "Bearer agent-token",
+          "X-Room-Cursor": "0",
+        },
+      })
+    )
+
+    expect(response.status).toBe(101)
+    expect(tags).toEqual(["agent-event:agent"])
+    expect(JSON.parse(socket.sent[0] ?? "{}")).toEqual({
+      type: "error",
+      error: "event_envelope_too_large",
+    })
+    expect(socket.closed).toContainEqual({
+      code: 1009,
+      reason: "Event envelope too large",
+    })
+  })
 })

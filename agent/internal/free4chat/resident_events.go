@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -13,7 +14,8 @@ import (
 
 const (
 	residentEventPath       = "/api/room/agent-events"
-	maxResidentEventBytes   = 256 * 1024
+	maxResidentEventBytes   = 2 * 1024 * 1024
+	residentEventReadLimit  = maxResidentEventBytes + 1
 	defaultAgentLeaseMillis = 90 * 1000
 )
 
@@ -81,6 +83,12 @@ func (c *Client) OpenResidentEventStream(
 	if err != nil {
 		return nil, classifyResidentEventDialError(response)
 	}
+	// coder/websocket defaults to 32 KiB. The application cap is derived from
+	// RoomSession's retained event window and enforced by the server after JSON
+	// serialization; allow one byte above it so Receive can classify an
+	// over-cap frame deterministically instead of treating it as a retryable
+	// transport failure.
+	conn.SetReadLimit(residentEventReadLimit)
 	return &residentEventStream{conn: conn}, nil
 }
 
@@ -104,6 +112,10 @@ func classifyResidentEventDialError(response *http.Response) error {
 func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, error) {
 	messageType, payload, err := s.conn.Read(ctx)
 	if err != nil {
+		if websocket.CloseStatus(err) == websocket.StatusMessageTooBig ||
+			strings.Contains(err.Error(), "read limited at") {
+			return types.WaitResult{}, &Error{Message: "resident event stream exceeded its message limit", Code: CodeToolError}
+		}
 		return types.WaitResult{}, &Error{Message: "resident event stream read failed", Code: CodeTransient}
 	}
 	if messageType != websocket.MessageText || len(payload) > maxResidentEventBytes {
@@ -112,6 +124,9 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 	var envelope residentEventEnvelope
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return types.WaitResult{}, &Error{Message: "resident event stream returned invalid JSON", Code: CodeToolError}
+	}
+	if envelope.Type == "error" {
+		return types.WaitResult{}, &Error{Message: "resident event stream rejected the event envelope", Code: CodeToolError}
 	}
 	if envelope.Type == "expired" || envelope.Expired {
 		return types.WaitResult{}, &Error{Message: "room expired", Code: CodeRoomExpired}

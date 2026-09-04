@@ -276,6 +276,7 @@ function createMcpServer(context: McpRequestContext) {
         }),
         cursor: result.data.cursor,
         expiresAt: result.data.expiresAt,
+        agentLeaseMs: result.data.agentLeaseMs,
         ...(returnedProviderHandle.success
           ? { runtimeProviderHandle: returnedProviderHandle.data }
           : {}),
@@ -353,6 +354,7 @@ function createMcpServer(context: McpRequestContext) {
         participant?: unknown
         cursor?: unknown
         expiresAt?: unknown
+        agentLeaseMs?: unknown
       }
       return toolResult({
         participant: payload.participant,
@@ -363,6 +365,7 @@ function createMcpServer(context: McpRequestContext) {
         }),
         cursor: payload.cursor,
         expiresAt: payload.expiresAt,
+        agentLeaseMs: payload.agentLeaseMs,
         invite: buildRoomInvite(roomId),
       })
     }

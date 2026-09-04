@@ -2,11 +2,16 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -15,6 +20,7 @@ type residentTestStream struct {
 	closed     chan struct{}
 	closeOnce  sync.Once
 	heartbeats chan int64
+	receiveErr error
 }
 
 func newResidentTestStream() *residentTestStream {
@@ -26,6 +32,9 @@ func newResidentTestStream() *residentTestStream {
 }
 
 func (s *residentTestStream) Receive(ctx context.Context) (types.WaitResult, error) {
+	if s.receiveErr != nil {
+		return types.WaitResult{}, s.receiveErr
+	}
 	select {
 	case result := <-s.results:
 		return result, nil
@@ -61,9 +70,22 @@ type residentTestClient struct {
 	openParticIDs []string
 }
 
+type parsedLeaseResidentClient struct {
+	*free4chat.Client
+	stream types.ResidentEventStream
+}
+
+func (c *parsedLeaseResidentClient) OpenResidentEventStream(
+	context.Context,
+	string,
+	int64,
+) (types.ResidentEventStream, error) {
+	return c.stream, nil
+}
+
 func (c *residentTestClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
 	joined, err := c.fakeClient.JoinRoom(roomID, name, capabilities, host)
-	joined.AgentLeaseMs = 30
+	joined.AgentLeaseMs = 30 // Deliberately differs from the 90s compatibility fallback.
 	return joined, err
 }
 
@@ -109,6 +131,9 @@ func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatal(err)
 	}
+	if got := rt.residentHeartbeatInterval(); got != 10*time.Millisecond {
+		t.Fatalf("server lease was not converted to one-third heartbeat: %s", got)
+	}
 	waitFor(t, time.Second, func() bool {
 		open, _, _ := client.residentOpenSnapshot()
 		return open == 1
@@ -134,6 +159,87 @@ func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Stop did not close the resident event stream")
 	}
+}
+
+func TestResidentRuntimeUsesLeaseParsedFromMCPJoin(t *testing.T) {
+	const leaseMs = 30
+	handlePayload, err := json.Marshal(map[string]string{
+		"room":             "room",
+		"participantId":    "agent-1",
+		"participantToken": "token-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	participantHandle := base64.RawURLEncoding.EncodeToString(handlePayload)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode MCP request: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if body.Method == "tools/list" {
+			tools := make([]map[string]string, 0, 16)
+			for _, name := range []string{
+				"room_info", "join_room", "create_room", "wait_for_events",
+				"send_text", "read_attachment", "leave_room", "update_capabilities",
+				"send_collab_request", "send_collab_response", "send_collab_result",
+				"send_attachment", "publish_surface", "clear_surface", "read_surface",
+			} {
+				tools = append(tools, map[string]string{"name": name})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": 1,
+				"result": map[string]any{"tools": tools},
+			})
+			return
+		}
+		payload := map[string]any{}
+		if body.Method == "tools/call" && body.Params.Name == "join_room" {
+			payload = map[string]any{
+				"participantHandle": participantHandle,
+				"participant":       map[string]any{"id": "agent-1"},
+				"cursor":            float64(0),
+				"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
+				"agentLeaseMs":      float64(leaseMs),
+			}
+		}
+		text, _ := json.Marshal(payload)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1,
+			"result": map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": string(text)}},
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	stream := newResidentTestStream()
+	client := &parsedLeaseResidentClient{
+		Client: free4chat.New(server.URL),
+		stream: stream,
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "resident-parsed-lease",
+		RoomID:     "room",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    &fakeAdapter{name: "pi"},
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.residentHeartbeatInterval(); got != 10*time.Millisecond {
+		t.Fatalf("MCP lease was not parsed into heartbeat interval: %s", got)
+	}
+	waitFor(t, time.Second, func() bool { return len(stream.heartbeats) > 0 }, "parsed lease heartbeat")
+	rt.Stop()
 }
 
 func TestResidentRuntimeReconnectPreservesParticipantAndCursor(t *testing.T) {
@@ -176,6 +282,37 @@ func TestResidentRuntimeReconnectPreservesParticipantAndCursor(t *testing.T) {
 	client.fakeClient.mu.Unlock()
 	if joins != 1 {
 		t.Fatalf("transient stream close must not create a new participant: joins=%d", joins)
+	}
+	rt.Stop()
+}
+
+func TestResidentRuntimeDoesNotReconnectAfterTerminalEventProtocolError(t *testing.T) {
+	stream := newResidentTestStream()
+	stream.receiveErr = &free4chat.Error{
+		Message: "resident event stream rejected the event envelope",
+		Code:    free4chat.CodeToolError,
+	}
+	client := &residentTestClient{
+		fakeClient: &fakeClient{},
+		streams:    make(chan *residentTestStream, 1),
+	}
+	client.streams <- stream
+	rt := NewResidentRuntime(Options{
+		InstanceID: "resident-terminal-frame",
+		RoomID:     "room",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    &fakeAdapter{name: "pi"},
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool {
+		return rt.Status().State == StateStopped
+	}, "terminal resident protocol error")
+	open, _, _ := client.residentOpenSnapshot()
+	if open != 1 {
+		t.Fatalf("terminal resident protocol error must not reconnect: opens=%d", open)
 	}
 	rt.Stop()
 }

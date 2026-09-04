@@ -685,6 +685,14 @@ func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
 		case free4chat.CodeRoomExpired:
 			r.cleanupAfterRoomExpiry()
 			return
+		case free4chat.CodeToolError:
+			// A malformed or over-cap application frame is deterministic. Do
+			// not reconnect with the same cursor forever; leave the Room and
+			// surface a terminal local error instead.
+			if r.beginStop("resident event protocol error") {
+				r.releaseResources()
+			}
+			return
 		default:
 			retryAttempt++
 			delay := RetryDelay(retryAttempt - 1)

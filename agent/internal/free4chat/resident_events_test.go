@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -132,6 +133,189 @@ func TestResidentEventStreamHeartbeatUsesCursor(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("server did not receive resident heartbeat")
+	}
+}
+
+func TestResidentEventStreamAcceptsFramesBeyondCoderDefaultLimit(t *testing.T) {
+	const largeText = 40 * 1024
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept resident stream: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		payload, _ := json.Marshal(map[string]any{
+			"type": "events",
+			"events": []any{map[string]any{
+				"sequence": float64(1),
+				"type":     "text",
+				"participant": map[string]any{
+					"id": "human-1", "name": "Ada", "kind": "human",
+				},
+				"text": strings.Repeat("x", largeText), "createdAt": float64(1),
+			}},
+			"cursor":    float64(1),
+			"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+		})
+		if len(payload) <= 32*1024 {
+			t.Errorf("test frame must exceed coder/websocket default: %d", len(payload))
+		}
+		if err := conn.Write(context.Background(), websocket.MessageText, payload); err != nil {
+			t.Errorf("write large resident envelope: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+	wait, err := stream.Receive(context.Background())
+	if err != nil {
+		t.Fatalf("receive >32 KiB resident envelope: %v", err)
+	}
+	if len(wait.Events) != 1 || len(wait.Events[0].Text) != largeText {
+		t.Fatalf("large resident envelope was truncated: events=%d text=%d", len(wait.Events), len(wait.Events[0].Text))
+	}
+}
+
+func TestResidentEventStreamAcceptsNearMaximumCatchupEnvelope(t *testing.T) {
+	const eventCount = 100
+	const eventText = 4000
+	events := make([]any, 0, eventCount)
+	for sequence := 1; sequence <= eventCount; sequence++ {
+		events = append(events, map[string]any{
+			"sequence": float64(sequence),
+			"type":     "text",
+			"participant": map[string]any{
+				"id": "human-1", "name": strings.Repeat("A", 32), "kind": "human",
+			},
+			"text": strings.Repeat("界", eventText), "createdAt": float64(sequence),
+		})
+	}
+	participants := make([]any, 0, 64)
+	for index := 0; index < 64; index++ {
+		participants = append(participants, map[string]any{
+			"id": fmt.Sprintf("human-%03d", index), "name": strings.Repeat("N", 32), "kind": "human",
+		})
+	}
+	runtimeHosts := make(map[string]any, 32)
+	for index := 0; index < 32; index++ {
+		id := fmt.Sprintf("host-%04d", index)
+		runtimeHosts[id] = map[string]any{
+			"runtimeHostId": id,
+			"speech":        map[string]any{"stt": true, "tts": true},
+		}
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type":         "events",
+		"events":       events,
+		"cursor":       float64(eventCount),
+		"expiresAt":    float64(time.Now().Add(time.Hour).UnixMilli()),
+		"participants": participants,
+		"runtimeHosts": runtimeHosts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) <= 1<<20 || len(payload) > maxResidentEventBytes {
+		t.Fatalf("near-maximum test payload has unexpected size: %d", len(payload))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept resident stream: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		if err := conn.Write(context.Background(), websocket.MessageText, payload); err != nil {
+			t.Errorf("write near-maximum resident envelope: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+	wait, err := stream.Receive(context.Background())
+	if err != nil {
+		t.Fatalf("receive near-maximum resident envelope: %v", err)
+	}
+	if wait.Cursor != eventCount || len(wait.Events) != eventCount || len(wait.Participants) != 64 || len(wait.RuntimeHosts) != 32 {
+		t.Fatalf("near-maximum resident envelope mismatch: cursor=%d events=%d participants=%d hosts=%d", wait.Cursor, len(wait.Events), len(wait.Participants), len(wait.RuntimeHosts))
+	}
+}
+
+func TestResidentEventStreamClassifiesOversizeEnvelopeAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept resident stream: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		payload := []byte(`{"type":"error","error":"event_envelope_too_large"}`)
+		if err := conn.Write(context.Background(), websocket.MessageText, payload); err != nil {
+			t.Errorf("write resident protocol error: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+	_, err = stream.Receive(context.Background())
+	if CodeOf(err) != CodeToolError {
+		t.Fatalf("oversize envelope must be terminal, got %v", err)
+	}
+}
+
+func TestResidentEventStreamClassifiesTransportOversizeAsTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept resident stream: %v", err)
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		// This is intentionally larger than the application maximum and the
+		// client's one-byte classification allowance, so coder/websocket must
+		// close it with StatusMessageTooBig.
+		_ = conn.Write(
+			context.Background(),
+			websocket.MessageText,
+			[]byte(strings.Repeat("x", maxResidentEventBytes+2)),
+		)
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+	_, err = stream.Receive(context.Background())
+	if CodeOf(err) != CodeToolError {
+		t.Fatalf("transport-oversize frame must be terminal, got %v", err)
 	}
 }
 
