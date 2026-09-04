@@ -154,7 +154,7 @@ export function LiveTranscriptControl({
         <div
           role="dialog"
           aria-label="Live Transcript"
-          className="absolute right-0 top-full z-20 mt-1 w-72 rounded-md border border-gray-700 bg-gray-800 p-3 text-xs text-gray-200 shadow-lg"
+          className="absolute right-0 top-full z-20 mt-1 max-h-[65dvh] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border border-gray-700 bg-gray-800 p-3 text-xs text-gray-200 shadow-lg"
         >
           {active ? (
             <>

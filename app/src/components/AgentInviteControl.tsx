@@ -92,7 +92,7 @@ export default function AgentInviteControl({
         <div
           role="dialog"
           aria-label="Invite an Agent"
-          className="absolute left-1/2 top-full z-20 mt-1 max-h-[calc(100vh-4rem)] w-80 max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-y-auto rounded-md border border-gray-700 bg-gray-800 p-3 text-xs text-gray-200 shadow-lg lg:left-auto lg:right-0 lg:translate-x-0"
+          className="absolute left-1/2 top-full z-20 mt-1 max-h-[65dvh] w-80 max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-y-auto rounded-md border border-gray-700 bg-gray-800 p-3 text-xs text-gray-200 shadow-lg lg:left-auto lg:right-0 lg:translate-x-0"
         >
           <p className="font-medium text-gray-100">Invite an Agent</p>
           <p className="mt-1 text-gray-400">
