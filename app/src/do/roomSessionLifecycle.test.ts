@@ -130,6 +130,14 @@ class TestAgentEventSocket {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
 function agentEventRoom(): RoomRecord {
   const now = Date.now()
   return {
@@ -250,6 +258,156 @@ describe("RoomSession expiry cleanup", () => {
     expect(fresh.messages).toEqual([])
     expect(store.get("live-transcript")).not.toEqual({ stale: true })
     expect(store.has("future-unknown-key")).toBe(false)
+  })
+
+  it("does not expire waiters or sockets from a recycled Room generation", async () => {
+    const oldRoom = expiredRoom()
+    const freshAgent = {
+      id: "fresh-agent",
+      name: "Fresh Agent",
+      kind: "agent" as const,
+      connected: true,
+      joinedAt: Date.now(),
+      lastSeenAt: Date.now(),
+      token: "fresh-agent-token",
+    }
+    const store = new Map<string, unknown>([["room", oldRoom]])
+    const oldSocket = new TestAgentEventSocket()
+    const freshSocket = new TestAgentEventSocket()
+    const sockets = [oldSocket]
+    const socketTags = new Map<TestAgentEventSocket, string[]>()
+    const ctx = {
+      storage: {
+        get: async (key: string) => store.get(key),
+        put: async (key: string, value: unknown) => void store.set(key, value),
+        delete: async (keys: string | string[]) => {
+          for (const key of Array.isArray(keys) ? keys : [keys])
+            store.delete(key)
+        },
+        list: async ({ prefix }: { prefix?: string }) =>
+          new Map(
+            [...store.entries()].filter(([key]) =>
+              prefix === undefined ? true : key.startsWith(prefix)
+            )
+          ),
+        setAlarm: async () => undefined,
+        deleteAlarm: async () => undefined,
+        getAlarm: async () => undefined,
+        deleteAll: async () => store.clear(),
+      },
+      getWebSockets: (tag?: string) =>
+        tag === undefined
+          ? [...sockets]
+          : sockets.filter((socket) => socketTags.get(socket)?.includes(tag)),
+      acceptWebSocket: vi.fn((socket: TestAgentEventSocket, tags: string[]) => {
+        sockets.push(socket)
+        socketTags.set(socket, tags)
+      }),
+    }
+    const session = new RoomSession(
+      ctx as never,
+      {
+        SFU_ROOM: {},
+        SFU_APP_ID: "app-id",
+        SFU_APP_SECRET: "app-secret",
+      } as never
+    )
+    const timer = setTimeout(() => undefined, 10_000)
+    let oldWaiterResponse: Response | undefined
+    ;(
+      session as unknown as { agentWaiters: Map<string, unknown> }
+    ).agentWaiters.set("agent", {
+      participantId: "agent",
+      cursor: 0,
+      timer,
+      resolve: (response: Response) => {
+        oldWaiterResponse = response
+      },
+    })
+
+    const mediaClose = deferred<Response>()
+    const fetchMock = vi.fn(() => mediaClose.promise)
+    vi.stubGlobal("fetch", fetchMock)
+
+    const expiry = (
+      session as unknown as {
+        expireRoom: (room: RoomRecord) => Promise<void>
+      }
+    ).expireRoom(oldRoom)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
+    expect(store.has("room")).toBe(false)
+
+    const createResponse = await session.fetch(
+      new Request("https://room/control", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "agent-create-room",
+          participant: freshAgent,
+        }),
+      })
+    )
+    expect(createResponse.status).toBe(200)
+
+    const NativeResponse = Response
+    class UpgradeResponse extends NativeResponse {
+      constructor(
+        body?: BodyInit | null,
+        init?: ResponseInit & { webSocket?: unknown }
+      ) {
+        if (init?.status === 101) {
+          super(null, { status: 200 })
+          Object.defineProperty(this, "status", { value: 101 })
+          ;(this as unknown as { webSocket?: unknown }).webSocket =
+            init.webSocket
+          return
+        }
+        super(body, init)
+      }
+    }
+    vi.stubGlobal("Response", UpgradeResponse)
+    vi.stubGlobal(
+      "WebSocketPair",
+      vi.fn().mockReturnValue({
+        0: new TestAgentEventSocket(),
+        1: freshSocket,
+      })
+    )
+    const freshConnection = await (
+      session as unknown as {
+        handleAgentEventConnection: (request: Request) => Promise<Response>
+      }
+    ).handleAgentEventConnection(
+      new Request("https://room/agent-events", {
+        method: "GET",
+        headers: {
+          Upgrade: "websocket",
+          "X-Room-Participant-Id": freshAgent.id,
+          Authorization: `Bearer ${freshAgent.token}`,
+          "X-Room-Cursor": "0",
+        },
+      })
+    )
+    expect(freshConnection.status).toBe(101)
+    expect(sockets).toContain(freshSocket)
+
+    mediaClose.resolve(new Response(null, { status: 204 }))
+    await expiry
+
+    expect(oldWaiterResponse).toBeDefined()
+    expect(JSON.parse(await oldWaiterResponse!.text())).toMatchObject({
+      expired: true,
+      cursor: oldRoom.nextMessageSequence,
+    })
+    expect(oldSocket.closed).toContainEqual({
+      code: 4001,
+      reason: "Room expired",
+    })
+    expect(freshSocket.closed).toEqual([])
+    expect(freshSocket.sent.some((value) => value.includes('"expired"'))).toBe(
+      false
+    )
+    const freshRoom = store.get("room") as RoomRecord
+    expect(freshRoom.participants[freshAgent.id]).toBeDefined()
   })
 
   it("authenticates, reconnects, and delivers canonical events on the hibernatable socket", async () => {
