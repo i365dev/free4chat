@@ -549,7 +549,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
-  it("releases a timed-out track admission so a later resync can retry", async () => {
+  it("reconnects after a Human track admission times out before allowing retry", async () => {
     const { socket, pc, unmount } = await connect()
     vi.useFakeTimers()
     const state = roomState([
@@ -561,11 +561,17 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000)
+      await flushAsync()
     })
-    sendState(socket, state)
+
+    expect(pc.connectionState).toBe("closed")
+    expect(TestPeerConnection.instances).toHaveLength(2)
+    const newPc = TestPeerConnection.instances[1]
+    const newSocket = TestWebSocket.instances[1]
+    sendState(newSocket, state)
     await flushAsync()
     expect(trackRequestNumber).toBe(2)
-    expect(pc.ontrack).not.toBeNull()
+    expect(newPc.ontrack).not.toBeNull()
     unmount()
   })
 
@@ -781,6 +787,79 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
       ["file-1", "text-1"]
     )
     expect(createObjectUrl).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
+  it("keeps a file after its sender anchor when the receiver Room socket is behind", async () => {
+    const { result, socket, unmount } = await connect()
+    const state = roomState([participant("publisher-a", [], "session-a", true)])
+    state.messages = [1, 2, 3].map((sequence) => ({
+      id: `text-${sequence}`,
+      peerId: "publisher-a",
+      name: "publisher-a",
+      kind: "human" as const,
+      type: "text" as const,
+      text: `message ${sequence}`,
+      createdAt: sequence,
+      sequence,
+    }))
+    sendState(socket, state)
+    await waitFor(() =>
+      expect(
+        TestPeerConnection.instances[0].createdChannels.filter((channel) =>
+          channel.name.includes("subscriber")
+        )
+      ).toHaveLength(1)
+    )
+    const channel = TestPeerConnection.instances[0].createdChannels.find(
+      (candidate) => candidate.name.includes("subscriber")
+    )!
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:file-behind"),
+    })
+
+    act(() =>
+      channel.emit("message", {
+        data: JSON.stringify({
+          type: "file-start",
+          id: "file-behind",
+          name: "behind.txt",
+          mime: "text/plain",
+          size: 3,
+          afterSequence: 5,
+        }),
+      })
+    )
+    act(() => {
+      channel.emit("message", { data: new Uint8Array([1, 2, 3]).buffer })
+      channel.emit("message", {
+        data: JSON.stringify({ type: "file-end", id: "file-behind" }),
+      })
+    })
+
+    for (const sequence of [4, 5])
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "message",
+            message: {
+              id: `text-${sequence}`,
+              peerId: "publisher-a",
+              name: "publisher-a",
+              kind: "human",
+              type: "text",
+              text: `message ${sequence}`,
+              createdAt: sequence,
+              sequence,
+            },
+          }),
+        })
+      )
+
+    expect(result.current.messages.map((message) => message.messageId)).toEqual(
+      ["text-1", "text-2", "text-3", "text-4", "text-5", "file-behind"]
+    )
     unmount()
   })
 

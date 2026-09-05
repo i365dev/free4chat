@@ -802,20 +802,31 @@ export function useSfuChatRoom(
       }
       binding.timeout = window.setTimeout(() => {
         if (remoteTrackBindingsRef.current.get(binding.mid) !== binding) return
+        const participant = participantMapRef.current.get(binding.participantId)
+        const isCurrentSubscriber =
+          peerConnectionRef.current === binding.peerConnection &&
+          sessionRef.current?.sessionId === binding.subscriberSessionId
         removeRemoteTrackBinding(binding)
         sfuClientDiagnostic("remote_track_wait_timeout", {
-          participant_kind: diagnosticParticipantKind(
-            participantMapRef.current.get(binding.participantId)?.kind
-          ),
+          participant_kind: diagnosticParticipantKind(participant?.kind),
           track_kind: binding.kind,
         })
-        sfuClientDiagnostic("remote_track_retry_allowed", {
-          participant_kind: diagnosticParticipantKind(
-            participantMapRef.current.get(binding.participantId)?.kind
-          ),
-          track_kind: binding.kind,
-          reason: "wait_timeout",
-        })
+        if (
+          participant?.kind === "human" &&
+          isCurrentSubscriber &&
+          !closingRef.current
+        ) {
+          // Cloudflare already admitted this mid. Keep the dedup marker until
+          // the existing media reconnect replaces the PeerConnection/session;
+          // a Room resync on this connection must not create another mid.
+          subscribedTracksRef.current.add(binding.subscriptionKey)
+          readySubscribedTracksRef.current.delete(binding.subscriptionKey)
+          sfuClientDiagnostic("remote_track_reconnect_requested", {
+            track_kind: binding.kind,
+            reason: "wait_timeout",
+          })
+          void mediaReconnectRef.current?.()
+        }
       }, REMOTE_TRACK_READY_TIMEOUT_MS)
       remoteTrackBindingsRef.current.set(input.mid, binding)
       sfuClientDiagnostic("remote_track_mid_registered", {
@@ -1222,14 +1233,14 @@ export function useSfuChatRoom(
             mime: message.mime.slice(0, 128),
             size: message.size,
             // The sender reports the latest Room sequence it had observed at
-            // transfer start. Clamp untrusted/future anchors to the latest
-            // sequence this receiver knows, while preserving an older anchor
-            // so a late file-start frame can still precede later Room text.
+            // transfer start. Preserve it even when this receiver's Room
+            // socket is behind; later Room messages can still arrive and
+            // complete the causal ordering.
             afterSequence:
               typeof message.afterSequence === "number" &&
               Number.isSafeInteger(message.afterSequence) &&
               message.afterSequence >= 0
-                ? Math.min(message.afterSequence, latestObservedRoomSequence())
+                ? message.afterSequence
                 : undefined,
             received: 0,
             chunks: [],
@@ -1262,7 +1273,7 @@ export function useSfuChatRoom(
         void event.data.arrayBuffer().then(consumeChunk)
       }
     },
-    [addReceivedFileMessage, latestObservedRoomSequence]
+    [addReceivedFileMessage]
   )
 
   const establishDataChannelTransport = useCallback(async () => {
@@ -1878,7 +1889,8 @@ export function useSfuChatRoom(
                 subscriberSessionId,
                 subscriberPeerConnection
               )
-            : isTransientRemoteTrackAdmissionError(response) &&
+            : !responseSummary.trackHasMid &&
+              isTransientRemoteTrackAdmissionError(response) &&
               scheduleRemoteTrackSubscriptionRetry(
                 key,
                 participant.id,
