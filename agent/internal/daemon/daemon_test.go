@@ -808,7 +808,11 @@ func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
 		mu.Lock()
 		left := leaveCalls
 		mu.Unlock()
-		if left == 1 && d.InstanceCount() == 0 {
+		// completeConfirmedSelfLeave unregisters first, then waits for the
+		// active Runtime turn to unwind before removing its workspace. The
+		// registry transition alone is therefore not the cleanup boundary.
+		_, workspaceErr := os.Stat(workspace)
+		if left == 1 && d.InstanceCount() == 0 && os.IsNotExist(workspaceErr) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
