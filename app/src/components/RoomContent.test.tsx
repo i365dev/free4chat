@@ -461,4 +461,54 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       roomType: "audio",
     })
   })
+
+  it("switches the active preview between two remote screen shares", async () => {
+    const streamA = {} as MediaStream
+    const streamB = {} as MediaStream
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      resolvedRoomType: "screenshare",
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+          screenShareEnabled: false,
+          screenShareStream: null,
+        },
+        {
+          peerId: "publisher-a",
+          name: "Bob",
+          kind: "human",
+          room: "test-room",
+          screenShareEnabled: true,
+          screenShareStream: streamA,
+        },
+        {
+          peerId: "publisher-b",
+          name: "Carol",
+          kind: "human",
+          room: "test-room",
+          screenShareEnabled: true,
+          screenShareStream: streamB,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent
+        roomName="test-room"
+        nickName="Alice"
+        roomType="screenshare"
+      />
+    )
+
+    const preview = () => document.querySelector("video") as HTMLVideoElement
+    await waitFor(() => expect(preview().srcObject).toBe(streamA))
+    fireEvent.click(screen.getByText("Carol"))
+    await waitFor(() => expect(preview().srcObject).toBe(streamB))
+  })
 })

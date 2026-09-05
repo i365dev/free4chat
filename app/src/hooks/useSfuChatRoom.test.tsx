@@ -1377,12 +1377,20 @@ describe("useSfuChatRoom room attachments (#123)", () => {
         }),
       })
     })
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).endsWith("/api/sfu/renegotiate")
+        )
+      ).toHaveLength(2)
+    )
     const pc = FakePeerConnection.instances.at(-1)!
     const track = new FakeTrack()
     act(() => {
       pc.ontrack?.({
         track,
         streams: [],
+        transceiver: { mid: "7" },
       })
     })
 
@@ -1396,6 +1404,19 @@ describe("useSfuChatRoom room attachments (#123)", () => {
         JSON.parse(
           message.slice("free4chat_voice_downstream ".length)
         ) as Record<string, unknown>,
+      ]
+    })
+    const sfuDiagnostics = info.mock.calls.flatMap(([message]) => {
+      if (
+        typeof message !== "string" ||
+        !message.startsWith("free4chat_sfu_downstream ")
+      )
+        return []
+      return [
+        JSON.parse(message.slice("free4chat_sfu_downstream ".length)) as Record<
+          string,
+          unknown
+        >,
       ]
     })
     expect(diagnostics).toEqual(
@@ -1433,16 +1454,21 @@ describe("useSfuChatRoom room attachments (#123)", () => {
         expect.objectContaining({
           event: "ontrack_fired",
           received_track_kind: "audio",
-          pending_remote_track_present: 1,
-        }),
-        expect.objectContaining({
-          event: "pending_session_match",
-          pending_session_match: 1,
+          remote_track_binding_present: 1,
         }),
         expect.objectContaining({
           event: "stream_attached",
           stream_attached: 1,
           attached_kind: "audio",
+        }),
+      ])
+    )
+    expect(sfuDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "remote_track_attached",
+          participant_kind: "agent",
+          track_kind: "audio",
         }),
       ])
     )
