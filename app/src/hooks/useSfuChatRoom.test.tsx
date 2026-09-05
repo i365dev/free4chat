@@ -29,7 +29,7 @@ class FakeDataChannel {
 
 class FakePeerConnection {
   static instances: FakePeerConnection[] = []
-  connectionState = "new"
+  connectionState = "connected"
   ontrack: ((event: unknown) => void) | null = null
   onconnectionstatechange: (() => void) | null = null
   private mids = 0

@@ -129,6 +129,7 @@ interface IncomingFileTransfer {
   name: string
   mime: string
   size: number
+  startedAt: number
   received: number
   chunks: ArrayBuffer[]
 }
@@ -1022,7 +1023,10 @@ export function useSfuChatRoom(
     (
       peerId: string,
       name: string,
-      file: Pick<IncomingFileTransfer, "id" | "name" | "mime" | "size">,
+      file: Pick<
+        IncomingFileTransfer,
+        "id" | "name" | "mime" | "size" | "startedAt"
+      >,
       chunks: ArrayBuffer[]
     ) => {
       const blob = new Blob(chunks, { type: file.mime })
@@ -1033,7 +1037,10 @@ export function useSfuChatRoom(
         name,
         type: file.mime.startsWith("image/") ? "image" : "file",
         messageId: file.id,
-        createdAt: Date.now(),
+        // A file's position is the time its transfer started, not the time
+        // the last chunk arrived. Otherwise later text can render above a
+        // file that was sent first when the file transfer is slow.
+        createdAt: file.startedAt,
         fileLink,
         fileName: file.name,
         fileSize: file.size,
@@ -1129,6 +1136,7 @@ export function useSfuChatRoom(
             name: message.name.slice(0, 256),
             mime: message.mime.slice(0, 128),
             size: message.size,
+            startedAt: Date.now(),
             received: 0,
             chunks: [],
           })
@@ -1246,6 +1254,16 @@ export function useSfuChatRoom(
         remoteFileChannelAttemptsRef.current.has(participant.id)
       )
         return
+      // Cloudflare's SFU requires the subscriber PeerConnection to be
+      // connected before session operations are accepted. Room state can
+      // arrive earlier, so leave this attempt unclaimed and let the
+      // connection-state resync below make the first real request.
+      if (pc.connectionState !== "connected") {
+        sfuClientDiagnostic("remote_file_channel_waiting_for_connection", {
+          participant_kind: participant.kind,
+        })
+        return
+      }
       const media = participant.media
       const channelKey = participant.id
       const fileChannelName = `files-${participant.id}`
@@ -1529,6 +1547,17 @@ export function useSfuChatRoom(
         media_present: media ? 1 : 0,
       })
       if (!session || !pc || !media) return
+      // A Room state update often races ICE/DTLS establishment. Do not spend
+      // the one logical subscription attempt while Cloudflare would reject
+      // the PeerConnection for not being connected yet. The connected
+      // handler replays the current participant map independently.
+      if (pc.connectionState !== "connected") {
+        sfuClientDiagnostic("remote_track_waiting_for_connection", {
+          participant_kind: participant.kind,
+          track_kind: diagnosticTrackKind(track.kind),
+        })
+        return
+      }
       const key = `${participant.id}:${media.sessionId}:${track.trackName}`
       const isAgentAudioSubscription =
         participant.kind === "agent" && track.kind === "audio"
@@ -1882,6 +1911,19 @@ export function useSfuChatRoom(
     subscribeTrackRef.current = subscribeTrack
   }, [subscribeTrack])
 
+  const resubscribeRemoteMedia = useCallback(() => {
+    const pc = peerConnectionRef.current
+    const session = sessionRef.current
+    if (!pc || !session || pc.connectionState !== "connected") return
+    for (const participant of participantMapRef.current.values()) {
+      if (participant.id === session.participantId) continue
+      for (const track of participant.media?.tracks ?? [])
+        void subscribeTrack(participant, track)
+      if (participant.media?.fileChannelReady)
+        void subscribeFileChannel(participant)
+    }
+  }, [subscribeFileChannel, subscribeTrack])
+
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
@@ -1981,25 +2023,14 @@ export function useSfuChatRoom(
         )
       )
       rebuildParticipants()
-      const localId = sessionRef.current?.participantId
-      for (const participant of state.participants) {
-        if (participant.id === localId) continue
-        const fullParticipant = participantMapRef.current.get(participant.id)
-        if (!fullParticipant) continue
-        for (const track of participant.media?.tracks ?? []) {
-          void subscribeTrack(fullParticipant, track)
-        }
-        if (fullParticipant.media?.fileChannelReady)
-          void subscribeFileChannel(fullParticipant)
-      }
+      resubscribeRemoteMedia()
     },
     [
       rebuildParticipants,
       resetRemoteParticipant,
       resetRemoteTrackSubscription,
       replaceRoomMessages,
-      subscribeFileChannel,
-      subscribeTrack,
+      resubscribeRemoteMedia,
     ]
   )
 
@@ -2086,6 +2117,10 @@ export function useSfuChatRoom(
         mediaReconnectAttemptsRef.current = 0
         setConnectionStatus("connected")
         sampleSfuEgress("interval", pc)
+        // Room state and ICE/DTLS completion are independent events. Replay
+        // all currently published remote media at this boundary so an early
+        // state notification cannot permanently lose a subscription.
+        resubscribeRemoteMedia()
       } else if (
         pc.connectionState === "failed" ||
         pc.connectionState === "disconnected"
@@ -2100,6 +2135,7 @@ export function useSfuChatRoom(
     clearRemoteTrackBindings,
     rebuildParticipants,
     removeRemoteTrackBinding,
+    resubscribeRemoteMedia,
     sampleSfuEgress,
   ])
 
@@ -2879,14 +2915,20 @@ export function useSfuChatRoom(
 
   const sendFileMessage = useCallback(
     async (file: File) => {
+      // Allocate the transfer id before queueing so the queued wire messages
+      // and the eventual local bubble share one stable identity.
+      const id = crypto.randomUUID()
+      const mime = file.type || "application/octet-stream"
       const send = async () => {
         if (file.size > MAX_FILE_SIZE)
           throw new Error("File exceeds the 20 MB limit")
         const channel = localFileChannelRef.current
         if (!channel) throw new Error("SFU file data channel is unavailable")
         await waitForDataChannelOpen(channel)
-        const id = crypto.randomUUID()
-        const mime = file.type || "application/octet-stream"
+        // This is deliberately inside the serialized operation and directly
+        // before file-start. A queued file must not claim a timeline position
+        // before the preceding transfer has actually started.
+        const createdAt = Date.now()
         channel.send(
           JSON.stringify({
             type: "file-start",
@@ -2912,7 +2954,7 @@ export function useSfuChatRoom(
           name: nickName,
           type: mime.startsWith("image/") ? "image" : "file",
           messageId: id,
-          createdAt: Date.now(),
+          createdAt,
           fileLink,
           fileName: file.name,
           fileSize: file.size,

@@ -60,7 +60,7 @@ class TestDataChannel {
 
 class TestPeerConnection {
   static instances: TestPeerConnection[] = []
-  connectionState = "new"
+  connectionState = "connected"
   ontrack: ((event: unknown) => void) | null = null
   onconnectionstatechange: (() => void) | null = null
   createdChannels: TestDataChannel[] = []
@@ -395,6 +395,50 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
+  it("waits for a connected PeerConnection before replaying initial remote media", async () => {
+    const { socket, pc, unmount } = await connect()
+    pc.connectionState = "new"
+    const state = roomState([
+      participant(
+        "publisher-a",
+        [{ trackName: "screen-a", kind: "video" }],
+        "session-a",
+        true
+      ),
+    ])
+
+    sendState(socket, state)
+    await flushAsync()
+    expect(trackRequestNumber).toBe(0)
+    expect(
+      fetchMock.mock.calls.filter(([input, init]) => {
+        if (!String(input).endsWith("/api/sfu/datachannels/new")) return false
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          dataChannels?: Array<{ location?: string }>
+        }
+        return body.dataChannels?.[0]?.location === "remote"
+      })
+    ).toHaveLength(0)
+
+    act(() => {
+      pc.connectionState = "connected"
+      pc.onconnectionstatechange?.()
+    })
+    await waitForRemoteTrackRequests(1)
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([input, init]) => {
+          if (!String(input).endsWith("/api/sfu/datachannels/new")) return false
+          const body = JSON.parse(String(init?.body ?? "{}")) as {
+            dataChannels?: Array<{ location?: string }>
+          }
+          return body.dataChannels?.[0]?.location === "remote"
+        })
+      ).toHaveLength(1)
+    )
+    unmount()
+  })
+
   it("ignores a delayed event from a rotated publisher session", async () => {
     const { result, socket, pc, unmount } = await connect()
     const oldTrack = { trackName: "screen", kind: "video" } as const
@@ -589,6 +633,169 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
           String(input).endsWith("/api/sfu/datachannels/new")
         )
       ).toHaveLength(4)
+    )
+    unmount()
+  })
+
+  it("orders a received file by transfer start before later Room text", async () => {
+    const { result, socket, unmount } = await connect()
+    const state = roomState([participant("publisher-a", [], "session-a", true)])
+    sendState(socket, state)
+    await waitFor(() =>
+      expect(
+        TestPeerConnection.instances[0].createdChannels.filter((channel) =>
+          channel.name.includes("subscriber")
+        )
+      ).toHaveLength(1)
+    )
+    const channel = TestPeerConnection.instances[0].createdChannels.find(
+      (candidate) => candidate.name.includes("subscriber")
+    )!
+    const createObjectUrl = vi.fn(() => "blob:file-1")
+    const revokeObjectUrl = vi.fn()
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    })
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    })
+
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    act(() =>
+      channel.emit("message", {
+        data: JSON.stringify({
+          type: "file-start",
+          id: "file-1",
+          name: "first.txt",
+          mime: "text/plain",
+          size: 3,
+        }),
+      })
+    )
+    vi.setSystemTime(2000)
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "message",
+          message: {
+            id: "text-1",
+            peerId: "publisher-a",
+            name: "publisher-a",
+            kind: "human",
+            type: "text",
+            text: "later text",
+            createdAt: 2000,
+            sequence: 1,
+          },
+        }),
+      })
+    )
+    act(() => {
+      channel.emit("message", { data: new Uint8Array([1, 2, 3]).buffer })
+      channel.emit("message", {
+        data: JSON.stringify({ type: "file-end", id: "file-1" }),
+      })
+    })
+
+    expect(result.current.messages.map((message) => message.messageId)).toEqual(
+      ["file-1", "text-1"]
+    )
+    expect(createObjectUrl).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
+  it("orders queued files by actual transfer start around an intervening Room text", async () => {
+    const { result, socket, pc, unmount } = await connect()
+    const localChannel = pc.createdChannels.find(
+      (channel) => channel.name === "files-human-local"
+    )!
+    const createObjectUrl = vi.fn((file: File) => `blob:${file.name}`)
+    const revokeObjectUrl = vi.fn()
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    })
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    })
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("file-a")
+      .mockReturnValueOnce("file-b")
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    localChannel.bufferedAmount = 256 * 1024 + 1
+    const fileA = {
+      name: "a.txt",
+      type: "text/plain",
+      size: 1,
+      slice: () => ({
+        arrayBuffer: () => Promise.resolve(new Uint8Array([1]).buffer),
+      }),
+    } as unknown as File
+    const fileB = {
+      name: "b.txt",
+      type: "text/plain",
+      size: 1,
+      slice: () => ({
+        arrayBuffer: () => Promise.resolve(new Uint8Array([2]).buffer),
+      }),
+    } as unknown as File
+
+    const firstSend = result.current.sendFileMessage(fileA)
+    await flushAsync()
+    expect(localChannel.send).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: "file-start",
+        id: "file-a",
+        name: "a.txt",
+        mime: "text/plain",
+        size: 1,
+      })
+    )
+
+    const secondSend = result.current.sendFileMessage(fileB)
+    vi.setSystemTime(2000)
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "message",
+          message: {
+            id: "text-between",
+            peerId: "human-other",
+            name: "Other",
+            kind: "human",
+            type: "text",
+            text: "between files",
+            createdAt: 2000,
+            sequence: 1,
+          },
+        }),
+      })
+    )
+
+    vi.setSystemTime(3000)
+    localChannel.bufferedAmount = 0
+    await act(async () => {
+      localChannel.emit("bufferedamountlow")
+      await firstSend
+      await secondSend
+    })
+
+    expect(
+      localChannel.send.mock.calls
+        .map(([data]) =>
+          typeof data === "string" && data.includes('"type":"file-start"')
+            ? JSON.parse(data).id
+            : undefined
+        )
+        .filter(Boolean)
+    ).toEqual(["file-a", "file-b"])
+    expect(result.current.messages.map((message) => message.messageId)).toEqual(
+      ["file-a", "text-between", "file-b"]
     )
     unmount()
   })
