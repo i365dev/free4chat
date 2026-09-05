@@ -840,9 +840,15 @@ func (r *ResidentRuntime) residentHeartbeatInterval() time.Duration {
 
 func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	r.mu.Lock()
-	if result.Cursor > r.cursor {
-		r.cursor = result.Cursor
-	}
+	// The Room transport is at-least-once across reconnect, heartbeat, and
+	// catch-up boundaries. Keep its receipt cursor separate from
+	// deliveredThrough, which tracks only successful Harness consumption.
+	//
+	// Capture the boundary before processing this envelope. A server cursor may
+	// advance over self-originated or otherwise filtered events, so it (rather
+	// than the highest event accepted below) remains the receipt boundary for
+	// the next envelope.
+	receivedThrough := r.cursor
 	// #228: a successful long-poll proves the Room connection recovered.
 	// Only a WAIT-origin transient error is cleared — the exact class a
 	// successful wait proves resolved. Harness/turn/send failures recorded
@@ -856,9 +862,31 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 		r.roster = append([]types.ParticipantRosterEntry(nil), result.Participants...)
 	}
 	r.mu.Unlock()
+
+	// Deduplicate within the envelope as well as against the prior transport
+	// receipt boundary. This map is intentionally envelope-local: the monotonic
+	// Room cursor is the sole in-memory receipt boundary, not a second delivery
+	// ledger.
+	accepted := make(map[int64]struct{}, len(result.Events))
 	for _, event := range result.Events {
+		if event.Sequence <= receivedThrough {
+			continue
+		}
+		if _, duplicate := accepted[event.Sequence]; duplicate {
+			continue
+		}
+		accepted[event.Sequence] = struct{}{}
 		r.acceptEvent(event)
 	}
+
+	// Advance only after this envelope's events have been ingested. A
+	// heartbeat may observe the prior cursor while ingestion is in progress;
+	// that is safe because replayed events are idempotently ignored above.
+	r.mu.Lock()
+	if result.Cursor > r.cursor {
+		r.cursor = result.Cursor
+	}
+	r.mu.Unlock()
 }
 
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
