@@ -578,12 +578,16 @@ func promptBlocks(input types.HarnessTurnInput, supportsImages bool) []map[strin
 	return blocks
 }
 
-// RunTurn executes one addressed turn against the retained session.
-func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput) (types.HarnessTurnResult, error) {
-	if err := a.EnsureSession(); err != nil {
-		return types.HarnessTurnResult{}, err
-	}
+// RunTurn executes one addressed turn against the exact retained session
+// generation prepared by the Runtime. In particular, this method must not
+// call EnsureSession: doing so could respawn a Harness after the Runtime had
+// already rendered a non-bootstrap prompt for the dead conversation.
+func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput, expectedSessionGeneration int64) (types.HarnessTurnResult, error) {
 	a.mu.Lock()
+	if expectedSessionGeneration <= 0 || a.sessionGeneration != expectedSessionGeneration {
+		a.mu.Unlock()
+		return types.HarnessTurnResult{}, types.ErrHarnessSessionGenerationChanged
+	}
 	if a.sessionID == "" || a.stdin == nil {
 		a.mu.Unlock()
 		return types.HarnessTurnResult{}, errors.New("ACP session is unavailable")

@@ -218,4 +218,55 @@ describe("RoomSession bounded historical context read (#223)", () => {
     expect((await room.read({ token: "wrong" })).status).toBe(401)
     expect((await room.read({ limit: 51 })).status).toBe(400)
   })
+
+  it("reports truncation for an intervening message gap despite an old retained attachment", async () => {
+    const room = fixture()
+    const retainedRoom = room.store.get("room") as {
+      messages: Array<Record<string, unknown>>
+      attachments: Array<Record<string, unknown>>
+      nextMessageSequence: number
+    }
+    // This is the shape produced when the 100-message ring has advanced to
+    // 101..200 while an early attachment remains in its independent 8-item
+    // ring. The first merged entry is sequence 1, but 2..100 are gone.
+    retainedRoom.messages = Array.from({ length: 100 }, (_, index) => {
+      const sequence = index + 101
+      return {
+        id: `message-${sequence}`,
+        peerId: "agent-b",
+        name: "Agent B",
+        kind: "agent",
+        type: "text",
+        text: `message-${sequence}`,
+        createdAt: sequence,
+        sequence,
+      }
+    })
+    retainedRoom.attachments = [
+      {
+        id: "attachment-1",
+        senderId: "agent-b",
+        senderName: "Agent B",
+        senderKind: "agent",
+        mimeType: "text/plain",
+        fileName: "early.txt",
+        size: 5,
+        chunkCount: 1,
+        createdAt: 1,
+        sequence: 1,
+      },
+    ]
+    retainedRoom.nextMessageSequence = 200
+
+    const page = (await room.read({ afterSequence: 1, limit: 50 })) as {
+      status: number
+      json: Record<string, any>
+    }
+    expect(page.status).toBe(200)
+    expect(page.json.oldestSequence).toBe(1)
+    expect(page.json.truncated).toBe(true)
+    expect(
+      page.json.events.map((event: { sequence: number }) => event.sequence)
+    ).toEqual(Array.from({ length: 50 }, (_, index) => index + 101))
+  })
 })

@@ -273,7 +273,7 @@ func (s *stubAdapter) Name() string                           { return s.name }
 func (*stubAdapter) Capabilities() *types.HarnessCapabilities { return nil }
 func (*stubAdapter) EnsureSession() error                     { return nil }
 func (*stubAdapter) SessionGeneration() int64                 { return 1 }
-func (*stubAdapter) RunTurn(types.HarnessTurnInput) (types.HarnessTurnResult, error) {
+func (*stubAdapter) RunTurn(types.HarnessTurnInput, int64) (types.HarnessTurnResult, error) {
 	return types.HarnessTurnResult{Text: "stub-reply"}, nil
 }
 func (*stubAdapter) OnFailure(types.AdapterFailureHandler) {}

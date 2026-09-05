@@ -1,10 +1,37 @@
 package runtime
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
+
+// pendingTurnContext is an immutable, bounded snapshot of one accepted
+// addressed delta. It is deliberately separate from EventBuffer: the latter
+// may evict recent transport history, but must never decide whether an
+// unacknowledged Harness turn remains retryable.
+type pendingTurnContext struct {
+	after  int64
+	target int64
+	events []types.RoomEvent
+}
+
+func containsSequence(items []int64, sequence int64) bool {
+	for _, item := range items {
+		if item == sequence {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneRoomEvents(events []types.RoomEvent) []types.RoomEvent {
+	out := make([]types.RoomEvent, len(events))
+	copy(out, events)
+	return out
+}
 
 // currentHandle snapshots the live capability value (internal use only).
 func (r *ResidentRuntime) currentHandle() string {
@@ -83,6 +110,7 @@ func (r *ResidentRuntime) ackPending(sequence int64) {
 			continue
 		}
 		r.pendingAddressed = append(r.pendingAddressed[:index], r.pendingAddressed[index+1:]...)
+		delete(r.pendingContexts, sequence)
 		return
 	}
 }
@@ -105,16 +133,20 @@ func (r *ResidentRuntime) effectiveDeliveryStart() int64 {
 // acknowledgeHarnessDelivery advances the successful Harness-delivery
 // cursor only after RunTurn returned successfully, and only then removes the
 // addressed trigger. Callers must keep outbound Room reply delivery separate.
-func (r *ResidentRuntime) acknowledgeHarnessDelivery(target, through int64) {
+func (r *ResidentRuntime) acknowledgeHarnessDelivery(target, through, generation int64) {
 	r.mu.Lock()
 	if through > r.deliveredThrough {
 		r.deliveredThrough = through
+	}
+	if generation > 0 && generation == r.observedHarnessGeneration {
+		r.bootstrappedHarnessGeneration = generation
 	}
 	for index, pending := range r.pendingAddressed {
 		if pending != target {
 			continue
 		}
 		r.pendingAddressed = append(r.pendingAddressed[:index], r.pendingAddressed[index+1:]...)
+		delete(r.pendingContexts, target)
 		break
 	}
 	r.mu.Unlock()
@@ -148,14 +180,14 @@ func (r *ResidentRuntime) observeHarnessSession(generation, target int64) bool {
 	if generation <= 0 {
 		return false
 	}
-	if r.harnessGeneration == 0 {
-		r.harnessGeneration = generation
-		return true
+	if r.observedHarnessGeneration == 0 {
+		r.observedHarnessGeneration = generation
+		return r.bootstrappedHarnessGeneration != generation
 	}
-	if r.harnessGeneration == generation {
-		return false
+	if r.observedHarnessGeneration == generation {
+		return r.bootstrappedHarnessGeneration != generation
 	}
-	r.harnessGeneration = generation
+	r.observedHarnessGeneration = generation
 	if target > 0 {
 		// Reset the current session's actual delivery knowledge. The separate
 		// floor suppresses automatic replay of old history, without treating it
@@ -171,7 +203,7 @@ func (r *ResidentRuntime) observeHarnessSession(generation, target int64) bool {
 	r.liveTranscriptDeliveryFloor = r.liveTranscriptDeliveredThrough
 	r.meetingDeliveredThrough = 0
 	r.liveTranscriptDeliveredThrough = 0
-	return true
+	return r.bootstrappedHarnessGeneration != generation
 }
 
 func (r *ResidentRuntime) bufferSince(after, through int64) []types.RoomEvent {
@@ -181,6 +213,78 @@ func (r *ResidentRuntime) bufferSince(after, through int64) []types.RoomEvent {
 	out := make([]types.RoomEvent, len(events))
 	copy(out, events)
 	return out
+}
+
+// pendingContext returns the frozen accepted delta for target. Older Runtime
+// state created before this invariant may lack a snapshot; in that narrow
+// case recover it from the bounded authenticated Room history rather than
+// treating a local EventBuffer eviction as a permanent delivery failure.
+func (r *ResidentRuntime) pendingContext(target int64) ([]types.RoomEvent, error) {
+	r.mu.Lock()
+	pending, ok := r.pendingContexts[target]
+	if !ok {
+		start := max(r.deliveredThrough, r.roomDeliveryFloor)
+		pending = pendingTurnContext{
+			after:  start,
+			target: target,
+			events: cloneRoomEvents(r.eventBuffer.Since(start, target)),
+		}
+		if r.pendingContexts == nil {
+			r.pendingContexts = make(map[int64]pendingTurnContext)
+		}
+		r.pendingContexts[target] = pending
+	}
+	if len(pending.events) > 0 {
+		events := cloneRoomEvents(pending.events)
+		r.mu.Unlock()
+		return events, nil
+	}
+	r.mu.Unlock()
+
+	client, ok := r.options.Client.(types.RoomContextClient)
+	if !ok {
+		return nil, errors.New("room context read is unavailable")
+	}
+	handle, err := r.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	cursor := pending.after
+	var events []types.RoomEvent
+	for cursor < pending.target {
+		context, err := client.ReadRoomContext(handle, types.RoomContextReadOptions{
+			AfterSequence:  cursor,
+			BeforeSequence: pending.target + 1,
+			Limit:          50,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if context.Room.Truncated {
+			return nil, fmt.Errorf("room context before sequence %d is no longer retained", cursor)
+		}
+		last := cursor
+		for _, event := range context.Room.Events {
+			if event.Sequence > cursor && event.Sequence <= pending.target {
+				events = append(events, event)
+				last = event.Sequence
+			}
+		}
+		if last == cursor {
+			break
+		}
+		cursor = last
+	}
+	if len(events) == 0 {
+		return nil, fmt.Errorf("room context for sequence %d is unavailable", pending.target)
+	}
+	r.mu.Lock()
+	if current, exists := r.pendingContexts[target]; exists && len(current.events) == 0 {
+		current.events = cloneRoomEvents(events)
+		r.pendingContexts[target] = current
+	}
+	r.mu.Unlock()
+	return events, nil
 }
 
 func (r *ResidentRuntime) rosterSnapshot() []types.ParticipantRosterEntry {

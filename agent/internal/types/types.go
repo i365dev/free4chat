@@ -385,6 +385,12 @@ type HarnessTurnResult struct {
 // AdapterFailureHandler is invoked when the Harness process dies unexpectedly.
 type AdapterFailureHandler func(error)
 
+// ErrHarnessSessionGenerationChanged means an adapter could no longer bind a
+// turn to the ACP conversation generation the Runtime prepared it for. The
+// Runtime must rebuild the turn after observing the replacement session so a
+// bootstrap/security contract can never be omitted on a fresh conversation.
+var ErrHarnessSessionGenerationChanged = errors.New("harness session generation changed")
+
 // HarnessAdapter is the real boundary between room turns and the local
 // Harness process (ACP).
 type HarnessAdapter interface {
@@ -396,7 +402,11 @@ type HarnessAdapter interface {
 	// Room delivery acknowledgement scoped to actual Harness memory rather
 	// than to transport reconnects or process ids.
 	SessionGeneration() int64
-	RunTurn(input HarnessTurnInput) (HarnessTurnResult, error)
+	// RunTurn binds the prepared input to expectedSessionGeneration. It must
+	// never create or silently switch to another session while sending a turn:
+	// the Runtime derives Session.New and the bootstrap contract from this exact
+	// generation.
+	RunTurn(input HarnessTurnInput, expectedSessionGeneration int64) (HarnessTurnResult, error)
 	OnFailure(handler AdapterFailureHandler)
 	CancelTurn() error
 	Close() error

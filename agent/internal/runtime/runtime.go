@@ -129,7 +129,13 @@ type ResidentRuntime struct {
 	// that older history remains available through explicit context read.
 	roomDeliveryFloor int64
 	pendingAddressed  []int64
-	harnessGeneration int64
+	pendingContexts   map[int64]pendingTurnContext
+	// observedHarnessGeneration is the ACP session/new generation most
+	// recently observed before rendering a prompt. bootstrappedHarnessGeneration
+	// advances only after that generation successfully consumes its bootstrap
+	// turn; observing a session is never an acknowledgement.
+	observedHarnessGeneration     int64
+	bootstrappedHarnessGeneration int64
 	// Transcript delivery keeps a per-ACP-session success marker plus a
 	// baseline captured at session/new. The baseline deliberately leaves old
 	// shared context pullable instead of dumping it into a new conversation.
@@ -564,6 +570,7 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.roomDeliveryFloor = joined.Cursor
 		r.eventBuffer.Clear()
 		r.pendingAddressed = nil
+		r.pendingContexts = nil
 	}
 	r.state = StateWaiting
 	r.lastError = ""
@@ -857,8 +864,26 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	r.mu.Lock()
 	r.eventBuffer.Add(event)
-	if event.Addressed {
-		r.pendingAddressed = BoundedPush(r.pendingAddressed, event.Sequence, MaxPendingTurns)
+	if event.Addressed && !containsSequence(r.pendingAddressed, event.Sequence) {
+		// Do not use BoundedPush here. An addressed trigger remains unacknowledged
+		// until RunTurn succeeds, so front eviction would silently lose a failed
+		// turn. When the bounded queue is full, keep every already-accepted
+		// context intact rather than silently acknowledging or replacing it.
+		if len(r.pendingAddressed) < MaxPendingTurns {
+			after := max(r.deliveredThrough, r.roomDeliveryFloor)
+			if pending := len(r.pendingAddressed); pending > 0 {
+				after = r.pendingAddressed[pending-1]
+			}
+			if r.pendingContexts == nil {
+				r.pendingContexts = make(map[int64]pendingTurnContext)
+			}
+			r.pendingAddressed = append(r.pendingAddressed, event.Sequence)
+			r.pendingContexts[event.Sequence] = pendingTurnContext{
+				after:  after,
+				target: event.Sequence,
+				events: cloneRoomEvents(r.eventBuffer.Since(after, event.Sequence)),
+			}
+		}
 	}
 	r.mu.Unlock()
 }
@@ -921,8 +946,18 @@ func (r *ResidentRuntime) drainTurns() {
 			r.log("turn_failed", nil)
 			return
 		}
-		newSession := r.observeHarnessSession(r.options.Adapter.SessionGeneration(), target)
-		events := r.bufferSince(r.effectiveDeliveryStart(), target)
+		generation := r.options.Adapter.SessionGeneration()
+		newSession := r.observeHarnessSession(generation, target)
+		events, contextErr := r.pendingContext(target)
+		if contextErr != nil {
+			r.mu.Lock()
+			r.lastError = contextErr.Error()
+			r.lastErrorSource = "harness"
+			r.state = StateReconnecting
+			r.mu.Unlock()
+			r.log("turn_context_unavailable", nil)
+			return
+		}
 		if len(events) == 0 {
 			// A duplicate pending target can only be safely discarded when the
 			// successful-delivery cursor already covers it. Otherwise bounded
@@ -963,7 +998,7 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Cancel()
 		}
 
-		result, err := r.options.Adapter.RunTurn(*input)
+		result, err := r.options.Adapter.RunTurn(*input, generation)
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
@@ -977,7 +1012,7 @@ func (r *ResidentRuntime) drainTurns() {
 		// RunTurn succeeded: commit every delivery marker before lifecycle
 		// handling or text persistence. If either of those later operations
 		// fails, replaying this already-consumed Harness prompt would be wrong.
-		r.acknowledgeHarnessDelivery(target, maxSeq)
+		r.acknowledgeHarnessDelivery(target, maxSeq, generation)
 		r.acknowledgeTranscriptDelivery(meetingThrough, liveThrough)
 		r.mu.Lock()
 		r.harnessFailed = false
@@ -1266,6 +1301,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 			r.lastError = lastError
 		}
 		r.pendingAddressed = nil
+		r.pendingContexts = nil
 		r.eventBuffer.Clear()
 		r.mu.Unlock()
 		close(r.stopCh)

@@ -1628,10 +1628,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         peerId: attachment.senderId,
       })),
     ].sort((left, right) => left.sequence - right.sequence)
-    const firstSequence = events[0]?.sequence
-    const truncated =
-      firstSequence !== undefined && clampedCursor < firstSequence - 1
-    const effectiveCursor = truncated ? firstSequence - 1 : clampedCursor
+    const coverageFloor = this.retainedEventCoverageFloor(events)
+    const truncated = coverageFloor > 0 && clampedCursor < coverageFloor - 1
+    const effectiveCursor = truncated ? coverageFloor - 1 : clampedCursor
     return {
       events: events
         .filter(
@@ -1663,6 +1662,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     ].sort((left, right) => left.sequence - right.sequence)
   }
 
+  // The retained message and attachment rings share one sequence domain but
+  // evict independently. The oldest retained entry is therefore not enough
+  // to prove a forward cursor is complete: an old attachment can survive
+  // while an intervening message range has already been evicted. Return the
+  // first sequence of the newest contiguous suffix, which is the true floor
+  // after which every Room event is still retained.
+  private retainedEventCoverageFloor<T extends { sequence: number }>(
+    entries: T[]
+  ): number {
+    if (entries.length === 0) return 0
+    let floor = entries[entries.length - 1].sequence
+    for (let index = entries.length - 2; index >= 0; index -= 1) {
+      if (entries[index].sequence !== floor - 1) break
+      floor = entries[index].sequence
+    }
+    return floor
+  }
+
   // contextPage preserves a deterministic, bounded cursor contract. An
   // after cursor pages forward; a before cursor (without after) returns the
   // closest retained predecessors. Each independent sequence domain uses
@@ -1684,6 +1701,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   } {
     const oldestSequence = entries[0]?.sequence ?? 0
     const newestSequence = entries[entries.length - 1]?.sequence ?? 0
+    const coverageFloor = this.retainedEventCoverageFloor(entries)
     const filtered = entries.filter(
       (entry) =>
         (options.after === undefined || entry.sequence > options.after) &&
@@ -1705,8 +1723,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         last !== undefined && entries.some((entry) => entry.sequence > last),
       truncated:
         options.after !== undefined &&
-        oldestSequence > 0 &&
-        options.after < oldestSequence - 1,
+        coverageFloor > 0 &&
+        options.after < coverageFloor - 1,
     }
   }
 

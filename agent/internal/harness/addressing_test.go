@@ -174,7 +174,7 @@ func TestACPTurnParsesOutboundAddressingEnvelope(t *testing.T) {
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("EnsureSession failed: %v", err)
 	}
-	result, err := adapter.RunTurn(turnInput("hand off please"))
+	result, err := adapter.RunTurn(turnInput("hand off please"), adapter.SessionGeneration())
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestACPTurnMalformedEnvelopeStaysProse(t *testing.T) {
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("EnsureSession failed: %v", err)
 	}
-	result, err := adapter.RunTurn(turnInput("hand off please"))
+	result, err := adapter.RunTurn(turnInput("hand off please"), adapter.SessionGeneration())
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestACPTurnPlainReplyStaysUnaddressed(t *testing.T) {
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("EnsureSession failed: %v", err)
 	}
-	result, err := adapter.RunTurn(turnInput("say hi"))
+	result, err := adapter.RunTurn(turnInput("say hi"), adapter.SessionGeneration())
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestACPTurnParsesLifecycleLeaveEnvelope(t *testing.T) {
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("EnsureSession failed: %v", err)
 	}
-	result, err := adapter.RunTurn(turnInput("please leave"))
+	result, err := adapter.RunTurn(turnInput("please leave"), adapter.SessionGeneration())
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
 	}

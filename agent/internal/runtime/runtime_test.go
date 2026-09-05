@@ -133,6 +133,9 @@ type fakeClient struct {
 	// sendFailuresRemaining makes the NEXT N SendText calls fail (#228:
 	// deterministic send-failure scripting).
 	sendFailuresRemaining int
+	contextResult         types.RoomContextReadResult
+	contextErr            error
+	contextCalls          int
 }
 
 type transcriptClient struct {
@@ -275,6 +278,13 @@ func (c *fakeClient) ListTools() ([]string, error) { return nil, nil }
 
 func (c *fakeClient) RoomInfo(string) (types.RoomInfo, error) {
 	return types.RoomInfo{Exists: true}, nil
+}
+
+func (c *fakeClient) ReadRoomContext(string, types.RoomContextReadOptions) (types.RoomContextReadResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.contextCalls++
+	return c.contextResult, c.contextErr
 }
 
 func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
@@ -433,8 +443,11 @@ type fakeAdapter struct {
 	onFail      func(error)
 	sessions    int
 	generation  int64
-	stopped     bool
-	delay       time.Duration
+	// replaceBeforeRun simulates a process/session replacement in the narrow
+	// interval after Runtime.EnsureSession but before it can bind RunTurn.
+	replaceBeforeRun bool
+	stopped          bool
+	delay            time.Duration
 }
 
 // adapterRunTurnHook lets individual tests observe the exact enriched turn
@@ -460,7 +473,17 @@ func (a *fakeAdapter) SessionGeneration() int64 {
 	return a.generation
 }
 
-func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput) (types.HarnessTurnResult, error) {
+func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput, expectedGeneration int64) (types.HarnessTurnResult, error) {
+	a.mu.Lock()
+	if a.replaceBeforeRun {
+		a.generation++
+		a.replaceBeforeRun = false
+	}
+	if expectedGeneration <= 0 || a.generation != expectedGeneration {
+		a.mu.Unlock()
+		return types.HarnessTurnResult{}, types.ErrHarnessSessionGenerationChanged
+	}
+	a.mu.Unlock()
 	if hook := adapterRunTurnHook; hook != nil {
 		hook(a, input)
 	}
@@ -1076,14 +1099,124 @@ func TestRetainedHarnessDeliveryAcknowledgesOnlySuccessfulTurn(t *testing.T) {
 	if got := rt.deliveredSeq(); got != 3 {
 		t.Fatalf("successful retry did not advance deliveredThrough: %d", got)
 	}
-	if len(captured) != 2 || captured[1].Session.New || len(captured[1].Events) != 3 {
-		t.Fatalf("retry must preserve same session and retry the unacknowledged delta: %#v", captured)
+	if len(captured) != 2 || !captured[1].Session.New || len(captured[1].Events) != 3 {
+		t.Fatalf("a failed bootstrap must retry the same unacknowledged delta with bootstrap context: %#v", captured)
 	}
 
 	rt.acceptEvent(roomEvent(4, true))
 	rt.drainTurns()
 	if len(captured) != 3 || captured[2].Session.New || len(captured[2].Events) != 1 || captured[2].Events[0].Sequence != 4 {
 		t.Fatalf("later retained-session prompt must be a delta, got %#v", captured)
+	}
+}
+
+func TestHarnessGenerationReplacementRebuildsBootstrapBeforePrompt(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-generation-race", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	rt.acceptEvent(roomEvent(1, true))
+	rt.drainTurns()
+	adapter.mu.Lock()
+	adapter.replaceBeforeRun = true
+	adapter.mu.Unlock()
+	rt.acceptEvent(roomEvent(2, true))
+	rt.drainTurns()
+	if got := rt.pendingAddressedSnapshot(); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("generation mismatch acknowledged pending work: %v", got)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("stale non-bootstrap prompt reached a replacement session: %#v", captured)
+	}
+
+	rt.drainTurns()
+	if len(captured) != 2 || !captured[1].Session.New {
+		t.Fatalf("replacement generation did not receive bootstrap context: %#v", captured)
+	}
+	if len(captured[1].Events) != 1 || captured[1].Events[0].Sequence != 2 {
+		t.Fatalf("replacement generation received the wrong Room delta: %#v", captured[1].Events)
+	}
+}
+
+func TestFailedTurnPinsContextAcrossQueueSaturationAndBufferEviction(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("ambiguous ACP failure")}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-pinned-context", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	rt.acceptEvent(roomEvent(1, false))
+	rt.acceptEvent(roomEvent(2, false))
+	rt.acceptEvent(roomEvent(3, true))
+	rt.drainTurns()
+	for sequence := int64(4); sequence < int64(4+MaxPendingTurns+defaultMaxEvents); sequence++ {
+		rt.acceptEvent(roomEvent(sequence, true))
+	}
+	if got := rt.pendingAddressedSnapshot(); len(got) != MaxPendingTurns || got[0] != 3 {
+		t.Fatalf("queue saturation evicted the failed head: %v", got)
+	}
+
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	rt.drainTurns()
+	if len(captured) < 2 || len(captured[1].Events) != 3 {
+		t.Fatalf("failed turn did not retry its pinned delta: %#v", captured)
+	}
+	for index, event := range captured[1].Events {
+		if event.Sequence != int64(index+1) {
+			t.Fatalf("pinned retry lost sequence %d: %#v", index+1, captured[1].Events)
+		}
+	}
+}
+
+func TestPendingTurnRecoversEvictedContextFromRoomHistory(t *testing.T) {
+	client := &fakeClient{contextResult: types.RoomContextReadResult{Room: types.RoomContextWindow{
+		Events: []types.RoomEvent{
+			roomEvent(1, false), roomEvent(2, false), roomEvent(3, true),
+		},
+	}}}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-context-recovery", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	rt.mu.Lock()
+	rt.pendingAddressed = []int64{3}
+	rt.pendingContexts = map[int64]pendingTurnContext{3: {after: 0, target: 3}}
+	rt.mu.Unlock()
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	rt.drainTurns()
+	client.mu.Lock()
+	contextCalls := client.contextCalls
+	client.mu.Unlock()
+	if contextCalls != 1 || len(captured) != 1 || len(captured[0].Events) != 3 {
+		t.Fatalf("evicted pending context was not recovered: calls=%d turns=%#v", contextCalls, captured)
 	}
 }
 
@@ -1146,8 +1279,8 @@ func TestRoomRejoinPreservesSurvivingHarnessDeliveryState(t *testing.T) {
 	adapter.turnErr = nil
 	adapter.mu.Unlock()
 	rt.drainTurns()
-	if len(captured) != 2 || captured[1].Session.New {
-		t.Fatalf("Room rejoin incorrectly bootstrapped a surviving Harness: %#v", captured)
+	if len(captured) != 2 || !captured[1].Session.New {
+		t.Fatalf("Room rejoin must retry an unacknowledged bootstrap: %#v", captured)
 	}
 }
 
