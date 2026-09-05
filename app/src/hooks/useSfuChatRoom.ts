@@ -552,6 +552,7 @@ export function useSfuChatRoom(
   const incomingFilesRef = useRef(new Map<string, IncomingFileTransfer>())
   const objectUrlsRef = useRef(new Set<string>())
   const roomMessagesRef = useRef<Message[]>([])
+  const attachmentsRef = useRef<RoomAttachmentProjection[]>([])
   const ephemeralMessagesRef = useRef<Message[]>([])
   const fileSendQueueRef = useRef(Promise.resolve())
   const dataChannelReadyRef = useRef(false)
@@ -1117,7 +1118,7 @@ export function useSfuChatRoom(
   }, [])
 
   const latestObservedRoomSequence = useCallback(() => {
-    return roomMessagesRef.current.reduce(
+    const latestMessageSequence = roomMessagesRef.current.reduce(
       (latest, message) =>
         typeof message.sequence === "number" &&
         Number.isSafeInteger(message.sequence) &&
@@ -1125,6 +1126,16 @@ export function useSfuChatRoom(
           ? Math.max(latest, message.sequence)
           : latest,
       0
+    )
+
+    return attachmentsRef.current.reduce(
+      (latest, attachment) =>
+        typeof attachment.sequence === "number" &&
+        Number.isSafeInteger(attachment.sequence) &&
+        attachment.sequence >= 0
+          ? Math.max(latest, attachment.sequence)
+          : latest,
+      latestMessageSequence
     )
   }, [])
 
@@ -2172,7 +2183,9 @@ export function useSfuChatRoom(
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
-      setAttachments(state.attachments ?? [])
+      const nextAttachments = state.attachments ?? []
+      attachmentsRef.current = nextAttachments
+      setAttachments(nextAttachments)
       const agentAudioTrackCount = state.participants.reduce(
         (count, participant) =>
           count +
@@ -2543,11 +2556,13 @@ export function useSfuChatRoom(
           roomMessageToMessage(message.message, localParticipantId)
         )
       } else if (message.type === "attachment" && message.attachment) {
-        setAttachments((current) =>
-          current.some((entry) => entry.id === message.attachment!.id)
-            ? current
-            : [...current, message.attachment!]
-        )
+        const attachment = message.attachment
+        const currentAttachments = attachmentsRef.current
+        if (!currentAttachments.some((entry) => entry.id === attachment.id)) {
+          const nextAttachments = [...currentAttachments, attachment]
+          attachmentsRef.current = nextAttachments
+          setAttachments(nextAttachments)
+        }
       } else if (message.type === "expired") {
         setError(
           "This room has closed after being empty for a while. Please open a new room."
@@ -2861,6 +2876,7 @@ export function useSfuChatRoom(
       for (const url of objectUrls) URL.revokeObjectURL(url)
       objectUrls.clear()
       roomMessagesRef.current = []
+      attachmentsRef.current = []
       ephemeralMessagesRef.current = []
       dataChannelReadyRef.current = false
       localTrackMids.clear()

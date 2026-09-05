@@ -1027,6 +1027,69 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
+  it("anchors a human file after the latest Agent attachment sequence", async () => {
+    const { result, socket, pc, unmount } = await connect()
+    const state = roomState([participant("publisher-a", [], "session-a", true)])
+    state.messages = [
+      {
+        id: "text-1",
+        peerId: "publisher-a",
+        name: "publisher-a",
+        kind: "human",
+        type: "text",
+        text: "before attachment",
+        createdAt: 1,
+        sequence: 1,
+      },
+    ]
+    state.attachments = [
+      {
+        id: "agent-attachment-2",
+        senderId: "agent-1",
+        senderName: "Agent",
+        senderKind: "agent",
+        fileName: "artifact.txt",
+        mimeType: "text/plain",
+        size: 1,
+        sequence: 2,
+        createdAt: 2,
+      },
+    ]
+    sendState(socket, state)
+
+    const localChannel = pc.createdChannels.find(
+      (channel) => channel.name === "files-human-local"
+    )!
+    const file = {
+      name: "human.txt",
+      type: "text/plain",
+      size: 1,
+      slice: () => ({
+        arrayBuffer: () => Promise.resolve(new Uint8Array([1]).buffer),
+      }),
+    } as unknown as File
+
+    await act(async () => {
+      await result.current.sendFileMessage(file)
+    })
+
+    const fileStart = localChannel.send.mock.calls
+      .map(([data]) =>
+        typeof data === "string" && data.includes('"type":"file-start"')
+          ? JSON.parse(data)
+          : undefined
+      )
+      .find((message) => message?.id)
+    expect(fileStart).toMatchObject({
+      type: "file-start",
+      afterSequence: 2,
+    })
+    expect(
+      result.current.attachments.map((attachment) => attachment.id)
+    ).toEqual(["agent-attachment-2"])
+    unmount()
+  })
+
   it("orders queued files by actual transfer start around an intervening Room text", async () => {
     const { result, socket, pc, unmount } = await connect()
     const localChannel = pc.createdChannels.find(
