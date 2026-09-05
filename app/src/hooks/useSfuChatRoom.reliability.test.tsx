@@ -71,9 +71,9 @@ class TestPeerConnection {
   createdChannels: TestDataChannel[] = []
   private mids = 0
   private readonly transceivers: Array<{
-    sender: { track: TestTrack }
+    sender: { track: TestTrack | null }
     mid: string
-    direction: "sendonly" | "recvonly"
+    direction: "sendonly" | "recvonly" | "sendrecv"
   }> = []
 
   constructor() {
@@ -81,13 +81,23 @@ class TestPeerConnection {
   }
 
   addTrack(track: TestTrack) {
+    const reusable = this.transceivers.find(
+      (transceiver) =>
+        transceiver.direction === "recvonly" &&
+        transceiver.sender.track === null
+    )
+    if (reusable) {
+      reusable.sender.track = track
+      reusable.direction = "sendrecv"
+      return reusable.sender
+    }
     const mid = String(this.mids++)
     this.transceivers.push({ sender: { track }, mid, direction: "sendonly" })
     return { track }
   }
 
   addTransceiver(
-    track: TestTrack,
+    track: TestTrack | null,
     init: { direction?: "sendonly" | "recvonly" } = {}
   ) {
     const transceiver = {
@@ -272,7 +282,9 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     remoteChannelNumber = 100
     transientRemoteTrackResponses = 0
     admittedRemoteTrackResponsesWithoutDescription = 0
-    localTrackResponseWithDescription = false
+    // Human local publication responses must include the answer and assigned
+    // mid that production /api/sfu/tracks now requires before confirmation.
+    localTrackResponseWithDescription = true
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       TestPeerConnection
     ;(global as unknown as { MediaStream: unknown }).MediaStream =
@@ -421,8 +433,10 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
 
   it("uses a fresh sendonly transceiver for a local screen share beside remote video", async () => {
     const { result, pc, unmount } = await connect()
-    const remoteVideoTrack = new TestTrack("video")
-    const remoteTransceiver = pc.addTransceiver(remoteVideoTrack, {
+    // A remote recvonly transceiver has no local sender track. The browser's
+    // addTrack() would reuse this m-line; the production code must allocate a
+    // separate sendonly transceiver for the local screen publication.
+    const remoteTransceiver = pc.addTransceiver(null, {
       direction: "recvonly",
     })
     const screenTrack = new TestTrack("video")

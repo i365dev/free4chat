@@ -142,6 +142,11 @@ describe("useSfuChatRoom SFU egress analytics", () => {
         })
       if (url.endsWith("/api/sfu/datachannels/new"))
         return jsonResponse({ dataChannels: [{ id: 1 }] })
+      if (url.endsWith("/api/sfu/tracks"))
+        return jsonResponse({
+          sessionDescription: { type: "answer", sdp: "fake-local-answer" },
+          tracks: [{ mid: "0" }],
+        })
       return jsonResponse({})
     }) as unknown as typeof fetch
     vi.mocked(trackAnalyticsEvent).mockClear()

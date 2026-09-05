@@ -265,6 +265,7 @@ describe("Origin policy is route-scoped, not global", () => {
     "agent-room-media",
     "tracks",
     "renegotiate",
+    "publish-confirm",
     "datachannels/establish",
   ]
   const missingOriginRejected = ["session"]
@@ -462,6 +463,23 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
       env
     )
     expect(res.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(actions.map((action) => action.action)).toEqual(["authorize"])
+
+    const confirm = await handleSfuRequest(
+      req("publish-confirm", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "human-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          trackName: "audio-1",
+          kind: "audio",
+        }),
+      }),
+      env
+    )
+    expect(confirm.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(actions).toContainEqual({
       action: "publish",

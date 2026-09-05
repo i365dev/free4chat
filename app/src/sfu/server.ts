@@ -1,4 +1,4 @@
-import type { SfuSessionResponse, SfuTrack } from "./types"
+import type { SfuSessionResponse } from "./types"
 import { isAllowedOrigin } from "../common/origin"
 import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
 import { compensateUnacceptedAgentMedia } from "../do/mediaEffects"
@@ -50,6 +50,7 @@ const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
   "agent-track-active",
   "tracks",
   "renegotiate",
+  "publish-confirm",
   // The resident, subscribe-only Meeting Notes Runtime has no browser Origin
   // but must establish its own WebRTC transport before it can pull Human
   // tracks. The route still performs the normal token/session/grant checks.
@@ -671,6 +672,50 @@ export async function handleSfuRequest(
     return json(diagnostic)
   }
 
+  // A successful Cloudflare tracks/new response is only an admission. A
+  // Human publication becomes Room-visible after the browser has applied the
+  // returned answer successfully. This is intentionally a separate request:
+  // initial microphone publication happens before the Room WebSocket is open.
+  if (route === "publish-confirm") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
+    const trackName = typeof body.trackName === "string" ? body.trackName : ""
+    const kind = body.kind === "audio" || body.kind === "video" ? body.kind : ""
+    if (!room || !participantId || !token || !sessionId || !trackName || !kind)
+      return badRequest("missing_publication")
+
+    const authResponse = await authorize(
+      env,
+      room,
+      participantId,
+      token,
+      sessionId
+    )
+    if (!authResponse.ok) return authResponse
+    const { kind: participantKind } = (await authResponse.json()) as {
+      kind?: string
+    }
+    if (participantKind !== "human")
+      return json({ error: "human_publish_only" }, 403)
+
+    const publishResponse = await roomControl(env, room, {
+      action: "publish",
+      participantId,
+      token,
+      sessionId,
+      track: { trackName, kind },
+    })
+    if (!publishResponse.ok) return publishResponse
+    return json({ ok: true })
+  }
+
   if (route === "tracks" || route === "renegotiate") {
     if (request.method !== "POST" && request.method !== "PUT") {
       return json({ error: "method_not_allowed" }, 405)
@@ -840,24 +885,6 @@ export async function handleSfuRequest(
     }
 
     if (route === "tracks" && Array.isArray(body.tracks)) {
-      for (const track of body.tracks as Array<Record<string, unknown>>) {
-        if (track.location !== "local" || typeof track.trackName !== "string")
-          continue
-        // #83: an Agent's publication is booked through the grant-rechecking
-        // "agent-track-published" action below — never this Human track-list
-        // action, which rejects agents outright.
-        if (participantKind === "agent") continue
-        const trackKind: SfuTrack["kind"] =
-          track.kind === "video" ? "video" : "audio"
-        const publishResponse = await roomControl(env, room, {
-          action: "publish",
-          participantId,
-          token,
-          sessionId,
-          track: { trackName: track.trackName, kind: trackKind },
-        })
-        if (!publishResponse.ok) return publishResponse
-      }
       // Record the Cloudflare-assigned mid(s) for the Agent's newly
       // established *remote* (subscribe) tracks, so a future Meeting Notes
       // revocation can actually close them server-side (finding #3) instead

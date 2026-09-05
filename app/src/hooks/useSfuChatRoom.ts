@@ -1538,9 +1538,23 @@ export function useSfuChatRoom(
             sdp: offer.sdp,
           },
         })
-        if (response.sessionDescription) {
-          await pc.setRemoteDescription(response.sessionDescription)
-        }
+        if (
+          !hasUsableSessionDescription(response) ||
+          !response.sessionDescription
+        )
+          throw new Error("SFU publication answer unavailable")
+        await pc.setRemoteDescription(response.sessionDescription)
+        // Cloudflare admission is not Room publication. Only advertise the
+        // local track after this PeerConnection has accepted the answer; the
+        // Worker re-checks the exact current session before committing it.
+        await apiRequest("publish-confirm", {
+          room: roomName,
+          participantId: session.participantId,
+          token: session.participantToken,
+          sessionId: session.sessionId,
+          trackName,
+          kind,
+        })
         localTrackMidsRef.current.set(trackName, transceiver.mid)
       })
     },
