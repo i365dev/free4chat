@@ -24,6 +24,7 @@ import (
 )
 
 var fakeAgentBinary string
+var free4chatAgentBinary string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "free4chat-daemon-")
@@ -36,6 +37,11 @@ func TestMain(m *testing.M) {
 		panic("fakeagent build failed: " + string(out))
 	}
 	fakeAgentBinary = bin
+	free4chatAgentBinary = filepath.Join(dir, "free4chat-agent")
+	runtimeBuild := exec.Command("go", "build", "-o", free4chatAgentBinary, "../../cmd/free4chat-agent")
+	if out, err := runtimeBuild.CombinedOutput(); err != nil {
+		panic("free4chat-agent build failed: " + string(out))
+	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
@@ -943,6 +949,139 @@ func serveResidentEventSocket(w http.ResponseWriter, r *http.Request, payload an
 	encoded, _ := json.Marshal(payload)
 	_ = conn.Write(context.Background(), websocket.MessageText, encoded)
 	return true
+}
+
+func TestCustomRuntimeRootReachesHarnessContextRead(t *testing.T) {
+	_, root := startDaemon(t)
+
+	// The fake ACP Harness invokes the CLI by name. Put the test-built CLI
+	// first on PATH so the child exercises the same local command path as a
+	// real Harness, while FREE4CHAT_AGENT_DIR points at this daemon's root.
+	t.Setenv("PATH", filepath.Dir(free4chatAgentBinary)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var mu sync.Mutex
+	var sentTexts []string
+	waitCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveResidentEventSocket(w, r, map[string]any{
+			"type": "events",
+			"events": []any{map[string]any{
+				"sequence": float64(1), "type": "text",
+				"participant": map[string]any{
+					"id": "human-1", "name": "History Human", "kind": "human",
+				},
+				"text": "live-trigger", "addressed": true,
+				"createdAt": float64(1700000000000),
+			}},
+			"cursor":    float64(1),
+			"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+		}) {
+			return
+		}
+
+		var body struct {
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body.Method {
+		case "tools/list":
+			writeModernMCPTools(w)
+		case "tools/call":
+			switch body.Params.Name {
+			case "join_room":
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"participantHandle": residentTestHandle("custom-root", "agent-1", "context-token"),
+					"participant":       map[string]any{"id": "agent-1"},
+					"cursor":            float64(0),
+					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
+				}))
+			case "read_room_context":
+				args := body.Params.Arguments
+				if args["beforeSequence"] != float64(2) || args["limit"] != float64(10) {
+					t.Errorf("context read bounds mismatch: %#v", args)
+				}
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"events": []any{map[string]any{
+						"sequence": float64(1), "type": "text",
+						"participant": map[string]any{
+							"id": "human-1", "name": "History Human", "kind": "human",
+						},
+						"text": "custom-root-history", "addressed": false,
+						"createdAt": float64(1699999999000),
+					}},
+					"oldestSequence": float64(1), "newestSequence": float64(1),
+					"hasMoreBefore": false, "hasMoreAfter": false,
+					"liveTranscript": map[string]any{
+						"segments": []any{}, "oldestSequence": float64(0),
+						"newestSequence": float64(0), "hasMoreBefore": false, "hasMoreAfter": false,
+					},
+				}))
+			case "wait_for_events":
+				mu.Lock()
+				waitCalls++
+				mu.Unlock()
+				http.Error(w, "resident Runtime must use the event stream", http.StatusInternalServerError)
+			case "send_text":
+				text, _ := body.Params.Arguments["text"].(string)
+				mu.Lock()
+				sentTexts = append(sentTexts, text)
+				mu.Unlock()
+				writeJSONRPC(w, callToolResult(map[string]any{"sequence": float64(2)}))
+			default:
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("FREE4CHAT_MCP_URL", server.URL)
+
+	joined, err := SendIPC(&IpcRequest{
+		Op:           "join",
+		Room:         "custom-root",
+		Name:         "Context Reader",
+		AgentCommand: fakeAgentBinary,
+		AgentArgs:    []string{"--mode", "context_read"},
+	})
+	if err != nil {
+		t.Fatalf("daemon join failed: %v", err)
+	}
+	var statusView struct {
+		State      string `json:"state"`
+		InstanceID string `json:"instanceId"`
+	}
+	if err := json.Unmarshal(joined, &statusView); err != nil || statusView.State != "waiting" || statusView.InstanceID == "" {
+		t.Fatalf("join view mismatch: %s", joined)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		answered := len(sentTexts) > 0
+		mu.Unlock()
+		if answered {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	mu.Lock()
+	texts := append([]string(nil), sentTexts...)
+	waits := waitCalls
+	mu.Unlock()
+	if waits != 0 {
+		t.Fatalf("resident Runtime used public wait_for_events %d times", waits)
+	}
+	if len(texts) != 1 || !strings.Contains(texts[0], "custom-root-history") {
+		t.Fatalf("Harness context read did not return bounded Room history: %q", texts)
+	}
+	if _, err := os.Stat(filepath.Join(root, "workspaces", statusView.InstanceID)); err != nil {
+		t.Fatalf("resident workspace was not created under custom Runtime root: %v", err)
+	}
 }
 
 func residentTestHandle(roomID, participantID, participantToken string) string {

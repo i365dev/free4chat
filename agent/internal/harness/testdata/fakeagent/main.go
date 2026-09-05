@@ -4,6 +4,8 @@
 // Modes are selected through FAKE_MODE:
 //
 //	normal         reply incrementally to every prompt
+//	env            reply with the Harness-visible FREE4CHAT_AGENT_DIR
+//	context_read   invoke the local CLI's bounded Room context read
 //	permission     answer a targeted turn after an auto-cancelled permission ask
 //	cancel         hold the requested turn until session/cancel arrives
 //	exit           die shortly after the first prompt completes
@@ -20,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"syscall"
@@ -123,7 +126,14 @@ func main() {
 		os.Exit(1)
 	}
 	tracePath = os.Getenv("FAKE_TRACE")
-	a := &agent{mode: os.Getenv("FAKE_MODE")}
+	mode := os.Getenv("FAKE_MODE")
+	for index := 0; index+1 < len(os.Args); index++ {
+		if os.Args[index] == "--mode" {
+			mode = os.Args[index+1]
+			break
+		}
+	}
+	a := &agent{mode: mode}
 	sessionID := ""
 	// A FIRST-life stuck process must also survive stdin EOF (the adapter
 	// closes the pipe before escalating): only SIGKILL may end it, which is
@@ -212,6 +222,17 @@ func main() {
 		case message.Method == "session/prompt":
 			prompt := promptText(message.Params)
 			switch a.mode {
+			case "env":
+				updateChunk(sessionID, os.Getenv("FREE4CHAT_AGENT_DIR"))
+				reply(message.ID, map[string]any{"stopReason": "end_turn"})
+			case "context_read":
+				output, err := exec.Command("free4chat-agent", "context", "read", "--before-sequence", "2", "--limit", "10").CombinedOutput()
+				if err != nil {
+					updateChunk(sessionID, "context-read-error: "+string(output))
+				} else {
+					updateChunk(sessionID, string(output))
+				}
+				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "permission":
 				if len(prompt) > 0 && contains(prompt, "permission-test") {
 					// Agent -> client requests carry an explicit id so the
