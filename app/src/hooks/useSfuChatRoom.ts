@@ -82,6 +82,8 @@ const AGENT_TEXT_EXTENSIONS = new Set([
 const AGENT_AUDIO_SUBSCRIPTION_RETRY_DELAYS_MS = [100, 300] as const
 const MAX_AGENT_AUDIO_SUBSCRIPTION_ATTEMPTS =
   1 + AGENT_AUDIO_SUBSCRIPTION_RETRY_DELAYS_MS.length
+const REMOTE_TRACK_READY_TIMEOUT_MS = 5000
+const REMOTE_FILE_CHANNEL_OPEN_TIMEOUT_MS = 5000
 
 const runtimeReattachStorageKey = (room: string) =>
   `free4chat:runtime-reattach:${room}`
@@ -151,6 +153,30 @@ interface AgentAudioSubscriptionRetry {
   subscriberPeerConnection: RTCPeerConnection
 }
 
+interface RemoteTrackBinding {
+  peerConnection: RTCPeerConnection
+  subscriberSessionId: string
+  mid: string
+  participantId: string
+  publisherSessionId: string
+  trackName: string
+  kind: "audio" | "video"
+  subscriptionKey: string
+  attempt: number
+  timeout: number | null
+  attached: boolean
+}
+
+interface RemoteFileChannelAttempt {
+  peerConnection: RTCPeerConnection
+  subscriberSessionId: string
+  publisherSessionId: string
+  participantKind: "human" | "agent"
+  attempt: number
+  channel: RTCDataChannel | null
+  channelId: number | null
+}
+
 function hasUsableSessionDescription(response: SfuApiResponse): boolean {
   const description = response.sessionDescription
   return Boolean(
@@ -208,6 +234,18 @@ function voiceDownstreamDiagnostic(
   // eslint-disable-next-line no-console
   console.info(
     `free4chat_voice_downstream ${JSON.stringify({ event, ...details })}`
+  )
+}
+
+function sfuClientDiagnostic(
+  event: string,
+  details: Record<string, VoiceDownstreamDiagnosticValue> = {}
+) {
+  // Keep browser diagnostics coarse and free of room, participant, session,
+  // SDP, MID, SSRC, track, file, and message identifiers.
+  // eslint-disable-next-line no-console
+  console.info(
+    `free4chat_sfu_downstream ${JSON.stringify({ event, ...details })}`
   )
 }
 
@@ -436,11 +474,7 @@ export function useSfuChatRoom(
     promise: Promise<{ providerClaimSecret: string }>
     expiresAt: number
   } | null>(null)
-  const pendingRemoteTrackRef = useRef<{
-    peerId: string
-    kind: "audio" | "video"
-    sessionId: string
-  } | null>(null)
+  const remoteTrackBindingsRef = useRef(new Map<string, RemoteTrackBinding>())
   const negotiationQueueRef = useRef(Promise.resolve())
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
@@ -453,6 +487,10 @@ export function useSfuChatRoom(
   const initialConnectRef = useRef<(() => Promise<void>) | null>(null)
   const localFileChannelRef = useRef<RTCDataChannel | null>(null)
   const remoteFileChannelsRef = useRef(new Map<string, RTCDataChannel>())
+  const remoteFileChannelAttemptsRef = useRef(
+    new Map<string, RemoteFileChannelAttempt>()
+  )
+  const remoteFileChannelAttemptCountsRef = useRef(new Map<string, number>())
   const remoteFileChannelIdsRef = useRef(new Map<string, number>())
   const dataChannelsRef = useRef(new Set<RTCDataChannel>())
   const dataChannelIdsRef = useRef(new Set<number>())
@@ -618,6 +656,172 @@ export function useSfuChatRoom(
     []
   )
 
+  const removeRemoteTrackBinding = useCallback(
+    (binding: RemoteTrackBinding) => {
+      if (remoteTrackBindingsRef.current.get(binding.mid) !== binding)
+        return false
+      if (binding.timeout !== null) clearTimeout(binding.timeout)
+      remoteTrackBindingsRef.current.delete(binding.mid)
+      const hasReplacement = [...remoteTrackBindingsRef.current.values()].some(
+        (candidate) =>
+          candidate.peerConnection === binding.peerConnection &&
+          candidate.subscriptionKey === binding.subscriptionKey
+      )
+      if (!hasReplacement) {
+        subscribedTracksRef.current.delete(binding.subscriptionKey)
+        readySubscribedTracksRef.current.delete(binding.subscriptionKey)
+      }
+      return true
+    },
+    []
+  )
+
+  const clearRemoteTrackBindings = useCallback(() => {
+    for (const binding of remoteTrackBindingsRef.current.values()) {
+      if (binding.timeout !== null) clearTimeout(binding.timeout)
+      subscribedTracksRef.current.delete(binding.subscriptionKey)
+      readySubscribedTracksRef.current.delete(binding.subscriptionKey)
+    }
+    remoteTrackBindingsRef.current.clear()
+  }, [])
+
+  const clearRemoteTrackBindingsForParticipant = useCallback(
+    (participantId: string) => {
+      for (const binding of remoteTrackBindingsRef.current.values()) {
+        if (binding.participantId === participantId)
+          removeRemoteTrackBinding(binding)
+      }
+    },
+    [removeRemoteTrackBinding]
+  )
+
+  const resetRemoteTrackSubscription = useCallback(
+    (
+      participantId: string,
+      publisherSessionId: string,
+      trackName: string,
+      kind: "audio" | "video"
+    ) => {
+      const subscriptionKey = `${participantId}:${publisherSessionId}:${trackName}`
+      for (const binding of remoteTrackBindingsRef.current.values()) {
+        if (binding.subscriptionKey === subscriptionKey)
+          removeRemoteTrackBinding(binding)
+      }
+      subscribedTracksRef.current.delete(subscriptionKey)
+      readySubscribedTracksRef.current.delete(subscriptionKey)
+      const streams =
+        kind === "video"
+          ? remoteScreenStreamsRef.current
+          : remoteAudioStreamsRef.current
+      const stream = streams.get(participantId)
+      stream?.getTracks().forEach((track) => track.stop())
+      streams.delete(participantId)
+    },
+    [removeRemoteTrackBinding]
+  )
+
+  const registerRemoteTrackBinding = useCallback(
+    (input: Omit<RemoteTrackBinding, "timeout" | "attached">) => {
+      const existing = remoteTrackBindingsRef.current.get(input.mid)
+      if (existing) removeRemoteTrackBinding(existing)
+      const binding: RemoteTrackBinding = {
+        ...input,
+        timeout: null,
+        attached: false,
+      }
+      binding.timeout = window.setTimeout(() => {
+        if (remoteTrackBindingsRef.current.get(binding.mid) !== binding) return
+        removeRemoteTrackBinding(binding)
+        sfuClientDiagnostic("remote_track_wait_timeout", {
+          participant_kind: diagnosticParticipantKind(
+            participantMapRef.current.get(binding.participantId)?.kind
+          ),
+          track_kind: binding.kind,
+        })
+        sfuClientDiagnostic("remote_track_retry_allowed", {
+          participant_kind: diagnosticParticipantKind(
+            participantMapRef.current.get(binding.participantId)?.kind
+          ),
+          track_kind: binding.kind,
+          reason: "wait_timeout",
+        })
+      }, REMOTE_TRACK_READY_TIMEOUT_MS)
+      remoteTrackBindingsRef.current.set(input.mid, binding)
+      sfuClientDiagnostic("remote_track_mid_registered", {
+        participant_kind: diagnosticParticipantKind(
+          participantMapRef.current.get(input.participantId)?.kind
+        ),
+        track_kind: input.kind,
+        attempt: input.attempt,
+      })
+      return binding
+    },
+    [removeRemoteTrackBinding]
+  )
+
+  const cleanupRemoteFileChannel = useCallback(
+    (
+      participantId: string,
+      attempt: RemoteFileChannelAttempt,
+      reason: string
+    ) => {
+      const activeAttempt =
+        remoteFileChannelAttemptsRef.current.get(participantId)
+      const readyChannel = remoteFileChannelsRef.current.get(participantId)
+      const ownsAttempt = activeAttempt === attempt
+      const ownsReadyChannel = readyChannel === attempt.channel
+      if (!ownsAttempt && !ownsReadyChannel) return false
+      if (ownsAttempt)
+        remoteFileChannelAttemptsRef.current.delete(participantId)
+      if (ownsReadyChannel) {
+        remoteFileChannelsRef.current.delete(participantId)
+        remoteFileChannelIdsRef.current.delete(participantId)
+      }
+      if (attempt.channel) {
+        dataChannelsRef.current.delete(attempt.channel)
+        attempt.channel.close()
+      }
+      if (attempt.channelId !== null)
+        dataChannelIdsRef.current.delete(attempt.channelId)
+      incomingFilesRef.current.delete(participantId)
+      sfuClientDiagnostic("remote_file_channel_retry_allowed", {
+        participant_kind: attempt.participantKind,
+        reason,
+      })
+      return true
+    },
+    []
+  )
+
+  const clearAllRemoteFileChannels = useCallback(
+    (reason: string) => {
+      const participantIds = new Set([
+        ...remoteFileChannelAttemptsRef.current.keys(),
+        ...remoteFileChannelsRef.current.keys(),
+      ])
+      for (const participantId of participantIds) {
+        const attempt =
+          remoteFileChannelAttemptsRef.current.get(participantId) ??
+          (() => {
+            const channel = remoteFileChannelsRef.current.get(participantId)
+            const channelId = remoteFileChannelIdsRef.current.get(participantId)
+            if (!channel) return null
+            return {
+              peerConnection: peerConnectionRef.current!,
+              subscriberSessionId: sessionRef.current?.sessionId ?? "",
+              publisherSessionId: "",
+              participantKind: "human" as const,
+              attempt: 0,
+              channel,
+              channelId: channelId ?? null,
+            }
+          })()
+        if (attempt) cleanupRemoteFileChannel(participantId, attempt, reason)
+      }
+    },
+    [cleanupRemoteFileChannel]
+  )
+
   const clearAgentAudioSubscriptionRetry = useCallback(
     (key: string, reason?: string) => {
       const retry = agentAudioSubscriptionRetriesRef.current.get(key)
@@ -705,13 +909,13 @@ export function useSfuChatRoom(
   )
 
   const waitForDataChannelOpen = useCallback(
-    (channel: RTCDataChannel): Promise<void> => {
+    (channel: RTCDataChannel, timeoutMs = 10000): Promise<void> => {
       if (channel.readyState === "open") return Promise.resolve()
       return new Promise((resolve, reject) => {
         const timeout = window.setTimeout(() => {
           cleanup()
           reject(new Error("SFU data channel timed out"))
-        }, 10000)
+        }, timeoutMs)
         const cleanup = () => {
           window.clearTimeout(timeout)
           channel.removeEventListener("open", onOpen)
@@ -853,16 +1057,30 @@ export function useSfuChatRoom(
           readySubscribedTracksRef.current.delete(key)
       }
 
-      const channel = remoteFileChannelsRef.current.get(participantId)
-      if (channel) {
-        channel.close()
-        dataChannelsRef.current.delete(channel)
-      }
-      remoteFileChannelsRef.current.delete(participantId)
-      const channelId = remoteFileChannelIdsRef.current.get(participantId)
-      if (channelId !== undefined) dataChannelIdsRef.current.delete(channelId)
-      remoteFileChannelIdsRef.current.delete(participantId)
-      incomingFilesRef.current.delete(participantId)
+      clearRemoteTrackBindingsForParticipant(participantId)
+      const fileAttempt =
+        remoteFileChannelAttemptsRef.current.get(participantId) ??
+        (() => {
+          const channel = remoteFileChannelsRef.current.get(participantId)
+          const channelId = remoteFileChannelIdsRef.current.get(participantId)
+          if (!channel) return null
+          return {
+            peerConnection: peerConnectionRef.current!,
+            subscriberSessionId: sessionRef.current?.sessionId ?? "",
+            publisherSessionId: "",
+            participantKind: "human" as const,
+            attempt: 0,
+            channel,
+            channelId: channelId ?? null,
+          }
+        })()
+      if (fileAttempt)
+        cleanupRemoteFileChannel(
+          participantId,
+          fileAttempt,
+          "participant_reset"
+        )
+      remoteFileChannelAttemptCountsRef.current.delete(participantId)
 
       remoteAudioStreamsRef.current
         .get(participantId)
@@ -874,10 +1092,12 @@ export function useSfuChatRoom(
         .forEach((track) => track.stop())
       remoteAudioStreamsRef.current.delete(participantId)
       remoteScreenStreamsRef.current.delete(participantId)
-      if (pendingRemoteTrackRef.current?.peerId === participantId)
-        pendingRemoteTrackRef.current = null
     },
-    [clearAgentAudioSubscriptionRetriesForParticipant]
+    [
+      clearAgentAudioSubscriptionRetriesForParticipant,
+      clearRemoteTrackBindingsForParticipant,
+      cleanupRemoteFileChannel,
+    ]
   )
 
   const handleFileChannelMessage = useCallback(
@@ -1022,53 +1242,132 @@ export function useSfuChatRoom(
         !session ||
         participant.id === session.participantId ||
         !participant.media?.fileChannelReady ||
-        remoteFileChannelsRef.current.has(participant.id)
+        remoteFileChannelsRef.current.has(participant.id) ||
+        remoteFileChannelAttemptsRef.current.has(participant.id)
       )
         return
       const media = participant.media
       const channelKey = participant.id
       const fileChannelName = `files-${participant.id}`
-      const response = await apiRequest("datachannels/new", {
-        room: roomName,
-        participantId: session.participantId,
-        token: session.participantToken,
-        sessionId: session.sessionId,
+      const attemptNumber =
+        (remoteFileChannelAttemptCountsRef.current.get(channelKey) ?? 0) + 1
+      remoteFileChannelAttemptCountsRef.current.set(channelKey, attemptNumber)
+      const attempt: RemoteFileChannelAttempt = {
+        peerConnection: pc,
+        subscriberSessionId: session.sessionId,
         publisherSessionId: media.sessionId,
-        dataChannels: [
-          {
-            location: "remote",
-            sessionId: media.sessionId,
-            dataChannelName: fileChannelName,
-            ordered: true,
-            waitForAck: true,
-          },
-        ],
+        participantKind: participant.kind,
+        attempt: attemptNumber,
+        channel: null,
+        channelId: null,
+      }
+      remoteFileChannelAttemptsRef.current.set(channelKey, attempt)
+      sfuClientDiagnostic("remote_file_channel_connecting", {
+        participant_kind: participant.kind,
+        attempt: attemptNumber,
       })
-      const channelId = response.dataChannels?.[0]?.id
-      if (typeof channelId !== "number")
-        throw new Error("SFU remote file data channel was not created")
-      const channel = pc.createDataChannel(`${fileChannelName}-subscriber`, {
-        negotiated: true,
-        id: channelId,
-        ordered: true,
-      })
-      dataChannelsRef.current.add(channel)
-      dataChannelIdsRef.current.add(channelId)
-      channel.binaryType = "arraybuffer"
-      channel.addEventListener("message", (event) =>
-        handleFileChannelMessage(
-          channelKey,
-          participant.id,
-          participant.name,
-          event
+      try {
+        const response = await apiRequest("datachannels/new", {
+          room: roomName,
+          participantId: session.participantId,
+          token: session.participantToken,
+          sessionId: session.sessionId,
+          publisherSessionId: media.sessionId,
+          dataChannels: [
+            {
+              location: "remote",
+              sessionId: media.sessionId,
+              dataChannelName: fileChannelName,
+              ordered: true,
+              waitForAck: true,
+            },
+          ],
+        })
+        const channelId = response.dataChannels?.[0]?.id
+        if (typeof channelId !== "number")
+          throw new Error("SFU remote file data channel was not created")
+        if (
+          remoteFileChannelAttemptsRef.current.get(channelKey) !== attempt ||
+          !isCurrentSubscriberSession(attempt.subscriberSessionId, pc) ||
+          participantMapRef.current.get(participant.id)?.media?.sessionId !==
+            media.sessionId
         )
-      )
-      remoteFileChannelsRef.current.set(channelKey, channel)
-      remoteFileChannelIdsRef.current.set(channelKey, channelId)
-      await waitForDataChannelOpen(channel)
-      channel.send("ack")
+          throw new Error("SFU remote file data channel became stale")
+        const channel = pc.createDataChannel(`${fileChannelName}-subscriber`, {
+          negotiated: true,
+          id: channelId,
+          ordered: true,
+        })
+        attempt.channel = channel
+        attempt.channelId = channelId
+        dataChannelsRef.current.add(channel)
+        dataChannelIdsRef.current.add(channelId)
+        channel.binaryType = "arraybuffer"
+        channel.addEventListener("message", (event) =>
+          handleFileChannelMessage(
+            channelKey,
+            participant.id,
+            participant.name,
+            event
+          )
+        )
+        const handleFailure = (reason: string) => {
+          const activeAttempt =
+            remoteFileChannelAttemptsRef.current.get(channelKey)
+          const readyChannel = remoteFileChannelsRef.current.get(channelKey)
+          if (activeAttempt !== attempt && readyChannel !== channel) return
+          sfuClientDiagnostic("remote_file_channel_closed", {
+            participant_kind: participant.kind,
+            reason,
+          })
+          cleanupRemoteFileChannel(channelKey, attempt, reason)
+        }
+        channel.addEventListener("close", () => handleFailure("closed"))
+        channel.addEventListener("error", () => handleFailure("error"))
+        await waitForDataChannelOpen(
+          channel,
+          REMOTE_FILE_CHANNEL_OPEN_TIMEOUT_MS
+        )
+        if (
+          remoteFileChannelAttemptsRef.current.get(channelKey) !== attempt ||
+          channel.readyState !== "open"
+        )
+          throw new Error("SFU remote file data channel became stale")
+        channel.send("ack")
+        if (
+          remoteFileChannelAttemptsRef.current.get(channelKey) !== attempt ||
+          channel.readyState !== "open"
+        )
+          throw new Error("SFU remote file data channel closed before ready")
+        remoteFileChannelAttemptsRef.current.delete(channelKey)
+        remoteFileChannelsRef.current.set(channelKey, channel)
+        remoteFileChannelIdsRef.current.set(channelKey, channelId)
+        sfuClientDiagnostic("remote_file_channel_ready", {
+          participant_kind: participant.kind,
+          attempt: attemptNumber,
+        })
+      } catch (error) {
+        const reason =
+          error instanceof Error &&
+          error.message === "SFU data channel timed out"
+            ? "open_timeout"
+            : "establishment_failed"
+        if (reason === "open_timeout")
+          sfuClientDiagnostic("remote_file_channel_open_timeout", {
+            participant_kind: participant.kind,
+            attempt: attemptNumber,
+          })
+        cleanupRemoteFileChannel(channelKey, attempt, reason)
+      }
     },
-    [apiRequest, handleFileChannelMessage, roomName, waitForDataChannelOpen]
+    [
+      apiRequest,
+      cleanupRemoteFileChannel,
+      handleFileChannelMessage,
+      isCurrentSubscriberSession,
+      roomName,
+      waitForDataChannelOpen,
+    ]
   )
 
   const publishTrack = useCallback(
@@ -1235,6 +1534,14 @@ export function useSfuChatRoom(
         participant.kind === "agent" && track.kind === "audio"
       const subscriberSessionId = session.sessionId
       const subscriberPeerConnection = pc
+      let binding: RemoteTrackBinding | null = null
+      const isCurrentRemoteSubscription = (): boolean =>
+        isCurrentSubscriberSession(
+          subscriberSessionId,
+          subscriberPeerConnection
+        ) &&
+        participantMapRef.current.get(participant.id)?.media?.sessionId ===
+          media.sessionId
       const cancelStaleAgentAudioSubscription = (stage: string): boolean => {
         if (!isAgentAudioSubscription) return false
         const currentSubscriberSession = isCurrentSubscriberSession(
@@ -1253,6 +1560,7 @@ export function useSfuChatRoom(
           subscribedTracksRef.current.delete(key)
           readySubscribedTracksRef.current.delete(key)
         }
+        if (binding) removeRemoteTrackBinding(binding)
         voiceDownstreamDiagnostic("agent_audio_subscription_retry_cancelled", {
           attempt,
           reason: currentSubscriberSession
@@ -1287,26 +1595,19 @@ export function useSfuChatRoom(
         return
       }
       if (cancelStaleAgentAudioSubscription("subscribe_entered")) return
-      if (
-        participantMapRef.current.get(participant.id)?.media?.sessionId !==
-        media.sessionId
-      )
-        return
+      if (!isCurrentRemoteSubscription()) return
       subscribedTracksRef.current.add(key)
+      sfuClientDiagnostic("remote_track_subscription_requested", {
+        participant_kind: participant.kind,
+        track_kind: track.kind,
+        attempt,
+      })
       await enqueueNegotiation(async () => {
         if (cancelStaleAgentAudioSubscription("before_tracks_new")) return
-        if (
-          participantMapRef.current.get(participant.id)?.media?.sessionId !==
-          media.sessionId
-        ) {
+        if (!isCurrentRemoteSubscription()) {
           subscribedTracksRef.current.delete(key)
           readySubscribedTracksRef.current.delete(key)
           return
-        }
-        pendingRemoteTrackRef.current = {
-          peerId: participant.id,
-          kind: track.kind,
-          sessionId: media.sessionId,
         }
         let response: SfuApiResponse
         try {
@@ -1371,6 +1672,7 @@ export function useSfuChatRoom(
             : {}),
         })
         if (cancelStaleAgentAudioSubscription("tracks_new_response")) return
+        if (!isCurrentRemoteSubscription()) return
         if (!hasUsableSessionDescription(response)) {
           const scheduled =
             isAgentAudioSubscription &&
@@ -1400,11 +1702,49 @@ export function useSfuChatRoom(
           )
           return
         }
+        const responseTrack =
+          response.tracks?.find(
+            (candidate) =>
+              candidate.trackName === track.trackName &&
+              typeof candidate.mid === "string" &&
+              candidate.mid.length > 0
+          ) ??
+          response.tracks?.find(
+            (candidate) =>
+              typeof candidate.mid === "string" && candidate.mid.length > 0
+          )
+        if (!responseTrack?.mid) {
+          subscribedTracksRef.current.delete(key)
+          readySubscribedTracksRef.current.delete(key)
+          sfuClientDiagnostic("remote_track_mid_missing", {
+            participant_kind: participant.kind,
+            track_kind: track.kind,
+            attempt,
+          })
+          return
+        }
+        binding = registerRemoteTrackBinding({
+          peerConnection: pc,
+          subscriberSessionId,
+          mid: responseTrack.mid,
+          participantId: participant.id,
+          publisherSessionId: media.sessionId,
+          trackName: track.trackName,
+          kind: track.kind,
+          subscriptionKey: key,
+          attempt,
+        })
         try {
-          if (cancelStaleAgentAudioSubscription("before_remote_description"))
+          if (
+            cancelStaleAgentAudioSubscription("before_remote_description") ||
+            !isCurrentRemoteSubscription()
+          )
             return
           await pc.setRemoteDescription(response.sessionDescription)
-          if (cancelStaleAgentAudioSubscription("remote_description_applied"))
+          if (
+            cancelStaleAgentAudioSubscription("remote_description_applied") ||
+            !isCurrentRemoteSubscription()
+          )
             return
           voiceDownstreamDiagnostic("remote_description_applied", {
             remote_description_applied: 1,
@@ -1419,7 +1759,11 @@ export function useSfuChatRoom(
         let answer: RTCSessionDescriptionInit
         try {
           answer = await pc.createAnswer()
-          if (cancelStaleAgentAudioSubscription("answer_created")) return
+          if (
+            cancelStaleAgentAudioSubscription("answer_created") ||
+            !isCurrentRemoteSubscription()
+          )
+            return
           voiceDownstreamDiagnostic("answer_created", { answer_created: 1 })
         } catch (error) {
           voiceDownstreamDiagnostic("negotiation_failed", {
@@ -1430,7 +1774,10 @@ export function useSfuChatRoom(
         }
         try {
           await pc.setLocalDescription(answer)
-          if (cancelStaleAgentAudioSubscription("local_description_applied"))
+          if (
+            cancelStaleAgentAudioSubscription("local_description_applied") ||
+            !isCurrentRemoteSubscription()
+          )
             return
           voiceDownstreamDiagnostic("local_description_applied", {
             local_description_applied: 1,
@@ -1443,7 +1790,11 @@ export function useSfuChatRoom(
           throw error
         }
         try {
-          if (cancelStaleAgentAudioSubscription("before_renegotiate")) return
+          if (
+            cancelStaleAgentAudioSubscription("before_renegotiate") ||
+            !isCurrentRemoteSubscription()
+          )
+            return
           await apiRequest("renegotiate", {
             room: roomName,
             participantId: session.participantId,
@@ -1451,9 +1802,19 @@ export function useSfuChatRoom(
             sessionId: session.sessionId,
             sessionDescription: { type: answer.type, sdp: answer.sdp },
           })
-          if (cancelStaleAgentAudioSubscription("renegotiate_complete")) return
+          if (
+            cancelStaleAgentAudioSubscription("renegotiate_complete") ||
+            !isCurrentRemoteSubscription()
+          )
+            return
           voiceDownstreamDiagnostic("renegotiate_ok", { renegotiate_ok: 1 })
           if (isAgentAudioSubscription) {
+            if (
+              !binding ||
+              (!binding.attached &&
+                remoteTrackBindingsRef.current.get(binding.mid) !== binding)
+            )
+              return
             // Negotiation completion is the ACK-safe boundary. Record it
             // even if the control WebSocket is briefly unavailable; a later
             // resync on the new socket will re-assert the same ACK.
@@ -1482,12 +1843,14 @@ export function useSfuChatRoom(
           throw error
         }
       }).catch((error) => {
+        if (binding) removeRemoteTrackBinding(binding)
         if (
-          !isAgentAudioSubscription ||
-          isCurrentSubscriberSession(
-            subscriberSessionId,
-            subscriberPeerConnection
-          )
+          isCurrentRemoteSubscription() ||
+          (isAgentAudioSubscription &&
+            isCurrentSubscriberSession(
+              subscriberSessionId,
+              subscriberPeerConnection
+            ))
         ) {
           subscribedTracksRef.current.delete(key)
           readySubscribedTracksRef.current.delete(key)
@@ -1507,6 +1870,8 @@ export function useSfuChatRoom(
       enqueueNegotiation,
       isCurrentAgentAudioPublication,
       isCurrentSubscriberSession,
+      registerRemoteTrackBinding,
+      removeRemoteTrackBinding,
       roomName,
       scheduleAgentAudioSubscriptionRetry,
       sendSocketMessage,
@@ -1553,6 +1918,17 @@ export function useSfuChatRoom(
       setLiveTranscriptMediaAvailable(state.meetingNotesMediaAvailable)
       setAgentVoiceState(state.agentVoice)
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
+      const localParticipantId = sessionRef.current?.participantId
+      const currentParticipantIds = new Set(
+        state.participants.map((participant) => participant.id)
+      )
+      for (const previousParticipantId of participantMapRef.current.keys()) {
+        if (
+          previousParticipantId !== localParticipantId &&
+          !currentParticipantIds.has(previousParticipantId)
+        )
+          resetRemoteParticipant(previousParticipantId)
+      }
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
         const previousTracks = previous?.media?.tracks ?? []
@@ -1568,13 +1944,30 @@ export function useSfuChatRoom(
                   currentTrack.kind === previousTrack.kind
               )
           )
-        if (
+        const mediaSessionChanged = Boolean(
           previous?.media &&
-          participant.media &&
-          previous.media.sessionId !== participant.media.sessionId
+            participant.media &&
+            previous.media.sessionId !== participant.media.sessionId
         )
+        if (mediaSessionChanged || agentAudioTrackRemoved) {
           resetRemoteParticipant(participant.id)
-        else if (agentAudioTrackRemoved) resetRemoteParticipant(participant.id)
+        } else if (previous?.media) {
+          for (const previousTrack of previousTracks) {
+            if (
+              !currentTracks.some(
+                (currentTrack) =>
+                  currentTrack.trackName === previousTrack.trackName &&
+                  currentTrack.kind === previousTrack.kind
+              )
+            )
+              resetRemoteTrackSubscription(
+                participant.id,
+                previous.media.sessionId,
+                previousTrack.trackName,
+                previousTrack.kind
+              )
+          }
+        }
       }
       participantMapRef.current = new Map(
         state.participants.map((participant) => [
@@ -1582,7 +1975,6 @@ export function useSfuChatRoom(
           { ...participant, token: "" } as SfuParticipant,
         ])
       )
-      const localParticipantId = sessionRef.current?.participantId
       replaceRoomMessages(
         state.messages.map((message) =>
           roomMessageToMessage(message, localParticipantId)
@@ -1604,6 +1996,7 @@ export function useSfuChatRoom(
     [
       rebuildParticipants,
       resetRemoteParticipant,
+      resetRemoteTrackSubscription,
       replaceRoomMessages,
       subscribeFileChannel,
       subscribeTrack,
@@ -1611,43 +2004,81 @@ export function useSfuChatRoom(
   )
 
   const createPeerConnection = useCallback(() => {
+    clearRemoteTrackBindings()
+    clearAllRemoteFileChannels("peer_connection_replaced")
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
     })
     peerConnectionRef.current = pc
     pc.ontrack = (event) => {
-      const pending = pendingRemoteTrackRef.current
+      const mid =
+        typeof event.transceiver?.mid === "string"
+          ? event.transceiver.mid
+          : null
+      const binding = mid ? remoteTrackBindingsRef.current.get(mid) : undefined
       voiceDownstreamDiagnostic("ontrack_fired", {
         ontrack_fired: 1,
         received_track_kind: diagnosticTrackKind(event.track.kind),
-        pending_remote_track_present: pending ? 1 : 0,
+        remote_track_binding_present: binding ? 1 : 0,
       })
-      if (!pending) {
-        voiceDownstreamDiagnostic("pending_session_match", {
-          pending_session_match: 0,
+      if (!binding) {
+        sfuClientDiagnostic("remote_track_stale_event_ignored", {
+          track_kind: diagnosticTrackKind(event.track.kind),
+          reason: mid ? "binding_missing" : "mid_missing",
         })
         return
       }
-      const pendingSessionMatches =
-        participantMapRef.current.get(pending.peerId)?.media?.sessionId ===
-        pending.sessionId
-      voiceDownstreamDiagnostic("pending_session_match", {
-        pending_session_match: pendingSessionMatches ? 1 : 0,
-      })
-      if (!pendingSessionMatches) {
-        pendingRemoteTrackRef.current = null
+      if (
+        binding.peerConnection !== pc ||
+        binding.subscriberSessionId !== sessionRef.current?.sessionId
+      ) {
+        sfuClientDiagnostic("remote_track_stale_event_ignored", {
+          track_kind: diagnosticTrackKind(event.track.kind),
+          reason:
+            binding.peerConnection === pc
+              ? "subscriber_session_stale"
+              : "peer_connection_replaced",
+        })
         return
       }
-      const stream = event.streams[0] ?? new MediaStream([event.track])
-      if (pending.kind === "video")
-        remoteScreenStreamsRef.current.set(pending.peerId, stream)
-      else remoteAudioStreamsRef.current.set(pending.peerId, stream)
+      const participant = participantMapRef.current.get(binding.participantId)
+      if (participant?.media?.sessionId !== binding.publisherSessionId) {
+        removeRemoteTrackBinding(binding)
+        sfuClientDiagnostic("remote_track_stale_event_ignored", {
+          track_kind: diagnosticTrackKind(event.track.kind),
+          reason: "publisher_session_stale",
+        })
+        return
+      }
+      if (event.track.kind !== binding.kind) {
+        removeRemoteTrackBinding(binding)
+        sfuClientDiagnostic("remote_track_stale_event_ignored", {
+          track_kind: diagnosticTrackKind(event.track.kind),
+          reason: "track_kind_mismatch",
+        })
+        return
+      }
+      if (binding.timeout !== null) clearTimeout(binding.timeout)
+      remoteTrackBindingsRef.current.delete(binding.mid)
+      binding.attached = true
+      const stream = event.streams?.[0] ?? new MediaStream([event.track])
+      const streams =
+        binding.kind === "video"
+          ? remoteScreenStreamsRef.current
+          : remoteAudioStreamsRef.current
+      const previousStream = streams.get(binding.participantId)
+      if (previousStream && previousStream !== stream)
+        previousStream.getTracks().forEach((track) => track.stop())
+      streams.set(binding.participantId, stream)
+      sfuClientDiagnostic("remote_track_attached", {
+        participant_kind: diagnosticParticipantKind(participant.kind),
+        track_kind: binding.kind,
+      })
       voiceDownstreamDiagnostic("stream_attached", {
         stream_attached: 1,
-        attached_kind: pending.kind,
+        attached_kind: binding.kind,
         remote_audio_stream_count: remoteAudioStreamsRef.current.size,
       })
-      pendingRemoteTrackRef.current = null
       rebuildParticipants()
     }
     pc.onconnectionstatechange = () => {
@@ -1664,7 +2095,13 @@ export function useSfuChatRoom(
       }
     }
     return pc
-  }, [rebuildParticipants, sampleSfuEgress])
+  }, [
+    clearAllRemoteFileChannels,
+    clearRemoteTrackBindings,
+    rebuildParticipants,
+    removeRemoteTrackBinding,
+    sampleSfuEgress,
+  ])
 
   const connectWebSocket = useCallback(() => {
     const session = sessionRef.current
@@ -1738,6 +2175,34 @@ export function useSfuChatRoom(
               tracks: [message.participant.track],
             }
           } else {
+            const existingTrack = current.media.tracks.find(
+              (track) =>
+                track.trackName === message.participant!.track!.trackName &&
+                track.kind === message.participant!.track!.kind
+            )
+            const subscriptionKey = incomingSessionId
+              ? `${participantId}:${incomingSessionId}:${message.participant.track.trackName}`
+              : null
+            const hasActiveBinding = subscriptionKey
+              ? [...remoteTrackBindingsRef.current.values()].some(
+                  (binding) => binding.subscriptionKey === subscriptionKey
+                )
+              : false
+            const hasExistingStream =
+              message.participant.track.kind === "video"
+                ? remoteScreenStreamsRef.current.has(participantId)
+                : remoteAudioStreamsRef.current.has(participantId)
+            if (
+              existingTrack &&
+              incomingSessionId &&
+              (hasActiveBinding || hasExistingStream)
+            )
+              resetRemoteTrackSubscription(
+                participantId,
+                incomingSessionId,
+                message.participant.track.trackName,
+                message.participant.track.kind
+              )
             current.media.tracks = [
               ...current.media.tracks.filter(
                 (track) =>
@@ -1859,6 +2324,7 @@ export function useSfuChatRoom(
     applyRoomState,
     rebuildParticipants,
     resetRemoteParticipant,
+    resetRemoteTrackSubscription,
     sendSocketMessage,
     subscribeFileChannel,
     subscribeTrack,
@@ -1883,12 +2349,14 @@ export function useSfuChatRoom(
           websocketRef.current = null
         }
         await closeDataChannels(previousSession)
+        clearAllRemoteFileChannels("media_reconnect")
+        clearRemoteTrackBindings()
         for (const channel of dataChannelsRef.current) channel.close()
         dataChannelsRef.current.clear()
-        for (const channel of remoteFileChannelsRef.current.values())
-          channel.close()
-        remoteFileChannelsRef.current.clear()
-        remoteFileChannelIdsRef.current.clear()
+        dataChannelIdsRef.current.clear()
+        incomingFilesRef.current.clear()
+        localFileChannelRef.current = null
+        localFileChannelIdRef.current = null
         const oldPeerConnection = peerConnectionRef.current
         if (oldPeerConnection) {
           sampleSfuEgress("disconnect", oldPeerConnection)
@@ -1902,7 +2370,6 @@ export function useSfuChatRoom(
         readySubscribedTracksRef.current.clear()
         remoteAudioStreamsRef.current.clear()
         remoteScreenStreamsRef.current.clear()
-        pendingRemoteTrackRef.current = null
       }
 
       // A fresh Human session must be Turnstile-verified; reconnects prove
@@ -1989,6 +2456,8 @@ export function useSfuChatRoom(
     [
       closeDataChannels,
       clearAllAgentAudioSubscriptionRetries,
+      clearAllRemoteFileChannels,
+      clearRemoteTrackBindings,
       connectWebSocket,
       createPeerConnection,
       establishDataChannelTransport,
@@ -2089,6 +2558,8 @@ export function useSfuChatRoom(
       }
       window.removeEventListener("pagehide", handlePageHide)
       void closeDataChannels(sessionRef.current)
+      clearAllRemoteFileChannels("unmount")
+      clearRemoteTrackBindings()
       websocketRef.current?.close()
       localAudioTrackRef.current?.stop()
       localScreenTrackRef.current?.stop()
@@ -2115,7 +2586,9 @@ export function useSfuChatRoom(
   }, [
     closeDataChannels,
     clearAllAgentAudioSubscriptionRetries,
+    clearAllRemoteFileChannels,
     connectMediaSession,
+    clearRemoteTrackBindings,
     enabled,
     nickName,
     reconnectMedia,
