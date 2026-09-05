@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSfuChatRoom } from "./useSfuChatRoom"
+import { buildRoomTimeline } from "../components/TextChatCard"
 import type { SfuRoomState, SfuTrack } from "../sfu/types"
 
 class TestTrack {
@@ -1084,6 +1085,12 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
       type: "file-start",
       afterSequence: 2,
     })
+    expect(
+      buildRoomTimeline(
+        result.current.messages,
+        result.current.attachments
+      ).map((item) => item.message?.messageId ?? item.attachment?.id)
+    ).toEqual(["text-1", "agent-attachment-2", fileStart.id])
     expect(
       result.current.attachments.map((attachment) => attachment.id)
     ).toEqual(["agent-attachment-2"])
