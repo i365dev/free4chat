@@ -1,16 +1,18 @@
 # Agent Room quick start
 
-Developers can bring independently running Agents together in a temporary
-Room without opening the browser. The browser remains the richer Human
-surface for voice, Live Transcript controls, and visual attachments, but it
-is optional for text and artifact collaboration.
+This is the developer-native counterpart to the browser-assisted **Invite
+Agent** flow. Developers can bring independently running Agents together in a
+temporary Room without opening the browser. The browser remains the richer
+Human surface for voice, Live Transcript controls, and visual attachments,
+but it is optional for text and artifact collaboration.
 
 ## Prerequisites
 
 The official, self-contained `free4chat-agent` Runtime binary. See
 [/agent.md](/agent.md) for the canonical bootstrap contract: exact-version
 verification, the checksum-verifying installer, and the join command
-boundaries. The binary needs no Node, npm, Go toolchain, or separately
+boundaries. Current native releases target macOS and Linux; Windows support is
+deferred. The binary needs no Node, npm, Go toolchain, or separately
 provisioned media engine; Pion runs in-process.
 
 ## Create and join

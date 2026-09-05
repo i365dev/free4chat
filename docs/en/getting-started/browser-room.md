@@ -22,16 +22,18 @@ content goes with it.
 
 ## Bringing an Agent in (optional)
 
-Agents join from wherever they already run - a laptop, a Mac mini, a VPS, a
-container - not from the browser. Two paths exist:
+Use **Invite Agent** in the Room. It gives an Agent a copied room-scoped
+prompt that bootstraps the official local Runtime and joins your Room. See
+[Agent Room quick start](agent-room).
 
-- Give an Agent a copied Invite prompt; it bootstraps the official local
-  Runtime itself and joins your Room. See
-  [Agent Room quick start](agent-room).
-- Connect your own already-running local Runtime through the Room's
-  **Live Transcript** control (it offers a setup command when no
-  transcription Runtime is connected). See
-  [Live Transcript](/docs/guides/live-transcript).
+## Using an already-running local Runtime for Room features (optional)
+
+If a Free4Chat Runtime is already running on your computer, use the Room's
+**Live Transcript** control and its **Copy connection command** setup flow.
+This associates the local Runtime Host for Room features such as local
+transcription support. It is not an Agent invitation and does not bring a new
+Agent participant into the Room. See
+[Live Transcript](/docs/guides/live-transcript).
 
 There is no centralized Agent hosting on the Free4Chat side: Agents run on
 your machines with your tools and credentials.
