@@ -60,6 +60,7 @@ class TestDataChannel {
 
 class TestPeerConnection {
   static instances: TestPeerConnection[] = []
+  static remoteDescriptionFailures = 0
   connectionState = "connected"
   ontrack: ((event: unknown) => void) | null = null
   onconnectionstatechange: (() => void) | null = null
@@ -97,6 +98,10 @@ class TestPeerConnection {
   }
 
   setRemoteDescription() {
+    if (TestPeerConnection.remoteDescriptionFailures > 0) {
+      TestPeerConnection.remoteDescriptionFailures -= 1
+      return Promise.reject(new Error("remote description failed"))
+    }
     return Promise.resolve()
   }
 
@@ -234,14 +239,19 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
   let sessionNumber: number
   let trackRequestNumber: number
   let remoteChannelNumber: number
+  let transientRemoteTrackResponses: number
+  let admittedRemoteTrackResponsesWithoutDescription: number
 
   beforeEach(() => {
     TestPeerConnection.instances.length = 0
     TestPeerConnection.channelFactory = null
+    TestPeerConnection.remoteDescriptionFailures = 0
     TestWebSocket.instances.length = 0
     sessionNumber = 0
     trackRequestNumber = 0
     remoteChannelNumber = 100
+    transientRemoteTrackResponses = 0
+    admittedRemoteTrackResponsesWithoutDescription = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       TestPeerConnection
     ;(global as unknown as { MediaStream: unknown }).MediaStream =
@@ -283,6 +293,23 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         }
         if (body.tracks[0].location !== "remote") return jsonResponse({})
         trackRequestNumber += 1
+        if (transientRemoteTrackResponses > 0) {
+          transientRemoteTrackResponses -= 1
+          return jsonResponse({
+            tracks: [{ errorCode: "empty_track_error" }],
+          })
+        }
+        if (admittedRemoteTrackResponsesWithoutDescription > 0) {
+          admittedRemoteTrackResponsesWithoutDescription -= 1
+          return jsonResponse({
+            tracks: [
+              {
+                mid: `remote-mid-${trackRequestNumber}`,
+                trackName: body.tracks[0].trackName,
+              },
+            ],
+          })
+        }
         return jsonResponse({
           sessionDescription: { type: "offer", sdp: "remote-offer" },
           tracks: [
@@ -439,6 +466,115 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
+  it("retries a Human video subscription after a transient track admission failure", async () => {
+    const { result, socket, pc, unmount } = await connect()
+    transientRemoteTrackResponses = 1
+    vi.useFakeTimers()
+    sendState(
+      socket,
+      roomState([
+        participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+      ])
+    )
+    await flushAsync()
+    expect(trackRequestNumber).toBe(1)
+    expect(
+      result.current.participants.find(
+        (entry) => entry.peerId === "publisher-a"
+      )?.screenShareStream
+    ).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+      await flushAsync()
+    })
+    expect(trackRequestNumber).toBe(2)
+
+    const stream = deliverTrack(pc, "remote-mid-2", "video")
+    await flushAsync()
+    expect(
+      result.current.participants.find(
+        (entry) => entry.peerId === "publisher-a"
+      )?.screenShareStream
+    ).toBe(stream)
+    unmount()
+  })
+
+  it("does not retry a Human track after a mid has been admitted", async () => {
+    const { socket, unmount } = await connect()
+    TestPeerConnection.remoteDescriptionFailures = 1
+    sendState(
+      socket,
+      roomState([
+        participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+      ])
+    )
+    await waitForRemoteTrackRequests(1)
+    await flushAsync()
+    vi.useFakeTimers()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000)
+      await flushAsync()
+    })
+    sendState(
+      socket,
+      roomState([
+        participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+      ])
+    )
+    await flushAsync()
+    expect(trackRequestNumber).toBe(1)
+    unmount()
+  })
+
+  it("reconnects when a Human track is admitted without a session description", async () => {
+    const { result, socket, unmount } = await connect()
+    admittedRemoteTrackResponsesWithoutDescription = 1
+    const state = roomState([
+      participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+    ])
+    sendState(socket, state)
+    await waitForRemoteTrackRequests(1)
+    await waitFor(() => expect(TestPeerConnection.instances).toHaveLength(2))
+
+    expect(trackRequestNumber).toBe(1)
+    const newPc = TestPeerConnection.instances[1]
+    const newSocket = TestWebSocket.instances[1]
+    sendState(newSocket, state)
+    await waitForRemoteTrackRequests(2)
+    expect(trackRequestNumber).toBe(2)
+
+    const requests = fetchMock.mock.calls
+      .filter(([input, init]) => {
+        if (!String(input).endsWith("/api/sfu/tracks")) return false
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          tracks?: Array<{ location?: string }>
+        }
+        return body.tracks?.[0]?.location === "remote"
+      })
+      .map(
+        ([, init]) =>
+          JSON.parse(String(init?.body ?? "{}")) as {
+            sessionId: string
+          }
+      )
+    expect(requests.map((request) => request.sessionId)).toEqual([
+      "subscriber-session-1",
+      "subscriber-session-2",
+    ])
+
+    const stream = deliverTrack(newPc, "remote-mid-2", "video")
+    await waitFor(() =>
+      expect(
+        result.current.participants.find(
+          (entry) => entry.peerId === "publisher-a"
+        )?.screenShareStream
+      ).toBe(stream)
+    )
+    unmount()
+  })
+
   it("ignores a delayed event from a rotated publisher session", async () => {
     const { result, socket, pc, unmount } = await connect()
     const oldTrack = { trackName: "screen", kind: "video" } as const
@@ -473,7 +609,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
-  it("releases a timed-out track admission so a later resync can retry", async () => {
+  it("reconnects after a Human track admission times out before allowing retry", async () => {
     const { socket, pc, unmount } = await connect()
     vi.useFakeTimers()
     const state = roomState([
@@ -485,11 +621,17 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5000)
+      await flushAsync()
     })
-    sendState(socket, state)
+
+    expect(pc.connectionState).toBe("closed")
+    expect(TestPeerConnection.instances).toHaveLength(2)
+    const newPc = TestPeerConnection.instances[1]
+    const newSocket = TestWebSocket.instances[1]
+    sendState(newSocket, state)
     await flushAsync()
     expect(trackRequestNumber).toBe(2)
-    expect(pc.ontrack).not.toBeNull()
+    expect(newPc.ontrack).not.toBeNull()
     unmount()
   })
 
@@ -637,7 +779,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
-  it("orders a received file by transfer start before later Room text", async () => {
+  it("orders a received file by Room sequence anchor despite sender clock skew", async () => {
     const { result, socket, unmount } = await connect()
     const state = roomState([participant("publisher-a", [], "session-a", true)])
     sendState(socket, state)
@@ -663,19 +805,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     })
 
     vi.useFakeTimers()
-    vi.setSystemTime(1000)
-    act(() =>
-      channel.emit("message", {
-        data: JSON.stringify({
-          type: "file-start",
-          id: "file-1",
-          name: "first.txt",
-          mime: "text/plain",
-          size: 3,
-        }),
-      })
-    )
-    vi.setSystemTime(2000)
+    vi.setSystemTime(30_000)
     act(() =>
       socket.onmessage?.({
         data: JSON.stringify({
@@ -687,9 +817,22 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
             kind: "human",
             type: "text",
             text: "later text",
-            createdAt: 2000,
+            createdAt: 1,
             sequence: 1,
           },
+        }),
+      })
+    )
+    vi.setSystemTime(60_000)
+    act(() =>
+      channel.emit("message", {
+        data: JSON.stringify({
+          type: "file-start",
+          id: "file-1",
+          name: "first.txt",
+          mime: "text/plain",
+          size: 3,
+          afterSequence: 0,
         }),
       })
     )
@@ -704,6 +847,79 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
       ["file-1", "text-1"]
     )
     expect(createObjectUrl).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
+  it("keeps a file after its sender anchor when the receiver Room socket is behind", async () => {
+    const { result, socket, unmount } = await connect()
+    const state = roomState([participant("publisher-a", [], "session-a", true)])
+    state.messages = [1, 2, 3].map((sequence) => ({
+      id: `text-${sequence}`,
+      peerId: "publisher-a",
+      name: "publisher-a",
+      kind: "human" as const,
+      type: "text" as const,
+      text: `message ${sequence}`,
+      createdAt: sequence,
+      sequence,
+    }))
+    sendState(socket, state)
+    await waitFor(() =>
+      expect(
+        TestPeerConnection.instances[0].createdChannels.filter((channel) =>
+          channel.name.includes("subscriber")
+        )
+      ).toHaveLength(1)
+    )
+    const channel = TestPeerConnection.instances[0].createdChannels.find(
+      (candidate) => candidate.name.includes("subscriber")
+    )!
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:file-behind"),
+    })
+
+    act(() =>
+      channel.emit("message", {
+        data: JSON.stringify({
+          type: "file-start",
+          id: "file-behind",
+          name: "behind.txt",
+          mime: "text/plain",
+          size: 3,
+          afterSequence: 5,
+        }),
+      })
+    )
+    act(() => {
+      channel.emit("message", { data: new Uint8Array([1, 2, 3]).buffer })
+      channel.emit("message", {
+        data: JSON.stringify({ type: "file-end", id: "file-behind" }),
+      })
+    })
+
+    for (const sequence of [4, 5])
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "message",
+            message: {
+              id: `text-${sequence}`,
+              peerId: "publisher-a",
+              name: "publisher-a",
+              kind: "human",
+              type: "text",
+              text: `message ${sequence}`,
+              createdAt: sequence,
+              sequence,
+            },
+          }),
+        })
+      )
+
+    expect(result.current.messages.map((message) => message.messageId)).toEqual(
+      ["text-1", "text-2", "text-3", "text-4", "text-5", "file-behind"]
+    )
     unmount()
   })
 
@@ -754,6 +970,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         name: "a.txt",
         mime: "text/plain",
         size: 1,
+        afterSequence: 0,
       })
     )
 
@@ -789,11 +1006,18 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
       localChannel.send.mock.calls
         .map(([data]) =>
           typeof data === "string" && data.includes('"type":"file-start"')
-            ? JSON.parse(data).id
+            ? JSON.parse(data)
             : undefined
         )
         .filter(Boolean)
-    ).toEqual(["file-a", "file-b"])
+        .map((message) => ({
+          id: message.id,
+          afterSequence: message.afterSequence,
+        }))
+    ).toEqual([
+      { id: "file-a", afterSequence: 0 },
+      { id: "file-b", afterSequence: 1 },
+    ])
     expect(result.current.messages.map((message) => message.messageId)).toEqual(
       ["file-a", "text-between", "file-b"]
     )

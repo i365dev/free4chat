@@ -39,6 +39,10 @@ export interface Message {
   messageId?: string
   createdAt?: number
   sequence?: number
+  // Browser-local causal anchor for an ephemeral file message. It means the
+  // sender had observed Room messages through this sequence when the file
+  // transfer started; it is not a Room sequence and is never server-issued.
+  afterSequence?: number
   ephemeral?: boolean
   text?: string
   fileLink?: string
