@@ -203,6 +203,22 @@ function hasUsableSessionDescription(response: SfuApiResponse): boolean {
   )
 }
 
+function addLocalMediaTrack(
+  pc: RTCPeerConnection,
+  track: MediaStreamTrack,
+  stream: MediaStream
+): RTCRtpTransceiver {
+  // A PeerConnection can already contain recvonly video transceivers created
+  // by SFU subscriptions. addTrack() is allowed to reuse one of those
+  // transceivers, which changes its direction and can make Cloudflare's next
+  // answer invalid when a second participant starts sharing. Local
+  // publications always get their own stable sendonly m-line.
+  return pc.addTransceiver(track, {
+    direction: "sendonly",
+    streams: [stream],
+  })
+}
+
 function hasRemoteTrackError(response: SfuApiResponse): boolean {
   return Boolean(
     response.errorCode ||
@@ -536,6 +552,7 @@ export function useSfuChatRoom(
   const incomingFilesRef = useRef(new Map<string, IncomingFileTransfer>())
   const objectUrlsRef = useRef(new Set<string>())
   const roomMessagesRef = useRef<Message[]>([])
+  const attachmentsRef = useRef<RoomAttachmentProjection[]>([])
   const ephemeralMessagesRef = useRef<Message[]>([])
   const fileSendQueueRef = useRef(Promise.resolve())
   const dataChannelReadyRef = useRef(false)
@@ -1101,7 +1118,7 @@ export function useSfuChatRoom(
   }, [])
 
   const latestObservedRoomSequence = useCallback(() => {
-    return roomMessagesRef.current.reduce(
+    const latestMessageSequence = roomMessagesRef.current.reduce(
       (latest, message) =>
         typeof message.sequence === "number" &&
         Number.isSafeInteger(message.sequence) &&
@@ -1109,6 +1126,16 @@ export function useSfuChatRoom(
           ? Math.max(latest, message.sequence)
           : latest,
       0
+    )
+
+    return attachmentsRef.current.reduce(
+      (latest, attachment) =>
+        typeof attachment.sequence === "number" &&
+        Number.isSafeInteger(attachment.sequence) &&
+        attachment.sequence >= 0
+          ? Math.max(latest, attachment.sequence)
+          : latest,
+      latestMessageSequence
     )
   }, [])
 
@@ -1522,9 +1549,23 @@ export function useSfuChatRoom(
             sdp: offer.sdp,
           },
         })
-        if (response.sessionDescription) {
-          await pc.setRemoteDescription(response.sessionDescription)
-        }
+        if (
+          !hasUsableSessionDescription(response) ||
+          !response.sessionDescription
+        )
+          throw new Error("SFU publication answer unavailable")
+        await pc.setRemoteDescription(response.sessionDescription)
+        // Cloudflare admission is not Room publication. Only advertise the
+        // local track after this PeerConnection has accepted the answer; the
+        // Worker re-checks the exact current session before committing it.
+        await apiRequest("publish-confirm", {
+          room: roomName,
+          participantId: session.participantId,
+          token: session.participantToken,
+          sessionId: session.sessionId,
+          trackName,
+          kind,
+        })
         localTrackMidsRef.current.set(trackName, transceiver.mid)
       })
     },
@@ -2142,7 +2183,9 @@ export function useSfuChatRoom(
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
       roomStateRef.current = state
-      setAttachments(state.attachments ?? [])
+      const nextAttachments = state.attachments ?? []
+      attachmentsRef.current = nextAttachments
+      setAttachments(nextAttachments)
       const agentAudioTrackCount = state.participants.reduce(
         (count, participant) =>
           count +
@@ -2513,11 +2556,13 @@ export function useSfuChatRoom(
           roomMessageToMessage(message.message, localParticipantId)
         )
       } else if (message.type === "attachment" && message.attachment) {
-        setAttachments((current) =>
-          current.some((entry) => entry.id === message.attachment!.id)
-            ? current
-            : [...current, message.attachment!]
-        )
+        const attachment = message.attachment
+        const currentAttachments = attachmentsRef.current
+        if (!currentAttachments.some((entry) => entry.id === attachment.id)) {
+          const nextAttachments = [...currentAttachments, attachment]
+          attachmentsRef.current = nextAttachments
+          setAttachments(nextAttachments)
+        }
       } else if (message.type === "expired") {
         setError(
           "This room has closed after being empty for a while. Please open a new room."
@@ -2654,10 +2699,10 @@ export function useSfuChatRoom(
       }
 
       const pc = createPeerConnection()
-      pc.addTrack(audioTrack, new MediaStream([audioTrack]))
+      addLocalMediaTrack(pc, audioTrack, new MediaStream([audioTrack]))
       const screenTrack = localScreenTrackRef.current
       if (screenTrack && screenTrack.readyState === "live")
-        pc.addTrack(screenTrack, new MediaStream([screenTrack]))
+        addLocalMediaTrack(pc, screenTrack, new MediaStream([screenTrack]))
       rebuildParticipants()
 
       const body: Record<string, unknown> = {
@@ -2831,6 +2876,7 @@ export function useSfuChatRoom(
       for (const url of objectUrls) URL.revokeObjectURL(url)
       objectUrls.clear()
       roomMessagesRef.current = []
+      attachmentsRef.current = []
       ephemeralMessagesRef.current = []
       dataChannelReadyRef.current = false
       localTrackMids.clear()
@@ -2889,7 +2935,7 @@ export function useSfuChatRoom(
       if (!track) return
       localScreenTrackRef.current = track
       localScreenTrackNameRef.current = `screen-${session.participantId}`
-      pc.addTrack(track, display)
+      addLocalMediaTrack(pc, track, display)
       track.onended = () => {
         if (localScreenTrackRef.current === track) {
           void closePublishedTrack(localScreenTrackNameRef.current)
@@ -2908,6 +2954,17 @@ export function useSfuChatRoom(
       rebuildParticipants()
       await publishTrack(track, "video", localScreenTrackNameRef.current)
     } catch (err) {
+      if (localScreenTrackRef.current && !closingRef.current) {
+        sfuClientDiagnostic("local_track_publish_failed", {
+          track_kind: "video",
+          error_type: diagnosticErrorType(err),
+        })
+        // A local tracks/new answer failure can leave this PeerConnection's
+        // SDP state unusable. Rebuild the whole media session so the Room
+        // state is re-advertised from a fresh PeerConnection instead of
+        // asking the poisoned one to negotiate a second video m-line.
+        void mediaReconnectRef.current?.()
+      }
       setError(
         err instanceof Error ? err.message : "Screen sharing was not started"
       )

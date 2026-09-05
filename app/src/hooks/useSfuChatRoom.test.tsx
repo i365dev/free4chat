@@ -44,6 +44,14 @@ class FakePeerConnection {
     this.transceivers.push({ sender: { track }, mid })
     return { track }
   }
+  addTransceiver(
+    track: FakeTrack,
+    _init: { direction?: "sendonly" | "recvonly" } = {}
+  ) {
+    const transceiver = { sender: { track }, mid: String(this.mids++) }
+    this.transceivers.push(transceiver)
+    return transceiver
+  }
   getTransceivers() {
     return this.transceivers
   }
@@ -73,6 +81,18 @@ function jsonResponse(body: unknown, status = 200) {
     json: () => Promise.resolve(body),
     text: () => Promise.resolve(JSON.stringify(body)),
   } as Response)
+}
+
+function localTrackResponse(init?: RequestInit) {
+  const body = JSON.parse(String(init?.body ?? "{}")) as {
+    tracks?: Array<{ location?: string; mid?: string; trackName?: string }>
+  }
+  const track = body.tracks?.find((entry) => entry.location === "local")
+  if (!track) return null
+  return jsonResponse({
+    sessionDescription: { type: "answer", sdp: "fake-local-answer" },
+    tracks: [{ mid: track.mid ?? "0", trackName: track.trackName }],
+  })
 }
 
 describe("useSfuChatRoom — Turnstile boundary", () => {
@@ -118,7 +138,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       configurable: true,
     })
 
-    fetchMock = vi.fn((input: RequestInfo | URL) => {
+    fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString()
       if (url.endsWith("/api/sfu/session")) {
         return jsonResponse({
@@ -135,7 +155,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
         return jsonResponse({ dataChannels: [{ id: 1 }] })
       }
       if (url.endsWith("/api/sfu/tracks")) {
-        return jsonResponse({})
+        return localTrackResponse(init) ?? jsonResponse({})
       }
       return jsonResponse({})
     })
@@ -295,7 +315,7 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
       },
       configurable: true,
     })
-    global.fetch = vi.fn((input: RequestInfo | URL) => {
+    global.fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith("/api/sfu/session"))
         return jsonResponse({
           participantId: "human-a",
@@ -305,6 +325,8 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
         })
       if (String(input).endsWith("/api/sfu/datachannels/new"))
         return jsonResponse({ dataChannels: [{ id: 1 }] })
+      if (String(input).endsWith("/api/sfu/tracks"))
+        return localTrackResponse(init) ?? jsonResponse({})
       return jsonResponse({})
     }) as unknown as typeof fetch
   })
@@ -505,7 +527,7 @@ describe("useSfuChatRoom room attachments (#123)", () => {
       configurable: true,
     })
 
-    fetchMock = vi.fn((input: RequestInfo | URL) => {
+    fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString()
       if (url.endsWith("/api/sfu/session")) {
         return jsonResponse({
@@ -522,7 +544,7 @@ describe("useSfuChatRoom room attachments (#123)", () => {
         return jsonResponse({ dataChannels: [{ id: 1 }] })
       }
       if (url.endsWith("/api/sfu/tracks")) {
-        return jsonResponse({})
+        return localTrackResponse(init) ?? jsonResponse({})
       }
       if (url.endsWith("/api/room/attachments")) {
         return jsonResponse({
@@ -655,6 +677,7 @@ describe("useSfuChatRoom room attachments (#123)", () => {
             attempts += 1
             return jsonResponse(response)
           }
+          return localTrackResponse(init)
         }
         return jsonResponse({})
       }
@@ -891,6 +914,7 @@ describe("useSfuChatRoom room attachments (#123)", () => {
           const body = JSON.parse((init?.body as string | undefined) ?? "{}")
           if (body.tracks?.[0]?.location === "remote")
             return pendingRemoteTracks
+          return localTrackResponse(init)
         }
         return jsonResponse({})
       }
@@ -1002,7 +1026,8 @@ describe("useSfuChatRoom room attachments (#123)", () => {
           ) as {
             tracks?: Array<{ location?: string }>
           }
-          if (body.tracks?.[0]?.location !== "remote") return jsonResponse({})
+          if (body.tracks?.[0]?.location !== "remote")
+            return localTrackResponse(init) ?? jsonResponse({})
           trackAttempts += 1
           if (trackAttempts === 1)
             return Promise.reject(new Error("secret-sdp-fetch-failure"))
@@ -1242,7 +1267,8 @@ describe("useSfuChatRoom room attachments (#123)", () => {
             sessionId?: string
             tracks?: Array<{ location?: string }>
           }
-          if (body.tracks?.[0]?.location !== "remote") return jsonResponse({})
+          if (body.tracks?.[0]?.location !== "remote")
+            return localTrackResponse(init) ?? jsonResponse({})
           remoteTrackAttempts += 1
           remoteSubscriberSessionIds.push(body.sessionId ?? "")
           if (remoteTrackAttempts === 1)

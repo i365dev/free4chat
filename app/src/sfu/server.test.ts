@@ -267,7 +267,7 @@ describe("Origin policy is route-scoped, not global", () => {
     "renegotiate",
     "datachannels/establish",
   ]
-  const missingOriginRejected = ["session"]
+  const missingOriginRejected = ["session", "publish-confirm"]
 
   for (const route of missingOriginAllowed) {
     it(`missing Origin is accepted on ${route} (non-browser Runtime route)`, async () => {
@@ -441,7 +441,13 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
   })
 
   it("Human + local audio track => allowed", async () => {
-    const env = makeEnv({}, doResponderForKind("human"))
+    const actions: Array<Record<string, unknown>> = []
+    const env = makeEnv({}, (body) => {
+      actions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "human" } }
+      return { status: 200, body: { ok: true } }
+    })
     const res = await handleSfuRequest(
       req("tracks", {
         body: JSON.stringify(
@@ -457,6 +463,31 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     )
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(actions.map((action) => action.action)).toEqual(["authorize"])
+
+    const confirm = await handleSfuRequest(
+      req("publish-confirm", {
+        origin: "https://www.free4.chat",
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "human-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+          trackName: "audio-1",
+          kind: "audio",
+        }),
+      }),
+      env
+    )
+    expect(confirm.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(actions).toContainEqual({
+      action: "publish",
+      participantId: "human-1",
+      token: "tok-1",
+      sessionId: "sess-1",
+      track: { trackName: "audio-1", kind: "audio" },
+    })
   })
 
   it("Human + local video track => allowed", async () => {
@@ -476,6 +507,38 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
     )
     expect(res.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not advertise a Human local track when Cloudflare omits its answer or mid", async () => {
+    fetchMock = vi.fn(async () =>
+      Response.json({ tracks: [{ errorCode: "publication_failed" }] })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const actions: Array<Record<string, unknown>> = []
+    const env = makeEnv({}, (body) => {
+      actions.push(body)
+      if (body.action === "authorize")
+        return { status: 200, body: { ok: true, kind: "human" } }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify(
+          humanTracksBody({
+            location: "local",
+            trackName: "video-1",
+            kind: "video",
+            mid: "1",
+          })
+        ),
+      }),
+      env
+    )
+
+    expect(res.status).toBe(502)
+    expect((await json(res)).error).toBe("sfu_publication_unverifiable")
+    expect(actions.map((action) => action.action)).toEqual(["authorize"])
   })
 
   it("Human remote response with an offer does not perform publisher diagnostics", async () => {

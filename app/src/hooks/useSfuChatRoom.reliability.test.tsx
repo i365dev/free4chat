@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSfuChatRoom } from "./useSfuChatRoom"
+import { buildRoomTimeline } from "../components/TextChatCard"
 import type { SfuRoomState, SfuTrack } from "../sfu/types"
 
 class TestTrack {
@@ -17,6 +18,10 @@ class TestMediaStream {
 
   getAudioTracks() {
     return this.tracks.filter((track) => track.kind === "audio")
+  }
+
+  getVideoTracks() {
+    return this.tracks.filter((track) => track.kind === "video")
   }
 
   getTracks() {
@@ -67,8 +72,9 @@ class TestPeerConnection {
   createdChannels: TestDataChannel[] = []
   private mids = 0
   private readonly transceivers: Array<{
-    sender: { track: TestTrack }
+    sender: { track: TestTrack | null }
     mid: string
+    direction: "sendonly" | "recvonly" | "sendrecv"
   }> = []
 
   constructor() {
@@ -76,9 +82,32 @@ class TestPeerConnection {
   }
 
   addTrack(track: TestTrack) {
+    const reusable = this.transceivers.find(
+      (transceiver) =>
+        transceiver.direction === "recvonly" &&
+        transceiver.sender.track === null
+    )
+    if (reusable) {
+      reusable.sender.track = track
+      reusable.direction = "sendrecv"
+      return reusable.sender
+    }
     const mid = String(this.mids++)
-    this.transceivers.push({ sender: { track }, mid })
+    this.transceivers.push({ sender: { track }, mid, direction: "sendonly" })
     return { track }
+  }
+
+  addTransceiver(
+    track: TestTrack | null,
+    init: { direction?: "sendonly" | "recvonly" } = {}
+  ) {
+    const transceiver = {
+      sender: { track },
+      mid: String(this.mids++),
+      direction: init.direction ?? "sendonly",
+    }
+    this.transceivers.push(transceiver)
+    return transceiver
   }
 
   getTransceivers() {
@@ -241,6 +270,8 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
   let remoteChannelNumber: number
   let transientRemoteTrackResponses: number
   let admittedRemoteTrackResponsesWithoutDescription: number
+  let getDisplayMedia: ReturnType<typeof vi.fn>
+  let localTrackResponseWithDescription: boolean
 
   beforeEach(() => {
     TestPeerConnection.instances.length = 0
@@ -252,6 +283,9 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     remoteChannelNumber = 100
     transientRemoteTrackResponses = 0
     admittedRemoteTrackResponsesWithoutDescription = 0
+    // Human local publication responses must include the answer and assigned
+    // mid that production /api/sfu/tracks now requires before confirmation.
+    localTrackResponseWithDescription = true
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       TestPeerConnection
     ;(global as unknown as { MediaStream: unknown }).MediaStream =
@@ -262,6 +296,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         getUserMedia: vi.fn().mockResolvedValue({
           getAudioTracks: () => [new TestTrack("audio")],
         }),
+        getDisplayMedia: (getDisplayMedia = vi.fn()),
       },
       configurable: true,
     })
@@ -289,9 +324,20 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
       }
       if (url.endsWith("/api/sfu/tracks")) {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
-          tracks: Array<{ location?: string; trackName: string }>
+          tracks: Array<{ location?: string; trackName: string; mid?: string }>
         }
-        if (body.tracks[0].location !== "remote") return jsonResponse({})
+        if (body.tracks[0].location !== "remote") {
+          if (!localTrackResponseWithDescription) return jsonResponse({})
+          return jsonResponse({
+            sessionDescription: { type: "answer", sdp: "local-answer" },
+            tracks: [
+              {
+                mid: body.tracks[0].mid ?? "local-mid",
+                trackName: body.tracks[0].trackName,
+              },
+            ],
+          })
+        }
         trackRequestNumber += 1
         if (transientRemoteTrackResponses > 0) {
           transientRemoteTrackResponses -= 1
@@ -383,6 +429,65 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         )?.screenShareStream
       ).toBe(streamB)
     })
+    unmount()
+  })
+
+  it("uses a fresh sendonly transceiver for a local screen share beside remote video", async () => {
+    const { result, pc, unmount } = await connect()
+    // A remote recvonly transceiver has no local sender track. The browser's
+    // addTrack() would reuse this m-line; the production code must allocate a
+    // separate sendonly transceiver for the local screen publication.
+    const remoteTransceiver = pc.addTransceiver(null, {
+      direction: "recvonly",
+    })
+    const screenTrack = new TestTrack("video")
+    getDisplayMedia.mockResolvedValue(new TestMediaStream([screenTrack]))
+
+    await act(async () => {
+      await result.current.toggleScreenShare()
+    })
+
+    const localTransceiver = pc
+      .getTransceivers()
+      .find((transceiver) => transceiver.sender.track === screenTrack)
+    expect(localTransceiver).toBeDefined()
+    expect(localTransceiver).not.toBe(remoteTransceiver)
+    expect(localTransceiver?.direction).toBe("sendonly")
+    expect(remoteTransceiver.direction).toBe("recvonly")
+
+    const localTrackRequest = fetchMock.mock.calls
+      .filter(([input, init]) => {
+        if (!String(input).endsWith("/api/sfu/tracks")) return false
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          tracks?: Array<{ location?: string }>
+        }
+        return body.tracks?.[0]?.location === "local"
+      })
+      .at(-1)
+    expect(
+      JSON.parse(String(localTrackRequest?.[1]?.body ?? "{}")).tracks[0].mid
+    ).toBe(localTransceiver?.mid)
+    unmount()
+  })
+
+  it("rebuilds the media session after a local screen-share answer failure", async () => {
+    const { result, pc, unmount } = await connect()
+    localTrackResponseWithDescription = true
+    const screenTrack = new TestTrack("video")
+    getDisplayMedia.mockResolvedValue(new TestMediaStream([screenTrack]))
+    TestPeerConnection.remoteDescriptionFailures = 1
+
+    await act(async () => {
+      await result.current.toggleScreenShare()
+    })
+
+    await waitFor(() => expect(TestPeerConnection.instances).toHaveLength(2))
+    expect(pc.connectionState).toBe("closed")
+    expect(
+      TestPeerConnection.instances[1]
+        .getTransceivers()
+        .some((transceiver) => transceiver.sender.track === screenTrack)
+    ).toBe(true)
     unmount()
   })
 
@@ -920,6 +1025,75 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     expect(result.current.messages.map((message) => message.messageId)).toEqual(
       ["text-1", "text-2", "text-3", "text-4", "text-5", "file-behind"]
     )
+    unmount()
+  })
+
+  it("anchors a human file after the latest Agent attachment sequence", async () => {
+    const { result, socket, pc, unmount } = await connect()
+    const state = roomState([participant("publisher-a", [], "session-a", true)])
+    state.messages = [
+      {
+        id: "text-1",
+        peerId: "publisher-a",
+        name: "publisher-a",
+        kind: "human",
+        type: "text",
+        text: "before attachment",
+        createdAt: 1,
+        sequence: 1,
+      },
+    ]
+    state.attachments = [
+      {
+        id: "agent-attachment-2",
+        senderId: "agent-1",
+        senderName: "Agent",
+        senderKind: "agent",
+        fileName: "artifact.txt",
+        mimeType: "text/plain",
+        size: 1,
+        sequence: 2,
+        createdAt: 2,
+      },
+    ]
+    sendState(socket, state)
+
+    const localChannel = pc.createdChannels.find(
+      (channel) => channel.name === "files-human-local"
+    )!
+    const file = {
+      name: "human.txt",
+      type: "text/plain",
+      size: 1,
+      slice: () => ({
+        arrayBuffer: () => Promise.resolve(new Uint8Array([1]).buffer),
+      }),
+    } as unknown as File
+
+    await act(async () => {
+      await result.current.sendFileMessage(file)
+    })
+
+    const fileStart = localChannel.send.mock.calls
+      .map(([data]) =>
+        typeof data === "string" && data.includes('"type":"file-start"')
+          ? JSON.parse(data)
+          : undefined
+      )
+      .find((message) => message?.id)
+    expect(fileStart).toMatchObject({
+      type: "file-start",
+      afterSequence: 2,
+    })
+    expect(
+      buildRoomTimeline(
+        result.current.messages,
+        result.current.attachments
+      ).map((item) => item.message?.messageId ?? item.attachment?.id)
+    ).toEqual(["text-1", "agent-attachment-2", fileStart.id])
+    expect(
+      result.current.attachments.map((attachment) => attachment.id)
+    ).toEqual(["agent-attachment-2"])
     unmount()
   })
 

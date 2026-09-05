@@ -360,6 +360,7 @@ type ControlRequest =
       action: "publish"
       participantId: string
       token: string
+      sessionId: string
       track: RoomMediaTrack
     }
   | {
@@ -3481,11 +3482,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ ok: true, expiresAt: room.expiresAt })
     }
 
-    const participant = this.findParticipant(
-      room,
-      request.participantId,
-      request.token
-    )
+    const participant =
+      request.action === "publish"
+        ? this.findParticipant(
+            room,
+            request.participantId,
+            request.token,
+            request.sessionId
+          )
+        : this.findParticipant(room, request.participantId, request.token)
     if (!participant) return this.json({ error: "unauthorized" }, 401)
 
     if (request.action === "publish") {

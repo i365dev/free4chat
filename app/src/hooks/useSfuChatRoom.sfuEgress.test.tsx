@@ -48,6 +48,14 @@ class FakePeerConnection {
     this.transceivers.push({ sender: { track }, mid })
     return { track }
   }
+  addTransceiver(
+    track: FakeTrack,
+    _init: { direction?: "sendonly" | "recvonly" } = {}
+  ) {
+    const transceiver = { sender: { track }, mid: String(this.mids++) }
+    this.transceivers.push(transceiver)
+    return transceiver
+  }
   getTransceivers() {
     return this.transceivers
   }
@@ -134,6 +142,11 @@ describe("useSfuChatRoom SFU egress analytics", () => {
         })
       if (url.endsWith("/api/sfu/datachannels/new"))
         return jsonResponse({ dataChannels: [{ id: 1 }] })
+      if (url.endsWith("/api/sfu/tracks"))
+        return jsonResponse({
+          sessionDescription: { type: "answer", sdp: "fake-local-answer" },
+          tracks: [{ mid: "0" }],
+        })
       return jsonResponse({})
     }) as unknown as typeof fetch
     vi.mocked(trackAnalyticsEvent).mockClear()
