@@ -8,7 +8,17 @@ import {
   createRuntimeProviderSecret,
   deriveRuntimeProviderReattachHash,
 } from "@common/runtimeProviderCredential"
+import {
+  createSfuEgressSampler,
+  SFU_EGRESS_SAMPLE_INTERVAL_MS,
+  type SfuEgressSampleReason,
+} from "@common/sfuEgress"
 import { ActionType, Message, UserInfo } from "@common/types"
+import {
+  hashRoom,
+  participantsBucket,
+  trackAnalyticsEvent,
+} from "@common/utils"
 import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import type {
@@ -455,6 +465,67 @@ export function useSfuChatRoom(
   const fileSendQueueRef = useRef(Promise.resolve())
   const dataChannelReadyRef = useRef(false)
   const closingRef = useRef(false)
+  const sfuEgressSamplerRef = useRef<ReturnType<
+    typeof createSfuEgressSampler
+  > | null>(null)
+  const sfuEgressTimerRef = useRef<number | null>(null)
+  const sfuEgressContextRef = useRef(
+    new WeakMap<
+      object,
+      {
+        roomHash: string
+        roomType: "audio" | "screenshare"
+        participantBucket: ReturnType<typeof participantsBucket>
+      }
+    >()
+  )
+  const analyticsContextRef = useRef({ roomName, roomType: resolvedRoomType })
+  analyticsContextRef.current = { roomName, roomType: resolvedRoomType }
+  if (!sfuEgressSamplerRef.current) {
+    sfuEgressSamplerRef.current = createSfuEgressSampler((sample, source) => {
+      const sourceContext =
+        typeof source === "object" && source !== null
+          ? sfuEgressContextRef.current.get(source)
+          : undefined
+      const currentContext = analyticsContextRef.current
+      const participantCount =
+        participantMapRef.current.size || (sessionRef.current ? 1 : 0)
+      const context = sourceContext ?? {
+        roomHash: hashRoom(currentContext.roomName),
+        roomType: currentContext.roomType,
+        participantBucket: participantsBucket(participantCount),
+      }
+      trackAnalyticsEvent("SFUEgressSample", {
+        roomHash: context.roomHash,
+        roomType: context.roomType,
+        participantBucket: context.participantBucket,
+        ...sample,
+      })
+    })
+  }
+
+  const sampleSfuEgress = useCallback(
+    (
+      reason: SfuEgressSampleReason,
+      peerConnection: RTCPeerConnection | null = peerConnectionRef.current
+    ) => {
+      if (!peerConnection || typeof peerConnection.getStats !== "function")
+        return
+      const participantCount =
+        participantMapRef.current.size || (sessionRef.current ? 1 : 0)
+      sfuEgressContextRef.current.set(peerConnection, {
+        roomHash: hashRoom(analyticsContextRef.current.roomName),
+        roomType: analyticsContextRef.current.roomType,
+        participantBucket: participantsBucket(participantCount),
+      })
+      sfuEgressSamplerRef.current?.sample(
+        peerConnection,
+        () => peerConnection.getStats(),
+        reason
+      )
+    },
+    []
+  )
 
   const rebuildParticipants = useCallback(() => {
     const state = roomStateRef.current
@@ -1583,15 +1654,17 @@ export function useSfuChatRoom(
       if (pc.connectionState === "connected") {
         mediaReconnectAttemptsRef.current = 0
         setConnectionStatus("connected")
+        sampleSfuEgress("interval", pc)
       } else if (
         pc.connectionState === "failed" ||
         pc.connectionState === "disconnected"
       ) {
+        sampleSfuEgress("disconnect", pc)
         void mediaReconnectRef.current?.()
       }
     }
     return pc
-  }, [rebuildParticipants])
+  }, [rebuildParticipants, sampleSfuEgress])
 
   const connectWebSocket = useCallback(() => {
     const session = sessionRef.current
@@ -1816,7 +1889,11 @@ export function useSfuChatRoom(
           channel.close()
         remoteFileChannelsRef.current.clear()
         remoteFileChannelIdsRef.current.clear()
-        peerConnectionRef.current?.close()
+        const oldPeerConnection = peerConnectionRef.current
+        if (oldPeerConnection) {
+          sampleSfuEgress("disconnect", oldPeerConnection)
+          oldPeerConnection.close()
+        }
         peerConnectionRef.current = null
         dataChannelReadyRef.current = false
         localTrackMidsRef.current.clear()
@@ -1920,6 +1997,7 @@ export function useSfuChatRoom(
       publishTrack,
       rebuildParticipants,
       roomName,
+      sampleSfuEgress,
     ]
   )
 
@@ -1980,6 +2058,15 @@ export function useSfuChatRoom(
     }
     mediaReconnectRef.current = reconnectMedia
     initialConnectRef.current = start
+    sfuEgressTimerRef.current = window.setInterval(() => {
+      const peerConnection = peerConnectionRef.current
+      if (peerConnection?.connectionState === "connected")
+        sampleSfuEgress("interval", peerConnection)
+    }, SFU_EGRESS_SAMPLE_INTERVAL_MS)
+    const handlePageHide = () => {
+      sampleSfuEgress("pagehide", peerConnectionRef.current)
+    }
+    window.addEventListener("pagehide", handlePageHide)
     void start()
 
     const remoteFileChannels = remoteFileChannelsRef.current
@@ -1991,10 +2078,16 @@ export function useSfuChatRoom(
 
     return () => {
       closingRef.current = true
+      sampleSfuEgress("disconnect", peerConnectionRef.current)
       clearAllAgentAudioSubscriptionRetries("unmount")
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       if (mediaReconnectTimerRef.current)
         clearTimeout(mediaReconnectTimerRef.current)
+      if (sfuEgressTimerRef.current) {
+        clearInterval(sfuEgressTimerRef.current)
+        sfuEgressTimerRef.current = null
+      }
+      window.removeEventListener("pagehide", handlePageHide)
       void closeDataChannels(sessionRef.current)
       websocketRef.current?.close()
       localAudioTrackRef.current?.stop()
@@ -2027,6 +2120,7 @@ export function useSfuChatRoom(
     nickName,
     reconnectMedia,
     roomName,
+    sampleSfuEgress,
     sendSocketMessage,
   ])
 
@@ -2214,8 +2308,9 @@ export function useSfuChatRoom(
   }, [sendSocketMessage])
 
   const leaveRoom = useCallback(() => {
+    sampleSfuEgress("leave", peerConnectionRef.current)
     sendSocketMessage({ type: "leave" })
-  }, [sendSocketMessage])
+  }, [sampleSfuEgress, sendSocketMessage])
 
   const setAgentVoice = useCallback(
     (agentParticipantId: string, enabled: boolean) => {
