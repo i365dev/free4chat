@@ -1,7 +1,10 @@
 import { render } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
-import ParticipantAvatar, { participantAccent } from "./ParticipantAvatar"
+import ParticipantAvatar, {
+  participantAccent,
+  participantVariant,
+} from "./ParticipantAvatar"
 
 describe("ParticipantAvatar", () => {
   it("uses a deterministic local accent and shared avatar grammar", () => {
@@ -22,6 +25,14 @@ describe("ParticipantAvatar", () => {
     expect(avatars[1]).toHaveStyle({
       "--participant-accent": participantAccent("Hermes"),
     })
+    expect(avatars[0]).toHaveAttribute(
+      "data-avatar-variant",
+      participantVariant("Hermes")
+    )
+    expect(avatars[1]).toHaveAttribute(
+      "data-avatar-variant",
+      participantVariant("Hermes")
+    )
     expect(container.querySelectorAll("img")).toHaveLength(0)
   })
 

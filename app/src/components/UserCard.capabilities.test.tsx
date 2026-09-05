@@ -13,19 +13,20 @@ function base(overrides: Record<string, unknown> = {}) {
   }
 }
 
-describe("Agent advertised capability chips (#234)", () => {
-  it("renders advertised capability chips for an Agent in full layout", () => {
+describe("Agent advertised capabilities stay out of the presence surface", () => {
+  it("does not render capability inventory in full layout", () => {
     const { getByText } = render(
       <UserCard
         {...base({ name: "Pi", kind: "agent", peerId: "agent-pi" })}
         capabilities={["code.edit", "shell"]}
       />
     )
-    expect(getByText("code.edit")).toBeTruthy()
-    expect(getByText("shell")).toBeTruthy()
+    expect(getByText("Pi")).toBeTruthy()
+    expect(document.querySelector('[title="code.edit"]')).toBeNull()
+    expect(document.querySelector('[title="shell"]')).toBeNull()
   })
 
-  it("compact layout also displays Agent capability chips without breaking layout", () => {
+  it("compact layout also keeps capability inventory out of the node", () => {
     const { getByText } = render(
       <UserCard
         {...base({
@@ -37,7 +38,8 @@ describe("Agent advertised capability chips (#234)", () => {
         capabilities={["code.edit"]}
       />
     )
-    expect(getByText("code.edit")).toBeTruthy()
+    expect(getByText("Pi")).toBeTruthy()
+    expect(document.querySelector('[title="code.edit"]')).toBeNull()
   })
 
   it("never shows a Human capability editor entry (removed with #234)", () => {

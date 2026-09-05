@@ -86,20 +86,83 @@ html {
 /* --- Temporary Room surface --- */
 
 .room-shell {
+  position: relative;
+  isolation: isolate;
   background-color: #030712;
   background-image: radial-gradient(
-      circle at 15% 10%,
-      rgba(34, 211, 238, 0.1),
-      transparent 30%
+      circle at 14% 18%,
+      rgba(34, 211, 238, 0.1) 0,
+      transparent 25%
     ),
     radial-gradient(
-      circle at 90% 20%,
-      rgba(168, 85, 247, 0.08),
-      transparent 28%
+      circle at 78% 22%,
+      rgba(168, 85, 247, 0.1) 0,
+      transparent 26%
     ),
-    linear-gradient(rgba(34, 211, 238, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(34, 211, 238, 0.035) 1px, transparent 1px);
-  background-size: auto, auto, 36px 36px, 36px 36px;
+    radial-gradient(
+      circle at 58% 78%,
+      rgba(190, 242, 100, 0.045) 0,
+      transparent 22%
+    ),
+    radial-gradient(
+      circle at 8% 74%,
+      rgba(251, 113, 133, 0.05) 0,
+      transparent 18%
+    ),
+    radial-gradient(
+      circle at 12% 14%,
+      rgba(226, 232, 240, 0.65) 0 1px,
+      transparent 1.5px
+    ),
+    radial-gradient(
+      circle at 36% 32%,
+      rgba(103, 232, 249, 0.55) 0 1px,
+      transparent 1.5px
+    ),
+    radial-gradient(
+      circle at 68% 12%,
+      rgba(226, 232, 240, 0.5) 0 1px,
+      transparent 1.5px
+    ),
+    radial-gradient(
+      circle at 86% 48%,
+      rgba(196, 181, 253, 0.5) 0 1px,
+      transparent 1.5px
+    ),
+    radial-gradient(
+      circle at 64% 86%,
+      rgba(226, 232, 240, 0.42) 0 1px,
+      transparent 1.5px
+    ),
+    linear-gradient(rgba(34, 211, 238, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 211, 238, 0.018) 1px, transparent 1px);
+  background-size: auto, auto, auto, auto, auto, auto, auto, auto, auto,
+    48px 48px, 48px 48px;
+}
+
+.room-shell::after {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.48);
+  content: "";
+  pointer-events: none;
+}
+
+.room-shell::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(148, 163, 184, 0.035) 0,
+    rgba(148, 163, 184, 0.035) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  content: "";
+  pointer-events: none;
 }
 
 .room-header {
@@ -156,6 +219,78 @@ html {
 
 .room-participant-strip {
   background: rgba(2, 6, 23, 0.56);
+}
+
+.room-participants-grid--constellation {
+  position: relative;
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(7.5rem, 1fr));
+  align-content: center;
+  justify-items: center;
+  gap: 0;
+  overflow: hidden;
+}
+
+.room-participants-grid--constellation::before,
+.room-participants-grid--constellation::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border: 1px solid rgba(103, 232, 249, 0.14);
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+  transform: translate(-50%, -50%) rotate(-13deg);
+}
+
+.room-participants-grid--constellation::before {
+  width: 72%;
+  height: 46%;
+}
+
+.room-participants-grid--constellation::after {
+  width: 43%;
+  height: 82%;
+  border-color: rgba(196, 181, 253, 0.1);
+  transform: translate(-50%, -50%) rotate(38deg);
+}
+
+.room-participants-grid--constellation > div {
+  z-index: 1;
+  width: clamp(7.5rem, 18vw, 10rem);
+}
+
+.room-participants-grid--constellation > div:nth-child(1) {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.room-participants-grid--constellation > div:nth-child(2) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.room-participants-grid--constellation > div:nth-child(3) {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.room-participants-grid--constellation > div:nth-child(4) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.room-participants-grid--constellation > div:nth-child(5) {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.room-participants-grid--constellation > div:nth-child(6) {
+  grid-column: 1;
+  grid-row: 1;
 }
 
 /* --- Participant node cards --- */
@@ -218,6 +353,64 @@ html {
   min-height: 94px;
   border-radius: 0.65rem;
   padding: 0.45rem;
+}
+
+.participant-card--node {
+  min-height: 0;
+  border-color: transparent;
+  border-radius: 999px;
+  background: transparent;
+  padding: 0.35rem;
+  box-shadow: none;
+}
+
+.participant-card--node::before,
+.participant-card--node::after {
+  display: none;
+}
+
+.participant-card--node:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--participant-accent) 5%, transparent);
+  box-shadow: 0 0 28px
+    color-mix(in srgb, var(--participant-accent) 12%, transparent);
+  transform: none;
+}
+
+.participant-card--node .participant-card__main {
+  gap: 0.38rem;
+}
+
+.participant-card--node .participant-card__name {
+  font-size: 0.78rem;
+}
+
+.participant-card--node .participant-card__status-row {
+  min-height: 0;
+}
+
+.participant-card--node .participant-status {
+  background: transparent;
+}
+
+.participant-card--node .participant-card__details {
+  min-height: 0;
+}
+
+.participant-card--node .participant-voice-button {
+  padding: 0.16rem 0.38rem;
+}
+
+.participant-card--node .participant-voice-button::before {
+  content: "";
+}
+
+.participant-card--node .participant-voice-button.is-enabled::before {
+  content: "◉";
+}
+
+.participant-card--node .participant-voice-button:not(.is-enabled)::before {
+  content: "○";
 }
 
 .participant-card__main {
@@ -414,6 +607,11 @@ html {
   height: 2.25rem;
 }
 
+.participant-avatar.text-chat-avatar {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
 .participant-avatar__orb {
   position: absolute;
   inset: 0.42rem;
@@ -549,6 +747,14 @@ html {
   transform: translate(-50%, -50%) scale(calc(1 + var(--audio-level, 0) * 0.12));
 }
 
+.participant-signal[data-speaking="true"]
+  + .participant-avatar
+  .participant-avatar__orb {
+  box-shadow: 0 0 calc(14px + var(--audio-level, 0) * 18px)
+      color-mix(in srgb, var(--participant-accent) 62%, transparent),
+    inset 0 0 12px rgba(255, 255, 255, 0.16);
+}
+
 .participant-signal[data-speaking="true"] .participant-signal__ring--inner {
   animation: participant-signal-spin 4s linear infinite;
 }
@@ -596,8 +802,64 @@ html {
 }
 
 @media (max-width: 639px) {
+  .room-participants-grid--constellation {
+    display: flex;
+    flex: none;
+    height: auto;
+    min-height: 8.5rem;
+    align-items: center;
+    gap: 0.1rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .room-participants-grid--constellation::before,
+  .room-participants-grid--constellation::after {
+    display: none;
+  }
+
+  .room-participants-grid--constellation > div {
+    width: 4.5rem;
+    flex: none;
+  }
+
+  .room-participants-grid--constellation > div:nth-child(n) {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .participant-card--node {
+    min-height: 5.5rem;
+    padding: 0.15rem;
+  }
+
+  .participant-card--node .participant-card__main {
+    gap: 0.2rem;
+  }
+
+  .participant-card--node .participant-card__name {
+    font-size: 0.6rem;
+  }
+
+  .participant-card--node .participant-status {
+    padding: 0.1rem 0.2rem;
+    font-size: 0.44rem;
+  }
+
+  .participant-card--node .participant-card__details {
+    position: absolute;
+    right: 0.15rem;
+    bottom: 0.12rem;
+  }
+
+  .participant-card--node .participant-voice-button {
+    width: 1.25rem;
+    height: 1.25rem;
+    padding: 0;
+    font-size: 0;
+  }
+
   .participant-card:not(.participant-card--compact) {
-    height: 112px;
     min-height: 112px;
     padding: 0.55rem;
   }
@@ -613,19 +875,19 @@ html {
     height: 2.2rem;
   }
 
-  .participant-card:not(.participant-card--compact) .participant-capability {
-    max-width: 4.1rem;
-  }
-
-  .participant-card:not(.participant-card--compact)
-    .participant-capability
-    ~ .participant-capability {
-    display: none;
-  }
-
   .participant-card:not(.participant-card--compact) .participant-card__details {
     flex-wrap: nowrap;
     overflow: hidden;
     gap: 0.16rem;
+  }
+
+  .participant-card--node:not(.participant-card--compact) {
+    min-height: 5.5rem;
+  }
+}
+
+@media (min-width: 640px) {
+  .room-participants-grid:not(.room-participants-grid--constellation) {
+    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
   }
 }

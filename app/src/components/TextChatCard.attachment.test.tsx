@@ -136,6 +136,19 @@ describe("buildRoomTimeline (#234)", () => {
 })
 
 describe("standalone Agent attachment rendering (#234)", () => {
+  it("uses the compact local participant avatar grammar for timeline senders", () => {
+    renderCard([message(2, "hi")], [AGENT_ATTACHMENT], vi.fn())
+
+    const avatars = screen.getAllByTestId("participant-avatar")
+    expect(avatars).toHaveLength(2)
+    expect(
+      avatars.every((avatar) =>
+        avatar.classList.contains("participant-avatar--compact")
+      )
+    ).toBe(true)
+    expect(document.querySelectorAll("img")).toHaveLength(0)
+  })
+
   it("renders sender, file name, mime, size and a Preview action", async () => {
     const onReadArtifact = vi.fn().mockResolvedValue({
       attachment: {

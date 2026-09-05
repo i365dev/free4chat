@@ -12,6 +12,8 @@ interface UserCardProps extends UserInfo {
   onToggleScreenShare?: () => void
   screenshareAllowed?: boolean
   compact?: boolean
+  /** Presentation-only constellation node mode for small Rooms. */
+  node?: boolean
   /** Room-wide publish authorization for this eligible Agent only. */
   voiceAvailable?: boolean
   voiceEnabled?: boolean
@@ -83,14 +85,6 @@ export default function UserCard(user: UserCardProps) {
   const displayName = isSelf ? `${user.name} (ME)` : user.name
   const accent = participantAccent(user.name)
   const style = { "--participant-accent": accent } as CSSProperties
-  const visibleCapabilities = (user.capabilities ?? []).slice(
-    0,
-    user.compact ? 2 : 3
-  )
-  const extraCapabilities = Math.max(
-    0,
-    (user.capabilities?.length ?? 0) - visibleCapabilities.length
-  )
 
   return (
     <div className={`${user.className ?? ""} min-w-0`}>
@@ -100,7 +94,7 @@ export default function UserCard(user: UserCardProps) {
         data-participant-kind={user.kind}
         className={`participant-card ${
           user.compact ? "participant-card--compact" : ""
-        }`}
+        } ${user.node ? "participant-card--node" : ""}`}
         style={style}
       >
         <div className="participant-card__main">
@@ -174,23 +168,12 @@ export default function UserCard(user: UserCardProps) {
             {user.kind === "agent" && user.voiceEnabled && (
               <StatusPill tone="active">Voice</StatusPill>
             )}
+            {user.muteState && <StatusPill tone="warning">Muted</StatusPill>}
           </div>
         </div>
 
-        <div className="participant-card__details">
-          {visibleCapabilities.map((capability) => (
-            <span
-              key={capability}
-              title={capability}
-              className="participant-capability"
-            >
-              {capability}
-            </span>
-          ))}
-          {extraCapabilities > 0 && (
-            <span className="participant-capability">+{extraCapabilities}</span>
-          )}
-          {user.kind === "agent" && (
+        {user.kind === "agent" && (
+          <div className="participant-card__details">
             <button
               type="button"
               onClick={user.onToggleAgentVoice}
@@ -209,12 +192,14 @@ export default function UserCard(user: UserCardProps) {
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
-              className="participant-voice-button"
+              className={`participant-voice-button ${
+                user.voiceEnabled ? "is-enabled" : ""
+              }`}
             >
               {user.voiceEnabled ? "◉ Voice" : "○ Voice"}
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         <audio ref={audioRef} autoPlay={!isSelf} muted={isSelf} />
       </article>

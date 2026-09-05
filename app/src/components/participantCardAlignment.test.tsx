@@ -91,6 +91,10 @@ describe("participant card equal-height contract (#228)", () => {
     // The grid top-aligns rows; no full-panel-height stretching remains.
     const grid = document.querySelector(".room-participants-grid")
     expect(grid).toBeTruthy()
+    expect(grid).toHaveClass("room-participants-grid--constellation")
+    expect(
+      cards.every((card) => card.className.includes("participant-card--node"))
+    ).toBe(true)
     expect(document.querySelector(".items-stretch")).toBeNull()
   })
 })

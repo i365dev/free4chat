@@ -185,6 +185,7 @@ export default function RoomContent({
     (p) =>
       p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID && p.screenShareStream
   )
+  const useConstellation = participants.length > 0 && participants.length <= 6
 
   const [activeSharePeerId, setActiveSharePeerId] = useState<string | null>(
     null
@@ -684,13 +685,22 @@ export default function RoomContent({
                         onToggleAgentVoice={() => toggleAgentVoice(p)}
                         className="w-[5.25rem]"
                         compact
+                        node
                       />
                     </div>
                   ))}
                 </div>
               </>
             ) : (
-              <div className="room-participants-grid scrollbar-thin grid h-full grid-cols-2 content-start items-start gap-2 overflow-y-auto p-3 sm:flex sm:flex-wrap">
+              <div
+                className={`room-participants-grid scrollbar-thin grid grid-cols-2 content-start items-start gap-2 overflow-y-auto p-3 ${
+                  !useConstellation ? "h-full" : ""
+                } ${
+                  useConstellation
+                    ? "room-participants-grid--constellation"
+                    : ""
+                }`}
+              >
                 {participants.map((p) => (
                   <div
                     key={p.peerId}
@@ -713,6 +723,7 @@ export default function RoomContent({
                       voiceEnabled={p.voiceEnabled}
                       onToggleAgentVoice={() => toggleAgentVoice(p)}
                       screenshareAllowed={screenshareAllowed}
+                      node={useConstellation}
                       className="w-full flex-none sm:w-40"
                     />
                     {p.peerId === LOCAL_PEER_ID && (

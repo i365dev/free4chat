@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, memo } from "react"
 
-import Avatar from "boring-avatars"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
@@ -16,6 +15,7 @@ import {
   isCollabRequestAnswered,
 } from "./collabUi"
 import HumanCollabResultComposer from "./HumanCollabResultComposer"
+import ParticipantAvatar from "./ParticipantAvatar"
 import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
 import type {
@@ -1187,10 +1187,11 @@ export default function TextChatCard({
               return (
                 <div className="mb-4 flex w-full items-end" key={attachment.id}>
                   <div className="mr-2 flex-shrink-0">
-                    <Avatar
-                      size={28}
-                      variant="beam"
+                    <ParticipantAvatar
                       name={attachment.senderName}
+                      kind={attachment.senderKind}
+                      size="compact"
+                      className="text-chat-avatar"
                     />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -1220,7 +1221,18 @@ export default function TextChatCard({
                 key={i}
               >
                 <div className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}>
-                  <Avatar size={28} variant="beam" name={p.name} />
+                  <ParticipantAvatar
+                    name={p.name}
+                    kind={
+                      p.kind ??
+                      participants.find(
+                        (participant) => participant.peerId === p.peerId
+                      )?.kind ??
+                      "human"
+                    }
+                    size="compact"
+                    className="text-chat-avatar"
+                  />
                 </div>
                 <div className="min-w-0 flex-1">
                   {!isSelf && (
@@ -1281,7 +1293,12 @@ export default function TextChatCard({
               className="mb-4 flex w-full flex-row-reverse items-end"
             >
               <div className="ml-2 flex-shrink-0">
-                <Avatar size={28} variant="beam" name={nickName} />
+                <ParticipantAvatar
+                  name={nickName}
+                  kind="human"
+                  size="compact"
+                  className="text-chat-avatar"
+                />
               </div>
               <div style={{ maxWidth: "72%" }}>
                 <div
