@@ -79,9 +79,12 @@ cd ../app && yarn docs:check && yarn test && yarn type-check
 cd ../app && yarn eslint src --no-fix && yarn prettier --check . && yarn cf-build
 ```
 
-Merge the activation PR only with normal `cf-sfu` CI and deployment green, then
-verify deployed `/agent.md` serves the release version, tag, and installer pin.
-This ensures production never points fresh Invites to a nonexistent binary.
+Merge the activation PR only after its PR CI is green. After merge, wait for
+the resulting `cf-sfu` Build & Deploy workflow to complete successfully. Only
+then verify deployed `/agent.md` serves the release version, tag, and installer
+pin. If that deployment fails, treat activation as incomplete: do not claim the
+release is live or proceed with production dogfood. This ensures production
+never points fresh Invites to a nonexistent binary.
 
 ## Production dogfood
 
