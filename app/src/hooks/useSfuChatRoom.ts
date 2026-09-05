@@ -82,6 +82,13 @@ const AGENT_TEXT_EXTENSIONS = new Set([
 const AGENT_AUDIO_SUBSCRIPTION_RETRY_DELAYS_MS = [100, 300] as const
 const MAX_AGENT_AUDIO_SUBSCRIPTION_ATTEMPTS =
   1 + AGENT_AUDIO_SUBSCRIPTION_RETRY_DELAYS_MS.length
+// A newly published Human screen-share track can be visible in Room state
+// before Cloudflare makes it available to tracks/new. Keep the retry bounded
+// and shared by Human audio/video subscriptions so one transient admission
+// response cannot permanently lose a remote screen share.
+const REMOTE_TRACK_SUBSCRIPTION_RETRY_DELAYS_MS = [
+  100, 300, 1000, 3000,
+] as const
 const REMOTE_TRACK_READY_TIMEOUT_MS = 5000
 const REMOTE_FILE_CHANNEL_OPEN_TIMEOUT_MS = 5000
 
@@ -148,6 +155,13 @@ interface SfuApiResponse {
 }
 
 interface AgentAudioSubscriptionRetry {
+  attempt: number
+  timeout: ReturnType<typeof setTimeout>
+  subscriberSessionId: string
+  subscriberPeerConnection: RTCPeerConnection
+}
+
+interface RemoteTrackSubscriptionRetry {
   attempt: number
   timeout: ReturnType<typeof setTimeout>
   subscriberSessionId: string
@@ -452,6 +466,9 @@ export function useSfuChatRoom(
   const agentAudioSubscriptionRetriesRef = useRef(
     new Map<string, AgentAudioSubscriptionRetry>()
   )
+  const remoteTrackSubscriptionRetriesRef = useRef(
+    new Map<string, RemoteTrackSubscriptionRetry>()
+  )
   const subscribeTrackRef = useRef<
     (
       participant: SfuParticipant,
@@ -696,6 +713,39 @@ export function useSfuChatRoom(
     [removeRemoteTrackBinding]
   )
 
+  const clearRemoteTrackSubscriptionRetry = useCallback(
+    (key: string, reason?: string) => {
+      const retry = remoteTrackSubscriptionRetriesRef.current.get(key)
+      if (!retry) return
+      clearTimeout(retry.timeout)
+      remoteTrackSubscriptionRetriesRef.current.delete(key)
+      if (reason)
+        sfuClientDiagnostic("remote_track_retry_cancelled", {
+          attempt: retry.attempt,
+          reason,
+        })
+    },
+    []
+  )
+
+  const clearRemoteTrackSubscriptionRetriesForParticipant = useCallback(
+    (participantId: string, reason: string) => {
+      for (const key of remoteTrackSubscriptionRetriesRef.current.keys()) {
+        if (key.startsWith(`${participantId}:`))
+          clearRemoteTrackSubscriptionRetry(key, reason)
+      }
+    },
+    [clearRemoteTrackSubscriptionRetry]
+  )
+
+  const clearAllRemoteTrackSubscriptionRetries = useCallback(
+    (reason: string) => {
+      for (const key of remoteTrackSubscriptionRetriesRef.current.keys())
+        clearRemoteTrackSubscriptionRetry(key, reason)
+    },
+    [clearRemoteTrackSubscriptionRetry]
+  )
+
   const resetRemoteTrackSubscription = useCallback(
     (
       participantId: string,
@@ -704,6 +754,7 @@ export function useSfuChatRoom(
       kind: "audio" | "video"
     ) => {
       const subscriptionKey = `${participantId}:${publisherSessionId}:${trackName}`
+      clearRemoteTrackSubscriptionRetry(subscriptionKey, "track_reset")
       for (const binding of remoteTrackBindingsRef.current.values()) {
         if (binding.subscriptionKey === subscriptionKey)
           removeRemoteTrackBinding(binding)
@@ -718,7 +769,7 @@ export function useSfuChatRoom(
       stream?.getTracks().forEach((track) => track.stop())
       streams.delete(participantId)
     },
-    [removeRemoteTrackBinding]
+    [clearRemoteTrackSubscriptionRetry, removeRemoteTrackBinding]
   )
 
   const registerRemoteTrackBinding = useCallback(
@@ -1055,6 +1106,10 @@ export function useSfuChatRoom(
         participantId,
         "participant_reset"
       )
+      clearRemoteTrackSubscriptionRetriesForParticipant(
+        participantId,
+        "participant_reset"
+      )
       for (const key of subscribedTracksRef.current) {
         if (key.startsWith(`${participantId}:`))
           subscribedTracksRef.current.delete(key)
@@ -1102,6 +1157,7 @@ export function useSfuChatRoom(
     },
     [
       clearAgentAudioSubscriptionRetriesForParticipant,
+      clearRemoteTrackSubscriptionRetriesForParticipant,
       clearRemoteTrackBindingsForParticipant,
       cleanupRemoteFileChannel,
     ]
@@ -1116,6 +1172,7 @@ export function useSfuChatRoom(
           name?: string
           mime?: string
           size?: number
+          createdAt?: number
         }
         try {
           message = JSON.parse(event.data) as typeof message
@@ -1136,7 +1193,15 @@ export function useSfuChatRoom(
             name: message.name.slice(0, 256),
             mime: message.mime.slice(0, 128),
             size: message.size,
-            startedAt: Date.now(),
+            // The sender reserves this timestamp immediately before the
+            // actual file-start frame. Use it when present so a slower
+            // DataChannel cannot move the file behind later Room text.
+            startedAt:
+              typeof message.createdAt === "number" &&
+              Number.isFinite(message.createdAt) &&
+              message.createdAt >= 0
+                ? message.createdAt
+                : Date.now(),
             received: 0,
             chunks: [],
           })
@@ -1536,6 +1601,75 @@ export function useSfuChatRoom(
     [isCurrentAgentAudioPublication, isCurrentSubscriberSession]
   )
 
+  const scheduleRemoteTrackSubscriptionRetry = useCallback(
+    (
+      key: string,
+      participantId: string,
+      sessionId: string,
+      trackName: string,
+      kind: "audio" | "video",
+      attempt: number,
+      subscriberSessionId: string,
+      subscriberPeerConnection: RTCPeerConnection
+    ) => {
+      const delay = REMOTE_TRACK_SUBSCRIPTION_RETRY_DELAYS_MS[attempt - 2]
+      if (delay === undefined) return false
+      if (remoteTrackSubscriptionRetriesRef.current.has(key)) return true
+      const timeout = setTimeout(() => {
+        const pending = remoteTrackSubscriptionRetriesRef.current.get(key)
+        if (!pending || pending.attempt !== attempt) return
+        remoteTrackSubscriptionRetriesRef.current.delete(key)
+        if (
+          !isCurrentSubscriberSession(
+            pending.subscriberSessionId,
+            pending.subscriberPeerConnection
+          )
+        ) {
+          sfuClientDiagnostic("remote_track_retry_cancelled", {
+            attempt,
+            reason: "stale_subscriber_session",
+          })
+          return
+        }
+        const participant = participantMapRef.current.get(participantId)
+        const track = participant?.media?.tracks.find(
+          (candidate) =>
+            candidate.kind === kind &&
+            candidate.trackName === trackName &&
+            participant.media?.sessionId === sessionId
+        )
+        if (!participant || !track) {
+          subscribedTracksRef.current.delete(key)
+          readySubscribedTracksRef.current.delete(key)
+          sfuClientDiagnostic("remote_track_retry_cancelled", {
+            attempt,
+            reason: "publication_missing",
+          })
+          return
+        }
+        // Keep the dedup set occupied until this timer is the sole logical
+        // retry chain. Clearing immediately before the synchronous retry lets
+        // that retry claim it again without a parallel Room-state attempt.
+        subscribedTracksRef.current.delete(key)
+        readySubscribedTracksRef.current.delete(key)
+        void subscribeTrackRef.current(participant, track, attempt)
+      }, delay)
+      remoteTrackSubscriptionRetriesRef.current.set(key, {
+        attempt,
+        timeout,
+        subscriberSessionId,
+        subscriberPeerConnection,
+      })
+      sfuClientDiagnostic("remote_track_retry_scheduled", {
+        attempt,
+        delay_ms: delay,
+        track_kind: kind,
+      })
+      return true
+    },
+    [isCurrentSubscriberSession]
+  )
+
   const subscribeTrack = useCallback(
     async (participant: SfuParticipant, track: SfuTrack, attempt = 1) => {
       const session = sessionRef.current
@@ -1703,19 +1837,28 @@ export function useSfuChatRoom(
         if (cancelStaleAgentAudioSubscription("tracks_new_response")) return
         if (!isCurrentRemoteSubscription()) return
         if (!hasUsableSessionDescription(response)) {
-          const scheduled =
-            isAgentAudioSubscription &&
-            !hasRemoteTrackError(response) &&
-            attempt < MAX_AGENT_AUDIO_SUBSCRIPTION_ATTEMPTS &&
-            scheduleAgentAudioSubscriptionRetry(
-              key,
-              participant.id,
-              media.sessionId,
-              track.trackName,
-              attempt + 1,
-              subscriberSessionId,
-              subscriberPeerConnection
-            )
+          const scheduled = isAgentAudioSubscription
+            ? !hasRemoteTrackError(response) &&
+              attempt < MAX_AGENT_AUDIO_SUBSCRIPTION_ATTEMPTS &&
+              scheduleAgentAudioSubscriptionRetry(
+                key,
+                participant.id,
+                media.sessionId,
+                track.trackName,
+                attempt + 1,
+                subscriberSessionId,
+                subscriberPeerConnection
+              )
+            : scheduleRemoteTrackSubscriptionRetry(
+                key,
+                participant.id,
+                media.sessionId,
+                track.trackName,
+                track.kind,
+                attempt + 1,
+                subscriberSessionId,
+                subscriberPeerConnection
+              )
           if (!scheduled) {
             subscribedTracksRef.current.delete(key)
             readySubscribedTracksRef.current.delete(key)
@@ -1743,8 +1886,22 @@ export function useSfuChatRoom(
               typeof candidate.mid === "string" && candidate.mid.length > 0
           )
         if (!responseTrack?.mid) {
-          subscribedTracksRef.current.delete(key)
-          readySubscribedTracksRef.current.delete(key)
+          const scheduled =
+            !isAgentAudioSubscription &&
+            scheduleRemoteTrackSubscriptionRetry(
+              key,
+              participant.id,
+              media.sessionId,
+              track.trackName,
+              track.kind,
+              attempt + 1,
+              subscriberSessionId,
+              subscriberPeerConnection
+            )
+          if (!scheduled) {
+            subscribedTracksRef.current.delete(key)
+            readySubscribedTracksRef.current.delete(key)
+          }
           sfuClientDiagnostic("remote_track_mid_missing", {
             participant_kind: participant.kind,
             track_kind: track.kind,
@@ -1873,8 +2030,21 @@ export function useSfuChatRoom(
         }
       }).catch((error) => {
         if (binding) removeRemoteTrackBinding(binding)
+        const scheduled =
+          participant.kind === "human" &&
+          isCurrentRemoteSubscription() &&
+          scheduleRemoteTrackSubscriptionRetry(
+            key,
+            participant.id,
+            media.sessionId,
+            track.trackName,
+            track.kind,
+            attempt + 1,
+            subscriberSessionId,
+            subscriberPeerConnection
+          )
         if (
-          isCurrentRemoteSubscription() ||
+          (!scheduled && isCurrentRemoteSubscription()) ||
           (isAgentAudioSubscription &&
             isCurrentSubscriberSession(
               subscriberSessionId,
@@ -1883,7 +2053,7 @@ export function useSfuChatRoom(
         ) {
           subscribedTracksRef.current.delete(key)
           readySubscribedTracksRef.current.delete(key)
-        } else {
+        } else if (isAgentAudioSubscription) {
           voiceDownstreamDiagnostic(
             "agent_audio_subscription_retry_cancelled",
             { attempt, reason: "stale_subscriber_session", stage: "failed" }
@@ -1903,6 +2073,7 @@ export function useSfuChatRoom(
       removeRemoteTrackBinding,
       roomName,
       scheduleAgentAudioSubscriptionRetry,
+      scheduleRemoteTrackSubscriptionRetry,
       sendSocketMessage,
     ]
   )
@@ -2035,6 +2206,7 @@ export function useSfuChatRoom(
   )
 
   const createPeerConnection = useCallback(() => {
+    clearAllRemoteTrackSubscriptionRetries("peer_connection_replaced")
     clearRemoteTrackBindings()
     clearAllRemoteFileChannels("peer_connection_replaced")
     const pc = new RTCPeerConnection({
@@ -2132,6 +2304,7 @@ export function useSfuChatRoom(
     return pc
   }, [
     clearAllRemoteFileChannels,
+    clearAllRemoteTrackSubscriptionRetries,
     clearRemoteTrackBindings,
     rebuildParticipants,
     removeRemoteTrackBinding,
@@ -2402,6 +2575,7 @@ export function useSfuChatRoom(
         dataChannelReadyRef.current = false
         localTrackMidsRef.current.clear()
         clearAllAgentAudioSubscriptionRetries("media_reconnect")
+        clearAllRemoteTrackSubscriptionRetries("media_reconnect")
         subscribedTracksRef.current.clear()
         readySubscribedTracksRef.current.clear()
         remoteAudioStreamsRef.current.clear()
@@ -2492,6 +2666,7 @@ export function useSfuChatRoom(
     [
       closeDataChannels,
       clearAllAgentAudioSubscriptionRetries,
+      clearAllRemoteTrackSubscriptionRetries,
       clearAllRemoteFileChannels,
       clearRemoteTrackBindings,
       connectWebSocket,
@@ -2585,6 +2760,7 @@ export function useSfuChatRoom(
       closingRef.current = true
       sampleSfuEgress("disconnect", peerConnectionRef.current)
       clearAllAgentAudioSubscriptionRetries("unmount")
+      clearAllRemoteTrackSubscriptionRetries("unmount")
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       if (mediaReconnectTimerRef.current)
         clearTimeout(mediaReconnectTimerRef.current)
@@ -2622,6 +2798,7 @@ export function useSfuChatRoom(
   }, [
     closeDataChannels,
     clearAllAgentAudioSubscriptionRetries,
+    clearAllRemoteTrackSubscriptionRetries,
     clearAllRemoteFileChannels,
     connectMediaSession,
     clearRemoteTrackBindings,
@@ -2936,6 +3113,7 @@ export function useSfuChatRoom(
             name: file.name,
             mime,
             size: file.size,
+            createdAt,
           })
         )
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {

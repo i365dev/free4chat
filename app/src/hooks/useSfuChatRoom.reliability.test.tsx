@@ -234,6 +234,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
   let sessionNumber: number
   let trackRequestNumber: number
   let remoteChannelNumber: number
+  let transientRemoteTrackResponses: number
 
   beforeEach(() => {
     TestPeerConnection.instances.length = 0
@@ -242,6 +243,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     sessionNumber = 0
     trackRequestNumber = 0
     remoteChannelNumber = 100
+    transientRemoteTrackResponses = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       TestPeerConnection
     ;(global as unknown as { MediaStream: unknown }).MediaStream =
@@ -283,6 +285,12 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         }
         if (body.tracks[0].location !== "remote") return jsonResponse({})
         trackRequestNumber += 1
+        if (transientRemoteTrackResponses > 0) {
+          transientRemoteTrackResponses -= 1
+          return jsonResponse({
+            tracks: [{ errorCode: "empty_track_error" }],
+          })
+        }
         return jsonResponse({
           sessionDescription: { type: "offer", sdp: "remote-offer" },
           tracks: [
@@ -436,6 +444,40 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         })
       ).toHaveLength(1)
     )
+    unmount()
+  })
+
+  it("retries a Human video subscription after a transient track admission failure", async () => {
+    const { result, socket, pc, unmount } = await connect()
+    transientRemoteTrackResponses = 1
+    vi.useFakeTimers()
+    sendState(
+      socket,
+      roomState([
+        participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+      ])
+    )
+    await flushAsync()
+    expect(trackRequestNumber).toBe(1)
+    expect(
+      result.current.participants.find(
+        (entry) => entry.peerId === "publisher-a"
+      )?.screenShareStream
+    ).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+      await flushAsync()
+    })
+    expect(trackRequestNumber).toBe(2)
+
+    const stream = deliverTrack(pc, "remote-mid-2", "video")
+    await flushAsync()
+    expect(
+      result.current.participants.find(
+        (entry) => entry.peerId === "publisher-a"
+      )?.screenShareStream
+    ).toBe(stream)
     unmount()
   })
 
@@ -637,7 +679,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
-  it("orders a received file by transfer start before later Room text", async () => {
+  it("orders a received file by sender transfer start when file-start arrives after Room text", async () => {
     const { result, socket, unmount } = await connect()
     const state = roomState([participant("publisher-a", [], "session-a", true)])
     sendState(socket, state)
@@ -663,18 +705,6 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     })
 
     vi.useFakeTimers()
-    vi.setSystemTime(1000)
-    act(() =>
-      channel.emit("message", {
-        data: JSON.stringify({
-          type: "file-start",
-          id: "file-1",
-          name: "first.txt",
-          mime: "text/plain",
-          size: 3,
-        }),
-      })
-    )
     vi.setSystemTime(2000)
     act(() =>
       socket.onmessage?.({
@@ -690,6 +720,19 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
             createdAt: 2000,
             sequence: 1,
           },
+        }),
+      })
+    )
+    vi.setSystemTime(3000)
+    act(() =>
+      channel.emit("message", {
+        data: JSON.stringify({
+          type: "file-start",
+          id: "file-1",
+          name: "first.txt",
+          mime: "text/plain",
+          size: 3,
+          createdAt: 1000,
         }),
       })
     )
@@ -754,6 +797,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         name: "a.txt",
         mime: "text/plain",
         size: 1,
+        createdAt: 1000,
       })
     )
 
