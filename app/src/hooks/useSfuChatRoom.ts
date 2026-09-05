@@ -203,6 +203,22 @@ function hasUsableSessionDescription(response: SfuApiResponse): boolean {
   )
 }
 
+function addLocalMediaTrack(
+  pc: RTCPeerConnection,
+  track: MediaStreamTrack,
+  stream: MediaStream
+): RTCRtpTransceiver {
+  // A PeerConnection can already contain recvonly video transceivers created
+  // by SFU subscriptions. addTrack() is allowed to reuse one of those
+  // transceivers, which changes its direction and can make Cloudflare's next
+  // answer invalid when a second participant starts sharing. Local
+  // publications always get their own stable sendonly m-line.
+  return pc.addTransceiver(track, {
+    direction: "sendonly",
+    streams: [stream],
+  })
+}
+
 function hasRemoteTrackError(response: SfuApiResponse): boolean {
   return Boolean(
     response.errorCode ||
@@ -2654,10 +2670,10 @@ export function useSfuChatRoom(
       }
 
       const pc = createPeerConnection()
-      pc.addTrack(audioTrack, new MediaStream([audioTrack]))
+      addLocalMediaTrack(pc, audioTrack, new MediaStream([audioTrack]))
       const screenTrack = localScreenTrackRef.current
       if (screenTrack && screenTrack.readyState === "live")
-        pc.addTrack(screenTrack, new MediaStream([screenTrack]))
+        addLocalMediaTrack(pc, screenTrack, new MediaStream([screenTrack]))
       rebuildParticipants()
 
       const body: Record<string, unknown> = {
@@ -2889,7 +2905,7 @@ export function useSfuChatRoom(
       if (!track) return
       localScreenTrackRef.current = track
       localScreenTrackNameRef.current = `screen-${session.participantId}`
-      pc.addTrack(track, display)
+      addLocalMediaTrack(pc, track, display)
       track.onended = () => {
         if (localScreenTrackRef.current === track) {
           void closePublishedTrack(localScreenTrackNameRef.current)
@@ -2908,6 +2924,17 @@ export function useSfuChatRoom(
       rebuildParticipants()
       await publishTrack(track, "video", localScreenTrackNameRef.current)
     } catch (err) {
+      if (localScreenTrackRef.current && !closingRef.current) {
+        sfuClientDiagnostic("local_track_publish_failed", {
+          track_kind: "video",
+          error_type: diagnosticErrorType(err),
+        })
+        // A local tracks/new answer failure can leave this PeerConnection's
+        // SDP state unusable. Rebuild the whole media session so the Room
+        // state is re-advertised from a fresh PeerConnection instead of
+        // asking the poisoned one to negotiate a second video m-line.
+        void mediaReconnectRef.current?.()
+      }
       setError(
         err instanceof Error ? err.message : "Screen sharing was not started"
       )

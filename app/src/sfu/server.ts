@@ -284,6 +284,37 @@ function usableSessionDescription(responseBody: string): boolean {
   return typeof description?.sdp === "string" && description.sdp.length > 0
 }
 
+function usableHumanPublication(
+  responseBody: string,
+  expectedTrackCount: number
+): boolean {
+  const response = parsedObject(responseBody)
+  const description =
+    response?.sessionDescription &&
+    typeof response.sessionDescription === "object"
+      ? (response.sessionDescription as Record<string, unknown>)
+      : undefined
+  if (
+    description?.type !== "answer" ||
+    typeof description.sdp !== "string" ||
+    description.sdp.length === 0
+  )
+    return false
+
+  const tracks = Array.isArray(response?.tracks) ? response.tracks : []
+  if (tracks.length < expectedTrackCount) return false
+  return tracks
+    .slice(0, expectedTrackCount)
+    .every(
+      (track) =>
+        track &&
+        typeof track === "object" &&
+        !("errorCode" in track) &&
+        typeof (track as Record<string, unknown>).mid === "string" &&
+        ((track as Record<string, unknown>).mid as string).length > 0
+    )
+}
+
 type PublisherTrackStatus = "active" | "inactive" | "waiting" | "unknown"
 
 function publisherTrackStatus(value: unknown): PublisherTrackStatus {
@@ -766,6 +797,18 @@ export async function handleSfuRequest(
     if (!upstream.ok)
       return new Response(responseBody, { status: upstream.status })
 
+    // A Human local publication is not safe to advertise from a bare 2xx:
+    // Cloudflare must have returned its answer and an assigned mid. Otherwise
+    // the Room can announce a track that this PeerConnection never actually
+    // published, leaving every subscriber to chase a dead publication.
+    if (
+      route === "tracks" &&
+      participantKind === "human" &&
+      localTracks.length > 0 &&
+      !usableHumanPublication(responseBody, localTracks.length)
+    )
+      return json({ error: "sfu_publication_unverifiable" }, 502)
+
     // Production-only diagnostic for the Human remote-subscribe path. A
     // successful tracks/new response should carry an SFU-generated offer;
     // when it does not, inspect the publisher session without changing the
@@ -806,12 +849,14 @@ export async function handleSfuRequest(
         if (participantKind === "agent") continue
         const trackKind: SfuTrack["kind"] =
           track.kind === "video" ? "video" : "audio"
-        await roomControl(env, room, {
+        const publishResponse = await roomControl(env, room, {
           action: "publish",
           participantId,
           token,
+          sessionId,
           track: { trackName: track.trackName, kind: trackKind },
         })
+        if (!publishResponse.ok) return publishResponse
       }
       // Record the Cloudflare-assigned mid(s) for the Agent's newly
       // established *remote* (subscribe) tracks, so a future Meeting Notes

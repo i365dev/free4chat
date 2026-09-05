@@ -48,6 +48,14 @@ class FakePeerConnection {
     this.transceivers.push({ sender: { track }, mid })
     return { track }
   }
+  addTransceiver(
+    track: FakeTrack,
+    _init: { direction?: "sendonly" | "recvonly" } = {}
+  ) {
+    const transceiver = { sender: { track }, mid: String(this.mids++) }
+    this.transceivers.push(transceiver)
+    return transceiver
+  }
   getTransceivers() {
     return this.transceivers
   }

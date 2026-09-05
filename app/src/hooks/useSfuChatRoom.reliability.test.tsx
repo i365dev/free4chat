@@ -19,6 +19,10 @@ class TestMediaStream {
     return this.tracks.filter((track) => track.kind === "audio")
   }
 
+  getVideoTracks() {
+    return this.tracks.filter((track) => track.kind === "video")
+  }
+
   getTracks() {
     return this.tracks
   }
@@ -69,6 +73,7 @@ class TestPeerConnection {
   private readonly transceivers: Array<{
     sender: { track: TestTrack }
     mid: string
+    direction: "sendonly" | "recvonly"
   }> = []
 
   constructor() {
@@ -77,8 +82,21 @@ class TestPeerConnection {
 
   addTrack(track: TestTrack) {
     const mid = String(this.mids++)
-    this.transceivers.push({ sender: { track }, mid })
+    this.transceivers.push({ sender: { track }, mid, direction: "sendonly" })
     return { track }
+  }
+
+  addTransceiver(
+    track: TestTrack,
+    init: { direction?: "sendonly" | "recvonly" } = {}
+  ) {
+    const transceiver = {
+      sender: { track },
+      mid: String(this.mids++),
+      direction: init.direction ?? "sendonly",
+    }
+    this.transceivers.push(transceiver)
+    return transceiver
   }
 
   getTransceivers() {
@@ -241,6 +259,8 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
   let remoteChannelNumber: number
   let transientRemoteTrackResponses: number
   let admittedRemoteTrackResponsesWithoutDescription: number
+  let getDisplayMedia: ReturnType<typeof vi.fn>
+  let localTrackResponseWithDescription: boolean
 
   beforeEach(() => {
     TestPeerConnection.instances.length = 0
@@ -252,6 +272,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     remoteChannelNumber = 100
     transientRemoteTrackResponses = 0
     admittedRemoteTrackResponsesWithoutDescription = 0
+    localTrackResponseWithDescription = false
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       TestPeerConnection
     ;(global as unknown as { MediaStream: unknown }).MediaStream =
@@ -262,6 +283,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         getUserMedia: vi.fn().mockResolvedValue({
           getAudioTracks: () => [new TestTrack("audio")],
         }),
+        getDisplayMedia: (getDisplayMedia = vi.fn()),
       },
       configurable: true,
     })
@@ -289,9 +311,20 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
       }
       if (url.endsWith("/api/sfu/tracks")) {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
-          tracks: Array<{ location?: string; trackName: string }>
+          tracks: Array<{ location?: string; trackName: string; mid?: string }>
         }
-        if (body.tracks[0].location !== "remote") return jsonResponse({})
+        if (body.tracks[0].location !== "remote") {
+          if (!localTrackResponseWithDescription) return jsonResponse({})
+          return jsonResponse({
+            sessionDescription: { type: "answer", sdp: "local-answer" },
+            tracks: [
+              {
+                mid: body.tracks[0].mid ?? "local-mid",
+                trackName: body.tracks[0].trackName,
+              },
+            ],
+          })
+        }
         trackRequestNumber += 1
         if (transientRemoteTrackResponses > 0) {
           transientRemoteTrackResponses -= 1
@@ -383,6 +416,63 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         )?.screenShareStream
       ).toBe(streamB)
     })
+    unmount()
+  })
+
+  it("uses a fresh sendonly transceiver for a local screen share beside remote video", async () => {
+    const { result, pc, unmount } = await connect()
+    const remoteVideoTrack = new TestTrack("video")
+    const remoteTransceiver = pc.addTransceiver(remoteVideoTrack, {
+      direction: "recvonly",
+    })
+    const screenTrack = new TestTrack("video")
+    getDisplayMedia.mockResolvedValue(new TestMediaStream([screenTrack]))
+
+    await act(async () => {
+      await result.current.toggleScreenShare()
+    })
+
+    const localTransceiver = pc
+      .getTransceivers()
+      .find((transceiver) => transceiver.sender.track === screenTrack)
+    expect(localTransceiver).toBeDefined()
+    expect(localTransceiver).not.toBe(remoteTransceiver)
+    expect(localTransceiver?.direction).toBe("sendonly")
+    expect(remoteTransceiver.direction).toBe("recvonly")
+
+    const localTrackRequest = fetchMock.mock.calls
+      .filter(([input, init]) => {
+        if (!String(input).endsWith("/api/sfu/tracks")) return false
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          tracks?: Array<{ location?: string }>
+        }
+        return body.tracks?.[0]?.location === "local"
+      })
+      .at(-1)
+    expect(
+      JSON.parse(String(localTrackRequest?.[1]?.body ?? "{}")).tracks[0].mid
+    ).toBe(localTransceiver?.mid)
+    unmount()
+  })
+
+  it("rebuilds the media session after a local screen-share answer failure", async () => {
+    const { result, pc, unmount } = await connect()
+    localTrackResponseWithDescription = true
+    const screenTrack = new TestTrack("video")
+    getDisplayMedia.mockResolvedValue(new TestMediaStream([screenTrack]))
+    TestPeerConnection.remoteDescriptionFailures = 1
+
+    await act(async () => {
+      await result.current.toggleScreenShare()
+    })
+
+    await waitFor(() => expect(TestPeerConnection.instances).toHaveLength(2))
+    expect(pc.connectionState).toBe("closed")
+    expect(
+      TestPeerConnection.instances[1]
+        .getTransceivers()
+        .some((transceiver) => transceiver.sender.track === screenTrack)
+    ).toBe(true)
     unmount()
   })
 

@@ -110,6 +110,25 @@ describe("buildRoomTimeline (#234)", () => {
     expect(timeline[1].message?.text).toBe("local")
   })
 
+  it("keeps a Human file at its causal anchor when the timeline is re-sorted", () => {
+    const file: Message = {
+      ...message(0, "file"),
+      type: "file",
+      messageId: "file-1",
+      sequence: undefined,
+      afterSequence: 2,
+      fileName: "report.pdf",
+    }
+    const timeline = buildRoomTimeline(
+      [message(1, "before"), file, message(3, "after")],
+      []
+    )
+
+    expect(
+      timeline.map((item) => item.message?.text ?? item.message?.fileName)
+    ).toEqual(["before", "file", "after"])
+  })
+
   it("formats bounded sizes for the timeline card", () => {
     expect(formatAttachmentSize(2557)).toBe("2.5 KB")
     expect(formatAttachmentSize(512)).toBe("512 B")

@@ -263,8 +263,8 @@ function messageRecipientCues(
 // #234: canonical timeline merge — Room messages and standalone
 // Agent-authored attachment metadata interleave by the Room's shared
 // sequence counter (attachments consume message-sequence slots at upload).
-// Ephemeral/local messages carry no sequence and stay in their relative
-// order at the end. Human/unknown attachments are deliberately excluded:
+// Ephemeral/local messages without a sequence or causal anchor stay in their
+// relative order at the end. Human/unknown attachments are deliberately excluded:
 // Human browser files already render through the DataChannel file bubble
 // (their Agent-consumption Room copies must not appear twice).
 interface TimelineItem {
@@ -272,6 +272,28 @@ interface TimelineItem {
   seq: number
   message?: Message
   attachment?: RoomAttachmentProjection
+}
+
+function messageTimelineSequence(message: Message): number {
+  if (
+    typeof message.sequence === "number" &&
+    Number.isSafeInteger(message.sequence) &&
+    message.sequence >= 0
+  )
+    return message.sequence
+
+  // Human browser files are ephemeral and do not consume a Room sequence.
+  // Their sender-side anchor places them immediately after the last Room
+  // message observed when the transfer actually started. Keep the fractional
+  // position local to this UI merge; it is never sent back to the Room.
+  if (
+    typeof message.afterSequence === "number" &&
+    Number.isSafeInteger(message.afterSequence) &&
+    message.afterSequence >= 0
+  )
+    return message.afterSequence + 0.5
+
+  return Number.POSITIVE_INFINITY
 }
 
 export function buildRoomTimeline(
@@ -282,7 +304,7 @@ export function buildRoomTimeline(
   for (const message of messages) {
     items.push({
       type: "message",
-      seq: message.sequence ?? Number.POSITIVE_INFINITY,
+      seq: messageTimelineSequence(message),
       message,
     })
   }
