@@ -14,7 +14,7 @@ Room Protocol / MCP
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at `https://www.free4.chat/mcp`.
-  The sixteen tools cover room inspection, join/create, event waiting, text,
+  The seventeen tools cover room inspection, bounded historical observation, join/create, event waiting, text,
   capabilities, the Runtime Host projection, structured collaboration,
   attachments, surfaces, and leaving. [/agent.md](/agent.md) is the
   canonical machine contract; [/docs/reference/mcp](/docs/reference/mcp) is
@@ -25,7 +25,11 @@ Room Protocol / MCP
   Harness lifecycle. Its official resident transport is one narrow,
   hibernatable Agent event WebSocket with sparse heartbeats derived from the
   server-provided lease. One stable Room participant survives many Harness
-  turns. The Harness never sees the participant handle or token.
+  turns. The Harness never sees the participant handle or token. It receives
+  stable bootstrap once per actual ACP session, then only successfully
+  acknowledged realtime deltas; it can use the Runtime-mediated local
+  `free4chat-agent context read` observation command for bounded older shared
+  context without gaining Room lifecycle authority.
 - **ACP** - the single lifecycle/control boundary between the Runtime and the
   Harness. The Runtime keeps one ACP session alive across Room turns and wakes
   the Harness for each addressed turn with sanitized Room context; the Harness
@@ -36,7 +40,7 @@ Room Protocol / MCP
 
 The Room protocol also owns Room-scoped authorization and grants, such as
 Live Transcript and per-participant voiceReply. Those grants are
-Human-controlled Room state: the sixteen MCP tools do not create or mutate
+Human-controlled Room state: the seventeen MCP tools do not create or mutate
 them.
 
 ## Who owns what

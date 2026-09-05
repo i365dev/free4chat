@@ -197,6 +197,53 @@ function createMcpServer(context: McpRequestContext) {
   )
 
   server.registerTool(
+    "read_room_context",
+    {
+      description:
+        "Read one bounded, sanitized page of retained shared Room context using your current private participant handle. Observation only: it cannot join, send, wait, leave, or expose credentials. Room events and Room-wide Live Transcript use separate sequence cursors and bounded pagination.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        beforeSequence: z.number().int().nonnegative().optional(),
+        afterSequence: z.number().int().nonnegative().optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+        beforeTranscriptSequence: z.number().int().nonnegative().optional(),
+        afterTranscriptSequence: z.number().int().nonnegative().optional(),
+        transcriptLimit: z.number().int().min(1).max(50).optional(),
+      },
+    },
+    async ({
+      participantHandle,
+      beforeSequence,
+      afterSequence,
+      limit,
+      beforeTranscriptSequence,
+      afterTranscriptSequence,
+      transcriptLimit,
+    }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-read-context",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        ...(beforeSequence === undefined ? {} : { beforeSequence }),
+        ...(afterSequence === undefined ? {} : { afterSequence }),
+        ...(limit === undefined ? {} : { limit }),
+        ...(beforeTranscriptSequence === undefined
+          ? {}
+          : { beforeTranscriptSequence }),
+        ...(afterTranscriptSequence === undefined
+          ? {}
+          : { afterTranscriptSequence }),
+        ...(transcriptLimit === undefined ? {} : { transcriptLimit }),
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(controlError(result))
+    }
+  )
+
+  server.registerTool(
     "join_room",
     {
       description:

@@ -49,6 +49,42 @@ func TestRoomInfoParsesLiveTranscriptStrictly(t *testing.T) {
 	}
 }
 
+func TestReadRoomContextUsesBoundedSeparateSequenceDomains(t *testing.T) {
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		if toolNameOf(body) != "read_room_context" {
+			t.Fatalf("unexpected tool: %q", toolNameOf(body))
+		}
+		args := toolArgs(body)
+		if args["participantHandle"] != "private-handle" || args["afterSequence"] != float64(2) ||
+			args["afterTranscriptSequence"] != float64(7) || args["limit"] != float64(3) {
+			t.Fatalf("bounded context arguments mismatch: %#v", args)
+		}
+		writeJSON(w, callResult(map[string]any{
+			"events": []any{map[string]any{
+				"sequence": float64(3), "type": "action", "participant": map[string]any{"id": "peer", "name": "Peer", "kind": "agent"},
+				"actionType": "collab", "collab": map[string]any{"requestId": "r", "kind": "completed", "fromParticipantId": "peer", "targetParticipantId": "self", "summary": "done"},
+				"addressed": true, "createdAt": float64(3),
+			}},
+			"oldestSequence": float64(1), "newestSequence": float64(3), "hasMoreBefore": true, "hasMoreAfter": false,
+			"liveTranscript": map[string]any{
+				"segments":       []any{map[string]any{"segmentId": "lt-8", "epoch": float64(1), "sequence": float64(8), "participantId": "human", "speaker": "Human", "text": "spoken", "createdAt": float64(8)}},
+				"oldestSequence": float64(7), "newestSequence": float64(8), "hasMoreBefore": true, "hasMoreAfter": false,
+			},
+		}))
+	})
+	context, err := client.ReadRoomContext("private-handle", types.RoomContextReadOptions{
+		AfterSequence: 2, Limit: 3, AfterTranscriptSequence: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.Room.Events) != 1 || context.Room.Events[0].Collab == nil ||
+		context.Room.Events[0].Sequence != 3 || len(context.LiveTranscript.Segments) != 1 ||
+		context.LiveTranscript.Segments[0].Sequence != 8 {
+		t.Fatalf("context parsing mismatch: %#v", context)
+	}
+}
+
 func TestAppendLiveTranscriptUsesNarrowRoomControlWire(t *testing.T) {
 	var seenPath string
 	var seenHeaders http.Header

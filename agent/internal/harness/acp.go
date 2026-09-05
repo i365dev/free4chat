@@ -117,19 +117,24 @@ type ACPAdapter struct {
 	options    AdapterOptions
 	name       string
 
-	mu           sync.Mutex
-	writeMu      sync.Mutex // serializes every stdin frame
-	proc         *harnessProcess
-	stdin        io.WriteCloser
-	pending      map[string]*pendingCall
-	nextID       int64
-	gen          int64 // lifecycle generation of the current child
-	sessionID    string
-	caps         *ACPCapabilities
-	onFailure    types.AdapterFailureHandler
-	closing      bool
-	promptActive bool
-	turnChunks   []string
+	mu      sync.Mutex
+	writeMu sync.Mutex // serializes every stdin frame
+	proc    *harnessProcess
+	stdin   io.WriteCloser
+	pending map[string]*pendingCall
+	nextID  int64
+	gen     int64 // lifecycle generation of the current child
+	// sessionGeneration advances only after a session/new response succeeds.
+	// Unlike gen it is meaningful to the Runtime: a replacement session has
+	// no retained conversation memory, while a transport reconnect alone does
+	// not change it.
+	sessionGeneration int64
+	sessionID         string
+	caps              *ACPCapabilities
+	onFailure         types.AdapterFailureHandler
+	closing           bool
+	promptActive      bool
+	turnChunks        []string
 }
 
 // NewACPAdapter creates an adapter bound to one workspace directory. It does
@@ -165,6 +170,15 @@ func (a *ACPAdapter) Capabilities() *types.HarnessCapabilities {
 		Images: a.caps.Images,
 		Resume: a.caps.ResumePresent,
 	}
+}
+
+// SessionGeneration identifies the current successfully-created ACP
+// conversation generation. It deliberately does not expose the ACP session
+// id, which is adapter-private transport state.
+func (a *ACPAdapter) SessionGeneration() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessionGeneration
 }
 
 // OnFailure registers the handler invoked on unexpected process death.
@@ -282,6 +296,7 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.mu.Lock()
 	a.sessionID = sessionID
 	a.caps = initCaps
+	a.sessionGeneration++
 	a.mu.Unlock()
 	return nil
 }

@@ -34,12 +34,18 @@ that decision. Room input alone never authorizes local tools.
 
 ## MCP Room API
 
-The sixteen tools are:
+The seventeen tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
   not return ordinary chat history, provider proofs, private participant
   handles, or media identifiers.
+- `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
+  - read one bounded, sanitized page of retained shared Room events and a
+  separately-paginated bounded Room-wide Live Transcript page. This is
+  observation only: it cannot join, send, wait, leave, advance a transport
+  cursor, or expose a participant credential. Event and transcript sequence
+  values are distinct domains and must not be compared or mixed.
 - `join_room(roomId, name, capabilities?)` - join as a text-only Agent and
   receive a private participant handle plus the current `agentLeaseMs` value.
   `capabilities` is an optional list of at most 8 short lowercase namespaced
@@ -182,6 +188,21 @@ approximate lifecycle lines do not trigger self-leave.
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or a second
 daemon to keep a Room participant alive. Do not expose a participant handle to
 the Harness or write it into a model-visible file.
+
+The Runtime pushes only new realtime Room context into a retained Harness
+conversation. It sends the stable bootstrap once per actual ACP `session/new`,
+acknowledges Room delivery only after a successful Harness turn, and keeps a
+failed/ambiguous turn retryable. A later Room reply-send failure does not replay
+an already successful Harness prompt. When earlier shared context is relevant,
+the Harness may use the Runtime-mediated local command:
+
+```text
+free4chat-agent context read [--before-sequence N | --after-sequence N] [--limit N]
+```
+
+This command is bounded observation only; it never gives the Harness the raw
+MCP handle or Room lifecycle authority. Meeting Notes remain private-local and
+their committed deltas are delivered only once per successful Harness turn.
 
 ### Direct MCP - low-level
 

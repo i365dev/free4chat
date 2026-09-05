@@ -171,22 +171,38 @@ func (r *ResidentRuntime) publishLiveTranscriptSegment(generation uint64, source
 	r.log("live_transcript_append_failed", map[string]string{"code": "transient"})
 }
 
-// attachLiveTranscript refreshes the bounded Room projection immediately
-// before an addressed Harness turn. It does not cache transcript history and
-// a refresh failure never blocks collaboration.
-func (r *ResidentRuntime) attachLiveTranscript(input *types.HarnessTurnInput) {
+// attachLiveTranscript refreshes Room-wide Live Transcript immediately before
+// an addressed Harness turn, but injects only segments not yet successfully
+// delivered to the retained Harness. A refresh failure never blocks ordinary
+// collaboration and a returned marker is acknowledged only after RunTurn.
+func (r *ResidentRuntime) attachLiveTranscript(input *types.HarnessTurnInput) int64 {
 	roomID := r.activeRoomID()
 	if roomID == "" {
-		return
+		return 0
 	}
 	info, err := r.options.Client.RoomInfo(roomID)
 	if err != nil {
 		r.log("live_transcript_refresh_failed", map[string]string{"code": string(free4chat.CodeOf(err))})
-		return
+		return 0
 	}
 	if len(info.LiveTranscriptSegments) == 0 {
-		return
+		return 0
 	}
-	segments := append([]types.LiveTranscriptSegment(nil), info.LiveTranscriptSegments...)
+	_, delivered := r.transcriptDeliveryMarkers()
+	segments := make([]types.LiveTranscriptSegment, 0, len(info.LiveTranscriptSegments))
+	var through int64
+	for _, segment := range info.LiveTranscriptSegments {
+		if segment.Sequence <= delivered {
+			continue
+		}
+		segments = append(segments, segment)
+		if segment.Sequence > through {
+			through = segment.Sequence
+		}
+	}
+	if len(segments) == 0 {
+		return 0
+	}
 	input.LiveTranscript = &types.HarnessLiveTranscript{Segments: segments}
+	return through
 }

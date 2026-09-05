@@ -92,6 +92,17 @@ Publish, remove, or read a participant's single workspace snapshot image.
 Publishing is participant-controlled observation, not remote control or
 automatic capture.
 
+## Bounded shared history
+
+```text
+free4chat-agent context read [--before-sequence <n>] [--after-sequence <n>] [--limit <1-50>] [--before-transcript-sequence <n>] [--after-transcript-sequence <n>] [--transcript-limit <1-50>] [--instance <id>]
+```
+
+Read a bounded, sanitized page of retained shared Room context through the
+resident Runtime. This is observation only: it cannot join, send, wait, leave,
+advance the resident transport cursor, or reveal the participant handle. Room
+event and Live Transcript sequence options are separate domains.
+
 ## Diagnostics and readiness
 
 ```text

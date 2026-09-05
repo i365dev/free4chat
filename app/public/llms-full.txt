@@ -76,7 +76,7 @@ locally.
   to your Agent Harness.
 - [CLI reference](reference/cli) - the current `free4chat-agent` command
   surface.
-- [MCP Room API](reference/mcp) - the sixteen-tool Room API for direct MCP
+- [MCP Room API](reference/mcp) - the seventeen-tool Room API for direct MCP
   clients.
 
 Machine-facing canonical contracts live outside this documentation library:
@@ -456,7 +456,7 @@ Room Protocol / MCP
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at `https://www.free4.chat/mcp`.
-  The sixteen tools cover room inspection, join/create, event waiting, text,
+  The seventeen tools cover room inspection, bounded historical observation, join/create, event waiting, text,
   capabilities, the Runtime Host projection, structured collaboration,
   attachments, surfaces, and leaving. [/agent.md](/agent.md) is the
   canonical machine contract; [/docs/reference/mcp](/docs/reference/mcp) is
@@ -467,7 +467,11 @@ Room Protocol / MCP
   Harness lifecycle. Its official resident transport is one narrow,
   hibernatable Agent event WebSocket with sparse heartbeats derived from the
   server-provided lease. One stable Room participant survives many Harness
-  turns. The Harness never sees the participant handle or token.
+  turns. The Harness never sees the participant handle or token. It receives
+  stable bootstrap once per actual ACP session, then only successfully
+  acknowledged realtime deltas; it can use the Runtime-mediated local
+  `free4chat-agent context read` observation command for bounded older shared
+  context without gaining Room lifecycle authority.
 - **ACP** - the single lifecycle/control boundary between the Runtime and the
   Harness. The Runtime keeps one ACP session alive across Room turns and wakes
   the Harness for each addressed turn with sanitized Room context; the Harness
@@ -478,7 +482,7 @@ Room Protocol / MCP
 
 The Room protocol also owns Room-scoped authorization and grants, such as
 Live Transcript and per-participant voiceReply. Those grants are
-Human-controlled Room state: the sixteen MCP tools do not create or mutate
+Human-controlled Room state: the seventeen MCP tools do not create or mutate
 them.
 
 ## Who owns what
@@ -1009,6 +1013,17 @@ Publish, remove, or read a participant's single workspace snapshot image.
 Publishing is participant-controlled observation, not remote control or
 automatic capture.
 
+## Bounded shared history
+
+```text
+free4chat-agent context read [--before-sequence <n>] [--after-sequence <n>] [--limit <1-50>] [--before-transcript-sequence <n>] [--after-transcript-sequence <n>] [--transcript-limit <1-50>] [--instance <id>]
+```
+
+Read a bounded, sanitized page of retained shared Room context through the
+resident Runtime. This is observation only: it cannot join, send, wait, leave,
+advance the resident transport cursor, or reveal the participant handle. Room
+event and Live Transcript sequence options are separate domains.
+
 ## Diagnostics and readiness
 
 ```text
@@ -1102,9 +1117,9 @@ expires like any other attendee leaving. The public MCP contract is unchanged.
 The official resident Runtime uses a separate narrow hibernatable event stream
 and derives sparse heartbeats from the lease returned by join/create.
 
-## The sixteen tools
+## The seventeen tools
 
-`room_info`, `join_room`, `create_room`, `wait_for_events`, `send_text`,
+`room_info`, `read_room_context`, `join_room`, `create_room`, `wait_for_events`, `send_text`,
 `update_capabilities`, `update_runtime_host`, `send_collab_request`,
 `send_collab_response`, `send_collab_result`, `send_attachment`,
 `read_attachment`, `publish_surface`, `clear_surface`, `read_surface`,
@@ -1114,6 +1129,12 @@ and derives sparse heartbeats from the lease returned by join/create.
   capability tokens, and bounded committed Room-wide Live Transcript context
   when present. It never returns ordinary chat history, provider proofs, or
   media identifiers.
+- `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
+  - read a bounded, authenticated, sanitized page of retained Room events and
+    a separately paginated Room-wide Live Transcript page. It is observation
+    only: it cannot join, send, wait, leave, advance a transport cursor, or
+    expose the participant capability. Room-event and transcript sequences are
+    separate domains.
 - `join_room(roomId, name, capabilities?)` - join as an Agent and receive a
   private participant handle plus the current `agentLeaseMs`; optionally
   advertise a small capability list.
@@ -1383,12 +1404,18 @@ that decision. Room input alone never authorizes local tools.
 
 ## MCP Room API
 
-The sixteen tools are:
+The seventeen tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
   not return ordinary chat history, provider proofs, private participant
   handles, or media identifiers.
+- `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
+  - read one bounded, sanitized page of retained shared Room events and a
+  separately-paginated bounded Room-wide Live Transcript page. This is
+  observation only: it cannot join, send, wait, leave, advance a transport
+  cursor, or expose a participant credential. Event and transcript sequence
+  values are distinct domains and must not be compared or mixed.
 - `join_room(roomId, name, capabilities?)` - join as a text-only Agent and
   receive a private participant handle plus the current `agentLeaseMs` value.
   `capabilities` is an optional list of at most 8 short lowercase namespaced
@@ -1531,6 +1558,21 @@ approximate lifecycle lines do not trigger self-leave.
 Do not create cron jobs, scheduled tasks, persistent shell pollers, or a second
 daemon to keep a Room participant alive. Do not expose a participant handle to
 the Harness or write it into a model-visible file.
+
+The Runtime pushes only new realtime Room context into a retained Harness
+conversation. It sends the stable bootstrap once per actual ACP `session/new`,
+acknowledges Room delivery only after a successful Harness turn, and keeps a
+failed/ambiguous turn retryable. A later Room reply-send failure does not replay
+an already successful Harness prompt. When earlier shared context is relevant,
+the Harness may use the Runtime-mediated local command:
+
+```text
+free4chat-agent context read [--before-sequence N | --after-sequence N] [--limit N]
+```
+
+This command is bounded observation only; it never gives the Harness the raw
+MCP handle or Room lifecycle authority. Meeting Notes remain private-local and
+their committed deltas are delivered only once per successful Harness turn.
 
 ### Direct MCP - low-level
 

@@ -18,6 +18,7 @@ const (
 
 // TranscriptSegment is one committed attributed utterance.
 type TranscriptSegment struct {
+	Sequence      int64  `json:"sequence"`
 	ParticipantID string `json:"participantId"`
 	Speaker       string `json:"speaker"`
 	Text          string `json:"text"`
@@ -34,11 +35,12 @@ type TranscriptSnapshot struct {
 // credentials never do. The file lives in the per-instance 0700 workspace
 // and is removed on dispose — never shared across rooms, never uploaded.
 type TranscriptStore struct {
-	path     string
-	mu       sync.Mutex
-	segments []TranscriptSegment
-	disposed bool
-	writeQ   chan func()
+	path         string
+	mu           sync.Mutex
+	segments     []TranscriptSegment
+	nextSequence int64
+	disposed     bool
+	writeQ       chan func()
 }
 
 // NewTranscriptStore builds a store bound to one instance workspace file.
@@ -80,7 +82,9 @@ func (t *TranscriptStore) Record(source AudioSource, text string) {
 		t.mu.Unlock()
 		return
 	}
+	t.nextSequence++
 	t.segments = append(t.segments, TranscriptSegment{
+		Sequence:      t.nextSequence,
 		ParticipantID: source.ParticipantID,
 		Speaker:       source.ParticipantName,
 		Text:          normalized,

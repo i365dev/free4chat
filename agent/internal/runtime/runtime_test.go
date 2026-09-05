@@ -189,6 +189,79 @@ func TestLiveTranscriptRefreshAndProducerPublishingAreBoundedAndGenerationGated(
 	}
 }
 
+func TestTranscriptDeltasAdvanceOnlyAfterSuccessfulHarnessTurn(t *testing.T) {
+	client := &transcriptClient{fakeClient: &fakeClient{}, roomInfo: types.RoomInfo{
+		Exists: true,
+		LiveTranscriptSegments: []types.LiveTranscriptSegment{{
+			Sequence: 8, ParticipantID: "human", Speaker: "Ada", Text: "first shared speech",
+		}},
+	}}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-transcript", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	store := speech.NewTranscriptStore(t.TempDir() + "/meeting.jsonl")
+	defer store.Dispose()
+	if err := store.Ready(); err != nil {
+		t.Fatalf("meeting store ready: %v", err)
+	}
+	rt.transcript = store
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	store.Record(speech.AudioSource{ParticipantID: "human", ParticipantName: "Ada"}, "first local speech")
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	rt.acceptEvent(roomEvent(1, true))
+	rt.drainTurns()
+	if len(captured) != 1 || captured[0].LiveTranscript == nil || len(captured[0].LiveTranscript.Segments) != 1 ||
+		captured[0].MeetingTranscript == nil || len(captured[0].MeetingTranscript.Segments) != 1 {
+		t.Fatalf("first transcript deltas missing: %#v", captured)
+	}
+
+	// Unchanged shared/local transcript state is absent from a later turn.
+	rt.acceptEvent(roomEvent(2, true))
+	rt.drainTurns()
+	if captured[1].LiveTranscript != nil || captured[1].MeetingTranscript != nil {
+		t.Fatalf("unchanged transcript snapshots replayed: %#v", captured[1])
+	}
+
+	client.roomInfo.LiveTranscriptSegments = append(client.roomInfo.LiveTranscriptSegments,
+		types.LiveTranscriptSegment{Sequence: 9, ParticipantID: "human", Speaker: "Ada", Text: "new shared speech"})
+	store.Record(speech.AudioSource{ParticipantID: "human", ParticipantName: "Ada"}, "new local speech")
+	adapter.mu.Lock()
+	adapter.turnErr = errors.New("ambiguous")
+	adapter.mu.Unlock()
+	rt.acceptEvent(roomEvent(3, true))
+	rt.drainTurns()
+	if len(captured) != 3 || captured[2].LiveTranscript.Segments[0].Sequence != 9 ||
+		captured[2].MeetingTranscript.Segments[0].Sequence != 2 {
+		t.Fatalf("new transcript deltas missing from failed turn: %#v", captured)
+	}
+	meeting, live := rt.transcriptDeliveryMarkers()
+	if meeting != 1 || live != 8 {
+		t.Fatalf("failed turn acknowledged transcript delta: meeting=%d live=%d", meeting, live)
+	}
+
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	rt.drainTurns()
+	if len(captured) != 4 || captured[3].LiveTranscript.Segments[0].Sequence != 9 ||
+		captured[3].MeetingTranscript.Segments[0].Sequence != 2 {
+		t.Fatalf("failed transcript delta was not retried: %#v", captured)
+	}
+	meeting, live = rt.transcriptDeliveryMarkers()
+	if meeting != 2 || live != 9 {
+		t.Fatalf("successful retry did not acknowledge transcript delta: meeting=%d live=%d", meeting, live)
+	}
+}
+
 type waitStep struct {
 	err    error
 	events []types.RoomEvent
@@ -359,6 +432,7 @@ type fakeAdapter struct {
 	turnResults []types.HarnessTurnResult
 	onFail      func(error)
 	sessions    int
+	generation  int64
 	stopped     bool
 	delay       time.Duration
 }
@@ -371,7 +445,20 @@ func (a *fakeAdapter) Name() string { return a.name }
 
 func (a *fakeAdapter) Capabilities() *types.HarnessCapabilities { return a.caps }
 
-func (a *fakeAdapter) EnsureSession() error { return nil }
+func (a *fakeAdapter) EnsureSession() error {
+	a.mu.Lock()
+	if a.generation == 0 {
+		a.generation = 1
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *fakeAdapter) SessionGeneration() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.generation
+}
 
 func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput) (types.HarnessTurnResult, error) {
 	if hook := adapterRunTurnHook; hook != nil {
@@ -419,6 +506,15 @@ func (a *fakeAdapter) sessionsInt() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.sessions
+}
+
+func (a *fakeAdapter) recreateSession() {
+	a.mu.Lock()
+	if a.generation == 0 {
+		a.generation = 1
+	}
+	a.generation++
+	a.mu.Unlock()
 }
 
 func (a *fakeAdapter) OnFailure(handler types.AdapterFailureHandler) {
@@ -938,6 +1034,154 @@ func (a *fakeAdapter) turnSnapshot() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.turnDtls...)
+}
+
+func TestRetainedHarnessDeliveryAcknowledgesOnlySuccessfulTurn(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("ambiguous ACP failure")}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-delivery", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	rt.acceptEvent(roomEvent(1, false))
+	rt.acceptEvent(roomEvent(2, false))
+	rt.acceptEvent(roomEvent(3, true))
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	rt.drainTurns()
+	if got := rt.pendingAddressedSnapshot(); len(got) != 1 || got[0] != 3 {
+		t.Fatalf("failed turn must retain its addressed target: %v", got)
+	}
+	if got := rt.deliveredSeq(); got != 0 {
+		t.Fatalf("failed turn advanced deliveredThrough to %d", got)
+	}
+	if len(captured) != 1 || !captured[0].Session.New || len(captured[0].Events) != 3 {
+		t.Fatalf("first session must receive bootstrap + full first delta: %#v", captured)
+	}
+
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	rt.drainTurns()
+	if got := rt.pendingAddressedSnapshot(); len(got) != 0 {
+		t.Fatalf("successful retry did not acknowledge target: %v", got)
+	}
+	if got := rt.deliveredSeq(); got != 3 {
+		t.Fatalf("successful retry did not advance deliveredThrough: %d", got)
+	}
+	if len(captured) != 2 || captured[1].Session.New || len(captured[1].Events) != 3 {
+		t.Fatalf("retry must preserve same session and retry the unacknowledged delta: %#v", captured)
+	}
+
+	rt.acceptEvent(roomEvent(4, true))
+	rt.drainTurns()
+	if len(captured) != 3 || captured[2].Session.New || len(captured[2].Events) != 1 || captured[2].Events[0].Sequence != 4 {
+		t.Fatalf("later retained-session prompt must be a delta, got %#v", captured)
+	}
+}
+
+func TestSendFailureDoesNotReplaySuccessfulHarnessDelivery(t *testing.T) {
+	client := &fakeClient{sendFailuresRemaining: 1}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-send-boundary", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	rt.acceptEvent(roomEvent(1, true))
+	rt.drainTurns()
+	if rt.deliveredSeq() != 1 || len(rt.pendingAddressedSnapshot()) != 0 {
+		t.Fatalf("RunTurn success must acknowledge context before SendText: delivered=%d pending=%v", rt.deliveredSeq(), rt.pendingAddressedSnapshot())
+	}
+	// There is no pending trigger to replay merely because the reply failed.
+	rt.drainTurns()
+	if len(captured) != 1 {
+		t.Fatalf("send failure replayed an already-successful Harness prompt: %#v", captured)
+	}
+
+	rt.acceptEvent(roomEvent(2, true))
+	rt.drainTurns()
+	if len(captured) != 2 || len(captured[1].Events) != 1 || captured[1].Events[0].Sequence != 2 {
+		t.Fatalf("recovery prompt replayed old context after send failure: %#v", captured)
+	}
+}
+
+func TestRoomRejoinPreservesSurvivingHarnessDeliveryState(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("turn lost")}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-rejoin", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent-1", ParticipantHandle: "secret-1", Cursor: 0})
+	rt.acceptEvent(roomEvent(1, true))
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+	rt.drainTurns()
+
+	// A fresh Room credential/cursor is a transport rejoin, not a session/new.
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent-2", ParticipantHandle: "secret-2", Cursor: 10})
+	if got := rt.pendingAddressedSnapshot(); len(got) != 1 || got[0] != 1 || rt.deliveredSeq() != 0 {
+		t.Fatalf("rejoin discarded unacknowledged Harness work: pending=%v delivered=%d", got, rt.deliveredSeq())
+	}
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	rt.drainTurns()
+	if len(captured) != 2 || captured[1].Session.New {
+		t.Fatalf("Room rejoin incorrectly bootstrapped a surviving Harness: %#v", captured)
+	}
+}
+
+func TestNewHarnessSessionBootstrapsWithoutReplayingPriorRoomDelta(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-session", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	var captured []types.HarnessTurnInput
+	var deliveredAtRun []int64
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+		deliveredAtRun = append(deliveredAtRun, rt.deliveredSeq())
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	rt.acceptEvent(roomEvent(1, true))
+	rt.drainTurns()
+	adapter.recreateSession()
+	rt.acceptEvent(roomEvent(2, true))
+	rt.drainTurns()
+	if len(captured) != 2 || !captured[0].Session.New || !captured[1].Session.New {
+		t.Fatalf("bootstrap must follow actual ACP session generations: %#v", captured)
+	}
+	if len(captured[1].Events) != 1 || captured[1].Events[0].Sequence != 2 {
+		t.Fatalf("new Harness session automatically replayed prior Room delta: %#v", captured[1].Events)
+	}
+	if len(deliveredAtRun) != 2 || deliveredAtRun[1] != 0 {
+		t.Fatalf("new Harness session inherited prior delivery acknowledgement: %v", deliveredAtRun)
+	}
 }
 
 func TestAttachmentEnrichmentImageResolvedInRuntime(t *testing.T) {

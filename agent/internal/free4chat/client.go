@@ -43,6 +43,7 @@ var defaultUserAgent = "free4chat-agent/" + doctor.Version
 
 var requiredTools = []string{
 	"room_info", "join_room", "create_room", "wait_for_events",
+	"read_room_context",
 	"send_text", "read_attachment", "leave_room", "update_capabilities",
 	"send_collab_request", "send_collab_response", "send_collab_result",
 	"send_attachment", "publish_surface", "clear_surface", "read_surface",
@@ -766,6 +767,90 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 		}
 	}
 	return wait, nil
+}
+
+// ReadRoomContext fetches one bounded, read-only historical context page.
+// The participant handle is used only inside the Runtime client call; callers
+// receive sanitized event/transcript projections in distinct sequence domains.
+func (c *Client) ReadRoomContext(participantHandle string, options types.RoomContextReadOptions) (types.RoomContextReadResult, error) {
+	args := map[string]any{"participantHandle": participantHandle}
+	if options.BeforeSequence > 0 {
+		args["beforeSequence"] = options.BeforeSequence
+	}
+	if options.AfterSequence > 0 {
+		args["afterSequence"] = options.AfterSequence
+	}
+	if options.Limit > 0 {
+		args["limit"] = options.Limit
+	}
+	if options.BeforeTranscriptSequence > 0 {
+		args["beforeTranscriptSequence"] = options.BeforeTranscriptSequence
+	}
+	if options.AfterTranscriptSequence > 0 {
+		args["afterTranscriptSequence"] = options.AfterTranscriptSequence
+	}
+	if options.TranscriptLimit > 0 {
+		args["transcriptLimit"] = options.TranscriptLimit
+	}
+	result, err := c.callTool("read_room_context", args)
+	if err != nil {
+		return types.RoomContextReadResult{}, err
+	}
+	room, err := parseRoomContextWindow(result)
+	if err != nil {
+		return types.RoomContextReadResult{}, err
+	}
+	liveRaw, ok := result["liveTranscript"].(map[string]any)
+	if !ok {
+		return types.RoomContextReadResult{}, &Error{Message: "Free4Chat returned an invalid context transcript", Code: CodeToolError}
+	}
+	live, err := parseLiveTranscriptContextWindow(liveRaw)
+	if err != nil {
+		return types.RoomContextReadResult{}, err
+	}
+	return types.RoomContextReadResult{Room: room, LiveTranscript: live}, nil
+}
+
+func parseRoomContextWindow(result map[string]any) (types.RoomContextWindow, error) {
+	events, err := parseRoomEvents(result["events"])
+	if err != nil {
+		return types.RoomContextWindow{}, err
+	}
+	oldest, err := requiredNumber(result, "oldestSequence")
+	if err != nil {
+		return types.RoomContextWindow{}, err
+	}
+	newest, err := requiredNumber(result, "newestSequence")
+	if err != nil {
+		return types.RoomContextWindow{}, err
+	}
+	return types.RoomContextWindow{
+		Events:         events,
+		OldestSequence: oldest,
+		NewestSequence: newest,
+		HasMoreBefore:  result["hasMoreBefore"] == true,
+		HasMoreAfter:   result["hasMoreAfter"] == true,
+		Truncated:      result["truncated"] == true,
+	}, nil
+}
+
+func parseLiveTranscriptContextWindow(result map[string]any) (types.LiveTranscriptContextWindow, error) {
+	oldest, err := requiredNumber(result, "oldestSequence")
+	if err != nil {
+		return types.LiveTranscriptContextWindow{}, err
+	}
+	newest, err := requiredNumber(result, "newestSequence")
+	if err != nil {
+		return types.LiveTranscriptContextWindow{}, err
+	}
+	return types.LiveTranscriptContextWindow{
+		Segments:       parseLiveTranscriptSegments(result["segments"]),
+		OldestSequence: oldest,
+		NewestSequence: newest,
+		HasMoreBefore:  result["hasMoreBefore"] == true,
+		HasMoreAfter:   result["hasMoreAfter"] == true,
+		Truncated:      result["truncated"] == true,
+	}, nil
 }
 
 // SendText publishes one agent message. targetParticipantIDs optionally

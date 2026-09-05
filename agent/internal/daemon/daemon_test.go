@@ -272,6 +272,7 @@ type stubAdapter struct{ name string }
 func (s *stubAdapter) Name() string                           { return s.name }
 func (*stubAdapter) Capabilities() *types.HarnessCapabilities { return nil }
 func (*stubAdapter) EnsureSession() error                     { return nil }
+func (*stubAdapter) SessionGeneration() int64                 { return 1 }
 func (*stubAdapter) RunTurn(types.HarnessTurnInput) (types.HarnessTurnResult, error) {
 	return types.HarnessTurnResult{Text: "stub-reply"}, nil
 }
@@ -477,7 +478,7 @@ func TestResolveRuntimeAmbiguityContract(t *testing.T) {
 // prepareLifecycle's Connect step succeeds before the (failing) Harness spawn.
 func writeModernMCPTools(w http.ResponseWriter) {
 	names := []string{
-		"room_info", "join_room", "create_room", "wait_for_events",
+		"room_info", "read_room_context", "join_room", "create_room", "wait_for_events",
 		"send_text", "read_attachment", "leave_room", "update_capabilities",
 		"send_collab_request", "send_collab_response", "send_collab_result",
 		"send_attachment", "publish_surface", "clear_surface", "read_surface",

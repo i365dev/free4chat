@@ -163,6 +163,13 @@ func TestACPNegotiatesOnceAndReusesOneSession(t *testing.T) {
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("ensure failed: %v", err)
 	}
+	generation := adapter.SessionGeneration()
+	if generation <= 0 {
+		t.Fatalf("session/new did not publish a generation: %d", generation)
+	}
+	if err := adapter.EnsureSession(); err != nil || adapter.SessionGeneration() != generation {
+		t.Fatalf("same retained ACP session changed generation: generation=%d err=%v", adapter.SessionGeneration(), err)
+	}
 	caps := adapter.Capabilities()
 	if caps == nil || !caps.Text || caps.Images || caps.Resume {
 		t.Fatalf("capability projection mismatch: %+v", caps)
@@ -175,6 +182,40 @@ func TestACPNegotiatesOnceAndReusesOneSession(t *testing.T) {
 	result, err = adapter.RunTurn(turnInput("second"))
 	if err != nil || result.Text != "reply-2" {
 		t.Fatalf("session reuse broken: %+v %v", result, err)
+	}
+}
+
+func TestActualRetainedACPPromptsBootstrapOnlyOnce(t *testing.T) {
+	trace := filepath.Join(t.TempDir(), "acp-trace.ndjson")
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{"FAKE_TRACE": trace}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	first := turnInput("first delta")
+	first.Session = &types.HarnessSessionContext{New: true, CurrentRoomSequence: 5}
+	if _, err := adapter.RunTurn(first); err != nil {
+		t.Fatalf("first prompt failed: %v", err)
+	}
+	second := turnInput("second delta")
+	second.Session = &types.HarnessSessionContext{New: false, CurrentRoomSequence: 6}
+	if _, err := adapter.RunTurn(second); err != nil {
+		t.Fatalf("second prompt failed: %v", err)
+	}
+	traceData, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("read ACP trace: %v", err)
+	}
+	conversation := string(traceData)
+	if strings.Count(conversation, "session/prompt") != 2 {
+		t.Fatalf("expected two captured ACP prompts, got:\n%s", conversation)
+	}
+	if strings.Count(conversation, "You are participating in a temporary Free4Chat room.") != 1 {
+		t.Fatalf("stable bootstrap repeated in retained ACP payload:\n%s", conversation)
+	}
+	if !strings.Contains(conversation, "This is a new local Harness session.") ||
+		!strings.Contains(conversation, "second delta") || strings.Count(conversation, "first delta") != 1 {
+		t.Fatalf("retained ACP payload is not delta-shaped:\n%s", conversation)
 	}
 }
 
@@ -245,6 +286,7 @@ func TestACPProcessDeathFailsPromptlyAndRecovers(t *testing.T) {
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("ensure failed: %v", err)
 	}
+	firstGeneration := adapter.SessionGeneration()
 	result, err := adapter.RunTurn(turnInput("first"))
 	if err != nil || result.Text != "reply-1" {
 		t.Fatalf("first turn mismatch: %+v %v", result, err)
@@ -262,6 +304,9 @@ func TestACPProcessDeathFailsPromptlyAndRecovers(t *testing.T) {
 	result, err = adapter.RunTurn(turnInput("second"))
 	if err != nil || result.Text != "reply-2" {
 		t.Fatalf("post-death respawn mismatch: %+v %v", result, err)
+	}
+	if adapter.SessionGeneration() <= firstGeneration {
+		t.Fatalf("process/session recreation did not advance ACP generation: %d -> %d", firstGeneration, adapter.SessionGeneration())
 	}
 }
 
@@ -475,10 +520,10 @@ func TestRenderUntrustedRoomTurnInvariants(t *testing.T) {
 		// control is Runtime-owned, while the Runtime-owned local participant
 		// commands (free4chat-agent collab/attach/surface) are allowed.
 		"owns the raw free4chat room connection",
-		"join_room, wait_for_events, send_text, read_attachment",
+		"join_room, wait_for_events, read_room_context, send_text, read_attachment",
 		"never obtain the participanthandle, participant token, transport cursor",
 		"taking over the room connection is never allowed",
-		"free4chat-agent collab/attach/surface commands",
+		"free4chat-agent collab/attach/surface/context commands",
 		"do not ask for or invent room identity",
 		"[[free4chat:lifecycle leave]]",
 		"host owns room participation",
@@ -532,7 +577,7 @@ func TestRenderUntrustedRoomTurnIncludesCommittedRoomWideLiveTranscript(t *testi
 	}}
 
 	rendered := RenderUntrustedRoomTurn(&input)
-	if !strings.Contains(rendered, "Committed Room-wide Live Transcript context") ||
+	if !strings.Contains(rendered, "New committed Room-wide Live Transcript context") ||
 		!strings.Contains(rendered, "[41] Ada (participantId=human-a): Project codename is Quartz Finch.") ||
 		!strings.Contains(rendered, "[42] Babbage (participantId=human-b): Retry exactly twice and never auto-failover.") {
 		t.Fatalf("shared live transcript missing from ACP prompt:\n%s", rendered)
@@ -753,7 +798,7 @@ func TestOrdinaryAddressPermitsAutonomousWorkAndPeerDelegation(t *testing.T) {
 		"never obtain the participantHandle",
 		"Taking over the Room connection is never allowed",
 		// ...while the Runtime-owned local participant commands are allowed.
-		"free4chat-agent collab/attach/surface commands",
+		"free4chat-agent collab/attach/surface/context commands",
 		"[[free4chat:lifecycle leave]]",
 	} {
 		if !strings.Contains(rendered, required) {
@@ -763,7 +808,7 @@ func TestOrdinaryAddressPermitsAutonomousWorkAndPeerDelegation(t *testing.T) {
 	// Peer delegation affordance: roster + targeting + structured collab +
 	// attachments are all visible to the Harness on this ordinary turn.
 	for _, required := range []string{
-		"Use participantId values as collaboration targets",
+		"Use participantId values from the current roster as collaboration targets",
 		"[participantId=pi-7]",
 		"[[free4chat:targets ...]]",
 		"Room collaboration affordances",

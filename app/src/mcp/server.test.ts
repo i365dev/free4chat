@@ -38,6 +38,8 @@ describe("public MCP tool surface", () => {
     const names = payload.result?.tools?.map((tool) => tool.name) ?? []
     expect(names).not.toContain("connect_runtime_provider")
     expect(names).not.toContain("runtimeProviderHandle")
+    expect(names).toContain("read_room_context")
+    expect(names).toHaveLength(17)
   })
 
   it("preserves the server Agent lease through join_room and create_room", async () => {

@@ -22,7 +22,8 @@ func TestTranscriptStoreBoundedAndPersisted(t *testing.T) {
 	snapshot := store.Snapshot()
 	if snapshot.Path != HarnessTranscriptPath || len(snapshot.Segments) != 2 ||
 		snapshot.Segments[0].Text != "first utterance" ||
-		snapshot.Segments[0].Speaker != "Alice" {
+		snapshot.Segments[0].Speaker != "Alice" ||
+		snapshot.Segments[0].Sequence != 1 || snapshot.Segments[1].Sequence != 2 {
 		t.Fatalf("snapshot mismatch: %+v", snapshot)
 	}
 	data, err := os.ReadFile(path)
