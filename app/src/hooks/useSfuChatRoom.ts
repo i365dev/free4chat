@@ -2915,18 +2915,20 @@ export function useSfuChatRoom(
 
   const sendFileMessage = useCallback(
     async (file: File) => {
-      // Reserve the timeline position when the user starts sending, rather
-      // than when the final chunk finishes. The send queue may serialize
-      // large files, and completion order is not message order.
+      // Allocate the transfer id before queueing so the queued wire messages
+      // and the eventual local bubble share one stable identity.
       const id = crypto.randomUUID()
       const mime = file.type || "application/octet-stream"
-      const createdAt = Date.now()
       const send = async () => {
         if (file.size > MAX_FILE_SIZE)
           throw new Error("File exceeds the 20 MB limit")
         const channel = localFileChannelRef.current
         if (!channel) throw new Error("SFU file data channel is unavailable")
         await waitForDataChannelOpen(channel)
+        // This is deliberately inside the serialized operation and directly
+        // before file-start. A queued file must not claim a timeline position
+        // before the preceding transfer has actually started.
+        const createdAt = Date.now()
         channel.send(
           JSON.stringify({
             type: "file-start",

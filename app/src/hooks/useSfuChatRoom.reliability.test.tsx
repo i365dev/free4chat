@@ -706,4 +706,97 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     expect(createObjectUrl).toHaveBeenCalledTimes(1)
     unmount()
   })
+
+  it("orders queued files by actual transfer start around an intervening Room text", async () => {
+    const { result, socket, pc, unmount } = await connect()
+    const localChannel = pc.createdChannels.find(
+      (channel) => channel.name === "files-human-local"
+    )!
+    const createObjectUrl = vi.fn((file: File) => `blob:${file.name}`)
+    const revokeObjectUrl = vi.fn()
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectUrl,
+    })
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectUrl,
+    })
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("file-a")
+      .mockReturnValueOnce("file-b")
+    vi.useFakeTimers()
+    vi.setSystemTime(1000)
+    localChannel.bufferedAmount = 256 * 1024 + 1
+    const fileA = {
+      name: "a.txt",
+      type: "text/plain",
+      size: 1,
+      slice: () => ({
+        arrayBuffer: () => Promise.resolve(new Uint8Array([1]).buffer),
+      }),
+    } as unknown as File
+    const fileB = {
+      name: "b.txt",
+      type: "text/plain",
+      size: 1,
+      slice: () => ({
+        arrayBuffer: () => Promise.resolve(new Uint8Array([2]).buffer),
+      }),
+    } as unknown as File
+
+    const firstSend = result.current.sendFileMessage(fileA)
+    await flushAsync()
+    expect(localChannel.send).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: "file-start",
+        id: "file-a",
+        name: "a.txt",
+        mime: "text/plain",
+        size: 1,
+      })
+    )
+
+    const secondSend = result.current.sendFileMessage(fileB)
+    vi.setSystemTime(2000)
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "message",
+          message: {
+            id: "text-between",
+            peerId: "human-other",
+            name: "Other",
+            kind: "human",
+            type: "text",
+            text: "between files",
+            createdAt: 2000,
+            sequence: 1,
+          },
+        }),
+      })
+    )
+
+    vi.setSystemTime(3000)
+    localChannel.bufferedAmount = 0
+    await act(async () => {
+      localChannel.emit("bufferedamountlow")
+      await firstSend
+      await secondSend
+    })
+
+    expect(
+      localChannel.send.mock.calls
+        .map(([data]) =>
+          typeof data === "string" && data.includes('"type":"file-start"')
+            ? JSON.parse(data).id
+            : undefined
+        )
+        .filter(Boolean)
+    ).toEqual(["file-a", "file-b"])
+    expect(result.current.messages.map((message) => message.messageId)).toEqual(
+      ["file-a", "text-between", "file-b"]
+    )
+    unmount()
+  })
 })
