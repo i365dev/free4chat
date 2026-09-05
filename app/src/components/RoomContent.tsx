@@ -44,7 +44,7 @@ function ScreenShareViewer({
   }
 
   return (
-    <div className="relative min-h-0 flex-1 bg-black">
+    <div className="room-share-viewer relative min-h-0 flex-1 bg-black">
       <video
         ref={videoRef}
         autoPlay
@@ -52,11 +52,12 @@ function ScreenShareViewer({
         muted
         className="h-full w-full object-contain"
       />
-      <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-xs text-white">
-        {name}
+      <div className="room-share-viewer__label absolute bottom-2 left-2 rounded px-2 py-0.5 text-xs text-white">
+        <span className="mr-1 text-cyan-300">●</span>
+        {name} is sharing
       </div>
       <button
-        className="absolute bottom-2 right-2 rounded bg-black/60 p-1 text-white hover:bg-black/80"
+        className="room-share-viewer__fullscreen absolute bottom-2 right-2 rounded p-1 text-white"
         onClick={enterFullscreen}
         title="Fullscreen"
       >
@@ -476,7 +477,7 @@ export default function RoomContent({
   }
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-gray-900 text-white">
+    <main className="room-shell flex h-screen flex-col overflow-hidden text-white">
       {connectionStatus === "reconnecting" && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60">
           <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
@@ -484,21 +485,25 @@ export default function RoomContent({
         </div>
       )}
 
-      <header className="flex flex-none flex-col gap-2 border-b border-gray-800 px-4 py-3 lg:flex-row lg:items-center">
+      <header className="room-header flex flex-none flex-col gap-2 border-b px-4 py-3 lg:flex-row lg:items-center">
         <div
           data-testid="room-header-identity"
           className="flex min-w-0 items-center gap-2"
         >
-          <h1 className="min-w-0 flex-1 truncate text-lg font-medium lg:flex-none">
+          <h1 className="min-w-0 flex-1 truncate font-mono text-lg font-medium tracking-wide text-cyan-100 lg:flex-none">
             #{roomName}
           </h1>
+          <span className="hidden font-mono text-[10px] uppercase tracking-[0.22em] text-slate-500 sm:inline">
+            temporary room · {participants.length} peer
+            {participants.length === 1 ? "" : "s"} online
+          </span>
           <button
             type="button"
             onClick={() => {
               leaveRoom()
               router.push("/")
             }}
-            className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:hidden"
+            className="shrink-0 rounded-md border border-rose-800/80 bg-rose-950/30 px-3 py-1 text-xs text-rose-200 hover:border-rose-500/80 hover:bg-rose-950/60 lg:hidden"
           >
             Leave
           </button>
@@ -511,7 +516,7 @@ export default function RoomContent({
             <button
               type="button"
               onClick={copyRoomLink}
-              className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700"
+              className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-slate-700/80 bg-slate-900/70 px-2 py-1 text-xs text-slate-300 hover:border-cyan-700/70 hover:bg-slate-800"
               title="Copy room link"
             >
               <svg
@@ -559,7 +564,7 @@ export default function RoomContent({
               leaveRoom()
               router.push("/")
             }}
-            className="hidden shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:inline-flex"
+            className="hidden shrink-0 rounded-md border border-rose-800/80 bg-rose-950/30 px-3 py-1 text-xs text-rose-200 hover:border-rose-500/80 hover:bg-rose-950/60 lg:inline-flex"
           >
             Leave
           </button>
@@ -617,7 +622,7 @@ export default function RoomContent({
         className="flex flex-1 flex-col overflow-hidden md:flex-row"
       >
         <div
-          className="flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
+          className="room-panel flex flex-1 flex-col overflow-hidden border-b border-slate-800/80 md:flex-none md:border-b-0 md:border-r"
           style={isMd ? { width: `${splitRatio}%` } : undefined}
         >
           {/* #111: Agent workspace snapshots — observation only, available in
@@ -636,7 +641,7 @@ export default function RoomContent({
                     name={activeShare.name}
                   />
                 )}
-                <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-slate-800/80 p-2">
                   {participants.map((p) => (
                     <div
                       key={p.peerId}
@@ -644,7 +649,7 @@ export default function RoomContent({
                         p.screenShareEnabled &&
                         p.peerId !== LOCAL_PEER_ID &&
                         p.peerId === activeSharePeerId
-                          ? "ring-2 ring-blue-400"
+                          ? "shadow-[0_0_16px_rgba(103,232,249,0.26)] ring-1 ring-cyan-300"
                           : ""
                       } ${
                         p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
@@ -677,7 +682,7 @@ export default function RoomContent({
                         }
                         voiceEnabled={p.voiceEnabled}
                         onToggleAgentVoice={() => toggleAgentVoice(p)}
-                        className="w-20"
+                        className="w-[5.25rem]"
                         compact
                       />
                     </div>
@@ -685,7 +690,7 @@ export default function RoomContent({
                 </div>
               </>
             ) : (
-              <div className="scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
+              <div className="room-participants-grid scrollbar-thin grid h-full grid-cols-2 content-start items-start gap-2 overflow-y-auto p-3 sm:flex sm:flex-wrap">
                 {participants.map((p) => (
                   <div
                     key={p.peerId}
@@ -708,7 +713,7 @@ export default function RoomContent({
                       voiceEnabled={p.voiceEnabled}
                       onToggleAgentVoice={() => toggleAgentVoice(p)}
                       screenshareAllowed={screenshareAllowed}
-                      className="w-40 flex-none"
+                      className="w-full flex-none sm:w-40"
                     />
                     {p.peerId === LOCAL_PEER_ID && (
                       <div className="hidden items-center gap-1 md:flex">
@@ -742,14 +747,14 @@ export default function RoomContent({
         </div>
 
         <div
-          className="hidden w-1 cursor-col-resize bg-gray-800 transition-colors hover:bg-blue-500/50 active:bg-blue-500 md:block"
+          className="hidden w-1 cursor-col-resize bg-slate-800/70 transition-colors hover:bg-cyan-500/50 active:bg-cyan-500 md:block"
           onMouseDown={(e) => {
             isDragging.current = true
             e.preventDefault()
           }}
         />
 
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="room-panel flex flex-1 flex-col overflow-hidden">
           <TextChatCard
             room={roomName}
             nickName={nickName}
