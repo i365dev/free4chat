@@ -1183,6 +1183,174 @@ func TestRetainedHarnessDeliveryAcknowledgesOnlySuccessfulTurn(t *testing.T) {
 	}
 }
 
+func TestTransportReplayAfterSuccessfulHarnessAckIsIgnored(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-replay-ack", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	addressed := roomEvent(7, true)
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{addressed}, Cursor: 7})
+	rt.drainTurns()
+	if got := rt.pendingAddressedSnapshot(); len(got) != 0 || rt.deliveredSeq() != 7 {
+		t.Fatalf("successful turn was not acknowledged: pending=%v delivered=%d", got, rt.deliveredSeq())
+	}
+
+	// A reconnect/catch-up replay of an already accepted transport event must
+	// not become a second Harness trigger after its first turn was acknowledged.
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{addressed}, Cursor: 7})
+	rt.drainTurns()
+
+	if got := rt.pendingAddressedSnapshot(); len(got) != 0 {
+		t.Fatalf("transport replay created a pending trigger: %v", got)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("transport replay reached the Harness: %#v", captured)
+	}
+	client.mu.Lock()
+	contextCalls := client.contextCalls
+	client.mu.Unlock()
+	if contextCalls != 0 {
+		t.Fatalf("transport replay attempted Room-context recovery: %d", contextCalls)
+	}
+	if status := rt.Status(); status.LastError != "" || status.State == StateReconnecting {
+		t.Fatalf("transport replay entered an error state: %+v", status)
+	}
+	if events := rt.bufferSince(0, 7); len(events) != 1 || events[0].Sequence != 7 {
+		t.Fatalf("transport replay duplicated EventBuffer state: %#v", events)
+	}
+}
+
+func TestTransportReplayPreservesUnacknowledgedHarnessTurn(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("ambiguous ACP failure")}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-replay-pending", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	addressed := roomEvent(8, true)
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{addressed}, Cursor: 8})
+	rt.drainTurns()
+	if got := rt.pendingAddressedSnapshot(); len(got) != 1 || got[0] != 8 || rt.deliveredSeq() != 0 {
+		t.Fatalf("ambiguous turn state mismatch: pending=%v delivered=%d", got, rt.deliveredSeq())
+	}
+
+	// The retry remains the original pinned turn; a duplicate transport receipt
+	// cannot replace its snapshot or acknowledge it.
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{addressed}, Cursor: 8})
+	if got := rt.pendingAddressedSnapshot(); len(got) != 1 || got[0] != 8 || rt.deliveredSeq() != 0 {
+		t.Fatalf("transport replay changed pending retry state: pending=%v delivered=%d", got, rt.deliveredSeq())
+	}
+	rt.mu.Lock()
+	pending := rt.pendingContexts[8]
+	rt.mu.Unlock()
+	if len(pending.events) != 1 || pending.events[0].Sequence != 8 {
+		t.Fatalf("transport replay replaced the pinned context: %#v", pending)
+	}
+
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	rt.drainTurns()
+	if len(captured) != 2 || len(captured[1].Events) != 1 || captured[1].Events[0].Sequence != 8 {
+		t.Fatalf("retry did not receive the original event exactly once: %#v", captured)
+	}
+	if got := rt.pendingAddressedSnapshot(); len(got) != 0 || rt.deliveredSeq() != 8 {
+		t.Fatalf("successful retry did not acknowledge once: pending=%v delivered=%d", got, rt.deliveredSeq())
+	}
+}
+
+func TestUnaddressedTransportReplayDoesNotDuplicateLaterHarnessDelta(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-replay-unaddressed", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	unaddressed := roomEvent(9, false)
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{unaddressed}, Cursor: 9})
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{unaddressed}, Cursor: 9})
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{roomEvent(10, true)}, Cursor: 10})
+	rt.drainTurns()
+
+	if len(captured) != 1 || len(captured[0].Events) != 2 ||
+		captured[0].Events[0].Sequence != 9 || captured[0].Events[1].Sequence != 10 {
+		t.Fatalf("unaddressed transport replay duplicated the Harness delta: %#v", captured)
+	}
+	if events := rt.bufferSince(0, 10); len(events) != 2 ||
+		events[0].Sequence != 9 || events[1].Sequence != 10 {
+		t.Fatalf("unaddressed transport replay duplicated EventBuffer state: %#v", events)
+	}
+}
+
+func TestOverlappingTransportEnvelopeAcceptsOnlyNewerSequences(t *testing.T) {
+	client := &fakeClient{}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-replay-overlap", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	// Cursor 12 proves receipt through an omitted self-originated event 12;
+	// later overlapping envelopes must still accept the new addressed 13.
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{roomEvent(11, false)}, Cursor: 12})
+	if got := rt.currentCursor(); got != 12 {
+		t.Fatalf("transport cursor did not advance across an omitted event: %d", got)
+	}
+	rt.advanceFromWait(types.WaitResult{Events: []types.RoomEvent{
+		roomEvent(11, false), roomEvent(13, true), roomEvent(13, true),
+	}, Cursor: 13})
+	rt.drainTurns()
+
+	if got := rt.currentCursor(); got != 13 {
+		t.Fatalf("transport cursor did not advance after overlap: %d", got)
+	}
+	if len(captured) != 1 || len(captured[0].Events) != 2 ||
+		captured[0].Events[0].Sequence != 11 || captured[0].Events[1].Sequence != 13 {
+		t.Fatalf("overlap did not preserve one old and one new event: %#v", captured)
+	}
+	if events := rt.bufferSince(0, 13); len(events) != 2 ||
+		events[0].Sequence != 11 || events[1].Sequence != 13 {
+		t.Fatalf("overlap duplicated buffered events: %#v", events)
+	}
+}
+
 func TestHarnessGenerationReplacementRebuildsBootstrapBeforePrompt(t *testing.T) {
 	client := &fakeClient{}
 	adapter := &fakeAdapter{name: "pi"}
