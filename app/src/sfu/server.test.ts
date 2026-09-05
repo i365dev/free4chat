@@ -265,10 +265,9 @@ describe("Origin policy is route-scoped, not global", () => {
     "agent-room-media",
     "tracks",
     "renegotiate",
-    "publish-confirm",
     "datachannels/establish",
   ]
-  const missingOriginRejected = ["session"]
+  const missingOriginRejected = ["session", "publish-confirm"]
 
   for (const route of missingOriginAllowed) {
     it(`missing Origin is accepted on ${route} (non-browser Runtime route)`, async () => {
@@ -468,6 +467,7 @@ describe("Phase-0 invariant: agent media sessions are subscribe-only", () => {
 
     const confirm = await handleSfuRequest(
       req("publish-confirm", {
+        origin: "https://www.free4.chat",
         body: JSON.stringify({
           room: "room-1",
           participantId: "human-1",
