@@ -148,14 +148,48 @@ describe("useSfuChatRoom SFU egress analytics", () => {
       .fn()
       .mockResolvedValueOnce(
         new Map([
-          ["audio", { type: "inbound-rtp", kind: "audio", bytesReceived: 100 }],
+          [
+            "audio",
+            {
+              id: "audio",
+              type: "inbound-rtp",
+              kind: "audio",
+              bytesReceived: 100,
+            },
+          ],
+          [
+            "video",
+            {
+              id: "video",
+              type: "inbound-rtp",
+              kind: "video",
+              bytesReceived: 0,
+            },
+          ],
+          ["dc", { id: "dc", type: "data-channel", bytesReceived: 0 }],
         ])
       )
       .mockResolvedValueOnce(
         new Map([
-          ["audio", { type: "inbound-rtp", kind: "audio", bytesReceived: 180 }],
-          ["video", { type: "inbound-rtp", kind: "video", bytesReceived: 20 }],
-          ["dc", { type: "data-channel", bytesReceived: 5 }],
+          [
+            "audio",
+            {
+              id: "audio",
+              type: "inbound-rtp",
+              kind: "audio",
+              bytesReceived: 180,
+            },
+          ],
+          [
+            "video",
+            {
+              id: "video",
+              type: "inbound-rtp",
+              kind: "video",
+              bytesReceived: 20,
+            },
+          ],
+          ["dc", { id: "dc", type: "data-channel", bytesReceived: 5 }],
         ])
       )
 
@@ -204,17 +238,41 @@ describe("useSfuChatRoom SFU egress analytics", () => {
       .fn()
       .mockResolvedValueOnce(
         new Map([
-          ["audio", { type: "inbound-rtp", kind: "audio", bytesReceived: 40 }],
+          [
+            "audio",
+            {
+              id: "audio",
+              type: "inbound-rtp",
+              kind: "audio",
+              bytesReceived: 40,
+            },
+          ],
         ])
       )
       .mockResolvedValueOnce(
         new Map([
-          ["audio", { type: "inbound-rtp", kind: "audio", bytesReceived: 40 }],
+          [
+            "audio",
+            {
+              id: "audio",
+              type: "inbound-rtp",
+              kind: "audio",
+              bytesReceived: 40,
+            },
+          ],
         ])
       )
       .mockResolvedValueOnce(
         new Map([
-          ["audio", { type: "inbound-rtp", kind: "audio", bytesReceived: 65 }],
+          [
+            "audio",
+            {
+              id: "audio",
+              type: "inbound-rtp",
+              kind: "audio",
+              bytesReceived: 65,
+            },
+          ],
         ])
       )
 

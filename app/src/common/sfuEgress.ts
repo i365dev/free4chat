@@ -12,6 +12,15 @@ export interface SfuEgressBytes {
   dataChannelBytes: number
 }
 
+export type SfuEgressStatCategory = "audio" | "video" | "dataChannel"
+
+export interface SfuEgressStat {
+  category: SfuEgressStatCategory
+  bytesReceived: number
+}
+
+export type SfuEgressStats = ReadonlyMap<string, SfuEgressStat>
+
 export interface SfuEgressSample extends SfuEgressBytes {
   totalBytes: number
   intervalMs: number
@@ -78,42 +87,57 @@ function eachStat(
   }
 }
 
-/** Aggregate only browser-observed Cloudflare -> browser counters. */
-export function aggregateSfuEgressStats(report: unknown): SfuEgressBytes {
-  const bytes = { ...EMPTY_BYTES }
+/** Collect only browser-observed receive counters, keyed by local stats.id. */
+export function aggregateSfuEgressStats(report: unknown): SfuEgressStats {
+  const stats = new Map<string, SfuEgressStat>()
   eachStat(report, (stat) => {
     const type = stat.type
-    const received = stat.bytesReceived
+    const rawId = stat.id
+    if (
+      (typeof rawId !== "string" && typeof rawId !== "number") ||
+      String(rawId).length === 0
+    )
+      return
+    const id = String(rawId)
+    const received = nonNegativeInteger(stat.bytesReceived)
+    let category: SfuEgressStatCategory | undefined
     if (type === "inbound-rtp") {
       const kind = stat.kind ?? stat.mediaType
-      if (kind === "audio")
-        bytes.audioBytes = addBytes(bytes.audioBytes, received)
-      else if (kind === "video")
-        bytes.videoBytes = addBytes(bytes.videoBytes, received)
-    } else if (type === "data-channel") {
-      bytes.dataChannelBytes = addBytes(bytes.dataChannelBytes, received)
-    }
+      if (kind === "audio") category = "audio"
+      else if (kind === "video") category = "video"
+    } else if (type === "data-channel") category = "dataChannel"
+    if (category) stats.set(id, { category, bytesReceived: received })
   })
-  return bytes
+  return stats
 }
 
-/** Return a non-negative delta, or null when a counter needs re-baselining. */
+/**
+ * Compare only the same WebRTC stats objects. A missing or reset object is
+ * re-baselined by the caller's next current-stats Map and does not affect
+ * deltas from unrelated objects.
+ */
 export function sfuEgressDelta(
-  previous: SfuEgressBytes | null,
-  current: SfuEgressBytes
+  previous: SfuEgressStats | null,
+  current: SfuEgressStats
 ): SfuEgressBytes | null {
   if (!previous) return null
-  if (
-    current.audioBytes < previous.audioBytes ||
-    current.videoBytes < previous.videoBytes ||
-    current.dataChannelBytes < previous.dataChannelBytes
-  )
-    return null
-  return {
-    audioBytes: current.audioBytes - previous.audioBytes,
-    videoBytes: current.videoBytes - previous.videoBytes,
-    dataChannelBytes: current.dataChannelBytes - previous.dataChannelBytes,
+  const bytes = { ...EMPTY_BYTES }
+  for (const [id, currentStat] of current) {
+    const previousStat = previous.get(id)
+    if (
+      !previousStat ||
+      previousStat.category !== currentStat.category ||
+      currentStat.bytesReceived < previousStat.bytesReceived
+    )
+      continue
+    const delta = currentStat.bytesReceived - previousStat.bytesReceived
+    if (currentStat.category === "audio")
+      bytes.audioBytes = addBytes(bytes.audioBytes, delta)
+    else if (currentStat.category === "video")
+      bytes.videoBytes = addBytes(bytes.videoBytes, delta)
+    else bytes.dataChannelBytes = addBytes(bytes.dataChannelBytes, delta)
   }
+  return bytes
 }
 
 function totalBytes(bytes: SfuEgressBytes): number {
@@ -143,7 +167,7 @@ export function createSfuEgressSampler(
   now: () => number = () => Date.now()
 ): SfuEgressSampler {
   let source: unknown = undefined
-  let previous: SfuEgressBytes | null = null
+  let previous: SfuEgressStats | null = null
   let lastObservedAt: number | null = null
   let pending: Promise<void> | null = null
 
