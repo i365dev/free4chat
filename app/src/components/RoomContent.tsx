@@ -185,6 +185,7 @@ export default function RoomContent({
     (p) =>
       p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID && p.screenShareStream
   )
+  const hasActiveScreenShare = activeScreenShares.length > 0
   const useConstellation = participants.length > 0 && participants.length <= 6
 
   const [activeSharePeerId, setActiveSharePeerId] = useState<string | null>(
@@ -620,11 +621,21 @@ export default function RoomContent({
 
       <div
         ref={containerRef}
-        className="flex flex-1 flex-col overflow-hidden md:flex-row"
+        className={`room-content flex min-h-0 flex-1 flex-col overflow-hidden ${
+          hasActiveScreenShare ? "md:flex-row" : "room-content--stacked"
+        }`}
       >
         <div
-          className="room-panel flex flex-1 flex-col overflow-hidden border-b border-slate-800/80 md:flex-none md:border-b-0 md:border-r"
-          style={isMd ? { width: `${splitRatio}%` } : undefined}
+          className={`room-panel flex min-h-0 flex-col overflow-hidden ${
+            hasActiveScreenShare
+              ? "flex-1 border-b border-slate-800/80 md:flex-none md:border-b-0 md:border-r"
+              : "w-full flex-none border-b border-slate-800/80"
+          }`}
+          style={
+            hasActiveScreenShare && isMd
+              ? { width: `${splitRatio}%` }
+              : undefined
+          }
         >
           {/* #111: Agent workspace snapshots — observation only, available in
               every room type; Human screen share is untouched below. */}
@@ -632,7 +643,11 @@ export default function RoomContent({
             participants={participants}
             getLocalRoomAuth={getLocalRoomAuth}
           />
-          <div className="relative flex flex-1 flex-col overflow-hidden">
+          <div
+            className={`relative flex flex-col overflow-hidden ${
+              hasActiveScreenShare ? "min-h-0 flex-1" : "flex-none"
+            }`}
+          >
             {activeScreenShares.length > 0 ? (
               <>
                 {activeShare && (
@@ -693,12 +708,10 @@ export default function RoomContent({
               </>
             ) : (
               <div
-                className={`room-participants-grid scrollbar-thin grid grid-cols-2 content-start items-start gap-2 overflow-y-auto p-3 ${
-                  !useConstellation ? "h-full" : ""
-                } ${
+                className={`room-participants-grid scrollbar-thin room-participants-grid--band gap-2 p-3 ${
                   useConstellation
-                    ? "room-participants-grid--constellation"
-                    : ""
+                    ? "room-participants-grid--node-band"
+                    : "room-participants-grid--card-band"
                 }`}
               >
                 {participants.map((p) => (
@@ -757,15 +770,17 @@ export default function RoomContent({
           </div>
         </div>
 
-        <div
-          className="hidden w-1 cursor-col-resize bg-slate-800/70 transition-colors hover:bg-cyan-500/50 active:bg-cyan-500 md:block"
-          onMouseDown={(e) => {
-            isDragging.current = true
-            e.preventDefault()
-          }}
-        />
+        {hasActiveScreenShare && (
+          <div
+            className="hidden w-1 cursor-col-resize bg-slate-800/70 transition-colors hover:bg-cyan-500/50 active:bg-cyan-500 md:block"
+            onMouseDown={(e) => {
+              isDragging.current = true
+              e.preventDefault()
+            }}
+          />
+        )}
 
-        <div className="room-panel flex flex-1 flex-col overflow-hidden">
+        <div className="room-panel flex min-h-0 flex-1 flex-col overflow-hidden">
           <TextChatCard
             room={roomName}
             nickName={nickName}

@@ -221,76 +221,69 @@ html {
   background: rgba(2, 6, 23, 0.56);
 }
 
-.room-participants-grid--constellation {
-  position: relative;
-  display: grid;
-  flex: 1;
-  min-height: 0;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(7.5rem, 1fr));
-  align-content: center;
-  justify-items: center;
-  gap: 0;
-  overflow: hidden;
+.room-content--stacked {
+  flex-direction: column;
 }
 
-.room-participants-grid--constellation::before,
-.room-participants-grid--constellation::after {
+.room-content--stacked > .room-panel:first-child {
+  width: 100%;
+}
+
+.room-content--stacked > .room-panel:last-child {
+  min-height: 0;
+}
+
+/* Normal Rooms use a short presence band. The conversation remains the
+   dominant surface below it; this is intentionally not a full-height map. */
+.room-participants-grid--band {
+  position: relative;
+  z-index: 0;
+  flex: none;
+  min-height: 0;
+  height: clamp(11.25rem, 24vh, 13.75rem);
+  align-items: center;
+  padding-inline: clamp(1rem, 5vw, 5rem);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.room-participants-grid--band::before {
   position: absolute;
   top: 50%;
-  left: 50%;
-  border: 1px solid rgba(103, 232, 249, 0.14);
+  left: 12%;
+  width: 76%;
+  height: 34%;
+  border: 1px solid rgba(103, 232, 249, 0.07);
   border-radius: 50%;
   content: "";
   pointer-events: none;
-  transform: translate(-50%, -50%) rotate(-13deg);
+  transform: translateY(-50%) rotate(-2deg);
 }
 
-.room-participants-grid--constellation::before {
-  width: 72%;
-  height: 46%;
+.room-participants-grid--node-band {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-content: center;
+  gap: 0.25rem clamp(1.25rem, 5vw, 5rem);
 }
 
-.room-participants-grid--constellation::after {
-  width: 43%;
-  height: 82%;
-  border-color: rgba(196, 181, 253, 0.1);
-  transform: translate(-50%, -50%) rotate(38deg);
-}
-
-.room-participants-grid--constellation > div {
+.room-participants-grid--node-band > div {
   z-index: 1;
-  width: clamp(7.5rem, 18vw, 10rem);
+  width: clamp(5.75rem, 11vw, 7.5rem);
+  flex: 0 1 clamp(5.75rem, 11vw, 7.5rem);
 }
 
-.room-participants-grid--constellation > div:nth-child(1) {
-  grid-column: 2;
-  grid-row: 3;
+.room-participants-grid--card-band {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  align-content: start;
+  overflow-y: auto;
 }
 
-.room-participants-grid--constellation > div:nth-child(2) {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.room-participants-grid--constellation > div:nth-child(3) {
-  grid-column: 3;
-  grid-row: 2;
-}
-
-.room-participants-grid--constellation > div:nth-child(4) {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.room-participants-grid--constellation > div:nth-child(5) {
-  grid-column: 3;
-  grid-row: 1;
-}
-
-.room-participants-grid--constellation > div:nth-child(6) {
-  grid-column: 1;
-  grid-row: 1;
+.room-participants-grid--card-band > div {
+  min-width: 0;
 }
 
 /* --- Participant node cards --- */
@@ -802,30 +795,33 @@ html {
 }
 
 @media (max-width: 639px) {
-  .room-participants-grid--constellation {
+  .room-participants-grid--node-band {
     display: flex;
     flex: none;
-    height: auto;
-    min-height: 8.5rem;
+    height: 7.25rem;
+    min-height: 7.25rem;
     align-items: center;
-    gap: 0.1rem;
+    justify-content: flex-start;
+    gap: 0.25rem;
     overflow-x: auto;
     overflow-y: hidden;
+    padding-inline: 1rem;
   }
 
-  .room-participants-grid--constellation::before,
-  .room-participants-grid--constellation::after {
+  .room-participants-grid--node-band::before {
     display: none;
   }
 
-  .room-participants-grid--constellation > div {
+  .room-participants-grid--node-band > div {
     width: 4.5rem;
     flex: none;
   }
 
-  .room-participants-grid--constellation > div:nth-child(n) {
-    grid-column: auto;
-    grid-row: auto;
+  .room-participants-grid--card-band {
+    height: 9.5rem;
+    min-height: 9.5rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-y: auto;
   }
 
   .participant-card--node {
@@ -860,7 +856,6 @@ html {
   }
 
   .participant-card:not(.participant-card--compact) {
-    min-height: 112px;
     padding: 0.55rem;
   }
 
@@ -879,15 +874,5 @@ html {
     flex-wrap: nowrap;
     overflow: hidden;
     gap: 0.16rem;
-  }
-
-  .participant-card--node:not(.participant-card--compact) {
-    min-height: 5.5rem;
-  }
-}
-
-@media (min-width: 640px) {
-  .room-participants-grid:not(.room-participants-grid--constellation) {
-    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
   }
 }

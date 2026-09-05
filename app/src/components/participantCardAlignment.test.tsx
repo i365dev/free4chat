@@ -2,7 +2,7 @@ import { cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 /**
  * #228/#234 participant-card visual consistency: in the NORMAL participant
- * grid, every UserCard root carries the same compact presentation contract, so
+ * band, every UserCard root carries the same compact presentation contract, so
  * Agent-only controls (Voice) live inside the same bounded card surface as
  * Human presence. jsdom cannot measure layout; this pins the semantic card
  * marker and grid contract. Visual confirmation happens in the production
@@ -54,7 +54,7 @@ function hookReturn(participants: Array<Record<string, unknown>>) {
   }
 }
 
-describe("participant card equal-height contract (#228)", () => {
+describe("participant card presentation contract (#228)", () => {
   afterEach(cleanup)
 
   beforeEach(() => {
@@ -88,10 +88,12 @@ describe("participant card equal-height contract (#228)", () => {
       cards.every((card) => card.className.includes("participant-card"))
     ).toBe(true)
 
-    // The grid top-aligns rows; no full-panel-height stretching remains.
+    // A normal Room keeps presence in a bounded band; chat owns the remaining
+    // viewport rather than sharing a full-height split panel.
     const grid = document.querySelector(".room-participants-grid")
     expect(grid).toBeTruthy()
-    expect(grid).toHaveClass("room-participants-grid--constellation")
+    expect(grid).toHaveClass("room-participants-grid--band")
+    expect(grid).toHaveClass("room-participants-grid--node-band")
     expect(
       cards.every((card) => card.className.includes("participant-card--node"))
     ).toBe(true)
