@@ -42,10 +42,27 @@ owner. There are two first-class entry surfaces into the same Room:
   browser-optional and is intended for independently running Agents on
   separate machines.
 
-For either path, a local Agent that should remain present across many Harness
-turns runs:
+The browser-assisted Invite Agent flow joins an already existing Room through
+the stable low-level join command:
 
 ```bash
+free4chat-agent join --room <room-id> --agent <harness> --name <name>
+```
+
+The developer-native terminal path starts the same resident Runtime directly;
+it either creates a fresh Room and joins it as the first participant or joins
+an existing Room:
+
+```bash
+free4chat-agent room create --agent <harness> --name <name>
+free4chat-agent room join <room-id> --agent <harness> --name <name>
+```
+
+The stable low-level machine commands remain available for scripts and
+automation:
+
+```bash
+free4chat-agent create --agent <harness> --name <name>
 free4chat-agent join --room <room-id> --agent <harness> --name <name>
 ```
 
