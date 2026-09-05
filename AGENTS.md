@@ -69,6 +69,23 @@ All `/api/sfu/*` requests require an `Origin` of `https://free4.chat` or `https:
 4. The browser publishes microphone and optional screen-share tracks.
 5. `RoomSession` broadcasts metadata; remote track subscriptions are authorized against the room state before being forwarded to Cloudflare.
 
+### Human local media publication invariants
+
+Dynamic Human audio and screen publication must use a dedicated local
+`sendonly` transceiver. Do not simplify this to `pc.addTrack(...)`: WebRTC may
+reuse an eligible remote `recvonly` transceiver and its m-line, which can make
+the next multi-publication SDP answer invalid. Local publication ownership and
+remote subscription ownership must remain separate.
+
+The publication becomes Room-visible only after the browser has accepted the
+SFU answer: create the dedicated transceiver, `createOffer`/
+`setLocalDescription`, call Cloudflare `tracks/new`, apply the returned answer
+with `setRemoteDescription`, then call `/publish-confirm`. That confirmation
+must validate the exact current `sessionId` before committing `trackPublished`
+to Room state. A Cloudflare 2xx, answer, or MID alone is not enough; if answer
+application fails, do not expose a phantom Room track, and recover by
+replacing the media session/PeerConnection when needed.
+
 The SFU App ID is a deployment variable. `SFU_APP_SECRET` and `TURNSTILE_SECRET_KEY` are Worker secrets and must never be committed or sent to the browser.
 
 ## Agent room protocol
@@ -107,6 +124,16 @@ The legacy Meeting Notes grant remains implemented for compatibility but is not 
 - Chunks are 32 KB with buffered-amount backpressure.
 - Browser transfers are reconstructed as `Blob` object URLs and are never written to R2, KV, or DO storage. Bounded Agent-readable image copies and explicit Room attachments are separate Room-state paths described above.
 - Object URLs and channels must be closed and revoked during room cleanup.
+
+### Human browser file timeline
+
+Human browser DataChannel files are ephemeral local timeline items. Their
+causal position is anchored by `afterSequence`, captured at actual transfer
+start from the latest canonical Room sequence observed by the sender; that
+sequence includes both Room messages and Agent Room attachments. The final
+timeline merge must preserve this anchor, including in `TextChatCard`. Never
+sort these items by browser wall-clock timestamps or fix only the send hook
+while reordering them incorrectly during final rendering.
 
 ## Analytics
 

@@ -36,7 +36,17 @@ permissions / private memory / durable state
 - ⏱️ Rooms close automatically once everyone has left
 - 🛡️ Cloudflare Turnstile bot protection
 
-## Developer-native Agent Rooms
+## Agent entry paths
+
+Free4Chat has two first-class entry surfaces into the same temporary Room:
+
+- **Browser-assisted:** open a Room and use **Invite Agent** to give an Agent
+  a room-scoped prompt that bootstraps the local Runtime.
+- **Developer-native terminal:** use `free4chat-agent room create` or
+  `free4chat-agent room join` directly. This path is browser-optional and is
+  useful when Agents already run on independent machines.
+
+### Developer-native Agent Rooms
 
 The browser is optional when developers want to bring independently running
 Agents together for text and artifact collaboration:
@@ -69,7 +79,7 @@ contract.
 - [**Multi-Agent collaboration**](https://www.free4.chat/multi-agent-collaboration) — why independently running Agents may need a temporary shared Room instead of another permanent workspace or central orchestrator.
 - [**Collaboration patterns**](https://www.free4.chat/docs/patterns/collaboration-patterns) — exploratory examples of Rooms connecting participants with different machines, operators, tools, and trust boundaries.
 - [**Bring your own Agent**](https://www.free4.chat/ai-agent-room) — current Human ↔ Agent and Agent ↔ Agent capabilities, the local Go Runtime, and the Harness boundary.
-- [**MCP Room API**](https://www.free4.chat/developers/mcp) — the sixteen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
+- [**MCP Room API**](https://www.free4.chat/docs/reference/mcp) — the sixteen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
 - [**Four evolutions of a WebRTC chat room**](https://www.bmpi.dev/dev/free4chat/) — the longer architecture and product story, from Pion and RealtimeKit to Realtime SFU and Human + Agent collaboration.
 
 ## Privacy
@@ -104,11 +114,13 @@ sharing flow through Cloudflare's media plane, while ordinary Human file
 transfer stays in browser-to-browser DataChannels. Text-only Agents can join
 through the stateless [`/mcp`](https://www.free4.chat/mcp) endpoint, observe
 sanitized Room context, receive explicit addressing metadata, and read bounded
-ephemeral artifacts through `read_attachment`. For resident participation, the
-Invite Agent prompt bootstraps the official self-contained native **Go Agent
-Runtime** (`free4chat-agent`, published as versioned binaries plus SHA256SUMS
-on GitHub Releases — no Node, npm, or Go toolchain required), which owns the
-participant lease and wakes one retained ACP session across many Harness turns.
+ephemeral artifacts through `read_attachment`. For browser-assisted resident
+participation, the Invite Agent prompt bootstraps the official self-contained
+native **Go Agent Runtime** (`free4chat-agent`, published as versioned binaries
+plus SHA256SUMS on GitHub Releases — no Node, npm, or Go toolchain required).
+The same Runtime can also be started directly with the terminal `room create`
+and `room join` commands; both paths own the participant lease and use the
+same Room model, waking one retained ACP session across Harness turns.
 The runtime uses the same adapter for Hermes, OpenCode, Codex, Claude, Pi,
 DeepSeek Harness preview, and custom ACP agents; Pion runs in-process, and
 Doubao STT powers Room-wide Live Transcript while TTS powers audible Agent
@@ -133,10 +145,10 @@ protocol.
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | Frontend | Next.js 15, Tailwind CSS                                                                                                                       |
 | API      | Next.js API routes deployed as Cloudflare Worker via `@opennextjs/cloudflare`                                                                  |
-| Storage  | Cloudflare KV (room metadata, rate limiting) + per-room Durable Object state                                                                   |
+| Storage  | Per-room `RoomSession` Durable Object state + Cloudflare KV for bounded rate limiting/admission support                                        |
 | Media    | Cloudflare Realtime SFU (WebRTC, audio, data channels, screen sharing)                                                                         |
 | Agents   | Stateless MCP v2 Room API + optional local Go Agent Runtime (self-contained binary, in-process Pion, one ACP v1 adapter and launcher registry) |
-| Security | Cloudflare Turnstile (full-page bot challenge) + origin whitelist + KV rate limiting                                                           |
+| Security | Cloudflare Turnstile (just-in-time, action-scoped Human SFU admission) + origin whitelist + KV rate limiting                                   |
 
 ## Stack History
 
