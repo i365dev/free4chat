@@ -60,6 +60,7 @@ class TestDataChannel {
 
 class TestPeerConnection {
   static instances: TestPeerConnection[] = []
+  static remoteDescriptionFailures = 0
   connectionState = "connected"
   ontrack: ((event: unknown) => void) | null = null
   onconnectionstatechange: (() => void) | null = null
@@ -97,6 +98,10 @@ class TestPeerConnection {
   }
 
   setRemoteDescription() {
+    if (TestPeerConnection.remoteDescriptionFailures > 0) {
+      TestPeerConnection.remoteDescriptionFailures -= 1
+      return Promise.reject(new Error("remote description failed"))
+    }
     return Promise.resolve()
   }
 
@@ -239,6 +244,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
   beforeEach(() => {
     TestPeerConnection.instances.length = 0
     TestPeerConnection.channelFactory = null
+    TestPeerConnection.remoteDescriptionFailures = 0
     TestWebSocket.instances.length = 0
     sessionNumber = 0
     trackRequestNumber = 0
@@ -481,6 +487,34 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
+  it("does not retry a Human track after a mid has been admitted", async () => {
+    const { socket, unmount } = await connect()
+    TestPeerConnection.remoteDescriptionFailures = 1
+    sendState(
+      socket,
+      roomState([
+        participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+      ])
+    )
+    await waitForRemoteTrackRequests(1)
+    await flushAsync()
+    vi.useFakeTimers()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000)
+      await flushAsync()
+    })
+    sendState(
+      socket,
+      roomState([
+        participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+      ])
+    )
+    await flushAsync()
+    expect(trackRequestNumber).toBe(1)
+    unmount()
+  })
+
   it("ignores a delayed event from a rotated publisher session", async () => {
     const { result, socket, pc, unmount } = await connect()
     const oldTrack = { trackName: "screen", kind: "video" } as const
@@ -679,7 +713,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
-  it("orders a received file by sender transfer start when file-start arrives after Room text", async () => {
+  it("orders a received file by Room sequence anchor despite sender clock skew", async () => {
     const { result, socket, unmount } = await connect()
     const state = roomState([participant("publisher-a", [], "session-a", true)])
     sendState(socket, state)
@@ -705,7 +739,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     })
 
     vi.useFakeTimers()
-    vi.setSystemTime(2000)
+    vi.setSystemTime(30_000)
     act(() =>
       socket.onmessage?.({
         data: JSON.stringify({
@@ -717,13 +751,13 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
             kind: "human",
             type: "text",
             text: "later text",
-            createdAt: 2000,
+            createdAt: 1,
             sequence: 1,
           },
         }),
       })
     )
-    vi.setSystemTime(3000)
+    vi.setSystemTime(60_000)
     act(() =>
       channel.emit("message", {
         data: JSON.stringify({
@@ -732,7 +766,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
           name: "first.txt",
           mime: "text/plain",
           size: 3,
-          createdAt: 1000,
+          afterSequence: 0,
         }),
       })
     )
@@ -797,7 +831,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         name: "a.txt",
         mime: "text/plain",
         size: 1,
-        createdAt: 1000,
+        afterSequence: 0,
       })
     )
 
@@ -833,11 +867,18 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
       localChannel.send.mock.calls
         .map(([data]) =>
           typeof data === "string" && data.includes('"type":"file-start"')
-            ? JSON.parse(data).id
+            ? JSON.parse(data)
             : undefined
         )
         .filter(Boolean)
-    ).toEqual(["file-a", "file-b"])
+        .map((message) => ({
+          id: message.id,
+          afterSequence: message.afterSequence,
+        }))
+    ).toEqual([
+      { id: "file-a", afterSequence: 0 },
+      { id: "file-b", afterSequence: 1 },
+    ])
     expect(result.current.messages.map((message) => message.messageId)).toEqual(
       ["file-a", "text-between", "file-b"]
     )

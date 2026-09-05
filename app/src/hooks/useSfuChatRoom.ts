@@ -136,7 +136,7 @@ interface IncomingFileTransfer {
   name: string
   mime: string
   size: number
-  startedAt: number
+  afterSequence?: number
   received: number
   chunks: ArrayBuffer[]
 }
@@ -210,6 +210,25 @@ function hasRemoteTrackError(response: SfuApiResponse): boolean {
         (track) =>
           typeof track.errorCode === "string" && track.errorCode.length > 0
       )
+  )
+}
+
+const TRANSIENT_REMOTE_TRACK_ADMISSION_ERRORS = new Set([
+  "empty_track_error",
+  "not_found_track_error",
+])
+
+function isTransientRemoteTrackAdmissionError(
+  response: SfuApiResponse
+): boolean {
+  const errorCodes = [
+    response.errorCode,
+    ...(response.tracks?.map((track) => track.errorCode) ?? []),
+  ]
+  return errorCodes.some(
+    (code) =>
+      typeof code === "string" &&
+      TRANSIENT_REMOTE_TRACK_ADMISSION_ERRORS.has(code)
   )
 }
 
@@ -1070,13 +1089,25 @@ export function useSfuChatRoom(
     )
   }, [])
 
+  const latestObservedRoomSequence = useCallback(() => {
+    return roomMessagesRef.current.reduce(
+      (latest, message) =>
+        typeof message.sequence === "number" &&
+        Number.isSafeInteger(message.sequence) &&
+        message.sequence >= 0
+          ? Math.max(latest, message.sequence)
+          : latest,
+      0
+    )
+  }, [])
+
   const addReceivedFileMessage = useCallback(
     (
       peerId: string,
       name: string,
       file: Pick<
         IncomingFileTransfer,
-        "id" | "name" | "mime" | "size" | "startedAt"
+        "id" | "name" | "mime" | "size" | "afterSequence"
       >,
       chunks: ArrayBuffer[]
     ) => {
@@ -1088,10 +1119,7 @@ export function useSfuChatRoom(
         name,
         type: file.mime.startsWith("image/") ? "image" : "file",
         messageId: file.id,
-        // A file's position is the time its transfer started, not the time
-        // the last chunk arrived. Otherwise later text can render above a
-        // file that was sent first when the file transfer is slow.
-        createdAt: file.startedAt,
+        afterSequence: file.afterSequence,
         fileLink,
         fileName: file.name,
         fileSize: file.size,
@@ -1172,7 +1200,7 @@ export function useSfuChatRoom(
           name?: string
           mime?: string
           size?: number
-          createdAt?: number
+          afterSequence?: number
         }
         try {
           message = JSON.parse(event.data) as typeof message
@@ -1193,15 +1221,16 @@ export function useSfuChatRoom(
             name: message.name.slice(0, 256),
             mime: message.mime.slice(0, 128),
             size: message.size,
-            // The sender reserves this timestamp immediately before the
-            // actual file-start frame. Use it when present so a slower
-            // DataChannel cannot move the file behind later Room text.
-            startedAt:
-              typeof message.createdAt === "number" &&
-              Number.isFinite(message.createdAt) &&
-              message.createdAt >= 0
-                ? message.createdAt
-                : Date.now(),
+            // The sender reports the latest Room sequence it had observed at
+            // transfer start. Clamp untrusted/future anchors to the latest
+            // sequence this receiver knows, while preserving an older anchor
+            // so a late file-start frame can still precede later Room text.
+            afterSequence:
+              typeof message.afterSequence === "number" &&
+              Number.isSafeInteger(message.afterSequence) &&
+              message.afterSequence >= 0
+                ? Math.min(message.afterSequence, latestObservedRoomSequence())
+                : undefined,
             received: 0,
             chunks: [],
           })
@@ -1233,7 +1262,7 @@ export function useSfuChatRoom(
         void event.data.arrayBuffer().then(consumeChunk)
       }
     },
-    [addReceivedFileMessage]
+    [addReceivedFileMessage, latestObservedRoomSequence]
   )
 
   const establishDataChannelTransport = useCallback(async () => {
@@ -1849,7 +1878,8 @@ export function useSfuChatRoom(
                 subscriberSessionId,
                 subscriberPeerConnection
               )
-            : scheduleRemoteTrackSubscriptionRetry(
+            : isTransientRemoteTrackAdmissionError(response) &&
+              scheduleRemoteTrackSubscriptionRetry(
                 key,
                 participant.id,
                 media.sessionId,
@@ -1886,22 +1916,8 @@ export function useSfuChatRoom(
               typeof candidate.mid === "string" && candidate.mid.length > 0
           )
         if (!responseTrack?.mid) {
-          const scheduled =
-            !isAgentAudioSubscription &&
-            scheduleRemoteTrackSubscriptionRetry(
-              key,
-              participant.id,
-              media.sessionId,
-              track.trackName,
-              track.kind,
-              attempt + 1,
-              subscriberSessionId,
-              subscriberPeerConnection
-            )
-          if (!scheduled) {
-            subscribedTracksRef.current.delete(key)
-            readySubscribedTracksRef.current.delete(key)
-          }
+          subscribedTracksRef.current.delete(key)
+          readySubscribedTracksRef.current.delete(key)
           sfuClientDiagnostic("remote_track_mid_missing", {
             participant_kind: participant.kind,
             track_kind: track.kind,
@@ -2029,36 +2045,34 @@ export function useSfuChatRoom(
           throw error
         }
       }).catch((error) => {
+        const hadAdmittedBinding = binding !== null
         if (binding) removeRemoteTrackBinding(binding)
-        const scheduled =
-          participant.kind === "human" &&
-          isCurrentRemoteSubscription() &&
-          scheduleRemoteTrackSubscriptionRetry(
-            key,
-            participant.id,
-            media.sessionId,
-            track.trackName,
-            track.kind,
-            attempt + 1,
-            subscriberSessionId,
-            subscriberPeerConnection
-          )
-        if (
-          (!scheduled && isCurrentRemoteSubscription()) ||
-          (isAgentAudioSubscription &&
-            isCurrentSubscriberSession(
-              subscriberSessionId,
-              subscriberPeerConnection
-            ))
-        ) {
-          subscribedTracksRef.current.delete(key)
-          readySubscribedTracksRef.current.delete(key)
+        const currentSubscriberSession = isCurrentSubscriberSession(
+          subscriberSessionId,
+          subscriberPeerConnection
+        )
+        if (isCurrentRemoteSubscription() || currentSubscriberSession) {
+          // A Human binding means Cloudflare already admitted this mid. Keep
+          // the dedup marker so a later Room resync cannot create a duplicate
+          // upstream subscription without first replacing the PeerConnection.
+          if (hadAdmittedBinding && !isAgentAudioSubscription) {
+            subscribedTracksRef.current.add(key)
+            readySubscribedTracksRef.current.delete(key)
+          } else {
+            subscribedTracksRef.current.delete(key)
+            readySubscribedTracksRef.current.delete(key)
+          }
         } else if (isAgentAudioSubscription) {
           voiceDownstreamDiagnostic(
             "agent_audio_subscription_retry_cancelled",
             { attempt, reason: "stale_subscriber_session", stage: "failed" }
           )
         }
+        if (hadAdmittedBinding && participant.kind === "human")
+          sfuClientDiagnostic("remote_track_retry_blocked", {
+            track_kind: track.kind,
+            reason: "mid_admitted",
+          })
         console.warn("sfu_remote_subscribe_failed", {
           errorType: error instanceof Error ? error.name : typeof error,
         })
@@ -3102,10 +3116,10 @@ export function useSfuChatRoom(
         const channel = localFileChannelRef.current
         if (!channel) throw new Error("SFU file data channel is unavailable")
         await waitForDataChannelOpen(channel)
-        // This is deliberately inside the serialized operation and directly
-        // before file-start. A queued file must not claim a timeline position
+        // Capture the latest Room sequence observed by this browser directly
+        // before file-start. A queued file must not claim a causal position
         // before the preceding transfer has actually started.
-        const createdAt = Date.now()
+        const afterSequence = latestObservedRoomSequence()
         channel.send(
           JSON.stringify({
             type: "file-start",
@@ -3113,7 +3127,7 @@ export function useSfuChatRoom(
             name: file.name,
             mime,
             size: file.size,
-            createdAt,
+            afterSequence,
           })
         )
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
@@ -3132,7 +3146,7 @@ export function useSfuChatRoom(
           name: nickName,
           type: mime.startsWith("image/") ? "image" : "file",
           messageId: id,
-          createdAt,
+          afterSequence,
           fileLink,
           fileName: file.name,
           fileSize: file.size,
@@ -3183,6 +3197,7 @@ export function useSfuChatRoom(
     },
     [
       appendEphemeralMessage,
+      latestObservedRoomSequence,
       nickName,
       roomName,
       waitForDataChannelOpen,
