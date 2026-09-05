@@ -424,6 +424,8 @@ func TestBuildHarnessEnvironmentIsAllowListed(t *testing.T) {
 	environment := BuildHarnessEnvironment(codex, map[string]string{
 		"PATH":                  "/safe/bin",
 		"HOME":                  "/home/test",
+		"FREE4CHAT_AGENT_DIR":   "/custom/runtime-root",
+		"FREE4CHAT_UNRELATED":   "must-not-pass",
 		"OPENAI_API_KEY":        "provider-secret",
 		"AWS_SECRET_ACCESS_KEY": "must-not-pass",
 		"GH_TOKEN":              "must-not-pass",
@@ -437,16 +439,40 @@ func TestBuildHarnessEnvironmentIsAllowListed(t *testing.T) {
 	if environment["OPENAI_API_KEY"] != "provider-secret" {
 		t.Fatal("provider credentials must survive the filter")
 	}
+	if environment["FREE4CHAT_AGENT_DIR"] != "/custom/runtime-root" {
+		t.Fatalf("explicit Runtime root must survive the filter: %v", environment)
+	}
 	for _, forbidden := range []string{"AWS_SECRET_ACCESS_KEY", "GH_TOKEN", "GITHUB_TOKEN"} {
 		if _, present := environment[forbidden]; present {
 			t.Fatalf("%s must not leak into the Harness environment", forbidden)
 		}
+	}
+	if _, present := environment["FREE4CHAT_UNRELATED"]; present {
+		t.Fatal("unrelated FREE4CHAT_* variables must not leak into the Harness environment")
 	}
 	if _, present := environment["CODEX_CONFIG"]; present {
 		t.Fatal("ambient CODEX_CONFIG must be dropped")
 	}
 	if environment["INITIAL_AGENT_MODE"] != "read-only" {
 		t.Fatalf("trusted launcher override lost: %v", environment["INITIAL_AGENT_MODE"])
+	}
+}
+
+func TestACPSubprocessReceivesExplicitRuntimeRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "runtime-root")
+	t.Setenv("FREE4CHAT_AGENT_DIR", root)
+	adapter, _ := newTestAdapter(t, scriptLauncher("env", nil), AdapterOptions{})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("runtime-root"), adapter.SessionGeneration())
+	if err != nil {
+		t.Fatalf("turn failed: %v", err)
+	}
+	if result.Text != root {
+		t.Fatalf("Harness did not receive FREE4CHAT_AGENT_DIR: got %q want %q", result.Text, root)
 	}
 }
 

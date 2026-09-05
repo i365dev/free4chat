@@ -24,6 +24,7 @@ func (e *UnknownLauncherError) Error() string {
 // explicit launcher override).
 var safeEnvironmentKeys = []string{
 	"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TERM", "NO_COLOR",
+	"FREE4CHAT_AGENT_DIR",
 	"OPENAI_API_KEY", "OPENAI_BASE_URL",
 	"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL",
 	"GOOGLE_API_KEY", "GEMINI_API_KEY",
