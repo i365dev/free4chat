@@ -774,20 +774,20 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 // receive sanitized event/transcript projections in distinct sequence domains.
 func (c *Client) ReadRoomContext(participantHandle string, options types.RoomContextReadOptions) (types.RoomContextReadResult, error) {
 	args := map[string]any{"participantHandle": participantHandle}
-	if options.BeforeSequence > 0 {
-		args["beforeSequence"] = options.BeforeSequence
+	if options.BeforeSequence != nil {
+		args["beforeSequence"] = *options.BeforeSequence
 	}
-	if options.AfterSequence > 0 {
-		args["afterSequence"] = options.AfterSequence
+	if options.AfterSequence != nil {
+		args["afterSequence"] = *options.AfterSequence
 	}
 	if options.Limit > 0 {
 		args["limit"] = options.Limit
 	}
-	if options.BeforeTranscriptSequence > 0 {
-		args["beforeTranscriptSequence"] = options.BeforeTranscriptSequence
+	if options.BeforeTranscriptSequence != nil {
+		args["beforeTranscriptSequence"] = *options.BeforeTranscriptSequence
 	}
-	if options.AfterTranscriptSequence > 0 {
-		args["afterTranscriptSequence"] = options.AfterTranscriptSequence
+	if options.AfterTranscriptSequence != nil {
+		args["afterTranscriptSequence"] = *options.AfterTranscriptSequence
 	}
 	if options.TranscriptLimit > 0 {
 		args["transcriptLimit"] = options.TranscriptLimit

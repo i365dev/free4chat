@@ -199,8 +199,8 @@ func (r *ResidentRuntime) observeHarnessSession(generation, target int64) bool {
 	// floor at the old successful marker so old bounded transcript history is
 	// explicitly pull-only, while any segment that failed delivery remains a
 	// proactive retry for the new session.
-	r.meetingDeliveryFloor = r.meetingDeliveredThrough
-	r.liveTranscriptDeliveryFloor = r.liveTranscriptDeliveredThrough
+	r.meetingDeliveryFloor = max(r.meetingDeliveryFloor, r.meetingDeliveredThrough)
+	r.liveTranscriptDeliveryFloor = max(r.liveTranscriptDeliveryFloor, r.liveTranscriptDeliveredThrough)
 	r.meetingDeliveredThrough = 0
 	r.liveTranscriptDeliveredThrough = 0
 	return r.bootstrappedHarnessGeneration != generation
@@ -252,9 +252,11 @@ func (r *ResidentRuntime) pendingContext(target int64) ([]types.RoomEvent, error
 	cursor := pending.after
 	var events []types.RoomEvent
 	for cursor < pending.target {
+		afterSequence := cursor
+		beforeSequence := pending.target + 1
 		context, err := client.ReadRoomContext(handle, types.RoomContextReadOptions{
-			AfterSequence:  cursor,
-			BeforeSequence: pending.target + 1,
+			AfterSequence:  &afterSequence,
+			BeforeSequence: &beforeSequence,
 			Limit:          50,
 		})
 		if err != nil {

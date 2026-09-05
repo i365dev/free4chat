@@ -70,11 +70,11 @@ type IpcRequest struct {
 	MimeType                 string            `json:"mimeType,omitempty"`
 	DataBase64               string            `json:"dataBase64,omitempty"`
 	SourceParticipantID      string            `json:"sourceParticipantId,omitempty"`
-	BeforeSequence           int64             `json:"beforeSequence,omitempty"`
-	AfterSequence            int64             `json:"afterSequence,omitempty"`
+	BeforeSequence           *int64            `json:"beforeSequence,omitempty"`
+	AfterSequence            *int64            `json:"afterSequence,omitempty"`
 	Limit                    int               `json:"limit,omitempty"`
-	BeforeTranscriptSequence int64             `json:"beforeTranscriptSequence,omitempty"`
-	AfterTranscriptSequence  int64             `json:"afterTranscriptSequence,omitempty"`
+	BeforeTranscriptSequence *int64            `json:"beforeTranscriptSequence,omitempty"`
+	AfterTranscriptSequence  *int64            `json:"afterTranscriptSequence,omitempty"`
 	TranscriptLimit          int               `json:"transcriptLimit,omitempty"`
 }
 

@@ -475,13 +475,14 @@ type RoomInfo struct {
 
 // RoomContextReadOptions bounds one read-only historical Room observation.
 // Room event and Live Transcript sequences intentionally remain separate
-// domains, so their cursors and limits are never interchanged.
+// domains, so their cursors and limits are never interchanged. Cursor
+// pointers preserve an omitted cursor separately from an explicit zero.
 type RoomContextReadOptions struct {
-	BeforeSequence           int64
-	AfterSequence            int64
+	BeforeSequence           *int64
+	AfterSequence            *int64
 	Limit                    int
-	BeforeTranscriptSequence int64
-	AfterTranscriptSequence  int64
+	BeforeTranscriptSequence *int64
+	AfterTranscriptSequence  *int64
 	TranscriptLimit          int
 }
 

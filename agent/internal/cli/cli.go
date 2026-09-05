@@ -100,16 +100,16 @@ func option(args []string, name string) string {
 	return ""
 }
 
-func nonnegativeSequenceOption(args []string, name string) (int64, error) {
+func nonnegativeSequenceOption(args []string, name string) (*int64, error) {
 	raw := option(args, name)
 	if raw == "" {
-		return 0, nil
+		return nil, nil
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, errUsage()
+		return nil, errUsage()
 	}
-	return value, nil
+	return &value, nil
 }
 
 func boundedContextLimitOption(args []string, name string) (int, error) {

@@ -50,6 +50,8 @@ func TestRoomInfoParsesLiveTranscriptStrictly(t *testing.T) {
 }
 
 func TestReadRoomContextUsesBoundedSeparateSequenceDomains(t *testing.T) {
+	afterSequence := int64(2)
+	afterTranscriptSequence := int64(7)
 	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
 		if toolNameOf(body) != "read_room_context" {
 			t.Fatalf("unexpected tool: %q", toolNameOf(body))
@@ -73,7 +75,7 @@ func TestReadRoomContextUsesBoundedSeparateSequenceDomains(t *testing.T) {
 		}))
 	})
 	context, err := client.ReadRoomContext("private-handle", types.RoomContextReadOptions{
-		AfterSequence: 2, Limit: 3, AfterTranscriptSequence: 7,
+		AfterSequence: &afterSequence, Limit: 3, AfterTranscriptSequence: &afterTranscriptSequence,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +84,46 @@ func TestReadRoomContextUsesBoundedSeparateSequenceDomains(t *testing.T) {
 		context.Room.Events[0].Sequence != 3 || len(context.LiveTranscript.Segments) != 1 ||
 		context.LiveTranscript.Segments[0].Sequence != 8 {
 		t.Fatalf("context parsing mismatch: %#v", context)
+	}
+}
+
+func TestReadRoomContextPreservesExplicitZeroCursorsAndOmitsAbsentOnWire(t *testing.T) {
+	zero := int64(0)
+	calls := 0
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		calls++
+		args := toolArgs(body)
+		for _, name := range []string{
+			"beforeSequence", "afterSequence", "beforeTranscriptSequence", "afterTranscriptSequence",
+		} {
+			_, present := args[name]
+			if calls == 1 && (!present || args[name] != float64(0)) {
+				t.Fatalf("explicit zero %s was not preserved: %#v", name, args)
+			}
+			if calls == 2 && present {
+				t.Fatalf("omitted %s unexpectedly reached MCP: %#v", name, args)
+			}
+		}
+		writeJSON(w, callResult(map[string]any{
+			"events": []any{}, "oldestSequence": float64(0), "newestSequence": float64(0),
+			"hasMoreBefore": false, "hasMoreAfter": false,
+			"liveTranscript": map[string]any{
+				"segments": []any{}, "oldestSequence": float64(0), "newestSequence": float64(0),
+				"hasMoreBefore": false, "hasMoreAfter": false,
+			},
+		}))
+	})
+	if _, err := client.ReadRoomContext("private-handle", types.RoomContextReadOptions{
+		BeforeSequence: &zero, AfterSequence: &zero,
+		BeforeTranscriptSequence: &zero, AfterTranscriptSequence: &zero,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ReadRoomContext("private-handle", types.RoomContextReadOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("MCP calls = %d, want 2", calls)
 	}
 }
 

@@ -281,6 +281,47 @@ func nextFakeRequest(t *testing.T, fixture *fakeDaemon) daemon.IpcRequest {
 	}
 }
 
+func TestContextReadPreservesExplicitZeroCursorPresenceOverIPC(t *testing.T) {
+	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+		if request.Op == "status" {
+			return daemon.IpcResponse{OK: true, Result: []any{}}
+		}
+		return daemon.IpcResponse{OK: true, Result: map[string]any{}}
+	})
+	_, code := runCliWithFakeDaemon(t, fixture, "context", "read",
+		"--before-sequence", "0", "--after-sequence", "0",
+		"--before-transcript-sequence", "0", "--after-transcript-sequence", "0")
+	if code != 0 {
+		t.Fatalf("context read with explicit zero cursors exited %d", code)
+	}
+	if status := nextFakeRequest(t, fixture); status.Op != "status" {
+		t.Fatalf("context read preflight = %q, want status", status.Op)
+	}
+	request := nextFakeRequest(t, fixture)
+	for name, cursor := range map[string]*int64{
+		"beforeSequence": request.BeforeSequence, "afterSequence": request.AfterSequence,
+		"beforeTranscriptSequence": request.BeforeTranscriptSequence,
+		"afterTranscriptSequence":  request.AfterTranscriptSequence,
+	} {
+		if cursor == nil || *cursor != 0 {
+			t.Fatalf("explicit zero %s was lost over IPC: %#v", name, request)
+		}
+	}
+
+	_, code = runCliWithFakeDaemon(t, fixture, "context", "read")
+	if code != 0 {
+		t.Fatalf("context read without cursors exited %d", code)
+	}
+	if status := nextFakeRequest(t, fixture); status.Op != "status" {
+		t.Fatalf("context read preflight = %q, want status", status.Op)
+	}
+	request = nextFakeRequest(t, fixture)
+	if request.BeforeSequence != nil || request.AfterSequence != nil ||
+		request.BeforeTranscriptSequence != nil || request.AfterTranscriptSequence != nil {
+		t.Fatalf("omitted context cursors were sent over IPC: %#v", request)
+	}
+}
+
 func roomFixture(t *testing.T, createResult, joinResult json.RawMessage) *fakeDaemon {
 	t.Helper()
 	return newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {

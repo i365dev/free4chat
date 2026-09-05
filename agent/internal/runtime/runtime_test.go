@@ -136,6 +136,7 @@ type fakeClient struct {
 	contextResult         types.RoomContextReadResult
 	contextErr            error
 	contextCalls          int
+	contextOptions        []types.RoomContextReadOptions
 }
 
 type transcriptClient struct {
@@ -265,6 +266,77 @@ func TestTranscriptDeltasAdvanceOnlyAfterSuccessfulHarnessTurn(t *testing.T) {
 	}
 }
 
+func TestTranscriptDeliveryFloorsSurviveRepeatedACPReplacement(t *testing.T) {
+	client := &transcriptClient{fakeClient: &fakeClient{}, roomInfo: types.RoomInfo{
+		Exists: true,
+		LiveTranscriptSegments: []types.LiveTranscriptSegment{{
+			Sequence: 100, ParticipantID: "human", Speaker: "Ada", Text: "old shared speech",
+		}},
+	}}
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "inst-transcript-replacement", RoomID: "room", Name: "Pi",
+		Client: client, Adapter: adapter,
+	})
+	store := speech.NewTranscriptStore(t.TempDir() + "/meeting.jsonl")
+	defer store.Dispose()
+	if err := store.Ready(); err != nil {
+		t.Fatalf("meeting store ready: %v", err)
+	}
+	rt.transcript = store
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	store.Record(speech.AudioSource{ParticipantID: "human", ParticipantName: "Ada"}, "old local speech")
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	defer func() { adapterRunTurnHook = original }()
+
+	// The initial retained ACP session successfully consumes the old local and
+	// Room-wide transcript state.
+	rt.acceptEvent(roomEvent(1, true))
+	rt.drainTurns()
+	if len(captured) != 1 || captured[0].MeetingTranscript == nil ||
+		captured[0].MeetingTranscript.Segments[0].Sequence != 1 || captured[0].LiveTranscript == nil ||
+		captured[0].LiveTranscript.Segments[0].Sequence != 100 {
+		t.Fatalf("initial transcript delivery mismatch: %#v", captured)
+	}
+
+	// A replacement gets only the newly committed delta, but its turn fails
+	// before acknowledgement.
+	adapter.recreateSession()
+	store.Record(speech.AudioSource{ParticipantID: "human", ParticipantName: "Ada"}, "new local speech")
+	client.roomInfo.LiveTranscriptSegments = append(client.roomInfo.LiveTranscriptSegments,
+		types.LiveTranscriptSegment{Sequence: 101, ParticipantID: "human", Speaker: "Ada", Text: "new shared speech"})
+	adapter.mu.Lock()
+	adapter.turnErr = errors.New("ambiguous")
+	adapter.mu.Unlock()
+	rt.acceptEvent(roomEvent(2, true))
+	rt.drainTurns()
+	if len(captured) != 2 || captured[1].MeetingTranscript == nil ||
+		captured[1].MeetingTranscript.Segments[0].Sequence != 2 || captured[1].LiveTranscript == nil ||
+		captured[1].LiveTranscript.Segments[0].Sequence != 101 {
+		t.Fatalf("failed replacement did not receive only its new transcript delta: %#v", captured)
+	}
+
+	// Replacing ACP again must retain the original pull-only floors despite the
+	// failed session resetting its delivered markers; only the failed delta is
+	// proactively retried.
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	adapter.recreateSession()
+	rt.drainTurns()
+	if len(captured) != 3 || captured[2].MeetingTranscript == nil ||
+		len(captured[2].MeetingTranscript.Segments) != 1 || captured[2].MeetingTranscript.Segments[0].Sequence != 2 ||
+		captured[2].LiveTranscript == nil || len(captured[2].LiveTranscript.Segments) != 1 ||
+		captured[2].LiveTranscript.Segments[0].Sequence != 101 {
+		t.Fatalf("second replacement replayed old transcript bulk: %#v", captured)
+	}
+}
+
 type waitStep struct {
 	err    error
 	events []types.RoomEvent
@@ -280,10 +352,11 @@ func (c *fakeClient) RoomInfo(string) (types.RoomInfo, error) {
 	return types.RoomInfo{Exists: true}, nil
 }
 
-func (c *fakeClient) ReadRoomContext(string, types.RoomContextReadOptions) (types.RoomContextReadResult, error) {
+func (c *fakeClient) ReadRoomContext(_ string, options types.RoomContextReadOptions) (types.RoomContextReadResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.contextCalls++
+	c.contextOptions = append(c.contextOptions, options)
 	return c.contextResult, c.contextErr
 }
 
@@ -1214,9 +1287,14 @@ func TestPendingTurnRecoversEvictedContextFromRoomHistory(t *testing.T) {
 	rt.drainTurns()
 	client.mu.Lock()
 	contextCalls := client.contextCalls
+	contextOptions := append([]types.RoomContextReadOptions(nil), client.contextOptions...)
 	client.mu.Unlock()
 	if contextCalls != 1 || len(captured) != 1 || len(captured[0].Events) != 3 {
 		t.Fatalf("evicted pending context was not recovered: calls=%d turns=%#v", contextCalls, captured)
+	}
+	if len(contextOptions) != 1 || contextOptions[0].AfterSequence == nil || *contextOptions[0].AfterSequence != 0 ||
+		contextOptions[0].BeforeSequence == nil || *contextOptions[0].BeforeSequence != 4 {
+		t.Fatalf("pending recovery did not request the forward zero cursor range: %#v", contextOptions)
 	}
 }
 
