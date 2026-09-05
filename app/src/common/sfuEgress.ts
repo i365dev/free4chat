@@ -112,9 +112,9 @@ export function aggregateSfuEgressStats(report: unknown): SfuEgressStats {
 }
 
 /**
- * Compare only the same WebRTC stats objects. A missing or reset object is
- * re-baselined by the caller's next current-stats Map and does not affect
- * deltas from unrelated objects.
+ * Compare WebRTC stats objects independently. New objects count their
+ * current counter after the first PeerConnection snapshot has established
+ * the initial baseline; reset objects are re-baselined without counting.
  */
 export function sfuEgressDelta(
   previous: SfuEgressStats | null,
@@ -124,8 +124,19 @@ export function sfuEgressDelta(
   const bytes = { ...EMPTY_BYTES }
   for (const [id, currentStat] of current) {
     const previousStat = previous.get(id)
+    if (!previousStat) {
+      if (currentStat.category === "audio")
+        bytes.audioBytes = addBytes(bytes.audioBytes, currentStat.bytesReceived)
+      else if (currentStat.category === "video")
+        bytes.videoBytes = addBytes(bytes.videoBytes, currentStat.bytesReceived)
+      else
+        bytes.dataChannelBytes = addBytes(
+          bytes.dataChannelBytes,
+          currentStat.bytesReceived
+        )
+      continue
+    }
     if (
-      !previousStat ||
       previousStat.category !== currentStat.category ||
       currentStat.bytesReceived < previousStat.bytesReceived
     )

@@ -151,7 +151,7 @@ describe("SFU egress stats", () => {
     )
   })
 
-  it("counts deltas only for matching stats ids and re-baselines reset or new ids", () => {
+  it("counts new stats ids after the initial baseline and re-baselines resets", () => {
     const previous = aggregateSfuEgressStats(
       report(
         { id: "audio", type: "inbound-rtp", kind: "audio", bytesReceived: 100 },
@@ -179,7 +179,7 @@ describe("SFU egress stats", () => {
 
     expect(sfuEgressDelta(previous, current)).toEqual({
       audioBytes: 50,
-      videoBytes: 0,
+      videoBytes: 10,
       dataChannelBytes: 0,
     })
     expect(sfuEgressDelta(null, current)).toBeNull()
@@ -267,7 +267,7 @@ describe("SFU egress stats", () => {
     )
   })
 
-  it("counts an existing RTP stream while a replacement stream establishes its baseline", async () => {
+  it("counts an existing RTP stream and a newly appearing video stream", async () => {
     let now = 1_000
     const emit = vi.fn()
     const sampler = createSfuEgressSampler(emit, () => now)
@@ -331,9 +331,9 @@ describe("SFU egress stats", () => {
     expect(emit).toHaveBeenLastCalledWith(
       {
         audioBytes: 50,
-        videoBytes: 0,
+        videoBytes: 10,
         dataChannelBytes: 0,
-        totalBytes: 50,
+        totalBytes: 60,
         intervalMs: 300_000,
         sampleReason: "interval",
       },
@@ -395,6 +395,52 @@ describe("SFU egress stats", () => {
         videoBytes: 0,
         dataChannelBytes: 0,
         totalBytes: 40,
+        intervalMs: 300_000,
+        sampleReason: "interval",
+      },
+      peerConnection
+    )
+  })
+
+  it("counts a newly appearing DataChannel stats object", async () => {
+    let now = 1_000
+    const emit = vi.fn()
+    const sampler = createSfuEgressSampler(emit, () => now)
+    const peerConnection = {}
+    const getStats = vi
+      .fn()
+      .mockResolvedValueOnce(
+        report({
+          id: "audio",
+          type: "inbound-rtp",
+          kind: "audio",
+          bytesReceived: 100,
+        })
+      )
+      .mockResolvedValueOnce(
+        report(
+          {
+            id: "audio",
+            type: "inbound-rtp",
+            kind: "audio",
+            bytesReceived: 140,
+          },
+          { id: "dc", type: "data-channel", bytesReceived: 25 }
+        )
+      )
+
+    sampler.sample(peerConnection, getStats, "interval")
+    await settle()
+    now += 300_000
+    sampler.sample(peerConnection, getStats, "interval")
+    await settle()
+
+    expect(emit).toHaveBeenCalledWith(
+      {
+        audioBytes: 40,
+        videoBytes: 0,
+        dataChannelBytes: 25,
+        totalBytes: 65,
         intervalMs: 300_000,
         sampleReason: "interval",
       },
