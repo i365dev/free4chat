@@ -107,25 +107,46 @@ type Options struct {
 // MCP long-poll remains available to direct callers and compatibility test
 // clients, but is not the transport used by the built-in resident Runtime.
 type ResidentRuntime struct {
-	options             Options
-	log                 LogFunc
-	mu                  sync.Mutex
-	participantHandle   string // secret bearer capability
-	participantID       string
-	cursor              int64
-	expiresAt           int64
-	agentLeaseMs        int64
-	state               State
-	lastError           string
-	stopped             bool
-	harnessFailed       bool
-	turnRunning         bool
-	lastHarnessSequence int64
-	pendingAddressed    []int64
-	eventBuffer         *EventBuffer
-	advertisedCaps      []string
-	roster              []types.ParticipantRosterEntry
-	resolvedRoomID      string
+	options           Options
+	log               LogFunc
+	mu                sync.Mutex
+	participantHandle string // secret bearer capability
+	participantID     string
+	cursor            int64
+	expiresAt         int64
+	agentLeaseMs      int64
+	state             State
+	lastError         string
+	stopped           bool
+	harnessFailed     bool
+	turnRunning       bool
+	// deliveredThrough is the highest Room event sequence successfully
+	// consumed by the current retained Harness conversation. It is NOT the
+	// Room transport cursor: receiving an event only advances cursor.
+	deliveredThrough int64
+	// roomDeliveryFloor excludes older bounded Room history from automatic
+	// push after a genuine ACP session/new. It is not an acknowledgement:
+	// that older history remains available through explicit context read.
+	roomDeliveryFloor int64
+	pendingAddressed  []int64
+	pendingContexts   map[int64]pendingTurnContext
+	// observedHarnessGeneration is the ACP session/new generation most
+	// recently observed before rendering a prompt. bootstrappedHarnessGeneration
+	// advances only after that generation successfully consumes its bootstrap
+	// turn; observing a session is never an acknowledgement.
+	observedHarnessGeneration     int64
+	bootstrappedHarnessGeneration int64
+	// Transcript delivery keeps a per-ACP-session success marker plus a
+	// baseline captured at session/new. The baseline deliberately leaves old
+	// shared context pullable instead of dumping it into a new conversation.
+	meetingDeliveredThrough        int64
+	meetingDeliveryFloor           int64
+	liveTranscriptDeliveredThrough int64
+	liveTranscriptDeliveryFloor    int64
+	eventBuffer                    *EventBuffer
+	advertisedCaps                 []string
+	roster                         []types.ParticipantRosterEntry
+	resolvedRoomID                 string
 	// participatingSince is set once on the lifecycle's first successful
 	// adoptJoin and preserved across transient retries/reconnects (#228).
 	participatingSince int64
@@ -528,8 +549,9 @@ func (r *ResidentRuntime) join() error {
 	return nil
 }
 
-// adoptJoin is the single adoption path for any successful room acquisition
-// (join or create): resets cursor/event state from the returned capability.
+// adoptJoin adopts a Room capability. The first join establishes the delivery
+// baseline; a later transport reconnect replaces stale Room credentials but
+// preserves pending work and retained-Harness delivery knowledge.
 func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.mu.Lock()
 	// The capability is intentionally kept only in this object and never
@@ -537,17 +559,25 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	r.participantHandle = joined.ParticipantHandle
 	r.participantID = joined.ParticipantID
 	r.cursor = joined.Cursor
-	r.lastHarnessSequence = joined.Cursor
 	r.expiresAt = joined.ExpiresAt
 	r.agentLeaseMs = joined.AgentLeaseMs
-	r.eventBuffer.Clear()
-	r.pendingAddressed = nil
+	initialJoin := r.participatingSince == 0
+	if initialJoin {
+		// A brand-new Runtime has no buffered Room history and no prior
+		// Harness delivery to preserve. Its first current turn starts from the
+		// server cursor captured at admission.
+		r.deliveredThrough = joined.Cursor
+		r.roomDeliveryFloor = joined.Cursor
+		r.eventBuffer.Clear()
+		r.pendingAddressed = nil
+		r.pendingContexts = nil
+	}
 	r.state = StateWaiting
 	r.lastError = ""
 	r.lastErrorSource = ""
 	// #228: participation age starts at the lifecycle's first successful
 	// create/join and survives transient retries and lease recovery.
-	if r.participatingSince == 0 {
+	if initialJoin {
 		r.participatingSince = time.Now().UnixMilli()
 	}
 	r.mu.Unlock()
@@ -834,8 +864,26 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	r.mu.Lock()
 	r.eventBuffer.Add(event)
-	if event.Addressed {
-		r.pendingAddressed = BoundedPush(r.pendingAddressed, event.Sequence, MaxPendingTurns)
+	if event.Addressed && !containsSequence(r.pendingAddressed, event.Sequence) {
+		// Do not use BoundedPush here. An addressed trigger remains unacknowledged
+		// until RunTurn succeeds, so front eviction would silently lose a failed
+		// turn. When the bounded queue is full, keep every already-accepted
+		// context intact rather than silently acknowledging or replacing it.
+		if len(r.pendingAddressed) < MaxPendingTurns {
+			after := max(r.deliveredThrough, r.roomDeliveryFloor)
+			if pending := len(r.pendingAddressed); pending > 0 {
+				after = r.pendingAddressed[pending-1]
+			}
+			if r.pendingContexts == nil {
+				r.pendingContexts = make(map[int64]pendingTurnContext)
+			}
+			r.pendingAddressed = append(r.pendingAddressed, event.Sequence)
+			r.pendingContexts[event.Sequence] = pendingTurnContext{
+				after:  after,
+				target: event.Sequence,
+				events: cloneRoomEvents(r.eventBuffer.Since(after, event.Sequence)),
+			}
+		}
 	}
 	r.mu.Unlock()
 }
@@ -853,12 +901,12 @@ func (r *ResidentRuntime) restoreStateAfterRetry() {
 	}
 }
 
-// drainTurns serially processes queued addressed events. Events between the
-// last delivered sequence and each pending target are replayed from the
-// bounded buffer exactly once. Mirroring the Node reference, the first
-// failure (Harness turn or send) aborts the remaining queued targets of
-// this pass; surviving queue entries are re-driven by the next successful
-// wait cycle, and no redelivery of already-consumed sequences ever happens.
+// drainTurns serially processes queued addressed events. Room transport
+// receipt, successful Harness context delivery, and reply persistence are
+// distinct boundaries: only RunTurn success acknowledges an addressed target
+// and advances deliveredThrough. A failed/ambiguous Harness turn is therefore
+// intentionally eligible for at-least-once retry; a later SendText failure is
+// not.
 func (r *ResidentRuntime) drainTurns() {
 	r.mu.Lock()
 	if r.turnRunning || r.stopped {
@@ -883,13 +931,44 @@ func (r *ResidentRuntime) drainTurns() {
 	}()
 
 	for !r.isStopped() {
-		target, ok := r.popPending()
+		target, ok := r.peekPending()
 		if !ok {
 			return
 		}
-		events := r.bufferSince(r.lastSeq(), target)
+		// Ensure before rendering so the prompt accurately knows whether this
+		// is the same retained ACP conversation or a real session/new.
+		if err := r.options.Adapter.EnsureSession(); err != nil {
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorSource = "harness"
+			r.state = StateReconnecting
+			r.mu.Unlock()
+			r.log("turn_failed", nil)
+			return
+		}
+		generation := r.options.Adapter.SessionGeneration()
+		newSession := r.observeHarnessSession(generation, target)
+		events, contextErr := r.pendingContext(target)
+		if contextErr != nil {
+			r.mu.Lock()
+			r.lastError = contextErr.Error()
+			r.lastErrorSource = "harness"
+			r.state = StateReconnecting
+			r.mu.Unlock()
+			r.log("turn_context_unavailable", nil)
+			return
+		}
 		if len(events) == 0 {
-			continue
+			// A duplicate pending target can only be safely discarded when the
+			// successful-delivery cursor already covers it. Otherwise bounded
+			// local context was lost, so retain the trigger for a later retry
+			// rather than silently claiming Harness delivery.
+			if target <= r.effectiveDeliveryStart() {
+				r.ackPending(target)
+				continue
+			}
+			r.log("turn_context_unavailable", nil)
+			return
 		}
 		maxSeq := events[0].Sequence
 		for _, event := range events[1:] {
@@ -897,15 +976,21 @@ func (r *ResidentRuntime) drainTurns() {
 				maxSeq = event.Sequence
 			}
 		}
-		r.setLastSeq(maxSeq)
 
 		input := BuildHarnessTurn(events, &TurnContextOptions{
 			Self:         r.selfContext(),
 			Participants: r.rosterSnapshot(),
 		})
+		input.Session = &types.HarnessSessionContext{
+			New: newSession,
+			// The rendered Room-event sequence is a stable, sanitized context
+			// fact. Do not expose the private resident transport cursor, which
+			// may have advanced beyond this turn while the Harness was running.
+			CurrentRoomSequence: maxSeq,
+		}
 		r.enrichAttachments(input)
-		r.attachLiveTranscript(input)
-		r.attachTranscript(input)
+		meetingThrough := r.attachTranscript(input)
+		liveThrough := r.attachLiveTranscript(input)
 
 		// A newly addressed turn wins the speaker: stale audio from the
 		// previous response must never keep playing over the new one.
@@ -913,7 +998,7 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Cancel()
 		}
 
-		result, err := r.options.Adapter.RunTurn(*input)
+		result, err := r.options.Adapter.RunTurn(*input, generation)
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
@@ -923,6 +1008,12 @@ func (r *ResidentRuntime) drainTurns() {
 			r.log("turn_failed", nil)
 			return
 		}
+
+		// RunTurn succeeded: commit every delivery marker before lifecycle
+		// handling or text persistence. If either of those later operations
+		// fails, replaying this already-consumed Harness prompt would be wrong.
+		r.acknowledgeHarnessDelivery(target, maxSeq, generation)
+		r.acknowledgeTranscriptDelivery(meetingThrough, liveThrough)
 		r.mu.Lock()
 		r.harnessFailed = false
 		// #228: a successful turn proves the Harness recovered — clear ONLY
@@ -1149,6 +1240,21 @@ func (r *ResidentRuntime) ReadSurface(sourceParticipantID, snapshotID string) (t
 	return r.options.Client.ReadSurface(handle, sourceParticipantID, snapshotID)
 }
 
+// ReadRoomContext mediates bounded historical observation for a local
+// Harness/CLI. The participant handle remains inside the Runtime; this API
+// has no send/join/wait/leave path and cannot alter Room transport state.
+func (r *ResidentRuntime) ReadRoomContext(options types.RoomContextReadOptions) (types.RoomContextReadResult, error) {
+	handle, err := r.requireHandle()
+	if err != nil {
+		return types.RoomContextReadResult{}, err
+	}
+	client, ok := r.options.Client.(types.RoomContextClient)
+	if !ok {
+		return types.RoomContextReadResult{}, errors.New("room context read is unavailable")
+	}
+	return client.ReadRoomContext(handle, options)
+}
+
 // PeerSurface returns the sanitized metadata of a peer's published snapshot,
 // used by CLI `surface read` to pin the exact snapshotId before bytes move.
 func (r *ResidentRuntime) PeerSurface(sourceParticipantID string) *types.RoomSurfaceMetadataV1 {
@@ -1195,6 +1301,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 			r.lastError = lastError
 		}
 		r.pendingAddressed = nil
+		r.pendingContexts = nil
 		r.eventBuffer.Clear()
 		r.mu.Unlock()
 		close(r.stopCh)

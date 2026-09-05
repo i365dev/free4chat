@@ -510,6 +510,20 @@ type ControlRequest =
       snapshotId: string
     }
   | {
+      // Bounded, authenticated observation of retained Room context. This is
+      // deliberately separate from agent-wait: it never registers a waiter,
+      // advances a transport cursor, or grants mutation/lifecycle authority.
+      action: "agent-read-context"
+      participantId: string
+      token: string
+      beforeSequence?: number
+      afterSequence?: number
+      limit?: number
+      beforeTranscriptSequence?: number
+      afterTranscriptSequence?: number
+      transcriptLimit?: number
+    }
+  | {
       action: "agent-media-attach"
       participantId: string
       token: string
@@ -1614,10 +1628,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         peerId: attachment.senderId,
       })),
     ].sort((left, right) => left.sequence - right.sequence)
-    const firstSequence = events[0]?.sequence
-    const truncated =
-      firstSequence !== undefined && clampedCursor < firstSequence - 1
-    const effectiveCursor = truncated ? firstSequence - 1 : clampedCursor
+    const coverageFloor = this.retainedEventCoverageFloor(events)
+    const truncated = coverageFloor > 0 && clampedCursor < coverageFloor - 1
+    const effectiveCursor = truncated ? coverageFloor - 1 : clampedCursor
     return {
       events: events
         .filter(
@@ -1628,6 +1641,90 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       cursor: serverCursor,
       expiresAt: room.expiresAt,
       ...(truncated ? { truncated: true } : {}),
+    }
+  }
+
+  // retainedContextEvents exposes the same sanitized event shapes as the
+  // Runtime transport, but includes the authenticated reader's own retained
+  // messages as well. That makes a genuinely new Harness session able to
+  // inspect bounded shared context without receiving the Runtime credential.
+  private retainedContextEvents(
+    room: RoomRecord,
+    participantId: string
+  ): AgentEvent[] {
+    return [
+      ...room.messages.map((message) =>
+        this.toAgentEvent(message, participantId)
+      ),
+      ...room.attachments.map((attachment) =>
+        this.toAttachmentEvent(attachment)
+      ),
+    ].sort((left, right) => left.sequence - right.sequence)
+  }
+
+  // The retained message and attachment rings share one sequence domain but
+  // evict independently. The oldest retained entry is therefore not enough
+  // to prove a forward cursor is complete: an old attachment can survive
+  // while an intervening message range has already been evicted. Return the
+  // first sequence of the newest contiguous suffix, which is the true floor
+  // after which every Room event is still retained.
+  private retainedEventCoverageFloor<T extends { sequence: number }>(
+    entries: T[]
+  ): number {
+    if (entries.length === 0) return 0
+    let floor = entries[entries.length - 1].sequence
+    for (let index = entries.length - 2; index >= 0; index -= 1) {
+      if (entries[index].sequence !== floor - 1) break
+      floor = entries[index].sequence
+    }
+    return floor
+  }
+
+  // contextPage preserves a deterministic, bounded cursor contract. An
+  // after cursor pages forward; a before cursor (without after) returns the
+  // closest retained predecessors. Each independent sequence domain uses
+  // this helper without ever comparing its sequence to the other domain.
+  private contextPage<T extends { sequence: number }>(
+    entries: T[],
+    options: {
+      before?: number
+      after?: number
+      limit: number
+    }
+  ): {
+    entries: T[]
+    oldestSequence: number
+    newestSequence: number
+    hasMoreBefore: boolean
+    hasMoreAfter: boolean
+    truncated: boolean
+  } {
+    const oldestSequence = entries[0]?.sequence ?? 0
+    const newestSequence = entries[entries.length - 1]?.sequence ?? 0
+    const coverageFloor = this.retainedEventCoverageFloor(entries)
+    const filtered = entries.filter(
+      (entry) =>
+        (options.after === undefined || entry.sequence > options.after) &&
+        (options.before === undefined || entry.sequence < options.before)
+    )
+    const page =
+      options.before !== undefined && options.after === undefined
+        ? filtered.slice(-options.limit)
+        : filtered.slice(0, options.limit)
+    const first = page[0]?.sequence
+    const last = page[page.length - 1]?.sequence
+    return {
+      entries: page,
+      oldestSequence,
+      newestSequence,
+      hasMoreBefore:
+        first !== undefined && entries.some((entry) => entry.sequence < first),
+      hasMoreAfter:
+        last !== undefined && entries.some((entry) => entry.sequence > last),
+      truncated:
+        options.after !== undefined &&
+        coverageFloor > 0 &&
+        options.after < coverageFloor - 1,
     }
   }
 
@@ -2116,6 +2213,70 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (request.action === "agent-wait") return this.waitForAgent(request)
+
+    if (request.action === "agent-read-context") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      const validSequence = (value: unknown): value is number =>
+        typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+      const validLimit = (value: unknown): value is number =>
+        typeof value === "number" &&
+        Number.isSafeInteger(value) &&
+        value >= 1 &&
+        value <= 50
+      for (const value of [
+        request.beforeSequence,
+        request.afterSequence,
+        request.beforeTranscriptSequence,
+        request.afterTranscriptSequence,
+      ]) {
+        if (value !== undefined && !validSequence(value))
+          return this.json({ error: "invalid_context_cursor" }, 400)
+      }
+      for (const value of [request.limit, request.transcriptLimit]) {
+        if (value !== undefined && !validLimit(value))
+          return this.json({ error: "invalid_context_limit" }, 400)
+      }
+      const roomPage = this.contextPage(
+        this.retainedContextEvents(room, participant.id),
+        {
+          before: request.beforeSequence,
+          after: request.afterSequence,
+          limit: request.limit ?? 25,
+        }
+      )
+      const transcriptPage = this.contextPage(room.liveTranscriptSegments, {
+        before: request.beforeTranscriptSequence,
+        after: request.afterTranscriptSequence,
+        limit: request.transcriptLimit ?? 25,
+      })
+      // This is intentionally storage/read-only: no waiter, transport
+      // cursor, lease, or Room message is changed by historical observation.
+      return this.json({
+        events: roomPage.entries,
+        oldestSequence: roomPage.oldestSequence,
+        newestSequence: roomPage.newestSequence,
+        hasMoreBefore: roomPage.hasMoreBefore,
+        hasMoreAfter: roomPage.hasMoreAfter,
+        ...(roomPage.truncated ? { truncated: true } : {}),
+        liveTranscript: {
+          segments: transcriptPage.entries,
+          oldestSequence: transcriptPage.oldestSequence,
+          newestSequence: transcriptPage.newestSequence,
+          hasMoreBefore: transcriptPage.hasMoreBefore,
+          hasMoreAfter: transcriptPage.hasMoreAfter,
+          ...(transcriptPage.truncated ? { truncated: true } : {}),
+        },
+      })
+    }
 
     if (request.action === "register" || request.action === "agent-register") {
       const now = Date.now()

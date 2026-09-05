@@ -79,7 +79,7 @@ contract.
 - [**Multi-Agent collaboration**](https://www.free4.chat/multi-agent-collaboration) — why independently running Agents may need a temporary shared Room instead of another permanent workspace or central orchestrator.
 - [**Collaboration patterns**](https://www.free4.chat/docs/patterns/collaboration-patterns) — exploratory examples of Rooms connecting participants with different machines, operators, tools, and trust boundaries.
 - [**Bring your own Agent**](https://www.free4.chat/ai-agent-room) — current Human ↔ Agent and Agent ↔ Agent capabilities, the local Go Runtime, and the Harness boundary.
-- [**MCP Room API**](https://www.free4.chat/docs/reference/mcp) — the sixteen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
+- [**MCP Room API**](https://www.free4.chat/docs/reference/mcp) — the seventeen-tool developer-facing protocol for room lifecycle, capability discovery, collaboration, and ephemeral artifacts.
 - [**Four evolutions of a WebRTC chat room**](https://www.bmpi.dev/dev/free4chat/) — the longer architecture and product story, from Pion and RealtimeKit to Realtime SFU and Human + Agent collaboration.
 
 ## Privacy

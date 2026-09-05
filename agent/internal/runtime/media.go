@@ -251,23 +251,38 @@ func (r *ResidentRuntime) voiceOutput() *voice.Speaker {
 	return r.voiceSrc.CurrentVoiceOutput()
 }
 
-// attachTranscript injects the bounded runtime-local transcript snapshot
-// into the Harness turn (Meeting Notes context).
-func (r *ResidentRuntime) attachTranscript(input *types.HarnessTurnInput) {
+// attachTranscript adds only newly committed runtime-local Meeting Notes
+// speech. The returned marker is committed only after a successful RunTurn,
+// so failed/ambiguous prompts retry the same local speech while unchanged
+// (including empty) snapshots do not consume prompt context.
+func (r *ResidentRuntime) attachTranscript(input *types.HarnessTurnInput) int64 {
 	if r.transcript == nil {
-		return
+		return 0
 	}
+	meetingDelivered, _ := r.transcriptDeliveryMarkers()
 	snapshot := r.transcript.Snapshot()
 	segments := make([]types.HarnessTranscriptSegment, 0, len(snapshot.Segments))
+	var through int64
 	for _, segment := range snapshot.Segments {
+		if segment.Sequence <= meetingDelivered {
+			continue
+		}
 		segments = append(segments, types.HarnessTranscriptSegment{
+			Sequence:      segment.Sequence,
 			ParticipantID: segment.ParticipantID,
 			Speaker:       segment.Speaker,
 			Text:          segment.Text,
 		})
+		if segment.Sequence > through {
+			through = segment.Sequence
+		}
+	}
+	if len(segments) == 0 {
+		return 0
 	}
 	input.MeetingTranscript = &types.HarnessMeetingTranscript{
 		Path:     snapshot.Path,
 		Segments: segments,
 	}
+	return through
 }

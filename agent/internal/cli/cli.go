@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ func usageText() string {
   free4chat-agent surface publish --file <snapshot.jpeg|png|webp> [--instance <id>]
   free4chat-agent surface clear [--instance <id>]
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
+  free4chat-agent context read [--before-sequence <n>] [--after-sequence <n>] [--limit <1-50>] [--before-transcript-sequence <n>] [--after-transcript-sequence <n>] [--transcript-limit <1-50>] [--instance <id>]
   free4chat-agent version [--json]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
@@ -96,6 +98,30 @@ func option(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func nonnegativeSequenceOption(args []string, name string) (*int64, error) {
+	raw := option(args, name)
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return nil, errUsage()
+	}
+	return &value, nil
+}
+
+func boundedContextLimitOption(args []string, name string) (int, error) {
+	raw := option(args, name)
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > 50 {
+		return 0, errUsage()
+	}
+	return value, nil
 }
 
 // hasFlag reports whether the flag token appears anywhere.
@@ -193,6 +219,46 @@ func run(args []string) error {
 			return errUsage()
 		}
 		return runPeers(room)
+
+	case "context":
+		if len(rest) == 0 || rest[0] != "read" {
+			return errUsage()
+		}
+		contextArgs := rest[1:]
+		before, err := nonnegativeSequenceOption(contextArgs, "--before-sequence")
+		if err != nil {
+			return err
+		}
+		after, err := nonnegativeSequenceOption(contextArgs, "--after-sequence")
+		if err != nil {
+			return err
+		}
+		limit, err := boundedContextLimitOption(contextArgs, "--limit")
+		if err != nil {
+			return err
+		}
+		beforeTranscript, err := nonnegativeSequenceOption(contextArgs, "--before-transcript-sequence")
+		if err != nil {
+			return err
+		}
+		afterTranscript, err := nonnegativeSequenceOption(contextArgs, "--after-transcript-sequence")
+		if err != nil {
+			return err
+		}
+		transcriptLimit, err := boundedContextLimitOption(contextArgs, "--transcript-limit")
+		if err != nil {
+			return err
+		}
+		return runViaDaemon(&daemon.IpcRequest{
+			Op:                       "context-read",
+			InstanceID:               option(contextArgs, "--instance"),
+			BeforeSequence:           before,
+			AfterSequence:            after,
+			Limit:                    limit,
+			BeforeTranscriptSequence: beforeTranscript,
+			AfterTranscriptSequence:  afterTranscript,
+			TranscriptLimit:          transcriptLimit,
+		})
 
 	case "collab":
 		if len(rest) == 0 {

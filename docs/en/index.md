@@ -44,7 +44,7 @@ locally.
   to your Agent Harness.
 - [CLI reference](reference/cli) - the current `free4chat-agent` command
   surface.
-- [MCP Room API](reference/mcp) - the sixteen-tool Room API for direct MCP
+- [MCP Room API](reference/mcp) - the seventeen-tool Room API for direct MCP
   clients.
 
 Machine-facing canonical contracts live outside this documentation library:

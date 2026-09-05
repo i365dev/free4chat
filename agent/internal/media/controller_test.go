@@ -324,6 +324,12 @@ func TestControllerMeetingNotesGrantStartsAndRevocationStopsBridge(t *testing.T)
 	client := &fakeRoomClient{}
 	controller, harness := newControllerHarness(t, client, nil)
 	defer controller.Stop()
+	// This test drives each authorization edge itself. A short background
+	// ticker can observe the prior grant while the test is changing it, which
+	// makes bridge creation rather than completed reconciliation the observed
+	// boundary. Give the background loop no opportunity to race these explicit
+	// polls; separate tests cover ticker-driven reconciliation.
+	controller.options.PollIntervalMs = 10_000
 
 	client.setRoom("off", "on", "agent", 0, "off", "on", "agent", 0, nil)
 	controller.Start(t.Context())
@@ -332,17 +338,30 @@ func TestControllerMeetingNotesGrantStartsAndRevocationStopsBridge(t *testing.T)
 	}
 
 	client.setRoom("on", "on", "agent", 111, "off", "on", "agent", 0, nil)
-	controller.Start(t.Context())
-	waitController(t, 2*time.Second, func() bool { return harness.bridgeCount() == 1 }, "bridge start")
+	controller.poll()
+	if got := harness.bridgeCount(); got != 1 {
+		t.Fatalf("bridge start count = %d, want 1", got)
+	}
 	firstEngine := harness.engineAt(0)
-	if firstEngine == nil || firstEngine.closeCalls != 0 {
+	if firstEngine == nil {
+		t.Fatal("bridge must be running under the MN grant")
+	}
+	firstEngine.mu.Lock()
+	closeCalls := firstEngine.closeCalls
+	firstEngine.mu.Unlock()
+	if closeCalls != 0 {
 		t.Fatal("bridge must be running under the MN grant")
 	}
 
 	// Revocation: grant off -> teardown of the shared session.
 	client.setRoom("off", "on", "agent", 0, "off", "on", "agent", 0, nil)
 	controller.poll()
-	waitController(t, 2*time.Second, func() bool { return firstEngine.closeCalls == 1 }, "bridge stop")
+	firstEngine.mu.Lock()
+	closeCalls = firstEngine.closeCalls
+	firstEngine.mu.Unlock()
+	if closeCalls != 1 {
+		t.Fatalf("bridge close calls = %d, want 1", closeCalls)
+	}
 }
 
 func TestControllerStopWithActiveSubscriptionDoesNotBlockMediaLifecycleMutex(t *testing.T) {

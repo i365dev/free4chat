@@ -340,6 +340,19 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 			return nil, writeErr
 		}
 		return map[string]any{"surface": read.Surface, "localPath": localPath}, nil
+	case "context-read":
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		return rt.ReadRoomContext(types.RoomContextReadOptions{
+			BeforeSequence:           request.BeforeSequence,
+			AfterSequence:            request.AfterSequence,
+			Limit:                    request.Limit,
+			BeforeTranscriptSequence: request.BeforeTranscriptSequence,
+			AfterTranscriptSequence:  request.AfterTranscriptSequence,
+			TranscriptLimit:          request.TranscriptLimit,
+		})
 	default:
 		return nil, errors.New("unknown daemon operation")
 	}

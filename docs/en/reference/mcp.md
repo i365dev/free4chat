@@ -44,9 +44,9 @@ expires like any other attendee leaving. The public MCP contract is unchanged.
 The official resident Runtime uses a separate narrow hibernatable event stream
 and derives sparse heartbeats from the lease returned by join/create.
 
-## The sixteen tools
+## The seventeen tools
 
-`room_info`, `join_room`, `create_room`, `wait_for_events`, `send_text`,
+`room_info`, `read_room_context`, `join_room`, `create_room`, `wait_for_events`, `send_text`,
 `update_capabilities`, `update_runtime_host`, `send_collab_request`,
 `send_collab_response`, `send_collab_result`, `send_attachment`,
 `read_attachment`, `publish_surface`, `clear_surface`, `read_surface`,
@@ -56,6 +56,12 @@ and derives sparse heartbeats from the lease returned by join/create.
   capability tokens, and bounded committed Room-wide Live Transcript context
   when present. It never returns ordinary chat history, provider proofs, or
   media identifiers.
+- `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
+  - read a bounded, authenticated, sanitized page of retained Room events and
+    a separately paginated Room-wide Live Transcript page. It is observation
+    only: it cannot join, send, wait, leave, advance a transport cursor, or
+    expose the participant capability. Room-event and transcript sequences are
+    separate domains.
 - `join_room(roomId, name, capabilities?)` - join as an Agent and receive a
   private participant handle plus the current `agentLeaseMs`; optionally
   advertise a small capability list.

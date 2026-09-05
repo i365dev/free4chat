@@ -176,6 +176,44 @@ func TestDaemonInfoReportsBuildVersion(t *testing.T) {
 	}
 }
 
+func TestIpcRequestPreservesExplicitZeroContextCursors(t *testing.T) {
+	zero := int64(0)
+	encoded, err := json.Marshal(IpcRequest{
+		Op:             "context-read",
+		BeforeSequence: &zero, AfterSequence: &zero,
+		BeforeTranscriptSequence: &zero, AfterTranscriptSequence: &zero,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"beforeSequence", "afterSequence", "beforeTranscriptSequence", "afterTranscriptSequence",
+	} {
+		if raw[name] != float64(0) {
+			t.Fatalf("explicit zero %s missing from IPC JSON: %s", name, encoded)
+		}
+	}
+	decoded, err := DecodeRequest(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.BeforeSequence == nil || decoded.AfterSequence == nil ||
+		decoded.BeforeTranscriptSequence == nil || decoded.AfterTranscriptSequence == nil {
+		t.Fatalf("explicit zero cursors were lost during IPC decode: %#v", decoded)
+	}
+	withoutCursors, err := json.Marshal(IpcRequest{Op: "context-read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(withoutCursors), "Sequence") {
+		t.Fatalf("omitted cursors unexpectedly serialized: %s", withoutCursors)
+	}
+}
+
 // recordingClient captures capability updates and room sends so ambiguity,
 // mutation, and cleanup flows can be asserted without network access.
 type recordingClient struct {
@@ -185,6 +223,7 @@ type recordingClient struct {
 	sent             []string
 	leftRoom         bool
 	providerConnects int
+	contextOptions   []types.RoomContextReadOptions
 }
 
 func (c *recordingClient) Connect() error               { return nil }
@@ -208,6 +247,12 @@ func (*recordingClient) CreateRoom(string, []string) (types.CreateRoomResult, er
 }
 func (*recordingClient) UpdateRuntimeHost(string, types.RuntimeHostProjection) error {
 	return nil
+}
+func (c *recordingClient) ReadRoomContext(_ string, options types.RoomContextReadOptions) (types.RoomContextReadResult, error) {
+	c.mu.Lock()
+	c.contextOptions = append(c.contextOptions, options)
+	c.mu.Unlock()
+	return types.RoomContextReadResult{}, nil
 }
 func (*recordingClient) WaitForEvents(string, int64, int) (types.WaitResult, error) {
 	time.Sleep(20 * time.Millisecond)
@@ -272,7 +317,8 @@ type stubAdapter struct{ name string }
 func (s *stubAdapter) Name() string                           { return s.name }
 func (*stubAdapter) Capabilities() *types.HarnessCapabilities { return nil }
 func (*stubAdapter) EnsureSession() error                     { return nil }
-func (*stubAdapter) RunTurn(types.HarnessTurnInput) (types.HarnessTurnResult, error) {
+func (*stubAdapter) SessionGeneration() int64                 { return 1 }
+func (*stubAdapter) RunTurn(types.HarnessTurnInput, int64) (types.HarnessTurnResult, error) {
 	return types.HarnessTurnResult{Text: "stub-reply"}, nil
 }
 func (*stubAdapter) OnFailure(types.AdapterFailureHandler) {}
@@ -364,6 +410,29 @@ func waitForStubJoin(t *testing.T, bundle stubBundle) {
 	}
 	if bundle.joinedCount() == 0 {
 		t.Fatal("stub runtime never joined")
+	}
+}
+
+func TestContextReadDispatchPreservesExplicitZeroCursorsToRuntime(t *testing.T) {
+	d, _ := startDaemon(t)
+	bundle := registerStub(t, d, "context-reader")
+	waitForStubJoin(t, bundle)
+	zero := int64(0)
+	if _, err := d.Dispatch(&IpcRequest{
+		Op: "context-read", InstanceID: "context-reader",
+		BeforeSequence: &zero, AfterSequence: &zero,
+		BeforeTranscriptSequence: &zero, AfterTranscriptSequence: &zero,
+	}); err != nil {
+		t.Fatalf("context-read dispatch failed: %v", err)
+	}
+	bundle.client.mu.Lock()
+	options := append([]types.RoomContextReadOptions(nil), bundle.client.contextOptions...)
+	bundle.client.mu.Unlock()
+	if len(options) != 1 || options[0].BeforeSequence == nil || *options[0].BeforeSequence != 0 ||
+		options[0].AfterSequence == nil || *options[0].AfterSequence != 0 ||
+		options[0].BeforeTranscriptSequence == nil || *options[0].BeforeTranscriptSequence != 0 ||
+		options[0].AfterTranscriptSequence == nil || *options[0].AfterTranscriptSequence != 0 {
+		t.Fatalf("daemon lost explicit zero context cursors before Runtime: %#v", options)
 	}
 }
 
@@ -477,7 +546,7 @@ func TestResolveRuntimeAmbiguityContract(t *testing.T) {
 // prepareLifecycle's Connect step succeeds before the (failing) Harness spawn.
 func writeModernMCPTools(w http.ResponseWriter) {
 	names := []string{
-		"room_info", "join_room", "create_room", "wait_for_events",
+		"room_info", "read_room_context", "join_room", "create_room", "wait_for_events",
 		"send_text", "read_attachment", "leave_room", "update_capabilities",
 		"send_collab_request", "send_collab_response", "send_collab_result",
 		"send_attachment", "publish_surface", "clear_surface", "read_surface",
@@ -807,7 +876,11 @@ func TestHarnessLifecycleLeaveRemovesOnlyItsConfirmedResident(t *testing.T) {
 		mu.Lock()
 		left := leaveCalls
 		mu.Unlock()
-		if left == 1 && d.InstanceCount() == 0 {
+		// completeConfirmedSelfLeave unregisters first, then waits for the
+		// active Runtime turn to unwind before removing its workspace. The
+		// registry transition alone is therefore not the cleanup boundary.
+		_, workspaceErr := os.Stat(workspace)
+		if left == 1 && d.InstanceCount() == 0 && os.IsNotExist(workspaceErr) {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

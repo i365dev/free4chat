@@ -187,7 +187,7 @@ func TestResidentRuntimeUsesLeaseParsedFromMCPJoin(t *testing.T) {
 		if body.Method == "tools/list" {
 			tools := make([]map[string]string, 0, 16)
 			for _, name := range []string{
-				"room_info", "join_room", "create_room", "wait_for_events",
+				"room_info", "read_room_context", "join_room", "create_room", "wait_for_events",
 				"send_text", "read_attachment", "leave_room", "update_capabilities",
 				"send_collab_request", "send_collab_response", "send_collab_result",
 				"send_attachment", "publish_surface", "clear_surface", "read_surface",

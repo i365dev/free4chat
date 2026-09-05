@@ -296,6 +296,7 @@ type RoomTurnContext struct {
 
 // HarnessTranscriptSegment is one committed attributed utterance.
 type HarnessTranscriptSegment struct {
+	Sequence      int64  `json:"sequence"`
 	ParticipantID string `json:"participantId"`
 	Speaker       string `json:"speaker"`
 	Text          string `json:"text"`
@@ -338,6 +339,14 @@ type HarnessLiveTranscript struct {
 	Segments []LiveTranscriptSegment `json:"segments"`
 }
 
+// HarnessSessionContext tells prompt rendering whether the Runtime has just
+// created a genuinely new retained ACP conversation. It carries no ACP id or
+// Room capability: the generation itself stays Runtime-local.
+type HarnessSessionContext struct {
+	New                 bool  `json:"new"`
+	CurrentRoomSequence int64 `json:"currentRoomSequence"`
+}
+
 // HarnessTurnInput is the bounded, untrusted-safe context handed to the
 // Harness for one addressed turn. It never contains the participant handle.
 type HarnessTurnInput struct {
@@ -345,6 +354,7 @@ type HarnessTurnInput struct {
 	Events            []HarnessEvent            `json:"events"`
 	MeetingTranscript *HarnessMeetingTranscript `json:"meetingTranscript,omitempty"`
 	LiveTranscript    *HarnessLiveTranscript    `json:"liveTranscript,omitempty"`
+	Session           *HarnessSessionContext    `json:"session,omitempty"`
 }
 
 // LifecycleIntent is the closed, local Harness-to-Runtime control result.
@@ -375,13 +385,28 @@ type HarnessTurnResult struct {
 // AdapterFailureHandler is invoked when the Harness process dies unexpectedly.
 type AdapterFailureHandler func(error)
 
+// ErrHarnessSessionGenerationChanged means an adapter could no longer bind a
+// turn to the ACP conversation generation the Runtime prepared it for. The
+// Runtime must rebuild the turn after observing the replacement session so a
+// bootstrap/security contract can never be omitted on a fresh conversation.
+var ErrHarnessSessionGenerationChanged = errors.New("harness session generation changed")
+
 // HarnessAdapter is the real boundary between room turns and the local
 // Harness process (ACP).
 type HarnessAdapter interface {
 	Name() string
 	Capabilities() *HarnessCapabilities
 	EnsureSession() error
-	RunTurn(input HarnessTurnInput) (HarnessTurnResult, error)
+	// SessionGeneration increases only after the adapter has successfully
+	// created a fresh ACP session/new conversation. It lets the Runtime keep
+	// Room delivery acknowledgement scoped to actual Harness memory rather
+	// than to transport reconnects or process ids.
+	SessionGeneration() int64
+	// RunTurn binds the prepared input to expectedSessionGeneration. It must
+	// never create or silently switch to another session while sending a turn:
+	// the Runtime derives Session.New and the bootstrap contract from this exact
+	// generation.
+	RunTurn(input HarnessTurnInput, expectedSessionGeneration int64) (HarnessTurnResult, error)
 	OnFailure(handler AdapterFailureHandler)
 	CancelTurn() error
 	Close() error
@@ -446,6 +471,50 @@ type RoomInfo struct {
 	AgentVoiceMediaAvailable   bool                       `json:"agentVoiceMediaAvailable"`
 	LiveTranscript             LiveTranscriptInfo         `json:"liveTranscript"`
 	LiveTranscriptSegments     []LiveTranscriptSegment    `json:"liveTranscriptSegments,omitempty"`
+}
+
+// RoomContextReadOptions bounds one read-only historical Room observation.
+// Room event and Live Transcript sequences intentionally remain separate
+// domains, so their cursors and limits are never interchanged. Cursor
+// pointers preserve an omitted cursor separately from an explicit zero.
+type RoomContextReadOptions struct {
+	BeforeSequence           *int64
+	AfterSequence            *int64
+	Limit                    int
+	BeforeTranscriptSequence *int64
+	AfterTranscriptSequence  *int64
+	TranscriptLimit          int
+}
+
+// RoomContextWindow is a retained, sanitized Room-event page. Sequence zero
+// denotes an empty retained window; Truncated means the requested `after`
+// cursor predates the bounded retained window.
+type RoomContextWindow struct {
+	Events         []RoomEvent `json:"events"`
+	OldestSequence int64       `json:"oldestSequence"`
+	NewestSequence int64       `json:"newestSequence"`
+	HasMoreBefore  bool        `json:"hasMoreBefore"`
+	HasMoreAfter   bool        `json:"hasMoreAfter"`
+	Truncated      bool        `json:"truncated,omitempty"`
+}
+
+// LiveTranscriptContextWindow is the analogous bounded page in the separate
+// Room-wide Live Transcript sequence domain.
+type LiveTranscriptContextWindow struct {
+	Segments       []LiveTranscriptSegment `json:"segments"`
+	OldestSequence int64                   `json:"oldestSequence"`
+	NewestSequence int64                   `json:"newestSequence"`
+	HasMoreBefore  bool                    `json:"hasMoreBefore"`
+	HasMoreAfter   bool                    `json:"hasMoreAfter"`
+	Truncated      bool                    `json:"truncated,omitempty"`
+}
+
+// RoomContextReadResult is a bounded, observation-only response. It never
+// contains a participant handle, token, connection nonce, media data, or any
+// lifecycle/mutation authority.
+type RoomContextReadResult struct {
+	Room           RoomContextWindow           `json:"room"`
+	LiveTranscript LiveTranscriptContextWindow `json:"liveTranscript"`
 }
 
 // WaitResult is wait_for_events' long-poll result with the advanced cursor.
@@ -560,6 +629,12 @@ type Free4ChatClient interface {
 	ReadSurface(participantHandle, sourceParticipantID, snapshotID string) (SurfaceReadResult, error)
 	LeaveRoom(participantHandle string) error
 	Close() error
+}
+
+// RoomContextClient is an optional narrow historical-observation extension.
+// The Runtime keeps the participant handle private while mediating every call.
+type RoomContextClient interface {
+	ReadRoomContext(participantHandle string, options RoomContextReadOptions) (RoomContextReadResult, error)
 }
 
 // ResidentEventStream is the Runtime-owned Room event transport. It is

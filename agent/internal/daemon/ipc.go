@@ -58,18 +58,24 @@ type IpcRequest struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	// ProviderClaim is a one-time opaque 256-bit capability accepted only by
 	// join/connect. It is never copied into a response, status, workspace, or log.
-	ProviderClaim       string            `json:"providerClaim,omitempty"`
-	TargetParticipantID string            `json:"targetParticipantId,omitempty"`
-	RequestID           string            `json:"requestId,omitempty"`
-	Decision            string            `json:"decision,omitempty"`
-	Status              string            `json:"status,omitempty"`
-	Summary             string            `json:"summary,omitempty"`
-	Details             map[string]string `json:"details,omitempty"`
-	AttachmentIDs       []string          `json:"attachmentIds,omitempty"`
-	FileName            string            `json:"fileName,omitempty"`
-	MimeType            string            `json:"mimeType,omitempty"`
-	DataBase64          string            `json:"dataBase64,omitempty"`
-	SourceParticipantID string            `json:"sourceParticipantId,omitempty"`
+	ProviderClaim            string            `json:"providerClaim,omitempty"`
+	TargetParticipantID      string            `json:"targetParticipantId,omitempty"`
+	RequestID                string            `json:"requestId,omitempty"`
+	Decision                 string            `json:"decision,omitempty"`
+	Status                   string            `json:"status,omitempty"`
+	Summary                  string            `json:"summary,omitempty"`
+	Details                  map[string]string `json:"details,omitempty"`
+	AttachmentIDs            []string          `json:"attachmentIds,omitempty"`
+	FileName                 string            `json:"fileName,omitempty"`
+	MimeType                 string            `json:"mimeType,omitempty"`
+	DataBase64               string            `json:"dataBase64,omitempty"`
+	SourceParticipantID      string            `json:"sourceParticipantId,omitempty"`
+	BeforeSequence           *int64            `json:"beforeSequence,omitempty"`
+	AfterSequence            *int64            `json:"afterSequence,omitempty"`
+	Limit                    int               `json:"limit,omitempty"`
+	BeforeTranscriptSequence *int64            `json:"beforeTranscriptSequence,omitempty"`
+	AfterTranscriptSequence  *int64            `json:"afterTranscriptSequence,omitempty"`
+	TranscriptLimit          int               `json:"transcriptLimit,omitempty"`
 }
 
 // IpcResponse is the single-line reply envelope.
