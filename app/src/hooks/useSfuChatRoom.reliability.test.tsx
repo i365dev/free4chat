@@ -240,6 +240,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
   let trackRequestNumber: number
   let remoteChannelNumber: number
   let transientRemoteTrackResponses: number
+  let admittedRemoteTrackResponsesWithoutDescription: number
 
   beforeEach(() => {
     TestPeerConnection.instances.length = 0
@@ -250,6 +251,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     trackRequestNumber = 0
     remoteChannelNumber = 100
     transientRemoteTrackResponses = 0
+    admittedRemoteTrackResponsesWithoutDescription = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       TestPeerConnection
     ;(global as unknown as { MediaStream: unknown }).MediaStream =
@@ -295,6 +297,17 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
           transientRemoteTrackResponses -= 1
           return jsonResponse({
             tracks: [{ errorCode: "empty_track_error" }],
+          })
+        }
+        if (admittedRemoteTrackResponsesWithoutDescription > 0) {
+          admittedRemoteTrackResponsesWithoutDescription -= 1
+          return jsonResponse({
+            tracks: [
+              {
+                mid: `remote-mid-${trackRequestNumber}`,
+                trackName: body.tracks[0].trackName,
+              },
+            ],
           })
         }
         return jsonResponse({
@@ -512,6 +525,53 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     )
     await flushAsync()
     expect(trackRequestNumber).toBe(1)
+    unmount()
+  })
+
+  it("reconnects when a Human track is admitted without a session description", async () => {
+    const { result, socket, unmount } = await connect()
+    admittedRemoteTrackResponsesWithoutDescription = 1
+    const state = roomState([
+      participant("publisher-a", [{ trackName: "screen-a", kind: "video" }]),
+    ])
+    sendState(socket, state)
+    await waitForRemoteTrackRequests(1)
+    await waitFor(() => expect(TestPeerConnection.instances).toHaveLength(2))
+
+    expect(trackRequestNumber).toBe(1)
+    const newPc = TestPeerConnection.instances[1]
+    const newSocket = TestWebSocket.instances[1]
+    sendState(newSocket, state)
+    await waitForRemoteTrackRequests(2)
+    expect(trackRequestNumber).toBe(2)
+
+    const requests = fetchMock.mock.calls
+      .filter(([input, init]) => {
+        if (!String(input).endsWith("/api/sfu/tracks")) return false
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          tracks?: Array<{ location?: string }>
+        }
+        return body.tracks?.[0]?.location === "remote"
+      })
+      .map(
+        ([, init]) =>
+          JSON.parse(String(init?.body ?? "{}")) as {
+            sessionId: string
+          }
+      )
+    expect(requests.map((request) => request.sessionId)).toEqual([
+      "subscriber-session-1",
+      "subscriber-session-2",
+    ])
+
+    const stream = deliverTrack(newPc, "remote-mid-2", "video")
+    await waitFor(() =>
+      expect(
+        result.current.participants.find(
+          (entry) => entry.peerId === "publisher-a"
+        )?.screenShareStream
+      ).toBe(stream)
+    )
     unmount()
   })
 

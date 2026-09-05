@@ -1902,8 +1902,26 @@ export function useSfuChatRoom(
                 subscriberPeerConnection
               )
           if (!scheduled) {
-            subscribedTracksRef.current.delete(key)
-            readySubscribedTracksRef.current.delete(key)
+            if (
+              responseSummary.trackHasMid &&
+              participant.kind === "human" &&
+              !closingRef.current
+            ) {
+              // A MID means Cloudflare admitted the subscription even though
+              // it did not return an SDP offer. Keep this key occupied until
+              // the existing media reconnect replaces the PC/session; a Room
+              // resync must not create another upstream subscription here.
+              subscribedTracksRef.current.add(key)
+              readySubscribedTracksRef.current.delete(key)
+              sfuClientDiagnostic("remote_track_reconnect_requested", {
+                track_kind: track.kind,
+                reason: "mid_admitted_no_description",
+              })
+              void mediaReconnectRef.current?.()
+            } else {
+              subscribedTracksRef.current.delete(key)
+              readySubscribedTracksRef.current.delete(key)
+            }
             if (isAgentAudioSubscription && !hasRemoteTrackError(response))
               voiceDownstreamDiagnostic(
                 "agent_audio_subscription_retry_exhausted",
