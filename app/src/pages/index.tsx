@@ -16,6 +16,7 @@ import {
 import CollaborationDiagram from "../components/CollaborationDiagram"
 import DiscoveryFooter from "../components/DiscoveryFooter"
 import Header from "../components/Header"
+import SignalCollapseText from "../components/SignalCollapseText"
 
 const inputClasses =
   "w-full rounded-none border border-emerald-900/70 bg-black/70 p-3 font-mono text-sm text-emerald-100 placeholder-emerald-600 caret-emerald-400 transition focus:border-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/30"
@@ -77,10 +78,13 @@ export default function Home() {
               FREE4CHAT://RELAY — LINK READY
               <span className="cursor-blink" />
             </p>
-            <h1 className="psy-headline mt-5 bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-3xl font-extrabold uppercase tracking-tight text-transparent sm:text-4xl">
-              Open a room.
-              <br />
-              Bring people and Agents together.
+            <h1
+              aria-label="Open a room. Bring people and Agents together."
+              className="psy-headline mt-5 bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-3xl font-extrabold uppercase tracking-tight text-transparent sm:text-4xl"
+            >
+              <SignalCollapseText
+                text={"Open a room.\nBring people and Agents together."}
+              />
             </h1>
 
             <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
