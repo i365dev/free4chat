@@ -161,7 +161,7 @@ test("two browsers exchange a text message through the real local DO", async ({
   // have 503'd here AND be recorded for this assertion, even when
   // best-effort production semantics would swallow the failure.
   const stateDir =
-    process.env.FREEF4CHAT_E2E_STATE_DIR ??
+    process.env.FREE4CHAT_E2E_STATE_DIR ??
     path.join(os.tmpdir(), "f4c-room-e2e")
   const fakePort = fs
     .readFileSync(path.join(stateDir, "fake-port.txt"), "utf8")
@@ -183,6 +183,11 @@ test("two browsers exchange a text message through the real local DO", async ({
     ),
     "the fake Realtime must have served the Human join path"
   ).toBe(true)
+
+  // Leave no harness state behind: the next run starts from a clean dir.
+  // (Playwright's webServer teardown may SIGKILL the harness before its own
+  // SIGTERM cleanup runs; the spec is the last reader of this state.)
+  fs.rmSync(stateDir, { recursive: true, force: true })
 
   await contextA.close()
   await contextB.close()

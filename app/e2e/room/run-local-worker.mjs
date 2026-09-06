@@ -115,6 +115,7 @@ function createFakeRealtime() {
   })
   return {
     requests,
+    unexpected,
     async listen() {
       await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
       const address = server.address()
@@ -136,8 +137,12 @@ function createFakeRealtime() {
 // The browser sees origin http://localhost:3000, which is already in the
 // production allow-list, so src/common/origin.ts is never weakened.
 const stateDir =
-  process.env.FREEF4CHAT_E2E_STATE_DIR ?? path.join(os.tmpdir(), "f4c-room-e2e")
+  process.env.FREE4CHAT_E2E_STATE_DIR ?? path.join(os.tmpdir(), "f4c-room-e2e")
 const fakePortFile = path.join(stateDir, "fake-port.txt")
+// The harness records its OWN pid so shutdown validation and scripts can
+// always signal the real Worker process (bash job wrappers may report a
+// different pid; signalling a wrapper leaves node orphaned).
+const harnessPidFile = path.join(stateDir, "harness.pid")
 
 function createProxy(targetPort) {
   const server = net.createServer((socket) => {
@@ -166,8 +171,10 @@ function createProxy(targetPort) {
 // ---------------------------------------------------------------------------
 async function main() {
   const fakeRealtime = createFakeRealtime()
+  runningFakeRealtime = fakeRealtime
   const fakeRealtimeBase = await fakeRealtime.listen()
   fs.mkdirSync(stateDir, { recursive: true })
+  fs.writeFileSync(harnessPidFile, String(process.pid))
   fs.writeFileSync(fakePortFile, String(new URL(fakeRealtimeBase).port))
   console.log(
     `[harness] fake realtime at ${fakeRealtimeBase} (port file ${fakePortFile})`
@@ -192,31 +199,47 @@ async function main() {
       },
     ],
   })
+  runningServer = server
 
   const { url: workerUrl } = await server.listen()
   console.log(`[harness] worker at ${workerUrl}`)
 
   const proxy = createProxy(workerUrl.port)
+  runningProxy = proxy
   await proxy.listen()
   console.log(`[harness] proxy at http://${PROXY_HOST}:${PROXY_PORT}`)
 
-  const shutdown = async () => {
-    console.log(
-      `[harness] fake-realtime saw ${fakeRealtime.requests.length} request(s), ${fakeRealtime.unexpected.length} unexpected:`
-    )
-    for (const request of fakeRealtime.requests)
-      console.log(`[fake-realtime] ${request.method} ${request.path}`)
-    fs.rmSync(fakePortFile, { force: true })
-    await proxy.close()
-    await server.close()
-    await fakeRealtime.close()
-    process.exit(0)
-  }
-  process.on("SIGINT", shutdown)
-  process.on("SIGTERM", shutdown)
-
   console.log("[harness] READY http://localhost:3000")
 }
+
+// Signal handling at MODULE scope: signals registered inside an async main()
+// were observed not to run in this harness (workerd child + long awaits);
+// module-level registration cannot be lost.
+function shutdown() {
+  console.log(
+    `[harness] fake-realtime saw ${runningFakeRealtime.requests.length} request(s), ${runningFakeRealtime.unexpected.length} unexpected:`
+  )
+  for (const request of runningFakeRealtime.requests)
+    console.log(`[fake-realtime] ${request.method} ${request.path}`)
+  fs.rmSync(fakePortFile, { force: true })
+  fs.rmSync(harnessPidFile, { force: true })
+  const finish = () => process.exit(0)
+  runningProxy
+    .close()
+    .then(() => runningServer.close())
+    .then(() => runningFakeRealtime.close())
+    .then(finish)
+    .catch((error) => {
+      console.error("[harness] shutdown error:", error)
+      process.exit(1)
+    })
+}
+process.on("SIGINT", shutdown)
+process.on("SIGTERM", shutdown)
+
+let runningFakeRealtime = null
+let runningServer = null
+let runningProxy = null
 
 main().catch((error) => {
   console.error("[harness] startup failed:", error)
