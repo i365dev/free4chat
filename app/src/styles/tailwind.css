@@ -216,6 +216,15 @@ html {
     transform 160ms ease;
 }
 
+.participant-card-shell--full {
+  height: 12.5rem;
+  min-height: 12.5rem;
+}
+
+.room-shell .participant-card__capability {
+  display: none;
+}
+
 .participant-card-shell--full:hover,
 .participant-card-shell--compact > div:hover {
   border-color: rgba(103, 232, 249, 0.7) !important;
@@ -361,8 +370,26 @@ html {
 }
 
 .participant-card-shell--full > .room-visualizer,
-.participant-card-shell--compact .room-visualizer {
-  width: 100%;
+.participant-card-shell--compact > div > .room-visualizer {
+  position: absolute;
+  right: 0.65rem;
+  bottom: 0.65rem;
+  left: 0.65rem;
+  z-index: 0;
+  width: auto !important;
+  height: 2.5rem;
+  margin: 0 !important;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+.participant-card-shell--full > :not(.room-visualizer),
+.participant-card-shell--compact > div > :not(.room-visualizer) {
+  position: relative;
+  z-index: 1;
 }
 
 .room-visualizer {
@@ -388,7 +415,7 @@ html {
   display: block;
   width: 86% !important;
   margin: 0 auto;
-  opacity: 0.92;
+  opacity: 0.82;
 }
 
 .room-chat-panel {

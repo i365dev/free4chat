@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react"
 
 interface Audio {
-  audio: MediaStream
+  audio?: MediaStream | null
   name: string
   muteState: boolean | false
 }
@@ -9,7 +9,12 @@ interface Audio {
 export default function AudioVisualizer(props: Audio) {
   const analyserCanvas = useRef(null)
   useEffect(() => {
-    if (!props.audio || props.audio.getAudioTracks().length === 0) return
+    if (
+      !props.audio ||
+      props.audio.getAudioTracks().length === 0 ||
+      props.muteState
+    )
+      return
     const audioCtx = new AudioContext()
     void audioCtx.resume().catch(() => undefined)
     const analyser = audioCtx.createAnalyser()
@@ -65,7 +70,14 @@ export default function AudioVisualizer(props: Audio) {
       analyser.disconnect()
       void audioCtx.close().catch(() => undefined)
     }
-  }, [props.audio, props.name])
+  }, [props.audio, props.name, props.muteState])
+
+  if (
+    !props.audio ||
+    props.audio.getAudioTracks().length === 0 ||
+    props.muteState
+  )
+    return null
 
   return (
     <div className="visualizer room-visualizer mx-auto mt-4">

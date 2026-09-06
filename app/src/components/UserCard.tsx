@@ -61,7 +61,7 @@ export default function UserCard(user: UserCardProps) {
           user.className ?? ""
         }`}
       >
-        <div className="flex flex-col items-center rounded-xl border border-gray-700 px-2 py-2">
+        <div className="flex w-full min-w-0 flex-col items-center rounded-xl border border-gray-700 px-2 py-2">
           <div className="participant-card__avatar relative">
             <ParticipantAvatar name={user.name} size="compact" />
             {user.muteState && (
@@ -88,7 +88,7 @@ export default function UserCard(user: UserCardProps) {
               </span>
             )}
           </div>
-          <p className="mt-1.5 w-full truncate text-center text-xs text-white">
+          <p className="mt-1.5 min-w-0 max-w-full truncate text-center text-xs text-white">
             {displayName}
           </p>
           {user.kind === "agent" && (
@@ -96,22 +96,17 @@ export default function UserCard(user: UserCardProps) {
               🤖 Agent
             </span>
           )}
-          {user.kind === "agent" && (
+          {user.kind === "agent" && user.voiceAvailable && (
             <button
               type="button"
               onClick={user.onToggleAgentVoice}
-              disabled={!user.voiceAvailable}
               title={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
               aria-label={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
@@ -120,15 +115,6 @@ export default function UserCard(user: UserCardProps) {
               {user.voiceEnabled ? "🔊" : "🔇"}
             </button>
           )}
-          {(user.capabilities ?? []).slice(0, 2).map((capability) => (
-            <span
-              key={capability}
-              title={capability}
-              className="participant-card__capability mt-1 max-w-[64px] truncate rounded-full bg-black/30 px-1.5 py-0.5 text-[8px] text-white/70"
-            >
-              {capability}
-            </span>
-          ))}
           {isSelf && (
             <div className="mt-1 flex gap-1">
               <button
@@ -184,8 +170,8 @@ export default function UserCard(user: UserCardProps) {
 
   return (
     <div className={user.className}>
-      <div className="participant-card-shell participant-card-shell--full flex min-h-[196px] w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3">
-        <div className="flex flex-1 flex-col items-center justify-center gap-2">
+      <div className="participant-card-shell participant-card-shell--full flex h-[200px] min-h-[200px] w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3">
+        <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-2">
           <div className="participant-card__avatar relative">
             <ParticipantAvatar name={user.name} size="full" />
             {!isSelf && user.muteState && (
@@ -253,7 +239,7 @@ export default function UserCard(user: UserCardProps) {
           </div>
 
           <p
-            className="w-full break-words text-center text-xs leading-tight text-white"
+            className="w-full min-w-0 max-w-full truncate whitespace-nowrap text-center text-xs leading-tight text-white"
             title={displayName}
           >
             {isSelf ? user.name : displayName}
@@ -269,36 +255,17 @@ export default function UserCard(user: UserCardProps) {
           <span className="participant-card__kind rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
             {user.kind === "agent" ? "🤖 Agent" : "Human"}
           </span>
-          {(user.capabilities ?? []).slice(0, 3).map((capability) => (
-            <span
-              key={capability}
-              title={capability}
-              className="participant-card__capability max-w-[72px] truncate rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/70"
-            >
-              {capability}
-            </span>
-          ))}
-          {(user.capabilities?.length ?? 0) > 3 && (
-            <span className="participant-card__capability rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/70">
-              +{(user.capabilities?.length ?? 0) - 3}
-            </span>
-          )}
-          {user.kind === "agent" && (
+          {user.kind === "agent" && user.voiceAvailable && (
             <button
               type="button"
               onClick={user.onToggleAgentVoice}
-              disabled={!user.voiceAvailable}
               title={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
               aria-label={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
