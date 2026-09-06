@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 
@@ -20,6 +20,10 @@ interface UserCardProps extends UserInfo {
 export default function UserCard(user: UserCardProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const [speakingLevel, setSpeakingLevel] = useState(0)
+  const handleAudioLevel = useCallback((level: number) => {
+    setSpeakingLevel(level)
+  }, [])
   const [canScreenShare] = useState(() => {
     if (typeof navigator === "undefined") return false
     const isMobileDevice = /Mobi|Android|iPhone|iPad|iPod/i.test(
@@ -63,7 +67,11 @@ export default function UserCard(user: UserCardProps) {
       >
         <div className="flex w-full min-w-0 flex-col items-center rounded-xl border border-gray-700 px-2 py-2">
           <div className="participant-card__avatar relative">
-            <ParticipantAvatar name={user.name} size="compact" />
+            <ParticipantAvatar
+              name={user.name}
+              size="compact"
+              speakingLevel={speakingLevel}
+            />
             {user.muteState && (
               <span className="absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5">
                 <svg
@@ -173,7 +181,11 @@ export default function UserCard(user: UserCardProps) {
       <div className="participant-card-shell participant-card-shell--full flex h-[200px] min-h-[200px] w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3">
         <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-2">
           <div className="participant-card__avatar relative">
-            <ParticipantAvatar name={user.name} size="full" />
+            <ParticipantAvatar
+              name={user.name}
+              size="full"
+              speakingLevel={speakingLevel}
+            />
             {!isSelf && user.muteState && (
               <span className="absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5">
                 <svg
@@ -282,6 +294,7 @@ export default function UserCard(user: UserCardProps) {
           audio={user.audioStream}
           name={user.name}
           muteState={user.muteState}
+          onLevel={handleAudioLevel}
         />
       </div>
     </div>

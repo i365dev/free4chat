@@ -4,21 +4,18 @@ interface Audio {
   audio?: MediaStream | null
   name: string
   muteState: boolean | false
+  onLevel?: (level: number) => void
 }
 
 export default function AudioVisualizer(props: Audio) {
   const analyserCanvas = useRef(null)
+  const { audio, name, muteState, onLevel } = props
   useEffect(() => {
-    if (
-      !props.audio ||
-      props.audio.getAudioTracks().length === 0 ||
-      props.muteState
-    )
-      return
+    if (!audio || audio.getAudioTracks().length === 0 || muteState) return
     const audioCtx = new AudioContext()
     void audioCtx.resume().catch(() => undefined)
     const analyser = audioCtx.createAnalyser()
-    const audioSrc = audioCtx.createMediaStreamSource(props.audio)
+    const audioSrc = audioCtx.createMediaStreamSource(audio)
     audioSrc.connect(analyser)
     analyser.fftSize = 256
     const bufferLength = analyser.frequencyBinCount
@@ -29,6 +26,7 @@ export default function AudioVisualizer(props: Audio) {
     const canvasCtx = canvas.getContext("2d")
 
     let animationFrame = 0
+    let lastLevelReport = 0
     const draw = () => {
       const WIDTH = canvas.width
       const HEIGHT = canvas.height
@@ -43,9 +41,11 @@ export default function AudioVisualizer(props: Audio) {
       const barWidth = 4
       let barHeight: number
       let x = 0
+      let levelTotal = 0
 
       for (let i = 0; i < bufferLength; i++) {
         barHeight = dataArray[i] / 2
+        levelTotal += dataArray[i]
 
         // const r = Math.floor(barHeight + 64)
         // if (g % 3 === 0) {
@@ -61,23 +61,32 @@ export default function AudioVisualizer(props: Audio) {
 
         x += barWidth + 2
       }
+
+      const now = performance.now()
+      if (onLevel && now - lastLevelReport >= 80) {
+        lastLevelReport = now
+        onLevel(Math.min(1, levelTotal / bufferLength / 255))
+      }
     }
+    const resume = () => {
+      void audioCtx.resume().catch(() => undefined)
+    }
+    window.addEventListener("pointerdown", resume)
+    window.addEventListener("keydown", resume)
     draw()
 
     return () => {
       cancelAnimationFrame(animationFrame)
+      window.removeEventListener("pointerdown", resume)
+      window.removeEventListener("keydown", resume)
+      onLevel?.(0)
       audioSrc.disconnect()
       analyser.disconnect()
       void audioCtx.close().catch(() => undefined)
     }
-  }, [props.audio, props.name, props.muteState])
+  }, [audio, name, muteState, onLevel])
 
-  if (
-    !props.audio ||
-    props.audio.getAudioTracks().length === 0 ||
-    props.muteState
-  )
-    return null
+  if (!audio || audio.getAudioTracks().length === 0 || muteState) return null
 
   return (
     <div className="visualizer room-visualizer mx-auto mt-4">
