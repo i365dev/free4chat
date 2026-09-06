@@ -4,8 +4,8 @@ import dynamic from "next/dynamic"
 import Head from "next/head"
 import { useRouter } from "next/router"
 
+import { generateParticipantName } from "../common/cosmicNames"
 import {
-  randomName,
   saveRoomToLocalStorage,
   gtagEvent,
   umamiEvent,
@@ -51,9 +51,11 @@ export default function Room() {
           setNickName(room.nickName)
           setReady(true)
         } else {
+          setNickName(generateParticipantName())
           setShowNickNamePop(true)
         }
       } catch {
+        setNickName(generateParticipantName())
         setShowNickNamePop(true)
       }
     }
@@ -101,7 +103,7 @@ export default function Room() {
               />
               <span className="absolute inset-y-0 right-0 grid w-10 place-content-center">
                 <button
-                  onClick={() => setNickName(randomName())}
+                  onClick={() => setNickName(generateParticipantName())}
                   type="button"
                   className="text-black hover:bg-red-400"
                 >

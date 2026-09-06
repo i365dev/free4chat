@@ -4,6 +4,7 @@ import { z } from "zod"
 
 import { buildRoomInvite } from "./invite"
 import { imageToolResult } from "./toolResults"
+import { generateRoomName } from "../common/cosmicNames"
 import { classifyRoomCreationSource } from "../do/roomAnalytics"
 import type { RoomSession } from "../do/RoomSession"
 
@@ -369,7 +370,7 @@ function createMcpServer(context: McpRequestContext) {
         context.requestInfo.headers.get("user-agent") ?? ""
       )
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        roomId = crypto.randomUUID()
+        roomId = generateRoomName()
         const result = await roomControl(env, roomId, {
           action: "agent-create-room",
           creationSource,

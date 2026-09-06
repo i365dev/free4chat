@@ -24,12 +24,12 @@ describe("UserCard Agent Voice", () => {
     expect(props.onToggleAgentVoice).toHaveBeenCalledOnce()
   })
 
-  it("renders an independent enabled control and a disabled unavailable control", () => {
-    const { getByRole, rerender } = render(
+  it("renders enabled controls independently and hides unavailable voice", () => {
+    const { getByRole, queryByRole, rerender } = render(
       <UserCard {...card({ voiceEnabled: true })} />
     )
     expect(getByRole("button", { name: "Mute Pi" })).not.toBeDisabled()
     rerender(<UserCard {...card({ voiceAvailable: false })} />)
-    expect(getByRole("button", { name: "Voice unavailable" })).toBeDisabled()
+    expect(queryByRole("button", { name: "Voice unavailable" })).toBeNull()
   })
 })

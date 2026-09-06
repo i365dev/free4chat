@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 /**
  * #234 production wiring proof: after the Request-work modal and the Human
  * self-capability editor were removed, RoomContent must never render either
- * entry point, and Agent advertised capability chips still surface from the
- * canonical Room participant state.
+ * entry point. Agent capability metadata remains in the canonical Room
+ * participant state but is not part of the default participant-card UI.
  */
 
 vi.mock("next/router", () => ({

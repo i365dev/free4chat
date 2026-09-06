@@ -2,11 +2,11 @@ import { cleanup, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 /**
  * #228/#234 participant-card visual consistency: in the NORMAL participant
- * grid, every UserCard root carries the SAME uniform min-height contract, so
- * Agent-only controls (Voice) live inside a shared reserved card height
- * instead of stretching Agent cards taller than Human cards.
+ * grid, every UserCard root carries the SAME fixed height contract, so
+ * Agent-only controls (Voice) live inside a shared card height instead of
+ * stretching Agent cards taller than Human cards.
  * jsdom cannot measure layout; this pins the class contract that produces
- * equal heights (uniform min-height on every normal card root). Visual
+ * equal heights (fixed height on every normal card root). Visual
  * confirmation happens in the production regression pass.
  */
 
@@ -79,11 +79,11 @@ describe("participant card equal-height contract (#228)", () => {
       <RoomContent roomName="test-room" nickName="Hannah" roomType="audio" />
     )
 
-    // Every normal-grid participant card root carries the SAME uniform
-    // min-height — Human self, Agents with controls, remote Humans.
+    // Every normal-grid participant card root carries the SAME fixed height —
+    // Human self, Agents with controls, remote Humans.
     const cards = Array.from(
       document.querySelectorAll("div.rounded-xl.border-gray-700")
-    ).filter((el) => el.className.includes("min-h-[196px]"))
+    ).filter((el) => el.className.includes("h-[200px]"))
     expect(cards.length).toBe(3)
 
     // The grid top-aligns rows; no full-panel-height stretching remains.

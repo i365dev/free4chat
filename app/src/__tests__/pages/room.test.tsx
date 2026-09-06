@@ -18,4 +18,13 @@ describe("Room page", () => {
       /<meta\s+name="robots"\s+content="noindex,\s*nofollow"\s*\/>/
     )
   })
+
+  it("uses a generated planet-style default only for an unsaved direct invite", () => {
+    const source = readFileSync(
+      join(process.cwd(), "src/pages/room.tsx"),
+      "utf-8"
+    )
+    expect(source).toMatch(/setNickName\(generateParticipantName\(\)\)/)
+    expect(source).toMatch(/setNickName\(room\.nickName\)/)
+  })
 })

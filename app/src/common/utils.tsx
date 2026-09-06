@@ -1,21 +1,4 @@
-import {
-  uniqueNamesGenerator,
-  Config,
-  adjectives,
-  colors,
-} from "unique-names-generator"
-
 import { Color } from "@common/types"
-
-const customConfig: Config = {
-  dictionaries: [adjectives, colors],
-  separator: "-",
-  length: 2,
-}
-
-export const randomName = () => {
-  return uniqueNamesGenerator(customConfig)
-}
 
 export const saveRoomToLocalStorage = (roomName, nickName) => {
   var rooms: {}[] = JSON.parse(localStorage.getItem("rooms") || "[]")

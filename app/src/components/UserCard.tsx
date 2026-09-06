@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react"
 
-import Avatar from "boring-avatars"
-
 import { LOCAL_PEER_ID } from "@common/consts"
-import { strToBgColor } from "@common/utils"
 
 import { UserInfo } from "../common/types"
 import AudioVisualizer from "../components/AudioVisualizer"
+import ParticipantAvatar from "../components/ParticipantAvatar"
 
 interface UserCardProps extends UserInfo {
   onMuteSelf?: () => void
@@ -58,13 +56,14 @@ export default function UserCard(user: UserCardProps) {
 
   if (user.compact) {
     return (
-      <div className={user.className}>
-        <div
-          className="flex flex-col items-center rounded-xl border border-gray-700 px-2 py-2"
-          style={{ backgroundColor: strToBgColor(user.name) }}
-        >
-          <div className="relative">
-            <Avatar size={36} variant="beam" name={user.name} />
+      <div
+        className={`participant-card-shell participant-card-shell--compact ${
+          user.className ?? ""
+        }`}
+      >
+        <div className="flex w-full min-w-0 flex-col items-center rounded-xl border border-gray-700 px-2 py-2">
+          <div className="participant-card__avatar relative">
+            <ParticipantAvatar name={user.name} size="compact" />
             {user.muteState && (
               <span className="absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5">
                 <svg
@@ -89,51 +88,38 @@ export default function UserCard(user: UserCardProps) {
               </span>
             )}
           </div>
-          <p className="mt-1.5 w-full truncate text-center text-xs text-white">
+          <p className="mt-1.5 min-w-0 max-w-full truncate text-center text-xs text-white">
             {displayName}
           </p>
           {user.kind === "agent" && (
-            <span className="mt-1 rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
+            <span className="participant-card__kind mt-1 rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
               🤖 Agent
             </span>
           )}
-          {user.kind === "agent" && (
+          {user.kind === "agent" && user.voiceAvailable && (
             <button
               type="button"
               onClick={user.onToggleAgentVoice}
-              disabled={!user.voiceAvailable}
               title={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
               aria-label={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
-              className="mt-1 min-h-6 rounded-full border border-gray-500 px-2 text-[9px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
+              className="participant-card__voice-button participant-card__voice-button--compact mt-1 min-h-6 rounded-full border border-gray-500 px-2 text-[9px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {user.voiceEnabled ? "🔊" : "🔇"}
+              {user.voiceEnabled ? "VOICE ●" : "VOICE"}
             </button>
           )}
-          {(user.capabilities ?? []).slice(0, 2).map((capability) => (
-            <span
-              key={capability}
-              title={capability}
-              className="mt-1 max-w-[64px] truncate rounded-full bg-black/30 px-1.5 py-0.5 text-[8px] text-white/70"
-            >
-              {capability}
-            </span>
-          ))}
           {isSelf && (
             <div className="mt-1 flex gap-1">
               <button
-                className="opacity-50 transition-opacity hover:opacity-80"
+                type="button"
+                className="participant-card__self-action opacity-50 transition-opacity hover:opacity-80"
                 onClick={user.onMuteSelf}
               >
                 {!user.muteState ? (
@@ -160,7 +146,8 @@ export default function UserCard(user: UserCardProps) {
               </button>
               {canScreenShare && user.screenshareAllowed && (
                 <button
-                  className="opacity-50 transition-opacity hover:opacity-80"
+                  type="button"
+                  className="participant-card__self-action participant-card__self-action--share opacity-50 transition-opacity hover:opacity-80"
                   onClick={user.onToggleScreenShare}
                 >
                   <svg
@@ -183,13 +170,15 @@ export default function UserCard(user: UserCardProps) {
 
   return (
     <div className={user.className}>
-      <div
-        className="flex min-h-[196px] w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3"
-        style={{ backgroundColor: strToBgColor(user.name) }}
-      >
-        <div className="flex flex-1 flex-col items-center justify-center gap-2">
-          <div className="relative">
-            <Avatar size={56} variant="beam" name={user.name} />
+      <div className="participant-card-shell participant-card-shell--full flex h-[200px] min-h-[200px] w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3">
+        <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-2">
+          <div className="participant-card__avatar relative">
+            <AudioVisualizer
+              audio={user.audioStream}
+              muteState={user.muteState}
+              size="full"
+            />
+            <ParticipantAvatar name={user.name} size="full" />
             {!isSelf && user.muteState && (
               <span className="absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5">
                 <svg
@@ -204,7 +193,8 @@ export default function UserCard(user: UserCardProps) {
             )}
             {isSelf && (
               <button
-                className="absolute -bottom-1 -left-1 rounded-full bg-gray-900 p-0.5 opacity-70 transition-opacity hover:opacity-100"
+                type="button"
+                className="participant-card__self-action absolute -bottom-1 -left-1 rounded-full bg-gray-900 p-0.5 opacity-70 transition-opacity hover:opacity-100"
                 onClick={user.onMuteSelf}
                 title={user.muteState ? "Unmute" : "Mute"}
               >
@@ -231,7 +221,8 @@ export default function UserCard(user: UserCardProps) {
             )}
             {isSelf && canScreenShare && user.screenshareAllowed && (
               <button
-                className="absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5 opacity-70 transition-opacity hover:opacity-100"
+                type="button"
+                className="participant-card__self-action participant-card__self-action--share absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5 opacity-70 transition-opacity hover:opacity-100"
                 onClick={user.onToggleScreenShare}
                 title="Screen share"
               >
@@ -253,7 +244,7 @@ export default function UserCard(user: UserCardProps) {
           </div>
 
           <p
-            className="w-full break-words text-center text-xs leading-tight text-white"
+            className="w-full min-w-0 max-w-full truncate whitespace-nowrap text-center text-xs leading-tight text-white"
             title={displayName}
           >
             {isSelf ? user.name : displayName}
@@ -266,56 +257,31 @@ export default function UserCard(user: UserCardProps) {
         </div>
 
         <div className="mb-1 flex min-h-[18px] flex-wrap items-center justify-center gap-1">
-          <span className="rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
+          <span className="participant-card__kind rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
             {user.kind === "agent" ? "🤖 Agent" : "Human"}
           </span>
-          {(user.capabilities ?? []).slice(0, 3).map((capability) => (
-            <span
-              key={capability}
-              title={capability}
-              className="max-w-[72px] truncate rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/70"
-            >
-              {capability}
-            </span>
-          ))}
-          {(user.capabilities?.length ?? 0) > 3 && (
-            <span className="rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/70">
-              +{(user.capabilities?.length ?? 0) - 3}
-            </span>
-          )}
-          {user.kind === "agent" && (
+          {user.kind === "agent" && user.voiceAvailable && (
             <button
               type="button"
               onClick={user.onToggleAgentVoice}
-              disabled={!user.voiceAvailable}
               title={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
               aria-label={
-                !user.voiceAvailable
-                  ? "Voice unavailable"
-                  : user.voiceEnabled
+                user.voiceEnabled
                   ? `Mute ${user.name}`
                   : `Enable voice for ${user.name}`
               }
-              className="min-h-7 rounded-full border border-gray-500 px-2 text-[10px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
+              className="participant-card__voice-button participant-card__voice-button--full min-h-7 rounded-full border border-gray-500 px-2 text-[10px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {user.voiceEnabled ? "🔊 Voice" : "🔇 Voice"}
+              {user.voiceEnabled ? "VOICE ●" : "VOICE"}
             </button>
           )}
         </div>
 
         <audio ref={audioRef} autoPlay={!isSelf} muted={isSelf} />
-
-        <AudioVisualizer
-          audio={user.audioStream}
-          name={user.name}
-          muteState={user.muteState}
-        />
       </div>
     </div>
   )
