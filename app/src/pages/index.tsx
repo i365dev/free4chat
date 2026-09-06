@@ -80,10 +80,11 @@ export default function Home() {
             </p>
             <h1
               aria-label="Open a room. Bring people and Agents together."
-              className="psy-headline mt-5 bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-3xl font-extrabold uppercase tracking-tight text-transparent sm:text-4xl"
+              className="psy-headline mt-5 text-3xl font-extrabold uppercase tracking-tight sm:text-4xl"
             >
               <SignalCollapseText
                 text={"Open a room.\nBring people and Agents together."}
+                className="bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-transparent"
               />
             </h1>
 
