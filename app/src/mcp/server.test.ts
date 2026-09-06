@@ -42,7 +42,7 @@ describe("public MCP tool surface", () => {
     expect(names).toHaveLength(17)
   })
 
-  it("preserves the server Agent lease through join_room and create_room", async () => {
+  it("preserves legacy Room ids and the server Agent lease", async () => {
     const leaseMs = 90_000
     const sessions = new Map<string, RoomSession>()
     const sessionFor = (room: string) => {
@@ -129,14 +129,21 @@ describe("public MCP tool surface", () => {
       return JSON.parse(text ?? "{}") as Record<string, unknown>
     }
 
+    const uuidRoomId = "123e4567-e89b-42d3-a456-426614174000"
+    const legacyRoomId = "room-239"
     const joined = await callTool("join_room", {
-      roomId: "room-239",
+      roomId: uuidRoomId,
       name: "Join Agent",
+    })
+    const legacyJoined = await callTool("join_room", {
+      roomId: legacyRoomId,
+      name: "Legacy Agent",
     })
     const created = await callTool("create_room", {
       name: "Create Agent",
     })
     expect(joined.agentLeaseMs).toBe(leaseMs)
+    expect(legacyJoined.agentLeaseMs).toBe(leaseMs)
     expect(created.agentLeaseMs).toBe(leaseMs)
     expect(created.invite).toMatchObject({
       roomId: expect.stringMatching(
@@ -146,7 +153,9 @@ describe("public MCP tool surface", () => {
     expect((created.invite as { roomUrl: string }).roomUrl).toContain(
       encodeURIComponent((created.invite as { roomId: string }).roomId)
     )
-    expect(sessions.size).toBe(2)
+    expect(sessions.has(uuidRoomId)).toBe(true)
+    expect(sessions.has(legacyRoomId)).toBe(true)
+    expect(sessions.size).toBe(3)
   })
 
   it("retries a cosmic Room id collision without joining the first id", async () => {
