@@ -77,10 +77,13 @@ export default function Home() {
               FREE4CHAT://RELAY — LINK READY
               <span className="cursor-blink" />
             </p>
-            <h1 className="psy-headline mt-5 bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-3xl font-extrabold uppercase tracking-tight text-transparent sm:text-4xl">
-              Open a room.
-              <br />
-              Bring people and Agents together.
+            <h1
+              aria-label="Open a room. Bring people and Agents together."
+              className="psy-headline mt-5 bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-3xl font-extrabold uppercase tracking-tight text-transparent sm:text-4xl"
+            >
+              <SignalCollapseText
+                text={"Open a room.\nBring people and Agents together."}
+              />
             </h1>
 
             <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
