@@ -1,0 +1,70 @@
+name: PR Autofix
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "app/**"
+      - ".github/workflows/pr-autofix.yml"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: pr-autofix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  autofix:
+    name: Format & lint autofix
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.nvmrc
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: app
+
+      - name: Apply deterministic frontend fixes
+        run: |
+          npx prettier --write .
+          yarn lint
+        working-directory: app
+
+      - name: Commit fixes when needed
+        id: commit
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "free4chat-autofix[bot]"
+          git config user.email "free4chat-autofix[bot]@users.noreply.github.com"
+          git add app
+          git commit -m "chore: apply automated frontend fixes"
+          git push origin "HEAD:$HEAD_REF"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # Commits created with GITHUB_TOKEN do not normally start another
+      # pull_request workflow. Explicitly dispatch the normal CI workflow on
+      # the updated branch so the new head SHA gets fresh validation.
+      - name: Validate autofixed head
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-web.yml --ref "$HEAD_REF"
