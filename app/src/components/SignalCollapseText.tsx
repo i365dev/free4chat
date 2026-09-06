@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useState } from "react"
 
 const NOISE_GLYPHS =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&*+-=/<>?[]{}:;@|_"
@@ -34,7 +34,7 @@ export default function SignalCollapseText({
   const [displayText, setDisplayText] = useState(text)
   const [phase, setPhase] = useState<Phase>("idle")
 
-  useEffect(() => {
+  useClientLayoutEffect(() => {
     const reducedMotion = window.matchMedia
       ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
       : false
