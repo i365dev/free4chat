@@ -17,6 +17,7 @@ export default function ParticipantAvatar({
 }) {
   const compact = size === "compact"
   const normalizedSpeakingLevel = Math.min(1, Math.max(0, speakingLevel))
+  const rippleDuration = `${(1.8 - normalizedSpeakingLevel * 0.95).toFixed(2)}s`
 
   return (
     <span
@@ -27,6 +28,7 @@ export default function ParticipantAvatar({
       style={
         {
           "--speaking-level": normalizedSpeakingLevel,
+          "--ripple-duration": rippleDuration,
         } as CSSProperties
       }
       aria-hidden="true"

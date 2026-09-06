@@ -310,10 +310,12 @@ html {
 
 .participant-avatar[data-speaking="true"] .participant-avatar__ripple--one {
   animation: participant-avatar-ripple 1.35s ease-out infinite;
+  animation-duration: var(--ripple-duration, 1.8s);
 }
 
 .participant-avatar[data-speaking="true"] .participant-avatar__ripple--two {
   animation: participant-avatar-ripple 1.35s 0.48s ease-out infinite;
+  animation-duration: var(--ripple-duration, 1.8s);
 }
 
 @keyframes participant-avatar-ripple {
@@ -404,55 +406,6 @@ html {
 .participant-card__self-action svg {
   width: 0.82rem;
   height: 0.82rem;
-}
-
-.participant-card-shell--full > .room-visualizer,
-.participant-card-shell--compact > div > .room-visualizer {
-  position: absolute;
-  right: 0.65rem;
-  bottom: 0.65rem;
-  left: 0.65rem;
-  z-index: 0;
-  width: auto !important;
-  height: 2.5rem;
-  margin: 0 !important;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  opacity: 0.48;
-  pointer-events: none;
-}
-
-.participant-card-shell--full > :not(.room-visualizer),
-.participant-card-shell--compact > div > :not(.room-visualizer) {
-  position: relative;
-  z-index: 1;
-}
-
-.room-visualizer {
-  position: relative;
-  border: 1px solid rgba(103, 232, 249, 0.22);
-  border-radius: 0.45rem;
-  background: rgba(2, 8, 20, 0.72);
-  box-shadow: inset 0 0 12px rgba(103, 232, 249, 0.06);
-}
-
-.room-visualizer::before {
-  position: absolute;
-  top: 50%;
-  right: 0.45rem;
-  left: 0.45rem;
-  border-top: 1px dashed rgba(103, 232, 249, 0.18);
-  content: "";
-  pointer-events: none;
-}
-
-.room-visualizer__canvas {
-  position: relative;
-  display: block;
-  width: 86% !important;
-  margin: 0 auto;
-  opacity: 0.82;
 }
 
 .room-chat-panel {

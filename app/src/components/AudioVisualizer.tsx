@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react"
+import { useEffect } from "react"
 
 interface Audio {
   audio?: MediaStream | null
@@ -7,8 +7,12 @@ interface Audio {
   onLevel?: (level: number) => void
 }
 
+/**
+ * Samples a participant track for presentation-only activity indicators.
+ * The component intentionally renders no waveform DOM; UserCard consumes the
+ * smoothed level to animate the avatar ripple instead.
+ */
 export default function AudioVisualizer(props: Audio) {
-  const analyserCanvas = useRef(null)
   const { audio, name, muteState, onLevel } = props
   useEffect(() => {
     if (!audio || audio.getAudioTracks().length === 0 || muteState) return
@@ -18,54 +22,29 @@ export default function AudioVisualizer(props: Audio) {
     const audioSrc = audioCtx.createMediaStreamSource(audio)
     audioSrc.connect(analyser)
     analyser.fftSize = 256
-    const bufferLength = analyser.frequencyBinCount
-    const dataArray = new Uint8Array(bufferLength)
-    analyser.getByteTimeDomainData(dataArray)
-
-    const canvas = analyserCanvas.current
-    const canvasCtx = canvas.getContext("2d")
+    const levelArray = new Uint8Array(analyser.fftSize)
 
     let animationFrame = 0
     let lastLevelReport = 0
+    let smoothedLevel = 0
     const draw = () => {
-      const WIDTH = canvas.width
-      const HEIGHT = canvas.height
-
       animationFrame = requestAnimationFrame(draw)
-      analyser.getByteFrequencyData(dataArray)
+      analyser.getByteTimeDomainData(levelArray)
 
-      // clear canvas for next drawing
-      canvasCtx.fillStyle = "rgba(2, 8, 20, 0.78)"
-      canvasCtx.fillRect(0, 0, WIDTH, HEIGHT)
-
-      const barWidth = 4
-      let barHeight: number
-      let x = 0
-      let levelTotal = 0
-
-      for (let i = 0; i < bufferLength; i++) {
-        barHeight = dataArray[i] / 2
-        levelTotal += dataArray[i]
-
-        // const r = Math.floor(barHeight + 64)
-        // if (g % 3 === 0) {
-        //   canvasCtx.fillStyle = `rgb(${r},${g},${b})`
-        // } else if (g % 3 === 1) {
-        //   canvasCtx.fillStyle = `rgb(${g},${r},${b})`
-        // } else {
-        //   canvasCtx.fillStyle = `rgb(${g},${b},${r})`
-        // }
-        canvasCtx.fillStyle = "rgba(166, 243, 255, 0.92)"
-
-        canvasCtx.fillRect(x, 40 - barHeight / 2, barWidth, barHeight)
-
-        x += barWidth + 2
+      let squareTotal = 0
+      for (const sample of levelArray) {
+        const centeredSample = (sample - 128) / 128
+        squareTotal += centeredSample * centeredSample
       }
+      const rms = Math.sqrt(squareTotal / levelArray.length)
+      const targetLevel = Math.min(1, Math.max(0, (rms - 0.015) / 0.22))
+      const smoothing = targetLevel > smoothedLevel ? 0.28 : 0.12
+      smoothedLevel += (targetLevel - smoothedLevel) * smoothing
 
       const now = performance.now()
       if (onLevel && now - lastLevelReport >= 80) {
         lastLevelReport = now
-        onLevel(Math.min(1, levelTotal / bufferLength / 255))
+        onLevel(smoothedLevel)
       }
     }
     const resume = () => {
@@ -86,14 +65,5 @@ export default function AudioVisualizer(props: Audio) {
     }
   }, [audio, name, muteState, onLevel])
 
-  if (!audio || audio.getAudioTracks().length === 0 || muteState) return null
-
-  return (
-    <div className="visualizer room-visualizer mx-auto mt-4">
-      <canvas
-        ref={analyserCanvas}
-        className="room-visualizer__canvas h-12 w-4/5"
-      ></canvas>
-    </div>
-  )
+  return null
 }
