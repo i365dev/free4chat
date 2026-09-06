@@ -89,6 +89,7 @@ describe("participant card equal-height contract (#228)", () => {
     // The grid top-aligns rows; no full-panel-height stretching remains.
     const grid = document.querySelector(".flex-wrap.items-start")
     expect(grid).toBeTruthy()
+    expect(grid).toHaveClass("justify-center")
     expect(document.querySelector(".flex-wrap.items-stretch")).toBeNull()
     expect(document.querySelectorAll("[data-peer]").length).toBe(0)
   })

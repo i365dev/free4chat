@@ -72,7 +72,7 @@ export default function Home() {
       <Header></Header>
       <main className="flex min-h-screen flex-col">
         <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col overflow-y-auto px-4 py-12">
-          <div className="slogan mx-auto my-auto w-full max-w-3xl text-center">
+          <div className="slogan mx-auto my-auto w-full max-w-5xl text-center">
             <p className="font-mono text-xs tracking-widest text-emerald-500">
               FREE4CHAT://TERMINAL — SESSION READY
               <span className="cursor-blink" />
@@ -91,9 +91,9 @@ export default function Home() {
               No permanent Room history — empty Rooms expire automatically.
             </p>
 
-            <div className="mx-auto mt-8 max-w-xl">
+            <div className="mx-auto mt-8 w-full max-w-xl lg:max-w-5xl">
               <div className="flex flex-col gap-4 sm:flex-row">
-                <div className="relative flex-1">
+                <div className="relative min-w-0 flex-1 sm:flex-[1.35]">
                   <label htmlFor="room" className="sr-only">
                     Room
                   </label>
@@ -127,7 +127,7 @@ export default function Home() {
                   </span>
                 </div>
 
-                <div className="relative flex-1">
+                <div className="relative min-w-0 flex-1">
                   <label htmlFor="nickname" className="sr-only">
                     Nickname
                   </label>
