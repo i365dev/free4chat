@@ -54,6 +54,75 @@ html {
   animation: psy-hue 14s linear infinite;
 }
 
+.home-join-cta {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(167, 243, 208, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(2, 8, 6, 0.18),
+    0 0 18px rgba(16, 185, 129, 0.16);
+  transition: background-color 160ms ease, border-color 160ms ease,
+    box-shadow 160ms ease, transform 120ms ease;
+}
+
+.home-join-cta::before {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(236, 253, 245, 0.16) 0,
+    rgba(236, 253, 245, 0.16) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  content: "";
+  opacity: 0.28;
+  pointer-events: none;
+  transform: translateX(-105%);
+  transition: transform 260ms ease;
+}
+
+.home-join-cta:hover,
+.home-join-cta:focus-visible {
+  border-color: rgba(236, 253, 245, 0.96);
+  background-color: #34d399;
+  box-shadow: inset 0 0 0 1px rgba(236, 253, 245, 0.22),
+    0 0 24px rgba(16, 185, 129, 0.26);
+}
+
+.home-join-cta:hover::before,
+.home-join-cta:focus-visible::before {
+  transform: translateX(105%);
+}
+
+.home-join-cta:active {
+  transform: scale(0.985);
+}
+
+.home-join-cta__arrow {
+  display: inline-block;
+  transition: transform 160ms ease;
+}
+
+.home-join-cta:hover .home-join-cta__arrow,
+.home-join-cta:focus-visible .home-join-cta__arrow {
+  transform: translateX(3px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-join-cta,
+  .home-join-cta::before,
+  .home-join-cta__arrow {
+    transition: none;
+  }
+
+  .home-join-cta:hover::before,
+  .home-join-cta:focus-visible::before,
+  .home-join-cta:hover .home-join-cta__arrow,
+  .home-join-cta:focus-visible .home-join-cta__arrow {
+    transform: none;
+  }
+}
+
 @keyframes psy-hue {
   from {
     filter: hue-rotate(0deg) drop-shadow(0 0 10px rgba(52, 211, 153, 0.3));

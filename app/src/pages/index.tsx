@@ -167,24 +167,15 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={go}
-                  className="group flex w-full items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300 sm:w-auto"
+                  aria-label="Join Room"
+                  className="home-join-cta group flex w-full items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300 sm:w-auto"
                 >
-                  <span> Join </span>
-
-                  <svg
-                    className="ml-3 h-5 w-5"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="2"
-                      d="M17 8l4 4m0 0l-4 4m4-4H3"
-                    />
-                  </svg>
+                  <span className="relative z-10">
+                    WARP IN{" "}
+                    <span className="home-join-cta__arrow" aria-hidden="true">
+                      →
+                    </span>
+                  </span>
                 </button>
               </div>
 
