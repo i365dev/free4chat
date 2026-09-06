@@ -127,12 +127,10 @@ export default function SignalCollapseText({
 
         // Before permanent lock, the real glyph becomes increasingly likely
         // to flash through the noise, like a weak signal gaining confidence.
-        const targetGlimpseProbability =
-          0.03 + 0.62 * progress * progress
+        const targetGlimpseProbability = 0.03 + 0.62 * progress * progress
 
         if (
-          unit(randomWords[sampleOffset + 1]) <
-          targetGlimpseProbability
+          unit(randomWords[sampleOffset + 1]) < targetGlimpseProbability
         ) {
           return target
         }
