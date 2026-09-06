@@ -16,7 +16,9 @@ describe("Home page", () => {
         name: /open a room\. bring people and agents together\./i,
       })
     ).toBeInTheDocument()
-    const joinButton = screen.getByRole("button", { name: "Join Room" })
+    const joinButton = screen.getByRole("button", {
+      name: "Warp In — Join Room",
+    })
     expect(joinButton).toBeInTheDocument()
     expect(joinButton).toHaveTextContent("WARP IN →")
     expect(screen.getByPlaceholderText("room_name")).toBeInTheDocument()

@@ -167,7 +167,7 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={go}
-                  aria-label="Join Room"
+                  aria-label="Warp In — Join Room"
                   className="home-join-cta group flex w-full items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300 sm:w-auto"
                 >
                   <span className="relative z-10">
