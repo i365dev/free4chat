@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - "app/**"
+      - ".github/workflows/pr-autofix.yml"
 
 permissions:
   contents: write
