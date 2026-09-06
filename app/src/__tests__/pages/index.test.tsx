@@ -16,6 +16,9 @@ describe("Home page", () => {
         name: /open a room\. bring people and agents together\./i,
       })
     ).toBeInTheDocument()
+    expect(
+      screen.getByText("FREE4CHAT://RELAY — LINK READY")
+    ).toBeInTheDocument()
     const joinButton = screen.getByRole("button", {
       name: "Warp In — Join Room",
     })

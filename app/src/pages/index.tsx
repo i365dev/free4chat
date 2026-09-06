@@ -74,7 +74,7 @@ export default function Home() {
         <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col overflow-y-auto px-4 py-12">
           <div className="slogan mx-auto my-auto w-full max-w-5xl text-center">
             <p className="font-mono text-xs tracking-widest text-emerald-500">
-              FREE4CHAT://TERMINAL — SESSION READY
+              FREE4CHAT://RELAY — LINK READY
               <span className="cursor-blink" />
             </p>
             <h1 className="psy-headline mt-5 bg-gradient-to-r from-emerald-300 via-fuchsia-400 to-cyan-300 bg-clip-text text-3xl font-extrabold uppercase tracking-tight text-transparent sm:text-4xl">
