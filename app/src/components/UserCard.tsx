@@ -120,7 +120,7 @@ export default function UserCard(user: UserCardProps) {
               }
               className="participant-card__voice-button participant-card__voice-button--compact mt-1 min-h-6 rounded-full border border-gray-500 px-2 text-[9px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {user.voiceEnabled ? "🔊" : "🔇"}
+              {user.voiceEnabled ? "VOICE ●" : "VOICE"}
             </button>
           )}
           {isSelf && (
@@ -283,7 +283,7 @@ export default function UserCard(user: UserCardProps) {
               }
               className="participant-card__voice-button participant-card__voice-button--full min-h-7 rounded-full border border-gray-500 px-2 text-[10px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {user.voiceEnabled ? "🔊 Voice" : "🔇 Voice"}
+              {user.voiceEnabled ? "VOICE ●" : "VOICE"}
             </button>
           )}
         </div>

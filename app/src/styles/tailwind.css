@@ -336,9 +336,9 @@ html {
 
 .participant-card__kind,
 .participant-card__capability {
-  border: 1px solid rgba(103, 232, 249, 0.24);
-  background: rgba(8, 47, 73, 0.4) !important;
-  color: #b9f7ff !important;
+  border: 1px solid rgba(103, 232, 249, 0.16);
+  background: rgba(8, 47, 73, 0.24) !important;
+  color: rgba(185, 247, 255, 0.72) !important;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.02em;
 }

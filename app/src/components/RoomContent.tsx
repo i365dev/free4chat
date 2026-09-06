@@ -677,7 +677,7 @@ export default function RoomContent({
                         }
                         voiceEnabled={p.voiceEnabled}
                         onToggleAgentVoice={() => toggleAgentVoice(p)}
-                        className="w-20"
+                        className="w-[84px]"
                         compact
                       />
                     </div>
