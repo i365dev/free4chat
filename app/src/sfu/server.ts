@@ -15,6 +15,13 @@ export interface SfuEnv {
   ROOMS_KV: KVNamespace
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
+  /** #275: test-only override of the Cloudflare Realtime base URL. Absent
+   * (production and ordinary local dev) means the real
+   * `https://rtc.live.cloudflare.com/v1/apps/{appId}` endpoint is used,
+   * exactly as before. Local E2E harnesses point this at a loopback fake so
+   * the real Human join path can run without ever contacting Cloudflare
+   * Realtime. Analytics/authorization semantics are untouched. */
+  SFU_RTC_BASE_URL?: string
   TURNSTILE_SECRET_KEY?: string
   // Explicit, reversible development/E2E bypass. Any value other than the
   // literal string "true" preserves the normal Turnstile behavior below.
@@ -187,12 +194,12 @@ async function realtimeRequest(
   const headers = new Headers(init.headers)
   headers.set("Authorization", `Bearer ${credentials.appSecret}`)
   headers.set("Content-Type", "application/json")
-  return fetch(
+  const base =
+    env.SFU_RTC_BASE_URL ??
     `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(
       credentials.appId
-    )}${path}`,
-    { ...init, headers }
-  )
+    )}`
+  return fetch(`${base}${path}`, { ...init, headers })
 }
 
 const MAX_DIAGNOSTIC_TRACK_COUNT = 100

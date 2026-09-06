@@ -36,10 +36,10 @@ Three hard rules (each one cost a debugging cycle):
 
 ## Turnstile switches (local bypass)
 
-| Layer | Mechanism |
-| --- | --- |
-| Server | `--var TURNSTILE_SECRET_KEY:` (empty ⇒ `verify()` returns true immediately, see sfu/server.ts) |
-| Client | build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1` ⇒ useTurnstile loads no widget, requestToken resolves instantly |
+| Layer               | Mechanism                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Server              | `--var TURNSTILE_SECRET_KEY:` (empty ⇒ `verify()` returns true immediately, see sfu/server.ts)                                    |
+| Client              | build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1` ⇒ useTurnstile loads no widget, requestToken resolves instantly                     |
 | Browser widget kept | sitekey must be `1x00000000000000000000` (20 chars); variants with an `AA` suffix are invalid keys and fail with Turnstile 400020 |
 
 Production builds set none of these ⇒ behavior identical to production.
@@ -81,3 +81,49 @@ wait_for_events {participantHandle, cursor, timeoutSeconds}
   leave leaves a ghost card until lease expiry.
 - Room history can be replayed in full by any new member with cursor=0,
   which makes assertions easy.
+
+## Automated browser Room E2E (the real Worker + real DO)
+
+`app/e2e/room/` is the repeatable control-plane regression: two REAL browser
+pages join the same Room through the REAL OpenNext Worker, REAL
+`RoomSession` Durable Object, REAL KV bindings, REAL WebSocket and REAL
+roster/message broadcast. The only fake layers are external:
+
+- Cloudflare Realtime upstream → loopback fake HTTP server (`SFU_RTC_BASE_URL`
+  env override; `src/sfu/server.ts` keeps the real production base when the
+  env var is absent);
+- browser media bootstrap → Chromium's fake-device flags
+  (`--use-fake-device-for-media-stream`) plus a tiny `RTCPeerConnection`
+  stub in `room.spec.ts` (the fake SFU's SDP is deliberately unparseable).
+
+Origin handling: the harness binds a transparent TCP relay on
+`http://localhost:3000` (the existing production allow-list origin) and
+forwards everything untouched — `src/common/origin.ts` is NOT weakened.
+
+```bash
+cd app
+yarn e2e:room
+```
+
+The webServer command runs `NEXT_PUBLIC_TURNSTILE_DISABLED=1 yarn cf-build &&
+node e2e/room/run-local-worker.mjs` (Wrangler `createTestHarness()` + fake
+Realtime + 3000 TCP relay). Run it at least twice to catch leaked ports or
+stale state; the fake Realtime fails CLOSED (503) on any unexpected outbound
+call, so a test passing proves no stray external request occurred.
+
+## Which test for which change
+
+| Change                                                        | Test                             |
+| ------------------------------------------------------------- | -------------------------------- |
+| Homepage visual/headline (signal collapse, CTA, layout)       | `yarn e2e:homepage`              |
+| Room layout / chat / participant cards / control-plane wiring | `yarn e2e:room`                  |
+| Worker routes / DO logic / MCP tools                          | local curl/MCP flow below        |
+| Audio / screen share / Agent Voice / SFU negotiation          | REAL deployed media dogfood only |
+
+> **Local Room E2E proves the collaboration/control plane. It does NOT prove
+> the Realtime SFU/media plane.** Do not claim media correctness from a
+> harness that fakes `rtc.live.cloudflare.com` or the peer connection.
+
+The manual `wrangler dev --local --port 3000` + curl/MCP/Agent Runtime
+workflow below remains the interactive investigation path; the automated
+harness and the manual workflow are complementary, not replacements.
