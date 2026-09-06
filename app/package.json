@@ -16,7 +16,8 @@
     "test": "vitest run",
     "docs:generate": "node scripts/generate-docs-assets.mjs",
     "docs:check": "node scripts/generate-docs-assets.mjs --check",
-    "prepare": "husky"
+    "prepare": "husky",
+    "e2e:homepage": "playwright test e2e/signal-collapse.spec.ts --config=e2e/playwright.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
@@ -32,6 +33,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260811.1",
     "@opennextjs/cloudflare": "^1.19.1",
+    "@playwright/test": "1.48.2",
     "@tailwindcss/aspect-ratio": "^0.4.0",
     "@tailwindcss/forms": "^0.5.0",
     "@tailwindcss/typography": "^0.5.2",
