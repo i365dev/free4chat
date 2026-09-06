@@ -4,7 +4,10 @@ import Link from "next/link"
 import { useRouter } from "next/router"
 
 import {
-  randomName,
+  generateParticipantName,
+  generateRoomName,
+} from "../common/cosmicNames"
+import {
   saveRoomToLocalStorage,
   umamiEvent,
   trackAnalyticsEvent,
@@ -30,7 +33,8 @@ export default function Home() {
   const [isDesktop, setIsDesktop] = useState<boolean>(false)
 
   useEffect(() => {
-    setRoomName(randomName())
+    setRoomName(generateRoomName())
+    setNickName(generateParticipantName())
     setIsDesktop(!/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent))
   }, [])
 
@@ -105,7 +109,7 @@ export default function Home() {
 
                   <span className="absolute inset-y-0 right-0 grid w-10 place-content-center">
                     <button
-                      onClick={() => setRoomName(randomName())}
+                      onClick={() => setRoomName(generateRoomName())}
                       type="button"
                       className={diceClasses}
                       title="Randomize room name"
@@ -142,7 +146,7 @@ export default function Home() {
 
                   <span className="absolute inset-y-0 right-0 grid w-10 place-content-center">
                     <button
-                      onClick={() => setNickName(randomName())}
+                      onClick={() => setNickName(generateParticipantName())}
                       type="button"
                       className={diceClasses}
                       title="Randomize nickname"

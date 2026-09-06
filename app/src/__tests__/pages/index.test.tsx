@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("next/router", () => ({
@@ -48,5 +48,25 @@ describe("Home page", () => {
     expect(
       screen.queryByText(/verifying you.re human/i)
     ).not.toBeInTheDocument()
+  })
+
+  it("prefills separate cosmic defaults and keeps both dice controls wired", async () => {
+    render(<Home />)
+
+    await waitFor(() => {
+      const room = screen.getByLabelText("Room") as HTMLInputElement
+      const nickname = screen.getByLabelText("Nickname") as HTMLInputElement
+      expect(room.value).toMatch(/^[a-z]+-[a-z]+-[a-z0-9]+$/)
+      expect(nickname.value).toMatch(/^[A-Z][a-z]+$/)
+    })
+
+    fireEvent.click(screen.getByTitle("Randomize room name"))
+    fireEvent.click(screen.getByTitle("Randomize nickname"))
+    expect((screen.getByLabelText("Room") as HTMLInputElement).value).toMatch(
+      /^[a-z]+-[a-z]+-[a-z0-9]+$/
+    )
+    expect(
+      (screen.getByLabelText("Nickname") as HTMLInputElement).value
+    ).toMatch(/^[A-Z][a-z]+$/)
   })
 })
