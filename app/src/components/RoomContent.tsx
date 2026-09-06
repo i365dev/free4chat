@@ -476,7 +476,7 @@ export default function RoomContent({
   }
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-gray-900 text-white">
+    <main className="room-shell flex h-screen flex-col overflow-hidden bg-gray-900 text-white">
       {connectionStatus === "reconnecting" && (
         <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60">
           <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
@@ -484,7 +484,7 @@ export default function RoomContent({
         </div>
       )}
 
-      <header className="flex flex-none flex-col gap-2 border-b border-gray-800 px-4 py-3 lg:flex-row lg:items-center">
+      <header className="room-header flex flex-none flex-col gap-2 border-b border-gray-800 px-4 py-3 lg:flex-row lg:items-center">
         <div
           data-testid="room-header-identity"
           className="flex min-w-0 items-center gap-2"
@@ -614,10 +614,10 @@ export default function RoomContent({
 
       <div
         ref={containerRef}
-        className="flex flex-1 flex-col overflow-hidden md:flex-row"
+        className="room-content flex flex-1 flex-col overflow-hidden md:flex-row"
       >
         <div
-          className="flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
+          className="room-panel flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
           style={isMd ? { width: `${splitRatio}%` } : undefined}
         >
           {/* #111: Agent workspace snapshots — observation only, available in
@@ -636,7 +636,7 @@ export default function RoomContent({
                     name={activeShare.name}
                   />
                 )}
-                <div className="scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
                   {participants.map((p) => (
                     <div
                       key={p.peerId}
@@ -685,7 +685,7 @@ export default function RoomContent({
                 </div>
               </>
             ) : (
-              <div className="scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
+              <div className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
                 {participants.map((p) => (
                   <div
                     key={p.peerId}
@@ -711,7 +711,7 @@ export default function RoomContent({
                       className="w-40 flex-none"
                     />
                     {p.peerId === LOCAL_PEER_ID && (
-                      <div className="hidden items-center gap-1 md:flex">
+                      <div className="room-reactions hidden items-center gap-1 md:flex">
                         {REACTION_EMOJIS.map((emoji) => (
                           <button
                             key={emoji}
@@ -749,7 +749,7 @@ export default function RoomContent({
           }}
         />
 
-        <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="room-panel room-chat-panel flex flex-1 flex-col overflow-hidden">
           <TextChatCard
             room={roomName}
             nickName={nickName}

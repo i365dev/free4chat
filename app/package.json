@@ -21,8 +21,8 @@
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
     "agents": "0.21.0",
-    "boring-avatars": "^1.7.0",
     "next": "15.5.24",
+    "planet-avatar": "0.1.0",
     "react": "19",
     "react-dom": "19",
     "react-markdown": "^10.1.0",

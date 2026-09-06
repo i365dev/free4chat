@@ -1,7 +1,5 @@
 import { useEffect, useRef } from "react"
 
-import { nameToColor, strToRGB } from "../common/utils"
-
 interface Audio {
   audio: MediaStream
   name: string
@@ -11,7 +9,6 @@ interface Audio {
 export default function AudioVisualizer(props: Audio) {
   const analyserCanvas = useRef(null)
   useEffect(() => {
-    const color = nameToColor(props.name)
     if (!props.audio || props.audio.getAudioTracks().length === 0) return
     const audioCtx = new AudioContext()
     void audioCtx.resume().catch(() => undefined)
@@ -26,9 +23,6 @@ export default function AudioVisualizer(props: Audio) {
     const canvas = analyserCanvas.current
     const canvasCtx = canvas.getContext("2d")
 
-    const g = color[1]
-    const b = color[2]
-
     let animationFrame = 0
     const draw = () => {
       const WIDTH = canvas.width
@@ -38,7 +32,7 @@ export default function AudioVisualizer(props: Audio) {
       analyser.getByteFrequencyData(dataArray)
 
       // clear canvas for next drawing
-      canvasCtx.fillStyle = strToRGB(props.name)
+      canvasCtx.fillStyle = "rgba(2, 8, 20, 0.78)"
       canvasCtx.fillRect(0, 0, WIDTH, HEIGHT)
 
       const barWidth = 4
@@ -56,7 +50,7 @@ export default function AudioVisualizer(props: Audio) {
         // } else {
         //   canvasCtx.fillStyle = `rgb(${g},${b},${r})`
         // }
-        canvasCtx.fillStyle = `rgb(255,255,255)`
+        canvasCtx.fillStyle = "rgba(166, 243, 255, 0.92)"
 
         canvasCtx.fillRect(x, 40 - barHeight / 2, barWidth, barHeight)
 
@@ -74,8 +68,11 @@ export default function AudioVisualizer(props: Audio) {
   }, [props.audio, props.name])
 
   return (
-    <div className="visualizer mx-auto mt-4">
-      <canvas ref={analyserCanvas} className="h-12 w-4/5"></canvas>
+    <div className="visualizer room-visualizer mx-auto mt-4">
+      <canvas
+        ref={analyserCanvas}
+        className="room-visualizer__canvas h-12 w-4/5"
+      ></canvas>
     </div>
   )
 }

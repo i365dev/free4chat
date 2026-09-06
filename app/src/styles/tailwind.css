@@ -82,3 +82,323 @@ html {
     animation: none;
   }
 }
+
+/* --- Room visual skin (presentation only) ---
+
+   The selectors below deliberately target the production Room structure. They
+   do not change participant state, media behavior, or the placement of any
+   existing interaction. */
+
+.room-shell {
+  position: relative;
+  isolation: isolate;
+  background-color: #050b18 !important;
+  background-image: radial-gradient(
+      circle at 15% 12%,
+      rgba(103, 232, 249, 0.08),
+      transparent 28rem
+    ),
+    radial-gradient(
+      circle at 85% 86%,
+      rgba(167, 139, 250, 0.07),
+      transparent 30rem
+    ),
+    linear-gradient(rgba(103, 232, 249, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.025) 1px, transparent 1px);
+  background-size: auto, auto, 32px 32px, 32px 32px;
+}
+
+.room-shell::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(103, 232, 249, 0.025) 0,
+    rgba(103, 232, 249, 0.025) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  content: "";
+  pointer-events: none;
+}
+
+.room-header {
+  border-color: rgba(71, 85, 105, 0.72) !important;
+  background: rgba(3, 9, 22, 0.9);
+  box-shadow: 0 1px 0 rgba(103, 232, 249, 0.06);
+}
+
+.room-header h1 {
+  color: #dffaff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.03em;
+  text-shadow: 0 0 14px rgba(103, 232, 249, 0.22);
+}
+
+.room-header button {
+  border-color: rgba(100, 116, 139, 0.78) !important;
+  background: rgba(15, 23, 42, 0.86) !important;
+  color: #cbd5e1 !important;
+  transition: border-color 160ms ease, color 160ms ease, box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.room-header button:hover,
+.room-header button:focus-visible {
+  border-color: rgba(103, 232, 249, 0.82) !important;
+  background: rgba(8, 47, 73, 0.62) !important;
+  box-shadow: 0 0 14px rgba(103, 232, 249, 0.12);
+  color: #ecfeff !important;
+  outline: none;
+}
+
+.room-content {
+  background: transparent;
+}
+
+.room-panel {
+  border-color: rgba(51, 65, 85, 0.8) !important;
+  background: rgba(3, 9, 22, 0.52);
+}
+
+.room-participants-grid {
+  background-image: radial-gradient(
+    circle at 8% 18%,
+    rgba(103, 232, 249, 0.1) 0 1px,
+    transparent 1.5px
+  );
+  background-size: 92px 86px;
+}
+
+.room-participant-strip {
+  border-color: rgba(51, 65, 85, 0.86) !important;
+  background: rgba(2, 8, 20, 0.88);
+}
+
+.room-participant-strip > div {
+  border-radius: 0.75rem;
+}
+
+.room-reactions {
+  margin-top: -0.15rem;
+  padding: 0.12rem 0.35rem;
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  border-radius: 999px;
+  background: rgba(2, 8, 20, 0.62);
+}
+
+.room-reactions button {
+  border-radius: 999px;
+  padding: 0.12rem 0.35rem;
+  font-size: 0.9rem;
+  line-height: 1;
+  transition: background 160ms ease, transform 160ms ease, filter 160ms ease;
+}
+
+.room-reactions button:hover,
+.room-reactions button:focus-visible {
+  background: rgba(103, 232, 249, 0.16);
+  filter: drop-shadow(0 0 5px rgba(103, 232, 249, 0.45));
+  outline: none;
+  transform: translateY(-1px) scale(1.12);
+}
+
+.participant-card-shell--full,
+.participant-card-shell--compact > div {
+  position: relative;
+  border-color: color-mix(in srgb, #67e8f9 26%, #334155) !important;
+  background: linear-gradient(145deg, rgba(8, 47, 73, 0.32), transparent 42%),
+    rgba(6, 14, 30, 0.88) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 12px 28px rgba(0, 0, 0, 0.18);
+  transition: border-color 160ms ease, box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.participant-card-shell--full:hover,
+.participant-card-shell--compact > div:hover {
+  border-color: rgba(103, 232, 249, 0.7) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 22px rgba(103, 232, 249, 0.1);
+  transform: translateY(-1px);
+}
+
+.participant-card-shell--full::before,
+.participant-card-shell--full::after,
+.participant-card-shell--compact > div::before,
+.participant-card-shell--compact > div::after {
+  position: absolute;
+  width: 1.15rem;
+  height: 0.35rem;
+  border-color: rgba(103, 232, 249, 0.72);
+  content: "";
+  pointer-events: none;
+}
+
+.participant-card-shell--full::before,
+.participant-card-shell--compact > div::before {
+  top: 0.45rem;
+  left: 0.45rem;
+  border-top: 1px solid;
+  border-left: 1px solid;
+}
+
+.participant-card-shell--full::after,
+.participant-card-shell--compact > div::after {
+  right: 0.45rem;
+  bottom: 0.45rem;
+  border-right: 1px solid;
+  border-bottom: 1px solid;
+  opacity: 0.45;
+}
+
+.participant-card__avatar {
+  display: grid;
+  place-items: center;
+  padding: 0.18rem;
+  border: 1px solid rgba(103, 232, 249, 0.28);
+  border-radius: 50%;
+  background: rgba(2, 8, 20, 0.72);
+  box-shadow: 0 0 14px rgba(103, 232, 249, 0.12);
+}
+
+.participant-avatar {
+  display: block;
+  width: 56px;
+  height: 56px;
+}
+
+.participant-avatar--compact {
+  width: 36px;
+  height: 36px;
+}
+
+.participant-avatar.text-chat-avatar {
+  width: 28px;
+  height: 28px;
+}
+
+.participant-avatar svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: saturate(1.08) drop-shadow(0 0 7px rgba(103, 232, 249, 0.2));
+}
+
+.participant-card__kind,
+.participant-card__capability {
+  border: 1px solid rgba(103, 232, 249, 0.24);
+  background: rgba(8, 47, 73, 0.4) !important;
+  color: #b9f7ff !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.02em;
+}
+
+.participant-card__capability {
+  border-color: rgba(167, 139, 250, 0.3);
+  background: rgba(49, 46, 129, 0.3) !important;
+  color: #ddd6fe !important;
+}
+
+.participant-card__voice-button {
+  min-width: 3.8rem;
+  border-color: rgba(167, 139, 250, 0.62) !important;
+  border-radius: 0.45rem !important;
+  background: rgba(49, 46, 129, 0.28) !important;
+  color: #e9d5ff !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.04em;
+  transition: border-color 160ms ease, background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.participant-card__voice-button:hover:not(:disabled),
+.participant-card__voice-button:focus-visible {
+  border-color: #c4b5fd !important;
+  background: rgba(109, 40, 217, 0.38) !important;
+  box-shadow: 0 0 12px rgba(167, 139, 250, 0.18);
+  outline: none;
+}
+
+.participant-card__voice-button:disabled {
+  border-color: rgba(100, 116, 139, 0.45) !important;
+  background: rgba(15, 23, 42, 0.58) !important;
+  color: #64748b !important;
+}
+
+.participant-card__self-action {
+  display: grid;
+  width: 1.55rem;
+  height: 1.55rem;
+  place-items: center;
+  border: 1px solid rgba(103, 232, 249, 0.44) !important;
+  border-radius: 0.4rem !important;
+  background: rgba(2, 8, 20, 0.94) !important;
+  color: #cbd5e1;
+  opacity: 1 !important;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease,
+    transform 160ms ease;
+}
+
+.participant-card__self-action:hover,
+.participant-card__self-action:focus-visible {
+  border-color: #67e8f9 !important;
+  background: rgba(8, 47, 73, 0.9) !important;
+  color: #ecfeff;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.participant-card__self-action--share {
+  border-color: rgba(190, 242, 100, 0.52) !important;
+  color: #d9f99d;
+}
+
+.participant-card__self-action svg {
+  width: 0.82rem;
+  height: 0.82rem;
+}
+
+.participant-card-shell--full > .room-visualizer,
+.participant-card-shell--compact .room-visualizer {
+  width: 100%;
+}
+
+.room-visualizer {
+  position: relative;
+  border: 1px solid rgba(103, 232, 249, 0.22);
+  border-radius: 0.45rem;
+  background: rgba(2, 8, 20, 0.72);
+  box-shadow: inset 0 0 12px rgba(103, 232, 249, 0.06);
+}
+
+.room-visualizer::before {
+  position: absolute;
+  top: 50%;
+  right: 0.45rem;
+  left: 0.45rem;
+  border-top: 1px dashed rgba(103, 232, 249, 0.18);
+  content: "";
+  pointer-events: none;
+}
+
+.room-visualizer__canvas {
+  position: relative;
+  display: block;
+  width: 86% !important;
+  margin: 0 auto;
+  opacity: 0.92;
+}
+
+.room-chat-panel {
+  background: rgba(2, 8, 20, 0.66);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-shell *,
+  .room-shell *::before,
+  .room-shell *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
