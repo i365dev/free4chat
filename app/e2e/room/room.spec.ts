@@ -1,3 +1,7 @@
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
 import { expect, test, type Page } from "@playwright/test"
 
 /**
@@ -150,6 +154,36 @@ test("two browsers exchange a text message through the real local DO", async ({
   })
 
   expect(errors).toEqual([])
+
+  // Hard invariant (#275 review): every Cloudflare Realtime request made
+  // during the test must have been explicitly handled by the loopback fake.
+  // The fake never forwards anything — an unexpected outbound call would
+  // have 503'd here AND be recorded for this assertion, even when
+  // best-effort production semantics would swallow the failure.
+  const stateDir =
+    process.env.FREEF4CHAT_E2E_STATE_DIR ??
+    path.join(os.tmpdir(), "f4c-room-e2e")
+  const fakePort = fs
+    .readFileSync(path.join(stateDir, "fake-port.txt"), "utf8")
+    .trim()
+  const audit = (await (
+    await fetch(`http://127.0.0.1:${fakePort}/__fake/requests`)
+  ).json()) as {
+    requests: Array<{ method: string; path: string }>
+    unexpected: Array<{ method: string; path: string }>
+  }
+  expect(
+    audit.unexpected,
+    "the app made an unexpected Cloudflare Realtime request during the E2E"
+  ).toEqual([])
+  expect(
+    audit.requests.some(
+      (request) =>
+        request.method === "POST" && request.path.endsWith("/sessions/new")
+    ),
+    "the fake Realtime must have served the Human join path"
+  ).toBe(true)
+
   await contextA.close()
   await contextB.close()
   void testInfo

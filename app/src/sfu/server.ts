@@ -1,5 +1,6 @@
 import type { SfuSessionResponse } from "./types"
 import { isAllowedOrigin } from "../common/origin"
+import { realtimeBaseUrl } from "../common/realtimeUrl"
 import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
 import { compensateUnacceptedAgentMedia } from "../do/mediaEffects"
 import { resolveAgentPurposePermission } from "../do/meetingNotesAuth"
@@ -194,11 +195,8 @@ async function realtimeRequest(
   const headers = new Headers(init.headers)
   headers.set("Authorization", `Bearer ${credentials.appSecret}`)
   headers.set("Content-Type", "application/json")
-  const base =
-    env.SFU_RTC_BASE_URL ??
-    `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(
-      credentials.appId
-    )}`
+  const base = realtimeBaseUrl(env)
+  if (!base) return json({ error: "sfu_not_configured" }, 503)
   return fetch(`${base}${path}`, { ...init, headers })
 }
 

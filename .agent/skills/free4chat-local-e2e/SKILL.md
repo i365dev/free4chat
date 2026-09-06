@@ -108,8 +108,17 @@ yarn e2e:room
 The webServer command runs `NEXT_PUBLIC_TURNSTILE_DISABLED=1 yarn cf-build &&
 node e2e/room/run-local-worker.mjs` (Wrangler `createTestHarness()` + fake
 Realtime + 3000 TCP relay). Run it at least twice to catch leaked ports or
-stale state; the fake Realtime fails CLOSED (503) on any unexpected outbound
-call, so a test passing proves no stray external request occurred.
+stale state.
+
+**Hard invariant:** `SFU_RTC_BASE_URL` is honored by EVERY known Cloudflare
+Realtime outbound I/O — both the Worker SFU routes (`realtimeRequest`) and
+the Durable Object media-cleanup effects (`executeMediaCloseEffect`) share
+the same seam (`src/common/realtimeUrl.ts`). The fake fails closed (503) on
+any unexpected outbound call AND records it; the spec's final audit asserts
+`unexpected == []`, so `yarn e2e:room` PASSES only if every Cloudflare
+Realtime request made during the test was explicitly handled by the local
+fake — nothing can silently escape to rtc.live.cloudflare.com, even on
+best-effort cleanup paths that production intentionally swallows.
 
 ## Which test for which change
 

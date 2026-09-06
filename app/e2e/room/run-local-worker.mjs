@@ -11,8 +11,11 @@
 // reverse proxy binds the canonical allowed origin and forwards everything
 // (including WebSocket upgrades) to the harness URL. Production origin
 // validation is deliberately untouched.
+import fs from "node:fs"
 import http from "node:http"
 import net from "node:net"
+import os from "node:os"
+import path from "node:path"
 import { randomUUID } from "node:crypto"
 
 import { createTestHarness } from "wrangler"
@@ -31,8 +34,20 @@ const DUMMY_APP_SECRET = "test-secret"
 function createFakeRealtime() {
   /** @type {Array<{method: string, path: string}>} */
   const requests = []
+  /** @type {Array<{method: string, path: string}>} unexpected requests that
+   * were NOT explicitly handled — the E2E spec hard-asserts this is empty. */
+  const unexpected = []
   const server = http.createServer((req, res) => {
     const path = req.url ?? ""
+    if (req.method === "GET" && path === "/__fake/requests") {
+      const payload = JSON.stringify({ requests, unexpected })
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      })
+      res.end(payload)
+      return
+    }
     requests.push({ method: req.method ?? "?", path })
     let body = ""
     req.on("data", (chunk) => (body += chunk))
@@ -87,7 +102,10 @@ function createFakeRealtime() {
         return
       }
       // Fail closed: any other outbound call is a test-contract violation,
-      // never an accidental network request.
+      // never an accidental network request. The request is recorded so the
+      // E2E spec can hard-fail on it even when production semantics would
+      // swallow the upstream 503 (e.g. best-effort media cleanup).
+      unexpected.push({ method: req.method ?? "?", path })
       console.error(
         `[fake-realtime] UNEXPECTED ${req.method} ${path} — failing closed`
       )
@@ -117,6 +135,10 @@ function createFakeRealtime() {
 // connection — including WebSocket upgrades — untouched to the harness URL.
 // The browser sees origin http://localhost:3000, which is already in the
 // production allow-list, so src/common/origin.ts is never weakened.
+const stateDir =
+  process.env.FREEF4CHAT_E2E_STATE_DIR ?? path.join(os.tmpdir(), "f4c-room-e2e")
+const fakePortFile = path.join(stateDir, "fake-port.txt")
+
 function createProxy(targetPort) {
   const server = net.createServer((socket) => {
     const upstream = net.connect(targetPort, "127.0.0.1", () => {
@@ -145,7 +167,11 @@ function createProxy(targetPort) {
 async function main() {
   const fakeRealtime = createFakeRealtime()
   const fakeRealtimeBase = await fakeRealtime.listen()
-  console.log(`[harness] fake realtime at ${fakeRealtimeBase}`)
+  fs.mkdirSync(stateDir, { recursive: true })
+  fs.writeFileSync(fakePortFile, String(new URL(fakeRealtimeBase).port))
+  console.log(
+    `[harness] fake realtime at ${fakeRealtimeBase} (port file ${fakePortFile})`
+  )
 
   const server = createTestHarness({
     workers: [
@@ -176,10 +202,11 @@ async function main() {
 
   const shutdown = async () => {
     console.log(
-      `[harness] fake-realtime saw ${fakeRealtime.requests.length} request(s):`
+      `[harness] fake-realtime saw ${fakeRealtime.requests.length} request(s), ${fakeRealtime.unexpected.length} unexpected:`
     )
     for (const request of fakeRealtime.requests)
       console.log(`[fake-realtime] ${request.method} ${request.path}`)
+    fs.rmSync(fakePortFile, { force: true })
     await proxy.close()
     await server.close()
     await fakeRealtime.close()
