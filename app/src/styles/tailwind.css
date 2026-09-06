@@ -58,6 +58,7 @@ html {
    resolves into one deterministic message. Text replacement is driven by JS;
    CSS supplies only the restrained CRT/glitch surface treatment. */
 .signal-collapse-text {
+  display: inline-block;
   white-space: pre-line;
 }
 
