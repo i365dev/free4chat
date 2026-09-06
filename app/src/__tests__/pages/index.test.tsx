@@ -16,12 +16,8 @@ describe("Home page", () => {
     })
     expect(heroHeading).toBeInTheDocument()
     const signalText = heroHeading.querySelector(".signal-collapse-text")
-    expect(signalText).toHaveClass(
-      "bg-gradient-to-r",
-      "bg-clip-text",
-      "text-transparent"
-    )
-    expect(heroHeading).not.toHaveClass("bg-clip-text", "text-transparent")
+    expect(signalText).toHaveClass("signal-collapse-text", "psy-headline")
+    expect(heroHeading).not.toHaveClass("psy-headline")
     expect(
       screen.getByText("FREE4CHAT://RELAY — LINK READY")
     ).toBeInTheDocument()
