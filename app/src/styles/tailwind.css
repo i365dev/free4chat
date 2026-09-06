@@ -49,65 +49,49 @@ html {
   );
 }
 
-/* Psychedelic mode: the headline gradient slowly cycles the full wheel. */
-.psy-headline {
-  animation: psy-hue 14s linear infinite;
-}
-
-/* The homepage headline behaves like a noisy relay signal that probabilistically
-   resolves into one deterministic message. Text replacement is driven by JS;
-   CSS supplies only the restrained CRT/glitch surface treatment. */
+/* The headline owns its visual effects on the same node that owns the
+   changing glyphs. This deliberately avoids nesting an animated text span
+   under an independently filtered/animated parent: WebKit has longstanding
+   repaint/compositor bugs around that combination. */
 .signal-collapse-text {
   display: inline-block;
   white-space: pre-line;
 }
 
-.signal-collapse-text--active {
-  opacity: 0.9;
+.signal-collapse-text.psy-headline {
+  background-image: linear-gradient(to right, #6ee7b7, #e879f9, #67e8f9);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.signal-collapse-text--idle.psy-headline,
+.signal-collapse-text--resolved.psy-headline {
+  animation: psy-hue 14s linear infinite;
+}
+
+/* While JS is replacing glyphs, keep the surface deliberately simple:
+   no opacity animation, no filter animation and no background-clip mask.
+   The stochastic character changes are the animation. Once convergence is
+   complete, the normal gradient/hue treatment resumes. */
+.signal-collapse-text--active.psy-headline {
+  animation: none;
+  background-image: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  color: #a7f3d0;
+  filter: none;
+  opacity: 1;
+  -webkit-text-fill-color: #a7f3d0;
   text-shadow: -0.035em 0 rgba(34, 211, 238, 0.42),
     0.035em 0 rgba(217, 70, 239, 0.28), 0 0 14px rgba(52, 211, 153, 0.24);
-  animation: signal-collapse-noise 110ms steps(2, end) infinite;
-}
-
-.signal-collapse-text--resolved {
-  animation: signal-collapse-lock 220ms ease-out 1;
-}
-
-@keyframes signal-collapse-noise {
-  0%,
-  100% {
-    opacity: 0.92;
-    text-shadow: -0.035em 0 rgba(34, 211, 238, 0.38),
-      0.035em 0 rgba(217, 70, 239, 0.24), 0 0 12px rgba(52, 211, 153, 0.2);
-  }
-  42% {
-    opacity: 0.74;
-    text-shadow: 0.045em 0 rgba(34, 211, 238, 0.48),
-      -0.025em 0 rgba(217, 70, 239, 0.34), 0 0 18px rgba(52, 211, 153, 0.28);
-  }
-  73% {
-    opacity: 0.86;
-    text-shadow: -0.02em 0 rgba(34, 211, 238, 0.34),
-      0.05em 0 rgba(217, 70, 239, 0.3), 0 0 15px rgba(52, 211, 153, 0.24);
-  }
-}
-
-@keyframes signal-collapse-lock {
-  from {
-    opacity: 0.88;
-    text-shadow: -0.04em 0 rgba(34, 211, 238, 0.5),
-      0.04em 0 rgba(217, 70, 239, 0.36), 0 0 24px rgba(52, 211, 153, 0.42);
-  }
-  to {
-    opacity: 1;
-    text-shadow: 0 0 10px rgba(52, 211, 153, 0.22);
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .signal-collapse-text--active,
-  .signal-collapse-text--resolved {
+  .signal-collapse-text.psy-headline {
     animation: none;
+    filter: none;
     opacity: 1;
     text-shadow: none;
   }
