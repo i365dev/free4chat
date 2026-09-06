@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from "react"
 
-const NOISE_GLYPHS =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&*+-=/<>?[]{}:;@|_"
+const NOISE_GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&*+-=/<>?[]{}:;@|_"
 const TICK_MS = 34
 const COLLAPSE_MS = 1180
 const LINE_DELAY_MS = 90
@@ -96,8 +95,7 @@ export default function SignalCollapseText({
       const next = chars.map((target, index) => {
         if (locked[index]) return target
 
-        const elapsed =
-          now - startedAt - lineByIndex[index] * LINE_DELAY_MS
+        const elapsed = now - startedAt - lineByIndex[index] * LINE_DELAY_MS
         const sampleOffset = index * 3
 
         if (elapsed <= 0) {
@@ -129,15 +127,11 @@ export default function SignalCollapseText({
         // to flash through the noise, like a weak signal gaining confidence.
         const targetGlimpseProbability = 0.03 + 0.62 * progress * progress
 
-        if (
-          unit(randomWords[sampleOffset + 1]) < targetGlimpseProbability
-        ) {
+        if (unit(randomWords[sampleOffset + 1]) < targetGlimpseProbability) {
           return target
         }
 
-        return NOISE_GLYPHS[
-          randomWords[sampleOffset + 2] % NOISE_GLYPHS.length
-        ]
+        return NOISE_GLYPHS[randomWords[sampleOffset + 2] % NOISE_GLYPHS.length]
       })
 
       if (locked.every(Boolean)) {
