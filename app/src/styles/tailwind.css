@@ -92,19 +92,19 @@ html {
 .room-shell {
   position: relative;
   isolation: isolate;
-  background-color: #050b18 !important;
+  background-color: #020806 !important;
   background-image: radial-gradient(
       circle at 15% 12%,
-      rgba(103, 232, 249, 0.08),
+      rgba(16, 185, 129, 0.09),
       transparent 28rem
     ),
     radial-gradient(
       circle at 85% 86%,
-      rgba(167, 139, 250, 0.07),
+      rgba(103, 232, 249, 0.07),
       transparent 30rem
     ),
-    linear-gradient(rgba(103, 232, 249, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(103, 232, 249, 0.025) 1px, transparent 1px);
+    linear-gradient(rgba(16, 185, 129, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(16, 185, 129, 0.045) 1px, transparent 1px);
   background-size: auto, auto, 32px 32px, 32px 32px;
 }
 
@@ -114,8 +114,8 @@ html {
   inset: 0;
   background: repeating-linear-gradient(
     to bottom,
-    rgba(103, 232, 249, 0.025) 0,
-    rgba(103, 232, 249, 0.025) 1px,
+    rgba(16, 185, 129, 0.045) 0,
+    rgba(16, 185, 129, 0.045) 1px,
     transparent 1px,
     transparent 4px
   );
@@ -124,33 +124,87 @@ html {
 }
 
 .room-header {
-  border-color: rgba(71, 85, 105, 0.72) !important;
-  background: rgba(3, 9, 22, 0.9);
-  box-shadow: 0 1px 0 rgba(103, 232, 249, 0.06);
+  border-color: rgba(16, 185, 129, 0.3) !important;
+  background: rgba(2, 8, 6, 0.92);
+  box-shadow: 0 1px 0 rgba(16, 185, 129, 0.12), 0 8px 22px rgba(0, 0, 0, 0.16);
+}
+
+.room-header-features {
+  width: 100%;
+}
+
+.room-header-toolbar {
+  width: 100%;
+}
+
+.room-header-toolbar > * {
+  min-width: 0;
+}
+
+.room-header-toolbar > button,
+.room-header-toolbar > div > button {
+  width: 100%;
+  white-space: nowrap;
+}
+
+@media (min-width: 1024px) {
+  .room-header-features {
+    width: auto;
+  }
+
+  .room-header-toolbar {
+    width: auto;
+    justify-content: flex-end;
+  }
+
+  .room-header-toolbar > button,
+  .room-header-toolbar > div > button {
+    width: auto;
+  }
 }
 
 .room-header h1 {
-  color: #dffaff;
+  color: #a7f3d0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.03em;
-  text-shadow: 0 0 14px rgba(103, 232, 249, 0.22);
+  text-shadow: 0 0 14px rgba(16, 185, 129, 0.28);
 }
 
-.room-header button {
-  border-color: rgba(100, 116, 139, 0.78) !important;
-  background: rgba(15, 23, 42, 0.86) !important;
-  color: #cbd5e1 !important;
+.room-header-toolbar > button,
+.room-header-toolbar > div > button,
+.room-header .room-header-leave {
+  border-color: rgba(16, 185, 129, 0.46) !important;
+  background: rgba(2, 20, 14, 0.88) !important;
+  color: #a7f3d0 !important;
   transition: border-color 160ms ease, color 160ms ease, box-shadow 160ms ease,
     background 160ms ease;
 }
 
-.room-header button:hover,
-.room-header button:focus-visible {
-  border-color: rgba(103, 232, 249, 0.82) !important;
-  background: rgba(8, 47, 73, 0.62) !important;
-  box-shadow: 0 0 14px rgba(103, 232, 249, 0.12);
-  color: #ecfeff !important;
+.room-header-toolbar > button:hover,
+.room-header-toolbar > button:focus-visible,
+.room-header-toolbar > div > button:hover,
+.room-header-toolbar > div > button:focus-visible,
+.room-header .room-header-leave:hover,
+.room-header .room-header-leave:focus-visible {
+  border-color: rgba(52, 211, 153, 0.88) !important;
+  background: rgba(6, 78, 59, 0.58) !important;
+  box-shadow: 0 0 14px rgba(16, 185, 129, 0.18);
+  color: #ecfdf5 !important;
   outline: none;
+}
+
+.room-header .room-header-leave {
+  border-color: rgba(244, 63, 94, 0.62) !important;
+  background: rgba(76, 5, 25, 0.38) !important;
+  color: #fda4af !important;
+}
+
+.room-header .room-header-leave:hover,
+.room-header .room-header-leave:focus-visible {
+  border-color: rgba(251, 113, 133, 0.92) !important;
+  background: rgba(136, 19, 55, 0.5) !important;
+  box-shadow: 0 0 14px rgba(244, 63, 94, 0.16);
+  color: #ffe4e6 !important;
 }
 
 .room-content {
@@ -159,7 +213,19 @@ html {
 
 .room-panel {
   border-color: rgba(51, 65, 85, 0.8) !important;
-  background: rgba(3, 9, 22, 0.52);
+  background: rgba(2, 8, 6, 0.58);
+}
+
+.room-participants-panel {
+  border-bottom-color: rgba(16, 185, 129, 0.3) !important;
+  box-shadow: 0 5px 0 rgba(2, 8, 6, 0.94), 0 10px 20px rgba(0, 0, 0, 0.24);
+}
+
+@media (min-width: 768px) {
+  .room-participants-panel {
+    border-right-color: rgba(16, 185, 129, 0.3) !important;
+    box-shadow: 5px 0 0 rgba(2, 8, 6, 0.94), 10px 0 20px rgba(0, 0, 0, 0.24);
+  }
 }
 
 .room-participants-grid {
@@ -383,7 +449,7 @@ html {
 }
 
 .room-chat-panel {
-  background: rgba(2, 8, 20, 0.66);
+  background: rgba(1, 6, 5, 0.72);
 }
 
 @media (prefers-reduced-motion: reduce) {

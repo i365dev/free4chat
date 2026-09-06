@@ -498,7 +498,7 @@ export default function RoomContent({
               leaveRoom()
               router.push("/")
             }}
-            className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:hidden"
+            className="room-header-leave shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:hidden"
           >
             Leave
           </button>
@@ -507,7 +507,7 @@ export default function RoomContent({
           data-testid="room-header-features"
           className="flex flex-none flex-col gap-2 lg:ml-auto lg:flex-row lg:items-center lg:gap-2"
         >
-          <div className="grid grid-cols-3 gap-2 lg:flex lg:items-center">
+          <div className="room-header-toolbar grid grid-cols-3 gap-2 lg:flex lg:items-center">
             <button
               type="button"
               onClick={copyRoomLink}
@@ -559,7 +559,7 @@ export default function RoomContent({
               leaveRoom()
               router.push("/")
             }}
-            className="hidden shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:inline-flex"
+            className="room-header-leave hidden shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:inline-flex"
           >
             Leave
           </button>
@@ -617,7 +617,7 @@ export default function RoomContent({
         className="room-content flex flex-1 flex-col overflow-hidden md:flex-row"
       >
         <div
-          className="room-panel flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
+          className="room-panel room-participants-panel flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
           style={isMd ? { width: `${splitRatio}%` } : undefined}
         >
           {/* #111: Agent workspace snapshots — observation only, available in
@@ -685,7 +685,7 @@ export default function RoomContent({
                 </div>
               </>
             ) : (
-              <div className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start gap-2 overflow-y-auto p-3">
+              <div className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3">
                 {participants.map((p) => (
                   <div
                     key={p.peerId}
