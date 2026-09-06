@@ -11,11 +11,17 @@ describe("Home page", () => {
   it("renders real product content immediately, with no Turnstile challenge blocking the view", () => {
     render(<Home />)
 
-    expect(
-      screen.getByRole("heading", {
-        name: /open a room\. bring people and agents together\./i,
-      })
-    ).toBeInTheDocument()
+    const heroHeading = screen.getByRole("heading", {
+      name: /open a room\. bring people and agents together\./i,
+    })
+    expect(heroHeading).toBeInTheDocument()
+    const signalText = heroHeading.querySelector(".signal-collapse-text")
+    expect(signalText).toHaveClass(
+      "bg-gradient-to-r",
+      "bg-clip-text",
+      "text-transparent"
+    )
+    expect(heroHeading).not.toHaveClass("bg-clip-text", "text-transparent")
     expect(
       screen.getByText("FREE4CHAT://RELAY — LINK READY")
     ).toBeInTheDocument()
