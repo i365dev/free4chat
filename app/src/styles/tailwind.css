@@ -217,8 +217,83 @@ html {
 }
 
 .room-participants-panel {
+  position: relative;
+  isolation: isolate;
   border-bottom-color: rgba(16, 185, 129, 0.3) !important;
   box-shadow: 0 5px 0 rgba(2, 8, 6, 0.94), 0 10px 20px rgba(0, 0, 0, 0.24);
+}
+
+/* A restrained, presentation-only starfield keeps the participant side
+   connected to the homepage's retro-space language without competing with
+   cards, controls, or shared-screen content. */
+.room-participants-panel::before,
+.room-participants-panel::after {
+  position: absolute;
+  z-index: 0;
+  inset: -12%;
+  content: "";
+  pointer-events: none;
+}
+
+.room-participants-panel::before {
+  background-image: radial-gradient(
+      circle at 12% 18%,
+      rgba(167, 243, 208, 0.38) 0 1px,
+      transparent 1.6px
+    ),
+    radial-gradient(
+      circle at 68% 32%,
+      rgba(103, 232, 249, 0.28) 0 1px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle at 38% 78%,
+      rgba(167, 139, 250, 0.24) 0 1px,
+      transparent 1.7px
+    );
+  background-size: 132px 118px, 196px 174px, 224px 206px;
+  opacity: 0.5;
+  animation: room-cosmos-stars 46s linear infinite;
+}
+
+.room-participants-panel::after {
+  background: radial-gradient(
+      ellipse at 18% 24%,
+      rgba(16, 185, 129, 0.13),
+      transparent 38%
+    ),
+    radial-gradient(
+      ellipse at 78% 72%,
+      rgba(124, 58, 237, 0.1),
+      transparent 42%
+    );
+  filter: blur(20px);
+  opacity: 0.62;
+  transform: scale(1.08);
+  animation: room-cosmos-nebula 38s ease-in-out infinite alternate;
+}
+
+.room-participants-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes room-cosmos-stars {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 132px 88px, -196px 116px, 224px -124px;
+  }
+}
+
+@keyframes room-cosmos-nebula {
+  from {
+    transform: scale(1.08) translate3d(-1%, -1%, 0);
+  }
+  to {
+    transform: scale(1.14) translate3d(2%, 1%, 0);
+  }
 }
 
 @media (min-width: 768px) {
@@ -457,5 +532,10 @@ html {
   .room-shell *::before,
   .room-shell *::after {
     transition-duration: 0.01ms !important;
+  }
+
+  .room-participants-panel::before,
+  .room-participants-panel::after {
+    animation: none !important;
   }
 }
