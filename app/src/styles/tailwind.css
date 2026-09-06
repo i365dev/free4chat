@@ -266,13 +266,13 @@ html {
   flex-wrap: wrap;
   justify-content: center;
   align-content: center;
-  gap: 0.25rem clamp(1.25rem, 5vw, 5rem);
+  gap: 0.25rem clamp(0.75rem, 3vw, 3rem);
 }
 
 .room-participants-grid--node-band > div {
   z-index: 1;
-  width: clamp(5.75rem, 11vw, 7.5rem);
-  flex: 0 1 clamp(5.75rem, 11vw, 7.5rem);
+  width: clamp(5.25rem, 10vw, 7rem);
+  flex: 0 1 clamp(5.25rem, 10vw, 7rem);
 }
 
 .room-participants-grid--card-band {
@@ -607,92 +607,20 @@ html {
 
 .participant-avatar__orb {
   position: absolute;
-  inset: 0.42rem;
+  inset: 0.32rem;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--participant-accent) 84%, #fff);
+  border: 1px solid color-mix(in srgb, var(--participant-accent) 72%, #fff);
   border-radius: 50%;
   background: color-mix(in srgb, var(--participant-accent) 16%, #020617);
-  box-shadow: 0 0 14px
-      color-mix(in srgb, var(--participant-accent) 46%, transparent),
-    inset 0 0 12px rgba(255, 255, 255, 0.12);
+  box-shadow: 0 0 10px
+      color-mix(in srgb, var(--participant-accent) 34%, transparent),
+    inset 0 0 10px rgba(255, 255, 255, 0.1);
 }
 
 .participant-avatar__orb svg {
   display: block;
   width: 100%;
   height: 100%;
-}
-
-.participant-avatar__orbit {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 100%;
-  height: 38%;
-  border: 1px solid
-    color-mix(in srgb, var(--participant-accent) 70%, transparent);
-  border-radius: 50%;
-  transform: translate(-50%, -50%) rotate(-22deg);
-  opacity: 0.78;
-}
-
-.participant-avatar__orbit--two {
-  width: 78%;
-  height: 28%;
-  transform: translate(-50%, -50%) rotate(54deg);
-  opacity: 0.36;
-}
-
-.participant-avatar--compact .participant-avatar__orbit {
-  width: 112%;
-}
-
-.participant-avatar__status {
-  position: absolute;
-  top: 0.24rem;
-  left: 0.34rem;
-  width: 0.4rem;
-  height: 0.4rem;
-  border: 1px solid #020617;
-  border-radius: 50%;
-  background: #bef264;
-  box-shadow: 0 0 8px rgba(190, 242, 100, 0.78);
-}
-
-.participant-avatar__status.is-muted {
-  background: #fb7185;
-  box-shadow: 0 0 8px rgba(251, 113, 133, 0.58);
-}
-
-.participant-avatar__kind {
-  position: absolute;
-  right: 0.12rem;
-  bottom: 0.1rem;
-  display: grid;
-  width: 1rem;
-  height: 1rem;
-  place-items: center;
-  border: 1px solid #020617;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--participant-accent) 78%, #020617);
-  color: #020617;
-}
-
-.participant-avatar__kind svg {
-  width: 0.68rem;
-  height: 0.68rem;
-}
-
-.participant-avatar--compact .participant-avatar__kind {
-  right: -0.08rem;
-  bottom: -0.05rem;
-  width: 0.72rem;
-  height: 0.72rem;
-}
-
-.participant-avatar--compact .participant-avatar__kind svg {
-  width: 0.5rem;
-  height: 0.5rem;
 }
 
 /* Local analyser output is deliberately a light signal around the node, not

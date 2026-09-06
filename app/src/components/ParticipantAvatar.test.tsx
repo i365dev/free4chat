@@ -44,5 +44,15 @@ describe("ParticipantAvatar", () => {
       "participant-avatar--compact"
     )
     expect(getByTestId("participant-avatar").querySelector("svg")).toBeTruthy()
+    expect(
+      getByTestId("participant-avatar").querySelector(
+        ".participant-avatar__orbit"
+      )
+    ).toBeNull()
+    expect(
+      getByTestId("participant-avatar").querySelector(
+        ".participant-avatar__kind"
+      )
+    ).toBeNull()
   })
 })

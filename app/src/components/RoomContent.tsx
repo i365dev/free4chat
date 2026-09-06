@@ -495,10 +495,6 @@ export default function RoomContent({
           <h1 className="min-w-0 flex-1 truncate font-mono text-lg font-medium tracking-wide text-cyan-100 lg:flex-none">
             #{roomName}
           </h1>
-          <span className="hidden font-mono text-[10px] uppercase tracking-[0.22em] text-slate-500 sm:inline">
-            temporary room · {participants.length} peer
-            {participants.length === 1 ? "" : "s"} online
-          </span>
           <button
             type="button"
             onClick={() => {
