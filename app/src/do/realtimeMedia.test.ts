@@ -65,7 +65,7 @@ describe("executeMediaCloseEffect — fail-closed external effect contract", () 
     vi.unstubAllGlobals()
   })
 
-  it("a 2xx response is confirmed success", async () => {
+  it("a 2xx response is confirmed success against the default production base", async () => {
     let requestedUrl: string | undefined
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       requestedUrl = String(input)
@@ -73,7 +73,7 @@ describe("executeMediaCloseEffect — fail-closed external effect contract", () 
     })
     vi.stubGlobal("fetch", fetchMock)
     await expect(
-      executeMediaCloseEffect(env, { sessionId: "sess-1", mids: ["1"] })
+      executeMediaCloseEffect({ ...env }, { sessionId: "sess-1", mids: ["1"] })
     ).resolves.toEqual({
       effect: { sessionId: "sess-1", mids: ["1"] },
       confirmedMids: ["1"],
@@ -81,6 +81,25 @@ describe("executeMediaCloseEffect — fail-closed external effect contract", () 
     expect(requestedUrl).toBe(
       "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/sess-1/tracks/close"
     )
+  })
+
+  it("SFU_RTC_BASE_URL redirects the media-effects tracks/close request too", async () => {
+    let requestedUrl: string | undefined
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      requestedUrl = String(input)
+      return new Response("", { status: 200 })
+    })
+    vi.stubGlobal("fetch", fetchMock)
+    await expect(
+      executeMediaCloseEffect(
+        { ...env, SFU_RTC_BASE_URL: "http://127.0.0.1:9999/v1/apps/app-id" },
+        { sessionId: "sess-1", mids: ["1"] }
+      )
+    ).resolves.toMatchObject({ confirmedMids: ["1"] })
+    expect(requestedUrl).toBe(
+      "http://127.0.0.1:9999/v1/apps/app-id/sessions/sess-1/tracks/close"
+    )
+    expect(requestedUrl).not.toContain("rtc.live.cloudflare.com")
   })
 
   it("a 401 response is not treated as success", async () => {

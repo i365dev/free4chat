@@ -36,3 +36,11 @@ of environment).
 The config builds and serves the app with `next build && next start`
 (production bundle), and runs the spec on BOTH Chromium and WebKit —
 matching the engines used for the investigation evidence.
+
+## Room control-plane E2E
+
+`yarn e2e:room` runs `e2e/room/room.spec.ts`: two real browsers against the
+real local Worker + RoomSession Durable Object (via `createTestHarness`),
+with only the Cloudflare Realtime upstream and the browser media bootstrap
+faked. See `.agent/skills/free4chat-local-e2e/SKILL.md` for the full local
+testing guide and the control-plane-vs-media boundary.

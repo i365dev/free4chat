@@ -1,3 +1,4 @@
+import { realtimeBaseUrl } from "../common/realtimeUrl"
 import type { PendingMediaCleanup } from "../room/types"
 
 // The external Cloudflare Realtime effect boundary. This module intentionally
@@ -9,6 +10,9 @@ import type { PendingMediaCleanup } from "../room/types"
 export interface RealtimeEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
+  /** #275: test-only override of the Cloudflare Realtime base URL; absent in
+   * production (see src/common/realtimeUrl.ts). */
+  SFU_RTC_BASE_URL?: string
 }
 
 export interface MediaCloseEffect {
@@ -65,10 +69,10 @@ export async function executeMediaCloseEffect(
   const credentials = getRealtimeCredentials(env)
   if (!credentials) return { effect: exact, confirmedMids: [] }
   try {
+    const base = realtimeBaseUrl(env)
+    if (!base) return { effect: exact, confirmedMids: [] }
     const response = await fetch(
-      `https://rtc.live.cloudflare.com/v1/apps/${encodeURIComponent(
-        credentials.appId
-      )}/sessions/${encodeURIComponent(exact.sessionId)}/tracks/close`,
+      `${base}/sessions/${encodeURIComponent(exact.sessionId)}/tracks/close`,
       {
         method: "PUT",
         headers: {

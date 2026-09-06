@@ -17,7 +17,8 @@
     "docs:generate": "node scripts/generate-docs-assets.mjs",
     "docs:check": "node scripts/generate-docs-assets.mjs --check",
     "prepare": "husky",
-    "e2e:homepage": "playwright test e2e/signal-collapse.spec.ts --config=e2e/playwright.config.ts"
+    "e2e:homepage": "playwright test e2e/signal-collapse.spec.ts --config=e2e/playwright.config.ts",
+    "e2e:room": "playwright test e2e/room/room.spec.ts --config=e2e/room/playwright.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
