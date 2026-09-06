@@ -5,9 +5,7 @@ import AudioVisualizer from "./AudioVisualizer"
 
 describe("AudioVisualizer", () => {
   it("does not render an empty frame without an audio track", () => {
-    const { container } = render(
-      <AudioVisualizer name="Hermes" muteState={false} />
-    )
+    const { container } = render(<AudioVisualizer muteState={false} />)
 
     expect(container.firstChild).toBeNull()
   })
@@ -17,9 +15,22 @@ describe("AudioVisualizer", () => {
       getAudioTracks: () => [{}],
     } as unknown as MediaStream
     const { container } = render(
-      <AudioVisualizer audio={stream} name="Hermes" muteState={true} />
+      <AudioVisualizer audio={stream} muteState={true} />
     )
 
     expect(container.firstChild).toBeNull()
+  })
+
+  it("renders an avatar-sized orbit only for an active track", () => {
+    const stream = {
+      getAudioTracks: () => [{}],
+    } as unknown as MediaStream
+    const { container } = render(
+      <AudioVisualizer audio={stream} muteState={false} size="full" />
+    )
+
+    expect(container.querySelector("canvas")).toHaveClass(
+      "participant-audio-orbit--full"
+    )
   })
 })

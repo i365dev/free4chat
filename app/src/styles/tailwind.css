@@ -239,6 +239,7 @@ html {
 }
 
 .participant-card__avatar {
+  position: relative;
   display: grid;
   place-items: center;
   padding: 0.18rem;
@@ -288,50 +289,23 @@ html {
   height: 36px !important;
 }
 
-.participant-avatar__ripple {
+.participant-audio-orbit {
   position: absolute;
+  top: 50%;
+  left: 50%;
   z-index: 0;
-  inset: -0.35rem;
-  border: 1px solid rgba(103, 232, 249, 0.78);
-  border-radius: 50%;
-  opacity: 0;
+  display: block;
+  width: 5.1rem;
+  height: 5.1rem;
+  max-width: none;
+  transform: translate(-50%, -50%);
   pointer-events: none;
-  will-change: opacity, transform;
+  overflow: visible;
 }
 
-.participant-avatar__ripple--two {
-  inset: -0.35rem;
-  border-color: rgba(167, 139, 250, 0.58);
-}
-
-.participant-avatar--compact .participant-avatar__ripple {
-  inset: -0.23rem;
-}
-
-.participant-avatar[data-speaking="true"] .participant-avatar__ripple--one {
-  animation: participant-avatar-ripple 1.35s ease-out infinite;
-  animation-duration: var(--ripple-duration, 1.8s);
-}
-
-.participant-avatar[data-speaking="true"] .participant-avatar__ripple--two {
-  animation: participant-avatar-ripple 1.35s 0.48s ease-out infinite;
-  animation-duration: var(--ripple-duration, 1.8s);
-}
-
-@keyframes participant-avatar-ripple {
-  0% {
-    opacity: calc(0.22 + var(--speaking-level) * 0.52);
-    transform: scale(0.9);
-  }
-
-  72% {
-    opacity: 0.08;
-  }
-
-  100% {
-    opacity: 0;
-    transform: scale(1.58);
-  }
+.participant-audio-orbit--compact {
+  width: 3.25rem;
+  height: 3.25rem;
 }
 
 .participant-card__kind,
@@ -417,9 +391,5 @@ html {
   .room-shell *::before,
   .room-shell *::after {
     transition-duration: 0.01ms !important;
-  }
-
-  .participant-avatar__ripple {
-    animation: none !important;
   }
 }
