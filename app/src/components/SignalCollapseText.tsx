@@ -7,6 +7,9 @@ const COLLAPSE_MS = 1180
 const LINE_DELAY_MS = 90
 const UINT32_RANGE = 0x100000000
 
+const useClientLayoutEffect =
+  typeof window === "undefined" ? useEffect : useLayoutEffect
+
 type Phase = "idle" | "active" | "resolved"
 
 interface SignalCollapseTextProps {
@@ -95,8 +98,15 @@ export default function SignalCollapseText({
 
         const elapsed =
           now - startedAt - lineByIndex[index] * LINE_DELAY_MS
-        const progress = Math.max(0, Math.min(1, elapsed / COLLAPSE_MS))
         const sampleOffset = index * 3
+
+        if (elapsed <= 0) {
+          return NOISE_GLYPHS[
+            randomWords[sampleOffset + 2] % NOISE_GLYPHS.length
+          ]
+        }
+
+        const progress = Math.max(0, Math.min(1, elapsed / COLLAPSE_MS))
 
         // A sigmoid raises the lock hazard sharply around a per-glyph random
         // center. Converting hazard to a delta-time probability keeps the
@@ -119,6 +129,7 @@ export default function SignalCollapseText({
         // to flash through the noise, like a weak signal gaining confidence.
         const targetGlimpseProbability =
           0.03 + 0.62 * progress * progress
+
         if (
           unit(randomWords[sampleOffset + 1]) <
           targetGlimpseProbability
@@ -144,11 +155,16 @@ export default function SignalCollapseText({
     return () => window.clearInterval(timer)
   }, [text])
 
+  const classes = [
+    "signal-collapse-text",
+    `signal-collapse-text--${phase}`,
+    className,
+  ]
+    .filter(Boolean)
+    .join(" ")
+
   return (
-    <span
-      aria-hidden="true"
-      className={`signal-collapse-text signal-collapse-text--${phase} ${className}`.trim()}
-    >
+    <span aria-hidden="true" className={classes}>
       {displayText}
     </span>
   )
