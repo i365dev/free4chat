@@ -16,6 +16,7 @@ import {
 import CollaborationDiagram from "../components/CollaborationDiagram"
 import DiscoveryFooter from "../components/DiscoveryFooter"
 import Header from "../components/Header"
+import SignalCollapseText from "../components/SignalCollapseText"
 
 const inputClasses =
   "w-full rounded-none border border-emerald-900/70 bg-black/70 p-3 font-mono text-sm text-emerald-100 placeholder-emerald-600 caret-emerald-400 transition focus:border-emerald-400 focus:outline-none focus:ring focus:ring-emerald-500/30"
