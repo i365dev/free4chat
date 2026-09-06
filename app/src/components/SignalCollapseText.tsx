@@ -1,9 +1,16 @@
 import { useEffect, useLayoutEffect, useState } from "react"
 
 const NOISE_GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&*+-=/<>?[]{}:;@|_"
-const TICK_MS = 34
+const FALLBACK_TICK_MS = 34
+const MAX_FRAME_DELTA_MS = 80
 const COLLAPSE_MS = 1180
 const LINE_DELAY_MS = 90
+// Absolute wall-clock budget: whatever the environment does to rAF or
+// timers (iOS Low Power Mode clamping, background freeze, bfcache restore),
+// the headline ALWAYS lands on the final deterministic slogan inside this
+// bound. Progress-driven locking alone can stall visually while a timer is
+// paused; this hard caps the worst case.
+const FINALIZE_MS = COLLAPSE_MS * 1.9
 const UINT32_RANGE = 0x100000000
 
 const useClientLayoutEffect =
@@ -81,10 +88,18 @@ export default function SignalCollapseText({
 
     const startedAt = window.performance.now()
     let previousAt = startedAt
+    let animationFrame = 0
 
-    const timer = window.setInterval(() => {
-      const now = window.performance.now()
-      const deltaSeconds = Math.min(0.08, (now - previousAt) / 1000)
+    // Frame-driven loop. requestAnimationFrame is naturally throttled with
+    // the display (including iOS Low Power Mode), and unlike setInterval it
+    // keeps firing on every rendered frame, so convergence stays smooth and
+    // never appears as "a few sudden jumps". Progress is computed from real
+    // elapsed time, so cadence never changes the final message.
+    const tick = (now: number) => {
+      const deltaSeconds = Math.min(
+        MAX_FRAME_DELTA_MS / 1000,
+        (now - previousAt) / 1000
+      )
       previousAt = now
 
       // Three independent samples per glyph: lock, transient target glimpse,
@@ -134,17 +149,33 @@ export default function SignalCollapseText({
         return NOISE_GLYPHS[randomWords[sampleOffset + 2] % NOISE_GLYPHS.length]
       })
 
-      if (locked.every(Boolean)) {
-        window.clearInterval(timer)
+      if (locked.every(Boolean) || now - startedAt >= FINALIZE_MS) {
+        window.cancelAnimationFrame(animationFrame)
         setDisplayText(text)
         setPhase("resolved")
         return
       }
 
       setDisplayText(next.join(""))
-    }, TICK_MS)
+      animationFrame = window.requestAnimationFrame(tick)
+    }
 
-    return () => window.clearInterval(timer)
+    if (typeof window.requestAnimationFrame === "function") {
+      animationFrame = window.requestAnimationFrame(tick)
+    } else {
+      // Ancient environments fall back to a bounded interval loop with the
+      // same delta-time progress; FINALIZE_MS still guarantees the endpoint.
+      const timer = window.setInterval(
+        () => tick(window.performance.now()),
+        FALLBACK_TICK_MS
+      )
+      return () => {
+        window.clearInterval(timer)
+        window.cancelAnimationFrame(animationFrame)
+      }
+    }
+
+    return () => window.cancelAnimationFrame(animationFrame)
   }, [text])
 
   const classes = [
