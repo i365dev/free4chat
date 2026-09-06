@@ -88,13 +88,25 @@ export default function SignalCollapseText({
 
     const startedAt = window.performance.now()
     let previousAt = startedAt
+    // The loop is driven by ONE mechanism only. requestAnimationFrame is
+    // naturally throttled with the display (including iOS Low Power Mode)
+    // and keeps firing on every rendered frame, so convergence stays smooth
+    // and never appears as "a few sudden jumps". For environments without
+    // rAF the loop is driven by a genuinely independent bounded interval —
+    // each driver owns its own schedule and cleanup, and tick never touches
+    // the other driver's APIs.
+    const usingRaf = typeof window.requestAnimationFrame === "function"
     let animationFrame = 0
+    let fallbackTimer = 0
 
-    // Frame-driven loop. requestAnimationFrame is naturally throttled with
-    // the display (including iOS Low Power Mode), and unlike setInterval it
-    // keeps firing on every rendered frame, so convergence stays smooth and
-    // never appears as "a few sudden jumps". Progress is computed from real
-    // elapsed time, so cadence never changes the final message.
+    const stopLoop = () => {
+      if (usingRaf) {
+        window.cancelAnimationFrame(animationFrame)
+      } else {
+        window.clearInterval(fallbackTimer)
+      }
+    }
+
     const tick = (now: number) => {
       const deltaSeconds = Math.min(
         MAX_FRAME_DELTA_MS / 1000,
@@ -150,32 +162,30 @@ export default function SignalCollapseText({
       })
 
       if (locked.every(Boolean) || now - startedAt >= FINALIZE_MS) {
-        window.cancelAnimationFrame(animationFrame)
+        stopLoop()
         setDisplayText(text)
         setPhase("resolved")
         return
       }
 
       setDisplayText(next.join(""))
-      animationFrame = window.requestAnimationFrame(tick)
-    }
-
-    if (typeof window.requestAnimationFrame === "function") {
-      animationFrame = window.requestAnimationFrame(tick)
-    } else {
-      // Ancient environments fall back to a bounded interval loop with the
-      // same delta-time progress; FINALIZE_MS still guarantees the endpoint.
-      const timer = window.setInterval(
-        () => tick(window.performance.now()),
-        FALLBACK_TICK_MS
-      )
-      return () => {
-        window.clearInterval(timer)
-        window.cancelAnimationFrame(animationFrame)
+      if (usingRaf) {
+        animationFrame = window.requestAnimationFrame(tick)
       }
     }
 
-    return () => window.cancelAnimationFrame(animationFrame)
+    if (usingRaf) {
+      animationFrame = window.requestAnimationFrame(tick)
+    } else {
+      // Bounded interval fallback with the same delta-time progress;
+      // FINALIZE_MS still guarantees the endpoint and stopLoop clears it.
+      fallbackTimer = window.setInterval(
+        () => tick(window.performance.now()),
+        FALLBACK_TICK_MS
+      )
+    }
+
+    return stopLoop
   }, [text])
 
   const classes = [

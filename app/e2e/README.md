@@ -11,15 +11,18 @@ actual page in Chromium/WebKit and observes:
 
 ## Run
 
+The dev dependency (`@playwright/test`) and the `e2e:homepage` script are
+committed. From a clean checkout:
+
 ```bash
-npm i -D playwright
-npx playwright install chromium   # one-time browser download
-npx playwright test e2e/signal-collapse.spec.ts
+yarn install                       # restores @playwright/test
+npx playwright install             # one-time browser download (chromium + webkit)
+yarn e2e:homepage
 ```
 
-The config starts `next dev -p 3780` automatically (or reuses an existing
-server). This is an optional manual regression path; it is intentionally not
-wired into CI.
+`yarn e2e:homepage` runs `playwright test e2e/signal-collapse.spec.ts
+--config=e2e/playwright.config.ts`. This is an optional manual regression
+path; it is intentionally not wired into CI.
 
 ## Why it exists
 
@@ -27,3 +30,9 @@ Previous fixes relied on unit/PWAs + class assertions. This suite pins the
 observable behavior in a real engine, including recovery from throttled or
 frozen timers (the component hard-finalizes within ~FINIALIZE_MS regardless
 of environment).
+
+## Production parity
+
+The config builds and serves the app with `next build && next start`
+(production bundle), and runs the spec on BOTH Chromium and WebKit —
+matching the engines used for the investigation evidence.

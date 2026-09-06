@@ -14,11 +14,17 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:3780",
   },
+  // Production-validation parity: the smoke runs against a real
+  // `next build && next start` server, exactly like the investigation that
+  // produced the evidence in the PR description — not dev mode.
   webServer: {
-    command: "yarn dev -p 3780",
+    command: "yarn next build && yarn start -p 3780",
     url: "http://127.0.0.1:3780",
     reuseExistingServer: true,
-    timeout: 120_000,
+    timeout: 300_000,
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    { name: "webkit", use: { browserName: "webkit" } },
+  ],
 })
