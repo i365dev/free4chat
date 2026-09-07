@@ -3,6 +3,7 @@ package harness
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,7 +49,95 @@ type AdapterOptions struct {
 	// that owns the resident daemon. It is passed to the Harness as
 	// launcher-owned FREE4CHAT_AGENT_BIN policy, never through Room state.
 	RuntimeExecutable string
+	// PermissionResponder is an optional, resident-local decision seam for
+	// ACP session/request_permission calls. A nil responder preserves the
+	// production fail-closed behavior and cancels the request immediately.
+	PermissionResponder ACPPermissionResponder
 }
+
+// ACPMode is the Harness-native session mode advertised by session/new.
+// Free4Chat preserves these fields without assigning them universal policy
+// semantics.
+type ACPMode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// ACPModeState is the resident-local projection of the Harness-native mode
+// control advertised by an ACP session.
+type ACPModeState struct {
+	CurrentModeID  string    `json:"currentModeId"`
+	AvailableModes []ACPMode `json:"availableModes"`
+}
+
+// ACPConfigOptionValue is one Harness-native value offered by a session
+// config option.
+type ACPConfigOptionValue struct {
+	Value       string `json:"value"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// ACPConfigOption is a sanitized native ACP session config option. Only
+// options that are mode/policy-shaped are retained by parseSessionControls.
+type ACPConfigOption struct {
+	ID           string                 `json:"id"`
+	Name         string                 `json:"name,omitempty"`
+	Description  string                 `json:"description,omitempty"`
+	Category     string                 `json:"category,omitempty"`
+	Type         string                 `json:"type,omitempty"`
+	CurrentValue string                 `json:"currentValue,omitempty"`
+	Options      []ACPConfigOptionValue `json:"options,omitempty"`
+}
+
+// ACPSessionControls contains only native ACP controls retained for a
+// resident. It is not a Free4Chat permission policy or security guarantee.
+type ACPSessionControls struct {
+	Modes         *ACPModeState     `json:"modes,omitempty"`
+	ConfigOptions []ACPConfigOption `json:"configOptions,omitempty"`
+}
+
+// ACPToolCall is the useful, local-only tool context attached to one native
+// permission request. RawInput and Content remain opaque to Free4Chat.
+type ACPToolCall struct {
+	ToolCallID string
+	Title      string
+	Kind       string
+	Status     string
+	RawInput   json.RawMessage
+	Content    json.RawMessage
+}
+
+// ACPPermissionOption preserves the exact native option offered by the
+// Harness. In particular, Free4Chat never interprets Kind or Meta.
+type ACPPermissionOption struct {
+	OptionID string
+	Name     string
+	Kind     string
+	Meta     json.RawMessage
+}
+
+// ACPPermissionRequest is the sanitized local callback payload for one
+// session/request_permission call. RequestID is retained as compact JSON so
+// numeric and string JSON-RPC ids remain distinguishable.
+type ACPPermissionRequest struct {
+	RequestID string
+	SessionID string
+	ToolCall  ACPToolCall
+	Options   []ACPPermissionOption
+}
+
+// ACPPermissionResponse selects one exact option previously offered in the
+// corresponding ACPPermissionRequest. An empty OptionID means cancellation.
+type ACPPermissionResponse struct {
+	OptionID string
+}
+
+// ACPPermissionResponder is deliberately a transport seam, not a policy
+// engine. The responder owns whether/when an authorized external actor
+// chooses one of the Harness-provided options.
+type ACPPermissionResponder func(context.Context, ACPPermissionRequest) (ACPPermissionResponse, error)
 
 // ACPCapabilities is the parsed initialize response projection.
 type ACPCapabilities struct {
@@ -58,6 +147,9 @@ type ACPCapabilities struct {
 	ResumePresent bool
 	// ClosePresent gates the graceful session/close attempt on shutdown.
 	ClosePresent bool
+	// SessionControls is the native control metadata returned by session/new.
+	// It remains resident-local and is cleared on session replacement/death.
+	SessionControls *ACPSessionControls
 }
 
 // acpMessage is one JSON-RPC 2.0 envelope over nd-json stdio.
@@ -92,6 +184,11 @@ type pendingCall struct {
 	result chan *acpMessage
 }
 
+type pendingPermission struct {
+	id      json.RawMessage
+	request ACPPermissionRequest
+}
+
 // harnessProcess owns the ONE cmd.Wait() call for a child lifecycle. Both
 // the death watcher and closeInternal observe the same exit signal, so the
 // shutdown path can reliably distinguish "terminated" from "ignored TERM"
@@ -119,21 +216,22 @@ func (p *harnessProcess) reap() {
 
 // ACPAdapter drives one local Harness process over ACP v1 (nd-json JSON-RPC
 // on stdio). It implements types.HarnessAdapter. Permission requests are
-// fail-closed (always cancelled); custom commands remain trusted-local code,
-// not a sandbox.
+// fail-closed when no responder is configured; custom commands remain
+// trusted-local code, not a sandbox.
 type ACPAdapter struct {
 	launcher   types.AgentLauncher
 	workingDir string
 	options    AdapterOptions
 	name       string
 
-	mu      sync.Mutex
-	writeMu sync.Mutex // serializes every stdin frame
-	proc    *harnessProcess
-	stdin   io.WriteCloser
-	pending map[string]*pendingCall
-	nextID  int64
-	gen     int64 // lifecycle generation of the current child
+	mu                 sync.Mutex
+	writeMu            sync.Mutex // serializes every stdin frame
+	proc               *harnessProcess
+	stdin              io.WriteCloser
+	pending            map[string]*pendingCall
+	pendingPermissions map[string]*pendingPermission
+	nextID             int64
+	gen                int64 // lifecycle generation of the current child
 	// sessionGeneration advances only after a session/new response succeeds.
 	// Unlike gen it is meaningful to the Runtime: a replacement session has
 	// no retained conversation memory, while a transport reconnect alone does
@@ -145,6 +243,8 @@ type ACPAdapter struct {
 	closing           bool
 	promptActive      bool
 	turnChunks        []string
+	turnContext       context.Context
+	turnCancel        context.CancelFunc
 }
 
 // NewACPAdapter creates an adapter bound to one workspace directory. It does
@@ -157,11 +257,12 @@ func NewACPAdapter(launcher types.AgentLauncher, workingDir string, options Adap
 		options.CancelGraceMs = defaultCancelGraceMs
 	}
 	return &ACPAdapter{
-		launcher:   launcher,
-		workingDir: workingDir,
-		options:    options,
-		name:       launcher.ID,
-		pending:    make(map[string]*pendingCall),
+		launcher:           launcher,
+		workingDir:         workingDir,
+		options:            options,
+		name:               launcher.ID,
+		pending:            make(map[string]*pendingCall),
+		pendingPermissions: make(map[string]*pendingPermission),
 	}
 }
 
@@ -180,6 +281,102 @@ func (a *ACPAdapter) Capabilities() *types.HarnessCapabilities {
 		Images: a.caps.Images,
 		Resume: a.caps.ResumePresent,
 	}
+}
+
+// SessionControls returns a copy of the native mode/config metadata last
+// advertised by session/new or session/update. It is resident-local and is
+// cleared when the ACP session is replaced or the Harness exits.
+func (a *ACPAdapter) SessionControls() *ACPSessionControls {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.caps == nil {
+		return nil
+	}
+	return cloneSessionControls(a.caps.SessionControls)
+}
+
+// PendingPermissionCount reports the number of permission requests currently
+// parked for the active turn. It is intentionally local diagnostic state and
+// never enters Room/status output.
+func (a *ACPAdapter) PendingPermissionCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.pendingPermissions)
+}
+
+// SetMode applies one Harness-native session mode that was advertised by the
+// current session. The adapter does not infer or translate policy semantics.
+func (a *ACPAdapter) SetMode(modeID string) error {
+	a.mu.Lock()
+	if a.sessionID == "" || a.stdin == nil || a.caps == nil || a.caps.SessionControls == nil || a.caps.SessionControls.Modes == nil {
+		a.mu.Unlock()
+		return errors.New("ACP session mode control is unavailable")
+	}
+	if !hasMode(a.caps.SessionControls.Modes, modeID) {
+		a.mu.Unlock()
+		return fmt.Errorf("ACP session mode %q was not advertised", modeID)
+	}
+	sessionID := a.sessionID
+	generation := a.sessionGeneration
+	a.mu.Unlock()
+
+	params, _ := json.Marshal(map[string]any{"sessionId": sessionID, "modeId": modeID})
+	if _, err := a.request("session/set_mode", params); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessionID == sessionID && a.sessionGeneration == generation && a.caps != nil && a.caps.SessionControls != nil && a.caps.SessionControls.Modes != nil {
+		a.caps.SessionControls.Modes.CurrentModeID = modeID
+	}
+	return nil
+}
+
+// SetConfigOption applies one advertised native session config option. A
+// value must be present in the option's advertised values; this prevents the
+// generic adapter from inventing or silently broadening Harness policy.
+func (a *ACPAdapter) SetConfigOption(configID, value string) error {
+	a.mu.Lock()
+	if a.sessionID == "" || a.stdin == nil || a.caps == nil || a.caps.SessionControls == nil {
+		a.mu.Unlock()
+		return errors.New("ACP session config control is unavailable")
+	}
+	option, ok := findConfigOption(a.caps.SessionControls.ConfigOptions, configID)
+	if !ok {
+		a.mu.Unlock()
+		return fmt.Errorf("ACP session config option %q was not advertised", configID)
+	}
+	if !hasConfigValue(option, value) {
+		a.mu.Unlock()
+		return fmt.Errorf("ACP config value %q was not advertised for %q", value, configID)
+	}
+	sessionID := a.sessionID
+	generation := a.sessionGeneration
+	a.mu.Unlock()
+
+	params, _ := json.Marshal(map[string]any{
+		"sessionId": sessionID,
+		"configId":  configID,
+		"value":     value,
+	})
+	response, err := a.request("session/set_config_option", params)
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessionID != sessionID || a.sessionGeneration != generation || a.caps == nil || a.caps.SessionControls == nil {
+		return nil
+	}
+	if controls := parseSessionControls(response.Result); controls != nil && len(controls.ConfigOptions) > 0 {
+		a.caps.SessionControls.ConfigOptions = controls.ConfigOptions
+	} else if current, ok := findConfigOption(a.caps.SessionControls.ConfigOptions, configID); ok {
+		current.CurrentValue = value
+		replaceConfigOption(a.caps.SessionControls.ConfigOptions, current)
+	}
+	return nil
 }
 
 // SessionGeneration identifies the current successfully-created ACP
@@ -212,6 +409,7 @@ func (a *ACPAdapter) fail(err error) {
 // ONLY for notifications belonging to the CURRENT process generation: delayed
 // EOF from an earlier dead child must never wipe a fresh respawn.
 func (a *ACPAdapter) markProcessDead(gen int64, err error) {
+	var turnCancel context.CancelFunc
 	a.mu.Lock()
 	if a.closing {
 		a.mu.Unlock()
@@ -221,7 +419,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 		a.mu.Unlock()
 		return
 	}
-	live := a.proc != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.pending) > 0
+	live := a.proc != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.pending) > 0 || len(a.pendingPermissions) > 0
 	if !live {
 		a.mu.Unlock()
 		return
@@ -234,9 +432,16 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 		close(call.result)
 	}
 	a.pending = make(map[string]*pendingCall)
+	a.pendingPermissions = make(map[string]*pendingPermission)
+	turnCancel = a.turnCancel
+	a.turnContext = nil
+	a.turnCancel = nil
 	a.promptActive = false
 	a.turnChunks = nil
 	a.mu.Unlock()
+	if turnCancel != nil {
+		turnCancel()
+	}
 	a.fail(fmt.Errorf("ACP process exited (%v)", err))
 }
 
@@ -326,7 +531,8 @@ func (a *ACPAdapter) handshake() (*ACPCapabilities, string, error) {
 			"version": clientVersion,
 		},
 		// Deliberately advertise no filesystem, terminal, MCP, or other host
-		// capabilities. Permission requests are cancelled as well.
+		// capabilities. Without an explicitly installed local responder,
+		// permission requests remain fail-closed and are cancelled.
 		"clientCapabilities": map[string]any{},
 	})
 	raw, err := a.request("initialize", initializeParams)
@@ -359,6 +565,7 @@ func (a *ACPAdapter) handshake() (*ACPCapabilities, string, error) {
 	if err := json.Unmarshal(raw.Result, &sessionResponse); err != nil || sessionResponse.SessionID == "" {
 		return nil, "", errors.New("ACP agent did not return a sessionId")
 	}
+	caps.SessionControls = parseSessionControls(raw.Result)
 	return caps, sessionResponse.SessionID, nil
 }
 
@@ -384,6 +591,149 @@ func parseAgentCapabilities(raw []byte) (*ACPCapabilities, error) {
 		caps.ClosePresent = true
 	}
 	return caps, nil
+}
+
+func parseSessionControls(raw []byte) *ACPSessionControls {
+	var wire struct {
+		Modes *struct {
+			CurrentModeID string `json:"currentModeId"`
+			Available     []struct {
+				ID          string `json:"id"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"availableModes"`
+		} `json:"modes"`
+		ConfigOptions []struct {
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			Description  string `json:"description"`
+			Category     string `json:"category"`
+			Type         string `json:"type"`
+			CurrentValue string `json:"currentValue"`
+			Options      []struct {
+				Value       string `json:"value"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"options"`
+		} `json:"configOptions"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return nil
+	}
+
+	controls := &ACPSessionControls{}
+	if wire.Modes != nil {
+		modes := &ACPModeState{CurrentModeID: wire.Modes.CurrentModeID}
+		for _, mode := range wire.Modes.Available {
+			if mode.ID == "" {
+				continue
+			}
+			modes.AvailableModes = append(modes.AvailableModes, ACPMode{
+				ID:          mode.ID,
+				Name:        boundedACPText(mode.Name),
+				Description: boundedACPText(mode.Description),
+			})
+		}
+		if len(modes.AvailableModes) > 0 || modes.CurrentModeID != "" {
+			controls.Modes = modes
+		}
+	}
+	for _, option := range wire.ConfigOptions {
+		if !isPolicyConfigOption(option.ID, option.Category) || option.ID == "" {
+			continue
+		}
+		projected := ACPConfigOption{
+			ID:           option.ID,
+			Name:         boundedACPText(option.Name),
+			Description:  boundedACPText(option.Description),
+			Category:     option.Category,
+			Type:         option.Type,
+			CurrentValue: option.CurrentValue,
+		}
+		for _, value := range option.Options {
+			if value.Value == "" {
+				continue
+			}
+			projected.Options = append(projected.Options, ACPConfigOptionValue{
+				Value:       value.Value,
+				Name:        boundedACPText(value.Name),
+				Description: boundedACPText(value.Description),
+			})
+		}
+		controls.ConfigOptions = append(controls.ConfigOptions, projected)
+	}
+	if controls.Modes == nil && len(controls.ConfigOptions) == 0 {
+		return nil
+	}
+	return controls
+}
+
+func isPolicyConfigOption(id, category string) bool {
+	id = strings.ToLower(strings.TrimSpace(id))
+	category = strings.ToLower(strings.TrimSpace(category))
+	return id == "mode" || id == "permission" || id == "policy" ||
+		strings.Contains(category, "mode") || strings.Contains(category, "permission") || strings.Contains(category, "policy")
+}
+
+func boundedACPText(value string) string {
+	const maxACPText = 16 * 1024
+	runes := []rune(value)
+	if len(runes) <= maxACPText {
+		return value
+	}
+	return string(runes[:maxACPText])
+}
+
+func cloneSessionControls(controls *ACPSessionControls) *ACPSessionControls {
+	if controls == nil {
+		return nil
+	}
+	clone := &ACPSessionControls{}
+	if controls.Modes != nil {
+		clone.Modes = &ACPModeState{CurrentModeID: controls.Modes.CurrentModeID}
+		clone.Modes.AvailableModes = append([]ACPMode(nil), controls.Modes.AvailableModes...)
+	}
+	for _, option := range controls.ConfigOptions {
+		option.Options = append([]ACPConfigOptionValue(nil), option.Options...)
+		clone.ConfigOptions = append(clone.ConfigOptions, option)
+	}
+	return clone
+}
+
+func hasMode(modes *ACPModeState, modeID string) bool {
+	for _, mode := range modes.AvailableModes {
+		if mode.ID == modeID {
+			return true
+		}
+	}
+	return false
+}
+
+func findConfigOption(options []ACPConfigOption, configID string) (ACPConfigOption, bool) {
+	for _, option := range options {
+		if option.ID == configID {
+			return option, true
+		}
+	}
+	return ACPConfigOption{}, false
+}
+
+func hasConfigValue(option ACPConfigOption, value string) bool {
+	for _, candidate := range option.Options {
+		if candidate.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
+func replaceConfigOption(options []ACPConfigOption, replacement ACPConfigOption) {
+	for index := range options {
+		if options[index].ID == replacement.ID {
+			options[index] = replacement
+			return
+		}
+	}
 }
 
 // readLoop pumps stdout frames into the dispatcher until the pipe dies.
@@ -420,15 +770,12 @@ func (a *ACPAdapter) dispatch(message *acpMessage) {
 		}
 		return
 	}
-	// Agent -> client request. Permission requests are fail-closed:
-	// always answered cancelled; everything else is method-not-found.
+	// Agent -> client request. Permission requests are handed off in a
+	// goroutine so a delayed responder never blocks the ACP read loop.
 	if len(message.ID) > 0 && message.Method != "" {
 		switch message.Method {
 		case "session/request_permission":
-			result, _ := json.Marshal(map[string]any{
-				"outcome": map[string]any{"outcome": "cancelled"},
-			})
-			_ = a.writeFrame(responseFrame(message.ID, result))
+			a.dispatchPermission(message)
 		default:
 			rpcErr := acpRPCError{Code: -32601, Message: "method not found"}
 			_ = a.writeFrame(errorFrame(message.ID, rpcErr))
@@ -437,12 +784,180 @@ func (a *ACPAdapter) dispatch(message *acpMessage) {
 	}
 	// Notification.
 	if message.Method == "session/update" {
+		a.applySessionUpdate(message.Params)
 		if chunk, ok := extractTextChunk(message.Params); ok && chunk != "" {
 			a.mu.Lock()
 			if a.promptActive {
 				a.turnChunks = append(a.turnChunks, chunk)
 			}
 			a.mu.Unlock()
+		}
+	}
+}
+
+func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
+	request, err := parsePermissionRequest(message)
+	if err != nil {
+		_ = a.writeFrame(cancelPermissionFrame(message.ID))
+		return
+	}
+
+	key := message.idKey()
+	a.mu.Lock()
+	if a.closing || !a.promptActive || a.turnContext == nil || a.sessionID == "" || request.SessionID != a.sessionID {
+		a.mu.Unlock()
+		_ = a.writeFrame(cancelPermissionFrame(message.ID))
+		return
+	}
+	if _, exists := a.pendingPermissions[key]; exists {
+		a.mu.Unlock()
+		_ = a.writeFrame(cancelPermissionFrame(message.ID))
+		return
+	}
+	pending := &pendingPermission{
+		id:      append(json.RawMessage(nil), message.ID...),
+		request: request,
+	}
+	a.pendingPermissions[key] = pending
+	responder := a.options.PermissionResponder
+	turnContext := a.turnContext
+	a.mu.Unlock()
+
+	if responder == nil {
+		a.finishPermission(key, "")
+		return
+	}
+	go func() {
+		response, responseErr := responder(turnContext, request)
+		if responseErr != nil || response.OptionID == "" || !permissionOptionOffered(request.Options, response.OptionID) {
+			a.finishPermission(key, "")
+			return
+		}
+		a.finishPermission(key, response.OptionID)
+	}()
+}
+
+func parsePermissionRequest(message *acpMessage) (ACPPermissionRequest, error) {
+	var wire struct {
+		SessionID string `json:"sessionId"`
+		ToolCall  struct {
+			ToolCallID string          `json:"toolCallId"`
+			Title      string          `json:"title"`
+			Kind       string          `json:"kind"`
+			Status     string          `json:"status"`
+			RawInput   json.RawMessage `json:"rawInput"`
+			Content    json.RawMessage `json:"content"`
+		} `json:"toolCall"`
+		Options []struct {
+			OptionID string          `json:"optionId"`
+			Name     string          `json:"name"`
+			Kind     string          `json:"kind"`
+			Meta     json.RawMessage `json:"_meta"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(message.Params, &wire); err != nil || wire.SessionID == "" {
+		return ACPPermissionRequest{}, errors.New("invalid ACP permission request")
+	}
+	request := ACPPermissionRequest{
+		RequestID: message.idKey(),
+		SessionID: wire.SessionID,
+		ToolCall: ACPToolCall{
+			ToolCallID: wire.ToolCall.ToolCallID,
+			Title:      boundedACPText(wire.ToolCall.Title),
+			Kind:       wire.ToolCall.Kind,
+			Status:     wire.ToolCall.Status,
+			RawInput:   cloneRawJSON(wire.ToolCall.RawInput),
+			Content:    cloneRawJSON(wire.ToolCall.Content),
+		},
+	}
+	for _, option := range wire.Options {
+		if option.OptionID == "" {
+			continue
+		}
+		request.Options = append(request.Options, ACPPermissionOption{
+			OptionID: option.OptionID,
+			Name:     boundedACPText(option.Name),
+			Kind:     option.Kind,
+			Meta:     cloneRawJSON(option.Meta),
+		})
+	}
+	return request, nil
+}
+
+func cloneRawJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
+}
+
+func permissionOptionOffered(options []ACPPermissionOption, optionID string) bool {
+	for _, option := range options {
+		if option.OptionID == optionID {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *ACPAdapter) finishPermission(key, optionID string) {
+	a.mu.Lock()
+	pending, ok := a.pendingPermissions[key]
+	if ok {
+		delete(a.pendingPermissions, key)
+	}
+	a.mu.Unlock()
+	if !ok {
+		return
+	}
+	if optionID == "" {
+		_ = a.writeFrame(cancelPermissionFrame(pending.id))
+		return
+	}
+	_ = a.writeFrame(selectedPermissionFrame(pending.id, optionID))
+}
+
+func cancelPermissionFrame(id json.RawMessage) []byte {
+	return responseFrame(id, map[string]any{
+		"outcome": map[string]any{"outcome": "cancelled"},
+	})
+}
+
+func selectedPermissionFrame(id json.RawMessage, optionID string) []byte {
+	return responseFrame(id, map[string]any{
+		"outcome": map[string]any{"outcome": "selected", "optionId": optionID},
+	})
+}
+
+func (a *ACPAdapter) applySessionUpdate(params json.RawMessage) {
+	var update struct {
+		SessionID string `json:"sessionId"`
+		Update    struct {
+			SessionUpdate string            `json:"sessionUpdate"`
+			CurrentModeID string            `json:"currentModeId"`
+			ConfigOptions []json.RawMessage `json:"configOptions"`
+		} `json:"update"`
+	}
+	if json.Unmarshal(params, &update) != nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.caps == nil || a.caps.SessionControls == nil || (a.sessionID != "" && update.SessionID != "" && update.SessionID != a.sessionID) {
+		return
+	}
+	switch update.Update.SessionUpdate {
+	case "current_mode_update":
+		if a.caps.SessionControls.Modes != nil && update.Update.CurrentModeID != "" {
+			a.caps.SessionControls.Modes.CurrentModeID = update.Update.CurrentModeID
+		}
+	case "config_option_update":
+		if len(update.Update.ConfigOptions) == 0 {
+			return
+		}
+		controls := parseSessionControls(mustJSON(map[string]any{"configOptions": update.Update.ConfigOptions}))
+		if controls != nil && len(controls.ConfigOptions) > 0 {
+			a.caps.SessionControls.ConfigOptions = controls.ConfigOptions
 		}
 	}
 }
@@ -627,6 +1142,7 @@ func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput, expectedSessionGenera
 	}
 	a.promptActive = true
 	a.turnChunks = nil
+	a.turnContext, a.turnCancel = context.WithCancel(context.Background())
 	blocks := promptBlocks(input, a.caps != nil && a.caps.Images)
 	params, _ := json.Marshal(map[string]any{
 		"sessionId": a.sessionID,
@@ -709,9 +1225,41 @@ func (a *ACPAdapter) drainChunks() string {
 func (a *ACPAdapter) resetPrompt(key string) {
 	a.mu.Lock()
 	delete(a.pending, key)
+	turnCancel := a.turnCancel
+	a.turnContext = nil
+	a.turnCancel = nil
+	permissions := a.takePendingPermissionsLocked()
 	a.promptActive = false
 	a.turnChunks = nil
 	a.mu.Unlock()
+	if turnCancel != nil {
+		turnCancel()
+	}
+	for _, permission := range permissions {
+		_ = a.writeFrame(cancelPermissionFrame(permission.id))
+	}
+}
+
+func (a *ACPAdapter) takePendingPermissionsLocked() []*pendingPermission {
+	permissions := make([]*pendingPermission, 0, len(a.pendingPermissions))
+	for _, permission := range a.pendingPermissions {
+		permissions = append(permissions, permission)
+	}
+	a.pendingPermissions = make(map[string]*pendingPermission)
+	return permissions
+}
+
+func (a *ACPAdapter) cancelPendingPermissions() {
+	a.mu.Lock()
+	turnCancel := a.turnCancel
+	permissions := a.takePendingPermissionsLocked()
+	a.mu.Unlock()
+	if turnCancel != nil {
+		turnCancel()
+	}
+	for _, permission := range permissions {
+		_ = a.writeFrame(cancelPermissionFrame(permission.id))
+	}
 }
 
 // recoverTimedOutTurn cancels the prompt and, if it does not settle within
@@ -753,6 +1301,7 @@ func (a *ACPAdapter) CancelTurn() error {
 	})
 	a.mu.Unlock()
 
+	a.cancelPendingPermissions()
 	return a.writeFrame(envelope)
 }
 
@@ -773,6 +1322,7 @@ func (a *ACPAdapter) forceClose() {
 }
 
 func (a *ACPAdapter) closeInternal(force bool) error {
+	var turnCancel context.CancelFunc
 	a.mu.Lock()
 	if a.closing {
 		a.mu.Unlock()
@@ -791,11 +1341,18 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 	a.proc = nil
 	a.promptActive = false
 	a.turnChunks = nil
+	turnCancel = a.turnCancel
+	a.turnContext = nil
+	a.turnCancel = nil
 	for _, call := range a.pending {
 		close(call.result)
 	}
 	a.pending = make(map[string]*pendingCall)
+	a.pendingPermissions = make(map[string]*pendingPermission)
 	a.mu.Unlock()
+	if turnCancel != nil {
+		turnCancel()
+	}
 
 	// Teardown state is cleared; allow a later EnsureSession to spawn a
 	// fresh process (timed-out turns rely on this recovery path). Late death

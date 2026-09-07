@@ -7,6 +7,7 @@
 //	env            reply with the Harness-visible FREE4CHAT_AGENT_DIR
 //	context_read   invoke the local CLI's bounded Room context read
 //	permission     answer a targeted turn after an auto-cancelled permission ask
+//	permission_wait  park a permission ask until the client chooses an offered option
 //	cancel         hold the requested turn until session/cancel arrives
 //	exit           die shortly after the first prompt completes
 //	restart        die after the first prompt; fresh process answers differently
@@ -14,7 +15,8 @@
 //	envelope       reply with the exact FAKE_REPLY_TEXT payload (#165 addressing tests)
 //
 // Markers/env: FAKE_EXIT_MARKER, FAKE_STATE_MARKER, FAKE_CANCEL_MARKER,
-// FAKE_IMAGE_CAP ("1" advertises image support), FAKE_REPLY_TEXT.
+// FAKE_IMAGE_CAP ("1" advertises image support), FAKE_REPLY_TEXT,
+// FAKE_POLICY_CAP ("1" advertises native modes/config options).
 package main
 
 import (
@@ -188,7 +190,64 @@ func main() {
 
 		case message.Method == "session/new":
 			sessionID = "session-" + strconv.Itoa(1)
-			reply(message.ID, map[string]any{"sessionId": sessionID})
+			response := map[string]any{"sessionId": sessionID}
+			if os.Getenv("FAKE_POLICY_CAP") == "1" {
+				response["modes"] = map[string]any{
+					"currentModeId": "observe",
+					"availableModes": []any{
+						map[string]any{"id": "observe", "name": "Observe", "description": "read-only"},
+						map[string]any{"id": "workspace", "name": "Workspace", "description": "workspace writes"},
+					},
+				}
+				response["configOptions"] = []any{map[string]any{
+					"id": "mode", "name": "Mode", "category": "mode", "type": "select",
+					"currentValue": "observe",
+					"options": []any{
+						map[string]any{"value": "observe", "name": "Observe"},
+						map[string]any{"value": "workspace", "name": "Workspace"},
+					},
+				}}
+			}
+			reply(message.ID, response)
+
+		case message.Method == "session/set_mode":
+			if os.Getenv("FAKE_POLICY_CAP") != "1" {
+				reply(message.ID, map[string]any{"error": "policy controls were not advertised"})
+				continue
+			}
+			var params struct {
+				ModeID string `json:"modeId"`
+			}
+			_ = json.Unmarshal(message.Params, &params)
+			notify("session/update", map[string]any{
+				"sessionId": sessionID,
+				"update":    map[string]any{"sessionUpdate": "current_mode_update", "currentModeId": params.ModeID},
+			})
+			reply(message.ID, map[string]any{})
+
+		case message.Method == "session/set_config_option":
+			if os.Getenv("FAKE_POLICY_CAP") != "1" {
+				reply(message.ID, map[string]any{"error": "policy controls were not advertised"})
+				continue
+			}
+			var params struct {
+				ConfigID string `json:"configId"`
+				Value    string `json:"value"`
+			}
+			_ = json.Unmarshal(message.Params, &params)
+			configOptions := []any{map[string]any{
+				"id": params.ConfigID, "name": "Mode", "category": "mode", "type": "select",
+				"currentValue": params.Value,
+				"options": []any{
+					map[string]any{"value": "observe", "name": "Observe"},
+					map[string]any{"value": "workspace", "name": "Workspace"},
+				},
+			}}
+			notify("session/update", map[string]any{
+				"sessionId": sessionID,
+				"update":    map[string]any{"sessionUpdate": "config_option_update", "configOptions": configOptions},
+			})
+			reply(message.ID, map[string]any{"configOptions": configOptions})
 
 		case message.Method == "session/close":
 			reply(message.ID, map[string]any{})
@@ -271,6 +330,31 @@ func main() {
 					continue
 				}
 				a.finishNormal(&message, sessionID)
+			case "permission_wait":
+				if len(prompt) > 0 && contains(prompt, "permission-test") {
+					send(&frame{
+						JSONRPC: "2.0",
+						ID:      json.RawMessage("78"),
+						Method:  "session/request_permission",
+						Params: mustJSON(map[string]any{
+							"sessionId": sessionID,
+							"toolCall": map[string]any{
+								"toolCallId": "tool-delayed",
+								"title":      "delayed harmless operation",
+								"kind":       "execute",
+								"status":     "pending",
+								"rawInput":   map[string]any{"command": "touch temporary-marker"},
+							},
+							"options": []any{
+								map[string]any{"optionId": "allow-once", "name": "Allow Once", "kind": "allow_once"},
+								map[string]any{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+							},
+						}),
+					})
+					a.pending = append([]byte(nil), message.ID...)
+					continue
+				}
+				a.finishNormal(&message, sessionID)
 			case "cancel":
 				if len(prompt) > 0 && contains(prompt, "cancel-test") {
 					a.pending = append([]byte(nil), message.ID...)
@@ -340,9 +424,21 @@ func main() {
 		case len(message.ID) > 0 && message.Result != nil:
 			// Runtime answered our outbound request (e.g. the auto-cancelled
 			// permission call). Continue the parked turn accordingly.
-			if a.mode == "permission" && a.pending != nil {
-				updateChunk(sessionID, "permission-cancelled")
-				reply(a.pending, map[string]any{"stopReason": "cancelled"})
+			if (a.mode == "permission" || a.mode == "permission_wait") && a.pending != nil {
+				var permissionResult struct {
+					Outcome struct {
+						Outcome  string `json:"outcome"`
+						OptionID string `json:"optionId"`
+					} `json:"outcome"`
+				}
+				_ = json.Unmarshal(message.Result, &permissionResult)
+				if a.mode == "permission_wait" && permissionResult.Outcome.Outcome == "selected" && permissionResult.Outcome.OptionID == "allow-once" {
+					updateChunk(sessionID, "permission-approved")
+					reply(a.pending, map[string]any{"stopReason": "end_turn"})
+				} else {
+					updateChunk(sessionID, "permission-cancelled")
+					reply(a.pending, map[string]any{"stopReason": "cancelled"})
+				}
 				a.pending = nil
 			}
 
