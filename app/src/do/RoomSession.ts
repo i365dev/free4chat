@@ -45,6 +45,13 @@ import {
   resolveAgentPurposePermission,
 } from "./meetingNotesAuth"
 import {
+  isPermissionEvent,
+  pendingPermissionRequestIsEquivalent,
+  PERMISSION_ACTION_TYPE,
+  validatePermissionRequest,
+  type PermissionRequestInput,
+} from "./permission"
+import {
   isHumanAudioTrackTarget,
   pendingCleanupHasCapacity,
   queuePendingCleanup,
@@ -120,6 +127,8 @@ import type {
   ParticipantKind,
   RoomSurfaceV1,
   CollabEvent,
+  PermissionEvent,
+  PermissionRequestRecord,
   RuntimeHostProjection,
 } from "../room/types"
 
@@ -130,6 +139,7 @@ const MAX_AGENT_ATTACHMENTS = 8
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
+const MAX_PENDING_PERMISSION_REQUESTS = 32
 // The resident event stream is intentionally one bounded frame. The 2 MiB
 // cap covers the retained 100-message/8-attachment event window (including
 // worst-case UTF-8 text), plus JSON, roster, and Runtime Host overhead; the
@@ -261,6 +271,7 @@ interface StoredRoom
     | "pendingMediaCleanup"
     | "runtimeHostProviders"
     | "runtimeHostProviderClaims"
+    | "permissionRequests"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
@@ -277,6 +288,7 @@ interface StoredRoom
   pendingMediaCleanup?: PendingMediaCleanup[]
   runtimeHostProviders?: unknown
   runtimeHostProviderClaims?: unknown
+  permissionRequests?: unknown
 }
 
 interface StoredLiveTranscript {
@@ -475,6 +487,15 @@ type ControlRequest =
       event: CollabEventInput
     }
   | {
+      // #286: Runtime-only structured ACP permission request. The Agent
+      // identity is derived from participantId/token; the body contains only
+      // bounded presentation and native option values.
+      action: "agent-send-permission"
+      participantId: string
+      token: string
+      request: PermissionRequestInput
+    }
+  | {
       action: "agent-read-attachment"
       participantId: string
       token: string
@@ -587,6 +608,14 @@ type ClientMessage =
       requestId: string
       status: "completed" | "failed"
       summary: string
+    }
+  | {
+      // #286: only an explicit Human button click can resolve a pending
+      // permission request. Request ownership and Human identity are derived
+      // from authenticated Room participants below.
+      type: "permission-response"
+      requestId: string
+      selectedOptionId: string
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
@@ -786,6 +815,57 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(targets?.length ? { targets } : {}),
       })
     }
+    const permissionRequests: Record<string, PermissionRequestRecord> = {}
+    if (stored.permissionRequests !== undefined) {
+      if (
+        !stored.permissionRequests ||
+        typeof stored.permissionRequests !== "object" ||
+        Array.isArray(stored.permissionRequests)
+      ) {
+        changed = true
+      } else {
+        const entries = Object.entries(
+          stored.permissionRequests as Record<string, unknown>
+        )
+        for (const [requestId, rawRecord] of entries.slice(
+          -MAX_PENDING_PERMISSION_REQUESTS
+        )) {
+          if (!rawRecord || typeof rawRecord !== "object") {
+            changed = true
+            continue
+          }
+          const record = rawRecord as Partial<PermissionRequestRecord>
+          const event = record.event
+          const agent =
+            typeof record.agentParticipantId === "string"
+              ? participants[record.agentParticipantId]
+              : undefined
+          if (
+            record.requestId !== requestId ||
+            typeof record.agentParticipantId !== "string" ||
+            agent?.kind !== "agent" ||
+            typeof record.sequence !== "number" ||
+            !Number.isSafeInteger(record.sequence) ||
+            record.sequence <= 0 ||
+            !isPermissionEvent(event) ||
+            event.kind !== "request" ||
+            event.requestId !== requestId ||
+            event.agentParticipantId !== record.agentParticipantId
+          ) {
+            changed = true
+            continue
+          }
+          permissionRequests[requestId] = {
+            requestId,
+            agentParticipantId: record.agentParticipantId,
+            sequence: record.sequence,
+            event,
+          }
+        }
+        if (Object.keys(permissionRequests).length !== entries.length)
+          changed = true
+      }
+    }
     // #228: sanitize the persisted collaboration interval; an invalid one
     // is dropped (worst case: a replacement duration interval opens later).
     const collaborationActivity = normalizeStoredCollaborationActivity(
@@ -966,6 +1046,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         runtimeHostProviders: normalizedRuntimeHostProviders.providers,
         runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
+        permissionRequests,
         liveTranscript: normalizedLiveProducer.liveTranscript,
         liveTranscriptSegments: normalizedLiveTranscript.liveTranscriptSegments,
         nextLiveTranscriptEpoch:
@@ -1399,6 +1480,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private async scheduleNextAlarm(room: RoomRecord): Promise<void> {
     const deadlines = [room.expiresAt]
+    for (const request of Object.values(room.permissionRequests ?? {}))
+      deadlines.push(request.event.expiresAt)
     for (const participant of Object.values(room.participants)) {
       if (participant.kind === "agent") {
         deadlines.push(participant.lastSeenAt + AGENT_LEASE_MS)
@@ -1559,6 +1642,81 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return roomMessage
   }
 
+  private permissionEventForMessage(
+    message: RoomMessage
+  ): PermissionEvent | undefined {
+    return message.actionType === PERMISSION_ACTION_TYPE &&
+      isPermissionEvent(message.permission)
+      ? message.permission
+      : undefined
+  }
+
+  private latestPermissionEvent(
+    room: RoomRecord,
+    requestId: string
+  ): PermissionEvent | undefined {
+    for (let index = room.messages.length - 1; index >= 0; index -= 1) {
+      const event = this.permissionEventForMessage(room.messages[index]!)
+      if (event?.requestId === requestId) return event
+    }
+    return undefined
+  }
+
+  // Permission events are private to the Agent that originated the request.
+  // Human clients receive them through the normal RoomState/message broadcast;
+  // unrelated resident Agents must not observe or wake on another Agent's
+  // approval flow.
+  private isPermissionVisibleToAgent(
+    message: RoomMessage,
+    participantId: string
+  ): boolean {
+    const event = this.permissionEventForMessage(message)
+    return !event || event.agentParticipantId === participantId
+  }
+
+  private expirePermissionRequests(
+    room: RoomRecord,
+    now: number,
+    departedAgentParticipantId?: string
+  ): boolean {
+    const pending = room.permissionRequests ?? {}
+    let changed = false
+    for (const [requestId, record] of Object.entries(pending)) {
+      const target = room.participants[record.agentParticipantId]
+      const shouldExpire =
+        (departedAgentParticipantId !== undefined &&
+          record.agentParticipantId === departedAgentParticipantId) ||
+        record.event.expiresAt <= now ||
+        !target ||
+        target.kind !== "agent"
+      if (!shouldExpire) continue
+      delete pending[requestId]
+      changed = true
+      const previous = this.latestPermissionEvent(room, requestId)
+      if (previous?.kind === "resolved" || previous?.kind === "expired")
+        continue
+      this.appendMessage(room, {
+        id: crypto.randomUUID(),
+        peerId: record.agentParticipantId,
+        name: target?.name ?? "Agent",
+        kind: "agent",
+        type: "action",
+        actionType: PERMISSION_ACTION_TYPE,
+        permission: {
+          requestId,
+          kind: "expired",
+          agentParticipantId: record.agentParticipantId,
+          createdAt: now,
+          expiresAt: record.event.expiresAt,
+        },
+        targets: [record.agentParticipantId],
+        createdAt: now,
+      })
+    }
+    if (changed) room.permissionRequests = pending
+    return changed
+  }
+
   private toAgentEvent(
     message: RoomMessage,
     participantId: string
@@ -1579,6 +1737,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ? {}
         : { actionPayload: message.actionPayload }),
       ...(message.collab === undefined ? {} : { collab: message.collab }),
+      ...(message.permission === undefined
+        ? {}
+        : { permission: message.permission }),
       addressed: message.targets?.includes(participantId) === true,
       createdAt: message.createdAt,
     }
@@ -1621,11 +1782,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         sequence: message.sequence,
         event: this.toAgentEvent(message, participantId),
         peerId: message.peerId,
+        visible: this.isPermissionVisibleToAgent(message, participantId),
+        deliverOwn: this.permissionEventForMessage(message)?.kind === "expired",
       })),
       ...room.attachments.map((attachment) => ({
         sequence: attachment.sequence,
         event: this.toAttachmentEvent(attachment),
         peerId: attachment.senderId,
+        visible: true,
+        deliverOwn: false,
       })),
     ].sort((left, right) => left.sequence - right.sequence)
     const coverageFloor = this.retainedEventCoverageFloor(events)
@@ -1635,7 +1800,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       events: events
         .filter(
           (entry) =>
-            entry.sequence > effectiveCursor && entry.peerId !== participantId
+            entry.sequence > effectiveCursor &&
+            (entry.peerId !== participantId || entry.deliverOwn === true) &&
+            entry.visible !== false
         )
         .map((entry) => entry.event),
       cursor: serverCursor,
@@ -1653,9 +1820,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participantId: string
   ): AgentEvent[] {
     return [
-      ...room.messages.map((message) =>
-        this.toAgentEvent(message, participantId)
-      ),
+      ...room.messages
+        .filter((message) =>
+          this.isPermissionVisibleToAgent(message, participantId)
+        )
+        .map((message) => this.toAgentEvent(message, participantId)),
       ...room.attachments.map((attachment) =>
         this.toAttachmentEvent(attachment)
       ),
@@ -1739,11 +1908,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const waiter of this.agentWaiters.values()) {
       if (!waiter) continue
       const result = this.agentEvents(room, waiter.participantId, waiter.cursor)
-      if (
-        result.events.length > 0 ||
-        result.cursor > waiter.cursor ||
-        result.truncated
-      ) {
+      if (result.events.length > 0 || result.truncated) {
         this.finishWaiter(
           waiter,
           this.json({
@@ -1807,13 +1972,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       attachment.participantId,
       attachment.cursor
     )
-    if (
-      !force &&
-      result.events.length === 0 &&
-      result.cursor <= attachment.cursor &&
-      !result.truncated
-    )
-      return
+    if (!force && result.events.length === 0 && !result.truncated) return
     try {
       const encoded = JSON.stringify({
         type: "events",
@@ -2763,6 +2922,54 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       })
     }
 
+    if (request.action === "agent-send-permission") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      participant.lastSeenAt = Date.now()
+      if (this.expirePermissionRequests(room, Date.now())) {
+        await this.saveRoom(room)
+        await this.scheduleNextAlarm(room)
+        await this.broadcastState(room)
+      }
+      const ingest = this.ingestPermissionRequest(
+        room,
+        participant,
+        request.request
+      )
+      if (ingest.status === "rejected")
+        return this.json(
+          { error: ingest.error },
+          ingest.error === "permission_request_conflict" ||
+            ingest.error === "permission_request_closed"
+            ? 409
+            : 400
+        )
+      if (ingest.status === "duplicate")
+        return this.json({
+          requestId: ingest.event.requestId,
+          sequence: ingest.sequence,
+          duplicate: true,
+          expiresAt: ingest.event.expiresAt,
+        })
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcast({ type: "message", message: ingest.message })
+      this.resolveAgentWaiters(room)
+      return this.json({
+        requestId: ingest.event.requestId,
+        sequence: ingest.sequence,
+        expiresAt: ingest.event.expiresAt,
+      })
+    }
+
     if (request.action === "agent-update-capabilities") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
@@ -3436,6 +3643,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant.runtimeHostId === room.liveTranscript.producerRuntimeHostId
       )
         this.stageAgentMediaRevocation(room, participant.id, "subscribed")
+      this.expirePermissionRequests(room, Date.now(), participant.id)
       const departingSurface = participant.surface
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
@@ -3861,6 +4069,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant,
     })
     this.stageMediaGrantRevocations(room, grantTransition.revocations)
+    if (participant.kind === "agent")
+      this.expirePermissionRequests(room, Date.now(), participant.id)
     if (participant.kind === "human")
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
     delete room.participants[participant.id]
@@ -3876,6 +4086,180 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.broadcastState(room)
     await this.scheduleNextAlarm(room)
     return this.json({ ok: true })
+  }
+
+  private ingestPermissionRequest(
+    room: RoomRecord,
+    agent: RoomParticipant,
+    input: PermissionRequestInput
+  ):
+    | {
+        status: "recorded" | "duplicate"
+        sequence: number
+        event: Extract<PermissionEvent, { kind: "request" }>
+        message: RoomMessage
+      }
+    | { status: "rejected"; error: string } {
+    const now = Date.now()
+    const validated = validatePermissionRequest(input ?? {}, now)
+    if (validated.ok === false)
+      return { status: "rejected", error: validated.error }
+    const event: Extract<PermissionEvent, { kind: "request" }> = {
+      requestId: validated.requestId,
+      kind: "request",
+      agentParticipantId: agent.id,
+      toolCall: validated.toolCall,
+      options: validated.options,
+      createdAt: now,
+      expiresAt: validated.expiresAt,
+    }
+    const pending = room.permissionRequests ?? {}
+    const existing = pending[event.requestId]
+    if (existing) {
+      if (!pendingPermissionRequestIsEquivalent(existing, event))
+        return { status: "rejected", error: "permission_request_conflict" }
+      const message = room.messages.find(
+        (candidate) => candidate.sequence === existing.sequence
+      )
+      if (!message)
+        return { status: "rejected", error: "permission_request_closed" }
+      return {
+        status: "duplicate",
+        sequence: existing.sequence,
+        event: existing.event,
+        message,
+      }
+    }
+
+    const previous = this.latestPermissionEvent(room, event.requestId)
+    if (previous) {
+      if (
+        previous.kind !== "request" ||
+        pendingPermissionRequestIsEquivalent(
+          {
+            requestId: previous.requestId,
+            agentParticipantId: previous.agentParticipantId,
+            sequence: 0,
+            event: previous,
+          },
+          event
+        ) === false
+      )
+        return {
+          status: "rejected",
+          error:
+            previous.kind === "request"
+              ? "permission_request_conflict"
+              : "permission_request_closed",
+        }
+      const message = room.messages.find(
+        (candidate) =>
+          candidate.actionType === PERMISSION_ACTION_TYPE &&
+          candidate.permission?.requestId === event.requestId &&
+          candidate.permission.kind === "request"
+      )
+      if (!message)
+        return { status: "rejected", error: "permission_request_closed" }
+      return {
+        status: "duplicate",
+        sequence: message.sequence,
+        event: previous,
+        message,
+      }
+    }
+    if (Object.keys(pending).length >= MAX_PENDING_PERMISSION_REQUESTS)
+      return { status: "rejected", error: "too_many_pending_permissions" }
+
+    const message = this.appendMessage(room, {
+      id: crypto.randomUUID(),
+      peerId: agent.id,
+      name: agent.name,
+      kind: "agent",
+      type: "action",
+      actionType: PERMISSION_ACTION_TYPE,
+      permission: event,
+      // This target is also persisted for the addressed Agent event
+      // contract; the DO additionally filters permission events by the
+      // envelope's authenticated agentParticipantId.
+      targets: [agent.id],
+      createdAt: event.createdAt,
+    })
+    pending[event.requestId] = {
+      requestId: event.requestId,
+      agentParticipantId: agent.id,
+      sequence: message.sequence,
+      event,
+    }
+    room.permissionRequests = pending
+    return {
+      status: "recorded",
+      sequence: message.sequence,
+      event,
+      message,
+    }
+  }
+
+  private async ingestPermissionResponse(
+    room: RoomRecord,
+    human: RoomParticipant,
+    requestId: string,
+    selectedOptionId: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const pending = room.permissionRequests ?? {}
+    const record = pending[requestId]
+    if (!record) {
+      const previous = this.latestPermissionEvent(room, requestId)
+      return {
+        ok: false,
+        error: previous
+          ? "permission_request_closed"
+          : "unknown_permission_request",
+      }
+    }
+    const now = Date.now()
+    if (record.event.expiresAt <= now) {
+      this.expirePermissionRequests(room, now, record.agentParticipantId)
+      return { ok: false, error: "permission_request_expired" }
+    }
+    if (
+      !record.event.options.some(
+        (option) => option.optionId === selectedOptionId
+      )
+    )
+      return { ok: false, error: "invalid_permission_option" }
+    const agent = room.participants[record.agentParticipantId]
+    if (!agent || agent.kind !== "agent") {
+      this.expirePermissionRequests(room, now, record.agentParticipantId)
+      return { ok: false, error: "permission_request_target_left" }
+    }
+    delete pending[requestId]
+    room.permissionRequests = pending
+    const event: Extract<PermissionEvent, { kind: "resolved" }> = {
+      requestId,
+      kind: "resolved",
+      agentParticipantId: record.agentParticipantId,
+      selectedOptionId,
+      humanParticipantId: human.id,
+      humanName: human.name,
+      createdAt: now,
+      expiresAt: record.event.expiresAt,
+    }
+    const message = this.appendMessage(room, {
+      id: crypto.randomUUID(),
+      peerId: human.id,
+      name: human.name,
+      kind: "human",
+      type: "action",
+      actionType: PERMISSION_ACTION_TYPE,
+      permission: event,
+      targets: [record.agentParticipantId],
+      createdAt: now,
+    })
+    await this.saveRoom(room)
+    await this.scheduleNextAlarm(room)
+    await this.broadcast({ type: "message", message })
+    this.resolveAgentWaiters(room)
+    return { ok: true }
   }
 
   // #113 shared request ingestion: Agent→Agent and Human→Agent work
@@ -4400,6 +4784,33 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
 
+    if (message.type === "permission-response") {
+      const reject = (error: string) =>
+        socket.send(JSON.stringify({ type: "error", error }))
+      if (participant.kind !== "human") {
+        reject("permission_responder_not_human")
+        return
+      }
+      const requestId =
+        typeof message.requestId === "string" ? message.requestId.trim() : ""
+      const selectedOptionId =
+        typeof message.selectedOptionId === "string"
+          ? message.selectedOptionId.trim()
+          : ""
+      if (!requestId || !selectedOptionId) {
+        reject("invalid_permission_response")
+        return
+      }
+      const result = await this.ingestPermissionResponse(
+        room,
+        participant,
+        requestId,
+        selectedOptionId
+      )
+      if (result.ok === false) reject(result.error)
+      return
+    }
+
     // #115: Human accepted/declined for an Agent-originated request. The
     // responder is the authenticated Human attachment; routing comes from
     // CollabRegistry correlation. v0 permits ONLY accepted/declined —
@@ -4493,6 +4904,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (message.type === "action") {
+      // A permission decision is never a generic Room action. This prevents
+      // ordinary action payloads from manufacturing an approval card or
+      // changing the pending permission index.
+      if (message.actionType === PERMISSION_ACTION_TYPE) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "permission_requires_structured_response",
+          })
+        )
+        return
+      }
       const roomMessage = this.appendMessage(room, {
         id: crypto.randomUUID(),
         peerId: participant.id,
@@ -4838,7 +5261,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.expireRoom(room)
       return
     }
-    let changed = false
+    let changed = this.expirePermissionRequests(room, now)
     const expiredSurfaces: Array<{
       participantId: string
       surface: RoomSurfaceV1
@@ -4883,6 +5306,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           })
         if (expiredHuman)
           this.removeRuntimeHostProviderAuthorizationForHuman(room, id)
+        if (expiredAgent && this.expirePermissionRequests(room, now, id))
+          changed = true
         delete room.participants[id]
         this.garbageCollectRuntimeHostAuthorization(room)
         const pendingDuration = this.updateCollaborationActivity(room)

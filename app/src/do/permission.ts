@@ -1,0 +1,249 @@
+import type {
+  PermissionEvent,
+  PermissionOption,
+  PermissionRequestRecord,
+  PermissionToolCall,
+} from "../room/types"
+
+// #286: this is a bounded presentation/transport envelope, not a policy
+// engine. Values are intentionally small enough for Room state, the Human
+// timeline, and the resident event frame.
+export const PERMISSION_ACTION_TYPE = "permission"
+export const MAX_PERMISSION_REQUEST_ID_LENGTH = 64
+export const MAX_PERMISSION_TITLE_LENGTH = 200
+export const MAX_PERMISSION_KIND_LENGTH = 64
+export const MAX_PERMISSION_SUMMARY_LENGTH = 1000
+export const MAX_PERMISSION_DETAILS_ENTRIES = 12
+export const MAX_PERMISSION_DETAIL_KEY_LENGTH = 64
+export const MAX_PERMISSION_DETAIL_VALUE_LENGTH = 512
+export const MAX_PERMISSION_OPTIONS = 8
+export const MAX_PERMISSION_OPTION_ID_LENGTH = 64
+export const MAX_PERMISSION_OPTION_NAME_LENGTH = 160
+export const MIN_PERMISSION_LIFETIME_MS = 1000
+export const DEFAULT_PERMISSION_LIFETIME_MS = 2 * 60 * 1000
+export const MAX_PERMISSION_LIFETIME_MS = 5 * 60 * 1000
+
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._:-]{3,63})$/
+
+export interface PermissionRequestInput {
+  requestId?: unknown
+  toolCall?: unknown
+  options?: unknown
+  expiresInMs?: unknown
+}
+
+export type PermissionRequestValidationResult =
+  | {
+      ok: true
+      requestId: string
+      toolCall: PermissionToolCall
+      options: PermissionOption[]
+      expiresAt: number
+    }
+  | { ok: false; error: string }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function validateBoundedString(
+  value: unknown,
+  maxLength: number,
+  requiredError: string,
+  invalidError = requiredError
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof value !== "string") return { ok: false, error: invalidError }
+  const normalized = value.trim()
+  if (!normalized) return { ok: false, error: requiredError }
+  if (normalized.length > maxLength)
+    return { ok: false, error: `${invalidError}_too_long` }
+  return { ok: true, value: normalized }
+}
+
+function validateOptionalString(
+  value: unknown,
+  maxLength: number
+): { ok: true; value?: string } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true }
+  if (typeof value !== "string") return { ok: false, error: "invalid_string" }
+  const normalized = value.trim()
+  if (!normalized) return { ok: true }
+  if (normalized.length > maxLength)
+    return { ok: false, error: "string_too_long" }
+  return { ok: true, value: normalized }
+}
+
+function validateDetails(
+  value: unknown
+):
+  | { ok: true; details?: Record<string, string> }
+  | { ok: false; error: string } {
+  if (value === undefined) return { ok: true }
+  if (!isRecord(value)) return { ok: false, error: "invalid_tool_call_details" }
+  const entries = Object.entries(value)
+  if (entries.length > MAX_PERMISSION_DETAILS_ENTRIES)
+    return { ok: false, error: "too_many_tool_call_details" }
+  const details: Record<string, string> = {}
+  for (const [key, rawValue] of entries) {
+    if (
+      key.length === 0 ||
+      key.length > MAX_PERMISSION_DETAIL_KEY_LENGTH ||
+      typeof rawValue !== "string" ||
+      rawValue.length > MAX_PERMISSION_DETAIL_VALUE_LENGTH
+    )
+      return { ok: false, error: "invalid_tool_call_detail" }
+    details[key] = rawValue
+  }
+  return { ok: true, ...(entries.length > 0 ? { details } : {}) }
+}
+
+function validateToolCall(
+  value: unknown
+): { ok: true; toolCall: PermissionToolCall } | { ok: false; error: string } {
+  if (!isRecord(value)) return { ok: false, error: "tool_call_required" }
+  const title = validateBoundedString(
+    value.title,
+    MAX_PERMISSION_TITLE_LENGTH,
+    "tool_call_title_required",
+    "tool_call_title"
+  )
+  if (title.ok === false) return { ok: false, error: title.error }
+  const kind = validateOptionalString(value.kind, MAX_PERMISSION_KIND_LENGTH)
+  if (!kind.ok) return { ok: false, error: "invalid_tool_call_kind" }
+  const summary = validateOptionalString(
+    value.summary,
+    MAX_PERMISSION_SUMMARY_LENGTH
+  )
+  if (!summary.ok) return { ok: false, error: "invalid_tool_call_summary" }
+  const details = validateDetails(value.details)
+  if (details.ok === false) return { ok: false, error: details.error }
+  return {
+    ok: true,
+    toolCall: {
+      title: title.value,
+      ...(kind.value ? { kind: kind.value } : {}),
+      ...(summary.value ? { summary: summary.value } : {}),
+      ...(details.details ? { details: details.details } : {}),
+    },
+  }
+}
+
+function validateOptions(
+  value: unknown
+): { ok: true; options: PermissionOption[] } | { ok: false; error: string } {
+  if (!Array.isArray(value) || value.length === 0)
+    return { ok: false, error: "permission_options_required" }
+  if (value.length > MAX_PERMISSION_OPTIONS)
+    return { ok: false, error: "too_many_permission_options" }
+  const seen = new Set<string>()
+  const options: PermissionOption[] = []
+  for (const rawOption of value) {
+    if (!isRecord(rawOption))
+      return { ok: false, error: "invalid_permission_option" }
+    const optionId = validateBoundedString(
+      rawOption.optionId,
+      MAX_PERMISSION_OPTION_ID_LENGTH,
+      "permission_option_id_required",
+      "permission_option_id"
+    )
+    if (optionId.ok === false) return { ok: false, error: optionId.error }
+    if (seen.has(optionId.value))
+      return { ok: false, error: "duplicate_permission_option" }
+    seen.add(optionId.value)
+    const name = validateBoundedString(
+      rawOption.name,
+      MAX_PERMISSION_OPTION_NAME_LENGTH,
+      "permission_option_name_required",
+      "permission_option_name"
+    )
+    if (name.ok === false) return { ok: false, error: name.error }
+    const kind = validateOptionalString(
+      rawOption.kind,
+      MAX_PERMISSION_KIND_LENGTH
+    )
+    if (!kind.ok) return { ok: false, error: "invalid_permission_option_kind" }
+    options.push({
+      // Keep each validated native presentation value; do not map it to a
+      // Free4Chat-specific allow/deny category.
+      optionId: optionId.value,
+      name: name.value,
+      ...(kind.value ? { kind: kind.value } : {}),
+    })
+  }
+  return { ok: true, options }
+}
+
+function permissionLifetime(
+  input: unknown
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (input === undefined)
+    return { ok: true, value: DEFAULT_PERMISSION_LIFETIME_MS }
+  if (
+    typeof input !== "number" ||
+    !Number.isSafeInteger(input) ||
+    input < MIN_PERMISSION_LIFETIME_MS ||
+    input > MAX_PERMISSION_LIFETIME_MS
+  )
+    return { ok: false, error: "invalid_permission_lifetime" }
+  return { ok: true, value: input }
+}
+
+export function validatePermissionRequest(
+  input: PermissionRequestInput,
+  now: number
+): PermissionRequestValidationResult {
+  if (typeof input.requestId !== "string")
+    return { ok: false, error: "permission_request_id_required" }
+  const requestId = input.requestId.trim()
+  if (
+    requestId.length === 0 ||
+    requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH ||
+    !REQUEST_ID_PATTERN.test(requestId)
+  )
+    return { ok: false, error: "invalid_permission_request_id" }
+  const toolCall = validateToolCall(input.toolCall)
+  if (toolCall.ok === false) return { ok: false, error: toolCall.error }
+  const options = validateOptions(input.options)
+  if (options.ok === false) return { ok: false, error: options.error }
+  const lifetime = permissionLifetime(input.expiresInMs)
+  if (lifetime.ok === false) return { ok: false, error: lifetime.error }
+  return {
+    ok: true,
+    requestId,
+    toolCall: toolCall.toolCall,
+    options: options.options,
+    expiresAt: now + lifetime.value,
+  }
+}
+
+export function permissionRequestFingerprint(
+  event: Extract<PermissionEvent, { kind: "request" }>
+): string {
+  return JSON.stringify({
+    requestId: event.requestId,
+    agentParticipantId: event.agentParticipantId,
+    toolCall: event.toolCall,
+    options: event.options,
+  })
+}
+
+export function pendingPermissionRequestIsEquivalent(
+  record: PermissionRequestRecord,
+  event: Extract<PermissionEvent, { kind: "request" }>
+): boolean {
+  return (
+    permissionRequestFingerprint(record.event) ===
+    permissionRequestFingerprint(event)
+  )
+}
+
+export function isPermissionEvent(value: unknown): value is PermissionEvent {
+  if (!isRecord(value) || typeof value.requestId !== "string") return false
+  if (
+    value.kind !== "request" &&
+    value.kind !== "resolved" &&
+    value.kind !== "expired"
+  )
+    return false
+  return typeof value.agentParticipantId === "string"
+}

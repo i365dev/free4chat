@@ -25,6 +25,7 @@ import ParticipantAvatar from "./ParticipantAvatar"
 import { resolveAgentTargetIds } from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
 import type {
+  PermissionEvent,
   RoomAttachmentProjection,
   RoomAttachmentRead,
 } from "../room/types"
@@ -76,6 +77,9 @@ interface TextChatCardProps {
     status: "completed" | "failed",
     summary: string
   ) => void
+  /** #286: submit one exact native permission option through the
+   * authenticated Human Room WebSocket action. */
+  onPermissionRespond?: (requestId: string, selectedOptionId: string) => void
 }
 
 const GAMES = [
@@ -465,6 +469,117 @@ function GameCard({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
   )
 }
 
+interface PermissionLifecycleProjection {
+  resolved?: Extract<PermissionEvent, { kind: "resolved" }>
+  expired: boolean
+}
+
+function buildPermissionLifecycleIndex(
+  messages: Message[]
+): Map<string, PermissionLifecycleProjection> {
+  const index = new Map<string, PermissionLifecycleProjection>()
+  for (const message of messages) {
+    if (message.type !== "action" || !message.permission) continue
+    const event = message.permission
+    const current =
+      index.get(event.requestId) ??
+      ({ expired: false } satisfies PermissionLifecycleProjection)
+    if (event.kind === "resolved") current.resolved = event
+    if (event.kind === "expired") current.expired = true
+    index.set(event.requestId, current)
+  }
+  return index
+}
+
+function PermissionCard({
+  msg,
+  isSelf,
+  lifecycle,
+  agentConnected,
+  onRespond,
+}: {
+  msg: Message
+  isSelf: boolean
+  lifecycle?: PermissionLifecycleProjection
+  agentConnected: boolean
+  onRespond?: (requestId: string, selectedOptionId: string) => void
+}) {
+  const permission = msg.permission
+  if (!permission || permission.kind !== "request") return null
+  const selectedOption = lifecycle?.resolved
+    ? permission.options.find(
+        (option) => option.optionId === lifecycle.resolved?.selectedOptionId
+      )
+    : undefined
+  const resolved = lifecycle?.resolved
+  const actionable = !resolved && !lifecycle?.expired && agentConnected
+  const containerClass = isSelf
+    ? "mr-2 rounded-br-3xl rounded-tl-xl rounded-tr-3xl"
+    : "ml-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl"
+
+  return (
+    <div
+      className={`${containerClass} max-w-sm border border-amber-400/30 bg-gray-900/90 px-3 py-2.5 text-xs text-white/80`}
+    >
+      <p className="flex items-center gap-1.5 font-medium text-white">
+        <span>🔐</span>
+        <span>{msg.name} needs permission</span>
+      </p>
+      <div className="mt-2 rounded-lg bg-white/5 px-2.5 py-2">
+        <p className="break-words font-medium text-white/90">
+          {permission.toolCall.title}
+        </p>
+        {permission.toolCall.kind && (
+          <p className="mt-0.5 text-[10px] uppercase tracking-wide text-amber-200/70">
+            {permission.toolCall.kind}
+          </p>
+        )}
+        {permission.toolCall.summary && (
+          <p className="mt-1 break-words text-white/70">
+            {permission.toolCall.summary}
+          </p>
+        )}
+        {permission.toolCall.details &&
+          Object.entries(permission.toolCall.details)
+            .slice(0, 6)
+            .map(([key, value]) => (
+              <p
+                key={key}
+                className="mt-0.5 break-all text-[11px] text-white/50"
+              >
+                {key}: {value}
+              </p>
+            ))}
+      </div>
+      {resolved ? (
+        <p data-testid="permission-resolution" className="mt-2 text-white/70">
+          Selected{" "}
+          <span className="font-medium text-white">
+            {selectedOption?.name ?? resolved.selectedOptionId}
+          </span>{" "}
+          by {resolved.humanName}
+        </p>
+      ) : lifecycle?.expired ? (
+        <p className="mt-2 text-white/50">Expired — no longer actionable.</p>
+      ) : null}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {permission.options.map((option) => (
+          <button
+            key={option.optionId}
+            type="button"
+            data-testid={`permission-option-${option.optionId}`}
+            onClick={() => onRespond?.(permission.requestId, option.optionId)}
+            disabled={!actionable || !onRespond}
+            className="rounded-md bg-amber-500/90 px-2.5 py-1.5 font-medium text-gray-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {option.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function ActionCard({
   msg,
   isSelf,
@@ -477,6 +592,9 @@ function ActionCard({
   onViewArtifact,
   onCollabResult,
   onOpenResultComposer,
+  permissionLifecycle,
+  agentConnected,
+  onPermissionRespond,
 }: {
   msg: Message
   isSelf: boolean
@@ -499,8 +617,23 @@ function ActionCard({
     requestId: string
     status: "completed" | "failed"
   }) => void
+  permissionLifecycle?: PermissionLifecycleProjection
+  agentConnected: boolean
+  onPermissionRespond?: (requestId: string, selectedOptionId: string) => void
 }) {
   if (msg.actionType === "reaction") return null
+
+  if (msg.actionType === "permission" && msg.permission) {
+    return (
+      <PermissionCard
+        msg={msg}
+        isSelf={isSelf}
+        lifecycle={permissionLifecycle}
+        agentConnected={agentConnected}
+        onRespond={onPermissionRespond}
+      />
+    )
+  }
 
   if (msg.actionType === "collab" && msg.collab) {
     const collab = msg.collab
@@ -801,6 +934,9 @@ interface TimelineMessageRowProps {
     requestId: string
     status: "completed" | "failed"
   }) => void
+  permissionLifecycle?: PermissionLifecycleProjection
+  agentConnected: boolean
+  onPermissionRespond?: (requestId: string, selectedOptionId: string) => void
 }
 
 function sameRecipientCues(
@@ -831,6 +967,19 @@ function sameCollabLifecycle(
   )
 }
 
+function samePermissionLifecycle(
+  left: PermissionLifecycleProjection | undefined,
+  right: PermissionLifecycleProjection | undefined
+): boolean {
+  return (
+    left?.expired === right?.expired &&
+    left?.resolved?.selectedOptionId === right?.resolved?.selectedOptionId &&
+    left?.resolved?.humanParticipantId ===
+      right?.resolved?.humanParticipantId &&
+    left?.resolved?.humanName === right?.resolved?.humanName
+  )
+}
+
 const TimelineMessageRow = memo(
   function TimelineMessageRow({
     message,
@@ -844,8 +993,16 @@ const TimelineMessageRow = memo(
     onViewArtifact,
     onCollabResult,
     onOpenResultComposer,
+    permissionLifecycle,
+    agentConnected,
+    onPermissionRespond,
   }: TimelineMessageRowProps) {
-    if (message.type === "action" && message.actionType === "reaction")
+    if (
+      message.type === "action" &&
+      (message.actionType === "reaction" ||
+        (message.actionType === "permission" &&
+          message.permission?.kind !== "request"))
+    )
       return null
 
     return (
@@ -903,6 +1060,9 @@ const TimelineMessageRow = memo(
               onViewArtifact={onViewArtifact}
               onCollabResult={onCollabResult}
               onOpenResultComposer={onOpenResultComposer}
+              permissionLifecycle={permissionLifecycle}
+              agentConnected={agentConnected}
+              onPermissionRespond={onPermissionRespond}
             />
           ) : (
             <FileMessageBubble msg={message} isSelf={isSelf} />
@@ -923,7 +1083,13 @@ const TimelineMessageRow = memo(
       left.onCollabRespond === right.onCollabRespond &&
       left.onViewArtifact === right.onViewArtifact &&
       left.onCollabResult === right.onCollabResult &&
-      left.onOpenResultComposer === right.onOpenResultComposer
+      left.onOpenResultComposer === right.onOpenResultComposer &&
+      samePermissionLifecycle(
+        left.permissionLifecycle,
+        right.permissionLifecycle
+      ) &&
+      left.agentConnected === right.agentConnected &&
+      left.onPermissionRespond === right.onPermissionRespond
     )
   }
 )
@@ -998,6 +1164,7 @@ interface RoomTimelineProps {
     requestId: string
     status: "completed" | "failed"
   }) => void
+  onPermissionRespond?: (requestId: string, selectedOptionId: string) => void
 }
 
 const RoomTimeline = memo(function RoomTimeline({
@@ -1012,6 +1179,7 @@ const RoomTimeline = memo(function RoomTimeline({
   onViewArtifact,
   onCollabResult,
   onOpenResultComposer,
+  onPermissionRespond,
 }: RoomTimelineProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -1025,6 +1193,10 @@ const RoomTimeline = memo(function RoomTimeline({
   )
   const collabLifecycleIndex = useMemo(
     () => buildCollabLifecycleIndex(messages),
+    [messages]
+  )
+  const permissionLifecycleIndex = useMemo(
+    () => buildPermissionLifecycleIndex(messages),
     [messages]
   )
   const pollVoteIndex = useMemo(() => buildPollVoteIndex(messages), [messages])
@@ -1068,9 +1240,15 @@ const RoomTimeline = memo(function RoomTimeline({
         }
 
         const message = item.message!
-        if (message.type === "action" && message.actionType === "reaction")
+        if (
+          message.type === "action" &&
+          (message.actionType === "reaction" ||
+            (message.actionType === "permission" &&
+              message.permission?.kind !== "request"))
+        )
           return null
         const pollId = message.actionPayload?.pollId
+        const permissionAgentId = message.permission?.agentParticipantId
         return (
           <TimelineMessageRow
             key={key}
@@ -1095,6 +1273,21 @@ const RoomTimeline = memo(function RoomTimeline({
             onViewArtifact={onViewArtifact}
             onCollabResult={onCollabResult}
             onOpenResultComposer={onOpenResultComposer}
+            permissionLifecycle={
+              message.permission
+                ? permissionLifecycleIndex.get(message.permission.requestId)
+                : undefined
+            }
+            agentConnected={
+              permissionAgentId
+                ? participants.some(
+                    (participant) =>
+                      participant.peerId === permissionAgentId &&
+                      participant.kind === "agent"
+                  )
+                : false
+            }
+            onPermissionRespond={onPermissionRespond}
           />
         )
       })}
@@ -1285,6 +1478,7 @@ const TextChatCard = memo(function TextChatCard({
   onCollabRespond,
   onReadArtifact,
   onCollabResult,
+  onPermissionRespond,
 }: TextChatCardProps) {
   const [message, setMessage] = useState<string>("")
   const [submenu, setSubmenu] = useState<"more" | "games" | null>(null)
@@ -1575,6 +1769,7 @@ const TextChatCard = memo(function TextChatCard({
           onViewArtifact={handlePreviewArtifact}
           onCollabResult={onCollabResult}
           onOpenResultComposer={handleOpenResultComposer}
+          onPermissionRespond={onPermissionRespond}
         />
 
         {showPollCreator && (

@@ -1,4 +1,4 @@
-import type { CollabEvent, RoomSurfaceV1 } from "../room/types"
+import type { CollabEvent, PermissionEvent, RoomSurfaceV1 } from "../room/types"
 
 export interface UserInfo {
   name: string
@@ -30,6 +30,7 @@ export type ActionType =
   | "game"
   | "reaction"
   | "collab"
+  | "permission"
 
 export interface Message {
   peerId: string
@@ -51,6 +52,7 @@ export interface Message {
   actionType?: ActionType
   actionPayload?: Record<string, string>
   collab?: CollabEvent
+  permission?: PermissionEvent
   // #165: structured addressing targets (participant IDs) the sender
   // explicitly chose. Pure routing metadata for the recipient cue — the
   // canonical source of truth for wakeup, never a capability grant.

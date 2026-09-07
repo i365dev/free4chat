@@ -5,6 +5,7 @@ import { validateRuntimeHost } from "../do/runtimeHost"
 
 const MAX_ROOM_LENGTH = 64
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
+const MAX_PERMISSION_REQUEST_BODY_BYTES = 64 * 1024
 const AGENT_EVENT_PATH = "/api/room/agent-events"
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -120,6 +121,44 @@ export async function handleRoomRequest(
         segmentId: body.segmentId,
         sourceParticipantId: body.sourceParticipantId,
         text: body.text,
+      }),
+    })
+  }
+
+  // Runtime-only structured ACP permission request ingress (#286). The
+  // authenticated Agent identity stays in headers and is derived by the DO;
+  // this body is only the bounded sanitized presentation/options envelope.
+  if (pathname === "/api/room/permissions/request") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
+    if (declaredSize > MAX_PERMISSION_REQUEST_BODY_BYTES)
+      return json({ error: "permission_request_too_large" }, 413)
+    let body: unknown
+    try {
+      const bytes = new Uint8Array(await request.arrayBuffer())
+      if (bytes.byteLength > MAX_PERMISSION_REQUEST_BODY_BYTES)
+        return json({ error: "permission_request_too_large" }, 413)
+      body = JSON.parse(new TextDecoder().decode(bytes))
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "agent-send-permission",
+        participantId,
+        token,
+        request: body,
       }),
     })
   }

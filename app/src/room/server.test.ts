@@ -231,6 +231,44 @@ describe("Resident Agent event transport gate", () => {
   })
 })
 
+describe("Runtime permission request transport gate", () => {
+  it("forwards the bounded presentation with authentication kept in headers", async () => {
+    const captured: CapturedControl[] = []
+    const response = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/permissions/request", {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "Content-Type": "application/json",
+          "X-Room-Id": "room-286",
+          "X-Room-Participant-Id": "agent-a",
+          "X-Room-Participant-Token": "private-agent-token",
+        },
+        body: JSON.stringify({
+          requestId: "permission-1",
+          agentParticipantId: "spoofed-agent",
+          toolCall: { title: "Run command" },
+          options: [{ optionId: "allow-once", name: "Allow once" }],
+        }),
+      }),
+      liveTranscriptEnv(captured)
+    )
+
+    expect(response.status).toBe(200)
+    expect(captured[0]?.body).toEqual({
+      action: "agent-send-permission",
+      participantId: "agent-a",
+      token: "private-agent-token",
+      request: {
+        requestId: "permission-1",
+        agentParticipantId: "spoofed-agent",
+        toolCall: { title: "Run command" },
+        options: [{ optionId: "allow-once", name: "Allow once" }],
+      },
+    })
+  })
+})
+
 describe("Live Transcript Runtime append gate", () => {
   it("forwards only the narrow authenticated segment control payload", async () => {
     const captured: CapturedControl[] = []
