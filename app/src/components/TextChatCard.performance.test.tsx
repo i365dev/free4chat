@@ -1,9 +1,11 @@
 import { act, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { reconcileCanonicalRoomMessages } from "@common/messageReconciliation"
 import type { Message, UserInfo } from "@common/types"
 
 const markdownRenderCount = vi.hoisted(() => ({ value: 0 }))
+const historicalRowRenderCount = vi.hoisted(() => ({ value: 0 }))
 
 // Keep this fixture focused on render counts rather than Markdown parser
 // details. The existing composer and Markdown behavior suites cover those
@@ -16,9 +18,10 @@ vi.mock("react-markdown", () => ({
 }))
 
 vi.mock("./ParticipantAvatar", () => ({
-  default: ({ name }: { name: string }) => (
-    <span data-testid="avatar">{name}</span>
-  ),
+  default: ({ name }: { name: string }) => {
+    historicalRowRenderCount.value += 1
+    return <span data-testid="avatar">{name}</span>
+  },
 }))
 
 import TextChatCard from "./TextChatCard"
@@ -83,14 +86,18 @@ function typeMessage(composer: HTMLTextAreaElement, value: string) {
 
 beforeEach(() => {
   markdownRenderCount.value = 0
+  historicalRowRenderCount.value = 0
   Element.prototype.scrollIntoView = vi.fn()
 })
 
 describe("long timeline render isolation (#280)", () => {
   it("does not re-render historical Markdown rows while typing", () => {
-    const messages = [textMessage(1), textMessage(2), textMessage(3)]
+    const messages = Array.from({ length: 120 }, (_, index) =>
+      textMessage(index + 1)
+    )
     renderCard(messages)
     expect(markdownRenderCount.value).toBe(messages.length)
+    expect(historicalRowRenderCount.value).toBe(messages.length)
 
     const composer = screen.getByLabelText(
       "Message the room or @ an Agent"
@@ -100,10 +107,67 @@ describe("long timeline render isolation (#280)", () => {
     typeMessage(composer, "hey")
 
     expect(markdownRenderCount.value).toBe(messages.length)
+    expect(historicalRowRenderCount.value).toBe(messages.length)
   })
 
-  it("only renders the appended Markdown row when one message arrives", () => {
-    const firstMessages = [textMessage(1), textMessage(2)]
+  it("does not re-render historical rows across a fresh muted Room state", () => {
+    const messages = Array.from({ length: 120 }, (_, index) =>
+      textMessage(index + 1)
+    )
+    const onSendText = vi.fn()
+    const onSendFile = vi.fn()
+    const onSendAction = vi.fn()
+    const view = render(
+      <TextChatCard
+        room="room-perf-test"
+        nickName="Human A"
+        messages={messages}
+        participants={PARTICIPANTS}
+        pendingFiles={[]}
+        onSendText={onSendText}
+        onSendFile={onSendFile}
+        onSendAction={onSendAction}
+      />
+    )
+    expect(historicalRowRenderCount.value).toBe(messages.length)
+
+    const freshServerSnapshot = messages.map((message) => ({ ...message }))
+    const reconciledMessages = reconcileCanonicalRoomMessages(
+      messages,
+      freshServerSnapshot
+    )
+    expect(reconciledMessages).toEqual(freshServerSnapshot)
+    expect(
+      reconciledMessages.every((message, index) => message === messages[index])
+    ).toBe(true)
+
+    // This models applyRoomState after a participant mute update: participant
+    // projections and the server message objects are fresh, but reconciliation
+    // supplies the existing canonical Message references to the timeline.
+    const mutedParticipants = PARTICIPANTS.map((participant, index) => ({
+      ...participant,
+      muteState: index === 0,
+    }))
+    view.rerender(
+      <TextChatCard
+        room="room-perf-test"
+        nickName="Human A"
+        messages={reconciledMessages}
+        participants={mutedParticipants}
+        pendingFiles={[]}
+        onSendText={onSendText}
+        onSendFile={onSendFile}
+        onSendAction={onSendAction}
+      />
+    )
+
+    expect(historicalRowRenderCount.value).toBe(messages.length)
+  })
+
+  it("only renders the new historical row when one message arrives", () => {
+    const firstMessages = Array.from({ length: 120 }, (_, index) =>
+      textMessage(index + 1)
+    )
     const attachments: RoomAttachmentProjection[] = []
     const onSendText = vi.fn()
     const onSendFile = vi.fn()
@@ -121,7 +185,8 @@ describe("long timeline render isolation (#280)", () => {
         onSendAction={onSendAction}
       />
     )
-    expect(markdownRenderCount.value).toBe(2)
+    expect(markdownRenderCount.value).toBe(firstMessages.length)
+    expect(historicalRowRenderCount.value).toBe(firstMessages.length)
 
     view.rerender(
       <TextChatCard
@@ -137,7 +202,8 @@ describe("long timeline render isolation (#280)", () => {
       />
     )
 
-    expect(markdownRenderCount.value).toBe(3)
+    expect(markdownRenderCount.value).toBe(firstMessages.length + 1)
+    expect(historicalRowRenderCount.value).toBe(firstMessages.length + 1)
   })
 
   it("renders a few hundred mixed synthetic entries with the same visible rows", () => {

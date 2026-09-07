@@ -1,5 +1,70 @@
 import type { Message } from "./types"
 
+function isCanonicalSequence(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+}
+
+function hasSameCanonicalIdentity(previous: Message, next: Message): boolean {
+  if (
+    previous.messageId &&
+    next.messageId &&
+    previous.messageId !== next.messageId
+  )
+    return false
+  if (
+    isCanonicalSequence(previous.sequence) &&
+    isCanonicalSequence(next.sequence) &&
+    previous.sequence !== next.sequence
+  )
+    return false
+  return true
+}
+
+/**
+ * Reuse objects for canonical Room messages that are present in both
+ * snapshots. Room messages are append-only and their messageId/sequence
+ * identity is server-assigned, so a full state refresh can preserve React
+ * row identity without a brittle field-by-field comparison.
+ */
+export function reconcileCanonicalRoomMessages(
+  previousMessages: readonly Message[],
+  nextMessages: readonly Message[]
+): Message[] {
+  const previousById = new Map<string, Message>()
+  const previousBySequence = new Map<number, Message>()
+
+  for (const message of previousMessages) {
+    if (message.messageId) previousById.set(message.messageId, message)
+    if (isCanonicalSequence(message.sequence))
+      previousBySequence.set(message.sequence, message)
+  }
+
+  return nextMessages.map((nextMessage) => {
+    const byId = nextMessage.messageId
+      ? previousById.get(nextMessage.messageId)
+      : undefined
+    const bySequence = isCanonicalSequence(nextMessage.sequence)
+      ? previousBySequence.get(nextMessage.sequence)
+      : undefined
+
+    // If both identities are available, require them to agree before
+    // reusing an object. This keeps a malformed/colliding snapshot safe.
+    if (
+      byId &&
+      hasSameCanonicalIdentity(byId, nextMessage) &&
+      (!bySequence || byId === bySequence)
+    )
+      return byId
+    if (
+      bySequence &&
+      !byId &&
+      hasSameCanonicalIdentity(bySequence, nextMessage)
+    )
+      return bySequence
+    return nextMessage
+  })
+}
+
 /**
  * RoomState is authoritative for text/actions, while file messages are
  * intentionally session-local DataChannel messages. Keep both sources in
