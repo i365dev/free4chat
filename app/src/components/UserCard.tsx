@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 
@@ -14,10 +14,10 @@ interface UserCardProps extends UserInfo {
   /** Room-wide publish authorization for this eligible Agent only. */
   voiceAvailable?: boolean
   voiceEnabled?: boolean
-  onToggleAgentVoice?: () => void
+  onToggleAgentVoice?: (peerId: string, enabled: boolean) => void
 }
 
-export default function UserCard(user: UserCardProps) {
+function UserCard(user: UserCardProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [canScreenShare] = useState(() => {
@@ -99,7 +99,9 @@ export default function UserCard(user: UserCardProps) {
           {user.kind === "agent" && user.voiceAvailable && (
             <button
               type="button"
-              onClick={user.onToggleAgentVoice}
+              onClick={() =>
+                user.onToggleAgentVoice?.(user.peerId, !user.voiceEnabled)
+              }
               title={
                 user.voiceEnabled
                   ? `Mute ${user.name}`
@@ -263,7 +265,9 @@ export default function UserCard(user: UserCardProps) {
           {user.kind === "agent" && user.voiceAvailable && (
             <button
               type="button"
-              onClick={user.onToggleAgentVoice}
+              onClick={() =>
+                user.onToggleAgentVoice?.(user.peerId, !user.voiceEnabled)
+              }
               title={
                 user.voiceEnabled
                   ? `Mute ${user.name}`
@@ -286,3 +290,5 @@ export default function UserCard(user: UserCardProps) {
     </div>
   )
 }
+
+export default memo(UserCard)

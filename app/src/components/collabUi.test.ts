@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest"
 
 import type { Message } from "@common/types"
 
-import { hasCollabTerminalResult, isCollabRequestAnswered } from "./collabUi"
+import {
+  buildCollabLifecycleIndex,
+  hasCollabTerminalResult,
+  isCollabRequestAnswered,
+} from "./collabUi"
 function collab(
   requestId: string,
   kind: "request" | "accepted" | "declined" | "completed" | "failed"
@@ -75,5 +79,62 @@ describe("terminal-result lifecycle helpers (#121)", () => {
     expect(
       isCollabRequestAnswered(log, "r1") || hasCollabTerminalResult(log, "r1")
     ).toBe(false)
+  })
+})
+
+describe("collaboration lifecycle index (#280)", () => {
+  it("projects each requestId without leaking duplicate or unrelated envelopes", () => {
+    const index = buildCollabLifecycleIndex([
+      collab("request", "request"),
+      collab("accepted", "request"),
+      collab("accepted", "accepted"),
+      collab("declined", "request"),
+      collab("declined", "declined"),
+      collab("completed", "request"),
+      collab("completed", "completed"),
+      collab("failed", "request"),
+      collab("failed", "failed"),
+      // Duplicate outcomes and a second request must remain scoped.
+      collab("accepted", "accepted"),
+      collab("other", "accepted"),
+    ])
+
+    expect(index.get("request")).toEqual({
+      answered: false,
+      accepted: false,
+      declined: false,
+      terminal: false,
+    })
+    expect(index.get("accepted")).toEqual({
+      answered: true,
+      accepted: true,
+      declined: false,
+      terminal: false,
+    })
+    expect(index.get("declined")).toEqual({
+      answered: true,
+      accepted: false,
+      declined: true,
+      terminal: false,
+    })
+    expect(index.get("completed")).toEqual({
+      answered: false,
+      accepted: false,
+      declined: false,
+      terminal: true,
+    })
+    expect(index.get("failed")).toEqual({
+      answered: false,
+      accepted: false,
+      declined: false,
+      terminal: true,
+    })
+    expect(index.get("other")).toEqual({
+      answered: true,
+      accepted: true,
+      declined: false,
+      terminal: false,
+    })
+    expect(index.has("missing")).toBe(false)
   })
 })

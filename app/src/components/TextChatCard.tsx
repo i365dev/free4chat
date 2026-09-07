@@ -1,4 +1,11 @@
-import React, { useState, useRef, useEffect, memo } from "react"
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useMemo,
+  useCallback,
+  memo,
+} from "react"
 
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -10,9 +17,8 @@ import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import CollabArtifactViewer from "./CollabArtifactViewer"
 import {
-  hasCollabTerminalResult,
-  isCollabRequestAccepted,
-  isCollabRequestAnswered,
+  buildCollabLifecycleIndex,
+  type CollabLifecycleProjection,
 } from "./collabUi"
 import HumanCollabResultComposer from "./HumanCollabResultComposer"
 import ParticipantAvatar from "./ParticipantAvatar"
@@ -30,6 +36,11 @@ interface PendingFile {
   error?: boolean
   errorMessage?: string
 }
+
+const EMPTY_ATTACHMENTS: RoomAttachmentProjection[] = []
+const EMPTY_MESSAGES: Message[] = []
+const EMPTY_PENDING_FILES: PendingFile[] = []
+const NOOP_PREVIEW = () => undefined
 
 interface TextChatCardProps {
   room: string
@@ -351,13 +362,13 @@ function getOrCreateWhiteboardUrl(room: string): string {
 function PollCard({
   msg,
   isSelf,
-  allMessages,
+  votes,
   myPeerId,
   onVote,
 }: {
   msg: Message
   isSelf: boolean
-  allMessages: Message[]
+  votes: Message[]
   myPeerId: string
   onVote: (pollId: string, option: string) => void
 }) {
@@ -365,12 +376,6 @@ function PollCard({
   const question = msg.actionPayload?.question ?? ""
   const options = (msg.actionPayload?.options ?? "").split("||")
 
-  const votes = allMessages.filter(
-    (m) =>
-      m.type === "action" &&
-      m.actionType === "vote" &&
-      m.actionPayload?.pollId === pollId
-  )
   const myVote = votes.find((v) => v.peerId === myPeerId)?.actionPayload?.option
 
   const containerClass = isSelf
@@ -463,9 +468,10 @@ function GameCard({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
 function ActionCard({
   msg,
   isSelf,
-  allMessages,
+  pollVotes,
   myPeerId,
   onVote,
+  collabLifecycle,
   localParticipantId,
   onCollabRespond,
   onViewArtifact,
@@ -474,9 +480,10 @@ function ActionCard({
 }: {
   msg: Message
   isSelf: boolean
-  allMessages: Message[]
+  pollVotes: Message[]
   myPeerId: string
   onVote: (pollId: string, option: string) => void
+  collabLifecycle?: CollabLifecycleProjection
   localParticipantId?: string
   onCollabRespond?: (
     requestId: string,
@@ -497,16 +504,12 @@ function ActionCard({
 
   if (msg.actionType === "collab" && msg.collab) {
     const collab = msg.collab
-    // #115: lifecycle-derived answered state — the message log IS the
-    // record. A later accepted/declined for the same requestId means the
-    // decision is made; never keep authoritative state in React.
-    const answered = isCollabRequestAnswered(allMessages, collab.requestId)
-    const accepted = isCollabRequestAccepted(allMessages, collab.requestId)
-    const terminal = hasCollabTerminalResult(allMessages, collab.requestId)
-    const declinedPresent = allMessages.some(
-      (m) =>
-        m.collab?.requestId === collab.requestId && m.collab.kind === "declined"
-    )
+    // #115/#280: lifecycle is projected once from the canonical message log;
+    // an individual card never rescans all messages.
+    const answered = collabLifecycle?.answered ?? false
+    const accepted = collabLifecycle?.accepted ?? false
+    const terminal = collabLifecycle?.terminal ?? false
+    const declinedPresent = collabLifecycle?.declined ?? false
     // #121: terminal controls appear ONLY when THIS Human is the target,
     // the request came from someone else, it was ACCEPTED, and no terminal
     // result exists yet — lifecycle derived from canonical messages.
@@ -669,7 +672,7 @@ function ActionCard({
       <PollCard
         msg={msg}
         isSelf={isSelf}
-        allMessages={allMessages}
+        votes={pollVotes}
         myPeerId={myPeerId}
         onVote={onVote}
       />
@@ -775,6 +778,384 @@ function FileMessageBubble({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
     </div>
   )
 }
+
+interface TimelineMessageRowProps {
+  message: Message
+  isSelf: boolean
+  recipientCues: RecipientCue[]
+  pollVotes: Message[]
+  collabLifecycle?: CollabLifecycleProjection
+  onVote: (pollId: string, option: string) => void
+  localParticipantId?: string
+  onCollabRespond?: (
+    requestId: string,
+    decision: "accepted" | "declined"
+  ) => void
+  onViewArtifact?: (attachmentId: string) => void
+  onCollabResult?: (
+    requestId: string,
+    status: "completed" | "failed",
+    summary: string
+  ) => void
+  onOpenResultComposer: (target: {
+    requestId: string
+    status: "completed" | "failed"
+  }) => void
+}
+
+function sameRecipientCues(
+  left: RecipientCue[],
+  right: RecipientCue[]
+): boolean {
+  if (left.length !== right.length) return false
+  return left.every(
+    (cue, index) =>
+      cue.label === right[index]?.label && cue.isName === right[index]?.isName
+  )
+}
+
+function sameMessages(left: Message[], right: Message[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((message, index) => message === right[index])
+}
+
+function sameCollabLifecycle(
+  left: CollabLifecycleProjection | undefined,
+  right: CollabLifecycleProjection | undefined
+): boolean {
+  return (
+    left?.answered === right?.answered &&
+    left?.accepted === right?.accepted &&
+    left?.declined === right?.declined &&
+    left?.terminal === right?.terminal
+  )
+}
+
+const TimelineMessageRow = memo(
+  function TimelineMessageRow({
+    message,
+    isSelf,
+    recipientCues,
+    pollVotes,
+    collabLifecycle,
+    onVote,
+    localParticipantId,
+    onCollabRespond,
+    onViewArtifact,
+    onCollabResult,
+    onOpenResultComposer,
+  }: TimelineMessageRowProps) {
+    if (message.type === "action" && message.actionType === "reaction")
+      return null
+
+    return (
+      <div
+        className={`mb-4 flex w-full items-end ${
+          isSelf ? "flex-row-reverse" : "flex-row"
+        }`}
+      >
+        <div className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}>
+          <ParticipantAvatar
+            name={message.name}
+            size="compact"
+            className="text-chat-avatar"
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          {!isSelf && (
+            <p className="mb-1 ml-1 text-xs text-gray-400">
+              {message.name}
+              {message.kind === "agent" && (
+                <span className="ml-1 text-[10px] text-blue-300">🤖 Agent</span>
+              )}
+            </p>
+          )}
+          {message.type === "text" ? (
+            <div
+              className={
+                isSelf
+                  ? "ml-auto w-fit max-w-[88%] rounded-2xl rounded-br-md bg-blue-600 px-4 py-2.5 text-white"
+                  : "w-fit max-w-full rounded-2xl rounded-tl-md border border-white/10 bg-gray-800/80 px-4 py-2.5 text-gray-100"
+              }
+            >
+              {recipientCues.length > 0 && (
+                <p className="mb-1 flex flex-wrap items-center gap-x-1 text-[11px] font-medium text-white/75">
+                  <span>→</span>
+                  {recipientCues.map((cue, index) => (
+                    <span key={index}>
+                      {cue.isName ? `@${cue.label}` : cue.label}
+                    </span>
+                  ))}
+                </p>
+              )}
+              <MessageMarkdown text={message.text ?? ""} />
+            </div>
+          ) : message.type === "action" ? (
+            <ActionCard
+              msg={message}
+              isSelf={isSelf}
+              pollVotes={pollVotes}
+              myPeerId={LOCAL_PEER_ID}
+              onVote={onVote}
+              collabLifecycle={collabLifecycle}
+              localParticipantId={localParticipantId}
+              onCollabRespond={onCollabRespond}
+              onViewArtifact={onViewArtifact}
+              onCollabResult={onCollabResult}
+              onOpenResultComposer={onOpenResultComposer}
+            />
+          ) : (
+            <FileMessageBubble msg={message} isSelf={isSelf} />
+          )}
+        </div>
+      </div>
+    )
+  },
+  (left, right) => {
+    return (
+      left.message === right.message &&
+      left.isSelf === right.isSelf &&
+      sameRecipientCues(left.recipientCues, right.recipientCues) &&
+      sameMessages(left.pollVotes, right.pollVotes) &&
+      sameCollabLifecycle(left.collabLifecycle, right.collabLifecycle) &&
+      left.onVote === right.onVote &&
+      left.localParticipantId === right.localParticipantId &&
+      left.onCollabRespond === right.onCollabRespond &&
+      left.onViewArtifact === right.onViewArtifact &&
+      left.onCollabResult === right.onCollabResult &&
+      left.onOpenResultComposer === right.onOpenResultComposer
+    )
+  }
+)
+
+const TimelineAttachmentRow = memo(function TimelineAttachmentRow({
+  attachment,
+  onPreview,
+}: {
+  attachment: RoomAttachmentProjection
+  onPreview: (attachmentId: string) => void
+}) {
+  return (
+    <div className="mb-4 flex w-full items-end">
+      <div className="mr-2 flex-shrink-0">
+        <ParticipantAvatar
+          name={attachment.senderName}
+          size="compact"
+          className="text-chat-avatar"
+        />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 ml-1 text-xs text-gray-400">
+          {attachment.senderName}
+          <span className="ml-1 text-[10px] text-blue-300">🤖 Agent</span>
+        </p>
+        <AgentAttachmentCard attachment={attachment} onPreview={onPreview} />
+      </div>
+    </div>
+  )
+})
+
+function timelineItemKey(item: TimelineItem): string {
+  if (item.type === "attachment") return `attachment:${item.attachment!.id}`
+  const message = item.message!
+  if (message.messageId) return `message:${message.messageId}`
+  if (Number.isFinite(item.seq)) return `message:sequence:${item.seq}`
+  return `message:ephemeral:${message.peerId}:${message.createdAt ?? "unknown"}`
+}
+
+function buildPollVoteIndex(messages: Message[]): Map<string, Message[]> {
+  const index = new Map<string, Message[]>()
+  for (const message of messages) {
+    if (message.type !== "action" || message.actionType !== "vote") continue
+    const pollId = message.actionPayload?.pollId
+    if (!pollId) continue
+    const votes = index.get(pollId)
+    if (votes) votes.push(message)
+    else index.set(pollId, [message])
+  }
+  return index
+}
+
+interface RoomTimelineProps {
+  messages: Message[]
+  attachments: RoomAttachmentProjection[]
+  participants: UserInfo[]
+  pendingFiles: PendingFile[]
+  nickName: string
+  localParticipantId?: string
+  onVote: (pollId: string, option: string) => void
+  onCollabRespond?: (
+    requestId: string,
+    decision: "accepted" | "declined"
+  ) => void
+  onViewArtifact?: (attachmentId: string) => void
+  onCollabResult?: (
+    requestId: string,
+    status: "completed" | "failed",
+    summary: string
+  ) => void
+  onOpenResultComposer: (target: {
+    requestId: string
+    status: "completed" | "failed"
+  }) => void
+}
+
+const RoomTimeline = memo(function RoomTimeline({
+  messages,
+  attachments,
+  participants,
+  pendingFiles,
+  nickName,
+  localParticipantId,
+  onVote,
+  onCollabRespond,
+  onViewArtifact,
+  onCollabResult,
+  onOpenResultComposer,
+}: RoomTimelineProps) {
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages, pendingFiles])
+
+  const timeline = useMemo(
+    () => buildRoomTimeline(messages, attachments),
+    [messages, attachments]
+  )
+  const collabLifecycleIndex = useMemo(
+    () => buildCollabLifecycleIndex(messages),
+    [messages]
+  )
+  const pollVoteIndex = useMemo(() => buildPollVoteIndex(messages), [messages])
+  const timelineKeys = useMemo(() => {
+    const seen = new Map<string, number>()
+    return timeline.map((item) => {
+      const base = timelineItemKey(item)
+      const occurrence = seen.get(base) ?? 0
+      seen.set(base, occurrence + 1)
+      return occurrence === 0 ? base : `${base}:duplicate:${occurrence}`
+    })
+  }, [timeline])
+  const recipientCuesByMessage = useMemo(() => {
+    const result = new Map<Message, RecipientCue[]>()
+    for (const item of timeline) {
+      if (item.type === "message") {
+        const message = item.message!
+        result.set(message, messageRecipientCues(message, participants))
+      }
+    }
+    return result
+  }, [participants, timeline])
+
+  return (
+    <div className="scrollbar-thin flex-1 overflow-y-auto p-4 text-sm">
+      {messages.length === 0 && attachments.length === 0 && (
+        <p className="mt-4 text-center text-xs text-gray-500">
+          No messages yet
+        </p>
+      )}
+      {timeline.map((item, index) => {
+        const key = timelineKeys[index]
+        if (item.type === "attachment") {
+          return (
+            <TimelineAttachmentRow
+              key={key}
+              attachment={item.attachment!}
+              onPreview={onViewArtifact ?? NOOP_PREVIEW}
+            />
+          )
+        }
+
+        const message = item.message!
+        if (message.type === "action" && message.actionType === "reaction")
+          return null
+        const pollId = message.actionPayload?.pollId
+        return (
+          <TimelineMessageRow
+            key={key}
+            message={message}
+            isSelf={message.peerId === LOCAL_PEER_ID}
+            recipientCues={recipientCuesByMessage.get(message) ?? []}
+            pollVotes={
+              message.type === "action" &&
+              message.actionType === "poll" &&
+              pollId
+                ? pollVoteIndex.get(pollId) ?? EMPTY_MESSAGES
+                : EMPTY_MESSAGES
+            }
+            collabLifecycle={
+              message.collab
+                ? collabLifecycleIndex.get(message.collab.requestId)
+                : undefined
+            }
+            onVote={onVote}
+            localParticipantId={localParticipantId}
+            onCollabRespond={onCollabRespond}
+            onViewArtifact={onViewArtifact}
+            onCollabResult={onCollabResult}
+            onOpenResultComposer={onOpenResultComposer}
+          />
+        )
+      })}
+      {pendingFiles.map((file) => (
+        <div
+          key={file.id}
+          className="mb-4 flex w-full flex-row-reverse items-end"
+        >
+          <div className="ml-2 flex-shrink-0">
+            <ParticipantAvatar
+              name={nickName}
+              size="compact"
+              className="text-chat-avatar"
+            />
+          </div>
+          <div style={{ maxWidth: "72%" }}>
+            <div
+              className={`flex items-center gap-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3 ${
+                file.error ? "bg-red-700/60" : "bg-blue-600/60"
+              }`}
+            >
+              {file.error ? (
+                <span className="text-xs text-white/80">
+                  {file.errorMessage ?? "Failed to send"}
+                </span>
+              ) : (
+                <>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4 animate-spin text-white/70"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                  </svg>
+                  <span className="max-w-[140px] truncate text-xs text-white/70">
+                    {file.fileName}
+                  </span>
+                  <span className="text-xs text-white/40">Sending…</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+      <div ref={messagesEndRef} />
+    </div>
+  )
+})
 
 function PollCreator({
   onSend,
@@ -890,13 +1271,13 @@ function GamesMenu({
   )
 }
 
-export default function TextChatCard({
+const TextChatCard = memo(function TextChatCard({
   room,
   nickName,
   messages,
-  attachments = [],
+  attachments = EMPTY_ATTACHMENTS,
   participants,
-  pendingFiles = [],
+  pendingFiles = EMPTY_PENDING_FILES,
   onSendText,
   onSendFile,
   onSendAction,
@@ -921,11 +1302,19 @@ export default function TextChatCard({
   const [pickerDismissed, setPickerDismissed] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textRef = useRef<HTMLTextAreaElement>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
   const moreBtnRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const gamesMenuRef = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
+  const handlePreviewArtifact = useCallback((attachmentId: string) => {
+    setArtifactId(attachmentId)
+  }, [])
+  const handleOpenResultComposer = useCallback(
+    (target: { requestId: string; status: "completed" | "failed" }) => {
+      setResultTarget(target)
+    },
+    []
+  )
   // Coarse pointers (touch) keep Enter as a newline so multiline editing
   // stays natural on mobile keyboards; sending uses the send button.
   const [isCoarsePointer] = useState<boolean>(() =>
@@ -933,10 +1322,6 @@ export default function TextChatCard({
       ? window.matchMedia("(pointer: coarse)").matches
       : false
   )
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages, pendingFiles])
 
   // Auto-grow the textarea with content up to a bounded height, then let it
   // scroll internally instead of consuming the whole Room.
@@ -1049,10 +1434,13 @@ export default function TextChatCard({
     onSendAction("game", { gameId })
   }
 
-  const handleVote = (pollId: string, option: string) => {
-    umamiEvent("ChatAction", { type: "vote", roomHash: hashRoom(room) })
-    onSendAction("vote", { pollId, option })
-  }
+  const handleVote = useCallback(
+    (pollId: string, option: string) => {
+      umamiEvent("ChatAction", { type: "vote", roomHash: hashRoom(room) })
+      onSendAction("vote", { pollId, option })
+    },
+    [onSendAction, room]
+  )
 
   const slashCommands = [
     {
@@ -1175,166 +1563,19 @@ export default function TextChatCard({
       .markdown-body hr { border-color: #374151; margin: 0.75rem 0; }
     `}</style>
       <div className="flex h-full flex-col overflow-hidden">
-        <div className="scrollbar-thin flex-1 overflow-y-auto p-4 text-sm">
-          {messages.length === 0 && attachments.length === 0 && (
-            <p className="mt-4 text-center text-xs text-gray-500">
-              No messages yet
-            </p>
-          )}
-          {buildRoomTimeline(messages, attachments).map((item, i) => {
-            if (item.type !== "message") {
-              const attachment = item.attachment!
-              return (
-                <div className="mb-4 flex w-full items-end" key={attachment.id}>
-                  <div className="mr-2 flex-shrink-0">
-                    <ParticipantAvatar
-                      name={attachment.senderName}
-                      size="compact"
-                      className="text-chat-avatar"
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="mb-1 ml-1 text-xs text-gray-400">
-                      {attachment.senderName}
-                      <span className="ml-1 text-[10px] text-blue-300">
-                        🤖 Agent
-                      </span>
-                    </p>
-                    <AgentAttachmentCard
-                      attachment={attachment}
-                      onPreview={(attachmentId) => setArtifactId(attachmentId)}
-                    />
-                  </div>
-                </div>
-              )
-            }
-            const p = item.message!
-            if (p.type === "action" && p.actionType === "reaction") return null
-            const isSelf = p.peerId === LOCAL_PEER_ID
-            const recipientCues = messageRecipientCues(p, participants)
-            return (
-              <div
-                className={`mb-4 flex w-full items-end ${
-                  isSelf ? "flex-row-reverse" : "flex-row"
-                }`}
-                key={i}
-              >
-                <div className={`flex-shrink-0 ${isSelf ? "ml-2" : "mr-2"}`}>
-                  <ParticipantAvatar
-                    name={p.name}
-                    size="compact"
-                    className="text-chat-avatar"
-                  />
-                </div>
-                <div className="min-w-0 flex-1">
-                  {!isSelf && (
-                    <p className="mb-1 ml-1 text-xs text-gray-400">
-                      {p.name}
-                      {p.kind === "agent" && (
-                        <span className="ml-1 text-[10px] text-blue-300">
-                          🤖 Agent
-                        </span>
-                      )}
-                    </p>
-                  )}
-                  {p.type === "text" ? (
-                    <div
-                      className={
-                        isSelf
-                          ? "ml-auto w-fit max-w-[88%] rounded-2xl rounded-br-md bg-blue-600 px-4 py-2.5 text-white"
-                          : "w-fit max-w-full rounded-2xl rounded-tl-md border border-white/10 bg-gray-800/80 px-4 py-2.5 text-gray-100"
-                      }
-                    >
-                      {recipientCues.length > 0 && (
-                        <p className="mb-1 flex flex-wrap items-center gap-x-1 text-[11px] font-medium text-white/75">
-                          <span>→</span>
-                          {recipientCues.map((cue, index) => (
-                            <span key={index}>
-                              {cue.isName ? `@${cue.label}` : cue.label}
-                            </span>
-                          ))}
-                        </p>
-                      )}
-                      <MessageMarkdown text={p.text ?? ""} />
-                    </div>
-                  ) : p.type === "action" ? (
-                    <ActionCard
-                      msg={p}
-                      isSelf={isSelf}
-                      allMessages={messages}
-                      myPeerId={LOCAL_PEER_ID}
-                      onVote={handleVote}
-                      localParticipantId={localParticipantId}
-                      onCollabRespond={onCollabRespond}
-                      onViewArtifact={(attachmentId) =>
-                        setArtifactId(attachmentId)
-                      }
-                      onCollabResult={onCollabResult}
-                      onOpenResultComposer={(target) => setResultTarget(target)}
-                    />
-                  ) : (
-                    <FileMessageBubble msg={p} isSelf={isSelf} />
-                  )}
-                </div>
-              </div>
-            )
-          })}
-          {pendingFiles.map((f) => (
-            <div
-              key={f.id}
-              className="mb-4 flex w-full flex-row-reverse items-end"
-            >
-              <div className="ml-2 flex-shrink-0">
-                <ParticipantAvatar
-                  name={nickName}
-                  size="compact"
-                  className="text-chat-avatar"
-                />
-              </div>
-              <div style={{ maxWidth: "72%" }}>
-                <div
-                  className={`flex items-center gap-2 rounded-bl-3xl rounded-tl-3xl rounded-tr-xl px-4 py-3 ${
-                    f.error ? "bg-red-700/60" : "bg-blue-600/60"
-                  }`}
-                >
-                  {f.error ? (
-                    <span className="text-xs text-white/80">
-                      {f.errorMessage ?? "Failed to send"}
-                    </span>
-                  ) : (
-                    <>
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        className="h-4 w-4 animate-spin text-white/70"
-                      >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                        />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                        />
-                      </svg>
-                      <span className="max-w-[140px] truncate text-xs text-white/70">
-                        {f.fileName}
-                      </span>
-                      <span className="text-xs text-white/40">Sending…</span>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
+        <RoomTimeline
+          messages={messages}
+          attachments={attachments}
+          participants={participants}
+          pendingFiles={pendingFiles}
+          nickName={nickName}
+          localParticipantId={localParticipantId}
+          onVote={handleVote}
+          onCollabRespond={onCollabRespond}
+          onViewArtifact={handlePreviewArtifact}
+          onCollabResult={onCollabResult}
+          onOpenResultComposer={handleOpenResultComposer}
+        />
 
         {showPollCreator && (
           <PollCreator
@@ -1554,4 +1795,6 @@ export default function TextChatCard({
       )}
     </>
   )
-}
+})
+
+export default TextChatCard

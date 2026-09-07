@@ -404,6 +404,47 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     for (let index = 0; index < 20; index += 1) await Promise.resolve()
   }
 
+  it("reuses canonical message objects across a muted full Room state refresh", async () => {
+    const { result, socket, unmount } = await connect()
+    const initialState = roomState([participant("publisher-a", [])])
+    initialState.messages = Array.from({ length: 120 }, (_, index) => ({
+      id: `message-${index + 1}`,
+      peerId: "publisher-a",
+      name: "publisher-a",
+      kind: "human" as const,
+      type: "text" as const,
+      text: `message ${index + 1}`,
+      createdAt: index + 1,
+      sequence: index + 1,
+    }))
+    sendState(socket, initialState)
+    await waitFor(() => expect(result.current.messages).toHaveLength(120))
+    const initialMessages = result.current.messages
+
+    const refreshedParticipant = participant("publisher-a", [])
+    refreshedParticipant.media!.muted = true
+    const refreshedState = roomState([refreshedParticipant])
+    refreshedState.messages = initialState.messages.map((message) => ({
+      ...message,
+    }))
+    sendState(socket, refreshedState)
+    await waitFor(() =>
+      expect(
+        result.current.participants.find(
+          (entry) => entry.peerId === "publisher-a"
+        )?.muteState
+      ).toBe(true)
+    )
+
+    expect(result.current.messages).toHaveLength(initialMessages.length)
+    expect(
+      result.current.messages.every(
+        (message, index) => message === initialMessages[index]
+      )
+    ).toBe(true)
+    unmount()
+  })
+
   it("correlates two video publishers by MID even when ontrack order is reversed", async () => {
     const { result, socket, pc, unmount } = await connect()
     sendState(

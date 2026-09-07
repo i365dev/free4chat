@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
-import { mergeRoomAndEphemeralMessages } from "@common/messageReconciliation"
+import {
+  mergeRoomAndEphemeralMessages,
+  reconcileCanonicalRoomMessages,
+} from "@common/messageReconciliation"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
 import {
   createRuntimeProviderClaim as createRuntimeProviderCredential,
@@ -1078,7 +1081,10 @@ export function useSfuChatRoom(
   )
 
   const replaceRoomMessages = useCallback((nextMessages: Message[]) => {
-    roomMessagesRef.current = nextMessages
+    roomMessagesRef.current = reconcileCanonicalRoomMessages(
+      roomMessagesRef.current,
+      nextMessages
+    )
     setMessages(
       mergeRoomAndEphemeralMessages(
         roomMessagesRef.current,
