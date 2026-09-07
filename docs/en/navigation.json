@@ -45,6 +45,11 @@
           "slug": "concepts/runtime-harness",
           "title": "Runtime and Harness",
           "description": "How the Room protocol, the Go Runtime, ACP, and your Harness relate, and who owns which part of the lifecycle."
+        },
+        {
+          "slug": "concepts/agent-permissions",
+          "title": "Agent permissions and approvals",
+          "description": "How ACP permission requests reach Human approval in a Room, and how supervised and headless Harnesses behave."
         }
       ]
     },

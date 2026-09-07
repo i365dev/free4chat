@@ -98,8 +98,17 @@ type ACPSessionControls struct {
 	ConfigOptions []ACPConfigOption `json:"configOptions,omitempty"`
 }
 
+// ACPPermissionPresentation is the optional native display metadata attached
+// to an ACP permission request. It is display-only: Free4Chat never derives
+// authorization semantics from either field.
+type ACPPermissionPresentation struct {
+	Title       string
+	Description string
+}
+
 // ACPToolCall is the useful, local-only tool context attached to one native
-// permission request. RawInput and Content remain opaque to Free4Chat.
+// permission request. RawInput and Content remain opaque to Free4Chat; only
+// the bounded display metadata is retained for the Room projection.
 type ACPToolCall struct {
 	ToolCallID string
 	Title      string
@@ -107,6 +116,7 @@ type ACPToolCall struct {
 	Status     string
 	RawInput   json.RawMessage
 	Content    json.RawMessage
+	Permission *ACPPermissionPresentation
 }
 
 // ACPPermissionOption preserves the exact native option offered by the
@@ -302,6 +312,34 @@ func (a *ACPAdapter) PendingPermissionCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.pendingPermissions)
+}
+
+// SetPermissionResponder installs the resident-local decision seam after the
+// Runtime has been constructed. The callback never leaves the process and is
+// replaced atomically with the adapter's other ACP state.
+func (a *ACPAdapter) SetPermissionResponder(responder ACPPermissionResponder) {
+	a.mu.Lock()
+	a.options.PermissionResponder = responder
+	a.mu.Unlock()
+}
+
+// PermissionRequestLifetime is the Room request lifetime compatible with the
+// adapter's local turn timeout. The one-second margin lets the Room expire an
+// interactive request before the ACP turn's own timeout boundary. A duration
+// shorter than the Room's minimum is reported as zero so the Runtime fails
+// closed before creating a request that could outlive its local responder.
+func (a *ACPAdapter) PermissionRequestLifetime() time.Duration {
+	a.mu.Lock()
+	timeoutMs := a.options.TurnTimeoutMs
+	a.mu.Unlock()
+	if timeoutMs <= 0 {
+		timeoutMs = defaultTurnTimeoutMs
+	}
+	lifetime := time.Duration(timeoutMs)*time.Millisecond - time.Second
+	if lifetime < time.Second {
+		return 0
+	}
+	return lifetime
 }
 
 // SetMode applies one Harness-native session mode that was advertised by the
@@ -840,13 +878,19 @@ func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
 func parsePermissionRequest(message *acpMessage) (ACPPermissionRequest, error) {
 	var wire struct {
 		SessionID string `json:"sessionId"`
-		ToolCall  struct {
+		Meta      struct {
+			Permission json.RawMessage `json:"permission"`
+		} `json:"_meta"`
+		ToolCall struct {
 			ToolCallID string          `json:"toolCallId"`
 			Title      string          `json:"title"`
 			Kind       string          `json:"kind"`
 			Status     string          `json:"status"`
 			RawInput   json.RawMessage `json:"rawInput"`
 			Content    json.RawMessage `json:"content"`
+			Meta       struct {
+				Permission json.RawMessage `json:"permission"`
+			} `json:"_meta"`
 		} `json:"toolCall"`
 		Options []struct {
 			OptionID string          `json:"optionId"`
@@ -868,6 +912,10 @@ func parsePermissionRequest(message *acpMessage) (ACPPermissionRequest, error) {
 			Status:     wire.ToolCall.Status,
 			RawInput:   cloneRawJSON(wire.ToolCall.RawInput),
 			Content:    cloneRawJSON(wire.ToolCall.Content),
+			Permission: parsePermissionPresentation(
+				wire.Meta.Permission,
+				wire.ToolCall.Meta.Permission,
+			),
 		},
 	}
 	for _, option := range wire.Options {
@@ -882,6 +930,43 @@ func parsePermissionRequest(message *acpMessage) (ACPPermissionRequest, error) {
 		})
 	}
 	return request, nil
+}
+
+func parsePermissionPresentation(rawValues ...json.RawMessage) *ACPPermissionPresentation {
+	presentation := &ACPPermissionPresentation{}
+	for _, raw := range rawValues {
+		if len(raw) == 0 {
+			continue
+		}
+		var wire struct {
+			Title       json.RawMessage `json:"title"`
+			Description json.RawMessage `json:"description"`
+		}
+		if json.Unmarshal(raw, &wire) != nil {
+			continue
+		}
+		if presentation.Title == "" {
+			presentation.Title = boundedPermissionMetaString(wire.Title)
+		}
+		if presentation.Description == "" {
+			presentation.Description = boundedPermissionMetaString(wire.Description)
+		}
+	}
+	if presentation.Title == "" && presentation.Description == "" {
+		return nil
+	}
+	return presentation
+}
+
+func boundedPermissionMetaString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return boundedACPText(value)
 }
 
 func cloneRawJSON(raw json.RawMessage) json.RawMessage {

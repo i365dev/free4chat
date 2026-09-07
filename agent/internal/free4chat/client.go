@@ -464,6 +464,92 @@ func (c *Client) roomControlEndpoint(path string) (*url.URL, error) {
 	return endpoint, nil
 }
 
+// RequestPermission publishes one bounded ACP permission presentation through
+// the authenticated Runtime-only Room control route. The Room derives the
+// Agent identity from the participant capability; no Harness ids or policy
+// state are added by this transport.
+func (c *Client) RequestPermission(
+	participantHandle string,
+	request types.RoomPermissionRequest,
+) error {
+	if !validPermissionRequestID(request.RequestID) ||
+		!validBoundedText(request.ToolCall.Title, 200) ||
+		(request.ToolCall.Kind != "" && !validBoundedText(request.ToolCall.Kind, 64)) ||
+		len(request.Options) == 0 || len(request.Options) > 8 {
+		return &Error{Message: "invalid Room permission request", Code: CodeToolError}
+	}
+	seen := make(map[string]struct{}, len(request.Options))
+	for _, option := range request.Options {
+		if !validBoundedText(option.OptionID, 64) || strings.TrimSpace(option.OptionID) != option.OptionID ||
+			!validBoundedText(option.Name, 160) ||
+			(option.Kind != "" && !validBoundedText(option.Kind, 64)) {
+			return &Error{Message: "invalid Room permission option", Code: CodeToolError}
+		}
+		if _, exists := seen[option.OptionID]; exists {
+			return &Error{Message: "duplicate Room permission option", Code: CodeToolError}
+		}
+		seen[option.OptionID] = struct{}{}
+	}
+	if request.ExpiresInMs != 0 &&
+		(request.ExpiresInMs < 1_000 || request.ExpiresInMs > 5*60*1_000) {
+		return &Error{Message: "invalid Room permission lifetime", Code: CodeToolError}
+	}
+	handle, err := parseRoomControlHandle(participantHandle)
+	if err != nil {
+		return err
+	}
+	endpoint, err := c.roomControlEndpoint("/api/room/permissions/request")
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return &Error{Message: "encode Room permission request", Code: CodeTransient}
+	}
+	httpRequest, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return &Error{Message: "create Room permission request", Code: CodeTransient}
+	}
+	httpRequest.Header.Set("Content-Type", headerContentType)
+	httpRequest.Header.Set("Accept", headerContentType)
+	httpRequest.Header.Set("User-Agent", defaultUserAgent)
+	httpRequest.Header.Set("Origin", endpoint.Scheme+"://"+endpoint.Host)
+	httpRequest.Header.Set("X-Room-Id", handle.Room)
+	httpRequest.Header.Set("X-Room-Participant-Id", handle.ParticipantID)
+	httpRequest.Header.Set("X-Room-Participant-Token", handle.ParticipantToken)
+	response, err := c.HTTP.Do(httpRequest)
+	if err != nil {
+		return &Error{Message: "Room permission request failed", Code: CodeTransient}
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode <= 299 {
+		return nil
+	}
+	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+		return &Error{Message: "Room permission request temporarily unavailable", Code: CodeTransient}
+	}
+	return &Error{Message: "Room permission request rejected", Code: CodeToolError}
+}
+
+func validPermissionRequestID(value string) bool {
+	if len(value) < 4 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		if index == 0 {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')) {
+				return false
+			}
+			continue
+		}
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '.' || char == '_' || char == ':' || char == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // AppendLiveTranscript commits a completed STT segment directly to the
 // authenticated Room control endpoint. It intentionally bypasses MCP: this
 // is a narrow Runtime-owned media side channel, never a Harness tool.

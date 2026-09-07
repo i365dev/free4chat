@@ -155,9 +155,14 @@ type ResidentRuntime struct {
 	// (SendText). A subsystem's successful operation clears ONLY its own
 	// error — a successful wait never hides an unresolved Harness or send
 	// failure. Empty = no current unresolved condition.
-	lastErrorSource string
-	providerClaim   string
-	providerHandles *ProviderHandleStore
+	lastErrorSource        string
+	providerClaim          string
+	providerHandles        *ProviderHandleStore
+	permissionMu           sync.Mutex
+	pendingPermissions     map[string]*pendingRoomPermission
+	permissionReaderMu     sync.Mutex
+	permissionReaderCancel context.CancelFunc
+	permissionReaderDone   chan struct{}
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -287,18 +292,21 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 	if providerHandles == nil {
 		providerHandles = NewProviderHandleStore()
 	}
-	return &ResidentRuntime{
-		options:         options,
-		log:             options.Log,
-		state:           StateStarting,
-		eventBuffer:     NewEventBuffer(0, 0),
-		advertisedCaps:  append([]string(nil), options.Capabilities...),
-		stopCh:          make(chan struct{}),
-		resolvedRoomID:  options.RoomID,
-		speechConfig:    speechConfig,
-		providerClaim:   providerClaim,
-		providerHandles: providerHandles,
+	runtime := &ResidentRuntime{
+		options:            options,
+		log:                options.Log,
+		state:              StateStarting,
+		eventBuffer:        NewEventBuffer(0, 0),
+		advertisedCaps:     append([]string(nil), options.Capabilities...),
+		stopCh:             make(chan struct{}),
+		resolvedRoomID:     options.RoomID,
+		speechConfig:       speechConfig,
+		providerClaim:      providerClaim,
+		providerHandles:    providerHandles,
+		pendingPermissions: make(map[string]*pendingRoomPermission),
 	}
+	configurePermissionResponder(runtime)
+	return runtime
 }
 
 // activeRoomID prefers the created room id once adoption happened.
@@ -696,6 +704,9 @@ func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
 		if r.isStopped() {
 			return
 		}
+		if err != nil {
+			r.cancelPendingPermissions(err)
+		}
 		if err == nil {
 			// A clean server close is still a reconnect boundary. The stream
 			// itself does not carry an HTTP lease, so use the same bounded
@@ -876,6 +887,9 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 			continue
 		}
 		accepted[event.Sequence] = struct{}{}
+		if r.handleRoomPermissionEvent(event) {
+			continue
+		}
 		r.acceptEvent(event)
 	}
 
@@ -1036,6 +1050,9 @@ func (r *ResidentRuntime) drainTurns() {
 			r.log("turn_failed", nil)
 			return
 		}
+		if r.isStopped() {
+			return
+		}
 
 		// RunTurn succeeded: commit every delivery marker before lifecycle
 		// handling or text persistence. If either of those later operations
@@ -1155,6 +1172,7 @@ func (r *ResidentRuntime) rejoinAfterExpiry() bool {
 	}
 	r.setState(StateReconnecting)
 	r.log("participant_rejoin", nil)
+	r.cancelPendingPermissions(errors.New("room participant connection was replaced"))
 	r.mu.Lock()
 	r.participantHandle = ""
 	r.participantID = ""
@@ -1332,6 +1350,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 		r.pendingContexts = nil
 		r.eventBuffer.Clear()
 		r.mu.Unlock()
+		r.cancelPendingPermissions(errors.New("runtime stopped"))
 		close(r.stopCh)
 		r.closeResidentStream()
 		transitioned = true

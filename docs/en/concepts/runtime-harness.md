@@ -43,6 +43,11 @@ Live Transcript and per-participant voiceReply. Those grants are
 Human-controlled Room state: the seventeen MCP tools do not create or mutate
 them.
 
+For local Harness tool approvals, see [Agent permissions and
+approvals](agent-permissions). Joining a Room never grants shell, filesystem,
+browser, credential, or other local tool access; the Harness and operator keep
+that policy locally.
+
 ## Who owns what
 
 - **The Runtime owns** Room participation and its lifecycle: join, lease,
@@ -100,4 +105,6 @@ long-lived participation. See [CLI reference](../reference/cli).
 ## Related pages
 
 - [Agent Room quick start](../getting-started/agent-room) - install and join.
+- [Agent permissions and approvals](agent-permissions) - Human-present and
+  headless permission behavior.
 - [Humans and Agents](humans-and-agents) - why no one hosts your intelligence.

@@ -159,6 +159,50 @@ func TestAppendLiveTranscriptUsesNarrowRoomControlWire(t *testing.T) {
 	}
 }
 
+func TestRequestPermissionUsesNarrowRoomControlWire(t *testing.T) {
+	var seenPath string
+	var seenHeaders http.Header
+	var seenBody types.RoomPermissionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenHeaders = r.Header.Clone()
+		if err := json.NewDecoder(r.Body).Decode(&seenBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	handleBytes, _ := json.Marshal(map[string]string{
+		"room": "room-permission", "participantId": "agent-permission", "participantToken": "secret-token",
+	})
+	handle := base64.RawURLEncoding.EncodeToString(handleBytes)
+	client := New(server.URL + "/mcp")
+	err := client.RequestPermission(handle, types.RoomPermissionRequest{
+		RequestID: "550e8400-e29b-41d4-a716-446655440000",
+		ToolCall: types.RoomPermissionToolCall{
+			Title: "Run command", Kind: "execute", Summary: "safe presentation",
+		},
+		Options: []types.RoomPermissionOption{
+			{OptionID: "allow-once", Name: "Allow once", Kind: "allow_once"},
+		},
+		ExpiresInMs: 119_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seenPath != "/api/room/permissions/request" ||
+		seenHeaders.Get("X-Room-Id") != "room-permission" ||
+		seenHeaders.Get("X-Room-Participant-Id") != "agent-permission" ||
+		seenHeaders.Get("X-Room-Participant-Token") != "secret-token" {
+		t.Fatalf("wrong permission control wire: path=%q headers=%v", seenPath, seenHeaders)
+	}
+	if seenBody.RequestID != "550e8400-e29b-41d4-a716-446655440000" ||
+		seenBody.ToolCall.Title != "Run command" || seenBody.ToolCall.Kind != "execute" ||
+		seenBody.Options[0].OptionID != "allow-once" || seenBody.ExpiresInMs != 119_000 {
+		t.Fatalf("permission presentation was not preserved: %+v", seenBody)
+	}
+}
+
 // fakeServer emulates the deployed /mcp wire contract closely enough to
 // exercise transport classification and payload parsing.
 type fakeServer struct {

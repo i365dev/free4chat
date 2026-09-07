@@ -123,7 +123,8 @@ export interface CollabEvent {
 
 // #286: Room-native ACP permission presentation. The Room carries only the
 // bounded, sanitized fields a Human needs to understand and choose an
-// option; it never carries ACP credentials, raw tool input, or policy state.
+// option; it carries only a bounded action presentation and never carries ACP
+// credentials, the raw tool input, or policy state.
 export interface PermissionToolCall {
   title: string
   kind?: string
@@ -141,9 +142,8 @@ export interface PermissionOption {
 
 export type PermissionEvent =
   | {
-      // Fresh random Room-correlation id from the future Runtime bridge. The
-      // future #286-C integration must generate one for every ACP permission
-      // request; this is deliberately not the Harness ACP JSON-RPC request id.
+      // Fresh random Room-correlation id from the resident Runtime bridge.
+      // This is deliberately not the Harness ACP JSON-RPC request id.
       requestId: string
       kind: "request"
       agentParticipantId: string
