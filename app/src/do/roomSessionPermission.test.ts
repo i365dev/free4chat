@@ -134,6 +134,7 @@ function makeRoomSession() {
       cursor,
       timeoutSeconds: 0,
     })
+  const reload = () => new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
   return {
     roomSession,
     control,
@@ -141,6 +142,7 @@ function makeRoomSession() {
     sendHuman,
     storedRoom,
     agentWait,
+    reload,
     browserFrames,
   }
 }
@@ -369,5 +371,70 @@ describe("RoomSession structured permission lifecycle (#286)", () => {
     expect(expiringRoom.storedRoom().messages[1]?.permission).toMatchObject({
       kind: "expired",
     })
+  })
+
+  it("commits expiry discovered by a rejected Human response", async () => {
+    const room = makeRoomSession()
+    await room.requestPermission()
+    const pending = room.storedRoom().permissionRequests?.["permission-1"]
+    ;(pending?.event as Record<string, unknown>).expiresAt = Date.now() - 1
+
+    await room.sendHuman("human-1", {
+      type: "permission-response",
+      requestId: "permission-1",
+      selectedOptionId: "allow-once",
+    })
+
+    const errors = room.browserFrames
+      .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+      .filter((frame) => frame.type === "error")
+    expect(errors.at(-1)).toMatchObject({
+      type: "error",
+      error: "permission_request_expired",
+    })
+    const states = room.browserFrames
+      .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+      .filter((frame) => frame.type === "state")
+    const stateMessages = ((states.at(-1)?.state as Record<string, unknown>)
+      ?.messages ?? []) as Array<Record<string, unknown>>
+    expect(stateMessages).toContainEqual(
+      expect.objectContaining({
+        permission: expect.objectContaining({
+          requestId: "permission-1",
+          kind: "expired",
+        }),
+      })
+    )
+
+    const target = await room.agentWait("agent-a")
+    expect(target.json.events).toContainEqual(
+      expect.objectContaining({
+        addressed: true,
+        permission: expect.objectContaining({
+          requestId: "permission-1",
+          kind: "expired",
+        }),
+      })
+    )
+
+    const reloaded = room.reload()
+    const durable = await (
+      reloaded as unknown as {
+        loadRoom: () => Promise<{
+          permissionRequests?: Record<string, unknown>
+          messages: Array<Record<string, unknown>>
+        } | null>
+      }
+    ).loadRoom()
+    expect(durable?.permissionRequests).toEqual({})
+    expect(durable?.messages).toContainEqual(
+      expect.objectContaining({
+        actionType: "permission",
+        permission: expect.objectContaining({
+          requestId: "permission-1",
+          kind: "expired",
+        }),
+      })
+    )
   })
 })

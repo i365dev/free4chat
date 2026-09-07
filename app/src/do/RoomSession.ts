@@ -1717,6 +1717,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return changed
   }
 
+  // A rejected Human response can discover expiry/target departure before
+  // the normal alarm or leave transaction does. Commit that canonical state
+  // transition before returning the rejection, including the targeted Agent
+  // event delivery and the next deadline calculation.
+  private async commitPermissionExpirations(
+    room: RoomRecord,
+    changed: boolean
+  ): Promise<void> {
+    if (!changed) return
+    await this.saveRoom(room)
+    await this.scheduleNextAlarm(room)
+    await this.broadcastState(room)
+    this.resolveAgentWaiters(room)
+  }
+
   private toAgentEvent(
     message: RoomMessage,
     participantId: string
@@ -2934,11 +2949,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
       participant.lastSeenAt = Date.now()
-      if (this.expirePermissionRequests(room, Date.now())) {
-        await this.saveRoom(room)
-        await this.scheduleNextAlarm(room)
-        await this.broadcastState(room)
-      }
+      await this.commitPermissionExpirations(
+        room,
+        this.expirePermissionRequests(room, Date.now())
+      )
       const ingest = this.ingestPermissionRequest(
         room,
         participant,
@@ -4218,7 +4232,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     const now = Date.now()
     if (record.event.expiresAt <= now) {
-      this.expirePermissionRequests(room, now, record.agentParticipantId)
+      await this.commitPermissionExpirations(
+        room,
+        this.expirePermissionRequests(room, now, record.agentParticipantId)
+      )
       return { ok: false, error: "permission_request_expired" }
     }
     if (
@@ -4229,7 +4246,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return { ok: false, error: "invalid_permission_option" }
     const agent = room.participants[record.agentParticipantId]
     if (!agent || agent.kind !== "agent") {
-      this.expirePermissionRequests(room, now, record.agentParticipantId)
+      await this.commitPermissionExpirations(
+        room,
+        this.expirePermissionRequests(room, now, record.agentParticipantId)
+      )
       return { ok: false, error: "permission_request_target_left" }
     }
     delete pending[requestId]
@@ -5261,7 +5281,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.expireRoom(room)
       return
     }
-    let changed = this.expirePermissionRequests(room, now)
+    let permissionExpired = this.expirePermissionRequests(room, now)
+    let changed = permissionExpired
     const expiredSurfaces: Array<{
       participantId: string
       surface: RoomSurfaceV1
@@ -5306,8 +5327,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           })
         if (expiredHuman)
           this.removeRuntimeHostProviderAuthorizationForHuman(room, id)
-        if (expiredAgent && this.expirePermissionRequests(room, now, id))
+        if (expiredAgent && this.expirePermissionRequests(room, now, id)) {
+          permissionExpired = true
           changed = true
+        }
         delete room.participants[id]
         this.garbageCollectRuntimeHostAuthorization(room)
         const pendingDuration = this.updateCollaborationActivity(room)
@@ -5335,6 +5358,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.applyEmptyRoomExpiry(room, now)
       await this.saveRoom(room)
       await this.broadcastState(room)
+      if (permissionExpired) this.resolveAgentWaiters(room)
       if (pendingDurations.length > 0) this.trackRoomAnalytics(pendingDurations)
     }
     // #111: chunk deletion after persistence — no surface outlives its
