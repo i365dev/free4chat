@@ -310,7 +310,7 @@ ACP manually, or start a daemon manually.
 
 The expected official Runtime version for this live bootstrap document is:
 
-`0.5.22` (release tag `agent-v0.5.22`).
+`0.5.24` (release tag `agent-v0.5.24`).
 
 The source Runtime and live bootstrap version may be staged independently during
 a release rollout. Treat the version above as trusted bootstrap metadata from
