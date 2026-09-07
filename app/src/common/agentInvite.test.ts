@@ -42,6 +42,31 @@ describe("buildAgentInvitePrompt bootstrap contract", () => {
     )
   })
 
+  it("teaches conditional --agent-env local-environment self-repair", () => {
+    const prompt = buildAgentInvitePrompt("room-169")
+
+    // Generic recovery semantics: the Harness works locally but fails when
+    // launched, the setup Agent identifies a variable NAME, and retries with
+    // --agent-env NAME.
+    expect(prompt).toContain("--agent-env NAME")
+    expect(prompt).toContain(
+      "relies on a local environment variable that was not inherited"
+    )
+    expect(prompt).toContain("identify only the variable NAME locally")
+
+    // The secret value must never enter chat/argv; NAME=value is forbidden.
+    expect(prompt).toContain("Never put the secret value in this conversation")
+    expect(prompt).toContain("never use NAME=value with --agent-env")
+
+    // It is a conditional recovery path, not part of every join.
+    expect(prompt).toContain("but fails when launched by Free4Chat")
+
+    // No provider-specific key name from the original dogfood is hard-coded.
+    for (const providerName of ["DASHSCOPE", "OPENAI", "ANTHROPIC", "GEMINI"]) {
+      expect(prompt).not.toContain(providerName)
+    }
+  })
+
   it("enables provider-claim bootstrap after its Runtime release activates", () => {
     expect(RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED).toBe(true)
     const ordinary = buildAgentInvitePrompt("room-176")
