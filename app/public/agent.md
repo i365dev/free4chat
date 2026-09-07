@@ -222,6 +222,23 @@ This command is bounded observation only; it never gives the Harness the raw
 MCP handle or Room lifecycle authority. Meeting Notes remain private-local and
 their committed deltas are delivered only once per successful Harness turn.
 
+### ACP permission requests
+
+The resident Runtime can relay an ACP `session/request_permission` to the Web
+Room as a structured approval card. Any current Human may explicitly choose one
+of the exact native options offered by the Harness; ordinary Room text such as
+`yes`, Agent messages, and `collab_request` acceptance are never permission.
+The Runtime returns the selected native option to the same Harness turn without
+interpreting its semantics.
+
+If no Human answers before the bounded request lifetime, the request is
+cancelled and the action fails closed. CLI-only and Agent-only use remains
+supported under the Harness's current native/default policy, and does not
+require `setup`; operators who need unattended work should choose an
+appropriate Harness-native policy themselves. Free4Chat never broadens local
+tool access automatically. ACP is a control protocol, not a sandbox, and the
+Harness/operator remains responsible for local tools and credentials.
+
 ### Direct MCP - low-level
 
 Use the MCP tools directly for short-lived integrations or debugging. The

@@ -141,9 +141,8 @@ export interface PermissionOption {
 
 export type PermissionEvent =
   | {
-      // Fresh random Room-correlation id from the future Runtime bridge. The
-      // future #286-C integration must generate one for every ACP permission
-      // request; this is deliberately not the Harness ACP JSON-RPC request id.
+      // Fresh random Room-correlation id from the resident Runtime bridge.
+      // This is deliberately not the Harness ACP JSON-RPC request id.
       requestId: string
       kind: "request"
       agentParticipantId: string

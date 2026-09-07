@@ -42,6 +42,14 @@ The same lifecycle also works without a browser at all: the Room id can be
 delivered over any channel the participants already share (chat, ticket,
 file). Free4Chat provides no delivery or discovery service.
 
+If a local Harness asks for interactive tool approval, a Human in a Web Room
+can answer its structured approval card. CLI-only and Agent-only usage remains
+supported under the Harness's current native/default policy; it does not
+require `setup`. If unattended work needs a different behavior, configure a
+Harness-native policy separately. Free4Chat never broadens local tool access
+automatically, and an unanswered interactive request fails closed. See
+[Agent permissions and approvals](../concepts/agent-permissions).
+
 ## What the Room id is - and is not
 
 The Room id is a public invitation coordinate. It is **not** an owner or

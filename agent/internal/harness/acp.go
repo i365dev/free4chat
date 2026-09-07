@@ -304,6 +304,34 @@ func (a *ACPAdapter) PendingPermissionCount() int {
 	return len(a.pendingPermissions)
 }
 
+// SetPermissionResponder installs the resident-local decision seam after the
+// Runtime has been constructed. The callback never leaves the process and is
+// replaced atomically with the adapter's other ACP state.
+func (a *ACPAdapter) SetPermissionResponder(responder ACPPermissionResponder) {
+	a.mu.Lock()
+	a.options.PermissionResponder = responder
+	a.mu.Unlock()
+}
+
+// PermissionRequestLifetime is the Room request lifetime compatible with the
+// adapter's local turn timeout. The one-second margin lets the Room expire an
+// interactive request before the ACP turn's own timeout boundary. A duration
+// shorter than the Room's minimum is reported as zero so the Runtime fails
+// closed before creating a request that could outlive its local responder.
+func (a *ACPAdapter) PermissionRequestLifetime() time.Duration {
+	a.mu.Lock()
+	timeoutMs := a.options.TurnTimeoutMs
+	a.mu.Unlock()
+	if timeoutMs <= 0 {
+		timeoutMs = defaultTurnTimeoutMs
+	}
+	lifetime := time.Duration(timeoutMs)*time.Millisecond - time.Second
+	if lifetime < time.Second {
+		return 0
+	}
+	return lifetime
+}
+
 // SetMode applies one Harness-native session mode that was advertised by the
 // current session. The adapter does not infer or translate policy semantics.
 func (a *ACPAdapter) SetMode(modeID string) error {
