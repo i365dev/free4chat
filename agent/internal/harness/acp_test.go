@@ -1088,16 +1088,6 @@ func TestGetLauncherRegistryContracts(t *testing.T) {
 		t.Fatalf("hermes notes must warn about no safe profile: %s", hermes.Notes)
 	}
 
-	if _, err := GetLauncher("deepseek-harness"); err == nil ||
-		err.Error() != "DeepSeek Harness is preview-only; set FREE4CHAT_DEEPSEEK_REPO or use --agent-command" {
-		t.Fatalf("deepseek repo guard mismatch: %v", err)
-	}
-	t.Setenv("FREE4CHAT_DEEPSEEK_REPO", "/repo/checkout")
-	withRepo, err := GetLauncher("deepseek-harness")
-	if err != nil || withRepo.Args[0] != "--dir" || withRepo.Args[1] != "/repo/checkout" {
-		t.Fatalf("deepseek dir prepending mismatch: %+v %v", withRepo.Args, err)
-	}
-
 	if _, err := GetLauncher("nonexistent"); err == nil ||
 		err.Error() != "Unknown ACP launcher: nonexistent" {
 		t.Fatalf("unknown launcher message mismatch: %v", err)
@@ -1106,6 +1096,22 @@ func TestGetLauncherRegistryContracts(t *testing.T) {
 	if _, err := CustomLauncher("   ", nil); err == nil ||
 		err.Error() != "ACP agent command cannot be empty" {
 		t.Fatalf("custom launcher empty-command guard mismatch: %v", err)
+	}
+}
+
+func TestBuiltInLauncherSet(t *testing.T) {
+	launchers := ListLaunchers()
+	want := []string{"hermes", "opencode", "codex", "claude", "pi"}
+	if len(launchers) != len(want) {
+		t.Fatalf("built-in launcher count mismatch: got %d want %d", len(launchers), len(want))
+	}
+	for i, launcher := range launchers {
+		if launcher.ID != want[i] {
+			t.Fatalf("built-in launcher[%d]: got %q want %q", i, launcher.ID, want[i])
+		}
+	}
+	if _, err := GetLauncher("deepseek-harness"); err == nil {
+		t.Fatal("removed DeepSeek Harness preview must not remain a built-in launcher")
 	}
 }
 

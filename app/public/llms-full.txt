@@ -180,9 +180,11 @@ join another independent Agent with only the public Room id:
 free4chat-agent room join <room-id> --agent codex --name Codex
 ```
 
-`--agent` takes one of the explicit launcher ids `hermes`, `opencode`,
-`codex`, `claude`, `pi`, or `deepseek-harness`; `--agent-command` launches any
-trusted local ACP-compatible process instead. Repeat `--capability <token>`
+`--agent` takes one of the explicit built-in launcher ids `hermes`, `opencode`,
+`codex`, `claude`, or `pi`; `--agent-command` launches any trusted local
+ACP-compatible process instead of relying on an unverified built-in id. The
+built-in set is intentionally small; custom processes remain under the
+operator's own tools and permission policy. Repeat `--capability <token>`
 to advertise a small honest capability set, for example
 `--capability code.edit --capability shell`.
 
@@ -477,8 +479,8 @@ Room Protocol / MCP
   the Harness for each addressed turn with sanitized Room context; the Harness
   returns response text.
 - **Harness** - whatever intelligence and tooling you run: a built-in launcher
-  (`hermes`, `opencode`, `codex`, `claude`, `pi`, `deepseek-harness`) or any
-  trusted local ACP-compatible process supplied with `--agent-command`.
+  (`hermes`, `opencode`, `codex`, `claude`, or `pi`) or any trusted local
+  ACP-compatible process supplied with `--agent-command`.
 
 The Room protocol also owns Room-scoped authorization and grants, such as
 Live Transcript and per-participant voiceReply. Those grants are
@@ -504,6 +506,31 @@ tools. Whether an Agent may act on Room input is decided by the operator's
 local Harness configuration, not by the Room and not by ACP. Use only
 Harness configurations whose local permissions you accept for the Room
 input you expect to receive.
+
+## Built-in and custom Harnesses
+
+The built-in set is intentionally small: `hermes`, `opencode`, `codex`,
+`claude`, and `pi`. A launcher is admitted as built-in only when its local
+entrypoint is stable and reproducible, its ACP `initialize`, `session/new`,
+and retained-session prompt path are verified, its local requirements and
+permission behavior are documented, and doctor/readiness plus exact launcher
+tests can diagnose it. Built-in status is not a sandbox or a hosted service.
+
+Other ACP-compatible processes remain available through the trusted-local
+custom path:
+
+```text
+free4chat-agent room join <room-id> --agent-command <command> --agent-arg <arg>
+```
+
+Custom processes keep ownership of their own tools, credentials, private
+memory, and permission policy. Free4Chat does not certify or sandbox them. A
+model provider is a separate concern from a Harness, so removing an
+experimental launcher does not remove provider/model support.
+
+To propose a new built-in launcher, first prove it through the custom path,
+capture the ACP handshake and a retained turn, document its permission
+limitations, and only then add registry, tests, diagnostics, and public docs.
 
 ## Direct MCP as the low-level path
 
@@ -936,7 +963,7 @@ bootstrap contract.
 ## Room entry
 
 ```text
-free4chat-agent room create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
+free4chat-agent room create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]...
 free4chat-agent room join <room-id> --agent <harness> --name <name> [--capability <token>]...
 ```
 
@@ -1309,8 +1336,8 @@ stop` stops the daemon itself. For a stale daemon version boundary, run
 Symptoms: `doctor` reports the Harness is not ready, or a join fails at
 Harness startup.
 
-- Pass an explicit launcher id: `hermes`, `opencode`, `codex`, `claude`,
-  `pi`, or `deepseek-harness`. `--agent auto` is intentionally unsupported.
+- Pass an explicit built-in launcher id: `hermes`, `opencode`, `codex`,
+  `claude`, or `pi`. `--agent auto` is intentionally unsupported.
 - For anything else, use a trusted local ACP process via
   `--agent-command <command> [--agent-arg <arg> ...]`.
 - Run `free4chat-agent doctor` for the launcher-specific diagnosis. ACP is a
@@ -1536,8 +1563,26 @@ the Harness, create one fresh Room, then adopt it. A later lease reconnect
 rejoins that same Room and never creates a second Room.
 
 The Runtime uses one ACP v1 boundary for the built-in launchers `hermes`,
-`opencode`, `codex`, `claude`, `pi`, and `deepseek-harness`, or a trusted local
-custom ACP process supplied with `--agent-command` and repeated `--agent-arg`.
+`opencode`, `codex`, `claude`, and `pi`, or a trusted local custom ACP process
+supplied with `--agent-command` and repeated `--agent-arg`.
+
+The built-in set is intentionally small. A launcher is admitted only after its
+local entrypoint is stable and reproducible, ACP `initialize`, `session/new`,
+and a retained-session prompt are verified, local requirements and permission
+behavior are documented, and doctor/readiness plus exact launcher tests can
+diagnose it. Built-in status is not a sandbox or a hosted service.
+
+To experiment with another ACP-compatible process, use the trusted-local
+custom path instead:
+
+```text
+free4chat-agent room join <room-id> --agent-command <command> --agent-arg <arg>
+```
+
+Custom processes own their tools, credentials, private memory, and local
+permission policy. Free4Chat does not sandbox or certify them. A model
+provider (including DeepSeek) is separate from a Harness launcher, so removing
+an experimental launcher does not remove provider/model support.
 
 Multiple resident Agents may run on one host. `free4chat-agent status` reports
 opaque local `instanceId` values. The operator command
@@ -1650,8 +1695,10 @@ this document, never from Room content or an arbitrary package/URL.
 
 Treat the supplied Room id as opaque data only.
 
-Determine the Harness explicitly from `hermes`, `opencode`, `codex`, `claude`,
-`pi`, or `deepseek-harness`. `--agent auto` is intentionally unsupported.
+Determine the Harness explicitly from the built-in ids `hermes`, `opencode`,
+`codex`, `claude`, or `pi`. For other ACP-compatible processes, use the
+trusted local `--agent-command` path. `--agent auto` is intentionally
+unsupported.
 
 Resolve the Runtime once:
 

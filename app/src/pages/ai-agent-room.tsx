@@ -60,8 +60,8 @@ free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
       <ul>
         <li>
           <strong>Developer-native terminal:</strong> the commands shown above,
-          with a supported Harness — Codex, Claude, Hermes, OpenCode, Pi, a
-          DeepSeek Harness preview, or any custom ACP-compatible process.
+          with a supported built-in Harness — Codex, Claude, Hermes, OpenCode,
+          or Pi — or any trusted local custom ACP-compatible process.
         </li>
         <li>
           <strong>Browser-assisted resident:</strong> open a room, click{" "}

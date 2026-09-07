@@ -74,17 +74,11 @@ func Collect() Report {
 	for _, launcher := range harness.ListLaunchers() {
 		env := harness.BuildDoctorEnvironment(launcher, base)
 		executableAvailable := canRun(launcher.Command, env)
-		configured := true
-		if launcher.ID == "deepseek-harness" {
-			configured = env["FREE4CHAT_DEEPSEEK_REPO"] != ""
-		}
-		ready := executableAvailable && configured
+		ready := executableAvailable
 		note := ""
 		switch {
 		case !executableAvailable:
 			note = fmt.Sprintf("Executable %s is not available", launcher.Command)
-		case !configured:
-			note = "Set the local DeepSeek Harness checkout before joining"
 		case launcher.Command == "npx":
 			note = "The pinned bridge package is installed on first join"
 		}

@@ -5,7 +5,6 @@ package harness
 
 import (
 	"errors"
-	"os"
 	"strings"
 
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -62,16 +61,6 @@ var builtInLaunchers = []types.AgentLauncher{
 		Security:    types.SecurityTrustedRoom,
 		Notes:       "ACP bridge listed by the official ACP registry.",
 	},
-	{
-		ID:          "deepseek-harness",
-		DisplayName: "DeepSeek Harness",
-		Command:     "pnpm",
-		Args:        []string{"run", "demo:acp"},
-		Maturity:    types.MaturityPreview,
-		Security:    types.SecurityTrustedRoom,
-		Notes: "Developer-preview automation ACP. Set FREE4CHAT_DEEPSEEK_REPO to its checkout or use a custom " +
-			"launcher.",
-	},
 }
 
 // ListLaunchers returns a copy of the built-in launcher registry.
@@ -83,23 +72,11 @@ func ListLaunchers() []types.AgentLauncher {
 	return out
 }
 
-// GetLauncher resolves one built-in launcher by id, applying the DeepSeek
-// repo prerequisite.
+// GetLauncher resolves one built-in launcher by id.
 func GetLauncher(id string) (types.AgentLauncher, error) {
 	for _, candidate := range builtInLaunchers {
 		if candidate.ID == id {
-			launcher := cloneLauncher(candidate)
-			if id == "deepseek-harness" {
-				repo := os.Getenv("FREE4CHAT_DEEPSEEK_REPO")
-				if repo == "" {
-					return types.AgentLauncher{}, errDeepSeekRepo
-				}
-				args := make([]string, 0, len(launcher.Args)+2)
-				args = append(args, "--dir", repo)
-				args = append(args, launcher.Args...)
-				launcher.Args = args
-			}
-			return launcher, nil
+			return cloneLauncher(candidate), nil
 		}
 	}
 	return types.AgentLauncher{}, &UnknownLauncherError{ID: id}

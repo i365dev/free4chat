@@ -145,4 +145,4 @@ case ":$PATH:" in
     ;;
 esac
 info "verify the install: '$install_dir/$BINARY_NAME' doctor"
-info "join a room: '$install_dir/$BINARY_NAME' join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name>"
+info "join a room: '$install_dir/$BINARY_NAME' join --room <room-id> --agent <hermes|opencode|codex|claude|pi> --name <name>"
