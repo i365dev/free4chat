@@ -2980,6 +2980,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({
         requestId: ingest.event.requestId,
         sequence: ingest.sequence,
+        ...(ingest.status === "replayed" ? { duplicate: true } : {}),
         expiresAt: ingest.event.expiresAt,
       })
     }
@@ -4108,7 +4109,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     input: PermissionRequestInput
   ):
     | {
-        status: "recorded" | "duplicate"
+        status: "recorded" | "duplicate" | "replayed"
         sequence: number
         event: Extract<PermissionEvent, { kind: "request" }>
         message: RoomMessage
@@ -4133,10 +4134,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!pendingPermissionRequestIsEquivalent(existing, event))
         return { status: "rejected", error: "permission_request_conflict" }
       const message = room.messages.find(
-        (candidate) => candidate.sequence === existing.sequence
+        (candidate) =>
+          candidate.sequence === existing.sequence &&
+          candidate.actionType === PERMISSION_ACTION_TYPE &&
+          candidate.permission?.requestId === event.requestId &&
+          candidate.permission.kind === "request"
       )
-      if (!message)
-        return { status: "rejected", error: "permission_request_closed" }
+      if (!message) {
+        // The pending record outlives the bounded message ring. Re-materialize
+        // the retained request presentation at the tail so a Runtime retry
+        // restores the Human approval card without changing request identity.
+        const replayedMessage = this.appendMessage(room, {
+          id: crypto.randomUUID(),
+          peerId: agent.id,
+          name: agent.name,
+          kind: "agent",
+          type: "action",
+          actionType: PERMISSION_ACTION_TYPE,
+          permission: existing.event,
+          targets: [agent.id],
+          createdAt: existing.event.createdAt,
+        })
+        existing.sequence = replayedMessage.sequence
+        return {
+          status: "replayed",
+          sequence: replayedMessage.sequence,
+          event: existing.event,
+          message: replayedMessage,
+        }
+      }
       return {
         status: "duplicate",
         sequence: existing.sequence,

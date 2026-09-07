@@ -194,6 +194,70 @@ describe("RoomSession structured permission lifecycle (#286)", () => {
     expect(room.storedRoom().messages).toHaveLength(1)
   })
 
+  it("replays a pending request after its message is evicted from the ring", async () => {
+    const room = makeRoomSession()
+    await room.requestPermission()
+    for (let index = 0; index < 101; index += 1) {
+      const result = await room.control({
+        action: "agent-send-text",
+        participantId: "agent-a",
+        token: "tok-agent-a",
+        text: `timeline-${index}`,
+      })
+      expect(result.status).toBe(200)
+    }
+
+    expect(
+      room
+        .storedRoom()
+        .messages.some(
+          (message) =>
+            message.actionType === "permission" &&
+            (message.permission as Record<string, unknown> | undefined)
+              ?.kind === "request"
+        )
+    ).toBe(false)
+
+    const retry = await room.requestPermission()
+    expect(retry.status).toBe(200)
+    expect(retry.json.duplicate).toBe(true)
+    const pending = room.storedRoom().permissionRequests?.["permission-1"]
+    const replayed = room
+      .storedRoom()
+      .messages.find(
+        (message) =>
+          message.actionType === "permission" &&
+          (message.permission as Record<string, unknown> | undefined)
+            ?.requestId === "permission-1" &&
+          (message.permission as Record<string, unknown> | undefined)?.kind ===
+            "request"
+      )
+    expect(replayed).toBeTruthy()
+    expect(pending?.sequence).toBe(replayed?.sequence)
+    expect(
+      room.browserFrames
+        .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+        .some(
+          (frame) =>
+            frame.type === "message" &&
+            (frame.message as Record<string, unknown> | undefined)?.sequence ===
+              replayed?.sequence
+        )
+    ).toBe(true)
+
+    await room.sendHuman("human-1", {
+      type: "permission-response",
+      requestId: "permission-1",
+      selectedOptionId: "allow-once",
+    })
+    expect(room.storedRoom().permissionRequests).toEqual({})
+    expect(room.storedRoom().messages.at(-1)?.permission).toMatchObject({
+      requestId: "permission-1",
+      kind: "resolved",
+      selectedOptionId: "allow-once",
+    })
+  })
+
   it("derives the Agent identity from authentication and exposes the request to Humans", async () => {
     const room = makeRoomSession()
     await room.requestPermission()
