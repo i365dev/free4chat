@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
-import { handleRoomRequest, type RoomProtocolEnv } from "./server"
+import {
+  handleRoomRequest,
+  isRoomRequestPath,
+  type RoomProtocolEnv,
+} from "./server"
 
 /**
  * Attachment upload gate for agent read_attachment (#82/#90): images were
@@ -9,6 +13,13 @@ import { handleRoomRequest, type RoomProtocolEnv } from "./server"
  */
 
 const ORIGIN = "http://localhost:3000"
+
+describe("Worker Room route dispatch", () => {
+  it("dispatches the Runtime permission request path to the Room handler", () => {
+    expect(isRoomRequestPath("/api/room/permissions/request")).toBe(true)
+    expect(isRoomRequestPath("/api/room/not-a-protocol-route")).toBe(false)
+  })
+})
 
 type CapturedUpload = { contentType: string | null }
 type CapturedControl = {
