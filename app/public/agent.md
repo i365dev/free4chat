@@ -371,7 +371,7 @@ Fetch the official installer and pin it to the expected version:
 
 ```text
 curl -fsSL https://www.free4.chat/install-agent.sh -o install-agent.sh
-expected_version="0.5.22"
+expected_version="0.5.24"
 FREE4CHAT_AGENT_VERSION="$expected_version" bash install-agent.sh
 ```
 
