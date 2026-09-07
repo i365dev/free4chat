@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -186,6 +188,53 @@ func TestACPNegotiatesOnceAndReusesOneSession(t *testing.T) {
 	}
 }
 
+func TestACPRetainsAndAppliesAdvertisedSessionControls(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_POLICY_CAP": "1",
+	}), AdapterOptions{})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	controls := adapter.SessionControls()
+	if controls == nil || controls.Modes == nil || controls.Modes.CurrentModeID != "observe" || !hasMode(controls.Modes, "workspace") {
+		t.Fatalf("native session modes were not retained: %+v", controls)
+	}
+	option, ok := findConfigOption(controls.ConfigOptions, "mode")
+	if !ok || !hasConfigValue(option, "workspace") {
+		t.Fatalf("native mode config option was not retained: %+v", controls)
+	}
+
+	if err := adapter.SetMode("workspace"); err != nil {
+		t.Fatalf("advertised session/set_mode failed: %v", err)
+	}
+	if current := adapter.SessionControls().Modes.CurrentModeID; current != "workspace" {
+		t.Fatalf("session mode was not updated: %q", current)
+	}
+	if err := adapter.SetConfigOption("mode", "observe"); err != nil {
+		t.Fatalf("advertised session/set_config_option failed: %v", err)
+	}
+	if current := findCurrentConfigValue(t, adapter.SessionControls(), "mode"); current != "observe" {
+		t.Fatalf("config option was not updated: %q", current)
+	}
+	if err := adapter.SetMode("unadvertised"); err == nil {
+		t.Fatal("unadvertised mode was accepted")
+	}
+	if err := adapter.SetConfigOption("mode", "unadvertised"); err == nil {
+		t.Fatal("unadvertised config value was accepted")
+	}
+}
+
+func findCurrentConfigValue(t *testing.T, controls *ACPSessionControls, configID string) string {
+	t.Helper()
+	option, ok := findConfigOption(controls.ConfigOptions, configID)
+	if !ok {
+		t.Fatalf("config option %q missing from %+v", configID, controls)
+	}
+	return option.CurrentValue
+}
+
 func TestACPRejectsTurnForUnexpectedSessionGeneration(t *testing.T) {
 	adapter, _ := newTestAdapter(t, scriptLauncher("normal", nil), AdapterOptions{})
 	defer adapter.Close()
@@ -257,6 +306,385 @@ func TestACPAutoCancelsPermissionAndNegotiatesImages(t *testing.T) {
 	// and the Harness reported the cancelled continuation.
 	if result.Text != "permission-cancelled" {
 		t.Fatalf("expected cancelled continuation, got %q", result.Text)
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("no-responder permission leaked: %d", count)
+	}
+}
+
+func TestACPDelayedPermissionSelectionContinuesSameTurn(t *testing.T) {
+	started := make(chan ACPPermissionRequest, 1)
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: func(ctx context.Context, request ACPPermissionRequest) (ACPPermissionResponse, error) {
+			started <- request
+			select {
+			case <-time.After(80 * time.Millisecond):
+				return ACPPermissionResponse{OptionID: "allow-once"}, nil
+			case <-ctx.Done():
+				return ACPPermissionResponse{}, ctx.Err()
+			}
+		},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+
+	done := make(chan struct {
+		result types.HarnessTurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		done <- struct {
+			result types.HarnessTurnResult
+			err    error
+		}{result, err}
+	}()
+
+	select {
+	case request := <-started:
+		if request.RequestID != "78" || request.SessionID == "" || request.ToolCall.ToolCallID != "tool-delayed" || request.ToolCall.Title != "delayed harmless operation" {
+			t.Fatalf("permission request context was not preserved: %+v", request)
+		}
+		if string(request.ToolCall.RawInput) != `{"command":"touch temporary-marker"}` {
+			t.Fatalf("tool call input was not preserved: %s", request.ToolCall.RawInput)
+		}
+		if len(request.Options) != 2 || request.Options[0].OptionID != "allow-once" || request.Options[0].Name != "Allow Once" || request.Options[0].Kind != "allow_once" || request.Options[1].OptionID != "reject-once" || request.Options[1].Name != "Reject" || request.Options[1].Kind != "reject_once" {
+			t.Fatalf("permission options were not preserved: %+v", request.Options)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission responder was not called")
+	}
+	if adapter.PendingPermissionCount() != 1 {
+		t.Fatalf("permission did not remain pending: %d", adapter.PendingPermissionCount())
+	}
+	select {
+	case got := <-done:
+		if got.err != nil || got.result.Text != "permission-approved" {
+			t.Fatalf("delayed approval did not continue same turn: %+v %v", got.result, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("delayed permission turn did not settle")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission leaked after turn settlement: %d", count)
+	}
+}
+
+func TestACPRejectsInvalidPermissionOptionAndKeepsFailClosed(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: func(context.Context, ACPPermissionRequest) (ACPPermissionResponse, error) {
+			return ACPPermissionResponse{OptionID: "not-offered"}, nil
+		},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+	if err != nil || result.Text != "permission-cancelled" {
+		t.Fatalf("invalid option was not cancelled: %+v %v", result, err)
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("invalid option leaked permission state: %d", count)
+	}
+}
+
+func TestACPExplicitPermissionRejectionContinuesCancelledTurn(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: func(context.Context, ACPPermissionRequest) (ACPPermissionResponse, error) {
+			return ACPPermissionResponse{OptionID: "reject-once"}, nil
+		},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+	if err != nil || result.Text != "permission-cancelled" {
+		t.Fatalf("explicit rejection did not continue cancelled turn: %+v %v", result, err)
+	}
+}
+
+func TestACPPermissionCancelClearsPendingRequest(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{})
+	adapter.options.PermissionResponder = func(ctx context.Context, _ ACPPermissionRequest) (ACPPermissionResponse, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return ACPPermissionResponse{}, ctx.Err()
+	}
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission responder did not start")
+	}
+	if err := adapter.CancelTurn(); err != nil {
+		t.Fatalf("cancel turn failed: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("cancelled permission turn failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled permission turn did not settle")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission remained after CancelTurn: %d", count)
+	}
+}
+
+func TestACPTurnTimeoutClearsPendingPermission(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		TurnTimeoutMs: 40,
+		CancelGraceMs: 500,
+		PermissionResponder: func(ctx context.Context, _ ACPPermissionRequest) (ACPPermissionResponse, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return ACPPermissionResponse{}, ctx.Err()
+		},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission responder did not start")
+	}
+	select {
+	case err := <-done:
+		var timeoutErr *TurnTimeoutError
+		if !errors.As(err, &timeoutErr) {
+			t.Fatalf("expected turn timeout, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed-out permission turn did not settle")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission remained after timeout: %d", count)
+	}
+}
+
+func TestACPProcessExitClearsPendingPermission(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: func(ctx context.Context, _ ACPPermissionRequest) (ACPPermissionResponse, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return ACPPermissionResponse{}, ctx.Err()
+		},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission responder did not start")
+	}
+	adapter.mu.Lock()
+	process := adapter.proc
+	adapter.mu.Unlock()
+	if process == nil || process.cmd.Process == nil {
+		t.Fatal("permission test process disappeared before exit test")
+	}
+	if err := process.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill fake permission Harness: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("process exit left permission turn blocked")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission remained after process exit: %d", count)
+	}
+}
+
+func TestACPAdapterCloseClearsPendingPermission(t *testing.T) {
+	started := make(chan struct{}, 1)
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: func(ctx context.Context, _ ACPPermissionRequest) (ACPPermissionResponse, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return ACPPermissionResponse{}, ctx.Err()
+		},
+	})
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission responder did not start")
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("adapter close failed: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("adapter close left permission turn blocked")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission remained after adapter close: %d", count)
+	}
+}
+
+func TestACPStalePermissionResponderCannotResolveReusedRequest(t *testing.T) {
+	type permissionDecision struct {
+		request ACPPermissionRequest
+		result  chan ACPPermissionResponse
+	}
+	decisions := make(chan permissionDecision, 2)
+	firstResult := make(chan ACPPermissionResponse, 1)
+	secondResult := make(chan ACPPermissionResponse, 1)
+	var responderCalls atomic.Int32
+	responder := func(ctx context.Context, request ACPPermissionRequest) (ACPPermissionResponse, error) {
+		call := permissionDecision{request: request, result: firstResult}
+		if responderCalls.Add(1) == 2 {
+			call.result = secondResult
+		}
+		decisions <- call
+		if call.result == firstResult {
+			// Deliberately ignore cancellation for A: the adapter must still
+			// reject its late completion after the process/session is gone.
+			return <-call.result, nil
+		}
+		select {
+		case result := <-call.result:
+			return result, nil
+		case <-ctx.Done():
+			return ACPPermissionResponse{}, ctx.Err()
+		}
+	}
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: responder,
+	})
+	defer func() {
+		// Keep cleanup non-blocking even if an assertion fails before either
+		// responder has returned.
+		select {
+		case firstResult <- ACPPermissionResponse{}:
+		default:
+		}
+		select {
+		case secondResult <- ACPPermissionResponse{}:
+		default:
+		}
+		_ = adapter.Close()
+	}()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+
+	doneA := make(chan error, 1)
+	go func() {
+		_, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		doneA <- err
+	}()
+	var callA permissionDecision
+	select {
+	case callA = <-decisions:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission A did not start")
+	}
+
+	adapter.mu.Lock()
+	processA := adapter.proc
+	adapter.mu.Unlock()
+	if processA == nil || processA.cmd.Process == nil {
+		t.Fatal("permission A process disappeared before replacement")
+	}
+	if err := processA.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill permission A Harness: %v", err)
+	}
+	select {
+	case <-doneA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission A did not clear after process death")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission A remained after process death: %d", count)
+	}
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("replacement ensure failed: %v", err)
+	}
+	doneB := make(chan struct {
+		result types.HarnessTurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		doneB <- struct {
+			result types.HarnessTurnResult
+			err    error
+		}{result, err}
+	}()
+	var callB permissionDecision
+	select {
+	case callB = <-decisions:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission B did not start")
+	}
+	if callA.request.RequestID != callB.request.RequestID || callB.request.RequestID != "78" {
+		t.Fatalf("fake Harness did not reuse the request id: A=%q B=%q", callA.request.RequestID, callB.request.RequestID)
+	}
+
+	// A offers the same allow-once option as B. Its late completion must be
+	// ignored rather than resolving B's newly-created map entry.
+	callA.result <- ACPPermissionResponse{OptionID: "allow-once"}
+	select {
+	case got := <-doneB:
+		t.Fatalf("stale permission A resolved permission B: %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if count := adapter.PendingPermissionCount(); count != 1 {
+		t.Fatalf("permission B was not still pending after stale A: %d", count)
+	}
+
+	callB.result <- ACPPermissionResponse{OptionID: "allow-once"}
+	select {
+	case got := <-doneB:
+		if got.err != nil || got.result.Text != "permission-approved" {
+			t.Fatalf("permission B did not resolve normally: %+v %v", got.result, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission B did not settle")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission B leaked after settlement: %d", count)
 	}
 }
 
