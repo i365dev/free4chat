@@ -906,19 +906,54 @@ func TestFormatCliErrorClassifier(t *testing.T) {
 	}
 }
 
-func TestRoomReadinessRejectsHarnessIdentityMismatch(t *testing.T) {
-	instances := []map[string]any{{
-		"roomId": "test-room", "instanceId": "instance-a", "participantId": "agent-a",
-		"adapter": "codex",
-	}}
-	mismatch := roomReadiness("test-room", instances, "hermes")
-	if mismatch["joined"] != false || mismatch["reason"] != "harness_mismatch" ||
-		mismatch["expectedAdapter"] != "hermes" || mismatch["actualAdapter"] != "codex" {
-		t.Fatalf("readiness accepted the wrong resident Harness: %#v", mismatch)
+func TestRoomReadinessSearchesAllHarnessResidents(t *testing.T) {
+	residents := func(firstAdapter, secondAdapter string) []map[string]any {
+		return []map[string]any{
+			{"roomId": "test-room", "instanceId": "resident-first", "participantId": "agent-first", "adapter": firstAdapter},
+			{"roomId": "test-room", "instanceId": "resident-second", "participantId": "agent-second", "adapter": secondAdapter},
+		}
 	}
-	matching := roomReadiness("test-room", instances, "codex")
-	if matching["joined"] != true || matching["adapter"] != "codex" {
-		t.Fatalf("readiness lost truthful matching adapter: %#v", matching)
+	for _, test := range []struct {
+		name            string
+		instances       []map[string]any
+		expected        string
+		joined          bool
+		wantInstance    string
+		wantParticipant string
+		wantReason      string
+	}{
+		{
+			name: "matching resident follows opencode", instances: residents("opencode", "codex"),
+			expected: "codex", joined: true, wantInstance: "resident-second", wantParticipant: "agent-second",
+		},
+		{
+			name: "matching resident precedes opencode", instances: residents("codex", "opencode"),
+			expected: "codex", joined: true, wantInstance: "resident-first", wantParticipant: "agent-first",
+		},
+		{
+			name: "no matching resident", instances: residents("opencode", "pi"),
+			expected: "codex", wantReason: "harness_mismatch",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := roomReadiness("test-room", test.instances, test.expected)
+			if result["joined"] != test.joined {
+				t.Fatalf("readiness result changed with resident order: %#v", result)
+			}
+			if test.joined {
+				if result["adapter"] != "codex" || result["instanceId"] != test.wantInstance ||
+					result["participantId"] != test.wantParticipant {
+					t.Fatalf("readiness did not select the matching codex resident: %#v", result)
+				}
+				return
+			}
+			if result["reason"] != test.wantReason || result["expectedAdapter"] != "codex" {
+				t.Fatalf("readiness mismatch result changed with resident order: %#v", result)
+			}
+			if !reflect.DeepEqual(result["actualAdapters"], []string{"opencode", "pi"}) {
+				t.Fatalf("mismatch adapter diagnostics were not deterministic: %#v", result)
+			}
+		})
 	}
 }
 
