@@ -223,7 +223,14 @@ func main() {
 			prompt := promptText(message.Params)
 			switch a.mode {
 			case "env":
-				updateChunk(sessionID, os.Getenv("FREE4CHAT_AGENT_DIR"))
+				// FAKE_ENV_NAME selects which environment variable the Harness
+				// observes (defaults to the Runtime root contract). The value is
+				// echoed as the reply, never leaked into logs.
+				name := os.Getenv("FAKE_ENV_NAME")
+				if name == "" {
+					name = "FREE4CHAT_AGENT_DIR"
+				}
+				updateChunk(sessionID, os.Getenv(name))
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "context_read":
 				output, err := exec.Command("free4chat-agent", "context", "read", "--before-sequence", "2", "--limit", "10").CombinedOutput()

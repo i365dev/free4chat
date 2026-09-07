@@ -374,6 +374,13 @@ func (d *Daemon) prepareRuntime(
 	isCreate bool,
 	request *IpcRequest,
 ) (*runtime.ResidentRuntime, string, string, error) {
+	// Authoritative reserved-name enforcement at the local IPC boundary: a
+	// direct daemon request (not just the CLI) must not be able to reintroduce
+	// Free4Chat-owned lifecycle/security variables through AgentEnv. The
+	// harness environment builder is a second, defense-in-depth drop layer.
+	if err := harness.ValidateExplicitEnv(request.AgentEnv); err != nil {
+		return nil, "", "", err
+	}
 	var launcher types.AgentLauncher
 	switch {
 	case request.AgentCommand != "" && request.Agent != "":
@@ -456,7 +463,10 @@ func (d *Daemon) prepareRuntime(
 		Adapter: harness.NewACPAdapter(launcher, workspace, harness.AdapterOptions{
 			TurnTimeoutMs: turnTimeoutMs,
 			CancelGraceMs: cancelGraceMs,
-			AgentEnv:      request.AgentEnv,
+			// Ephemeral per-resident Harness launch material transferred from
+			// the CLI. Never returned in responses, never persisted to status,
+			// workspace, or logs; dropped with the resident.
+			AgentEnv: request.AgentEnv,
 		}),
 		Capabilities:        request.Capabilities,
 		SiteOrigin:          siteOrigin,
@@ -467,7 +477,6 @@ func (d *Daemon) prepareRuntime(
 		ProviderClaim:       request.ProviderClaim,
 		ProviderHandles:     d.providerHandles,
 		TranscriptProducers: d.transcriptProducers,
-		AgentEnv:            request.AgentEnv,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the

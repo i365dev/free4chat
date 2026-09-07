@@ -458,6 +458,143 @@ func TestBuildHarnessEnvironmentIsAllowListed(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessEnvironmentAppliesExplicitEnv proves the three-layer
+// precedence: safe ambient environment first, then explicitly inherited names
+// from the operator, with unrelated ambient variables still filtered out.
+func TestBuildHarnessEnvironmentAppliesExplicitEnv(t *testing.T) {
+	launcher := types.AgentLauncher{ID: "fake"}
+	explicit := map[string]string{
+		"CUSTOM_PROVIDER_KEY": "operator-secret",
+	}
+	environment := BuildHarnessEnvironment(launcher, map[string]string{
+		"PATH":                  "/safe/bin",
+		"CUSTOM_PROVIDER_KEY":   "ambient-must-not-win",
+		"AWS_SECRET_ACCESS_KEY": "must-not-pass",
+	}, explicit)
+	if environment["PATH"] != "/safe/bin" {
+		t.Fatalf("safe ambient key lost: %v", environment)
+	}
+	if environment["CUSTOM_PROVIDER_KEY"] != "operator-secret" {
+		t.Fatalf("explicitly inherited value must win over ambient: %v", environment["CUSTOM_PROVIDER_KEY"])
+	}
+	if _, present := environment["AWS_SECRET_ACCESS_KEY"]; present {
+		t.Fatal("unrelated ambient secret must stay filtered")
+	}
+}
+
+// TestBuildHarnessEnvironmentLauncherPolicyWins proves Free4Chat launcher-owned
+// explicit policy overrides operator-inherited environment.
+func TestBuildHarnessEnvironmentLauncherPolicyWins(t *testing.T) {
+	launcher := types.AgentLauncher{
+		ID: "fake",
+		Environment: map[string]string{
+			"MODE_LOCK": "launcher-policy",
+		},
+	}
+	environment := BuildHarnessEnvironment(launcher, nil, map[string]string{
+		"MODE_LOCK": "operator-attempt",
+	})
+	if environment["MODE_LOCK"] != "launcher-policy" {
+		t.Fatalf("launcher-owned policy must win, got %q", environment["MODE_LOCK"])
+	}
+}
+
+// TestBuildHarnessEnvironmentDropsForbiddenExplicit proves defense-in-depth:
+// even a direct internal explicitEnv map cannot reintroduce Free4Chat-owned
+// lifecycle/security variables into the Harness subprocess environment.
+func TestBuildHarnessEnvironmentDropsForbiddenExplicit(t *testing.T) {
+	launcher := types.AgentLauncher{
+		ID: "fake",
+		Environment: map[string]string{
+			"INITIAL_AGENT_MODE": "read-only",
+		},
+	}
+	environment := BuildHarnessEnvironment(launcher, nil, map[string]string{
+		"CODEX_CONFIG":       "/bypass/config",
+		"INITIAL_AGENT_MODE": "full-access",
+		"FREE4CHAT_OVERRIDE": "bypass",
+		"OK_PROVIDER_VAR":    "allowed",
+	})
+	if _, present := environment["CODEX_CONFIG"]; present {
+		t.Fatal("explicit CODEX_CONFIG must be dropped")
+	}
+	if environment["INITIAL_AGENT_MODE"] != "read-only" {
+		t.Fatalf("explicit INITIAL_AGENT_MODE must not override launcher policy, got %q", environment["INITIAL_AGENT_MODE"])
+	}
+	if _, present := environment["FREE4CHAT_OVERRIDE"]; present {
+		t.Fatal("explicit FREE4CHAT_* must be dropped")
+	}
+	if environment["OK_PROVIDER_VAR"] != "allowed" {
+		t.Fatalf("allowed operator variable lost: %v", environment["OK_PROVIDER_VAR"])
+	}
+}
+
+// TestValidateExplicitEnvRejectsForbidden proves the authoritative IPC-boundary
+// validation: a direct daemon request carrying forbidden names fails closed.
+func TestValidateExplicitEnvRejectsForbidden(t *testing.T) {
+	for _, env := range []map[string]string{
+		{"CODEX_CONFIG": "x"},
+		{"INITIAL_AGENT_MODE": "x"},
+		{"FREE4CHAT_ANYTHING": "x"},
+	} {
+		if err := ValidateExplicitEnv(env); err == nil ||
+			!strings.Contains(err.Error(), "reserved by Free4Chat") {
+			t.Fatalf("forbidden env %v must be rejected, got %v", env, err)
+		}
+	}
+	if err := ValidateExplicitEnv(map[string]string{"CUSTOM_PROVIDER_KEY": "x"}); err != nil {
+		t.Fatalf("ordinary operator variable must pass validation: %v", err)
+	}
+}
+
+// TestACPSubprocessReceivesExplicitEnv proves the whole path end to end: an
+// operator-authorized variable resolved from the current shell reaches the ACP
+// Harness subprocess environment through the adapter's explicit env.
+func TestACPSubprocessReceivesExplicitEnv(t *testing.T) {
+	const sentinel = "sentinel-explicit-env-276"
+	launcher := scriptLauncher("env", map[string]string{
+		"FAKE_ENV_NAME": "CUSTOM_PROVIDER_VAR",
+	})
+	adapter, _ := newTestAdapter(t, launcher, AdapterOptions{
+		AgentEnv: map[string]string{"CUSTOM_PROVIDER_VAR": sentinel},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("reveal"), adapter.SessionGeneration())
+	if err != nil {
+		t.Fatalf("turn failed: %v", err)
+	}
+	if result.Text != sentinel {
+		t.Fatalf("Harness did not receive explicit env value, got %q", result.Text)
+	}
+}
+
+// TestACPSubprocessLauncherPolicyWins proves that when the launcher itself
+// owns a variable, the operator's inherited value cannot override it in the
+// ACP subprocess.
+func TestACPSubprocessLauncherPolicyWins(t *testing.T) {
+	launcher := scriptLauncher("env", map[string]string{
+		"FAKE_ENV_NAME": "MODE_LOCK",
+		"MODE_LOCK":     "launcher-policy",
+	})
+	adapter, _ := newTestAdapter(t, launcher, AdapterOptions{
+		AgentEnv: map[string]string{"MODE_LOCK": "operator-attempt"},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("reveal"), adapter.SessionGeneration())
+	if err != nil {
+		t.Fatalf("turn failed: %v", err)
+	}
+	if result.Text != "launcher-policy" {
+		t.Fatalf("launcher-owned policy must win in the subprocess, got %q", result.Text)
+	}
+}
+
 func TestACPSubprocessReceivesExplicitRuntimeRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "runtime-root")
 	t.Setenv("FREE4CHAT_AGENT_DIR", root)

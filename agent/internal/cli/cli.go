@@ -17,6 +17,7 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/daemon"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
+	"github.com/i365dev/free4chat/agent/internal/harness"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -33,13 +34,6 @@ const agentEnvMaxTotalBytes = 32 * 1024
 
 // agentEnvNamePattern matches conventional environment variable names.
 var agentEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-// reservedAgentEnvNames are variables that Free4Chat intentionally owns or
-// filters for security/lifecycle semantics. Explicit inheritance is forbidden.
-var reservedAgentEnvNames = map[string]struct{}{
-	"CODEX_CONFIG":       {},
-	"INITIAL_AGENT_MODE": {},
-}
 
 func usageText() string {
 	return `Usage:
@@ -178,6 +172,16 @@ func keyValueOption(args []string, name string) (map[string]string, error) {
 // It resolves each NAME from the current CLI process environment and
 // validates against bounds, reserved names, and conventional grammar.
 func agentEnvOption(args []string) (map[string]string, error) {
+	// A bare trailing --agent-env (or one followed by another flag) has no
+	// NAME at all and must fail rather than being silently ignored.
+	for index, candidate := range args {
+		if candidate != "--agent-env" {
+			continue
+		}
+		if index+1 >= len(args) || strings.HasPrefix(args[index+1], "--") {
+			return nil, fmt.Errorf("--agent-env requires a variable NAME")
+		}
+	}
 	names := repeatedOption(args, "--agent-env")
 	if len(names) == 0 {
 		return nil, nil
@@ -197,12 +201,10 @@ func agentEnvOption(args []string) (map[string]string, error) {
 		if !agentEnvNamePattern.MatchString(name) {
 			return nil, fmt.Errorf("invalid environment variable name: %s", name)
 		}
-		// Forbid reserved Free4Chat lifecycle/security variables.
-		if _, reserved := reservedAgentEnvNames[name]; reserved {
-			return nil, fmt.Errorf("Harness environment variable %s is reserved by Free4Chat and cannot be inherited explicitly", name)
-		}
-		// Forbid arbitrary FREE4CHAT_* variables (Runtime controls, not provider config).
-		if strings.HasPrefix(name, "FREE4CHAT_") {
+		// Forbid Free4Chat-owned lifecycle/security variables. The shared
+		// rule (harness.ForbiddenExplicitEnv) is also enforced authoritatively
+		// at the daemon IPC boundary for direct requests.
+		if harness.ForbiddenExplicitEnv(name) {
 			return nil, fmt.Errorf("Harness environment variable %s is reserved by Free4Chat and cannot be inherited explicitly", name)
 		}
 		// Deduplicate: first occurrence wins (deterministic).

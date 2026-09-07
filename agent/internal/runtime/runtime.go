@@ -96,11 +96,6 @@ type Options struct {
 	// Room-selected Live Transcript Runtime Host. Nil disables the optional
 	// producer path fail-closed while preserving text and legacy media.
 	TranscriptProducers media.LiveTranscriptCoordinator
-	// AgentEnv is a map of explicitly authorized Harness environment variable
-	// NAMES -> VALUES resolved from the CLI process at join/create time.
-	// It is ephemeral launch material: never returned in daemon responses,
-	// never persisted to workspace/status/logs, never enters Room/MCP/ACP.
-	AgentEnv map[string]string
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness

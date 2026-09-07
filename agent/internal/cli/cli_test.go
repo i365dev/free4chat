@@ -898,23 +898,67 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
-// TestAgentEnvParsing validates the --agent-env CLI flag parsing contract.
-func TestAgentEnvParsing(t *testing.T) {
-	// 1. repeatable flag
-	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
-		if request.Op == "status" {
+// agentEnvFixture is a fake daemon that answers the standard join/create
+// preflight handshakes and the join/create operation itself.
+func agentEnvFixture(t *testing.T, result map[string]any) *fakeDaemon {
+	t.Helper()
+	return newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+		switch request.Op {
+		case "status":
 			return daemon.IpcResponse{OK: true, Result: []any{}}
-		}
-		if request.Op == "daemon-info" {
+		case "daemon-info":
 			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
+		case "join":
+			return daemon.IpcResponse{OK: true, Result: result}
+		case "create":
+			// The room create human-facing printer requires the public invite.
+			return daemon.IpcResponse{OK: true, Result: map[string]any{
+				"roomId": "test-room",
+				"invite": map[string]any{
+					"kind":    "free4chat.room-invite",
+					"version": 1,
+					"roomId":  "test-room",
+					"roomUrl": "https://www.free4.chat/room?id=test-room",
+				},
+			}}
+		default:
+			return daemon.IpcResponse{OK: false, Error: "unexpected fake daemon operation " + request.Op}
 		}
-		return daemon.IpcResponse{OK: true, Result: map[string]any{"roomId": "test-room"}}
 	})
+}
+
+// nextFakeRequestOp drains preflight handshakes until the requested operation
+// arrives. join goes through daemon-info/version; create goes through
+// EnsureDaemon/status. Hard-coding the exact preflight sequence per command is
+// the source of earlier failures, so tests wait for the actual operation
+// instead of assuming a fixed request order.
+func nextFakeRequestOp(t *testing.T, fixture *fakeDaemon, op string) daemon.IpcRequest {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case request := <-fixture.requests:
+			if request.Op == op {
+				return request
+			}
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	t.Fatalf("timed out waiting for fake daemon operation %q", op)
+	return daemon.IpcRequest{}
+}
+
+// TestAgentEnvParsing validates the --agent-env CLI flag parsing contract:
+// repeatable names are resolved from the CURRENT CLI environment and reach
+// the daemon IPC request.
+func TestAgentEnvParsing(t *testing.T) {
+	fixture := agentEnvFixture(t, map[string]any{"roomId": "test-room"})
 	_ = os.Setenv("CUSTOM_VAR1", "value1")
 	_ = os.Setenv("CUSTOM_VAR2", "value2")
 	defer os.Unsetenv("CUSTOM_VAR1")
 	defer os.Unsetenv("CUSTOM_VAR2")
-	_, code := runCliWithFakeDaemon(t, fixture,
+
+	output, code := runCliWithFakeDaemon(t, fixture,
 		"join", "--room", "test-room",
 		"--agent", "opencode",
 		"--name", "Test",
@@ -922,23 +966,20 @@ func TestAgentEnvParsing(t *testing.T) {
 		"--agent-env", "CUSTOM_VAR2",
 	)
 	if code != 0 {
-		t.Fatalf("multiple --agent-env should succeed")
+		t.Fatalf("multiple --agent-env should succeed, got %d (%s)", code, output)
 	}
-	// Skip preflight requests
-	nextFakeRequest(t, fixture)        // status
-	nextFakeRequest(t, fixture)        // daemon-info
-	req := nextFakeRequest(t, fixture) // join
-	if req.AgentEnv == nil {
-		t.Fatalf("AgentEnv should be present in IPC request")
+	request := nextFakeRequestOp(t, fixture, "join")
+	if len(request.AgentEnv) != 2 {
+		t.Fatalf("AgentEnv should carry both names, got %v", request.AgentEnv)
 	}
-	if req.AgentEnv["CUSTOM_VAR1"] != "value1" || req.AgentEnv["CUSTOM_VAR2"] != "value2" {
-		t.Fatalf("AgentEnv values should be populated from current shell: %v", req.AgentEnv)
+	if request.AgentEnv["CUSTOM_VAR1"] != "value1" || request.AgentEnv["CUSTOM_VAR2"] != "value2" {
+		t.Fatalf("AgentEnv values should be populated from current shell: %v", request.AgentEnv)
 	}
 }
 
-// TestAgentEnvMissingFailsBeforeJoin ensures missing env vars fail locally.
+// TestAgentEnvMissingFailsBeforeJoin ensures a requested NAME that is absent
+// from the CURRENT CLI environment fails locally before any daemon operation.
 func TestAgentEnvMissingFailsBeforeJoin(t *testing.T) {
-	// Unset the variable first
 	_ = os.Unsetenv("MISSING_VAR_FOR_TEST_276")
 	output, code := runCli(t,
 		"join", "--room", "test-room",
@@ -955,13 +996,13 @@ func TestAgentEnvMissingFailsBeforeJoin(t *testing.T) {
 	}
 }
 
-// TestAgentEnvInvalidNameRejected validates environment variable name grammar.
+// TestAgentEnvInvalidNameRejected validates environment variable name grammar
+// and the explicit rejection of NAME=value syntax.
 func TestAgentEnvInvalidNameRejected(t *testing.T) {
 	for _, invalid := range []string{
 		"123INVALID",   // starts with digit
 		"INVALID-NAME", // contains hyphen
 		"INVALID.NAME", // contains dot
-		"=VALUE",       // NAME=value syntax
 		"",             // empty
 	} {
 		output, code := runCli(t,
@@ -974,18 +1015,48 @@ func TestAgentEnvInvalidNameRejected(t *testing.T) {
 			t.Fatalf("invalid name %q should be rejected", invalid)
 		}
 		if !strings.Contains(output, "invalid environment variable name") {
-			t.Fatalf("error should mention invalid name: %s", output)
+			t.Fatalf("error should mention invalid name for %q: %s", invalid, output)
+		}
+	}
+
+	// NAME=value syntax is forbidden with its own message.
+	output, code := runCli(t,
+		"join", "--room", "test-room",
+		"--agent", "opencode",
+		"--name", "Test",
+		"--agent-env", "SOME_KEY=secret-value",
+	)
+	if code == 0 {
+		t.Fatal("NAME=value --agent-env syntax should be rejected")
+	}
+	if !strings.Contains(output, "--agent-env takes a variable NAME only, not NAME=value") {
+		t.Fatalf("NAME=value error message missing: %s", output)
+	}
+}
+
+// TestAgentEnvMissingValueRejected ensures a bare --agent-env with no
+// following NAME fails cleanly.
+func TestAgentEnvMissingValueRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"join", "--room", "test-room", "--agent", "opencode", "--name", "Test", "--agent-env"},
+		{"join", "--room", "test-room", "--agent", "opencode", "--name", "Test", "--agent-env", "--capability", "x"},
+	} {
+		output, code := runCli(t, args...)
+		if code == 0 || !strings.Contains(output, "--agent-env requires a variable NAME") {
+			t.Fatalf("%v must fail with the missing-NAME error, got code=%d output=%q", args, code, output)
 		}
 	}
 }
 
-// TestAgentEnvReservedNamesRejected validates reserved Free4Chat variables.
+// TestAgentEnvReservedNamesRejected validates Free4Chat-owned lifecycle and
+// security variables are rejected at the CLI.
 func TestAgentEnvReservedNamesRejected(t *testing.T) {
 	for _, reserved := range []string{
 		"CODEX_CONFIG",
 		"INITIAL_AGENT_MODE",
 		"FREE4CHAT_API_KEY",
 		"FREE4CHAT_SOME_SETTING",
+		"FREE4CHAT_AGENT_DIR",
 	} {
 		output, code := runCli(t,
 			"join", "--room", "test-room",
@@ -996,20 +1067,25 @@ func TestAgentEnvReservedNamesRejected(t *testing.T) {
 		if code == 0 {
 			t.Fatalf("reserved name %q should be rejected", reserved)
 		}
-		if !strings.Contains(output, "reserved by Free4Chat") {
-			t.Fatalf("error should mention reserved: %s", output)
+		if !strings.Contains(output, "reserved by Free4Chat") ||
+			strings.Contains(output, "=") {
+			t.Fatalf("reserved error should be name-only for %q: %s", reserved, output)
 		}
 	}
 }
 
-// TestAgentEnvBoundsEnforced validates count and total size bounds.
+// TestAgentEnvBoundsEnforced validates count and total value size bounds.
 func TestAgentEnvBoundsEnforced(t *testing.T) {
-	// Too many entries
 	many := make([]string, 0, agentEnvMaxCount+2)
 	for i := 0; i < agentEnvMaxCount+2; i++ {
 		many = append(many, "--agent-env", fmt.Sprintf("VAR%d", i))
 		_ = os.Setenv(fmt.Sprintf("VAR%d", i), "value")
 	}
+	defer func() {
+		for i := 0; i < agentEnvMaxCount+2; i++ {
+			_ = os.Unsetenv(fmt.Sprintf("VAR%d", i))
+		}
+	}()
 	args := append([]string{"join", "--room", "test-room", "--agent", "opencode", "--name", "Test"}, many...)
 	output, code := runCli(t, args...)
 	if code == 0 {
@@ -1019,43 +1095,27 @@ func TestAgentEnvBoundsEnforced(t *testing.T) {
 		t.Fatalf("error should mention count limit: %s", output)
 	}
 
-	// Clean up
-	for i := 0; i < agentEnvMaxCount+2; i++ {
-		_ = os.Unsetenv(fmt.Sprintf("VAR%d", i))
-	}
-
-	// Total size limit
 	largeVal := strings.Repeat("x", agentEnvMaxTotalBytes+1)
 	_ = os.Setenv("LARGE_VAR_TEST", largeVal)
+	defer os.Unsetenv("LARGE_VAR_TEST")
 	output, code = runCli(t,
 		"join", "--room", "test-room",
 		"--agent", "opencode",
 		"--name", "Test",
 		"--agent-env", "LARGE_VAR_TEST",
 	)
-	_ = os.Unsetenv("LARGE_VAR_TEST")
 	if code == 0 {
-		t.Fatalf("too large --agent-env value should fail")
+		t.Fatalf("over-size --agent-env value should fail")
 	}
 	if !strings.Contains(output, "exceeds") && !strings.Contains(output, "bytes") {
 		t.Fatalf("error should mention size limit: %s", output)
 	}
 }
 
-// TestAgentEnvWorksOnAllEntryPaths validates --agent-env on create, join, room create, room join.
+// TestAgentEnvWorksOnAllEntryPaths validates --agent-env on create, join,
+// room create, and room join.
 func TestAgentEnvWorksOnAllEntryPaths(t *testing.T) {
-	// We only test that the flag is accepted and parsed on all four paths.
-	// The fake daemon will accept any request.
-	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
-		if request.Op == "status" {
-			return daemon.IpcResponse{OK: true, Result: []any{}}
-		}
-		if request.Op == "daemon-info" {
-			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
-		}
-		return daemon.IpcResponse{OK: true, Result: map[string]any{"roomId": "test-room"}}
-	})
-
+	fixture := agentEnvFixture(t, map[string]any{"roomId": "test-room"})
 	_ = os.Setenv("TEST_VAR_ENTRY", "entry-value")
 	defer os.Unsetenv("TEST_VAR_ENTRY")
 
@@ -1065,146 +1125,89 @@ func TestAgentEnvWorksOnAllEntryPaths(t *testing.T) {
 		{"room", "create", "--agent", "opencode", "--name", "Test", "--agent-env", "TEST_VAR_ENTRY"},
 		{"room", "join", "test-room", "--agent", "opencode", "--name", "Test", "--agent-env", "TEST_VAR_ENTRY"},
 	} {
-		_, code := runCliWithFakeDaemon(t, fixture, cmd...)
+		output, code := runCliWithFakeDaemon(t, fixture, cmd...)
 		if code != 0 {
-			t.Fatalf("--agent-env should work on %v: %v", cmd[0], code)
+			t.Fatalf("--agent-env should work on %v: %d %s", cmd, code, output)
 		}
-		req := nextFakeRequest(t, fixture)
-		if req.AgentEnv == nil || req.AgentEnv["TEST_VAR_ENTRY"] != "entry-value" {
-			t.Fatalf("AgentEnv not passed correctly for %v: %v", cmd[0], req.AgentEnv)
+		op := "create"
+		if cmd[0] == "join" || (cmd[0] == "room" && cmd[1] == "join") {
+			op = "join"
+		}
+		request := nextFakeRequestOp(t, fixture, op)
+		if request.AgentEnv == nil || request.AgentEnv["TEST_VAR_ENTRY"] != "entry-value" {
+			t.Fatalf("AgentEnv not passed for %v: %v", cmd, request.AgentEnv)
 		}
 	}
 }
 
-// TestAgentEnvDeduplication validates deterministic duplicate handling.
+// TestAgentEnvDeduplication validates deterministic duplicate handling: first
+// occurrence wins and the map holds exactly one entry.
 func TestAgentEnvDeduplication(t *testing.T) {
-	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
-		if request.Op == "status" {
-			return daemon.IpcResponse{OK: true, Result: []any{}}
-		}
-		if request.Op == "daemon-info" {
-			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
-		}
-		return daemon.IpcResponse{OK: true, Result: map[string]any{"roomId": "test-room"}}
-	})
+	fixture := agentEnvFixture(t, map[string]any{"roomId": "test-room"})
 	_ = os.Setenv("DUP_VAR_TEST", "first-value")
 	defer os.Unsetenv("DUP_VAR_TEST")
 
-	_, code := runCliWithFakeDaemon(t, fixture,
+	output, code := runCliWithFakeDaemon(t, fixture,
 		"join", "--room", "test-room",
 		"--agent", "opencode",
 		"--name", "Test",
 		"--agent-env", "DUP_VAR_TEST",
-		"--agent-env", "DUP_VAR_TEST", // duplicate
+		"--agent-env", "DUP_VAR_TEST",
 	)
 	if code != 0 {
-		t.Fatalf("duplicate --agent-env should not fail")
+		t.Fatalf("duplicate --agent-env should not fail, got %d (%s)", code, output)
 	}
-	req := nextFakeRequest(t, fixture)
-	if len(req.AgentEnv) != 1 || req.AgentEnv["DUP_VAR_TEST"] != "first-value" {
-		t.Fatalf("duplicate should be deduplicated (first wins): %v", req.AgentEnv)
+	request := nextFakeRequestOp(t, fixture, "join")
+	if len(request.AgentEnv) != 1 || request.AgentEnv["DUP_VAR_TEST"] != "first-value" {
+		t.Fatalf("duplicate should be deduplicated (first wins): %v", request.AgentEnv)
 	}
 }
 
-// TestAgentEnvStaleDaemonRegression ensures current-shell values win over stale daemon env.
+// TestAgentEnvStaleDaemonRegression proves the CLI resolves values from its
+// own CURRENT environment: a value set after the daemon might have started
+// still reaches the IPC request, and the daemon never gets a chance to use an
+// older ambient copy for an explicitly inherited name.
 func TestAgentEnvStaleDaemonRegression(t *testing.T) {
-	// This test validates that the CLI resolves values from its own process environment,
-	// not from the daemon's potentially stale environment.
-	// We simulate by setting a value in the test process, then verifying it reaches the IPC.
-	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
-		if request.Op == "status" {
-			return daemon.IpcResponse{OK: true, Result: []any{}}
-		}
-		if request.Op == "daemon-info" {
-			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
-		}
-		return daemon.IpcResponse{OK: true, Result: map[string]any{"roomId": "test-room"}}
-	})
+	fixture := agentEnvFixture(t, map[string]any{"roomId": "test-room"})
 
-	// Set a value in the CURRENT test process (simulating current shell)
+	// Simulate the stale-daemon setup: a value that existed "before" the CLI
+	// invocation. The explicit request must carry the CURRENT value.
 	_ = os.Setenv("STALE_TEST_VAR", "current-shell-value")
 	defer os.Unsetenv("STALE_TEST_VAR")
 
-	_, code := runCliWithFakeDaemon(t, fixture,
+	output, code := runCliWithFakeDaemon(t, fixture,
 		"join", "--room", "test-room",
 		"--agent", "opencode",
 		"--name", "Test",
 		"--agent-env", "STALE_TEST_VAR",
 	)
 	if code != 0 {
-		t.Fatalf("stale daemon regression test failed: %v", code)
+		t.Fatalf("stale daemon regression CLI run failed: %d (%s)", code, output)
 	}
-	req := nextFakeRequest(t, fixture)
-	if req.AgentEnv["STALE_TEST_VAR"] != "current-shell-value" {
-		t.Fatalf("current shell value should win, got: %v", req.AgentEnv["STALE_TEST_VAR"])
-	}
-}
-
-// TestAgentEnvSecretHygiene ensures secret values don't leak into responses/logs.
-func TestAgentEnvSecretHygiene(t *testing.T) {
-	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
-		if request.Op == "status" {
-			return daemon.IpcResponse{OK: true, Result: []any{}}
-		}
-		if request.Op == "daemon-info" {
-			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
-		}
-		// Include the secret in the response to verify it's NOT in the CLI output
-		return daemon.IpcResponse{OK: true, Result: map[string]any{
-			"roomId":     "test-room",
-			"secretEcho": "sentinel-super-secret-276",
-		}}
-	})
-
-	_ = os.Setenv("SECRET_HYGIENE_VAR", "sentinel-super-secret-276")
-	defer os.Unsetenv("SECRET_HYGIENE_VAR")
-
-	output, code := runCliWithFakeDaemon(t, fixture,
-		"join", "--room", "test-room",
-		"--agent", "opencode",
-		"--name", "Test",
-		"--agent-env", "SECRET_HYGIENE_VAR",
-	)
-	if code != 0 {
-		t.Fatalf("secret hygiene test failed: %v", code)
-	}
-	// The secret value must NOT appear in CLI output
-	if strings.Contains(output, "sentinel-super-secret-276") {
-		t.Fatalf("secret value leaked into CLI output: %s", output)
-	}
-	// The secret value must NOT appear in daemon response (we verify by checking
-	// the response we crafted doesn't accidentally contain it - the daemon
-	// response should not include AgentEnv)
-	if strings.Contains(output, "SECRET_HYGIENE_VAR") {
-		t.Fatalf("secret name leaked into CLI output: %s", output)
+	request := nextFakeRequestOp(t, fixture, "join")
+	if request.AgentEnv["STALE_TEST_VAR"] != "current-shell-value" {
+		t.Fatalf("current shell value should be carried over IPC, got %q", request.AgentEnv["STALE_TEST_VAR"])
 	}
 }
 
-// TestAgentEnvWorksWithCustomLauncher validates --agent-env works with --agent-command.
+// TestAgentEnvWorksWithCustomLauncher validates --agent-env works with the
+// --agent-command custom launcher path.
 func TestAgentEnvWorksWithCustomLauncher(t *testing.T) {
-	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
-		if request.Op == "status" {
-			return daemon.IpcResponse{OK: true, Result: []any{}}
-		}
-		if request.Op == "daemon-info" {
-			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
-		}
-		return daemon.IpcResponse{OK: true, Result: map[string]any{"roomId": "test-room"}}
-	})
+	fixture := agentEnvFixture(t, map[string]any{"roomId": "test-room"})
 	_ = os.Setenv("CUSTOM_LAUNCHER_VAR", "custom-value")
 	defer os.Unsetenv("CUSTOM_LAUNCHER_VAR")
 
-	_, code := runCliWithFakeDaemon(t, fixture,
+	output, code := runCliWithFakeDaemon(t, fixture,
 		"join", "--room", "test-room",
 		"--agent-command", "custom-acp",
 		"--name", "Test",
 		"--agent-env", "CUSTOM_LAUNCHER_VAR",
 	)
 	if code != 0 {
-		t.Fatalf("--agent-env should work with --agent-command")
+		t.Fatalf("--agent-env should work with --agent-command, got %d (%s)", code, output)
 	}
-	req := nextFakeRequest(t, fixture)
-	if req.AgentEnv == nil || req.AgentEnv["CUSTOM_LAUNCHER_VAR"] != "custom-value" {
-		t.Fatalf("AgentEnv not passed with custom launcher: %v", req.AgentEnv)
+	request := nextFakeRequestOp(t, fixture, "join")
+	if request.AgentEnv == nil || request.AgentEnv["CUSTOM_LAUNCHER_VAR"] != "custom-value" {
+		t.Fatalf("AgentEnv not passed with custom launcher: %v", request.AgentEnv)
 	}
 }
