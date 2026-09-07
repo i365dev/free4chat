@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,9 +21,39 @@ const (
 	maxRoomPermissionOptions  = 8
 	maxRoomPermissionOptionID = 64
 	maxRoomPermissionName     = 160
+	maxRoomPermissionSummary  = 1000
+	maxRoomPermissionDetail   = 512
 	roomPermissionMinLifetime = time.Second
 	roomPermissionMaxLifetime = 5 * time.Minute
 )
+
+type roomPermissionRawField struct {
+	roomKey string
+	rawKeys []string
+}
+
+// These are presentation-only fields from common ACP tool-call shapes. The
+// raw request remains local; in particular, arbitrary nested values such as
+// env, headers, tokens, and credentials are never copied into Room state.
+var roomPermissionRawFields = []roomPermissionRawField{
+	{roomKey: "command", rawKeys: []string{"command"}},
+	{roomKey: "cwd", rawKeys: []string{"cwd"}},
+	{roomKey: "url", rawKeys: []string{"url", "uri"}},
+	{roomKey: "host", rawKeys: []string{"host", "hostname"}},
+	{roomKey: "path", rawKeys: []string{"path", "filePath", "file_path", "filesystemPath", "filesystem_path"}},
+	{roomKey: "server", rawKeys: []string{"server", "serverName"}},
+	{roomKey: "glob", rawKeys: []string{"glob", "pattern"}},
+}
+
+var genericExecutePermissionTitles = map[string]struct{}{
+	"command":         {},
+	"execute":         {},
+	"execute command": {},
+	"execute tool":    {},
+	"run":             {},
+	"run command":     {},
+	"run tool":        {},
+}
 
 var errRoomPermissionCancelled = errors.New("Room permission approval was cancelled")
 
@@ -124,6 +155,11 @@ func projectRoomPermission(
 	request harness.ACPPermissionRequest,
 ) (types.RoomPermissionRequest, map[string]struct{}, error) {
 	title := strings.TrimSpace(request.ToolCall.Title)
+	if request.ToolCall.Permission != nil {
+		if nativeTitle := strings.TrimSpace(request.ToolCall.Permission.Title); validRoomPermissionText(nativeTitle, maxRoomPermissionTitle) {
+			title = nativeTitle
+		}
+	}
 	if !validRoomPermissionText(title, maxRoomPermissionTitle) {
 		return types.RoomPermissionRequest{}, nil, errors.New("invalid Harness permission title")
 	}
@@ -161,13 +197,67 @@ func projectRoomPermission(
 			Kind:     optionKind,
 		})
 	}
+	summary := ""
+	if request.ToolCall.Permission != nil {
+		nativeSummary := strings.TrimSpace(request.ToolCall.Permission.Description)
+		if validRoomPermissionText(nativeSummary, maxRoomPermissionSummary) {
+			summary = nativeSummary
+		}
+	}
+	details := projectRoomPermissionDetails(request.ToolCall.RawInput)
+	if isBlindGenericExecutePermission(kind, title, summary, details) {
+		return types.RoomPermissionRequest{}, nil, errors.New("Harness permission lacks a safe action presentation")
+	}
 	// ACP rawInput/content, toolCallId, status, sessionId, and the native
-	// JSON-RPC request id are intentionally not projected into Room. #291's
-	// presentation remains Human-useful without leaking local Harness state.
+	// JSON-RPC request id stay local. Only the bounded, allowlisted action
+	// fields above are projected into Room, alongside native display metadata.
 	return types.RoomPermissionRequest{
-		ToolCall: types.RoomPermissionToolCall{Title: title, Kind: kind},
-		Options:  options,
+		ToolCall: types.RoomPermissionToolCall{
+			Title: title, Kind: kind, Summary: summary, Details: details,
+		},
+		Options: options,
 	}, offered, nil
+}
+
+func projectRoomPermissionDetails(rawInput json.RawMessage) map[string]string {
+	if len(rawInput) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(rawInput, &fields) != nil {
+		return nil
+	}
+	details := make(map[string]string)
+	for _, field := range roomPermissionRawFields {
+		for _, rawKey := range field.rawKeys {
+			rawValue, ok := fields[rawKey]
+			if !ok {
+				continue
+			}
+			var value string
+			if json.Unmarshal(rawValue, &value) != nil {
+				continue
+			}
+			if strings.TrimSpace(value) == "" || !validRoomPermissionText(value, maxRoomPermissionDetail) {
+				continue
+			}
+			details[field.roomKey] = value
+			break
+		}
+	}
+	if len(details) == 0 {
+		return nil
+	}
+	return details
+}
+
+func isBlindGenericExecutePermission(kind, title, summary string, details map[string]string) bool {
+	if strings.ToLower(strings.TrimSpace(kind)) != "execute" || summary != "" || details["command"] != "" {
+		return false
+	}
+	normalizedTitle := strings.ToLower(strings.Join(strings.Fields(title), " "))
+	_, generic := genericExecutePermissionTitles[normalizedTitle]
+	return generic
 }
 
 func validRoomPermissionText(value string, maxUTF16 int) bool {

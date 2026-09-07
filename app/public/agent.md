@@ -231,6 +231,11 @@ of the exact native options offered by the Harness; ordinary Room text such as
 The Runtime returns the selected native option to the same Harness turn without
 interpreting its semantics.
 
+Free4Chat does not expose the raw Harness request payload; it publishes only a
+bounded Human-facing description of the requested action and the exact native
+permission options. Credentials, private Harness state, and ACP identifiers
+remain local to the Runtime and Harness.
+
 If no Human answers before the bounded request lifetime, the request is
 cancelled and the action fails closed. CLI-only and Agent-only use remains
 supported under the Harness's current native/default policy, and does not

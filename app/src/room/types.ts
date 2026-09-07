@@ -123,7 +123,8 @@ export interface CollabEvent {
 
 // #286: Room-native ACP permission presentation. The Room carries only the
 // bounded, sanitized fields a Human needs to understand and choose an
-// option; it never carries ACP credentials, raw tool input, or policy state.
+// option; it carries only a bounded action presentation and never carries ACP
+// credentials, the raw tool input, or policy state.
 export interface PermissionToolCall {
   title: string
   kind?: string

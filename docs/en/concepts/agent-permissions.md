@@ -22,7 +22,9 @@ Only an explicit choice on the matching structured approval card is used.
 If nobody answers before the bounded request lifetime, the request is
 cancelled and the action fails closed. Free4Chat never automatically broadens
 local Harness permissions because no Human is available, and it never exposes
-the Harness's local credentials or raw tool input in the Room.
+the Harness's local credentials or raw request payload in the Room. It
+publishes only a bounded Human-facing description of the requested action and
+the exact native permission options.
 
 ## Human-present and headless Rooms
 

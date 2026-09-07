@@ -593,7 +593,9 @@ Only an explicit choice on the matching structured approval card is used.
 If nobody answers before the bounded request lifetime, the request is
 cancelled and the action fails closed. Free4Chat never automatically broadens
 local Harness permissions because no Human is available, and it never exposes
-the Harness's local credentials or raw tool input in the Room.
+the Harness's local credentials or raw request payload in the Room. It
+publishes only a bounded Human-facing description of the requested action and
+the exact native permission options.
 
 ## Human-present and headless Rooms
 
@@ -1696,6 +1698,11 @@ of the exact native options offered by the Harness; ordinary Room text such as
 `yes`, Agent messages, and `collab_request` acceptance are never permission.
 The Runtime returns the selected native option to the same Harness turn without
 interpreting its semantics.
+
+Free4Chat does not expose the raw Harness request payload; it publishes only a
+bounded Human-facing description of the requested action and the exact native
+permission options. Credentials, private Harness state, and ACP identifiers
+remain local to the Runtime and Harness.
 
 If no Human answers before the bounded request lifetime, the request is
 cancelled and the action fails closed. CLI-only and Agent-only use remains

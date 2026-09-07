@@ -343,7 +343,17 @@ func main() {
 								"title":      "delayed harmless operation",
 								"kind":       "execute",
 								"status":     "pending",
-								"rawInput":   map[string]any{"command": "touch temporary-marker"},
+								"rawInput": map[string]any{
+									"command": "touch temporary-marker",
+									"cwd":     "/workspace",
+									"env":     map[string]any{"PRIVATE_TOKEN": "secret-token"},
+									"headers": map[string]any{"Authorization": "Bearer secret-token"},
+								},
+							},
+							"_meta": map[string]any{
+								"permission": map[string]any{
+									"description": "Create a temporary marker file",
+								},
 							},
 							"options": []any{
 								map[string]any{"optionId": "allow-once", "name": "Allow Once", "kind": "allow_once"},

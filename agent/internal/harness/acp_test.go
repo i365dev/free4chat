@@ -347,8 +347,11 @@ func TestACPDelayedPermissionSelectionContinuesSameTurn(t *testing.T) {
 		if request.RequestID != "78" || request.SessionID == "" || request.ToolCall.ToolCallID != "tool-delayed" || request.ToolCall.Title != "delayed harmless operation" {
 			t.Fatalf("permission request context was not preserved: %+v", request)
 		}
-		if string(request.ToolCall.RawInput) != `{"command":"touch temporary-marker"}` {
+		if string(request.ToolCall.RawInput) != `{"command":"touch temporary-marker","cwd":"/workspace","env":{"PRIVATE_TOKEN":"secret-token"},"headers":{"Authorization":"Bearer secret-token"}}` {
 			t.Fatalf("tool call input was not preserved: %s", request.ToolCall.RawInput)
+		}
+		if request.ToolCall.Permission == nil || request.ToolCall.Permission.Description != "Create a temporary marker file" {
+			t.Fatalf("permission presentation metadata was not preserved: %+v", request.ToolCall.Permission)
 		}
 		if len(request.Options) != 2 || request.Options[0].OptionID != "allow-once" || request.Options[0].Name != "Allow Once" || request.Options[0].Kind != "allow_once" || request.Options[1].OptionID != "reject-once" || request.Options[1].Name != "Reject" || request.Options[1].Kind != "reject_once" {
 			t.Fatalf("permission options were not preserved: %+v", request.Options)

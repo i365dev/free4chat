@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"os/exec"
 	"path/filepath"
 	stdruntime "runtime"
@@ -113,8 +114,11 @@ func TestRoomPermissionMappingUsesFreshIdsAndRejectsStaleOrInvalidResponses(t *t
 	}
 	if first.request.ToolCall.Title != "Run command" || first.request.ToolCall.Kind != "execute" ||
 		len(first.request.Options) != 2 || first.request.Options[0].OptionID != "allow-once" ||
-		first.request.ToolCall.Summary != "" || first.request.ToolCall.Details != nil {
+		first.request.ToolCall.Details["command"] != "do-not-project" {
 		t.Fatalf("unsafe or incomplete Room projection: %+v", first.request)
+	}
+	if first.request.ToolCall.Summary != "" {
+		t.Fatalf("unexpected native summary in projection: %q", first.request.ToolCall.Summary)
 	}
 
 	// A delayed response from an earlier Room request cannot resolve this one.
@@ -212,6 +216,26 @@ func TestResidentACPPermissionContinuesSameTurnThroughRoomEventStream(t *testing
 	if request.request.ExpiresInMs <= 0 || request.request.ExpiresInMs >= 5_000 {
 		t.Fatalf("Room request was not bounded below the ACP turn timeout: %d", request.request.ExpiresInMs)
 	}
+	if request.request.ToolCall.Title != "delayed harmless operation" ||
+		request.request.ToolCall.Summary != "Create a temporary marker file" ||
+		request.request.ToolCall.Details["command"] != "touch temporary-marker" ||
+		request.request.ToolCall.Details["cwd"] != "/workspace" {
+		t.Fatalf("Room permission omitted the requested action presentation: %+v", request.request.ToolCall)
+	}
+	if request.request.RequestID == "78" {
+		t.Fatal("ACP JSON-RPC id was exposed as the Room correlation id")
+	}
+	wire, err := json.Marshal(request.request)
+	if err != nil {
+		t.Fatalf("marshal Room permission request: %v", err)
+	}
+	for _, forbidden := range []string{
+		"sessionId", "session-local", "toolCallId", "tool-delayed", "rawInput", "credential", "secret-token",
+	} {
+		if strings.Contains(string(wire), forbidden) {
+			t.Fatalf("Room permission wire exposed %q: %s", forbidden, wire)
+		}
+	}
 
 	stream.results <- types.WaitResult{
 		Events: []types.RoomEvent{
@@ -237,6 +261,21 @@ func TestResidentACPPermissionContinuesSameTurnThroughRoomEventStream(t *testing
 	client.fakeClient.mu.Unlock()
 	if waits != 0 {
 		t.Fatalf("permission response used legacy agent-wait transport: %d waits", waits)
+	}
+}
+
+func TestRoomPermissionProjectionRejectsBlindGenericExecute(t *testing.T) {
+	_, _, err := projectRoomPermission(harness.ACPPermissionRequest{
+		RequestID: "78",
+		ToolCall: harness.ACPToolCall{
+			Title:    "Run command",
+			Kind:     "execute",
+			RawInput: []byte(`{"env":{"TOKEN":"secret-token"},"cwd":"/workspace"}`),
+		},
+		Options: []harness.ACPPermissionOption{{OptionID: "allow", Name: "Allow"}},
+	})
+	if err == nil {
+		t.Fatal("generic execute permission without a safe action presentation was allowed")
 	}
 }
 
