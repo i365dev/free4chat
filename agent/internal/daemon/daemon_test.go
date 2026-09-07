@@ -1343,3 +1343,284 @@ func TestStatusProjectsRuntimeHost(t *testing.T) {
 		t.Fatalf("speech readiness mismatch: %v", view["speech"])
 	}
 }
+
+// TestAgentEnvDirectIPCRejectsForbidden proves reserved-name enforcement is
+// authoritative beyond the CLI: a direct daemon IPC request carrying
+// Free4Chat-owned lifecycle/security variables is rejected at the daemon
+// boundary before any room/Harness work happens.
+func TestAgentEnvDirectIPCRejectsForbidden(t *testing.T) {
+	d, _ := startDaemon(t)
+
+	for _, forbidden := range []string{
+		"CODEX_CONFIG",
+		"INITIAL_AGENT_MODE",
+		"FREE4CHAT_OVERRIDE",
+	} {
+		_, err := SendIPC(&IpcRequest{
+			Op:           "join",
+			Room:         "forbidden-room",
+			Name:         "Forbidden",
+			AgentCommand: fakeAgentBinary,
+			AgentEnv:     map[string]string{forbidden: "bypass-value"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "reserved by Free4Chat") ||
+			strings.Contains(err.Error(), "bypass-value") {
+			t.Fatalf("direct IPC with %s must be rejected name-only, got %v", forbidden, err)
+		}
+	}
+	if count := d.InstanceCount(); count != 0 {
+		t.Fatalf("forbidden join must not create a resident: %d", count)
+	}
+
+	// An ordinary operator variable still passes the boundary; the join then
+	// fails later on the dead Harness, never on env validation.
+	_, err := SendIPC(&IpcRequest{
+		Op:           "join",
+		Room:         "clean-room",
+		Name:         "Clean",
+		AgentCommand: "nonexistent-acp-binary-xyz",
+		AgentEnv:     map[string]string{"CUSTOM_PROVIDER_KEY": "ok"},
+	})
+	if err == nil || strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("ordinary AgentEnv must pass the boundary validation: %v", err)
+	}
+}
+
+// scriptLauncherForEnv builds a shell wrapper around the fake agent that sets
+// FAKE_MODE and FAKE_ENV_NAME, so the ACP subprocess observes the chosen env
+// variable without weakening the production environment filter.
+func scriptLauncherForEnv(mode, envName string) string {
+	dir, err := os.MkdirTemp("", "fcagent-env-launcher-")
+	if err != nil {
+		panic(err)
+	}
+	script := "#!/bin/sh\nexport FAKE_MODE=" + mode + "\nexport FAKE_ENV_NAME=" + envName + "\nexec \"" + fakeAgentBinary + "\"\n"
+	path := filepath.Join(dir, "env-agent")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		panic(err)
+	}
+	return path
+}
+
+// envEchoMCPServer scripts the MCP layer for a join + one addressed room
+// event. The fake Harness runs in mode "env" and echoes the observed value of
+// the FAKE_ENV_NAME variable as its reply, which the Runtime publishes via
+// send_text. Returns the server plus a recorder of sent room texts.
+func envEchoMCPServer(t *testing.T, room string) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var sentTexts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveResidentEventSocket(w, r, map[string]any{
+			"type": "events",
+			"events": []any{map[string]any{
+				"sequence": float64(1), "type": "text",
+				"participant": map[string]any{
+					"id": "human-1", "name": "Ada", "kind": "human",
+				},
+				"text": "reveal", "addressed": true,
+				"createdAt": float64(1700000000000),
+			}},
+			"cursor":    float64(1),
+			"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+		}) {
+			return
+		}
+		var body struct {
+			Method string `json:"method"`
+			Params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body.Method {
+		case "tools/list":
+			writeModernMCPTools(w)
+		case "tools/call":
+			w.Header().Set("Content-Type", "application/json")
+			switch body.Params.Name {
+			case "join_room":
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"participantHandle": residentTestHandle(room, "agent-env", "env-token"),
+					"participant":       map[string]any{"id": "agent-env"},
+					"cursor":            float64(0),
+					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
+				}))
+			case "wait_for_events":
+				http.Error(w, "resident Runtime must use the event stream", http.StatusInternalServerError)
+			case "send_text":
+				text, _ := body.Params.Arguments["text"].(string)
+				mu.Lock()
+				sentTexts = append(sentTexts, text)
+				mu.Unlock()
+				writeJSONRPC(w, callToolResult(map[string]any{"sequence": float64(1)}))
+			case "leave_room":
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			default:
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), sentTexts...)
+	}
+}
+
+// TestAgentEnvStaleDaemonMeaningful proves the stale-daemon regression end to
+// end: the daemon process environment holds an OLD ambient value for a safe
+// allow-list key, while the explicit transfer carries the NEW value. The ACP
+// Harness subprocess must observe the NEW explicitly transferred value, never
+// the stale daemon ambient copy.
+func TestAgentEnvStaleDaemonMeaningful(t *testing.T) {
+	// Seed the daemon ambient environment with the OLD value BEFORE it starts;
+	// OPENAI_API_KEY is on the safe ambient allow-list, so without explicit
+	// transfer the Harness would inherit this stale copy.
+	t.Setenv("OPENAI_API_KEY", "stale-daemon-value")
+
+	_, _ = startDaemon(t)
+	server, sent := envEchoMCPServer(t, "stale-env")
+	t.Setenv("FREE4CHAT_MCP_URL", server.URL)
+
+	launcher := scriptLauncherForEnv("env", "OPENAI_API_KEY")
+	joined, err := SendIPC(&IpcRequest{
+		Op:           "join",
+		Room:         "stale-env",
+		Name:         "Stale",
+		AgentCommand: launcher,
+		// The explicit transfer carries the NEW value resolved from the
+		// current CLI environment (simulated here as the direct IPC value).
+		AgentEnv: map[string]string{"OPENAI_API_KEY": "new-cli-value"},
+	})
+	if err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	var view struct {
+		InstanceID string `json:"instanceId"`
+		State      string `json:"state"`
+	}
+	if err := json.Unmarshal(joined, &view); err != nil || view.State != "waiting" {
+		t.Fatalf("join view mismatch: %s", joined)
+	}
+
+	// The fake Harness echoes the environment value it actually observes. It
+	// must be the NEW transferred value, never the stale daemon ambient copy.
+	deadline := time.Now().Add(10 * time.Second)
+	var texts []string
+	for time.Now().Before(deadline) {
+		texts = sent()
+		if len(texts) > 0 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(texts) == 0 {
+		t.Fatal("fake Harness never answered the addressed turn")
+	}
+	foundNew, foundOld := false, false
+	for _, text := range texts {
+		if text == "new-cli-value" {
+			foundNew = true
+		}
+		if text == "stale-daemon-value" {
+			foundOld = true
+		}
+	}
+	if foundOld {
+		t.Fatalf("stale daemon ambient value won over explicit transfer: %v", texts)
+	}
+	if !foundNew {
+		t.Fatalf("Harness did not receive the explicitly transferred value: %v", texts)
+	}
+}
+
+// TestAgentEnvSecretNonPersistence proves explicitly inherited values survive
+// only in (a) the transient IPC request and (b) the Harness subprocess env:
+// the daemon response, status projection, bounded daemon logs, and resident
+// workspace files never contain the inherited VALUE.
+func TestAgentEnvSecretNonPersistence(t *testing.T) {
+	const sentinel = "sentinel-super-secret-276"
+	_, _ = startDaemon(t)
+
+	server, sent := envEchoMCPServer(t, "secret-room")
+	t.Setenv("FREE4CHAT_MCP_URL", server.URL)
+
+	launcher := scriptLauncherForEnv("env", "CUSTOM_PROVIDER_VAR")
+	joined, err := SendIPC(&IpcRequest{
+		Op:           "join",
+		Room:         "secret-room",
+		Name:         "Secret",
+		AgentCommand: launcher,
+		AgentEnv:     map[string]string{"CUSTOM_PROVIDER_VAR": sentinel},
+	})
+	if err != nil {
+		t.Fatalf("join failed: %v", err)
+	}
+	// The join RESPONSE must never echo the inherited value.
+	if strings.Contains(string(joined), sentinel) {
+		t.Fatalf("join response leaked the inherited value: %s", joined)
+	}
+	var view struct {
+		InstanceID string `json:"instanceId"`
+		State      string `json:"state"`
+	}
+	if err := json.Unmarshal(joined, &view); err != nil || view.InstanceID == "" {
+		t.Fatalf("join payload mismatch: %s", joined)
+	}
+
+	// The turn IS answered (proving the value reached the Harness subprocess),
+	// then the value must appear in NO daemon-visible surface.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && len(sent()) == 0 {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(sent()) == 0 {
+		t.Fatal("fake Harness never answered the addressed turn")
+	}
+
+	for _, surface := range []string{string(joined), string(mustStatus(t))} {
+		if strings.Contains(surface, sentinel) {
+			t.Fatalf("inherited value leaked into a daemon surface: %s", surface)
+		}
+	}
+
+	// Bounded daemon logs must not contain the value.
+	log := NewBoundedLog(RuntimeDirectory())
+	if strings.Contains(strings.Join(log.Tail(2000, ""), "\n"), sentinel) {
+		t.Fatalf("daemon logs leaked the inherited value")
+	}
+
+	// Resident workspace files must not contain the value.
+	workspace := filepath.Join(WorkspacesRoot(), view.InstanceID)
+	if err := filepath.Walk(workspace, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr == nil && strings.Contains(string(data), sentinel) {
+			t.Fatalf("workspace file %s leaked the inherited value", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("workspace walk failed: %v", err)
+	}
+
+	if _, err := SendIPC(&IpcRequest{Op: "leave", InstanceID: view.InstanceID}); err != nil {
+		t.Fatalf("leave failed: %v", err)
+	}
+}
+
+// mustStatus snapshots daemon status, failing the test on transport errors.
+func mustStatus(t *testing.T) json.RawMessage {
+	t.Helper()
+	status, err := SendIPC(&IpcRequest{Op: "status"})
+	if err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+	return status
+}

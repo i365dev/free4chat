@@ -17,6 +17,7 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/daemon"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
+	"github.com/i365dev/free4chat/agent/internal/harness"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -25,17 +26,26 @@ const maxSurfaceBytes = attachments.MaxSurfaceBytes
 
 const mcpEndpointDefault = "https://www.free4.chat/mcp"
 
+// agentEnvMaxCount is the maximum number of --agent-env entries allowed.
+const agentEnvMaxCount = 16
+
+// agentEnvMaxTotalBytes is the maximum total size of all inherited values.
+const agentEnvMaxTotalBytes = 32 * 1024
+
+// agentEnvNamePattern matches conventional environment variable names.
+var agentEnvNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func usageText() string {
 	return `Usage:
-  free4chat-agent room create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
-  free4chat-agent room create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
-  free4chat-agent room join <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
-  free4chat-agent room join <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
-  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
-  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>]
+  free4chat-agent room create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+  free4chat-agent room create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
+  free4chat-agent room join <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
+  free4chat-agent room join <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
+  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
+  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
   free4chat-agent connect --room <room-id> --provider-claim <opaque-secret>
-  free4chat-agent create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]...
-  free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]...
+  free4chat-agent create --agent <hermes|opencode|codex|claude|pi|deepseek-harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+  free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
   free4chat-agent peers --room <room-id>
   free4chat-agent collab request --target <participant-id> --summary <text> [--request-id <id>] [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
@@ -156,6 +166,69 @@ func keyValueOption(args []string, name string) (map[string]string, error) {
 		details[entry[:separator]] = entry[separator+1:]
 	}
 	return details, nil
+}
+
+// agentEnvOption parses --agent-env NAME flags (repeatable, names only).
+// It resolves each NAME from the current CLI process environment and
+// validates against bounds, reserved names, and conventional grammar.
+func agentEnvOption(args []string) (map[string]string, error) {
+	// A bare trailing --agent-env (or one followed by another flag) has no
+	// NAME at all and must fail rather than being silently ignored.
+	for index, candidate := range args {
+		if candidate != "--agent-env" {
+			continue
+		}
+		if index+1 >= len(args) || strings.HasPrefix(args[index+1], "--") {
+			return nil, fmt.Errorf("--agent-env requires a variable NAME")
+		}
+	}
+	names := repeatedOption(args, "--agent-env")
+	if len(names) == 0 {
+		return nil, nil
+	}
+	if len(names) > agentEnvMaxCount {
+		return nil, fmt.Errorf("too many --agent-env entries (max %d)", agentEnvMaxCount)
+	}
+	env := make(map[string]string, len(names))
+	totalBytes := 0
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		// Reject NAME=value syntax explicitly.
+		if strings.Contains(name, "=") {
+			return nil, fmt.Errorf("--agent-env takes a variable NAME only, not NAME=value")
+		}
+		// Validate conventional environment variable grammar.
+		if !agentEnvNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("invalid environment variable name: %s", name)
+		}
+		// Forbid Free4Chat-owned lifecycle/security variables. The shared
+		// rule (harness.ForbiddenExplicitEnv) is also enforced authoritatively
+		// at the daemon IPC boundary for direct requests.
+		if harness.ForbiddenExplicitEnv(name) {
+			return nil, fmt.Errorf("Harness environment variable %s is reserved by Free4Chat and cannot be inherited explicitly", name)
+		}
+		// Deduplicate: first occurrence wins (deterministic).
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		// Resolve value from CURRENT CLI process environment, not daemon.
+		value, ok := os.LookupEnv(name)
+		if !ok {
+			return nil, fmt.Errorf("Requested Harness environment variable %s is not set locally", name)
+		}
+		// Validate NUL-free (OS subprocess constraint).
+		if strings.Contains(value, "\x00") {
+			return nil, fmt.Errorf("environment variable %s contains invalid NUL byte", name)
+		}
+		valueBytes := len(value)
+		if totalBytes+valueBytes > agentEnvMaxTotalBytes {
+			return nil, fmt.Errorf("total inherited environment value size exceeds %d bytes", agentEnvMaxTotalBytes)
+		}
+		totalBytes += valueBytes
+		env[name] = value
+	}
+	return env, nil
 }
 
 func errUsage() error { return &exitError{code: 2, err: errors.New(usageText())} }
@@ -503,6 +576,10 @@ func joinRequest(rest []string) (*daemon.IpcRequest, error) {
 		(agent != "" && agentCommand != "") {
 		return nil, errUsage()
 	}
+	agentEnv, err := agentEnvOption(rest)
+	if err != nil {
+		return nil, err
+	}
 	return &daemon.IpcRequest{
 		Op:            "join",
 		Room:          room,
@@ -512,6 +589,7 @@ func joinRequest(rest []string) (*daemon.IpcRequest, error) {
 		AgentArgs:     repeatedOption(rest, "--agent-arg"),
 		Capabilities:  repeatedOption(rest, "--capability"),
 		ProviderClaim: providerClaim,
+		AgentEnv:      agentEnv,
 	}, nil
 }
 
@@ -526,6 +604,10 @@ func createRequest(rest []string) (*daemon.IpcRequest, error) {
 		(agent == "" && agentCommand == "") || (agent != "" && agentCommand != "") {
 		return nil, errUsage()
 	}
+	agentEnv, err := agentEnvOption(rest)
+	if err != nil {
+		return nil, err
+	}
 	return &daemon.IpcRequest{
 		Op:           "create",
 		Name:         name,
@@ -533,6 +615,7 @@ func createRequest(rest []string) (*daemon.IpcRequest, error) {
 		AgentCommand: agentCommand,
 		AgentArgs:    repeatedOption(rest, "--agent-arg"),
 		Capabilities: repeatedOption(rest, "--capability"),
+		AgentEnv:     agentEnv,
 	}, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
@@ -45,14 +46,46 @@ var doctorEnvironmentKeys = []string{
 	"PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR",
 }
 
+// ForbiddenExplicitEnv reports whether an explicitly inherited environment
+// NAME is Free4Chat-owned lifecycle/security policy that must never be
+// overridable through operator-authorized named inheritance.
+//
+// CODEX_CONFIG and INITIAL_AGENT_MODE are intentionally removed from every
+// Harness environment and may only be set by a built-in launcher's own
+// explicit policy. Arbitrary FREE4CHAT_* names are Runtime control variables,
+// not generic provider configuration; FREE4CHAT_AGENT_DIR remains propagated
+// by the ambient allow-list (never through explicit inheritance).
+func ForbiddenExplicitEnv(name string) bool {
+	return name == "CODEX_CONFIG" || name == "INITIAL_AGENT_MODE" ||
+		strings.HasPrefix(name, "FREE4CHAT_")
+}
+
+// ValidateExplicitEnv rejects a whole explicitly inherited environment map
+// when it contains any Free4Chat-owned lifecycle/security variable. The
+// daemon calls this at the IPC boundary so a direct daemon request — not just
+// the CLI — cannot reintroduce a forbidden policy override.
+func ValidateExplicitEnv(env map[string]string) error {
+	for name := range env {
+		if ForbiddenExplicitEnv(name) {
+			return fmt.Errorf(
+				"Harness environment variable %s is reserved by Free4Chat and cannot be inherited explicitly",
+				name,
+			)
+		}
+	}
+	return nil
+}
+
 // BuildHarnessEnvironment filters the ambient environment down to the safe
-// allow-list, never inherits ambient Codex privilege/configuration policy,
-// and finally applies the launcher's explicit overrides.
-func BuildHarnessEnvironment(launcher types.AgentLauncher, base map[string]string) map[string]string {
+// allow-list, applies explicitly authorized named environment from the
+// operator (CLI --agent-env), and finally applies the launcher's explicit
+// overrides. Precedence: safe ambient -> operator authorized -> launcher policy.
+// launcher-owned policy always wins.
+func BuildHarnessEnvironment(launcher types.AgentLauncher, base map[string]string, explicitEnv map[string]string) map[string]string {
 	if base == nil {
 		base = osEnviron()
 	}
-	environment := make(map[string]string, len(safeEnvironmentKeys)+len(launcher.Environment))
+	environment := make(map[string]string, len(safeEnvironmentKeys)+len(launcher.Environment)+len(explicitEnv))
 	for _, key := range safeEnvironmentKeys {
 		if value, ok := base[key]; ok {
 			environment[key] = value
@@ -62,6 +95,18 @@ func BuildHarnessEnvironment(launcher types.AgentLauncher, base map[string]strin
 	// built-in launcher may opt into an explicit safe value below.
 	delete(environment, "CODEX_CONFIG")
 	delete(environment, "INITIAL_AGENT_MODE")
+	// Apply explicitly authorized named environment from operator (CLI --agent-env).
+	// These are resolved from the CURRENT CLI process, not the daemon.
+	// Defense in depth: even if a forbidden name slipped past the daemon's
+	// ValidateExplicitEnv boundary, it is dropped here and can never reach
+	// the Harness subprocess or override launcher-owned policy.
+	for key, value := range explicitEnv {
+		if ForbiddenExplicitEnv(key) {
+			continue
+		}
+		environment[key] = value
+	}
+	// Launcher-owned explicit policy wins (e.g., Codex INITIAL_AGENT_MODE=read-only).
 	for key, value := range launcher.Environment {
 		environment[key] = value
 	}

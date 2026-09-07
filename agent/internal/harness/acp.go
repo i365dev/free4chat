@@ -38,6 +38,11 @@ func (e *TurnTimeoutError) Error() string {
 type AdapterOptions struct {
 	TurnTimeoutMs int64
 	CancelGraceMs int64
+	// AgentEnv is a map of explicitly authorized Harness environment variable
+	// NAMES -> VALUES resolved from the CLI process at join/create time.
+	// It is ephemeral launch material: never returned in daemon responses,
+	// never persisted to workspace/status/logs, never enters Room/MCP/ACP.
+	AgentEnv map[string]string
 }
 
 // ACPCapabilities is the parsed initialize response projection.
@@ -246,7 +251,7 @@ func (a *ACPAdapter) EnsureSession() error {
 
 	command := exec.Command(a.launcher.Command, a.launcher.Args...)
 	command.Dir = a.workingDir
-	command.Env = environmentSlice(BuildHarnessEnvironment(a.launcher, nil))
+	command.Env = environmentSlice(BuildHarnessEnvironment(a.launcher, nil, a.options.AgentEnv))
 	stdinPipe, err := command.StdinPipe()
 	if err != nil {
 		a.mu.Unlock()
