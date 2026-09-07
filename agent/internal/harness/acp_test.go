@@ -638,7 +638,7 @@ func TestGetLauncherRegistryContracts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opencode missing: %v", err)
 	}
-	want := []string{"acp", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false", "--pure"}
+	want := []string{"acp", "--pure"}
 	if len(opencode.Args) != len(want) {
 		t.Fatalf("opencode args mismatch: %v", opencode.Args)
 	}
@@ -646,6 +646,10 @@ func TestGetLauncherRegistryContracts(t *testing.T) {
 		if opencode.Args[i] != want[i] {
 			t.Fatalf("opencode args[%d]: got %s want %s", i, opencode.Args[i], want[i])
 		}
+	}
+	if !strings.Contains(opencode.Notes, "defaults to loopback") ||
+		!strings.Contains(opencode.Notes, "external plugins disabled") {
+		t.Fatalf("opencode notes must document the retained pure-mode boundary: %s", opencode.Notes)
 	}
 
 	hermes, err := GetLauncher("hermes")

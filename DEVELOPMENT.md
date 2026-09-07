@@ -183,8 +183,10 @@ historical reference: tag `node-agent-runtime-e2e-2026-08-27`, branch
 Resident launchers run with a restricted environment and a per-instance 0700
 workspace. Provider authentication variables may be retained, but unrelated
 AWS/GitHub/shell secrets and ambient Codex privilege configuration are removed;
-the built-in Codex launcher explicitly selects read-only mode. OpenCode is
-forced to a loopback ephemeral ACP server with mDNS disabled. A custom
+the built-in Codex launcher explicitly selects read-only mode. OpenCode uses
+its documented ACP stdio launcher in pure mode (external plugins disabled); its
+defaults keep the ACP server on loopback with an ephemeral port and mDNS
+disabled. A custom
 `--agent-command` is a trusted local ACP implementation, not a sandbox: ACP
 protocol compliance alone cannot contain a malicious process.
 

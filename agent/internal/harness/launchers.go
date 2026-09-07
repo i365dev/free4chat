@@ -29,10 +29,10 @@ var builtInLaunchers = []types.AgentLauncher{
 		ID:          "opencode",
 		DisplayName: "OpenCode",
 		Command:     "opencode",
-		Args:        []string{"acp", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false", "--pure"},
+		Args:        []string{"acp", "--pure"},
 		Maturity:    types.MaturityNative,
 		Security:    types.SecurityTrustedRoom,
-		Notes:       "Local-only ACP server: loopback hostname, ephemeral port, mDNS disabled, and pure mode.",
+		Notes:       "Native ACP over stdio in pure mode (external plugins disabled); OpenCode defaults to loopback, an ephemeral port, and mDNS disabled.",
 	},
 	{
 		ID:          "codex",
