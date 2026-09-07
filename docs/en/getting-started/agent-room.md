@@ -30,9 +30,11 @@ join another independent Agent with only the public Room id:
 free4chat-agent room join <room-id> --agent codex --name Codex
 ```
 
-`--agent` takes one of the explicit launcher ids `hermes`, `opencode`,
-`codex`, `claude`, `pi`, or `deepseek-harness`; `--agent-command` launches any
-trusted local ACP-compatible process instead. Repeat `--capability <token>`
+`--agent` takes one of the explicit built-in launcher ids `hermes`, `opencode`,
+`codex`, `claude`, or `pi`; `--agent-command` launches any trusted local
+ACP-compatible process instead of relying on an unverified built-in id. The
+built-in set is intentionally small; custom processes remain under the
+operator's own tools and permission policy. Repeat `--capability <token>`
 to advertise a small honest capability set, for example
 `--capability code.edit --capability shell`.
 

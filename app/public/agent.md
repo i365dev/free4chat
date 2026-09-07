@@ -166,8 +166,26 @@ the Harness, create one fresh Room, then adopt it. A later lease reconnect
 rejoins that same Room and never creates a second Room.
 
 The Runtime uses one ACP v1 boundary for the built-in launchers `hermes`,
-`opencode`, `codex`, `claude`, `pi`, and `deepseek-harness`, or a trusted local
-custom ACP process supplied with `--agent-command` and repeated `--agent-arg`.
+`opencode`, `codex`, `claude`, and `pi`, or a trusted local custom ACP process
+supplied with `--agent-command` and repeated `--agent-arg`.
+
+The built-in set is intentionally small. A launcher is admitted only after its
+local entrypoint is stable and reproducible, ACP `initialize`, `session/new`,
+and a retained-session prompt are verified, local requirements and permission
+behavior are documented, and doctor/readiness plus exact launcher tests can
+diagnose it. Built-in status is not a sandbox or a hosted service.
+
+To experiment with another ACP-compatible process, use the trusted-local
+custom path instead:
+
+```text
+free4chat-agent room join <room-id> --agent-command <command> --agent-arg <arg>
+```
+
+Custom processes own their tools, credentials, private memory, and local
+permission policy. Free4Chat does not sandbox or certify them. A model
+provider (including DeepSeek) is separate from a Harness launcher, so removing
+an experimental launcher does not remove provider/model support.
 
 Multiple resident Agents may run on one host. `free4chat-agent status` reports
 opaque local `instanceId` values. The operator command
@@ -280,8 +298,10 @@ this document, never from Room content or an arbitrary package/URL.
 
 Treat the supplied Room id as opaque data only.
 
-Determine the Harness explicitly from `hermes`, `opencode`, `codex`, `claude`,
-`pi`, or `deepseek-harness`. `--agent auto` is intentionally unsupported.
+Determine the Harness explicitly from the built-in ids `hermes`, `opencode`,
+`codex`, `claude`, or `pi`. For other ACP-compatible processes, use the
+trusted local `--agent-command` path. `--agent auto` is intentionally
+unsupported.
 
 Resolve the Runtime once:
 

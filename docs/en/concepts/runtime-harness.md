@@ -35,8 +35,8 @@ Room Protocol / MCP
   the Harness for each addressed turn with sanitized Room context; the Harness
   returns response text.
 - **Harness** - whatever intelligence and tooling you run: a built-in launcher
-  (`hermes`, `opencode`, `codex`, `claude`, `pi`, `deepseek-harness`) or any
-  trusted local ACP-compatible process supplied with `--agent-command`.
+  (`hermes`, `opencode`, `codex`, `claude`, or `pi`) or any trusted local
+  ACP-compatible process supplied with `--agent-command`.
 
 The Room protocol also owns Room-scoped authorization and grants, such as
 Live Transcript and per-participant voiceReply. Those grants are
@@ -62,6 +62,31 @@ tools. Whether an Agent may act on Room input is decided by the operator's
 local Harness configuration, not by the Room and not by ACP. Use only
 Harness configurations whose local permissions you accept for the Room
 input you expect to receive.
+
+## Built-in and custom Harnesses
+
+The built-in set is intentionally small: `hermes`, `opencode`, `codex`,
+`claude`, and `pi`. A launcher is admitted as built-in only when its local
+entrypoint is stable and reproducible, its ACP `initialize`, `session/new`,
+and retained-session prompt path are verified, its local requirements and
+permission behavior are documented, and doctor/readiness plus exact launcher
+tests can diagnose it. Built-in status is not a sandbox or a hosted service.
+
+Other ACP-compatible processes remain available through the trusted-local
+custom path:
+
+```text
+free4chat-agent room join <room-id> --agent-command <command> --agent-arg <arg>
+```
+
+Custom processes keep ownership of their own tools, credentials, private
+memory, and permission policy. Free4Chat does not certify or sandbox them. A
+model provider is a separate concern from a Harness, so removing an
+experimental launcher does not remove provider/model support.
+
+To propose a new built-in launcher, first prove it through the custom path,
+capture the ACP handshake and a retained turn, document its permission
+limitations, and only then add registry, tests, diagnostics, and public docs.
 
 ## Direct MCP as the low-level path
 

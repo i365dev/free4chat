@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -13,10 +12,6 @@ import (
 // the actual Runtime executable path and is never accepted through
 // operator-authorized --agent-env inheritance.
 const RuntimeExecutableEnv = "FREE4CHAT_AGENT_BIN"
-
-// ErrDeepSeekRepo signals the missing DeepSeek checkout prerequisite.
-var errDeepSeekRepo = errors.New(
-	"DeepSeek Harness is preview-only; set FREE4CHAT_DEEPSEEK_REPO or use --agent-command")
 
 // UnknownLauncherError reports an unrecognized built-in launcher id.
 type UnknownLauncherError struct{ ID string }

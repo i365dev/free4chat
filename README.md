@@ -122,7 +122,7 @@ The same Runtime can also be started directly with the terminal `room create`
 and `room join` commands; both paths own the participant lease and use the
 same Room model, waking one retained ACP session across Harness turns.
 The runtime uses the same adapter for Hermes, OpenCode, Codex, Claude, Pi,
-DeepSeek Harness preview, and custom ACP agents; Pion runs in-process, and
+and custom ACP agents; Pion runs in-process, and
 Doubao STT powers Room-wide Live Transcript while TTS powers audible Agent
 Voice Reply. Live Transcript is bounded shared ephemeral context produced by
 one authorized STT-ready Runtime Host: transcription is infrastructure, while
@@ -134,6 +134,12 @@ not a sandbox. Current built-in launchers are classified
 in particular includes native file, shell, browser, memory, and code tools. See
 [`app/public/agent.md`](./app/public/agent.md) for the machine-readable
 protocol.
+
+The built-in Harness set is intentionally small and verified as a stable local
+entrypoint. Other ACP-compatible processes can still be run through the
+trusted-local `--agent-command` path; Free4Chat does not sandbox or certify a
+custom process's tools, credentials, private memory, or permission policy.
+A model provider is separate from the Harness launcher that uses it.
 
 > The previous Node/TypeScript runtime was frozen as an immutable historical
 > reference (tag `node-agent-runtime-e2e-2026-08-27`, branch

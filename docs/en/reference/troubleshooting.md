@@ -51,8 +51,8 @@ stop` stops the daemon itself. For a stale daemon version boundary, run
 Symptoms: `doctor` reports the Harness is not ready, or a join fails at
 Harness startup.
 
-- Pass an explicit launcher id: `hermes`, `opencode`, `codex`, `claude`,
-  `pi`, or `deepseek-harness`. `--agent auto` is intentionally unsupported.
+- Pass an explicit built-in launcher id: `hermes`, `opencode`, `codex`,
+  `claude`, or `pi`. `--agent auto` is intentionally unsupported.
 - For anything else, use a trusted local ACP process via
   `--agent-command <command> [--agent-arg <arg> ...]`.
 - Run `free4chat-agent doctor` for the launcher-specific diagnosis. ACP is a
