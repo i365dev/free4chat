@@ -656,6 +656,96 @@ func TestCollabAttachmentEnrichmentDeduplicatesReadsAndBoundsContent(t *testing.
 	}
 }
 
+func TestCollabReferencesPrioritizeImageBudgetAndAvoidDuplicateStandaloneContent(t *testing.T) {
+	client := &collabAttachmentClient{
+		fakeClient: &fakeClient{},
+		attachments: map[string]types.AttachmentRead{
+			"attachment-image-a": {FileName: "a.png", MimeType: "image/png", Data: "IMAGE_A"},
+			"attachment-image-b": {FileName: "b.png", MimeType: "image/png", Data: "IMAGE_B"},
+		},
+	}
+	input := &types.HarnessTurnInput{Events: []types.HarnessEvent{
+		{Attachment: &types.RoomAttachmentMetadata{ID: "attachment-image-a", FileName: "a.png", MimeType: "image/png"}},
+		{Attachment: &types.RoomAttachmentMetadata{ID: "attachment-image-b", FileName: "b.png", MimeType: "image/png"}},
+		{Collab: &types.CollabEventView{WireCollabEvent: types.WireCollabEvent{
+			Kind: types.CollabRequest, AttachmentIDs: []string{"attachment-image-b"},
+		}}},
+	}}
+	imagesSupported := true
+	EnrichTurnAttachments(input, func(attachmentID string) (types.AttachmentRead, error) {
+		return client.ReadAttachment("test-handle", attachmentID)
+	}, nil, &EnrichOptions{ImagesSupported: &imagesSupported})
+
+	ref := input.Events[2].ReferencedAttachments
+	if len(ref) != 1 || ref[0].Image == nil || ref[0].Image.Data != "IMAGE_B" {
+		t.Fatalf("explicit collaboration image did not receive priority: %#v", ref)
+	}
+	if input.Events[1].Image != nil {
+		t.Fatal("referenced image was duplicated as standalone image content")
+	}
+	imageDataCounts := make(map[string]int)
+	imageCount := 0
+	for _, event := range input.Events {
+		if event.Image != nil {
+			imageDataCounts[event.Image.Data]++
+			imageCount++
+		}
+		for _, attachment := range event.ReferencedAttachments {
+			if attachment.Image != nil {
+				imageDataCounts[attachment.Image.Data]++
+				imageCount++
+			}
+		}
+	}
+	if imageCount > maxImagesPerTurn || imageDataCounts["IMAGE_B"] != 1 {
+		t.Fatalf("collaboration image priority broke global image bound: count=%d data=%#v", imageCount, imageDataCounts)
+	}
+	client.mu.Lock()
+	readsA := client.reads["attachment-image-a"]
+	readsB := client.reads["attachment-image-b"]
+	client.mu.Unlock()
+	if readsA != 1 || readsB != 1 {
+		t.Fatalf("priority path redundantly read or skipped artifacts: A=%d B=%d", readsA, readsB)
+	}
+}
+
+func TestCollabReferencesPrioritizeCumulativeTextBudget(t *testing.T) {
+	const referenceContent = "exact-priority-collaboration-content"
+	client := &collabAttachmentClient{
+		fakeClient: &fakeClient{},
+		attachments: map[string]types.AttachmentRead{
+			"attachment-standalone-text": {
+				FileName: "standalone.md", MimeType: "text/markdown",
+				Text: strings.Repeat("x", maxTextFileChars),
+			},
+			"attachment-collab-text": {
+				FileName: "collab.md", MimeType: "text/markdown", Text: referenceContent,
+			},
+		},
+	}
+	input := &types.HarnessTurnInput{Events: []types.HarnessEvent{
+		{Attachment: &types.RoomAttachmentMetadata{ID: "attachment-standalone-text", FileName: "standalone.md", MimeType: "text/markdown"}},
+		{Collab: &types.CollabEventView{WireCollabEvent: types.WireCollabEvent{
+			Kind: types.CollabRequest, AttachmentIDs: []string{"attachment-collab-text"},
+		}}},
+	}}
+	imagesSupported := false
+	EnrichTurnAttachments(input, func(attachmentID string) (types.AttachmentRead, error) {
+		return client.ReadAttachment("test-handle", attachmentID)
+	}, nil, &EnrichOptions{ImagesSupported: &imagesSupported})
+
+	refs := input.Events[1].ReferencedAttachments
+	if len(refs) != 1 || refs[0].TextFile == nil || refs[0].TextFile.Content != referenceContent {
+		t.Fatalf("explicit collaboration text did not receive priority: %#v", refs)
+	}
+	if input.Events[0].TextFile == nil || len(input.Events[0].TextFile.Content) != maxTextFileChars-len(referenceContent) {
+		t.Fatalf("standalone text did not use only the remaining bounded budget: %#v", input.Events[0].TextFile)
+	}
+	if len(input.Events[0].TextFile.Content)+len(refs[0].TextFile.Content) > maxTextFileChars {
+		t.Fatal("collaboration text priority exceeded the cumulative text bound")
+	}
+}
+
 func (*fakeClient) UpdateCapabilities(handle string, capabilities []string) error {
 	return nil
 }

@@ -80,33 +80,14 @@ func EnrichTurnAttachments(
 			Content:  content,
 		}
 	}
-	for i := range input.Events {
-		event := &input.Events[i]
-		if event.Attachment != nil {
-			attachmentID := event.Attachment.ID
-			attachment, err := resolve(attachmentID)
-			if err != nil {
-				reportUnavailable(*event, attachmentID, err)
-			} else if attachment.Text != "" {
-				event.TextFile = addText(
-					firstNonEmpty(attachment.FileName, event.Attachment.FileName, attachmentID),
-					firstNonEmpty(attachment.MimeType, event.Attachment.MimeType),
-					attachment.Text,
-				)
-			} else if attachment.Data != "" && imagesSupported && imageCount < maxImagesPerTurn {
-				event.Image = &types.HarnessImage{
-					Data:     attachment.Data,
-					MimeType: firstNonEmpty(attachment.MimeType, event.Attachment.MimeType),
-				}
-				imageCount++
-			}
-		}
-
+	explicitAttachmentIDs := make(map[string]struct{})
+	resolveCollabAttachments := func(event *types.HarnessEvent) {
 		if event.Collab == nil {
-			continue
+			return
 		}
 		seen := make(map[string]struct{}, len(event.Collab.AttachmentIDs))
 		for _, attachmentID := range event.Collab.AttachmentIDs {
+			explicitAttachmentIDs[attachmentID] = struct{}{}
 			if _, duplicate := seen[attachmentID]; duplicate {
 				continue
 			}
@@ -139,13 +120,46 @@ func EnrichTurnAttachments(
 				imageCount++
 			case attachment.Data != "":
 				// The bytes stay out of the prompt when the ACP session does
-				// not negotiate image support. The reference remains visible
-				// as a safe metadata-only collaboration artifact.
+				// not negotiate image support or the turn image bound is full.
+				// The reference remains visible as metadata-only context.
 			default:
 				referenced.Unavailable = true
 				reportUnavailable(*event, attachmentID, errors.New("attachment content is unavailable"))
 			}
 			event.ReferencedAttachments = append(event.ReferencedAttachments, referenced)
+		}
+	}
+	// Explicit collaboration references are the reliable handoff primitive;
+	// resolve and charge them before incidental standalone attachment context.
+	for i := range input.Events {
+		resolveCollabAttachments(&input.Events[i])
+	}
+	for i := range input.Events {
+		event := &input.Events[i]
+		if event.Attachment == nil {
+			continue
+		}
+		attachmentID := event.Attachment.ID
+		if _, referenced := explicitAttachmentIDs[attachmentID]; referenced {
+			// Keep the correlated content under ReferencedAttachments rather
+			// than charging or duplicating it as incidental context.
+			continue
+		}
+		attachment, err := resolve(attachmentID)
+		if err != nil {
+			reportUnavailable(*event, attachmentID, err)
+		} else if attachment.Text != "" {
+			event.TextFile = addText(
+				firstNonEmpty(attachment.FileName, event.Attachment.FileName, attachmentID),
+				firstNonEmpty(attachment.MimeType, event.Attachment.MimeType),
+				attachment.Text,
+			)
+		} else if attachment.Data != "" && imagesSupported && imageCount < maxImagesPerTurn {
+			event.Image = &types.HarnessImage{
+				Data:     attachment.Data,
+				MimeType: firstNonEmpty(attachment.MimeType, event.Attachment.MimeType),
+			}
+			imageCount++
 		}
 	}
 }

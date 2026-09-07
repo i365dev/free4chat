@@ -48,7 +48,8 @@ type Daemon struct {
 	// runtimeExecutable is the exact binary that owns this daemon. The
 	// Harness receives it through launcher-owned environment policy so local
 	// participant commands cannot fall back to a different PATH binary.
-	runtimeExecutable string
+	runtimeExecutable     string
+	runtimeExecutableCopy string
 }
 
 // New creates an idle daemon.
@@ -75,11 +76,16 @@ func (d *Daemon) Run() error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
+	if err := d.prepareRuntimeExecutable(dir); err != nil {
+		return err
+	}
 	workspaces := WorkspacesRoot()
 	if err := os.MkdirAll(workspaces, 0o700); err != nil {
+		d.cleanupRuntimeExecutable()
 		return err
 	}
 	if err := RemoveStaleWorkspaces(workspaces); err != nil {
+		d.cleanupRuntimeExecutable()
 		return err
 	}
 	socket := SocketPath()
@@ -87,6 +93,7 @@ func (d *Daemon) Run() error {
 
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
+		d.cleanupRuntimeExecutable()
 		return fmt.Errorf("daemon listen failed: %w", err)
 	}
 	d.mu.Lock()
@@ -95,6 +102,7 @@ func (d *Daemon) Run() error {
 	if err := os.Chmod(socket, 0o600); err != nil {
 		_ = listener.Close()
 		close(d.closed)
+		d.cleanupRuntimeExecutable()
 		return err
 	}
 
@@ -473,7 +481,7 @@ func (d *Daemon) prepareRuntime(
 			// the CLI. Never returned in responses, never persisted to status,
 			// workspace, or logs; dropped with the resident.
 			AgentEnv:          request.AgentEnv,
-			RuntimeExecutable: d.runtimeExecutable,
+			RuntimeExecutable: d.runtimeExecutableCopy,
 		}),
 		Capabilities:        request.Capabilities,
 		SiteOrigin:          siteOrigin,
@@ -726,6 +734,7 @@ func (d *Daemon) finishStopAfterReply() {
 		if listener != nil {
 			_ = listener.Close()
 		}
+		d.cleanupRuntimeExecutable()
 	})
 }
 
