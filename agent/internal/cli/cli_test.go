@@ -892,6 +892,69 @@ func TestFormatCliErrorClassifier(t *testing.T) {
 	if !strings.Contains(deadHarness, "The Harness ACP process stopped before joining") {
 		t.Fatalf("dead-harness hint missing: %q", deadHarness)
 	}
+	missing := formatCliError(errString("ACP session/new failed: Missing environment variable: CUSTOM_TEST_SETTING"))
+	if !strings.Contains(missing, "CUSTOM_TEST_SETTING") ||
+		!strings.Contains(missing, "--agent-env CUSTOM_TEST_SETTING") {
+		t.Fatalf("safe missing-env recovery hint missing: %q", missing)
+	}
+	if strings.Contains(missing, "=") || strings.Contains(missing, "value") {
+		t.Fatalf("missing-env hint must not expose a value: %q", missing)
+	}
+	reserved := formatCliError(errString("Missing environment variable: FREE4CHAT_AGENT_BIN"))
+	if strings.Contains(reserved, "--agent-env") {
+		t.Fatalf("reserved Runtime policy must not get an inheritance hint: %q", reserved)
+	}
+}
+
+func TestRoomReadinessSearchesAllHarnessResidents(t *testing.T) {
+	residents := func(firstAdapter, secondAdapter string) []map[string]any {
+		return []map[string]any{
+			{"roomId": "test-room", "instanceId": "resident-first", "participantId": "agent-first", "adapter": firstAdapter},
+			{"roomId": "test-room", "instanceId": "resident-second", "participantId": "agent-second", "adapter": secondAdapter},
+		}
+	}
+	for _, test := range []struct {
+		name            string
+		instances       []map[string]any
+		expected        string
+		joined          bool
+		wantInstance    string
+		wantParticipant string
+		wantReason      string
+	}{
+		{
+			name: "matching resident follows opencode", instances: residents("opencode", "codex"),
+			expected: "codex", joined: true, wantInstance: "resident-second", wantParticipant: "agent-second",
+		},
+		{
+			name: "matching resident precedes opencode", instances: residents("codex", "opencode"),
+			expected: "codex", joined: true, wantInstance: "resident-first", wantParticipant: "agent-first",
+		},
+		{
+			name: "no matching resident", instances: residents("opencode", "pi"),
+			expected: "codex", wantReason: "harness_mismatch",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := roomReadiness("test-room", test.instances, test.expected)
+			if result["joined"] != test.joined {
+				t.Fatalf("readiness result changed with resident order: %#v", result)
+			}
+			if test.joined {
+				if result["adapter"] != "codex" || result["instanceId"] != test.wantInstance ||
+					result["participantId"] != test.wantParticipant {
+					t.Fatalf("readiness did not select the matching codex resident: %#v", result)
+				}
+				return
+			}
+			if result["reason"] != test.wantReason || result["expectedAdapter"] != "codex" {
+				t.Fatalf("readiness mismatch result changed with resident order: %#v", result)
+			}
+			if !reflect.DeepEqual(result["actualAdapters"], []string{"opencode", "pi"}) {
+				t.Fatalf("mismatch adapter diagnostics were not deterministic: %#v", result)
+			}
+		})
+	}
 }
 
 type errString string

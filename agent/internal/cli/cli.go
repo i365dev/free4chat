@@ -896,8 +896,9 @@ func encodeBase64(data []byte) string {
 }
 
 var (
-	patternAuth    = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*(?:bearer|basic)\s+)\S+`)
-	patternSecrets = regexp.MustCompile(`(?i)((?:x-api-key|api[-_ ]?key|access[-_ ]?token|secret)\s*[:=]\s*)\S+`)
+	patternAuth       = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*(?:bearer|basic)\s+)\S+`)
+	patternSecrets    = regexp.MustCompile(`(?i)((?:x-api-key|api[-_ ]?key|access[-_ ]?token|secret)\s*[:=]\s*)\S+`)
+	patternMissingEnv = regexp.MustCompile(`(?i)missing environment variable:\s*([A-Za-z_][A-Za-z0-9_]*)\b`)
 )
 
 // redactSecrets scrubs credential-shaped substrings from diagnostics.
@@ -913,6 +914,9 @@ func redactSecrets(value string, maxLength int) string {
 // formatCliError mirrors the Node classifier so Agents see stable guidance.
 func formatCliError(err error) string {
 	message := redactSecrets(err.Error(), 2000)
+	if hint := missingEnvRecoveryHint(message); hint != "" {
+		return hint
+	}
 	lower := strings.ToLower(message)
 	switch {
 	case strings.Contains(lower, "authentication required") ||
@@ -932,6 +936,24 @@ func formatCliError(err error) string {
 		return message[:297] + "..."
 	}
 	return message
+}
+
+// missingEnvRecoveryHint recognizes only an explicit, conventional
+// "Missing environment variable: NAME" diagnostic already provided by the
+// local Harness/Runtime path. It never inspects Harness stderr, guesses a
+// provider name, prints a value, or suggests Free4Chat-owned policy vars.
+func missingEnvRecoveryHint(message string) string {
+	matches := patternMissingEnv.FindAllStringSubmatch(message, -1)
+	if len(matches) != 1 || len(matches[0]) != 2 {
+		return ""
+	}
+	name := matches[0][1]
+	if !agentEnvNamePattern.MatchString(name) || harness.ForbiddenExplicitEnv(name) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Harness reports missing local environment variable %s. If this Harness normally works locally, retry with --agent-env %s.",
+		name, name)
 }
 
 func spawnFailed(lower string) bool {

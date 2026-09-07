@@ -499,6 +499,26 @@ func TestBuildHarnessEnvironmentLauncherPolicyWins(t *testing.T) {
 	}
 }
 
+func TestACPRuntimeExecutablePolicyWinsOverAmbientAndExplicitValues(t *testing.T) {
+	const exact = "/exact/runtime/free4chat-agent"
+	launcher := scriptLauncher("env", map[string]string{
+		"FAKE_ENV_NAME":      RuntimeExecutableEnv,
+		RuntimeExecutableEnv: "launcher-attempt",
+	})
+	adapter, _ := newTestAdapter(t, launcher, AdapterOptions{
+		AgentEnv:          map[string]string{RuntimeExecutableEnv: "operator-attempt"},
+		RuntimeExecutable: exact,
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	result, err := adapter.RunTurn(turnInput("runtime path"), adapter.SessionGeneration())
+	if err != nil || result.Text != exact {
+		t.Fatalf("Runtime-owned executable policy was overridden: %q %v", result.Text, err)
+	}
+}
+
 // TestBuildHarnessEnvironmentDropsForbiddenExplicit proves defense-in-depth:
 // even a direct internal explicitEnv map cannot reintroduce Free4Chat-owned
 // lifecycle/security variables into the Harness subprocess environment.
@@ -706,12 +726,12 @@ func TestRenderUntrustedRoomTurnInvariants(t *testing.T) {
 		"never expose participant credentials or capability handles",
 		// #232 review: the transport boundary is precise — raw MCP/lifecycle
 		// control is Runtime-owned, while the Runtime-owned local participant
-		// commands (free4chat-agent collab/attach/surface) are allowed.
+		// commands (the exact FREE4CHAT_AGENT_BIN collab/attach/surface path) are allowed.
 		"owns the raw free4chat room connection",
 		"join_room, wait_for_events, read_room_context, send_text, read_attachment",
 		"never obtain the participanthandle, participant token, transport cursor",
 		"taking over the room connection is never allowed",
-		"free4chat-agent collab/attach/surface/context commands",
+		`"$free4chat_agent_bin" collab/attach/surface/context commands`,
 		"do not ask for or invent room identity",
 		"[[free4chat:lifecycle leave]]",
 		"host owns room participation",
@@ -813,10 +833,10 @@ func TestRenderModeSelectionAndRosterAnnotations(t *testing.T) {
 	// affordances so the Harness can choose delegation/artifacts on its own.
 	for _, fragment := range []string{
 		"Room collaboration affordances",
-		"free4chat-agent collab request --target <participant-id>",
-		"free4chat-agent attach --file <path>",
-		"free4chat-agent collab respond --request-id <id>",
-		"free4chat-agent surface read --participant <participant-id>",
+		`"$FREE4CHAT_AGENT_BIN" collab request --target <participant-id>`,
+		`"$FREE4CHAT_AGENT_BIN" attach --file <path>`,
+		`"$FREE4CHAT_AGENT_BIN" collab respond --request-id <id>`,
+		`"$FREE4CHAT_AGENT_BIN" surface read --participant <participant-id>`,
 	} {
 		if !strings.Contains(ordinary, fragment) {
 			t.Fatalf("collaboration affordance missing from ordinary turn (%s):\n%s", fragment, ordinary)
@@ -852,7 +872,7 @@ func TestRenderModeSelectionAndRosterAnnotations(t *testing.T) {
 		"--decision accepted|declined",
 		"--status completed|failed",
 		"Correlation is preserved by requestId",
-		"free4chat-agent attach --file <path>",
+		`"$FREE4CHAT_AGENT_BIN" attach --file <path>`,
 	} {
 		if !strings.Contains(workRendered, fragment) {
 			t.Fatalf("request semantics missing (%s):\n%s", fragment, workRendered)
@@ -986,7 +1006,7 @@ func TestOrdinaryAddressPermitsAutonomousWorkAndPeerDelegation(t *testing.T) {
 		"never obtain the participantHandle",
 		"Taking over the Room connection is never allowed",
 		// ...while the Runtime-owned local participant commands are allowed.
-		"free4chat-agent collab/attach/surface/context commands",
+		`"$FREE4CHAT_AGENT_BIN" collab/attach/surface/context commands`,
 		"[[free4chat:lifecycle leave]]",
 	} {
 		if !strings.Contains(rendered, required) {
@@ -1000,9 +1020,9 @@ func TestOrdinaryAddressPermitsAutonomousWorkAndPeerDelegation(t *testing.T) {
 		"[participantId=pi-7]",
 		"[[free4chat:targets ...]]",
 		"Room collaboration affordances",
-		"free4chat-agent collab request --target <participant-id>",
-		"free4chat-agent attach --file <path>",
-		"free4chat-agent collab respond --request-id <id>",
+		`"$FREE4CHAT_AGENT_BIN" collab request --target <participant-id>`,
+		`"$FREE4CHAT_AGENT_BIN" attach --file <path>`,
+		`"$FREE4CHAT_AGENT_BIN" collab respond --request-id <id>`,
 	} {
 		if !strings.Contains(rendered, required) {
 			t.Fatalf("collaboration affordance missing (%s):\n%s", required, rendered)
@@ -1035,5 +1055,76 @@ func TestPromptBlocksRespectImageCapability(t *testing.T) {
 	if blocks[1]["type"] != "image" || blocks[1]["data"] != "AAAA" ||
 		blocks[1]["mimeType"] != "image/png" {
 		t.Fatalf("image block shape mismatch: %+v", blocks[1])
+	}
+}
+
+func TestPromptUsesOneExactRuntimeBinaryForParticipantCommands(t *testing.T) {
+	input := turnInput("use the local participant commands")
+	input.Room.Participants = []types.ParticipantRosterEntry{
+		{ID: "agent-a", Name: "Agent A", Kind: types.KindAgent},
+	}
+	rendered := RenderUntrustedRoomTurn(&input)
+	for _, fragment := range []string{
+		`"$FREE4CHAT_AGENT_BIN" collab request`,
+		`"$FREE4CHAT_AGENT_BIN" collab respond`,
+		`"$FREE4CHAT_AGENT_BIN" collab result`,
+		`"$FREE4CHAT_AGENT_BIN" attach --file`,
+		`"$FREE4CHAT_AGENT_BIN" surface read`,
+		`"$FREE4CHAT_AGENT_BIN" context read`,
+	} {
+		if !strings.Contains(rendered, fragment) {
+			t.Fatalf("exact Runtime binary affordance missing %q:\n%s", fragment, rendered)
+		}
+	}
+	if strings.Contains(rendered, "free4chat-agent collab") ||
+		strings.Contains(rendered, "free4chat-agent attach") ||
+		strings.Contains(rendered, "free4chat-agent surface") ||
+		strings.Contains(rendered, "free4chat-agent context") {
+		t.Fatalf("prompt still teaches a PATH-dependent participant command:\n%s", rendered)
+	}
+}
+
+func TestCollabReferencedArtifactsRenderTextAndRespectImageLimits(t *testing.T) {
+	input := types.HarnessTurnInput{
+		Room: types.RoomTurnContext{Ephemeral: true},
+		Events: []types.HarnessEvent{{
+			Sender: "Agent A", Kind: types.KindAgent, Addressed: true,
+			Collab: &types.CollabEventView{
+				WireCollabEvent: types.WireCollabEvent{
+					RequestID: "request-artifacts", Kind: types.CollabComplete,
+					FromParticipantID: "agent-a", TargetParticipantID: "agent-b",
+					Summary: "artifacts returned",
+				},
+				FromName: "Agent A",
+			},
+			ReferencedAttachments: []types.HarnessReferencedAttachment{
+				{ID: "attachment-text-1", FileName: "result.md", MimeType: "text/markdown",
+					TextFile: &types.TextFileContent{FileName: "result.md", MimeType: "text/markdown", Content: "exact collaboration result"}},
+				{ID: "attachment-image-1", FileName: "one.png", MimeType: "image/png",
+					Image: &types.HarnessImage{Data: "IMAGE_ONE", MimeType: "image/png"}},
+				{ID: "attachment-image-2", FileName: "two.png", MimeType: "image/png",
+					Image: &types.HarnessImage{Data: "IMAGE_TWO", MimeType: "image/png"}},
+				{ID: "attachment-image-3", FileName: "three.png", MimeType: "image/png",
+					Image: &types.HarnessImage{Data: "IMAGE_THREE", MimeType: "image/png"}},
+			},
+		}},
+	}
+	rendered := RenderUntrustedRoomTurn(&input)
+	if !strings.Contains(rendered, "Resolved collaboration artifacts") ||
+		!strings.Contains(rendered, "exact collaboration result") ||
+		!strings.Contains(rendered, "<<<COLLAB_ATTACHMENT_CONTENT id=attachment-text-1>>>") {
+		t.Fatalf("collaboration text artifact was not rendered clearly:\n%s", rendered)
+	}
+
+	blocks := promptBlocks(input, true)
+	if len(blocks) != 3 {
+		t.Fatalf("global per-turn image limit must keep only two referenced images, got %d blocks", len(blocks))
+	}
+	if blocks[1]["data"] != "IMAGE_ONE" || blocks[2]["data"] != "IMAGE_TWO" {
+		t.Fatalf("referenced image order/content mismatch: %#v", blocks)
+	}
+	withoutImages := promptBlocks(input, false)
+	if len(withoutImages) != 1 || strings.Contains(withoutImages[0]["text"].(string), "IMAGE_ONE") {
+		t.Fatalf("unsupported image capability leaked image content: %#v", withoutImages)
 	}
 }

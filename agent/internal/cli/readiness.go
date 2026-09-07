@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/i365dev/free4chat/agent/internal/daemon"
@@ -86,7 +87,7 @@ func runReadiness(args []string) error {
 			report.Runtime["ready"] = false
 			report.Runtime["daemonReady"] = false
 		}
-		report.Room = roomReadiness(roomID, instances)
+		report.Room = roomReadiness(roomID, instances, option(args, "--agent"))
 	}
 
 	return printJSON(report)
@@ -94,20 +95,68 @@ func runReadiness(args []string) error {
 
 // roomReadiness projects daemon status into per-room readiness, matching the
 // Node projection shape.
-func roomReadiness(roomID string, instances []map[string]any) map[string]any {
+func roomReadiness(roomID string, instances []map[string]any, expectedAdapter string) map[string]any {
+	var firstCandidate map[string]any
+	actualAdapters := make(map[string]struct{})
 	for _, instance := range instances {
-		if instanceRoom, _ := instance["roomId"].(string); instanceRoom == roomID {
-			view := map[string]any{"joined": true, "roomId": roomID}
-			if id, ok := instance["instanceId"].(string); ok && id != "" {
-				view["instanceId"] = id
-			}
-			if pid, ok := instance["participantId"].(string); ok && pid != "" {
-				view["participantId"] = pid
-			}
-			return view
+		if instanceRoom, _ := instance["roomId"].(string); instanceRoom != roomID {
+			continue
 		}
+		if firstCandidate == nil {
+			firstCandidate = instance
+		}
+		actualAdapter, _ := instance["adapter"].(string)
+		if actualAdapter != "" {
+			actualAdapters[actualAdapter] = struct{}{}
+		}
+		if expectedAdapter != "" && actualAdapter != expectedAdapter {
+			continue
+		}
+		return roomJoinedView(roomID, instance, actualAdapter)
+	}
+	if firstCandidate != nil && expectedAdapter != "" {
+		view := map[string]any{
+			"joined":          false,
+			"roomId":          roomID,
+			"reason":          "harness_mismatch",
+			"expectedAdapter": expectedAdapter,
+		}
+		// Keep the single-resident diagnostic field compatible with the old
+		// projection. Multiple residents have no singular actual adapter, so
+		// report a sorted set instead of making status order observable.
+		if len(actualAdapters) == 1 {
+			for actualAdapter := range actualAdapters {
+				view["actualAdapter"] = actualAdapter
+			}
+		} else if len(actualAdapters) > 1 {
+			adapters := make([]string, 0, len(actualAdapters))
+			for actualAdapter := range actualAdapters {
+				adapters = append(adapters, actualAdapter)
+			}
+			sort.Strings(adapters)
+			view["actualAdapters"] = adapters
+		}
+		return view
+	}
+	if firstCandidate != nil {
+		actualAdapter, _ := firstCandidate["adapter"].(string)
+		return roomJoinedView(roomID, firstCandidate, actualAdapter)
 	}
 	return map[string]any{"joined": false, "roomId": roomID, "reason": "not_joined"}
+}
+
+func roomJoinedView(roomID string, instance map[string]any, actualAdapter string) map[string]any {
+	view := map[string]any{"joined": true, "roomId": roomID}
+	if actualAdapter != "" {
+		view["adapter"] = actualAdapter
+	}
+	if id, ok := instance["instanceId"].(string); ok && id != "" {
+		view["instanceId"] = id
+	}
+	if pid, ok := instance["participantId"].(string); ok && pid != "" {
+		view["participantId"] = pid
+	}
+	return view
 }
 
 // decodeAny decodes raw JSON preserving number fidelity via json.Number.

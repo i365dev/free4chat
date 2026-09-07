@@ -452,6 +452,300 @@ func (*fakeClient) ReadAttachment(_, _ string) (types.AttachmentRead, error) {
 	return types.AttachmentRead{Data: "Zm9v", MimeType: "image/png"}, nil
 }
 
+type collabAttachmentClient struct {
+	*fakeClient
+	attachments map[string]types.AttachmentRead
+	errors      map[string]error
+	reads       map[string]int
+}
+
+func (c *collabAttachmentClient) ReadAttachment(_, attachmentID string) (types.AttachmentRead, error) {
+	c.mu.Lock()
+	if c.reads == nil {
+		c.reads = make(map[string]int)
+	}
+	c.reads[attachmentID]++
+	err := c.errors[attachmentID]
+	attachment := c.attachments[attachmentID]
+	c.mu.Unlock()
+	if err != nil {
+		return types.AttachmentRead{}, err
+	}
+	return attachment, nil
+}
+
+func newCollabAttachmentRuntime(t *testing.T, client *collabAttachmentClient, adapter *fakeAdapter) *ResidentRuntime {
+	t.Helper()
+	rt := NewResidentRuntime(Options{
+		InstanceID: "test-runtime", RoomID: "test-room", Name: "Agent B",
+		Client: client, Adapter: adapter,
+	})
+	rt.mu.Lock()
+	rt.participantHandle = "test-handle"
+	rt.participantID = "agent-b"
+	rt.state = StateWaiting
+	rt.mu.Unlock()
+	t.Cleanup(rt.Stop)
+	return rt
+}
+
+func TestCollabReferenceOnlyAttachmentContentReachesRequestAndResultTurns(t *testing.T) {
+	client := &collabAttachmentClient{
+		fakeClient: &fakeClient{},
+		attachments: map[string]types.AttachmentRead{
+			"attachment-old-1": {
+				FileName: "input.md", MimeType: "text/markdown",
+				Text: "exact artifact content for Agent B",
+			},
+		},
+	}
+	adapter := &fakeAdapter{
+		name: "hermes",
+		caps: &types.HarnessCapabilities{Text: true, Images: true},
+	}
+	rt := newCollabAttachmentRuntime(t, client, adapter)
+
+	var captured []types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) {
+		captured = append(captured, input)
+	}
+	t.Cleanup(func() { adapterRunTurnHook = original })
+
+	// The standalone upload event is consumed in an earlier Harness turn.
+	// The later request and result each carry only the old attachment id.
+	rt.acceptEvent(types.RoomEvent{
+		Sequence: 1, Type: "image", Participant: types.ParticipantIdentity{
+			ID: "agent-a", Name: "Agent A", Kind: types.KindAgent,
+		}, Addressed: true, Attachment: &types.RoomAttachmentMetadata{
+			ID: "attachment-old-1", FileName: "input.md", MimeType: "text/markdown",
+		},
+	})
+	rt.drainTurns()
+	rt.acceptEvent(types.RoomEvent{
+		Sequence: 2, Type: "action", Participant: types.ParticipantIdentity{
+			ID: "agent-a", Name: "Agent A", Kind: types.KindAgent,
+		}, Addressed: true, Collab: &types.WireCollabEvent{
+			RequestID: "request-1", Kind: types.CollabRequest,
+			FromParticipantID: "agent-a", TargetParticipantID: "agent-b",
+			Summary: "review the earlier artifact", AttachmentIDs: []string{"attachment-old-1"},
+		},
+	})
+	rt.drainTurns()
+	rt.acceptEvent(types.RoomEvent{
+		Sequence: 3, Type: "action", Participant: types.ParticipantIdentity{
+			ID: "agent-b", Name: "Agent B", Kind: types.KindAgent,
+		}, Addressed: true, Collab: &types.WireCollabEvent{
+			RequestID: "request-1", Kind: types.CollabComplete,
+			FromParticipantID: "agent-b", TargetParticipantID: "agent-a",
+			Summary: "review complete", AttachmentIDs: []string{"attachment-old-1"},
+		},
+	})
+	rt.drainTurns()
+
+	if len(captured) != 3 {
+		t.Fatalf("expected standalone, request, and result turns, got %d", len(captured))
+	}
+	for index, label := range []string{"request", "result"} {
+		input := captured[index+1]
+		if len(input.Events) != 1 || input.Events[0].Attachment != nil {
+			t.Fatalf("%s turn unexpectedly depended on standalone attachment event: %#v", label, input.Events)
+		}
+		refs := input.Events[0].ReferencedAttachments
+		if len(refs) != 1 || refs[0].TextFile == nil || refs[0].TextFile.Content != "exact artifact content for Agent B" {
+			t.Fatalf("%s turn did not receive exact referenced content: %#v", label, refs)
+		}
+	}
+	client.mu.Lock()
+	readCount := client.reads["attachment-old-1"]
+	client.mu.Unlock()
+	if readCount != 3 {
+		t.Fatalf("standalone + request + result should reuse reads within each turn; got %d total reads", readCount)
+	}
+}
+
+func TestCollabReferenceAttachmentFailureIsFailOpen(t *testing.T) {
+	client := &collabAttachmentClient{
+		fakeClient: &fakeClient{},
+		errors:     map[string]error{"attachment-evicted-1": errors.New("attachment unavailable")},
+	}
+	adapter := &fakeAdapter{name: "pi", caps: &types.HarnessCapabilities{Text: true}}
+	rt := newCollabAttachmentRuntime(t, client, adapter)
+	var captured types.HarnessTurnInput
+	original := adapterRunTurnHook
+	adapterRunTurnHook = func(_ *fakeAdapter, input types.HarnessTurnInput) { captured = input }
+	t.Cleanup(func() { adapterRunTurnHook = original })
+
+	rt.acceptEvent(types.RoomEvent{
+		Sequence: 4, Type: "action", Participant: types.ParticipantIdentity{
+			ID: "agent-a", Name: "Agent A", Kind: types.KindAgent,
+		}, Addressed: true, Collab: &types.WireCollabEvent{
+			RequestID: "request-evicted", Kind: types.CollabRequest,
+			FromParticipantID: "agent-a", TargetParticipantID: "agent-b",
+			Summary: "use the evicted artifact", AttachmentIDs: []string{"attachment-evicted-1"},
+		},
+	})
+	rt.drainTurns()
+	if captured.Events == nil || len(captured.Events) != 1 || len(captured.Events[0].ReferencedAttachments) != 1 {
+		t.Fatalf("collaboration turn was aborted by an unavailable reference: %#v", captured)
+	}
+	if !captured.Events[0].ReferencedAttachments[0].Unavailable {
+		t.Fatal("unavailable collaboration reference lacks a safe marker")
+	}
+}
+
+func TestCollabAttachmentEnrichmentDeduplicatesReadsAndBoundsContent(t *testing.T) {
+	client := &collabAttachmentClient{
+		fakeClient: &fakeClient{},
+		attachments: map[string]types.AttachmentRead{
+			"attachment-text-1": {
+				FileName: "large.md", MimeType: "text/markdown",
+				Text: strings.Repeat("x", maxTextFileChars),
+			},
+			"attachment-image-1": {
+				FileName: "one.png", MimeType: "image/png", Data: "IMAGE_ONE",
+			},
+		},
+	}
+	input := &types.HarnessTurnInput{Events: []types.HarnessEvent{
+		{Collab: &types.CollabEventView{WireCollabEvent: types.WireCollabEvent{
+			AttachmentIDs: []string{"attachment-text-1", "attachment-text-1", "attachment-image-1"},
+		}}},
+		{Collab: &types.CollabEventView{WireCollabEvent: types.WireCollabEvent{
+			AttachmentIDs: []string{"attachment-text-1"},
+		}}},
+	}}
+	imagesSupported := true
+	EnrichTurnAttachments(input, func(attachmentID string) (types.AttachmentRead, error) {
+		return client.ReadAttachment("test-handle", attachmentID)
+	}, nil, &EnrichOptions{ImagesSupported: &imagesSupported})
+	if len(input.Events[0].ReferencedAttachments) != 2 {
+		t.Fatalf("duplicate reference in one collab event was not deduplicated: %#v", input.Events[0].ReferencedAttachments)
+	}
+	if input.Events[0].ReferencedAttachments[0].TextFile == nil ||
+		len(input.Events[0].ReferencedAttachments[0].TextFile.Content) != maxTextFileChars {
+		t.Fatal("first text reference was not bounded at the existing per-turn limit")
+	}
+	if input.Events[0].ReferencedAttachments[1].Image == nil ||
+		input.Events[0].ReferencedAttachments[1].Image.Data != "IMAGE_ONE" {
+		t.Fatalf("image reference was not resolved: %#v", input.Events[0].ReferencedAttachments)
+	}
+	if len(input.Events[1].ReferencedAttachments) != 1 ||
+		!input.Events[1].ReferencedAttachments[0].Unavailable {
+		t.Fatalf("text growth past the turn bound must fail open: %#v", input.Events[1].ReferencedAttachments)
+	}
+	client.mu.Lock()
+	textReads := client.reads["attachment-text-1"]
+	imageReads := client.reads["attachment-image-1"]
+	client.mu.Unlock()
+	if textReads != 1 || imageReads != 1 {
+		t.Fatalf("duplicate references caused redundant Room reads: text=%d image=%d", textReads, imageReads)
+	}
+
+	withoutImages := &types.HarnessTurnInput{Events: []types.HarnessEvent{{
+		Collab: &types.CollabEventView{WireCollabEvent: types.WireCollabEvent{
+			AttachmentIDs: []string{"attachment-image-1"},
+		}},
+	}}}
+	imagesSupported = false
+	EnrichTurnAttachments(withoutImages, func(attachmentID string) (types.AttachmentRead, error) {
+		return client.ReadAttachment("test-handle", attachmentID)
+	}, nil, &EnrichOptions{ImagesSupported: &imagesSupported})
+	if withoutImages.Events[0].ReferencedAttachments[0].Image != nil {
+		t.Fatal("image bytes leaked into a Harness turn without negotiated image support")
+	}
+}
+
+func TestCollabReferencesPrioritizeImageBudgetAndAvoidDuplicateStandaloneContent(t *testing.T) {
+	client := &collabAttachmentClient{
+		fakeClient: &fakeClient{},
+		attachments: map[string]types.AttachmentRead{
+			"attachment-image-a": {FileName: "a.png", MimeType: "image/png", Data: "IMAGE_A"},
+			"attachment-image-b": {FileName: "b.png", MimeType: "image/png", Data: "IMAGE_B"},
+		},
+	}
+	input := &types.HarnessTurnInput{Events: []types.HarnessEvent{
+		{Attachment: &types.RoomAttachmentMetadata{ID: "attachment-image-a", FileName: "a.png", MimeType: "image/png"}},
+		{Attachment: &types.RoomAttachmentMetadata{ID: "attachment-image-b", FileName: "b.png", MimeType: "image/png"}},
+		{Collab: &types.CollabEventView{WireCollabEvent: types.WireCollabEvent{
+			Kind: types.CollabRequest, AttachmentIDs: []string{"attachment-image-b"},
+		}}},
+	}}
+	imagesSupported := true
+	EnrichTurnAttachments(input, func(attachmentID string) (types.AttachmentRead, error) {
+		return client.ReadAttachment("test-handle", attachmentID)
+	}, nil, &EnrichOptions{ImagesSupported: &imagesSupported})
+
+	ref := input.Events[2].ReferencedAttachments
+	if len(ref) != 1 || ref[0].Image == nil || ref[0].Image.Data != "IMAGE_B" {
+		t.Fatalf("explicit collaboration image did not receive priority: %#v", ref)
+	}
+	if input.Events[1].Image != nil {
+		t.Fatal("referenced image was duplicated as standalone image content")
+	}
+	imageDataCounts := make(map[string]int)
+	imageCount := 0
+	for _, event := range input.Events {
+		if event.Image != nil {
+			imageDataCounts[event.Image.Data]++
+			imageCount++
+		}
+		for _, attachment := range event.ReferencedAttachments {
+			if attachment.Image != nil {
+				imageDataCounts[attachment.Image.Data]++
+				imageCount++
+			}
+		}
+	}
+	if imageCount > maxImagesPerTurn || imageDataCounts["IMAGE_B"] != 1 {
+		t.Fatalf("collaboration image priority broke global image bound: count=%d data=%#v", imageCount, imageDataCounts)
+	}
+	client.mu.Lock()
+	readsA := client.reads["attachment-image-a"]
+	readsB := client.reads["attachment-image-b"]
+	client.mu.Unlock()
+	if readsA != 1 || readsB != 1 {
+		t.Fatalf("priority path redundantly read or skipped artifacts: A=%d B=%d", readsA, readsB)
+	}
+}
+
+func TestCollabReferencesPrioritizeCumulativeTextBudget(t *testing.T) {
+	const referenceContent = "exact-priority-collaboration-content"
+	client := &collabAttachmentClient{
+		fakeClient: &fakeClient{},
+		attachments: map[string]types.AttachmentRead{
+			"attachment-standalone-text": {
+				FileName: "standalone.md", MimeType: "text/markdown",
+				Text: strings.Repeat("x", maxTextFileChars),
+			},
+			"attachment-collab-text": {
+				FileName: "collab.md", MimeType: "text/markdown", Text: referenceContent,
+			},
+		},
+	}
+	input := &types.HarnessTurnInput{Events: []types.HarnessEvent{
+		{Attachment: &types.RoomAttachmentMetadata{ID: "attachment-standalone-text", FileName: "standalone.md", MimeType: "text/markdown"}},
+		{Collab: &types.CollabEventView{WireCollabEvent: types.WireCollabEvent{
+			Kind: types.CollabRequest, AttachmentIDs: []string{"attachment-collab-text"},
+		}}},
+	}}
+	imagesSupported := false
+	EnrichTurnAttachments(input, func(attachmentID string) (types.AttachmentRead, error) {
+		return client.ReadAttachment("test-handle", attachmentID)
+	}, nil, &EnrichOptions{ImagesSupported: &imagesSupported})
+
+	refs := input.Events[1].ReferencedAttachments
+	if len(refs) != 1 || refs[0].TextFile == nil || refs[0].TextFile.Content != referenceContent {
+		t.Fatalf("explicit collaboration text did not receive priority: %#v", refs)
+	}
+	if input.Events[0].TextFile == nil || len(input.Events[0].TextFile.Content) != maxTextFileChars-len(referenceContent) {
+		t.Fatalf("standalone text did not use only the remaining bounded budget: %#v", input.Events[0].TextFile)
+	}
+	if len(input.Events[0].TextFile.Content)+len(refs[0].TextFile.Content) > maxTextFileChars {
+		t.Fatal("collaboration text priority exceeded the cumulative text bound")
+	}
+}
+
 func (*fakeClient) UpdateCapabilities(handle string, capabilities []string) error {
 	return nil
 }

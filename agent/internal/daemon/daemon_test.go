@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -65,10 +66,41 @@ func TestRemoveStaleWorkspacesWipesEverythingInside(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleRuntimeExecutablesIsScopedAndPreservesLiveOwner(t *testing.T) {
+	root := t.TempDir()
+	deadPID := 999999999
+	if runtimeProcessAlive(deadPID) {
+		t.Skip("test fixture pid is unexpectedly alive")
+	}
+	stale := filepath.Join(root, runtimeExecutablePrefix+strconv.Itoa(deadPID)+"-stale")
+	live := filepath.Join(root, runtimeExecutablePrefix+strconv.Itoa(os.Getpid())+"-live")
+	unrelated := filepath.Join(root, "unrelated")
+	for _, path := range []string{stale, live, unrelated} {
+		if err := os.WriteFile(path, []byte("fixture"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := removeStaleRuntimeExecutables(root); err != nil {
+		t.Fatalf("stale Runtime executable cleanup failed: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("dead daemon executable copy survived cleanup")
+	}
+	for _, path := range []string{live, unrelated} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cleanup removed a live or unrelated file %s: %v", path, err)
+		}
+	}
+}
+
 // startDaemon runs a daemon against a temporary AGENT_DIR. SendIPC from the
 // tests talks to the real Unix socket; tests may reach into the daemon
 // directly because they live in the same package.
 func startDaemon(t *testing.T) (*Daemon, string) {
+	return startDaemonWithExecutable(t, "")
+}
+
+func startDaemonWithExecutable(t *testing.T, executable string) (*Daemon, string) {
 	t.Helper()
 	// Unix-domain sockets require short paths on darwin (<104 chars), so the
 	// runtime directory for tests lives directly under /tmp.
@@ -84,6 +116,9 @@ func startDaemon(t *testing.T) (*Daemon, string) {
 	// opt-out contract for unit tests.
 	t.Setenv("FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE", "1")
 	d := New()
+	if executable != "" {
+		d.runtimeExecutable = executable
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -477,6 +512,42 @@ func TestConnectChoosesOneSameHostResidentWithoutHumanInstanceSelection(t *testi
 	}
 	if pi.runtimeRef.Status().ParticipantID == "" || codex.runtimeRef.Status().ParticipantID == "" {
 		t.Fatal("provider connection must not replace either resident Agent")
+	}
+}
+
+func TestDaemonStatusPreservesDistinctHarnessIdentities(t *testing.T) {
+	d, _ := startDaemon(t)
+	for _, resident := range []struct {
+		instance string
+		adapter  string
+	}{
+		{instance: "resident-hermes", adapter: "hermes"},
+		{instance: "resident-codex", adapter: "codex"},
+	} {
+		rt := runtime.NewResidentRuntime(runtime.Options{
+			InstanceID: resident.instance,
+			RoomID:     "identity-room",
+			Name:       "Agent " + resident.adapter,
+			Client:     &recordingClient{},
+			Adapter:    &stubAdapter{name: resident.adapter},
+		})
+		d.register(&residentInstance{
+			instanceID: resident.instance,
+			roomID:     "identity-room",
+			runtime:    rt,
+			workspace:  t.TempDir(),
+		})
+	}
+
+	views := d.statusViews()
+	seen := make(map[string]string, len(views))
+	for _, view := range views {
+		instance, _ := view["instanceId"].(string)
+		adapter, _ := view["adapter"].(string)
+		seen[instance] = adapter
+	}
+	if seen["resident-hermes"] != "hermes" || seen["resident-codex"] != "codex" {
+		t.Fatalf("status substituted or obscured resident Harness identity: %#v", seen)
 	}
 }
 
@@ -951,13 +1022,42 @@ func serveResidentEventSocket(w http.ResponseWriter, r *http.Request, payload an
 	return true
 }
 
-func TestCustomRuntimeRootReachesHarnessContextRead(t *testing.T) {
-	_, root := startDaemon(t)
+func TestRuntimeExecutableCopySurvivesInstalledPathReplacement(t *testing.T) {
+	installedDir := t.TempDir()
+	installedPath := filepath.Join(installedDir, "free4chat-agent")
+	installedBinary, err := os.ReadFile(free4chatAgentBinary)
+	if err != nil {
+		t.Fatalf("read installed Runtime fixture failed: %v", err)
+	}
+	if err := os.WriteFile(installedPath, installedBinary, 0o700); err != nil {
+		t.Fatalf("write installed Runtime fixture failed: %v", err)
+	}
+	d, root := startDaemonWithExecutable(t, installedPath)
+	stablePath := d.runtimeExecutableCopy
+	if stablePath == "" {
+		t.Fatal("daemon did not establish a stable Runtime executable copy")
+	}
+	if _, err := os.Stat(stablePath); err != nil {
+		t.Fatalf("stable Runtime executable copy is missing: %v", err)
+	}
 
-	// The fake ACP Harness invokes the CLI by name. Put the test-built CLI
-	// first on PATH so the child exercises the same local command path as a
-	// real Harness, while FREE4CHAT_AGENT_DIR points at this daemon's root.
-	t.Setenv("PATH", filepath.Dir(free4chatAgentBinary)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Model the official installer's atomic replacement of the installed path.
+	replacementPath := installedPath + ".replacement"
+	if err := os.WriteFile(replacementPath, []byte("#!/bin/sh\nprintf replacement-b\n"), 0o700); err != nil {
+		t.Fatalf("write replacement Runtime fixture failed: %v", err)
+	}
+	if err := os.Rename(replacementPath, installedPath); err != nil {
+		t.Fatalf("replace installed Runtime fixture failed: %v", err)
+	}
+
+	// Also provide a stale PATH binary. The fake Harness must ignore both the
+	// replaced installed path and stale PATH, invoking FREE4CHAT_AGENT_BIN.
+	staleDir := t.TempDir()
+	stalePath := filepath.Join(staleDir, "free4chat-agent")
+	if err := os.WriteFile(stalePath, []byte("#!/bin/sh\nprintf stale-path-binary\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", staleDir)
 
 	var mu sync.Mutex
 	var sentTexts []string
@@ -1078,6 +1178,9 @@ func TestCustomRuntimeRootReachesHarnessContextRead(t *testing.T) {
 	}
 	if len(texts) != 1 || !strings.Contains(texts[0], "custom-root-history") {
 		t.Fatalf("Harness context read did not return bounded Room history: %q", texts)
+	}
+	if strings.Contains(strings.Join(texts, "\n"), "replacement-b") {
+		t.Fatalf("Harness invoked the replaced installed Runtime pathname: %q", texts)
 	}
 	if _, err := os.Stat(filepath.Join(root, "workspaces", statusView.InstanceID)); err != nil {
 		t.Fatalf("resident workspace was not created under custom Runtime root: %v", err)

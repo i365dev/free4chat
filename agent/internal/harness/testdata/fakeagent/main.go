@@ -233,7 +233,13 @@ func main() {
 				updateChunk(sessionID, os.Getenv(name))
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "context_read":
-				output, err := exec.Command("free4chat-agent", "context", "read", "--before-sequence", "2", "--limit", "10").CombinedOutput()
+				runtimeBinary := os.Getenv("FREE4CHAT_AGENT_BIN")
+				if runtimeBinary == "" {
+					updateChunk(sessionID, "context-read-error: exact Runtime executable is unavailable")
+					reply(message.ID, map[string]any{"stopReason": "end_turn"})
+					continue
+				}
+				output, err := exec.Command(runtimeBinary, "context", "read", "--before-sequence", "2", "--limit", "10").CombinedOutput()
 				if err != nil {
 					updateChunk(sessionID, "context-read-error: "+string(output))
 				} else {
