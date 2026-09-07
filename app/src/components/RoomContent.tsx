@@ -10,7 +10,6 @@ import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
-import type { UserInfo } from "../common/types"
 import {
   umamiEvent,
   trackAnalyticsEvent,
@@ -21,6 +20,7 @@ import { useSfuChatRoom } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 
 const REACTION_EMOJIS = ["👍", "😂", "🔥", "❓"]
+const MAX_FILE_SIZE = 20 * 1024 * 1024
 
 function ScreenShareViewer({
   stream,
@@ -158,14 +158,15 @@ export default function RoomContent({
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
-  const toggleAgentVoice = (participant: UserInfo) => {
-    if (!participant.voiceAvailable) return
-    const enabled = !participant.voiceEnabled
-    setAgentVoice(participant.peerId, enabled)
-    trackAnalyticsEvent(enabled ? "AgentVoiceStarted" : "AgentVoiceStopped", {
-      roomType: resolvedRoomType,
-    })
-  }
+  const toggleAgentVoice = useCallback(
+    (participantId: string, enabled: boolean) => {
+      setAgentVoice(participantId, enabled)
+      trackAnalyticsEvent(enabled ? "AgentVoiceStarted" : "AgentVoiceStopped", {
+        roomType: resolvedRoomType,
+      })
+    },
+    [resolvedRoomType, setAgentVoice]
+  )
   const handleStartLiveTranscript = (runtimeHostId: string) => {
     startLiveTranscript(runtimeHostId)
     trackAnalyticsEvent("LiveTranscriptStarted", {
@@ -303,69 +304,79 @@ export default function RoomContent({
   }, [messages, spawnReaction])
 
   const hasSentTextRef = useRef(false)
-  const wrappedSendText = (text: string, targets: string[] = []) => {
-    if (!hasSentTextRef.current) {
-      hasSentTextRef.current = true
-      umamiEvent("ChatActivity", { type: "text", roomHash: hashRoom(roomName) })
-    }
-    sendTextMessage(text, targets)
-  }
+  const wrappedSendText = useCallback(
+    (text: string, targets: string[] = []) => {
+      if (!hasSentTextRef.current) {
+        hasSentTextRef.current = true
+        umamiEvent("ChatActivity", {
+          type: "text",
+          roomHash: hashRoom(roomName),
+        })
+      }
+      sendTextMessage(text, targets)
+    },
+    [roomName, sendTextMessage]
+  )
 
-  const MAX_FILE_SIZE = 20 * 1024 * 1024
+  const sendReaction = useCallback(
+    (emoji: string) => {
+      sendActionMessage("reaction", { emoji, ts: Date.now().toString() })
+    },
+    [sendActionMessage]
+  )
 
-  const sendReaction = (emoji: string) => {
-    sendActionMessage("reaction", { emoji, ts: Date.now().toString() })
-  }
-
-  const wrappedSendFile = async (file: File) => {
-    const id = `${Date.now()}-${file.name}`
-    if (file.size > MAX_FILE_SIZE) {
+  const wrappedSendFile = useCallback(
+    async (file: File) => {
+      const id = `${Date.now()}-${file.name}`
+      if (file.size > MAX_FILE_SIZE) {
+        setPendingFiles((prev) => [
+          ...prev,
+          {
+            id,
+            fileName: file.name,
+            isImage: file.type.startsWith("image/"),
+            error: true,
+            errorMessage: `File too large (max 20 MB)`,
+          },
+        ])
+        setTimeout(
+          () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
+          3000
+        )
+        return
+      }
+      umamiEvent("ChatActivity", {
+        type: file.type.startsWith("image/") ? "image" : "file",
+        roomHash: hashRoom(roomName),
+      })
       setPendingFiles((prev) => [
         ...prev,
-        {
-          id,
-          fileName: file.name,
-          isImage: file.type.startsWith("image/"),
-          error: true,
-          errorMessage: `File too large (max 20 MB)`,
-        },
+        { id, fileName: file.name, isImage: file.type.startsWith("image/") },
       ])
-      setTimeout(
-        () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
-        3000
-      )
-      return
-    }
-    umamiEvent("ChatActivity", {
-      type: file.type.startsWith("image/") ? "image" : "file",
-      roomHash: hashRoom(roomName),
-    })
-    setPendingFiles((prev) => [
-      ...prev,
-      { id, fileName: file.name, isImage: file.type.startsWith("image/") },
-    ])
-    try {
-      await sendFileMessage(file)
-    } catch {
-      setPendingFiles((prev) =>
-        prev.map((f) =>
-          f.id === id
-            ? { ...f, error: true, errorMessage: "Failed to send" }
-            : f
+      try {
+        await sendFileMessage(file)
+      } catch {
+        setPendingFiles((prev) =>
+          prev.map((f) =>
+            f.id === id
+              ? { ...f, error: true, errorMessage: "Failed to send" }
+              : f
+          )
         )
-      )
-      setTimeout(
-        () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
-        3000
-      )
-      return
-    }
-    setPendingFiles((prev) => prev.filter((f) => f.id !== id))
-  }
+        setTimeout(
+          () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
+          3000
+        )
+        return
+      }
+      setPendingFiles((prev) => prev.filter((f) => f.id !== id))
+    },
+    [roomName, sendFileMessage]
+  )
 
   const selfScreenShareRef = useRef(false)
   const [screenShareWarning, setScreenShareWarning] = useState("")
-  const wrappedToggleScreenShare = () => {
+  const wrappedToggleScreenShare = useCallback(() => {
     const isCurrentlySharing = participants.find(
       (p) => p.peerId === LOCAL_PEER_ID
     )?.screenShareEnabled
@@ -385,7 +396,24 @@ export default function RoomContent({
       roomHash: hashRoom(roomName),
     })
     toggleScreenShare()
-  }
+  }, [participants, roomName, toggleScreenShare])
+
+  const handleCollabRespond = useCallback(
+    (requestId: string, decision: "accepted" | "declined") => {
+      sendCollabResponse(requestId, decision)
+    },
+    [sendCollabResponse]
+  )
+  const handleReadArtifact = useCallback(
+    (attachmentId: string) => readRoomAttachment(attachmentId),
+    [readRoomAttachment]
+  )
+  const handleCollabResult = useCallback(
+    (requestId: string, status: "completed" | "failed", summary: string) => {
+      sendCollabResult(requestId, status, summary)
+    },
+    [sendCollabResult]
+  )
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
@@ -676,7 +704,7 @@ export default function RoomContent({
                           p.voiceAvailable && agentVoiceMediaAvailable
                         }
                         voiceEnabled={p.voiceEnabled}
-                        onToggleAgentVoice={() => toggleAgentVoice(p)}
+                        onToggleAgentVoice={toggleAgentVoice}
                         className="w-[84px]"
                         compact
                       />
@@ -706,7 +734,7 @@ export default function RoomContent({
                         p.voiceAvailable && agentVoiceMediaAvailable
                       }
                       voiceEnabled={p.voiceEnabled}
-                      onToggleAgentVoice={() => toggleAgentVoice(p)}
+                      onToggleAgentVoice={toggleAgentVoice}
                       screenshareAllowed={screenshareAllowed}
                       className="w-40 flex-none"
                     />
@@ -761,13 +789,9 @@ export default function RoomContent({
             onSendFile={wrappedSendFile}
             onSendAction={sendActionMessage}
             localParticipantId={getLocalRoomAuth()?.participantId}
-            onCollabRespond={(requestId, decision) => {
-              sendCollabResponse(requestId, decision)
-            }}
-            onReadArtifact={(attachmentId) => readRoomAttachment(attachmentId)}
-            onCollabResult={(requestId, status, summary) => {
-              sendCollabResult(requestId, status, summary)
-            }}
+            onCollabRespond={handleCollabRespond}
+            onReadArtifact={handleReadArtifact}
+            onCollabResult={handleCollabResult}
           />
         </div>
       </div>
