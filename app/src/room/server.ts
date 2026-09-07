@@ -7,6 +7,15 @@ const MAX_ROOM_LENGTH = 64
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const MAX_PERMISSION_REQUEST_BODY_BYTES = 64 * 1024
 const AGENT_EVENT_PATH = "/api/room/agent-events"
+const ROOM_REQUEST_PATHS = new Set([
+  "/api/room/attachments",
+  "/api/room/live-transcript/append",
+  AGENT_EVENT_PATH,
+  "/api/room/permissions/request",
+  "/api/room/runtime-provider/connect",
+  "/api/room/surfaces/read",
+  "/api/room/attachments/read",
+])
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -22,6 +31,13 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 
 export interface RoomProtocolEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
+}
+
+// Keep the Worker entrypoint and the protocol handler on the same allowlist.
+// A path that is implemented below but omitted here falls through to the
+// Next.js app and becomes an opaque HTML 404 to native Runtime clients.
+export function isRoomRequestPath(pathname: string): boolean {
+  return ROOM_REQUEST_PATHS.has(pathname)
 }
 
 function json(data: unknown, status = 200): Response {

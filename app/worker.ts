@@ -3,7 +3,7 @@ import { default as handler } from "./.open-next/worker.js"
 
 import { handleSfuRequest } from "./src/sfu/server"
 import { handleMcpRequest } from "./src/mcp/server"
-import { handleRoomRequest } from "./src/room/server"
+import { handleRoomRequest, isRoomRequestPath } from "./src/room/server"
 
 export { RoomSession } from "./src/do/RoomSession"
 
@@ -16,14 +16,7 @@ export default {
     if (pathname.startsWith("/api/sfu/")) {
       return handleSfuRequest(request, env)
     }
-    if (
-      pathname === "/api/room/attachments" ||
-      pathname === "/api/room/live-transcript/append" ||
-      pathname === "/api/room/agent-events" ||
-      pathname === "/api/room/runtime-provider/connect" ||
-      pathname === "/api/room/surfaces/read" ||
-      pathname === "/api/room/attachments/read"
-    ) {
+    if (isRoomRequestPath(pathname)) {
       return handleRoomRequest(request, env)
     }
     return handler.fetch(request, env, ctx)
