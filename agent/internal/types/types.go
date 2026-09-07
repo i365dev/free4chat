@@ -222,6 +222,21 @@ type HarnessImage struct {
 	MimeType string
 }
 
+// HarnessReferencedAttachment is the bounded content view of an attachment
+// referenced by a structured collaboration envelope. The collaboration
+// envelope already carries the opaque reference id; this type adds only the
+// Runtime-resolved content needed by the local Harness for this turn.
+// Unavailable is a safe fail-open marker for an unknown, evicted, unsupported,
+// or unreadable attachment. It never carries Room credentials or raw errors.
+type HarnessReferencedAttachment struct {
+	ID          string           `json:"id"`
+	FileName    string           `json:"fileName,omitempty"`
+	MimeType    string           `json:"mimeType,omitempty"`
+	TextFile    *TextFileContent `json:"textFile,omitempty"`
+	Image       *HarnessImage    `json:"image,omitempty"`
+	Unavailable bool             `json:"unavailable,omitempty"`
+}
+
 // ParticipantIdentity is the public identity attached to every event.
 type ParticipantIdentity struct {
 	ID   string          `json:"id"`
@@ -274,8 +289,13 @@ type HarnessEvent struct {
 	Attachment    *RoomAttachmentMetadata `json:"attachment,omitempty"`
 	Image         *HarnessImage           `json:"image,omitempty"`
 	TextFile      *TextFileContent        `json:"textFile,omitempty"`
-	Sequence      int64                   `json:"sequence"`
-	CreatedAt     int64                   `json:"createdAt"`
+	// ReferencedAttachments contains bounded content resolved from the
+	// Collab.AttachmentIDs references for this event. It is deliberately
+	// separate from Attachment so plural collaboration references cannot drop
+	// all but the first artifact.
+	ReferencedAttachments []HarnessReferencedAttachment `json:"referencedAttachments,omitempty"`
+	Sequence              int64                         `json:"sequence"`
+	CreatedAt             int64                         `json:"createdAt"`
 }
 
 // RoomSelfContext tells the Harness who it is for this room. It never
@@ -681,6 +701,7 @@ type LiveTranscriptAppendClient interface {
 // AttachmentRead is read_attachment's normalized result: either an image
 // payload or a decoded text-like attachment copy.
 type AttachmentRead struct {
+	FileName string // returned attachment metadata, when available
 	Data     string // base64 for images
 	MimeType string
 	Text     string // present only for text-like attachments

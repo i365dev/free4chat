@@ -906,6 +906,7 @@ func (c *Client) ReadAttachment(participantHandle, attachmentID string) (types.A
 		}
 	}
 	content, _ := result["content"].([]any)
+	var image *types.AttachmentRead
 	for _, item := range content {
 		block, ok := item.(map[string]any)
 		if !ok {
@@ -914,7 +915,7 @@ func (c *Client) ReadAttachment(participantHandle, attachmentID string) (types.A
 		if blockType, _ := block["type"].(string); blockType == "image" {
 			data, _ := block["data"].(string)
 			mimeType, _ := block["mimeType"].(string)
-			return types.AttachmentRead{Data: data, MimeType: mimeType}, nil
+			image = &types.AttachmentRead{Data: data, MimeType: mimeType}
 		}
 	}
 	for _, item := range content {
@@ -930,6 +931,7 @@ func (c *Client) ReadAttachment(participantHandle, attachmentID string) (types.A
 			Data       string `json:"data"`
 			Text       string `json:"text"`
 			Attachment struct {
+				FileName string `json:"fileName"`
 				MimeType string `json:"mimeType"`
 			} `json:"attachment"`
 		}
@@ -938,11 +940,21 @@ func (c *Client) ReadAttachment(participantHandle, attachmentID string) (types.A
 		}
 		if payload.Text != "" {
 			return types.AttachmentRead{
+				FileName: payload.Attachment.FileName,
 				Data:     payload.Data,
 				MimeType: payload.Attachment.MimeType,
 				Text:     payload.Text,
 			}, nil
 		}
+		if image != nil {
+			image.FileName = payload.Attachment.FileName
+			if image.MimeType == "" {
+				image.MimeType = payload.Attachment.MimeType
+			}
+		}
+	}
+	if image != nil && image.Data != "" && image.MimeType != "" {
+		return *image, nil
 	}
 	return types.AttachmentRead{}, &Error{
 		Message: "Free4Chat returned no image content",

@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	shutdownTimeoutMs    = 2_000
-	defaultTurnTimeoutMs = 120_000
-	defaultCancelGraceMs = 2_000
+	shutdownTimeoutMs      = 2_000
+	defaultTurnTimeoutMs   = 120_000
+	defaultCancelGraceMs   = 2_000
+	maxPromptImagesPerTurn = 2
 
 	protocolVersion = 1
 	clientName      = "free4chat-agent-runtime"
@@ -43,6 +44,10 @@ type AdapterOptions struct {
 	// It is ephemeral launch material: never returned in daemon responses,
 	// never persisted to workspace/status/logs, never enters Room/MCP/ACP.
 	AgentEnv map[string]string
+	// RuntimeExecutable is the exact currently-running free4chat-agent binary
+	// that owns the resident daemon. It is passed to the Harness as
+	// launcher-owned FREE4CHAT_AGENT_BIN policy, never through Room state.
+	RuntimeExecutable string
 }
 
 // ACPCapabilities is the parsed initialize response projection.
@@ -251,7 +256,13 @@ func (a *ACPAdapter) EnsureSession() error {
 
 	command := exec.Command(a.launcher.Command, a.launcher.Args...)
 	command.Dir = a.workingDir
-	command.Env = environmentSlice(BuildHarnessEnvironment(a.launcher, nil, a.options.AgentEnv))
+	environment := BuildHarnessEnvironment(a.launcher, nil, a.options.AgentEnv)
+	if a.options.RuntimeExecutable != "" {
+		// Apply after both ambient and operator/launcher layers so a stale
+		// PATH binary or custom launcher policy cannot replace the owner.
+		environment[RuntimeExecutableEnv] = a.options.RuntimeExecutable
+	}
+	command.Env = environmentSlice(environment)
 	stdinPipe, err := command.StdinPipe()
 	if err != nil {
 		a.mu.Unlock()
@@ -571,13 +582,26 @@ func promptBlocks(input types.HarnessTurnInput, supportsImages bool) []map[strin
 	if !supportsImages {
 		return blocks
 	}
+	imageCount := 0
 	for _, event := range input.Events {
-		if event.Image != nil {
+		if event.Image != nil && imageCount < maxPromptImagesPerTurn {
 			blocks = append(blocks, map[string]any{
 				"type":     "image",
 				"data":     event.Image.Data,
 				"mimeType": event.Image.MimeType,
 			})
+			imageCount++
+		}
+		for _, attachment := range event.ReferencedAttachments {
+			if attachment.Image == nil || imageCount >= maxPromptImagesPerTurn {
+				continue
+			}
+			blocks = append(blocks, map[string]any{
+				"type":     "image",
+				"data":     attachment.Image.Data,
+				"mimeType": attachment.Image.MimeType,
+			})
+			imageCount++
 		}
 	}
 	return blocks

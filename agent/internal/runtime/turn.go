@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"errors"
+
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -20,8 +22,11 @@ type UnavailableFunc func(event types.HarnessEvent, message string)
 // EnrichTurnAttachments is the pure attachment-enrichment pass shared by the
 // turn pipeline: text-like attachments become bounded inline textFile
 // content; binary image attachments become image blocks (when the Harness
-// negotiated image support, up to two per turn); per-event failures are
-// reported and never abort the turn.
+// negotiated image support, up to two per turn). Structured collaboration
+// attachment references are resolved into their own bounded collection rather
+// than being collapsed into the singular event.Attachment field. Reads are
+// cached within the turn, and per-reference failures are reported without
+// aborting the collaboration lifecycle.
 func EnrichTurnAttachments(
 	input *types.HarnessTurnInput,
 	readAttachment ReadAttachmentFunc,
@@ -35,39 +40,113 @@ func EnrichTurnAttachments(
 		imagesSupported = *options.ImagesSupported
 	}
 	imageCount := 0
+	textChars := 0
+	type resolution struct {
+		read types.AttachmentRead
+		err  error
+	}
+	cache := make(map[string]resolution)
+	resolve := func(attachmentID string) (types.AttachmentRead, error) {
+		if cached, ok := cache[attachmentID]; ok {
+			return cached.read, cached.err
+		}
+		read, err := readAttachment(attachmentID)
+		cache[attachmentID] = resolution{read: read, err: err}
+		return read, err
+	}
+	reportUnavailable := func(event types.HarnessEvent, attachmentID string, err error) {
+		if onUnavailable == nil {
+			return
+		}
+		if event.Attachment == nil || event.Attachment.ID != attachmentID {
+			// Keep the existing callback shape while making the referenced id
+			// available to the Runtime's secret-free diagnostic logger.
+			event.Attachment = &types.RoomAttachmentMetadata{ID: attachmentID}
+		}
+		onUnavailable(event, err.Error())
+	}
+	addText := func(fileName, mimeType, content string) *types.TextFileContent {
+		remaining := maxTextFileChars - textChars
+		if remaining <= 0 {
+			return nil
+		}
+		if len(content) > remaining {
+			content = content[:remaining]
+		}
+		textChars += len(content)
+		return &types.TextFileContent{
+			FileName: fileName,
+			MimeType: mimeType,
+			Content:  content,
+		}
+	}
 	for i := range input.Events {
 		event := &input.Events[i]
-		if event.Attachment == nil {
-			continue
-		}
-		attachment, err := readAttachment(event.Attachment.ID)
-		if err != nil {
-			message := err.Error()
-			if onUnavailable != nil {
-				onUnavailable(*event, message)
+		if event.Attachment != nil {
+			attachmentID := event.Attachment.ID
+			attachment, err := resolve(attachmentID)
+			if err != nil {
+				reportUnavailable(*event, attachmentID, err)
+			} else if attachment.Text != "" {
+				event.TextFile = addText(
+					firstNonEmpty(attachment.FileName, event.Attachment.FileName, attachmentID),
+					firstNonEmpty(attachment.MimeType, event.Attachment.MimeType),
+					attachment.Text,
+				)
+			} else if attachment.Data != "" && imagesSupported && imageCount < maxImagesPerTurn {
+				event.Image = &types.HarnessImage{
+					Data:     attachment.Data,
+					MimeType: firstNonEmpty(attachment.MimeType, event.Attachment.MimeType),
+				}
+				imageCount++
 			}
+		}
+
+		if event.Collab == nil {
 			continue
 		}
-		if attachment.Text != "" {
-			content := attachment.Text
-			if len(content) > maxTextFileChars {
-				content = content[:maxTextFileChars]
+		seen := make(map[string]struct{}, len(event.Collab.AttachmentIDs))
+		for _, attachmentID := range event.Collab.AttachmentIDs {
+			if _, duplicate := seen[attachmentID]; duplicate {
+				continue
 			}
-			event.TextFile = &types.TextFileContent{
-				FileName: event.Attachment.FileName,
-				MimeType: attachment.MimeType,
-				Content:  content,
+			seen[attachmentID] = struct{}{}
+			referenced := types.HarnessReferencedAttachment{ID: attachmentID}
+			attachment, err := resolve(attachmentID)
+			if err != nil {
+				referenced.Unavailable = true
+				reportUnavailable(*event, attachmentID, err)
+				event.ReferencedAttachments = append(event.ReferencedAttachments, referenced)
+				continue
 			}
-			continue
+			referenced.FileName = firstNonEmpty(attachment.FileName, attachmentID)
+			referenced.MimeType = attachment.MimeType
+			switch {
+			case attachment.Text != "":
+				referenced.TextFile = addText(
+					referenced.FileName,
+					attachment.MimeType,
+					attachment.Text,
+				)
+				if referenced.TextFile == nil {
+					referenced.Unavailable = true
+				}
+			case attachment.Data != "" && imagesSupported && imageCount < maxImagesPerTurn:
+				referenced.Image = &types.HarnessImage{
+					Data:     attachment.Data,
+					MimeType: attachment.MimeType,
+				}
+				imageCount++
+			case attachment.Data != "":
+				// The bytes stay out of the prompt when the ACP session does
+				// not negotiate image support. The reference remains visible
+				// as a safe metadata-only collaboration artifact.
+			default:
+				referenced.Unavailable = true
+				reportUnavailable(*event, attachmentID, errors.New("attachment content is unavailable"))
+			}
+			event.ReferencedAttachments = append(event.ReferencedAttachments, referenced)
 		}
-		if !imagesSupported || imageCount >= maxImagesPerTurn {
-			continue
-		}
-		event.Image = &types.HarnessImage{
-			Data:     attachment.Data,
-			MimeType: attachment.MimeType,
-		}
-		imageCount++
 	}
 }
 
@@ -125,4 +204,13 @@ func BuildHarnessTurn(
 type TurnContextOptions struct {
 	Self         *types.RoomSelfContext
 	Participants []types.ParticipantRosterEntry
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

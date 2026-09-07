@@ -892,6 +892,34 @@ func TestFormatCliErrorClassifier(t *testing.T) {
 	if !strings.Contains(deadHarness, "The Harness ACP process stopped before joining") {
 		t.Fatalf("dead-harness hint missing: %q", deadHarness)
 	}
+	missing := formatCliError(errString("ACP session/new failed: Missing environment variable: CUSTOM_TEST_SETTING"))
+	if !strings.Contains(missing, "CUSTOM_TEST_SETTING") ||
+		!strings.Contains(missing, "--agent-env CUSTOM_TEST_SETTING") {
+		t.Fatalf("safe missing-env recovery hint missing: %q", missing)
+	}
+	if strings.Contains(missing, "=") || strings.Contains(missing, "value") {
+		t.Fatalf("missing-env hint must not expose a value: %q", missing)
+	}
+	reserved := formatCliError(errString("Missing environment variable: FREE4CHAT_AGENT_BIN"))
+	if strings.Contains(reserved, "--agent-env") {
+		t.Fatalf("reserved Runtime policy must not get an inheritance hint: %q", reserved)
+	}
+}
+
+func TestRoomReadinessRejectsHarnessIdentityMismatch(t *testing.T) {
+	instances := []map[string]any{{
+		"roomId": "test-room", "instanceId": "instance-a", "participantId": "agent-a",
+		"adapter": "codex",
+	}}
+	mismatch := roomReadiness("test-room", instances, "hermes")
+	if mismatch["joined"] != false || mismatch["reason"] != "harness_mismatch" ||
+		mismatch["expectedAdapter"] != "hermes" || mismatch["actualAdapter"] != "codex" {
+		t.Fatalf("readiness accepted the wrong resident Harness: %#v", mismatch)
+	}
+	matching := roomReadiness("test-room", instances, "codex")
+	if matching["joined"] != true || matching["adapter"] != "codex" {
+		t.Fatalf("readiness lost truthful matching adapter: %#v", matching)
+	}
 }
 
 type errString string

@@ -495,16 +495,19 @@ func TestReadAttachmentImageAndTextPaths(t *testing.T) {
 		switch toolNameOf(body) {
 		case "read_attachment":
 			writeJSON(w, rpcOK(map[string]any{
-				"content": []any{map[string]any{
-					"type": "image", "data": "QUJD", "mimeType": "image/png",
-				}},
+				"content": []any{
+					map[string]any{"type": "image", "data": "QUJD", "mimeType": "image/png"},
+					map[string]any{"type": "text", "text": string(mustJSONValue(map[string]any{
+						"attachment": map[string]any{"fileName": "proof.png", "mimeType": "image/png"},
+					}))},
+				},
 			}))
 		default:
 			respondToolsList(w)
 		}
 	})
 	read, err := client.ReadAttachment("h", "att")
-	if err != nil || read.Data != "QUJD" || read.MimeType != "image/png" || read.Text != "" {
+	if err != nil || read.FileName != "proof.png" || read.Data != "QUJD" || read.MimeType != "image/png" || read.Text != "" {
 		t.Fatalf("image path mismatch: %+v %v", read, err)
 	}
 
@@ -516,13 +519,13 @@ func TestReadAttachmentImageAndTextPaths(t *testing.T) {
 				"text": string(mustJSONValue(map[string]any{
 					"data":       "IyDlsI3otLvluLrlupvlj5Hpuqw=",
 					"text":       markdown,
-					"attachment": map[string]any{"mimeType": "text/markdown"},
+					"attachment": map[string]any{"fileName": "agenda.md", "mimeType": "text/markdown"},
 				})),
 			}},
 		}))
 	})
 	read, err = client2.ReadAttachment("h", "att-1")
-	if err != nil || read.Text != markdown || read.MimeType != "text/markdown" {
+	if err != nil || read.FileName != "agenda.md" || read.Text != markdown || read.MimeType != "text/markdown" {
 		t.Fatalf("text envelope path mismatch: %+v %v", read, err)
 	}
 }

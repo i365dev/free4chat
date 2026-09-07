@@ -86,7 +86,7 @@ func runReadiness(args []string) error {
 			report.Runtime["ready"] = false
 			report.Runtime["daemonReady"] = false
 		}
-		report.Room = roomReadiness(roomID, instances)
+		report.Room = roomReadiness(roomID, instances, option(args, "--agent"))
 	}
 
 	return printJSON(report)
@@ -94,10 +94,23 @@ func runReadiness(args []string) error {
 
 // roomReadiness projects daemon status into per-room readiness, matching the
 // Node projection shape.
-func roomReadiness(roomID string, instances []map[string]any) map[string]any {
+func roomReadiness(roomID string, instances []map[string]any, expectedAdapter string) map[string]any {
 	for _, instance := range instances {
 		if instanceRoom, _ := instance["roomId"].(string); instanceRoom == roomID {
+			actualAdapter, _ := instance["adapter"].(string)
+			if expectedAdapter != "" && actualAdapter != expectedAdapter {
+				return map[string]any{
+					"joined":          false,
+					"roomId":          roomID,
+					"reason":          "harness_mismatch",
+					"expectedAdapter": expectedAdapter,
+					"actualAdapter":   actualAdapter,
+				}
+			}
 			view := map[string]any{"joined": true, "roomId": roomID}
+			if actualAdapter != "" {
+				view["adapter"] = actualAdapter
+			}
 			if id, ok := instance["instanceId"].(string); ok && id != "" {
 				view["instanceId"] = id
 			}

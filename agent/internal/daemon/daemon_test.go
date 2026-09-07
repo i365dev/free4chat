@@ -480,6 +480,42 @@ func TestConnectChoosesOneSameHostResidentWithoutHumanInstanceSelection(t *testi
 	}
 }
 
+func TestDaemonStatusPreservesDistinctHarnessIdentities(t *testing.T) {
+	d, _ := startDaemon(t)
+	for _, resident := range []struct {
+		instance string
+		adapter  string
+	}{
+		{instance: "resident-hermes", adapter: "hermes"},
+		{instance: "resident-codex", adapter: "codex"},
+	} {
+		rt := runtime.NewResidentRuntime(runtime.Options{
+			InstanceID: resident.instance,
+			RoomID:     "identity-room",
+			Name:       "Agent " + resident.adapter,
+			Client:     &recordingClient{},
+			Adapter:    &stubAdapter{name: resident.adapter},
+		})
+		d.register(&residentInstance{
+			instanceID: resident.instance,
+			roomID:     "identity-room",
+			runtime:    rt,
+			workspace:  t.TempDir(),
+		})
+	}
+
+	views := d.statusViews()
+	seen := make(map[string]string, len(views))
+	for _, view := range views {
+		instance, _ := view["instanceId"].(string)
+		adapter, _ := view["adapter"].(string)
+		seen[instance] = adapter
+	}
+	if seen["resident-hermes"] != "hermes" || seen["resident-codex"] != "codex" {
+		t.Fatalf("status substituted or obscured resident Harness identity: %#v", seen)
+	}
+}
+
 func TestResolveRuntimeAmbiguityContract(t *testing.T) {
 	d, _ := startDaemon(t)
 	registerStub(t, d, "inst-a")
@@ -952,12 +988,20 @@ func serveResidentEventSocket(w http.ResponseWriter, r *http.Request, payload an
 }
 
 func TestCustomRuntimeRootReachesHarnessContextRead(t *testing.T) {
-	_, root := startDaemon(t)
+	d, root := startDaemon(t)
+	// The in-process test daemon normally reports the daemon.test executable;
+	// point this fixture at the actual CLI binary so the child Harness exercises
+	// the same exact Runtime command path as production.
+	d.runtimeExecutable = free4chatAgentBinary
 
-	// The fake ACP Harness invokes the CLI by name. Put the test-built CLI
-	// first on PATH so the child exercises the same local command path as a
-	// real Harness, while FREE4CHAT_AGENT_DIR points at this daemon's root.
-	t.Setenv("PATH", filepath.Dir(free4chatAgentBinary)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Deliberately provide a stale PATH binary. The fake Harness must ignore it
+	// and invoke FREE4CHAT_AGENT_BIN supplied by the Runtime instead.
+	staleDir := t.TempDir()
+	stalePath := filepath.Join(staleDir, "free4chat-agent")
+	if err := os.WriteFile(stalePath, []byte("#!/bin/sh\nprintf stale-path-binary\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", staleDir)
 
 	var mu sync.Mutex
 	var sentTexts []string
