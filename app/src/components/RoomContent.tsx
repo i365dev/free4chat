@@ -19,7 +19,6 @@ import {
 import { useSfuChatRoom } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 
-const REACTION_EMOJIS = ["👍", "😂", "🔥", "❓"]
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
 function ScreenShareViewer({
@@ -316,13 +315,6 @@ export default function RoomContent({
       sendTextMessage(text, targets)
     },
     [roomName, sendTextMessage]
-  )
-
-  const sendReaction = useCallback(
-    (emoji: string) => {
-      sendActionMessage("reaction", { emoji, ts: Date.now().toString() })
-    },
-    [sendActionMessage]
   )
 
   const wrappedSendFile = useCallback(
@@ -738,20 +730,6 @@ export default function RoomContent({
                       screenshareAllowed={screenshareAllowed}
                       className="w-40 flex-none"
                     />
-                    {p.peerId === LOCAL_PEER_ID && (
-                      <div className="room-reactions hidden items-center gap-1 md:flex">
-                        {REACTION_EMOJIS.map((emoji) => (
-                          <button
-                            key={emoji}
-                            type="button"
-                            onClick={() => sendReaction(emoji)}
-                            className="rounded-full px-1.5 py-0.5 text-base transition-transform hover:scale-125 active:scale-95"
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>

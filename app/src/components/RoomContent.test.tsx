@@ -416,6 +416,36 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     ).toBeTruthy()
   })
 
+  it("keeps participant cards free of personal reaction quick controls", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+    })
+
+    const { container } = render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+
+    expect(container.querySelector(".room-reactions")).toBeNull()
+    for (const emoji of ["👍", "😂", "🔥", "❓"])
+      expect(screen.queryByRole("button", { name: emoji })).toBeNull()
+  })
+
   it("emits LiveTranscriptStarted only on actual Start, never on popover open", () => {
     vi.mocked(trackAnalyticsEvent).mockClear()
     mockUseSfuChatRoom.mockReturnValue({
