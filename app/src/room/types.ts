@@ -121,6 +121,65 @@ export interface CollabEvent {
   attachmentIds?: string[]
 }
 
+// #286: Room-native ACP permission presentation. The Room carries only the
+// bounded, sanitized fields a Human needs to understand and choose an
+// option; it never carries ACP credentials, raw tool input, or policy state.
+export interface PermissionToolCall {
+  title: string
+  kind?: string
+  summary?: string
+  details?: Record<string, string>
+}
+
+export interface PermissionOption {
+  // Native ACP option identity/presentation is preserved. Free4Chat does not
+  // translate these into its own permission categories.
+  optionId: string
+  name: string
+  kind?: string
+}
+
+export type PermissionEvent =
+  | {
+      // Fresh random Room-correlation id from the future Runtime bridge. The
+      // future #286-C integration must generate one for every ACP permission
+      // request; this is deliberately not the Harness ACP JSON-RPC request id.
+      requestId: string
+      kind: "request"
+      agentParticipantId: string
+      toolCall: PermissionToolCall
+      options: PermissionOption[]
+      createdAt: number
+      expiresAt: number
+    }
+  | {
+      requestId: string
+      kind: "resolved"
+      agentParticipantId: string
+      selectedOptionId: string
+      humanParticipantId: string
+      humanName: string
+      createdAt: number
+      expiresAt: number
+    }
+  | {
+      requestId: string
+      kind: "expired"
+      agentParticipantId: string
+      createdAt: number
+      expiresAt: number
+    }
+
+// Server-only pending index. The request presentation is duplicated here so
+// retries remain deterministic even if the bounded message ring evicts the
+// original request before its lifecycle closes.
+export interface PermissionRequestRecord {
+  requestId: string
+  agentParticipantId: string
+  sequence: number
+  event: Extract<PermissionEvent, { kind: "request" }>
+}
+
 export interface RoomParticipant {
   id: string
   name: string
@@ -169,6 +228,10 @@ export interface RoomMessage {
   // envelope validated by do/collab.ts. targets carries the addressed
   // participant so the event wakes exactly the targeted resident Runtime.
   collab?: CollabEvent
+  // Set only when actionType is "permission": a bounded Room-native ACP
+  // request/resolution lifecycle. Agent delivery is filtered by the DO to
+  // the exact agentParticipantId in this envelope.
+  permission?: PermissionEvent
   targets?: string[]
   createdAt: number
   sequence: number
@@ -373,6 +436,9 @@ export interface RoomRecord {
   runtimeHostProviders?: Record<string, RuntimeHostProviderAssociation>
   runtimeHostProviderClaims?: Record<string, PendingRuntimeHostProviderClaim>
   messages: RoomMessage[]
+  // #286: bounded pending permission requests. Resolved/expired requests are
+  // represented in the canonical message ring and removed from this index.
+  permissionRequests?: Record<string, PermissionRequestRecord>
   liveTranscript: LiveTranscriptState
   liveTranscriptSegments: LiveTranscriptSegment[]
   // Next values to allocate. They are Room-local counters, never timestamps
@@ -408,6 +474,7 @@ export interface AgentEvent {
   actionType?: string
   actionPayload?: Record<string, string>
   collab?: CollabEvent
+  permission?: PermissionEvent
   attachment?: Pick<RoomAttachment, "id" | "fileName" | "mimeType" | "size">
   addressed: boolean
   createdAt: number

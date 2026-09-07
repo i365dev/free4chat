@@ -433,6 +433,7 @@ const roomMessageToMessage = (
     actionType: message.actionType as ActionType | undefined,
     actionPayload: message.actionPayload,
     collab: message.collab,
+    permission: message.permission,
     targets: message.targets,
   }
 }
@@ -3086,6 +3087,25 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #286: an approval is a structured authenticated Room action. The server
+  // derives the Human identity and the target Agent from Room state; this
+  // client only submits the request and the exact native option id.
+  const sendPermissionResponse = useCallback(
+    (requestId: string, selectedOptionId: string): boolean => {
+      const request = requestId.trim()
+      const option = selectedOptionId.trim()
+      if (!request || !option) return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      sendSocketMessage({
+        type: "permission-response",
+        requestId: request,
+        selectedOptionId: option,
+      })
+      return true
+    },
+    [sendSocketMessage]
+  )
+
   const startLiveTranscript = useCallback(
     (runtimeHostId: string) => {
       sendSocketMessage({
@@ -3327,6 +3347,7 @@ export function useSfuChatRoom(
     sendActionMessage,
     sendCollabResponse,
     sendCollabResult,
+    sendPermissionResponse,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
     muteSelf,

@@ -132,6 +132,7 @@ export default function RoomContent({
     sendCollabResponse,
     readRoomAttachment,
     sendCollabResult,
+    sendPermissionResponse,
     muteSelf,
     toggleScreenShare,
     retryVerification,
@@ -405,6 +406,12 @@ export default function RoomContent({
       sendCollabResult(requestId, status, summary)
     },
     [sendCollabResult]
+  )
+  const handlePermissionResponse = useCallback(
+    (requestId: string, selectedOptionId: string) => {
+      sendPermissionResponse(requestId, selectedOptionId)
+    },
+    [sendPermissionResponse]
   )
 
   const copyRoomLink = () => {
@@ -770,6 +777,7 @@ export default function RoomContent({
             onCollabRespond={handleCollabRespond}
             onReadArtifact={handleReadArtifact}
             onCollabResult={handleCollabResult}
+            onPermissionRespond={handlePermissionResponse}
           />
         </div>
       </div>
