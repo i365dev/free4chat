@@ -432,7 +432,7 @@ func TestBuildHarnessEnvironmentIsAllowListed(t *testing.T) {
 		"GITHUB_TOKEN":          "must-not-pass",
 		"CODEX_CONFIG":          "/unsafe/config",
 		"INITIAL_AGENT_MODE":    "full-access",
-	})
+	}, map[string]string{})
 	if environment["PATH"] != "/safe/bin" || environment["HOME"] != "/home/test" {
 		t.Fatalf("safe keys lost: %v", environment)
 	}

@@ -46,13 +46,15 @@ var doctorEnvironmentKeys = []string{
 }
 
 // BuildHarnessEnvironment filters the ambient environment down to the safe
-// allow-list, never inherits ambient Codex privilege/configuration policy,
-// and finally applies the launcher's explicit overrides.
-func BuildHarnessEnvironment(launcher types.AgentLauncher, base map[string]string) map[string]string {
+// allow-list, applies explicitly authorized named environment from the
+// operator (CLI --agent-env), and finally applies the launcher's explicit
+// overrides. Precedence: safe ambient -> operator authorized -> launcher policy.
+// launcher-owned policy always wins.
+func BuildHarnessEnvironment(launcher types.AgentLauncher, base map[string]string, explicitEnv map[string]string) map[string]string {
 	if base == nil {
 		base = osEnviron()
 	}
-	environment := make(map[string]string, len(safeEnvironmentKeys)+len(launcher.Environment))
+	environment := make(map[string]string, len(safeEnvironmentKeys)+len(launcher.Environment)+len(explicitEnv))
 	for _, key := range safeEnvironmentKeys {
 		if value, ok := base[key]; ok {
 			environment[key] = value
@@ -62,6 +64,12 @@ func BuildHarnessEnvironment(launcher types.AgentLauncher, base map[string]strin
 	// built-in launcher may opt into an explicit safe value below.
 	delete(environment, "CODEX_CONFIG")
 	delete(environment, "INITIAL_AGENT_MODE")
+	// Apply explicitly authorized named environment from operator (CLI --agent-env).
+	// These are resolved from the CURRENT CLI process, not the daemon.
+	for key, value := range explicitEnv {
+		environment[key] = value
+	}
+	// Launcher-owned explicit policy wins (e.g., Codex INITIAL_AGENT_MODE=read-only).
 	for key, value := range launcher.Environment {
 		environment[key] = value
 	}

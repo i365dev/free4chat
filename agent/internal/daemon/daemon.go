@@ -456,6 +456,7 @@ func (d *Daemon) prepareRuntime(
 		Adapter: harness.NewACPAdapter(launcher, workspace, harness.AdapterOptions{
 			TurnTimeoutMs: turnTimeoutMs,
 			CancelGraceMs: cancelGraceMs,
+			AgentEnv:      request.AgentEnv,
 		}),
 		Capabilities:        request.Capabilities,
 		SiteOrigin:          siteOrigin,
@@ -466,6 +467,7 @@ func (d *Daemon) prepareRuntime(
 		ProviderClaim:       request.ProviderClaim,
 		ProviderHandles:     d.providerHandles,
 		TranscriptProducers: d.transcriptProducers,
+		AgentEnv:            request.AgentEnv,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the
