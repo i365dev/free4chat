@@ -824,16 +824,16 @@ func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
 	a.mu.Unlock()
 
 	if responder == nil {
-		a.finishPermission(key, "")
+		a.finishPermission(key, pending, "")
 		return
 	}
 	go func() {
 		response, responseErr := responder(turnContext, request)
 		if responseErr != nil || response.OptionID == "" || !permissionOptionOffered(request.Options, response.OptionID) {
-			a.finishPermission(key, "")
+			a.finishPermission(key, pending, "")
 			return
 		}
-		a.finishPermission(key, response.OptionID)
+		a.finishPermission(key, pending, response.OptionID)
 	}()
 }
 
@@ -900,16 +900,15 @@ func permissionOptionOffered(options []ACPPermissionOption, optionID string) boo
 	return false
 }
 
-func (a *ACPAdapter) finishPermission(key, optionID string) {
+func (a *ACPAdapter) finishPermission(key string, pending *pendingPermission, optionID string) {
 	a.mu.Lock()
-	pending, ok := a.pendingPermissions[key]
-	if ok {
-		delete(a.pendingPermissions, key)
-	}
-	a.mu.Unlock()
-	if !ok {
+	current, ok := a.pendingPermissions[key]
+	if !ok || current != pending {
+		a.mu.Unlock()
 		return
 	}
+	delete(a.pendingPermissions, key)
+	a.mu.Unlock()
 	if optionID == "" {
 		_ = a.writeFrame(cancelPermissionFrame(pending.id))
 		return

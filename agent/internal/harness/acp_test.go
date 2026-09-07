@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -557,6 +558,133 @@ func TestACPAdapterCloseClearsPendingPermission(t *testing.T) {
 	}
 	if count := adapter.PendingPermissionCount(); count != 0 {
 		t.Fatalf("permission remained after adapter close: %d", count)
+	}
+}
+
+func TestACPStalePermissionResponderCannotResolveReusedRequest(t *testing.T) {
+	type permissionDecision struct {
+		request ACPPermissionRequest
+		result  chan ACPPermissionResponse
+	}
+	decisions := make(chan permissionDecision, 2)
+	firstResult := make(chan ACPPermissionResponse, 1)
+	secondResult := make(chan ACPPermissionResponse, 1)
+	var responderCalls atomic.Int32
+	responder := func(ctx context.Context, request ACPPermissionRequest) (ACPPermissionResponse, error) {
+		call := permissionDecision{request: request, result: firstResult}
+		if responderCalls.Add(1) == 2 {
+			call.result = secondResult
+		}
+		decisions <- call
+		if call.result == firstResult {
+			// Deliberately ignore cancellation for A: the adapter must still
+			// reject its late completion after the process/session is gone.
+			return <-call.result, nil
+		}
+		select {
+		case result := <-call.result:
+			return result, nil
+		case <-ctx.Done():
+			return ACPPermissionResponse{}, ctx.Err()
+		}
+	}
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: responder,
+	})
+	defer func() {
+		// Keep cleanup non-blocking even if an assertion fails before either
+		// responder has returned.
+		select {
+		case firstResult <- ACPPermissionResponse{}:
+		default:
+		}
+		select {
+		case secondResult <- ACPPermissionResponse{}:
+		default:
+		}
+		_ = adapter.Close()
+	}()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+
+	doneA := make(chan error, 1)
+	go func() {
+		_, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		doneA <- err
+	}()
+	var callA permissionDecision
+	select {
+	case callA = <-decisions:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission A did not start")
+	}
+
+	adapter.mu.Lock()
+	processA := adapter.proc
+	adapter.mu.Unlock()
+	if processA == nil || processA.cmd.Process == nil {
+		t.Fatal("permission A process disappeared before replacement")
+	}
+	if err := processA.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill permission A Harness: %v", err)
+	}
+	select {
+	case <-doneA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission A did not clear after process death")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission A remained after process death: %d", count)
+	}
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("replacement ensure failed: %v", err)
+	}
+	doneB := make(chan struct {
+		result types.HarnessTurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration())
+		doneB <- struct {
+			result types.HarnessTurnResult
+			err    error
+		}{result, err}
+	}()
+	var callB permissionDecision
+	select {
+	case callB = <-decisions:
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission B did not start")
+	}
+	if callA.request.RequestID != callB.request.RequestID || callB.request.RequestID != "78" {
+		t.Fatalf("fake Harness did not reuse the request id: A=%q B=%q", callA.request.RequestID, callB.request.RequestID)
+	}
+
+	// A offers the same allow-once option as B. Its late completion must be
+	// ignored rather than resolving B's newly-created map entry.
+	callA.result <- ACPPermissionResponse{OptionID: "allow-once"}
+	select {
+	case got := <-doneB:
+		t.Fatalf("stale permission A resolved permission B: %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if count := adapter.PendingPermissionCount(); count != 1 {
+		t.Fatalf("permission B was not still pending after stale A: %d", count)
+	}
+
+	callB.result <- ACPPermissionResponse{OptionID: "allow-once"}
+	select {
+	case got := <-doneB:
+		if got.err != nil || got.result.Text != "permission-approved" {
+			t.Fatalf("permission B did not resolve normally: %+v %v", got.result, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission B did not settle")
+	}
+	if count := adapter.PendingPermissionCount(); count != 0 {
+		t.Fatalf("permission B leaked after settlement: %d", count)
 	}
 }
 
