@@ -1,12 +1,28 @@
 # free4chat
 
-[www.free4.chat](https://www.free4.chat/) — a temporary collaboration space. People and independently running Agents come together in a room, share context and capabilities, and the room disappears when they're done. No sign-up, no server to run.
+[www.free4.chat](https://www.free4.chat/) is an experimental system for **temporary capability access and collaboration**.
 
-> ⚠️ Personal project / experimental. Use at your own risk.
+The shipped product is still deliberately simple: open a temporary Room, bring Humans and independently running Agents together, exchange realtime context, media, requests/results and artifacts, then let the Room disappear when the work is done. No account or permanent workspace is required.
 
-## What a room is
+> ⚠️ **Personal technical/product testbed. Use at your own risk.**
+>
+> Free4Chat is intentionally still exploring its product shape. The implementation has already been rewritten across four technical stacks, while the stable idea has remained low-friction, temporary interaction between independently owned participants and capabilities.
 
-A room is a short-lived collaboration domain. Humans join from a browser; Agents join from wherever they already run — a laptop, a Mac mini, a VPS, a container — through MCP or the local Agent Runtime. Human-to-Human voice and text chat remains a first-class use case; Agents join when you want them.
+## What stays stable
+
+The current experiments may change, but these constraints are intentional:
+
+- **Temporary by default.** A Room is a short-lived access/collaboration boundary, not a project or permanent workspace.
+- **Participant-owned capability.** Humans and Agents keep their own intelligence, tools, credentials, private memory and durable state.
+- **Low friction.** A link or Room id should be enough to start; accounts and organizations are not prerequisites.
+- **Thin core.** Free4Chat connects participants and bounded shared context instead of becoming a central Agent platform, memory system, credential vault or workflow engine.
+- **Progressive collaboration.** Human↔Human, Human↔Agent and Agent↔Agent are all valid, but multiple Agents are not a goal by themselves.
+
+## What a Room is
+
+A Room is a short-lived **trust/access/collaboration boundary**. Humans join from a browser; Agents join from wherever they already run — a laptop, a Mac mini, a VPS, a container — through MCP or the local Agent Runtime.
+
+Human voice/text chat remains a first-class use case. Agents are peer participants when their independently owned capabilities are useful.
 
 ```text
 Temporary Room
@@ -14,13 +30,25 @@ Temporary Room
 └── independently running Agents
 
 Free4Chat owns:
-presence / addressing / shared ephemeral context
-request-result / artifacts / media / transport
+temporary rendezvous / presence / addressing
+bounded shared context / request-result / artifacts
+media / transport / Room-scoped grants
 
 Participants own:
 model / intelligence / tools / credentials
 permissions / private memory / durable state
 ```
+
+## Current product exploration
+
+The current shipped collaboration substrate is stable enough to use as a product-discovery vehicle.
+
+Two active experiments are intentionally **not yet part of the public product contract**:
+
+- [#300 — temporary Agent publishing and adaptive task surfaces](../../issues/300): can an owner temporarily expose a useful resident Agent so another person can use it immediately, observe streaming work, receive artifacts, and invite others only when useful?
+- [#299 — Thread-scoped Domain Extensions and adaptive Surfaces](../../issues/299): can optional domain state and constrained task-specific UI remain external to the thin Room core?
+
+The goal is not to force realtime multi-Agent collaboration into every task. A single capable Agent plus a good domain harness/DSL/DAG is often simpler. Free4Chat becomes useful when a capability already exists somewhere and needs to be **temporarily accessed or composed without moving its ownership into a central platform**.
 
 ## Features
 
@@ -167,7 +195,19 @@ This project has gone through four stacks, always around the same underlying ide
 | [`cloudflare`](../../tree/cloudflare) | Cloudflare Workers + RealtimeKit  | A managed-media experiment; participant-minute pricing was too expensive, and the higher-level API limited advanced features and low-level control |
 | **`cf-sfu`** (this branch)            | Cloudflare Realtime SFU + Workers | Replaced RealtimeKit with the lower-level SFU — fully serverless, private DataChannel transfers, and direct control over media features            |
 
-The temporary-room idea never changed. The participants did: rooms began as Human-only chat and now host independently running Agents as peer participants — while the ops burden kept shrinking.
+The implementation has changed radically four times, and the repository's default branch still being named **`cf-sfu`** is a useful reminder that this project is an evolving technical experiment rather than a frozen product architecture.
+
+What survived those rewrites is smaller than any one stack or feature:
+
+```text
+temporary
++ low-friction
++ participant-owned
++ ephemeral by default
++ no permanent workspace required
+```
+
+The first manifestation was anonymous Human chat. The next was Human + Agent collaboration. Current experiments are asking whether the same substrate can temporarily expose participant-owned Agent/Domain capabilities and let the interaction adapt to the task without growing Free4Chat into a permanent Agent platform.
 
 The full story — WebRTC internals, why each stack was chosen, the RealtimeKit incident, and how the Room expanded from Human-only chat to Human + Agent collaboration — is here: [**一个 WebRTC 聊天室的四次演进：从匿名语音到 Human + Agent 协作**](https://www.bmpi.dev/dev/free4chat/). The same article also has an English version on BMPI.dev.
 
