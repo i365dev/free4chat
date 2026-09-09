@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,49 @@ func scopedEvent(sequence int64, scope, text string) types.RoomEvent {
 	event.Text = text
 	return event
 }
+
+type legacyOnlyAdapter struct {
+	ensureCalls     int
+	generationCalls int
+	runCalls        int
+	generation      int64
+	turns           []string
+}
+
+func (a *legacyOnlyAdapter) Name() string { return "legacy-only" }
+
+func (a *legacyOnlyAdapter) Capabilities() *types.HarnessCapabilities {
+	return &types.HarnessCapabilities{Text: true}
+}
+
+func (a *legacyOnlyAdapter) EnsureSession() error {
+	a.ensureCalls++
+	if a.generation == 0 {
+		a.generation = 1
+	}
+	return nil
+}
+
+func (a *legacyOnlyAdapter) SessionGeneration() int64 {
+	a.generationCalls++
+	return a.generation
+}
+
+func (a *legacyOnlyAdapter) RunTurn(input types.HarnessTurnInput, _ int64) (types.HarnessTurnResult, error) {
+	a.runCalls++
+	texts := make([]string, 0, len(input.Events))
+	for _, event := range input.Events {
+		if event.Text != "" {
+			texts = append(texts, event.Text)
+		}
+	}
+	a.turns = append(a.turns, strings.Join(texts, ","))
+	return types.HarnessTurnResult{Text: "legacy-reply"}, nil
+}
+
+func (a *legacyOnlyAdapter) OnFailure(types.AdapterFailureHandler) {}
+func (a *legacyOnlyAdapter) CancelTurn() error                     { return nil }
+func (a *legacyOnlyAdapter) Close() error                          { return nil }
 
 func TestLogicalScopesReuseIsolatedHarnessSessions(t *testing.T) {
 	adapter := &fakeAdapter{name: "pi"}
@@ -78,6 +122,54 @@ func TestLogicalScopesReuseIsolatedHarnessSessions(t *testing.T) {
 	if !reflect.DeepEqual(details["task:T"], []string{"TASK_T_MARKER", "TASK_T_MARKER_2"}) ||
 		!reflect.DeepEqual(details["task:U"], []string{"TASK_U_MARKER", "TASK_U_MARKER_2"}) {
 		t.Fatalf("alternating scope context was not retained: %#v", details)
+	}
+}
+
+func TestLegacyAdapterFailsClosedForTaskScope(t *testing.T) {
+	adapter := &legacyOnlyAdapter{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "legacy-only-test",
+		RoomID:     "room-legacy-only",
+		Name:       "Agent",
+		Client:     &fakeClient{},
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	rt.acceptEvent(roomEvent(1, true))
+	rt.acceptEvent(scopedEvent(2, "task:T", "TASK_PRIVATE"))
+	rt.drainTurns()
+
+	if !reflect.DeepEqual(adapter.turns, []string{"message-1"}) {
+		t.Fatalf("legacy adapter received task context or missed Room context: %v", adapter.turns)
+	}
+	if adapter.ensureCalls != 1 || adapter.generationCalls != 1 || adapter.runCalls != 1 {
+		t.Fatalf("task scope called legacy adapter methods: ensure=%d generation=%d run=%d", adapter.ensureCalls, adapter.generationCalls, adapter.runCalls)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); !reflect.DeepEqual(got, []int64{2}) {
+		t.Fatalf("unsupported task turn was incorrectly acknowledged: %v", got)
+	}
+	if status := rt.Status(); status.LastError != errScopedHarnessUnsupported.Error() {
+		t.Fatalf("unsupported task scope was not reported explicitly: %+v", status)
+	}
+
+	if err := rt.ensureHarnessSession("task:T"); !errors.Is(err, errScopedHarnessUnsupported) {
+		t.Fatalf("ensure helper did not fail closed: %v", err)
+	}
+	if _, err := rt.harnessSessionGeneration("task:T"); !errors.Is(err, errScopedHarnessUnsupported) {
+		t.Fatalf("generation helper did not fail closed: %v", err)
+	}
+	if _, err := rt.runHarnessTurn("task:T", types.HarnessTurnInput{}, 1); !errors.Is(err, errScopedHarnessUnsupported) {
+		t.Fatalf("turn helper did not fail closed: %v", err)
+	}
+	if adapter.ensureCalls != 1 || adapter.generationCalls != 1 || adapter.runCalls != 1 {
+		t.Fatalf("direct task helper calls reached legacy adapter: ensure=%d generation=%d run=%d", adapter.ensureCalls, adapter.generationCalls, adapter.runCalls)
 	}
 }
 

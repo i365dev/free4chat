@@ -1039,7 +1039,16 @@ func (r *ResidentRuntime) drainTurns() {
 			r.log("turn_failed", nil)
 			return
 		}
-		generation := r.harnessSessionGeneration(scope)
+		generation, err := r.harnessSessionGeneration(scope)
+		if err != nil {
+			r.mu.Lock()
+			r.lastError = err.Error()
+			r.lastErrorSource = "harness"
+			r.state = StateReconnecting
+			r.mu.Unlock()
+			r.log("turn_failed", nil)
+			return
+		}
 		newSession := r.observeHarnessSessionFor(scope, generation, target)
 		events, contextErr := r.pendingContextFor(scope, target)
 		if contextErr != nil {

@@ -19,6 +19,8 @@ type pendingTurnContext struct {
 	events []types.RoomEvent
 }
 
+var errScopedHarnessUnsupported = errors.New("scoped Harness adapter is unavailable")
+
 type logicalSessionRef struct {
 	deliveredThrough               *int64
 	roomDeliveryFloor              *int64
@@ -196,26 +198,35 @@ func (r *ResidentRuntime) currentParticipantID() string {
 
 func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 	scope = normalizeScope(scope)
+	if scope == roomScope {
+		return r.options.Adapter.EnsureSession()
+	}
 	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
 		return adapter.EnsureSessionFor(scope)
 	}
-	return r.options.Adapter.EnsureSession()
+	return errScopedHarnessUnsupported
 }
 
-func (r *ResidentRuntime) harnessSessionGeneration(scope string) int64 {
+func (r *ResidentRuntime) harnessSessionGeneration(scope string) (int64, error) {
 	scope = normalizeScope(scope)
-	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
-		return adapter.SessionGenerationFor(scope)
+	if scope == roomScope {
+		return r.options.Adapter.SessionGeneration(), nil
 	}
-	return r.options.Adapter.SessionGeneration()
+	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
+		return adapter.SessionGenerationFor(scope), nil
+	}
+	return 0, errScopedHarnessUnsupported
 }
 
 func (r *ResidentRuntime) runHarnessTurn(scope string, input types.HarnessTurnInput, generation int64) (types.HarnessTurnResult, error) {
 	scope = normalizeScope(scope)
+	if scope == roomScope {
+		return r.options.Adapter.RunTurn(input, generation)
+	}
 	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
 		return adapter.RunTurnFor(scope, input, generation)
 	}
-	return r.options.Adapter.RunTurn(input, generation)
+	return types.HarnessTurnResult{}, errScopedHarnessUnsupported
 }
 
 func (r *ResidentRuntime) isStopped() bool {
