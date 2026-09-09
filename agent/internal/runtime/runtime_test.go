@@ -137,6 +137,7 @@ type fakeClient struct {
 	contextErr            error
 	contextCalls          int
 	contextOptions        []types.RoomContextReadOptions
+	collabResults         []types.CollabResultArgs
 }
 
 type transcriptClient struct {
@@ -758,7 +759,10 @@ func (*fakeClient) SendCollabResponse(string, types.CollabResponseArgs) (types.S
 	return types.SendTextResult{Sequence: 1}, nil
 }
 
-func (*fakeClient) SendCollabResult(string, types.CollabResultArgs) (types.SendTextResult, error) {
+func (c *fakeClient) SendCollabResult(_ string, args types.CollabResultArgs) (types.SendTextResult, error) {
+	c.mu.Lock()
+	c.collabResults = append(c.collabResults, args)
+	c.mu.Unlock()
 	return types.SendTextResult{Sequence: 1}, nil
 }
 

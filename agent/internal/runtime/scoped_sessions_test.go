@@ -378,3 +378,88 @@ func TestLogicalTaskScopeCapacityFailsClosedWithoutRoomFallback(t *testing.T) {
 		t.Fatalf("rejected task fell back into Room context: %v", roomTurns)
 	}
 }
+
+func TestLogicalTaskScopeCapacityEmitsCanonicalFailedCollabResult(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "capacity-collab-test",
+		RoomID:     "room-capacity-collab",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	for index := 0; index < types.MaxLogicalTaskScopes; index++ {
+		rt.acceptEvent(scopedEvent(int64(index+1), "task:"+itoa(int64(index+1)), "scope-"+itoa(int64(index+1))))
+	}
+	rt.drainTurns()
+	initialRuns, initialDetails := adapter.scopedRunSnapshot()
+
+	overflow := scopedEvent(100, "task:overflow-request", "OVERFLOW_TASK_MARKER")
+	overflow.Type = "action"
+	overflow.ActionType = "collab"
+	overflow.Collab = &types.WireCollabEvent{
+		RequestID: "overflow-request",
+		Kind:      types.CollabRequest,
+	}
+	rt.acceptEvent(overflow)
+
+	rt.mu.Lock()
+	if len(rt.scopedSessions) != types.MaxLogicalTaskScopes || len(rt.scopeOrder) != types.MaxLogicalTaskScopes {
+		rt.mu.Unlock()
+		t.Fatalf("capacity rejection changed scope state: sessions=%d order=%d", len(rt.scopedSessions), len(rt.scopeOrder))
+	}
+	buffered := rt.eventBuffer.Snapshot()
+	rt.mu.Unlock()
+	for _, event := range buffered {
+		if event.Sequence == overflow.Sequence {
+			t.Fatalf("capacity rejection entered EventBuffer: %#v", event)
+		}
+	}
+	if runs, details := adapter.scopedRunSnapshot(); !reflect.DeepEqual(runs, initialRuns) || !reflect.DeepEqual(details, initialDetails) {
+		t.Fatalf("capacity rejection reached Harness: before=%v/%v after=%v/%v", initialRuns, initialDetails, runs, details)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:overflow-request"); got != nil {
+		t.Fatalf("capacity rejection created pending delivery: %v", got)
+	}
+	client.mu.Lock()
+	results := append([]types.CollabResultArgs(nil), client.collabResults...)
+	client.mu.Unlock()
+	if len(results) != 1 {
+		t.Fatalf("expected exactly one canonical capacity result, got %d: %#v", len(results), results)
+	}
+	if results[0].RequestID != "overflow-request" || results[0].Status != "failed" || results[0].Summary != "Agent cannot start another task right now." {
+		t.Fatalf("unexpected capacity result: %#v", results[0])
+	}
+
+	// Existing task scopes and ordinary Room remain usable at capacity.
+	rt.acceptEvent(scopedEvent(101, "task:1", "scope-1-after-capacity"))
+	rt.acceptEvent(roomEvent(102, true))
+	rt.drainTurns()
+	if runs, details := adapter.scopedRunSnapshot(); len(runs) != types.MaxLogicalTaskScopes+1 || !reflect.DeepEqual(details["task:1"], []string{"scope-1", "scope-1-after-capacity"}) {
+		t.Fatalf("existing task scope did not remain usable: runs=%v details=%#v", runs, details)
+	}
+	adapter.mu.Lock()
+	roomTurns := append([]string(nil), adapter.turnDtls...)
+	adapter.mu.Unlock()
+	if !reflect.DeepEqual(roomTurns, []string{"message-102"}) {
+		t.Fatalf("ordinary Room event did not remain usable: %v", roomTurns)
+	}
+
+	// A non-collaboration scope rejection must not fabricate a result card.
+	rt.acceptEvent(scopedEvent(103, "task:internal-overflow", "INTERNAL_OVERFLOW_MARKER"))
+	client.mu.Lock()
+	resultCount := len(client.collabResults)
+	client.mu.Unlock()
+	if resultCount != 1 {
+		t.Fatalf("non-collab scope rejection fabricated a result: %d", resultCount)
+	}
+}
