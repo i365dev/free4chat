@@ -54,7 +54,7 @@ interface TextChatCardProps {
   attachments?: RoomAttachmentProjection[]
   participants: UserInfo[]
   pendingFiles?: PendingFile[]
-  onSendText: (text: string, targets?: string[]) => void
+  onSendText: (text: string, targets?: string[], taskRequestId?: string) => void
   onSendFile: (file: File) => void
   onSendAction: (
     actionType: ActionType,
@@ -80,6 +80,9 @@ interface TextChatCardProps {
   /** #286: submit one exact native permission option through the
    * authenticated Human Room WebSocket action. */
   onPermissionRespond?: (requestId: string, selectedOptionId: string) => void
+  /** #309: when set, this composer sends ordinary text into one existing
+   * canonical task and targets its primary Agent only. */
+  taskRequestId?: string
 }
 
 const GAMES = [
@@ -1479,7 +1482,9 @@ const TextChatCard = memo(function TextChatCard({
   onReadArtifact,
   onCollabResult,
   onPermissionRespond,
+  taskRequestId,
 }: TextChatCardProps) {
+  const taskScoped = Boolean(taskRequestId)
   const [message, setMessage] = useState<string>("")
   const [submenu, setSubmenu] = useState<"more" | "games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
@@ -1546,10 +1551,11 @@ const TextChatCard = memo(function TextChatCard({
 
   const sendCurrentMessage = () => {
     if (message.trim() === "") return
-    onSendText(
-      message.trim(),
-      resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
-    )
+    const targets = taskScoped
+      ? []
+      : resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
+    if (taskRequestId) onSendText(message.trim(), targets, taskRequestId)
+    else onSendText(message.trim(), targets)
     setMessage("")
     setSelectedAgents([])
   }
@@ -1690,7 +1696,8 @@ const TextChatCard = memo(function TextChatCard({
       : connectedAgents.filter((agent) =>
           agent.name.toLowerCase().startsWith(mentionQuery.toLowerCase())
         )
-  const showAgentPicker = !pickerDismissed && mentionAgents.length > 0
+  const showAgentPicker =
+    !taskScoped && !pickerDismissed && mentionAgents.length > 0
 
   const selectAgent = (agent: UserInfo) => {
     if (!agent) return
@@ -1772,7 +1779,7 @@ const TextChatCard = memo(function TextChatCard({
           onPermissionRespond={onPermissionRespond}
         />
 
-        {showPollCreator && (
+        {showPollCreator && !taskScoped && (
           <PollCreator
             onSend={handlePollSend}
             onCancel={() => setShowPollCreator(false)}
@@ -1823,87 +1830,91 @@ const TextChatCard = memo(function TextChatCard({
               )}
             </div>
           )}
-          <div ref={moreBtnRef} className="relative">
-            <button
-              type="button"
-              onClick={() => setSubmenu((v) => (v === "more" ? null : "more"))}
-              className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white"
-              title="More actions"
-              aria-label="More actions"
-              aria-expanded={submenu === "more" || submenu === "games"}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={2}
-                stroke="currentColor"
-                className="h-4 w-4"
+          {!taskScoped && (
+            <div ref={moreBtnRef} className="relative">
+              <button
+                type="button"
+                onClick={() =>
+                  setSubmenu((v) => (v === "more" ? null : "more"))
+                }
+                className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white"
+                title="More actions"
+                aria-label="More actions"
+                aria-expanded={submenu === "more" || submenu === "games"}
               >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 4.5v15m7.5-7.5h-15"
-                />
-              </svg>
-            </button>
-            {submenu === "more" && (
-              <>
-                <div
-                  className="fixed inset-0 z-20 md:hidden"
-                  onClick={closeMenu}
-                />
-                <div
-                  ref={moreMenuRef}
-                  className="fixed bottom-0 left-0 right-0 z-30 rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:w-48 md:rounded-lg md:border md:border-gray-600"
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  strokeWidth={2}
+                  stroke="currentColor"
+                  className="h-4 w-4"
                 >
-                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
-                    Room actions
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // Close before opening the native picker so the menu
-                      // (mobile bottom sheet) is gone when the picker returns.
-                      closeMenu()
-                      fileInputRef.current?.click()
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 4.5v15m7.5-7.5h-15"
+                  />
+                </svg>
+              </button>
+              {submenu === "more" && (
+                <>
+                  <div
+                    className="fixed inset-0 z-20 md:hidden"
+                    onClick={closeMenu}
+                  />
+                  <div
+                    ref={moreMenuRef}
+                    className="fixed bottom-0 left-0 right-0 z-30 rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:w-48 md:rounded-lg md:border md:border-gray-600"
                   >
-                    <span>📎</span> Attach file
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleWhiteboard}
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                  >
-                    <span>🎨</span> Whiteboard
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handlePoll}
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                  >
-                    <span>📊</span> Poll
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSubmenu("games")}
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                  >
-                    <span>🎮</span> Games
-                  </button>
-                </div>
-              </>
-            )}
-            {submenu === "games" && (
-              <GamesMenu
-                onSelect={handleGameSelect}
-                onBack={() => setSubmenu(null)}
-                menuRef={gamesMenuRef}
-              />
-            )}
-          </div>
+                    <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
+                      Room actions
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Close before opening the native picker so the menu
+                        // (mobile bottom sheet) is gone when the picker returns.
+                        closeMenu()
+                        fileInputRef.current?.click()
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                    >
+                      <span>📎</span> Attach file
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleWhiteboard}
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                    >
+                      <span>🎨</span> Whiteboard
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePoll}
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                    >
+                      <span>📊</span> Poll
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSubmenu("games")}
+                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                    >
+                      <span>🎮</span> Games
+                    </button>
+                  </div>
+                </>
+              )}
+              {submenu === "games" && (
+                <GamesMenu
+                  onSelect={handleGameSelect}
+                  onBack={() => setSubmenu(null)}
+                  menuRef={gamesMenuRef}
+                />
+              )}
+            </div>
+          )}
           <textarea
             ref={textRef}
             rows={1}

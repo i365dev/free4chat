@@ -125,6 +125,33 @@ func TestLogicalScopesReuseIsolatedHarnessSessions(t *testing.T) {
 	}
 }
 
+func TestTaskScopedHarnessOutputPreservesRequestCorrelation(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "scoped-output-test",
+		RoomID:     "room-scoped-output",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	rt.acceptEvent(scopedEvent(1, "task:T", "T prompt"))
+	rt.acceptEvent(scopedEvent(2, "task:U", "U prompt"))
+	rt.drainTurns()
+
+	if got := client.snapshotSentTaskRequestIDs(); !reflect.DeepEqual(got, []string{"T", "U"}) {
+		t.Fatalf("task output lost Room request correlation: %v", got)
+	}
+}
+
 func TestLegacyAdapterFailsClosedForTaskScope(t *testing.T) {
 	adapter := &legacyOnlyAdapter{}
 	rt := NewResidentRuntime(Options{

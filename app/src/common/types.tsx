@@ -53,6 +53,7 @@ export interface Message {
   actionPayload?: Record<string, string>
   collab?: CollabEvent
   permission?: PermissionEvent
+  taskRequestId?: string
   // #165: structured addressing targets (participant IDs) the sender
   // explicitly chose. Pure routing metadata for the recipient cue — the
   // canonical source of truth for wakeup, never a capability grant.

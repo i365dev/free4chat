@@ -1,0 +1,108 @@
+import { describe, expect, it } from "vitest"
+
+import { buildTaskProjections, roomMessagesForView } from "./taskViews"
+import type { Message } from "./types"
+
+const request = (requestId: string, summary: string): Message => ({
+  peerId: "human",
+  name: "Human",
+  kind: "human",
+  type: "action",
+  actionType: "collab",
+  collab: {
+    requestId,
+    kind: "request",
+    fromParticipantId: "human",
+    targetParticipantId: "agent-x",
+    summary,
+  },
+})
+
+describe("task interaction projections (#309)", () => {
+  it("derives Room, T, and U views from canonical messages without a task store", () => {
+    const taskT = request("T", "Migration plan")
+    const taskU = request("U", "U marker")
+    const messages: Message[] = [
+      { peerId: "human", name: "Human", type: "text", text: "ROOM" },
+      taskT,
+      {
+        peerId: "agent-x",
+        name: "Agent",
+        kind: "agent",
+        type: "action",
+        actionType: "collab",
+        collab: {
+          requestId: "T",
+          kind: "accepted",
+          fromParticipantId: "agent-x",
+          targetParticipantId: "human",
+          summary: "working",
+        },
+      },
+      {
+        peerId: "agent-x",
+        name: "Agent",
+        kind: "agent",
+        type: "text",
+        text: "T output",
+        taskRequestId: "T",
+      },
+      taskU,
+      {
+        peerId: "human",
+        name: "Human",
+        kind: "human",
+        type: "text",
+        text: "T follow-up",
+        taskRequestId: "T",
+      },
+      {
+        peerId: "agent-x",
+        name: "Agent",
+        kind: "agent",
+        type: "text",
+        text: "U output",
+        taskRequestId: "U",
+      },
+    ]
+
+    expect(
+      roomMessagesForView(messages).map((message) => message.text)
+    ).toEqual(["ROOM"])
+    const projections = buildTaskProjections(messages)
+    expect(
+      projections.map(({ requestId, title, status }) => ({
+        requestId,
+        title,
+        status,
+      }))
+    ).toEqual([
+      { requestId: "T", title: "Migration plan", status: "Working" },
+      { requestId: "U", title: "U marker", status: "Starting" },
+    ])
+    expect(projections[0]?.messages.map((message) => message.text)).toEqual([
+      undefined,
+      undefined,
+      "T output",
+      "T follow-up",
+    ])
+    expect(projections[1]?.messages.map((message) => message.text)).toEqual([
+      undefined,
+      "U output",
+    ])
+  })
+
+  it("projects terminal lifecycle states without adding new status vocabulary", () => {
+    const task = request("T", "Task")
+    const terminal: Message = {
+      ...task,
+      collab: {
+        ...task.collab!,
+        kind: "completed",
+        fromParticipantId: "agent-x",
+        targetParticipantId: "human",
+      },
+    }
+    expect(buildTaskProjections([task, terminal])[0]?.status).toBe("Completed")
+  })
+})

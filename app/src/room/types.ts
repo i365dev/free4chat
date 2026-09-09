@@ -232,6 +232,9 @@ export interface RoomMessage {
   // request/resolution lifecycle. Agent delivery is filtered by the DO to
   // the exact agentParticipantId in this envelope.
   permission?: PermissionEvent
+  // #309: validated correlation to an existing canonical collaboration
+  // request. This is not a client-selected generic scope id.
+  taskRequestId?: string
   targets?: string[]
   createdAt: number
   sequence: number

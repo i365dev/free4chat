@@ -24,6 +24,7 @@ vi.mock("../hooks/useSfuChatRoom", () => ({
   useSfuChatRoom: (...args: unknown[]) => mockUseSfuChatRoom(...args),
 }))
 
+import type { Message } from "@common/types"
 import { trackAnalyticsEvent } from "@common/utils"
 
 import RoomContent from "./RoomContent"
@@ -169,6 +170,82 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(mock.render).toHaveBeenCalledTimes(1)
     expect(mock.remove).toHaveBeenCalledTimes(1)
     expect(container.querySelector('[id^="cf-chl-widget"]')).toBeNull()
+  })
+
+  it("switches between Room, T, and U without mirroring task text into Room", () => {
+    const taskRequest = (
+      requestId: string,
+      summary: string,
+      sequence: number
+    ): Message => ({
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence,
+      collab: {
+        requestId,
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-x",
+        summary,
+      },
+    })
+    const message = (
+      taskRequestId: string,
+      text: string,
+      sequence: number
+    ): Message => ({
+      peerId: "agent-x",
+      name: "Agent X",
+      kind: "agent",
+      type: "text",
+      sequence,
+      text,
+      taskRequestId,
+    })
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          type: "text",
+          sequence: 1,
+          text: "ROOM marker",
+        },
+        taskRequest("T", "Migration plan", 2),
+        message("T", "T output", 3),
+        taskRequest("U", "U marker", 4),
+        message("U", "U output", 5),
+      ],
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    )
+    expect(screen.getByText("ROOM marker")).toBeInTheDocument()
+    expect(screen.queryByText("T output")).not.toBeInTheDocument()
+    expect(screen.queryByText("U output")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
+    expect(screen.getByText("T output")).toBeInTheDocument()
+    expect(screen.queryByText("ROOM marker")).not.toBeInTheDocument()
+    expect(screen.queryByText("U output")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-U"))
+    expect(screen.getByText("U output")).toBeInTheDocument()
+    expect(screen.queryByText("T output")).not.toBeInTheDocument()
   })
 
   it("copies the ordinary Agent invite only through the popover action, without a provider claim", async () => {

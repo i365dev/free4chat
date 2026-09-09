@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react"
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 
 import { useRouter } from "next/router"
 
@@ -11,6 +11,7 @@ import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
+import { buildTaskProjections, roomMessagesForView } from "../common/taskViews"
 import {
   umamiEvent,
   trackAnalyticsEvent,
@@ -97,6 +98,8 @@ export default function RoomContent({
   const [taskAgent, setTaskAgent] = useState<TaskAgent | null>(null)
   const [taskInstruction, setTaskInstruction] = useState("")
   const [taskError, setTaskError] = useState("")
+  const [activeInteraction, setActiveInteraction] = useState("room")
+  const pendingLocalTaskSummaries = useRef<string[]>([])
   // #236 follow-up: shared popover state so the Live Transcript setup copy
   // can cross-open the Invite Agent popover (no routing machinery).
   const [agentInviteOpen, setAgentInviteOpen] = useState(false)
@@ -163,6 +166,53 @@ export default function RoomContent({
     getTurnstileToken: requestToken,
   })
 
+  const taskProjections = useMemo(
+    () => buildTaskProjections(messages),
+    [messages]
+  )
+  const effectiveLocalParticipantId =
+    localParticipantId ?? getLocalRoomAuth()?.participantId
+  const activeTask = taskProjections.find(
+    (task) => task.requestId === activeInteraction
+  )
+  const interactionMessages = activeTask
+    ? activeTask.messages
+    : roomMessagesForView(messages)
+
+  useEffect(() => {
+    const pending = pendingLocalTaskSummaries.current
+    const created =
+      effectiveLocalParticipantId && pending.length > 0
+        ? taskProjections.find(
+            (task) =>
+              task.createdByParticipantId === effectiveLocalParticipantId &&
+              pending.includes(task.title)
+          )
+        : undefined
+    if (created) {
+      pending.splice(pending.indexOf(created.title), 1)
+      setActiveInteraction(created.requestId)
+      return
+    }
+
+    // Preserve the existing Human-facing collaboration controls: an incoming
+    // request addressed to this Human opens its task view so Accept/Decline
+    // remains visible, while unrelated task views stay behind the switcher.
+    if (activeInteraction !== "room" || !effectiveLocalParticipantId) return
+    const incoming = taskProjections.find(
+      (task) => task.targetParticipantId === effectiveLocalParticipantId
+    )
+    if (incoming) setActiveInteraction(incoming.requestId)
+  }, [activeInteraction, effectiveLocalParticipantId, taskProjections])
+
+  useEffect(() => {
+    if (
+      activeInteraction !== "room" &&
+      !taskProjections.some((task) => task.requestId === activeInteraction)
+    )
+      setActiveInteraction("room")
+  }, [activeInteraction, taskProjections])
+
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
   const handleStartTask = useCallback(
@@ -193,6 +243,7 @@ export default function RoomContent({
         setTaskError("Could not start the task. Check your connection.")
         return
       }
+      pendingLocalTaskSummaries.current.push(taskInstruction.trim())
       closeTaskComposer()
     },
     [closeTaskComposer, sendCollabRequest, taskAgent, taskInstruction]
@@ -345,7 +396,7 @@ export default function RoomContent({
 
   const hasSentTextRef = useRef(false)
   const wrappedSendText = useCallback(
-    (text: string, targets: string[] = []) => {
+    (text: string, targets: string[] = [], taskRequestId?: string) => {
       if (!hasSentTextRef.current) {
         hasSentTextRef.current = true
         umamiEvent("ChatActivity", {
@@ -353,7 +404,7 @@ export default function RoomContent({
           roomHash: hashRoom(roomName),
         })
       }
-      sendTextMessage(text, targets)
+      sendTextMessage(text, targets, taskRequestId)
     },
     [roomName, sendTextMessage]
   )
@@ -609,7 +660,7 @@ export default function RoomContent({
               liveTranscript={liveTranscript}
               runtimeHosts={runtimeHosts}
               runtimeHostProviders={runtimeHostProviders}
-              localParticipantId={localParticipantId}
+              localParticipantId={effectiveLocalParticipantId}
               participants={participants}
               mediaAvailable={liveTranscriptMediaAvailable}
               onStart={handleStartLiveTranscript}
@@ -805,22 +856,72 @@ export default function RoomContent({
         />
 
         <div className="room-panel room-chat-panel flex flex-1 flex-col overflow-hidden">
-          <TextChatCard
-            room={roomName}
-            nickName={nickName}
-            messages={messages}
-            attachments={attachments}
-            participants={participants}
-            pendingFiles={pendingFiles}
-            onSendText={wrappedSendText}
-            onSendFile={wrappedSendFile}
-            onSendAction={sendActionMessage}
-            localParticipantId={getLocalRoomAuth()?.participantId}
-            onCollabRespond={handleCollabRespond}
-            onReadArtifact={handleReadArtifact}
-            onCollabResult={handleCollabResult}
-            onPermissionRespond={handlePermissionResponse}
-          />
+          <div
+            role="tablist"
+            aria-label="Room interactions"
+            className="scrollbar-thin flex flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/60 px-3 py-2"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeInteraction === "room"}
+              data-testid="interaction-tab-room"
+              onClick={() => setActiveInteraction("room")}
+              className={`shrink-0 rounded-md px-3 py-1.5 text-xs transition ${
+                activeInteraction === "room"
+                  ? "bg-blue-600 text-white"
+                  : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+              }`}
+            >
+              Room
+            </button>
+            {taskProjections.map((task) => (
+              <button
+                key={task.requestId}
+                type="button"
+                role="tab"
+                aria-selected={activeInteraction === task.requestId}
+                data-testid={`interaction-tab-task-${task.requestId}`}
+                onClick={() => setActiveInteraction(task.requestId)}
+                className={`flex max-w-52 shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition ${
+                  activeInteraction === task.requestId
+                    ? "bg-blue-600 text-white"
+                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                }`}
+              >
+                <span className="truncate">{task.title}</span>
+                <span
+                  aria-label={`Status ${task.status}`}
+                  className="text-[10px] opacity-70"
+                >
+                  {task.status === "Completed"
+                    ? "✓"
+                    : task.status === "Failed"
+                    ? "×"
+                    : "●"}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1">
+            <TextChatCard
+              room={roomName}
+              nickName={nickName}
+              messages={interactionMessages}
+              attachments={activeTask ? [] : attachments}
+              participants={participants}
+              pendingFiles={activeTask ? [] : pendingFiles}
+              onSendText={wrappedSendText}
+              onSendFile={wrappedSendFile}
+              onSendAction={sendActionMessage}
+              localParticipantId={effectiveLocalParticipantId}
+              onCollabRespond={handleCollabRespond}
+              onReadArtifact={handleReadArtifact}
+              onCollabResult={handleCollabResult}
+              onPermissionRespond={handlePermissionResponse}
+              taskRequestId={activeTask?.requestId}
+            />
+          </div>
         </div>
       </div>
       {taskAgent && (

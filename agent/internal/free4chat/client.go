@@ -943,12 +943,26 @@ func parseLiveTranscriptContextWindow(result map[string]any) (types.LiveTranscri
 // carries explicit addressing (#165); when empty the tool payload is
 // byte-identical to the pre-#165 ordinary unaddressed send.
 func (c *Client) SendText(participantHandle, text string, targetParticipantIDs []string) (types.SendTextResult, error) {
+	return c.sendText(participantHandle, text, targetParticipantIDs, "")
+}
+
+// SendTextForTask preserves the canonical Room collaboration request on
+// ordinary Agent output so the browser can project it into the same Task view
+// and the Room can route the follow-up back to the same task scope.
+func (c *Client) SendTextForTask(participantHandle, text string, targetParticipantIDs []string, taskRequestID string) (types.SendTextResult, error) {
+	return c.sendText(participantHandle, text, targetParticipantIDs, taskRequestID)
+}
+
+func (c *Client) sendText(participantHandle, text string, targetParticipantIDs []string, taskRequestID string) (types.SendTextResult, error) {
 	args := map[string]any{
 		"participantHandle": participantHandle,
 		"text":              text,
 	}
 	if len(targetParticipantIDs) > 0 {
 		args["targetParticipantIds"] = targetParticipantIDs
+	}
+	if taskRequestID != "" {
+		args["taskRequestId"] = taskRequestID
 	}
 	result, err := c.callTool("send_text", args)
 	if err != nil {

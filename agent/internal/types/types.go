@@ -724,6 +724,14 @@ type Free4ChatClient interface {
 	Close() error
 }
 
+// TaskTextClient is the optional narrow transport extension for preserving an
+// existing Room collaboration request on ordinary task text. Legacy clients
+// remain valid for ordinary Room text; a Runtime must not silently use that
+// legacy path for a non-Room scope.
+type TaskTextClient interface {
+	SendTextForTask(participantHandle, text string, targetParticipantIDs []string, taskRequestID string) (SendTextResult, error)
+}
+
 // RoomContextClient is an optional narrow historical-observation extension.
 // The Runtime keeps the participant handle private while mediating every call.
 type RoomContextClient interface {

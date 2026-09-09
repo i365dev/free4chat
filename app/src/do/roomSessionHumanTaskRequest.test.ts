@@ -94,6 +94,18 @@ function harness() {
     session,
     socket,
     sendHuman,
+    control: async (body: Record<string, unknown>) => {
+      const response = await session.fetch(
+        new Request("https://room/control", {
+          method: "POST",
+          body: JSON.stringify(body),
+        })
+      )
+      return {
+        status: response.status,
+        json: (await response.json()) as Record<string, unknown>,
+      }
+    },
     stored: () => store.get("room") as RoomRecord,
   }
 }
@@ -209,6 +221,71 @@ describe("RoomSession Human task entry (#305)", () => {
       type: "error",
       error: "target_not_in_room",
     })
+    expect(test.stored().messages).toHaveLength(0)
+  })
+
+  it("keeps Agent output and Human follow-up in the existing task interaction", async () => {
+    const test = harness()
+
+    await test.sendHuman({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Investigate the task marker",
+    })
+    const requestId = test.stored().messages[0].collab?.requestId
+    expect(requestId).toEqual(expect.any(String))
+
+    const agentReply = await test.control({
+      action: "agent-send-text",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      text: "task agent output",
+      taskRequestId: requestId,
+    })
+    expect(agentReply.status).toBe(200)
+    expect(test.stored().messages[1]).toMatchObject({
+      text: "task agent output",
+      taskRequestId: requestId,
+    })
+
+    await test.sendHuman({
+      type: "chat",
+      text: "task human follow-up",
+      taskRequestId: requestId,
+    })
+    expect(test.stored().messages[2]).toMatchObject({
+      peerId: "human-1",
+      text: "task human follow-up",
+      taskRequestId: requestId,
+      targets: ["agent-a"],
+    })
+
+    const agentEvent = (
+      test.session as unknown as {
+        toAgentEvent: (
+          message: unknown,
+          participantId: string
+        ) => { scopeId?: string; addressed: boolean }
+      }
+    ).toAgentEvent(test.stored().messages[2], "agent-a")
+    expect(agentEvent).toMatchObject({
+      scopeId: `task:${requestId}`,
+      addressed: true,
+    })
+  })
+
+  it("rejects arbitrary task correlation instead of creating a task view", async () => {
+    const test = harness()
+
+    await test.sendHuman({
+      type: "chat",
+      text: "forged task text",
+      taskRequestId: "not-a-canonical-request",
+    })
+
+    expect(test.socket.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "error", error: "unknown_task_request" })
+    )
     expect(test.stored().messages).toHaveLength(0)
   })
 })

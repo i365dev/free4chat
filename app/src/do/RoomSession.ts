@@ -430,6 +430,9 @@ type ControlRequest =
       participantId: string
       token: string
       text: string
+      // #309: optional task correlation. The DO validates this against an
+      // existing canonical collaboration request before persisting text.
+      taskRequestId?: unknown
       // #165/#234: optional explicit addressing carried by the same Room
       // primitive the Human chat path uses. Participant IDs only — the DO
       // normalizes, drops malformed/stale/self targets, and persists at most
@@ -584,7 +587,13 @@ type ControlRequest =
     }
 
 type ClientMessage =
-  | { type: "chat"; text: string; targets?: string[] }
+  | {
+      type: "chat"
+      text: string
+      targets?: string[]
+      // #309: only an existing canonical collaboration request may be used.
+      taskRequestId?: string
+    }
   | {
       type: "action"
       actionType: string
@@ -694,6 +703,33 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }))
     this.collabRegistry.rebuild(entries)
     this.collabRebuilt = true
+  }
+
+  // #309: task text is allowed only when its correlation resolves to a
+  // retained canonical collaboration request whose primary target is still
+  // the connected Agent. This keeps stale/arbitrary client scope labels from
+  // becoming Room state or Runtime routing hints.
+  private taskRequestFor(
+    room: RoomRecord,
+    rawRequestId: unknown
+  ):
+    | { ok: true; requestId: string; targetParticipantId: string }
+    | { ok: false; error: string } {
+    if (typeof rawRequestId !== "string")
+      return { ok: false, error: "invalid_task_request" }
+    const requestId = rawRequestId.trim()
+    if (!requestId) return { ok: false, error: "invalid_task_request" }
+    this.warmCollabRegistry(room)
+    const record = this.collabRegistry.find(requestId)
+    if (!record) return { ok: false, error: "unknown_task_request" }
+    const target = room.participants[record.targetParticipantId]
+    if (!target || target.kind !== "agent" || !target.connected)
+      return { ok: false, error: "task_target_not_in_room" }
+    return {
+      ok: true,
+      requestId,
+      targetParticipantId: record.targetParticipantId,
+    }
   }
 
   private async loadRoom(): Promise<RoomRecord | null> {
@@ -1748,9 +1784,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // instead of storing a second scope field in Room state. Only the target
     // Agent receives this task scope; ordinary text and non-target context
     // remain in the default Room conversation.
+    const taskRequest = message.taskRequestId
+      ? this.collabRegistry.find(message.taskRequestId)
+      : undefined
     const scopeId =
-      message.collab?.targetParticipantId === participantId &&
-      message.collab.requestId
+      taskRequest?.targetParticipantId === participantId
+        ? `task:${message.taskRequestId}`
+        : message.collab?.targetParticipantId === participantId &&
+          message.collab.requestId
         ? `task:${message.collab.requestId}`
         : undefined
     return {
@@ -1808,6 +1849,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     expiresAt: number
     truncated?: boolean
   } {
+    this.warmCollabRegistry(room)
     const serverCursor = room.nextMessageSequence
     const clampedCursor = Math.min(Math.max(cursor, 0), serverCursor)
     const events = [
@@ -1852,6 +1894,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     room: RoomRecord,
     participantId: string
   ): AgentEvent[] {
+    this.warmCollabRegistry(room)
     return [
       ...room.messages
         .filter((message) =>
@@ -2923,6 +2966,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "agent_only" }, 403)
       const text = request.text.trim()
       if (!text) return this.json({ error: "text_required" }, 400)
+      const taskRequest =
+        request.taskRequestId === undefined
+          ? undefined
+          : this.taskRequestFor(room, request.taskRequestId)
+      if (taskRequest && taskRequest.ok === false)
+        return this.json({ error: taskRequest.error }, 409)
+      if (
+        taskRequest &&
+        taskRequest.ok === true &&
+        taskRequest.targetParticipantId !== participant.id
+      )
+        return this.json({ error: "task_target_mismatch" }, 403)
       participant.lastSeenAt = Date.now()
       const roomMessage = this.appendMessage(room, {
         id: crypto.randomUUID(),
@@ -2931,6 +2986,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         kind: participant.kind,
         type: "text",
         text: text.slice(0, 4000),
+        ...(taskRequest && taskRequest.ok === true
+          ? { taskRequestId: taskRequest.requestId }
+          : {}),
         // #165/#234: Agent-originated explicit addressing reuses the exact
         // Room target semantics of the Human chat path (dedupe, current
         // participant filter, MAX_TARGETS). Self-targets are dropped so an
@@ -4978,6 +5036,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (message.type === "chat" && message.text.trim()) {
+      const taskRequest =
+        message.taskRequestId === undefined
+          ? undefined
+          : this.taskRequestFor(room, message.taskRequestId)
+      if (taskRequest && taskRequest.ok === false) {
+        socket.send(JSON.stringify({ type: "error", error: taskRequest.error }))
+        return
+      }
+      if (taskRequest && message.targets?.length) {
+        socket.send(
+          JSON.stringify({ type: "error", error: "task_targets_forbidden" })
+        )
+        return
+      }
       const roomMessage = this.appendMessage(room, {
         id: crypto.randomUUID(),
         peerId: participant.id,
@@ -4985,10 +5057,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         kind: participant.kind,
         type: "text",
         text: message.text.trim().slice(0, 4000),
-        ...(() => {
-          const targets = normalizeChatTargets(room, message.targets)
-          return targets.length ? { targets } : {}
-        })(),
+        ...(taskRequest && taskRequest.ok === true
+          ? {
+              taskRequestId: taskRequest.requestId,
+              targets: [taskRequest.targetParticipantId],
+            }
+          : (() => {
+              const targets = normalizeChatTargets(room, message.targets)
+              return targets.length ? { targets } : {}
+            })()),
         createdAt: Date.now(),
       })
       await this.saveRoom(room)

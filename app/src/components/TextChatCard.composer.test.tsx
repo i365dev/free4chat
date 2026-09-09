@@ -144,6 +144,16 @@ describe("composer keyboard semantics", () => {
     )
   })
 
+  it("sends task text with the existing task correlation and no ad hoc picker target", () => {
+    const { composer, onSendText } = renderCard({
+      taskRequestId: "task-123",
+    })
+    typeMessage(composer, "continue the task")
+    fireEvent.keyDown(composer, { key: "Enter" })
+    expect(onSendText).toHaveBeenCalledWith("continue the task", [], "task-123")
+    expect(screen.queryByLabelText("More actions")).not.toBeInTheDocument()
+  })
+
   it("dismisses the mention picker with Escape so Enter sends normally", () => {
     const { composer, onSendText } = renderCard()
     typeMessage(composer, "@Age")
