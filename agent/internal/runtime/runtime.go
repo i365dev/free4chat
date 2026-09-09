@@ -26,6 +26,25 @@ const (
 	StateStopped      State = "stopped"
 )
 
+const roomScope = "room"
+
+// logicalSessionState is Runtime-local cognition state for one logical
+// scope. Room transport, participant credentials, roster, and the bounded
+// source event buffer remain ResidentRuntime-level state.
+type logicalSessionState struct {
+	deliveredThrough               int64
+	roomDeliveryFloor              int64
+	pendingAddressed               []int64
+	pendingContexts                map[int64]pendingTurnContext
+	observedHarnessGeneration      int64
+	bootstrappedHarnessGeneration  int64
+	meetingDeliveredThrough        int64
+	meetingDeliveryFloor           int64
+	liveTranscriptDeliveredThrough int64
+	liveTranscriptDeliveryFloor    int64
+	sourceCursors                  map[string]int64
+}
+
 // Status is the side-effect-free status projection returned over IPC.
 type Status struct {
 	InstanceID    string `json:"instanceId"`
@@ -144,9 +163,14 @@ type ResidentRuntime struct {
 	liveTranscriptDeliveredThrough int64
 	liveTranscriptDeliveryFloor    int64
 	eventBuffer                    *EventBuffer
-	advertisedCaps                 []string
-	roster                         []types.ParticipantRosterEntry
-	resolvedRoomID                 string
+	// scopedSessions contains only non-default logical scopes. The legacy
+	// fields above remain the Room scope so the proven #223 delivery path and
+	// its invariants stay structurally unchanged.
+	scopedSessions map[string]*logicalSessionState
+	scopeOrder     []string
+	advertisedCaps []string
+	roster         []types.ParticipantRosterEntry
+	resolvedRoomID string
 	// participatingSince is set once on the lifecycle's first successful
 	// adoptJoin and preserved across transient retries/reconnects (#228).
 	participatingSince int64
@@ -579,6 +603,8 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.eventBuffer.Clear()
 		r.pendingAddressed = nil
 		r.pendingContexts = nil
+		r.scopedSessions = nil
+		r.scopeOrder = nil
 	}
 	r.state = StateWaiting
 	r.lastError = ""
@@ -654,7 +680,7 @@ func (r *ResidentRuntime) waitLoop() {
 
 		retryAttempt = 0
 		r.advanceFromWait(result)
-		if len(r.pendingAddressedSnapshot()) > 0 && !r.isStopped() {
+		if len(r.pendingScopes()) > 0 && !r.isStopped() {
 			r.drainTurns()
 		}
 	}
@@ -795,7 +821,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			return err
 		}
 		r.advanceFromWait(result)
-		if len(r.pendingAddressedSnapshot()) > 0 && !r.isStopped() {
+		if len(r.pendingScopes()) > 0 && !r.isStopped() {
 			r.drainTurns()
 		}
 	}
@@ -906,24 +932,34 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	r.mu.Lock()
 	r.eventBuffer.Add(event)
-	if event.Addressed && !containsSequence(r.pendingAddressed, event.Sequence) {
+	scope := scopeForRoomEvent(event)
+	newScope := scope != roomScope && !r.scopeStateExistsLocked(scope)
+	ref := r.sessionRefLocked(scope)
+	if newScope {
+		// A task scope starts at its first task-correlated trigger. Earlier
+		// private Room conversation remains pull-only and is not copied into a
+		// new Harness conversation implicitly.
+		*ref.deliveredThrough = event.Sequence - 1
+		*ref.roomDeliveryFloor = event.Sequence - 1
+	}
+	if event.Addressed && !containsSequence(*ref.pendingAddressed, event.Sequence) {
 		// Do not use BoundedPush here. An addressed trigger remains unacknowledged
 		// until RunTurn succeeds, so front eviction would silently lose a failed
 		// turn. When the bounded queue is full, keep every already-accepted
 		// context intact rather than silently acknowledging or replacing it.
-		if len(r.pendingAddressed) < MaxPendingTurns {
-			after := max(r.deliveredThrough, r.roomDeliveryFloor)
-			if pending := len(r.pendingAddressed); pending > 0 {
-				after = r.pendingAddressed[pending-1]
+		if len(*ref.pendingAddressed) < MaxPendingTurns {
+			after := max(*ref.deliveredThrough, *ref.roomDeliveryFloor)
+			if pending := len(*ref.pendingAddressed); pending > 0 {
+				after = (*ref.pendingAddressed)[pending-1]
 			}
-			if r.pendingContexts == nil {
-				r.pendingContexts = make(map[int64]pendingTurnContext)
+			if *ref.pendingContexts == nil {
+				*ref.pendingContexts = make(map[int64]pendingTurnContext)
 			}
-			r.pendingAddressed = append(r.pendingAddressed, event.Sequence)
-			r.pendingContexts[event.Sequence] = pendingTurnContext{
+			*ref.pendingAddressed = append(*ref.pendingAddressed, event.Sequence)
+			(*ref.pendingContexts)[event.Sequence] = pendingTurnContext{
 				after:  after,
 				target: event.Sequence,
-				events: cloneRoomEvents(r.eventBuffer.Since(after, event.Sequence)),
+				events: r.eventsForScopeLocked(scope, after, event.Sequence),
 			}
 		}
 	}
@@ -973,13 +1009,18 @@ func (r *ResidentRuntime) drainTurns() {
 	}()
 
 	for !r.isStopped() {
-		target, ok := r.peekPending()
-		if !ok {
+		scopes := r.pendingScopes()
+		if len(scopes) == 0 {
 			return
+		}
+		scope := scopes[0]
+		target, ok := r.peekPendingFor(scope)
+		if !ok {
+			continue
 		}
 		// Ensure before rendering so the prompt accurately knows whether this
 		// is the same retained ACP conversation or a real session/new.
-		if err := r.options.Adapter.EnsureSession(); err != nil {
+		if err := r.ensureHarnessSession(scope); err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
 			r.lastErrorSource = "harness"
@@ -988,9 +1029,9 @@ func (r *ResidentRuntime) drainTurns() {
 			r.log("turn_failed", nil)
 			return
 		}
-		generation := r.options.Adapter.SessionGeneration()
-		newSession := r.observeHarnessSession(generation, target)
-		events, contextErr := r.pendingContext(target)
+		generation := r.harnessSessionGeneration(scope)
+		newSession := r.observeHarnessSessionFor(scope, generation, target)
+		events, contextErr := r.pendingContextFor(scope, target)
 		if contextErr != nil {
 			r.mu.Lock()
 			r.lastError = contextErr.Error()
@@ -1005,8 +1046,8 @@ func (r *ResidentRuntime) drainTurns() {
 			// successful-delivery cursor already covers it. Otherwise bounded
 			// local context was lost, so retain the trigger for a later retry
 			// rather than silently claiming Harness delivery.
-			if target <= r.effectiveDeliveryStart() {
-				r.ackPending(target)
+			if target <= r.effectiveDeliveryStartFor(scope) {
+				r.ackPendingFor(scope, target)
 				continue
 			}
 			r.log("turn_context_unavailable", nil)
@@ -1031,8 +1072,8 @@ func (r *ResidentRuntime) drainTurns() {
 			CurrentRoomSequence: maxSeq,
 		}
 		r.enrichAttachments(input)
-		meetingThrough := r.attachTranscript(input)
-		liveThrough := r.attachLiveTranscript(input)
+		meetingThrough := r.attachTranscriptFor(scope, input)
+		liveThrough := r.attachLiveTranscriptFor(scope, input)
 
 		// A newly addressed turn wins the speaker: stale audio from the
 		// previous response must never keep playing over the new one.
@@ -1040,7 +1081,7 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Cancel()
 		}
 
-		result, err := r.options.Adapter.RunTurn(*input, generation)
+		result, err := r.runHarnessTurn(scope, *input, generation)
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
@@ -1057,8 +1098,8 @@ func (r *ResidentRuntime) drainTurns() {
 		// RunTurn succeeded: commit every delivery marker before lifecycle
 		// handling or text persistence. If either of those later operations
 		// fails, replaying this already-consumed Harness prompt would be wrong.
-		r.acknowledgeHarnessDelivery(target, maxSeq, generation)
-		r.acknowledgeTranscriptDelivery(meetingThrough, liveThrough)
+		r.acknowledgeHarnessDeliveryFor(scope, target, maxSeq, generation)
+		r.acknowledgeTranscriptDeliveryFor(scope, meetingThrough, liveThrough)
 		r.mu.Lock()
 		r.harnessFailed = false
 		// #228: a successful turn proves the Harness recovered — clear ONLY

@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -16,6 +17,104 @@ type pendingTurnContext struct {
 	after  int64
 	target int64
 	events []types.RoomEvent
+}
+
+const maxLogicalScopeLength = 128
+
+type logicalSessionRef struct {
+	deliveredThrough               *int64
+	roomDeliveryFloor              *int64
+	pendingAddressed               *[]int64
+	pendingContexts                *map[int64]pendingTurnContext
+	observedHarnessGeneration      *int64
+	bootstrappedHarnessGeneration  *int64
+	meetingDeliveredThrough        *int64
+	meetingDeliveryFloor           *int64
+	liveTranscriptDeliveredThrough *int64
+	liveTranscriptDeliveryFloor    *int64
+	sourceCursors                  *map[string]int64
+}
+
+func normalizeScope(scope string) string {
+	scope = strings.TrimSpace(scope)
+	if scope == "" || len(scope) > maxLogicalScopeLength {
+		return roomScope
+	}
+	return scope
+}
+
+func newLogicalSessionState() *logicalSessionState {
+	return &logicalSessionState{
+		pendingContexts: make(map[int64]pendingTurnContext),
+		sourceCursors:   make(map[string]int64),
+	}
+}
+
+// sessionRefLocked keeps the default Room scope on the existing fields while
+// giving task/request scopes their own delivery and source checkpoints.
+// Callers must hold r.mu.
+func (r *ResidentRuntime) sessionRefLocked(scope string) *logicalSessionRef {
+	scope = normalizeScope(scope)
+	if scope == roomScope {
+		return &logicalSessionRef{
+			deliveredThrough:               &r.deliveredThrough,
+			roomDeliveryFloor:              &r.roomDeliveryFloor,
+			pendingAddressed:               &r.pendingAddressed,
+			pendingContexts:                &r.pendingContexts,
+			observedHarnessGeneration:      &r.observedHarnessGeneration,
+			bootstrappedHarnessGeneration:  &r.bootstrappedHarnessGeneration,
+			meetingDeliveredThrough:        &r.meetingDeliveredThrough,
+			meetingDeliveryFloor:           &r.meetingDeliveryFloor,
+			liveTranscriptDeliveredThrough: &r.liveTranscriptDeliveredThrough,
+			liveTranscriptDeliveryFloor:    &r.liveTranscriptDeliveryFloor,
+			sourceCursors:                  nil,
+		}
+	}
+	if r.scopedSessions == nil {
+		r.scopedSessions = make(map[string]*logicalSessionState)
+	}
+	state := r.scopedSessions[scope]
+	if state == nil {
+		state = newLogicalSessionState()
+		r.scopedSessions[scope] = state
+		r.scopeOrder = append(r.scopeOrder, scope)
+	}
+	return &logicalSessionRef{
+		deliveredThrough:               &state.deliveredThrough,
+		roomDeliveryFloor:              &state.roomDeliveryFloor,
+		pendingAddressed:               &state.pendingAddressed,
+		pendingContexts:                &state.pendingContexts,
+		observedHarnessGeneration:      &state.observedHarnessGeneration,
+		bootstrappedHarnessGeneration:  &state.bootstrappedHarnessGeneration,
+		meetingDeliveredThrough:        &state.meetingDeliveredThrough,
+		meetingDeliveryFloor:           &state.meetingDeliveryFloor,
+		liveTranscriptDeliveredThrough: &state.liveTranscriptDeliveredThrough,
+		liveTranscriptDeliveryFloor:    &state.liveTranscriptDeliveryFloor,
+		sourceCursors:                  &state.sourceCursors,
+	}
+}
+
+func (r *ResidentRuntime) scopeStateExistsLocked(scope string) bool {
+	scope = normalizeScope(scope)
+	return scope == roomScope || r.scopedSessions != nil && r.scopedSessions[scope] != nil
+}
+
+func scopeForRoomEvent(event types.RoomEvent) string {
+	if scope := normalizeScope(event.ScopeID); scope != roomScope {
+		return scope
+	}
+	// A bounded action producer may carry the same hint without requiring a
+	// wider wire model. taskId is deliberately namespaced so it cannot collide
+	// with the default Room conversation.
+	if event.ActionPayload != nil {
+		if scope := strings.TrimSpace(event.ActionPayload["scopeId"]); scope != "" {
+			return normalizeScope("task:" + scope)
+		}
+		if taskID := strings.TrimSpace(event.ActionPayload["taskId"]); taskID != "" {
+			return normalizeScope("task:" + taskID)
+		}
+	}
+	return roomScope
 }
 
 func containsSequence(items []int64, sequence int64) bool {
@@ -54,6 +153,30 @@ func (r *ResidentRuntime) currentParticipantID() string {
 	return r.participantID
 }
 
+func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
+	scope = normalizeScope(scope)
+	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
+		return adapter.EnsureSessionFor(scope)
+	}
+	return r.options.Adapter.EnsureSession()
+}
+
+func (r *ResidentRuntime) harnessSessionGeneration(scope string) int64 {
+	scope = normalizeScope(scope)
+	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
+		return adapter.SessionGenerationFor(scope)
+	}
+	return r.options.Adapter.SessionGeneration()
+}
+
+func (r *ResidentRuntime) runHarnessTurn(scope string, input types.HarnessTurnInput, generation int64) (types.HarnessTurnResult, error) {
+	scope = normalizeScope(scope)
+	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
+		return adapter.RunTurnFor(scope, input, generation)
+	}
+	return r.options.Adapter.RunTurn(input, generation)
+}
+
 func (r *ResidentRuntime) isStopped() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -82,89 +205,149 @@ func (r *ResidentRuntime) setLastError(state State, message string) {
 }
 
 func (r *ResidentRuntime) pendingAddressedSnapshot() []int64 {
+	return r.pendingAddressedSnapshotFor(roomScope)
+}
+
+func (r *ResidentRuntime) pendingAddressedSnapshotFor(scope string) []int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]int64(nil), r.pendingAddressed...)
+	ref := r.sessionRefLocked(scope)
+	return append([]int64(nil), (*ref.pendingAddressed)...)
+}
+
+func (r *ResidentRuntime) pendingScopes() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.pendingAddressed) > 0 {
+		out := []string{roomScope}
+		for _, scope := range r.scopeOrder {
+			if state := r.scopedSessions[scope]; state != nil && len(state.pendingAddressed) > 0 {
+				out = append(out, scope)
+			}
+		}
+		return out
+	}
+	var out []string
+	for _, scope := range r.scopeOrder {
+		if state := r.scopedSessions[scope]; state != nil && len(state.pendingAddressed) > 0 {
+			out = append(out, scope)
+		}
+	}
+	return out
 }
 
 // peekPending returns the next addressed target without acknowledging it.
 // A target remains retryable until the Harness has successfully consumed the
 // corresponding turn; Room transport receipt is deliberately insufficient.
 func (r *ResidentRuntime) peekPending() (int64, bool) {
+	return r.peekPendingFor(roomScope)
+}
+
+func (r *ResidentRuntime) peekPendingFor(scope string) (int64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(r.pendingAddressed) == 0 {
+	ref := r.sessionRefLocked(scope)
+	if len(*ref.pendingAddressed) == 0 {
 		return 0, false
 	}
-	return r.pendingAddressed[0], true
+	return (*ref.pendingAddressed)[0], true
 }
 
 // ackPending removes one successfully-delivered target. It intentionally
 // matches by sequence rather than blindly popping so an unexpected queue
 // mutation cannot acknowledge a different addressed turn.
 func (r *ResidentRuntime) ackPending(sequence int64) {
+	r.ackPendingFor(roomScope, sequence)
+}
+
+func (r *ResidentRuntime) ackPendingFor(scope string, sequence int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for index, pending := range r.pendingAddressed {
+	ref := r.sessionRefLocked(scope)
+	for index, pending := range *ref.pendingAddressed {
 		if pending != sequence {
 			continue
 		}
-		r.pendingAddressed = append(r.pendingAddressed[:index], r.pendingAddressed[index+1:]...)
-		delete(r.pendingContexts, sequence)
+		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
+		delete(*ref.pendingContexts, sequence)
 		return
 	}
 }
 
 func (r *ResidentRuntime) deliveredSeq() int64 {
+	return r.deliveredSeqFor(roomScope)
+}
+
+func (r *ResidentRuntime) deliveredSeqFor(scope string) int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.deliveredThrough
+	return *r.sessionRefLocked(scope).deliveredThrough
 }
 
 // effectiveDeliveryStart is the automatic-push boundary. A new ACP session
 // deliberately advances its floor to the current trigger without pretending
 // the earlier retained Room history was consumed; that history stays pullable.
 func (r *ResidentRuntime) effectiveDeliveryStart() int64 {
+	return r.effectiveDeliveryStartFor(roomScope)
+}
+
+func (r *ResidentRuntime) effectiveDeliveryStartFor(scope string) int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return max(r.deliveredThrough, r.roomDeliveryFloor)
+	ref := r.sessionRefLocked(scope)
+	return max(*ref.deliveredThrough, *ref.roomDeliveryFloor)
 }
 
 // acknowledgeHarnessDelivery advances the successful Harness-delivery
 // cursor only after RunTurn returned successfully, and only then removes the
 // addressed trigger. Callers must keep outbound Room reply delivery separate.
 func (r *ResidentRuntime) acknowledgeHarnessDelivery(target, through, generation int64) {
+	r.acknowledgeHarnessDeliveryFor(roomScope, target, through, generation)
+}
+
+func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, through, generation int64) {
 	r.mu.Lock()
-	if through > r.deliveredThrough {
-		r.deliveredThrough = through
+	ref := r.sessionRefLocked(scope)
+	if through > *ref.deliveredThrough {
+		*ref.deliveredThrough = through
 	}
-	if generation > 0 && generation == r.observedHarnessGeneration {
-		r.bootstrappedHarnessGeneration = generation
+	if generation > 0 && generation == *ref.observedHarnessGeneration {
+		*ref.bootstrappedHarnessGeneration = generation
 	}
-	for index, pending := range r.pendingAddressed {
+	for index, pending := range *ref.pendingAddressed {
 		if pending != target {
 			continue
 		}
-		r.pendingAddressed = append(r.pendingAddressed[:index], r.pendingAddressed[index+1:]...)
-		delete(r.pendingContexts, target)
+		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
+		delete(*ref.pendingContexts, target)
 		break
 	}
 	r.mu.Unlock()
 }
 
 func (r *ResidentRuntime) transcriptDeliveryMarkers() (meeting, live int64) {
+	return r.transcriptDeliveryMarkersFor(roomScope)
+}
+
+func (r *ResidentRuntime) transcriptDeliveryMarkersFor(scope string) (meeting, live int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return max(r.meetingDeliveryFloor, r.meetingDeliveredThrough), max(r.liveTranscriptDeliveryFloor, r.liveTranscriptDeliveredThrough)
+	ref := r.sessionRefLocked(scope)
+	return max(*ref.meetingDeliveryFloor, *ref.meetingDeliveredThrough), max(*ref.liveTranscriptDeliveryFloor, *ref.liveTranscriptDeliveredThrough)
 }
 
 func (r *ResidentRuntime) acknowledgeTranscriptDelivery(meeting, live int64) {
+	r.acknowledgeTranscriptDeliveryFor(roomScope, meeting, live)
+}
+
+func (r *ResidentRuntime) acknowledgeTranscriptDeliveryFor(scope string, meeting, live int64) {
 	r.mu.Lock()
-	if meeting > r.meetingDeliveredThrough {
-		r.meetingDeliveredThrough = meeting
+	ref := r.sessionRefLocked(scope)
+	if meeting > *ref.meetingDeliveredThrough {
+		*ref.meetingDeliveredThrough = meeting
 	}
-	if live > r.liveTranscriptDeliveredThrough {
-		r.liveTranscriptDeliveredThrough = live
+	if live > *ref.liveTranscriptDeliveredThrough {
+		*ref.liveTranscriptDeliveredThrough = live
 	}
 	r.mu.Unlock()
 }
@@ -175,35 +358,40 @@ func (r *ResidentRuntime) acknowledgeTranscriptDelivery(meeting, live int64) {
 // with its current addressed trigger only; older bounded context stays
 // available through the explicit Runtime-mediated history read.
 func (r *ResidentRuntime) observeHarnessSession(generation, target int64) bool {
+	return r.observeHarnessSessionFor(roomScope, generation, target)
+}
+
+func (r *ResidentRuntime) observeHarnessSessionFor(scope string, generation, target int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	ref := r.sessionRefLocked(scope)
 	if generation <= 0 {
 		return false
 	}
-	if r.observedHarnessGeneration == 0 {
-		r.observedHarnessGeneration = generation
-		return r.bootstrappedHarnessGeneration != generation
+	if *ref.observedHarnessGeneration == 0 {
+		*ref.observedHarnessGeneration = generation
+		return *ref.bootstrappedHarnessGeneration != generation
 	}
-	if r.observedHarnessGeneration == generation {
-		return r.bootstrappedHarnessGeneration != generation
+	if *ref.observedHarnessGeneration == generation {
+		return *ref.bootstrappedHarnessGeneration != generation
 	}
-	r.observedHarnessGeneration = generation
+	*ref.observedHarnessGeneration = generation
 	if target > 0 {
 		// Reset the current session's actual delivery knowledge. The separate
 		// floor suppresses automatic replay of old history, without treating it
 		// as acknowledged by a Harness that has never seen it.
-		r.deliveredThrough = 0
-		r.roomDeliveryFloor = target - 1
+		*ref.deliveredThrough = 0
+		*ref.roomDeliveryFloor = target - 1
 	}
 	// A replacement ACP session has no private conversation memory. Keep a
 	// floor at the old successful marker so old bounded transcript history is
 	// explicitly pull-only, while any segment that failed delivery remains a
 	// proactive retry for the new session.
-	r.meetingDeliveryFloor = max(r.meetingDeliveryFloor, r.meetingDeliveredThrough)
-	r.liveTranscriptDeliveryFloor = max(r.liveTranscriptDeliveryFloor, r.liveTranscriptDeliveredThrough)
-	r.meetingDeliveredThrough = 0
-	r.liveTranscriptDeliveredThrough = 0
-	return r.bootstrappedHarnessGeneration != generation
+	*ref.meetingDeliveryFloor = max(*ref.meetingDeliveryFloor, *ref.meetingDeliveredThrough)
+	*ref.liveTranscriptDeliveryFloor = max(*ref.liveTranscriptDeliveryFloor, *ref.liveTranscriptDeliveredThrough)
+	*ref.meetingDeliveredThrough = 0
+	*ref.liveTranscriptDeliveredThrough = 0
+	return *ref.bootstrappedHarnessGeneration != generation
 }
 
 func (r *ResidentRuntime) bufferSince(after, through int64) []types.RoomEvent {
@@ -220,19 +408,24 @@ func (r *ResidentRuntime) bufferSince(after, through int64) []types.RoomEvent {
 // case recover it from the bounded authenticated Room history rather than
 // treating a local EventBuffer eviction as a permanent delivery failure.
 func (r *ResidentRuntime) pendingContext(target int64) ([]types.RoomEvent, error) {
+	return r.pendingContextFor(roomScope, target)
+}
+
+func (r *ResidentRuntime) pendingContextFor(scope string, target int64) ([]types.RoomEvent, error) {
 	r.mu.Lock()
-	pending, ok := r.pendingContexts[target]
+	ref := r.sessionRefLocked(scope)
+	pending, ok := (*ref.pendingContexts)[target]
 	if !ok {
-		start := max(r.deliveredThrough, r.roomDeliveryFloor)
+		start := max(*ref.deliveredThrough, *ref.roomDeliveryFloor)
 		pending = pendingTurnContext{
 			after:  start,
 			target: target,
-			events: cloneRoomEvents(r.eventBuffer.Since(start, target)),
+			events: r.eventsForScopeLocked(scope, start, target),
 		}
-		if r.pendingContexts == nil {
-			r.pendingContexts = make(map[int64]pendingTurnContext)
+		if *ref.pendingContexts == nil {
+			*ref.pendingContexts = make(map[int64]pendingTurnContext)
 		}
-		r.pendingContexts[target] = pending
+		(*ref.pendingContexts)[target] = pending
 	}
 	if len(pending.events) > 0 {
 		events := cloneRoomEvents(pending.events)
@@ -268,7 +461,9 @@ func (r *ResidentRuntime) pendingContext(target int64) ([]types.RoomEvent, error
 		last := cursor
 		for _, event := range context.Room.Events {
 			if event.Sequence > cursor && event.Sequence <= pending.target {
-				events = append(events, event)
+				if scopeForRoomEvent(event) == normalizeScope(scope) {
+					events = append(events, event)
+				}
 				last = event.Sequence
 			}
 		}
@@ -281,12 +476,53 @@ func (r *ResidentRuntime) pendingContext(target int64) ([]types.RoomEvent, error
 		return nil, fmt.Errorf("room context for sequence %d is unavailable", pending.target)
 	}
 	r.mu.Lock()
-	if current, exists := r.pendingContexts[target]; exists && len(current.events) == 0 {
+	ref = r.sessionRefLocked(scope)
+	if current, exists := (*ref.pendingContexts)[target]; exists && len(current.events) == 0 {
 		current.events = cloneRoomEvents(events)
-		r.pendingContexts[target] = current
+		(*ref.pendingContexts)[target] = current
 	}
 	r.mu.Unlock()
 	return events, nil
+}
+
+func (r *ResidentRuntime) eventsForScopeLocked(scope string, after, through int64) []types.RoomEvent {
+	all := r.eventBuffer.Since(after, through)
+	scope = normalizeScope(scope)
+	filtered := make([]types.RoomEvent, 0, len(all))
+	for _, event := range all {
+		if scopeForRoomEvent(event) == scope {
+			filtered = append(filtered, event)
+		}
+	}
+	return cloneRoomEvents(filtered)
+}
+
+// observeLogicalSource records an independent source checkpoint. It is an
+// observation only: no pending Room turn is created and no Harness call is
+// made. Source adapters can use the same narrow helper when this spike gains
+// another bounded source.
+func (r *ResidentRuntime) observeLogicalSource(scope, source string, cursor int64) {
+	scope = normalizeScope(scope)
+	source = strings.TrimSpace(source)
+	if source == "" || cursor < 0 {
+		return
+	}
+	r.mu.Lock()
+	ref := r.sessionRefLocked(scope)
+	if ref.sourceCursors != nil && cursor > (*ref.sourceCursors)[source] {
+		(*ref.sourceCursors)[source] = cursor
+	}
+	r.mu.Unlock()
+}
+
+func (r *ResidentRuntime) logicalSourceCursor(scope, source string) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ref := r.sessionRefLocked(scope)
+	if ref.sourceCursors == nil {
+		return 0
+	}
+	return (*ref.sourceCursors)[source]
 }
 
 func (r *ResidentRuntime) rosterSnapshot() []types.ParticipantRosterEntry {

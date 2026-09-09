@@ -199,6 +199,12 @@ type pendingPermission struct {
 	request ACPPermissionRequest
 }
 
+type acpSession struct {
+	sessionID  string
+	caps       *ACPCapabilities
+	generation int64
+}
+
 // harnessProcess owns the ONE cmd.Wait() call for a child lifecycle. Both
 // the death watcher and closeInternal observe the same exit signal, so the
 // shutdown path can reliably distinguish "terminated" from "ignored TERM"
@@ -246,15 +252,18 @@ type ACPAdapter struct {
 	// Unlike gen it is meaningful to the Runtime: a replacement session has
 	// no retained conversation memory, while a transport reconnect alone does
 	// not change it.
-	sessionGeneration int64
-	sessionID         string
-	caps              *ACPCapabilities
-	onFailure         types.AdapterFailureHandler
-	closing           bool
-	promptActive      bool
-	turnChunks        []string
-	turnContext       context.Context
-	turnCancel        context.CancelFunc
+	sessionGeneration   int64
+	sessionID           string
+	caps                *ACPCapabilities
+	sessions            map[string]*acpSession
+	nextScopeGeneration int64
+	onFailure           types.AdapterFailureHandler
+	closing             bool
+	promptActive        bool
+	turnChunks          []string
+	turnContext         context.Context
+	turnCancel          context.CancelFunc
+	turnSessionID       string
 }
 
 // NewACPAdapter creates an adapter bound to one workspace directory. It does
@@ -273,6 +282,7 @@ func NewACPAdapter(launcher types.AgentLauncher, workingDir string, options Adap
 		name:               launcher.ID,
 		pending:            make(map[string]*pendingCall),
 		pendingPermissions: make(map[string]*pendingPermission),
+		sessions:           make(map[string]*acpSession),
 	}
 }
 
@@ -426,6 +436,21 @@ func (a *ACPAdapter) SessionGeneration() int64 {
 	return a.sessionGeneration
 }
 
+// SessionGenerationFor returns the generation of one opaque logical scope.
+// A process restart invalidates every scoped ACP conversation; the next
+// EnsureSessionFor creates a new generation for that scope.
+func (a *ACPAdapter) SessionGenerationFor(scope string) int64 {
+	if scope == "room" || strings.TrimSpace(scope) == "" {
+		return a.SessionGeneration()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if session := a.sessions[scope]; session != nil {
+		return session.generation
+	}
+	return 0
+}
+
 // OnFailure registers the handler invoked on unexpected process death.
 func (a *ACPAdapter) OnFailure(handler types.AdapterFailureHandler) {
 	a.mu.Lock()
@@ -457,7 +482,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 		a.mu.Unlock()
 		return
 	}
-	live := a.proc != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.pending) > 0 || len(a.pendingPermissions) > 0
+	live := a.proc != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.sessions) > 0 || len(a.pending) > 0 || len(a.pendingPermissions) > 0
 	if !live {
 		a.mu.Unlock()
 		return
@@ -466,6 +491,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 	a.stdin = nil
 	a.sessionID = ""
 	a.caps = nil
+	a.sessions = make(map[string]*acpSession)
 	for _, call := range a.pending {
 		close(call.result)
 	}
@@ -474,6 +500,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 	turnCancel = a.turnCancel
 	a.turnContext = nil
 	a.turnCancel = nil
+	a.turnSessionID = ""
 	a.promptActive = false
 	a.turnChunks = nil
 	a.mu.Unlock()
@@ -558,6 +585,65 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.sessionGeneration++
 	a.mu.Unlock()
 	return nil
+}
+
+// EnsureSessionFor creates one additional ACP conversation in the already
+// resident Harness process. The default Room conversation remains the
+// compatibility path above; task scopes share the process but never share its
+// ACP session id or retained conversation.
+func (a *ACPAdapter) EnsureSessionFor(scope string) error {
+	if strings.TrimSpace(scope) == "" {
+		return errors.New("ACP logical scope is empty")
+	}
+	if scope == "room" {
+		return a.EnsureSession()
+	}
+	if err := a.EnsureSession(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if session := a.sessions[scope]; session != nil && session.sessionID != "" && a.proc != nil && a.stdin != nil {
+		a.mu.Unlock()
+		return nil
+	}
+	base := cloneACPCapabilities(a.caps)
+	a.mu.Unlock()
+	if base == nil {
+		return errors.New("ACP default session is unavailable")
+	}
+	newParams, _ := json.Marshal(map[string]any{"cwd": a.workingDir, "mcpServers": []any{}})
+	raw, err := a.request("session/new", newParams)
+	if err != nil {
+		return err
+	}
+	var sessionResponse struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(raw.Result, &sessionResponse); err != nil || sessionResponse.SessionID == "" {
+		return errors.New("ACP agent did not return a sessionId")
+	}
+	base.SessionControls = parseSessionControls(raw.Result)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.proc == nil || a.stdin == nil {
+		return errors.New("ACP process exited while creating scoped session")
+	}
+	a.nextScopeGeneration++
+	a.sessions[scope] = &acpSession{
+		sessionID:  sessionResponse.SessionID,
+		caps:       base,
+		generation: a.nextScopeGeneration,
+	}
+	return nil
+}
+
+func cloneACPCapabilities(caps *ACPCapabilities) *ACPCapabilities {
+	if caps == nil {
+		return nil
+	}
+	clone := *caps
+	clone.SessionControls = cloneSessionControls(caps.SessionControls)
+	return &clone
 }
 
 // handshake performs initialize + session/new synchronously.
@@ -842,7 +928,7 @@ func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
 
 	key := message.idKey()
 	a.mu.Lock()
-	if a.closing || !a.promptActive || a.turnContext == nil || a.sessionID == "" || request.SessionID != a.sessionID {
+	if a.closing || !a.promptActive || a.turnContext == nil || a.turnSessionID == "" || request.SessionID != a.turnSessionID {
 		a.mu.Unlock()
 		_ = a.writeFrame(cancelPermissionFrame(message.ID))
 		return
@@ -1027,13 +1113,23 @@ func (a *ACPAdapter) applySessionUpdate(params json.RawMessage) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.caps == nil || a.caps.SessionControls == nil || (a.sessionID != "" && update.SessionID != "" && update.SessionID != a.sessionID) {
+	caps := a.caps
+	if update.SessionID != "" && update.SessionID != a.sessionID {
+		caps = nil
+		for _, session := range a.sessions {
+			if session.sessionID == update.SessionID {
+				caps = session.caps
+				break
+			}
+		}
+	}
+	if caps == nil || caps.SessionControls == nil {
 		return
 	}
 	switch update.Update.SessionUpdate {
 	case "current_mode_update":
-		if a.caps.SessionControls.Modes != nil && update.Update.CurrentModeID != "" {
-			a.caps.SessionControls.Modes.CurrentModeID = update.Update.CurrentModeID
+		if caps.SessionControls.Modes != nil && update.Update.CurrentModeID != "" {
+			caps.SessionControls.Modes.CurrentModeID = update.Update.CurrentModeID
 		}
 	case "config_option_update":
 		if len(update.Update.ConfigOptions) == 0 {
@@ -1041,7 +1137,7 @@ func (a *ACPAdapter) applySessionUpdate(params json.RawMessage) {
 		}
 		controls := parseSessionControls(mustJSON(map[string]any{"configOptions": update.Update.ConfigOptions}))
 		if controls != nil && len(controls.ConfigOptions) > 0 {
-			a.caps.SessionControls.ConfigOptions = controls.ConfigOptions
+			caps.SessionControls.ConfigOptions = controls.ConfigOptions
 		}
 	}
 }
@@ -1206,17 +1302,30 @@ func promptBlocks(input types.HarnessTurnInput, supportsImages bool) []map[strin
 	return blocks
 }
 
-// RunTurn executes one addressed turn against the exact retained session
-// generation prepared by the Runtime. In particular, this method must not
-// call EnsureSession: doing so could respawn a Harness after the Runtime had
-// already rendered a non-bootstrap prompt for the dead conversation.
+// RunTurn keeps the original default Room adapter contract.
 func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput, expectedSessionGeneration int64) (types.HarnessTurnResult, error) {
+	return a.RunTurnFor("room", input, expectedSessionGeneration)
+}
+
+// RunTurnFor executes one addressed turn against the exact retained session
+// generation prepared by the Runtime. In particular, this method must not
+// call EnsureSessionFor: doing so could create or switch conversations after
+// the Runtime rendered a prompt for a specific generation.
+func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expectedSessionGeneration int64) (types.HarnessTurnResult, error) {
 	a.mu.Lock()
-	if expectedSessionGeneration <= 0 || a.sessionGeneration != expectedSessionGeneration {
+	var sessionID string
+	var caps *ACPCapabilities
+	var generation int64
+	if scope == "room" || strings.TrimSpace(scope) == "" {
+		sessionID, caps, generation = a.sessionID, a.caps, a.sessionGeneration
+	} else if session := a.sessions[scope]; session != nil {
+		sessionID, caps, generation = session.sessionID, session.caps, session.generation
+	}
+	if expectedSessionGeneration <= 0 || generation != expectedSessionGeneration {
 		a.mu.Unlock()
 		return types.HarnessTurnResult{}, types.ErrHarnessSessionGenerationChanged
 	}
-	if a.sessionID == "" || a.stdin == nil {
+	if sessionID == "" || a.stdin == nil {
 		a.mu.Unlock()
 		return types.HarnessTurnResult{}, errors.New("ACP session is unavailable")
 	}
@@ -1227,9 +1336,10 @@ func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput, expectedSessionGenera
 	a.promptActive = true
 	a.turnChunks = nil
 	a.turnContext, a.turnCancel = context.WithCancel(context.Background())
-	blocks := promptBlocks(input, a.caps != nil && a.caps.Images)
+	a.turnSessionID = sessionID
+	blocks := promptBlocks(input, caps != nil && caps.Images)
 	params, _ := json.Marshal(map[string]any{
-		"sessionId": a.sessionID,
+		"sessionId": sessionID,
 		"prompt":    blocks,
 	})
 	a.nextID++
@@ -1312,6 +1422,7 @@ func (a *ACPAdapter) resetPrompt(key string) {
 	turnCancel := a.turnCancel
 	a.turnContext = nil
 	a.turnCancel = nil
+	a.turnSessionID = ""
 	permissions := a.takePendingPermissionsLocked()
 	a.promptActive = false
 	a.turnChunks = nil
@@ -1373,11 +1484,11 @@ func (a *ACPAdapter) recoverTimedOutTurn(call *pendingCall, key string, graceMs 
 // CancelTurn notifies the Harness to cancel the active prompt.
 func (a *ACPAdapter) CancelTurn() error {
 	a.mu.Lock()
-	if a.sessionID == "" || a.stdin == nil || !a.promptActive {
+	if a.turnSessionID == "" || a.stdin == nil || !a.promptActive {
 		a.mu.Unlock()
 		return nil
 	}
-	params, _ := json.Marshal(map[string]any{"sessionId": a.sessionID})
+	params, _ := json.Marshal(map[string]any{"sessionId": a.turnSessionID})
 	envelope, _ := json.Marshal(acpMessage{
 		JSONRPC: "2.0",
 		Method:  "session/cancel",
@@ -1415,12 +1526,18 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 	a.closing = true
 	proc := a.proc
 	writer := a.stdin
-	sessionID := a.sessionID
-	closePresent := a.caps != nil && a.caps.ClosePresent
-	nextID := a.nextID + 1
-	a.nextID = nextID
+	closeFrames := make([][]byte, 0, 1+len(a.sessions))
+	if !force && a.caps != nil && a.caps.ClosePresent && a.sessionID != "" {
+		closeFrames = append(closeFrames, a.sessionCloseFrameLocked(a.sessionID))
+	}
+	for _, session := range a.sessions {
+		if !force && session.caps != nil && session.caps.ClosePresent && session.sessionID != "" {
+			closeFrames = append(closeFrames, a.sessionCloseFrameLocked(session.sessionID))
+		}
+	}
 	a.sessionID = ""
 	a.caps = nil
+	a.sessions = make(map[string]*acpSession)
 	a.stdin = nil
 	a.proc = nil
 	a.promptActive = false
@@ -1428,6 +1545,7 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 	turnCancel = a.turnCancel
 	a.turnContext = nil
 	a.turnCancel = nil
+	a.turnSessionID = ""
 	for _, call := range a.pending {
 		close(call.result)
 	}
@@ -1449,22 +1567,13 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 
 	/* Graceful session/close only when not force-tearing down a stuck
 	 * Harness; process termination below remains the final boundary. */
-	var envelope []byte
-	if !force && writer != nil && sessionID != "" && closePresent {
-		id, _ := json.Marshal(nextID)
-		params, _ := json.Marshal(map[string]any{"sessionId": sessionID})
-		envelope, _ = json.Marshal(acpMessage{
-			JSONRPC: "2.0",
-			ID:      id,
-			Method:  "session/close",
-			Params:  params,
-		})
-	}
 	if writer != nil {
-		if envelope != nil {
+		if len(closeFrames) > 0 {
 			done := make(chan struct{})
 			go func() {
-				_, _ = writer.Write(append(envelope, '\n'))
+				for _, frame := range closeFrames {
+					_, _ = writer.Write(append(frame, '\n'))
+				}
 				close(done)
 			}()
 			select {
@@ -1495,6 +1604,19 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 		}
 	}
 	return nil
+}
+
+func (a *ACPAdapter) sessionCloseFrameLocked(sessionID string) []byte {
+	a.nextID++
+	id, _ := json.Marshal(a.nextID)
+	params, _ := json.Marshal(map[string]any{"sessionId": sessionID})
+	frame, _ := json.Marshal(acpMessage{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  "session/close",
+		Params:  params,
+	})
+	return frame
 }
 
 // environmentSlice converts a filtered map into exec.Env form (sorted for

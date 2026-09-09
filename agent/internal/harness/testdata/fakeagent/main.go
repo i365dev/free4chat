@@ -44,9 +44,11 @@ type frame struct {
 }
 
 type agent struct {
-	mode        string
-	promptCount int
-	pending     []byte // id of a held prompt waiting for cancellation
+	mode             string
+	promptCount      int
+	pending          []byte // id of a held prompt waiting for cancellation
+	pendingSessionID string
+	nextSessionID    int
 }
 
 var tracePath string
@@ -136,7 +138,6 @@ func main() {
 		}
 	}
 	a := &agent{mode: mode}
-	sessionID := ""
 	// A FIRST-life stuck process must also survive stdin EOF (the adapter
 	// closes the pipe before escalating): only SIGKILL may end it, which is
 	// exactly what the adapter's bounded escalation tests verify.
@@ -189,7 +190,8 @@ func main() {
 			})
 
 		case message.Method == "session/new":
-			sessionID = "session-" + strconv.Itoa(1)
+			a.nextSessionID++
+			sessionID := "session-" + strconv.Itoa(a.nextSessionID)
 			response := map[string]any{"sessionId": sessionID}
 			if os.Getenv("FAKE_POLICY_CAP") == "1" {
 				response["modes"] = map[string]any{
@@ -216,11 +218,12 @@ func main() {
 				continue
 			}
 			var params struct {
-				ModeID string `json:"modeId"`
+				SessionID string `json:"sessionId"`
+				ModeID    string `json:"modeId"`
 			}
 			_ = json.Unmarshal(message.Params, &params)
 			notify("session/update", map[string]any{
-				"sessionId": sessionID,
+				"sessionId": params.SessionID,
 				"update":    map[string]any{"sessionUpdate": "current_mode_update", "currentModeId": params.ModeID},
 			})
 			reply(message.ID, map[string]any{})
@@ -231,8 +234,9 @@ func main() {
 				continue
 			}
 			var params struct {
-				ConfigID string `json:"configId"`
-				Value    string `json:"value"`
+				SessionID string `json:"sessionId"`
+				ConfigID  string `json:"configId"`
+				Value     string `json:"value"`
 			}
 			_ = json.Unmarshal(message.Params, &params)
 			configOptions := []any{map[string]any{
@@ -244,7 +248,7 @@ func main() {
 				},
 			}}
 			notify("session/update", map[string]any{
-				"sessionId": sessionID,
+				"sessionId": params.SessionID,
 				"update":    map[string]any{"sessionUpdate": "config_option_update", "configOptions": configOptions},
 			})
 			reply(message.ID, map[string]any{"configOptions": configOptions})
@@ -253,24 +257,29 @@ func main() {
 			reply(message.ID, map[string]any{})
 
 		case message.Method == "session/cancel":
+			var cancelParams struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(message.Params, &cancelParams)
 			switch a.mode {
 			case "cancel":
 				if a.pending != nil {
-					updateChunk(sessionID, "cancelled")
+					updateChunk(cancelParams.SessionID, "cancelled")
 					reply(a.pending, map[string]any{"stopReason": "cancelled"})
 					a.pending = nil
+					a.pendingSessionID = ""
 				}
 			case "thought":
 				// Emits internal reasoning that must NEVER surface in the
 				// runtime's published reply, then the real message.
 				notify("session/update", map[string]any{
-					"sessionId": sessionID,
+					"sessionId": cancelParams.SessionID,
 					"update": map[string]any{
 						"sessionUpdate": "agent_thought_chunk",
 						"content":       map[string]any{"type": "text", "text": "SECRET-THINKING-0123456789"},
 					},
 				})
-				updateChunk(sessionID, "public-reply")
+				updateChunk(cancelParams.SessionID, "public-reply")
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "timeout_stuck":
 				if marker := os.Getenv("FAKE_CANCEL_MARKER"); marker != "" && !fileExists(marker) {
@@ -279,6 +288,11 @@ func main() {
 			}
 
 		case message.Method == "session/prompt":
+			var promptParams struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(message.Params, &promptParams)
+			promptSessionID := promptParams.SessionID
 			prompt := promptText(message.Params)
 			switch a.mode {
 			case "env":
@@ -289,20 +303,20 @@ func main() {
 				if name == "" {
 					name = "FREE4CHAT_AGENT_DIR"
 				}
-				updateChunk(sessionID, os.Getenv(name))
+				updateChunk(promptSessionID, os.Getenv(name))
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "context_read":
 				runtimeBinary := os.Getenv("FREE4CHAT_AGENT_BIN")
 				if runtimeBinary == "" {
-					updateChunk(sessionID, "context-read-error: exact Runtime executable is unavailable")
+					updateChunk(promptSessionID, "context-read-error: exact Runtime executable is unavailable")
 					reply(message.ID, map[string]any{"stopReason": "end_turn"})
 					continue
 				}
 				output, err := exec.Command(runtimeBinary, "context", "read", "--before-sequence", "2", "--limit", "10").CombinedOutput()
 				if err != nil {
-					updateChunk(sessionID, "context-read-error: "+string(output))
+					updateChunk(promptSessionID, "context-read-error: "+string(output))
 				} else {
-					updateChunk(sessionID, string(output))
+					updateChunk(promptSessionID, string(output))
 				}
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "permission":
@@ -314,7 +328,7 @@ func main() {
 						ID:      json.RawMessage("77"),
 						Method:  "session/request_permission",
 						Params: mustJSON(map[string]any{
-							"sessionId": sessionID,
+							"sessionId": promptSessionID,
 							"toolCall": map[string]any{
 								"toolCallId": "tool-1",
 								"title":      "unsafe operation",
@@ -327,9 +341,10 @@ func main() {
 					// Wait for the runtime's auto-cancelled response; the
 					// response handler below drives completion. Stash the id.
 					a.pending = append([]byte(nil), message.ID...)
+					a.pendingSessionID = promptSessionID
 					continue
 				}
-				a.finishNormal(&message, sessionID)
+				a.finishNormal(&message, promptSessionID)
 			case "permission_wait":
 				if len(prompt) > 0 && contains(prompt, "permission-test") {
 					send(&frame{
@@ -337,7 +352,7 @@ func main() {
 						ID:      json.RawMessage("78"),
 						Method:  "session/request_permission",
 						Params: mustJSON(map[string]any{
-							"sessionId": sessionID,
+							"sessionId": promptSessionID,
 							"toolCall": map[string]any{
 								"toolCallId": "tool-delayed",
 								"title":      "delayed harmless operation",
@@ -362,17 +377,19 @@ func main() {
 						}),
 					})
 					a.pending = append([]byte(nil), message.ID...)
+					a.pendingSessionID = promptSessionID
 					continue
 				}
-				a.finishNormal(&message, sessionID)
+				a.finishNormal(&message, promptSessionID)
 			case "cancel":
 				if len(prompt) > 0 && contains(prompt, "cancel-test") {
 					a.pending = append([]byte(nil), message.ID...)
+					a.pendingSessionID = promptSessionID
 					continue
 				}
-				a.finishNormal(&message, sessionID)
+				a.finishNormal(&message, promptSessionID)
 			case "exit":
-				a.finishNormal(&message, sessionID)
+				a.finishNormal(&message, promptSessionID)
 				a.killAfter(10*time.Millisecond, "FAKE_EXIT_MARKER")
 			case "restart":
 				marker := os.Getenv("FAKE_RESTART_MARKER")
@@ -384,7 +401,7 @@ func main() {
 				if !restarted {
 					text = "reply-1"
 				}
-				updateChunk(sessionID, text)
+				updateChunk(promptSessionID, text)
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 				if !restarted {
 					a.killAfter(10*time.Millisecond, "FAKE_RESTART_MARKER")
@@ -395,19 +412,19 @@ func main() {
 				if text == "" {
 					text = fmt.Sprintf("reply-%d", a.promptCount)
 				}
-				updateChunk(sessionID, text)
+				updateChunk(promptSessionID, text)
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "thought":
 				// Emits internal reasoning that must NEVER surface in the
 				// runtime's published reply, then the real message.
 				notify("session/update", map[string]any{
-					"sessionId": sessionID,
+					"sessionId": promptSessionID,
 					"update": map[string]any{
 						"sessionUpdate": "agent_thought_chunk",
 						"content":       map[string]any{"type": "text", "text": "SECRET-THINKING-0123456789"},
 					},
 				})
-				updateChunk(sessionID, "public-reply")
+				updateChunk(promptSessionID, "public-reply")
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "timeout_stuck":
 				stateMarker := os.Getenv("FAKE_STATE_MARKER")
@@ -416,7 +433,7 @@ func main() {
 					wasStuck = fileExists(stateMarker)
 				}
 				if wasStuck {
-					updateChunk(sessionID, "recovered")
+					updateChunk(promptSessionID, "recovered")
 					reply(message.ID, map[string]any{"stopReason": "end_turn"})
 					continue
 				}
@@ -428,7 +445,7 @@ func main() {
 				}
 				continue
 			default:
-				a.finishNormal(&message, sessionID)
+				a.finishNormal(&message, promptSessionID)
 			}
 
 		case len(message.ID) > 0 && message.Result != nil:
@@ -443,13 +460,14 @@ func main() {
 				}
 				_ = json.Unmarshal(message.Result, &permissionResult)
 				if a.mode == "permission_wait" && permissionResult.Outcome.Outcome == "selected" && permissionResult.Outcome.OptionID == "allow-once" {
-					updateChunk(sessionID, "permission-approved")
+					updateChunk(a.pendingSessionID, "permission-approved")
 					reply(a.pending, map[string]any{"stopReason": "end_turn"})
 				} else {
-					updateChunk(sessionID, "permission-cancelled")
+					updateChunk(a.pendingSessionID, "permission-cancelled")
 					reply(a.pending, map[string]any{"stopReason": "cancelled"})
 				}
 				a.pending = nil
+				a.pendingSessionID = ""
 			}
 
 		default:

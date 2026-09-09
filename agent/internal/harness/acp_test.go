@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -185,6 +186,74 @@ func TestACPNegotiatesOnceAndReusesOneSession(t *testing.T) {
 	result, err = adapter.RunTurn(turnInput("second"), adapter.SessionGeneration())
 	if err != nil || result.Text != "reply-2" {
 		t.Fatalf("session reuse broken: %+v %v", result, err)
+	}
+}
+
+func TestACPScopesRetainMultipleConversationsInOneProcess(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_TRACE": tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure Room session failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:T"); err != nil {
+		t.Fatalf("ensure T session failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:U"); err != nil {
+		t.Fatalf("ensure U session failed: %v", err)
+	}
+	tGeneration := adapter.SessionGenerationFor("task:T")
+	uGeneration := adapter.SessionGenerationFor("task:U")
+	if tGeneration <= 0 || uGeneration <= 0 || tGeneration == uGeneration {
+		t.Fatalf("scoped generations were not independent: T=%d U=%d", tGeneration, uGeneration)
+	}
+
+	for _, turn := range []struct {
+		scope      string
+		generation int64
+	}{
+		{scope: "task:T", generation: tGeneration},
+		{scope: "task:U", generation: uGeneration},
+		{scope: "task:T", generation: tGeneration},
+		{scope: "task:U", generation: uGeneration},
+	} {
+		if result, err := adapter.RunTurnFor(turn.scope, turnInput(turn.scope), turn.generation); err != nil || result.Text == "" {
+			t.Fatalf("scoped turn failed for %s: %+v %v", turn.scope, result, err)
+		}
+	}
+	if adapter.SessionGenerationFor("task:T") != tGeneration || adapter.SessionGenerationFor("task:U") != uGeneration {
+		t.Fatal("alternating scoped turns created a new conversation")
+	}
+
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read ACP trace: %v", err)
+	}
+	var promptSessions []string
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) != "IN" {
+			continue
+		}
+		var message struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal([]byte(parts[1]), &message) != nil || message.Method != "session/prompt" {
+			continue
+		}
+		var params struct {
+			SessionID string `json:"sessionId"`
+		}
+		if json.Unmarshal(message.Params, &params) == nil {
+			promptSessions = append(promptSessions, params.SessionID)
+		}
+	}
+	if !reflect.DeepEqual(promptSessions, []string{"session-2", "session-3", "session-2", "session-3"}) {
+		t.Fatalf("ACP prompts did not stay bound to scoped conversations: %v", promptSessions)
 	}
 }
 

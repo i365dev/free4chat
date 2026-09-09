@@ -228,9 +228,14 @@ type RoomPermissionEvent struct {
 
 // RoomEvent is one room event delivered through wait_for_events.
 type RoomEvent struct {
-	Sequence      int64                   `json:"sequence"`
-	Type          string                  `json:"type"` // text | action | image
-	Participant   ParticipantIdentity     `json:"participant"`
+	Sequence    int64               `json:"sequence"`
+	Type        string              `json:"type"` // text | action | image
+	Participant ParticipantIdentity `json:"participant"`
+	// ScopeID is an optional bounded cognition-routing hint. Empty means the
+	// ordinary Room conversation; task/request producers may set it to route
+	// an addressed event to one logical Agent scope without changing Room
+	// transport ownership.
+	ScopeID       string                  `json:"scopeId,omitempty"`
 	Text          string                  `json:"text,omitempty"`
 	ActionType    string                  `json:"actionType,omitempty"`
 	ActionPayload map[string]string       `json:"actionPayload,omitempty"`
@@ -472,6 +477,17 @@ type HarnessAdapter interface {
 	OnFailure(handler AdapterFailureHandler)
 	CancelTurn() error
 	Close() error
+}
+
+// ScopedHarnessAdapter is the small optional seam for one resident Agent to
+// retain more than one logical Harness conversation. Scope is an opaque
+// Runtime-owned value; ACP session ids never leave the adapter.
+// Implementations may serialize turns across scopes while preserving each
+// scope's conversation and generation independently.
+type ScopedHarnessAdapter interface {
+	EnsureSessionFor(scope string) error
+	SessionGenerationFor(scope string) int64
+	RunTurnFor(scope string, input HarnessTurnInput, expectedSessionGeneration int64) (HarnessTurnResult, error)
 }
 
 // JoinResult is what join_room returns; the participantHandle is the bearer
