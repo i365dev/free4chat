@@ -54,6 +54,10 @@ type Status struct {
 	State         State  `json:"state"`
 	ParticipantID string `json:"participantId,omitempty"`
 	LastError     string `json:"lastError,omitempty"`
+	// HarnessSessions is optional local ACP observability. It contains only
+	// logical scope, opaque session identity, and generation; it is never
+	// copied into Room/MCP state or Harness prompts.
+	HarnessSessions []types.HarnessSessionDiagnostic `json:"harnessSessions,omitempty"`
 	// ParticipatingSince is the epoch-ms timestamp of the resident's first
 	// successful join/create for the CURRENT lifecycle (#228). Preserved
 	// across transient retries/reconnects; a new resident lifecycle starts
@@ -412,6 +416,10 @@ func (r *ResidentRuntime) ConnectProviderClaim(providerClaim string) error {
 
 // Status snapshots the lifecycle state. It never contains the handle.
 func (r *ResidentRuntime) Status() Status {
+	var harnessSessions []types.HarnessSessionDiagnostic
+	if adapter, ok := r.options.Adapter.(types.HarnessSessionDiagnostics); ok {
+		harnessSessions = append(harnessSessions, adapter.SessionDiagnostics()...)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return Status{
@@ -422,6 +430,7 @@ func (r *ResidentRuntime) Status() Status {
 		State:              r.state,
 		ParticipantID:      r.participantID,
 		LastError:          r.lastError,
+		HarnessSessions:    harnessSessions,
 		ParticipatingSince: r.participatingSince,
 	}
 }

@@ -16,7 +16,8 @@
 //
 // Markers/env: FAKE_EXIT_MARKER, FAKE_STATE_MARKER, FAKE_CANCEL_MARKER,
 // FAKE_IMAGE_CAP ("1" advertises image support), FAKE_REPLY_TEXT,
-// FAKE_POLICY_CAP ("1" advertises native modes/config options).
+// FAKE_POLICY_CAP ("1" advertises native modes/config options),
+// FAKE_UNIQUE_SESSION_IDS ("1" makes session ids process-unique for tests).
 package main
 
 import (
@@ -192,6 +193,9 @@ func main() {
 		case message.Method == "session/new":
 			a.nextSessionID++
 			sessionID := "session-" + strconv.Itoa(a.nextSessionID)
+			if os.Getenv("FAKE_UNIQUE_SESSION_IDS") == "1" {
+				sessionID = fmt.Sprintf("session-%d-%d", os.Getpid(), a.nextSessionID)
+			}
 			response := map[string]any{"sessionId": sessionID}
 			if os.Getenv("FAKE_POLICY_CAP") == "1" {
 				response["modes"] = map[string]any{

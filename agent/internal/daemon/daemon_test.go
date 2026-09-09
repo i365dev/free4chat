@@ -366,6 +366,15 @@ func (*stubAdapter) OnFailure(types.AdapterFailureHandler) {}
 func (*stubAdapter) CancelTurn() error                     { return nil }
 func (*stubAdapter) Close() error                          { return nil }
 
+type diagnosticStubAdapter struct {
+	*stubAdapter
+	diagnostics []types.HarnessSessionDiagnostic
+}
+
+func (a *diagnosticStubAdapter) SessionDiagnostics() []types.HarnessSessionDiagnostic {
+	return append([]types.HarnessSessionDiagnostic(nil), a.diagnostics...)
+}
+
 type stubBundle struct {
 	client     *recordingClient
 	runtimeRef *runtime.ResidentRuntime
@@ -548,6 +557,48 @@ func TestDaemonStatusPreservesDistinctHarnessIdentities(t *testing.T) {
 	}
 	if seen["resident-hermes"] != "hermes" || seen["resident-codex"] != "codex" {
 		t.Fatalf("status substituted or obscured resident Harness identity: %#v", seen)
+	}
+}
+
+func TestDaemonStatusIPCProjectsHarnessSessionDiagnostics(t *testing.T) {
+	d, _ := startDaemon(t)
+	rt := runtime.NewResidentRuntime(runtime.Options{
+		InstanceID: "resident-status",
+		RoomID:     "status-room",
+		Name:       "Status Agent",
+		Client:     &recordingClient{},
+		Adapter: &diagnosticStubAdapter{
+			stubAdapter: &stubAdapter{name: "codex"},
+			diagnostics: []types.HarnessSessionDiagnostic{
+				{Scope: "room", SessionID: "room-session", Generation: 1},
+				{Scope: "task:T", SessionID: "task-session", Generation: 1},
+			},
+		},
+	})
+	t.Cleanup(rt.Stop)
+	d.register(&residentInstance{
+		instanceID: "resident-status",
+		roomID:     "status-room",
+		runtime:    rt,
+		workspace:  t.TempDir(),
+	})
+
+	result, err := SendIPC(&IpcRequest{Op: "status"})
+	if err != nil {
+		t.Fatalf("status IPC failed: %v", err)
+	}
+	var views []struct {
+		HarnessSessions []types.HarnessSessionDiagnostic `json:"harnessSessions"`
+	}
+	if err := json.Unmarshal(result, &views); err != nil {
+		t.Fatalf("decode status IPC result: %v (%s)", err, result)
+	}
+	if len(views) != 1 || len(views[0].HarnessSessions) != 2 ||
+		views[0].HarnessSessions[0].Scope != "room" ||
+		views[0].HarnessSessions[0].SessionID != "room-session" ||
+		views[0].HarnessSessions[1].Scope != "task:T" ||
+		views[0].HarnessSessions[1].SessionID != "task-session" {
+		t.Fatalf("status IPC omitted or altered Harness session diagnostics: %s", result)
 	}
 }
 

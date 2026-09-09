@@ -257,6 +257,85 @@ func TestACPScopesRetainMultipleConversationsInOneProcess(t *testing.T) {
 	}
 }
 
+func TestACPSessionDiagnosticsTrackScopesAndClearOnProcessReplacement(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_UNIQUE_SESSION_IDS": "1",
+	}), AdapterOptions{})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure Room session failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:U"); err != nil {
+		t.Fatalf("ensure U session failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:T"); err != nil {
+		t.Fatalf("ensure T session failed: %v", err)
+	}
+	wantScopes := []string{"room", "task:T", "task:U"}
+	wantGenerations := []int64{1, 2, 1}
+	got := adapter.SessionDiagnostics()
+	if len(got) != len(wantScopes) {
+		t.Fatalf("unexpected ACP session diagnostic count: got=%+v", got)
+	}
+	for index, diagnostic := range got {
+		if diagnostic.Scope != wantScopes[index] || diagnostic.SessionID == "" || diagnostic.Generation != wantGenerations[index] {
+			t.Fatalf("unexpected deterministic ACP session diagnostics: got=%+v", got)
+		}
+	}
+	if err := adapter.EnsureSessionFor("task:T"); err != nil {
+		t.Fatalf("reusing T session failed: %v", err)
+	}
+	if repeated := adapter.SessionDiagnostics(); !reflect.DeepEqual(repeated, got) {
+		t.Fatalf("reusing a scope changed its diagnostic mapping: got=%+v want=%+v", repeated, got)
+	}
+
+	old := append([]types.HarnessSessionDiagnostic(nil), got...)
+	adapter.mu.Lock()
+	process := adapter.proc
+	adapter.mu.Unlock()
+	if process == nil || process.cmd.Process == nil {
+		t.Fatal("ACP process disappeared before replacement")
+	}
+	if err := process.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill ACP process: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(adapter.SessionDiagnostics()) == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := adapter.SessionDiagnostics(); len(got) != 0 {
+		t.Fatalf("process replacement retained stale diagnostics: %+v", got)
+	}
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure replacement Room session failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:T"); err != nil {
+		t.Fatalf("ensure replacement T session failed: %v", err)
+	}
+	recreated := adapter.SessionDiagnostics()
+	if len(recreated) != 2 || recreated[0].Scope != "room" || recreated[1].Scope != "task:T" {
+		t.Fatalf("replacement diagnostics lost expected scopes: %+v", recreated)
+	}
+	for _, diagnostic := range recreated {
+		for _, previous := range old {
+			if diagnostic.Scope == previous.Scope && diagnostic.SessionID == previous.SessionID {
+				t.Fatalf("replacement reused stale ACP session id for %s: %q", diagnostic.Scope, diagnostic.SessionID)
+			}
+			if diagnostic.Scope == previous.Scope && diagnostic.Generation <= previous.Generation {
+				t.Fatalf("replacement did not advance ACP session generation for %s: old=%d new=%d", diagnostic.Scope, previous.Generation, diagnostic.Generation)
+			}
+		}
+		if diagnostic.Generation <= 0 {
+			t.Fatalf("replacement diagnostic has invalid generation: %+v", diagnostic)
+		}
+	}
+}
+
 func TestACPScopesAreBoundedAndExistingConversationRemainsReusable(t *testing.T) {
 	tracePath := filepath.Join(t.TempDir(), "acp-bound-trace.log")
 	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{

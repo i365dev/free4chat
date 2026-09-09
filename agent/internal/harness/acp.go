@@ -452,6 +452,40 @@ func (a *ACPAdapter) SessionGenerationFor(scope string) int64 {
 	return 0
 }
 
+// SessionDiagnostics returns the currently retained ACP conversation mapping
+// for local daemon/CLI status only. The snapshot contains no prompt/context
+// data and is sorted by logical scope so map iteration cannot affect output.
+func (a *ACPAdapter) SessionDiagnostics() []types.HarnessSessionDiagnostic {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	diagnostics := make([]types.HarnessSessionDiagnostic, 0, 1+len(a.sessions))
+	if a.sessionID != "" && a.sessionGeneration > 0 {
+		diagnostics = append(diagnostics, types.HarnessSessionDiagnostic{
+			Scope:      "room",
+			SessionID:  a.sessionID,
+			Generation: a.sessionGeneration,
+		})
+	}
+
+	scopes := make([]string, 0, len(a.sessions))
+	for scope, session := range a.sessions {
+		if session != nil && session.sessionID != "" && session.generation > 0 {
+			scopes = append(scopes, scope)
+		}
+	}
+	sort.Strings(scopes)
+	for _, scope := range scopes {
+		session := a.sessions[scope]
+		diagnostics = append(diagnostics, types.HarnessSessionDiagnostic{
+			Scope:      scope,
+			SessionID:  session.sessionID,
+			Generation: session.generation,
+		})
+	}
+	return diagnostics
+}
+
 // OnFailure registers the handler invoked on unexpected process death.
 func (a *ACPAdapter) OnFailure(handler types.AdapterFailureHandler) {
 	a.mu.Lock()
