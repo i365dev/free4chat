@@ -15,6 +15,7 @@ interface UserCardProps extends UserInfo {
   voiceAvailable?: boolean
   voiceEnabled?: boolean
   onToggleAgentVoice?: (peerId: string, enabled: boolean) => void
+  onStartTask?: (peerId: string, name: string) => void
 }
 
 function UserCard(user: UserCardProps) {
@@ -115,6 +116,16 @@ function UserCard(user: UserCardProps) {
               className="participant-card__voice-button participant-card__voice-button--compact mt-1 min-h-6 rounded-full border border-gray-500 px-2 text-[9px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {user.voiceEnabled ? "VOICE ●" : "VOICE"}
+            </button>
+          )}
+          {user.kind === "agent" && !isSelf && user.onStartTask && (
+            <button
+              type="button"
+              onClick={() => user.onStartTask?.(user.peerId, user.name)}
+              aria-label={`Start task with ${user.name}`}
+              className="mt-1 min-h-6 rounded-full border border-blue-400/60 px-2 text-[9px] text-blue-200 hover:bg-blue-500/20"
+            >
+              TASK
             </button>
           )}
           {isSelf && (
@@ -281,6 +292,16 @@ function UserCard(user: UserCardProps) {
               className="participant-card__voice-button participant-card__voice-button--full min-h-7 rounded-full border border-gray-500 px-2 text-[10px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {user.voiceEnabled ? "VOICE ●" : "VOICE"}
+            </button>
+          )}
+          {user.kind === "agent" && !isSelf && user.onStartTask && (
+            <button
+              type="button"
+              onClick={() => user.onStartTask?.(user.peerId, user.name)}
+              aria-label={`Start task with ${user.name}`}
+              className="min-h-7 rounded-full border border-blue-400/60 px-2 text-[10px] text-blue-200 hover:bg-blue-500/20"
+            >
+              Start task
             </button>
           )}
         </div>

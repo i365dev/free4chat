@@ -327,6 +327,12 @@ function userFacingRoomError(error: string | undefined): string {
     case "runtime_provider_proof_required":
     case "runtime_provider_handle_invalid":
       return "Runtime connection is no longer available. Try again."
+    case "target_not_in_room":
+      return "That Agent is no longer in this Room."
+    case "target_not_agent":
+      return "Choose a connected Agent to start a task."
+    case "summary_required":
+      return "Add a short instruction for the Agent."
     default:
       if (error?.startsWith("runtime_"))
         return "Runtime connection unavailable."
@@ -2997,6 +3003,25 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #305: Human-originated task entry. This is deliberately only a thin
+  // socket seam; the Room derives the sender, validates the connected Agent,
+  // generates the requestId, and appends the canonical collaboration event.
+  const sendCollabRequest = useCallback(
+    (targetParticipantId: string, summary: string): boolean => {
+      const target = targetParticipantId.trim()
+      const instruction = summary.trim()
+      if (!target || !instruction) return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      sendSocketMessage({
+        type: "collab-request",
+        targetParticipantId: target,
+        summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
+      })
+      return true
+    },
+    [sendSocketMessage]
+  )
+
   // #117: authenticated Human on-demand read of one existing room
   // collaboration artifact. Credentials ride in request headers only; the
   // response is validated strictly (id match, MIME allow-list, size bounds,
@@ -3345,6 +3370,7 @@ export function useSfuChatRoom(
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,
+    sendCollabRequest,
     sendCollabResponse,
     sendCollabResult,
     sendPermissionResponse,

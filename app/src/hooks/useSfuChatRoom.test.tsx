@@ -433,6 +433,30 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     unmount()
   })
 
+  it("sends a bounded Human task request and refuses a closed socket", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("task-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    expect(
+      result.current.sendCollabRequest(" agent-a ", "  TASK_T_MARKER  ")
+    ).toBe(true)
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "TASK_T_MARKER",
+    })
+
+    socket.readyState = 3
+    expect(result.current.sendCollabRequest("agent-a", "TASK_U_MARKER")).toBe(
+      false
+    )
+    unmount()
+  })
+
   it("reuses one pending local Runtime connection claim across repeated clicks", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, "clipboard", {

@@ -1,11 +1,10 @@
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 /**
- * #234 production wiring proof: after the Request-work modal and the Human
- * self-capability editor were removed, RoomContent must never render either
- * entry point. Agent capability metadata remains in the canonical Room
- * participant state but is not part of the default participant-card UI.
+ * #305 production wiring proof: the old Request-work/capability-editor
+ * controls remain absent while the small Start-task entry point is available
+ * on a connected Agent card.
  */
 
 vi.mock("next/router", () => ({
@@ -51,8 +50,9 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
 })
 
-describe("simplified Human/Agent room wiring (#234)", () => {
-  it("Agent cards no longer expose Request work and no Human capability editor exists", async () => {
+describe("simplified Human/Agent room wiring (#305)", () => {
+  it("exposes Start task on a connected Agent without restoring old controls", async () => {
+    const sendCollabRequest = vi.fn(() => true)
     mockUseSfuChatRoom.mockReturnValue({
       participants: connectedParticipants(),
       messages: [],
@@ -60,6 +60,7 @@ describe("simplified Human/Agent room wiring (#234)", () => {
       sendTextMessage: vi.fn(),
       sendFileMessage: vi.fn(),
       sendActionMessage: vi.fn(),
+      sendCollabRequest,
       sendCollabResponse: vi.fn(),
       readRoomAttachment: vi.fn(),
       getLocalRoomAuth: vi.fn(() => ({
@@ -90,8 +91,24 @@ describe("simplified Human/Agent room wiring (#234)", () => {
     expect(screen.queryByText("Request work")).toBeNull()
     expect(screen.queryByText("Capabilities")).toBeNull()
 
-    // The ordinary @-mention composer is the Human→Agent path and the Agent
-    // card still renders as an Agent card.
+    expect(
+      screen.getByRole("button", { name: "Start task with Agent B" })
+    ).toBeTruthy()
+    fireEvent.click(
+      screen.getByRole("button", { name: "Start task with Agent B" })
+    )
+    expect(screen.getByRole("dialog")).toBeTruthy()
+    fireEvent.change(screen.getByLabelText("What should this Agent do?"), {
+      target: { value: "Review TASK_T_MARKER" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    expect(sendCollabRequest).toHaveBeenCalledWith(
+      "agent-b",
+      "Review TASK_T_MARKER"
+    )
+
+    // The ordinary @-mention composer remains available and the Agent card
+    // still renders as an Agent card.
     expect(
       screen.getByPlaceholderText(/Message the room or @ an Agent/)
     ).toBeTruthy()

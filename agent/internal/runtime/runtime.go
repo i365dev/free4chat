@@ -942,6 +942,7 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	if !admitted {
 		r.mu.Unlock()
 		r.log("logical_scope_rejected", map[string]string{"reason": "capacity"})
+		r.reportTaskScopeCapacityFailure(event)
 		return
 	}
 	r.eventBuffer.Add(event)
@@ -974,6 +975,23 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 		}
 	}
 	r.mu.Unlock()
+}
+
+// reportTaskScopeCapacityFailure publishes the existing canonical collaboration
+// result for a task request that was accepted by Room but rejected locally by
+// this Runtime's bounded scope admission. It is intentionally called only
+// after acceptEvent has released r.mu: SendCollabResult is external I/O.
+func (r *ResidentRuntime) reportTaskScopeCapacityFailure(event types.RoomEvent) {
+	if !event.Addressed || event.Collab == nil || event.Collab.Kind != types.CollabRequest || event.Collab.RequestID == "" {
+		return
+	}
+	if _, err := r.CollabResult(types.CollabResultArgs{
+		RequestID: event.Collab.RequestID,
+		Status:    "failed",
+		Summary:   "Agent cannot start another task right now.",
+	}); err != nil {
+		r.log("collab_result_failed", map[string]string{"reason": "task_scope_capacity"})
+	}
 }
 
 func (r *ResidentRuntime) restoreStateAfterRetry() {
