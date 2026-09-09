@@ -812,9 +812,13 @@ type fakeAdapter struct {
 	generation  int64
 	// replaceBeforeRun simulates a process/session replacement in the narrow
 	// interval after Runtime.EnsureSession but before it can bind RunTurn.
-	replaceBeforeRun bool
-	stopped          bool
-	delay            time.Duration
+	replaceBeforeRun  bool
+	stopped           bool
+	delay             time.Duration
+	scopedGenerations map[string]int64
+	scopedRuns        []string
+	scopedTurnDetails map[string][]string
+	scopedSessionNews map[string][]bool
 }
 
 // adapterRunTurnHook lets individual tests observe the exact enriched turn
@@ -838,6 +842,30 @@ func (a *fakeAdapter) SessionGeneration() int64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.generation
+}
+
+func (a *fakeAdapter) EnsureSessionFor(scope string) error {
+	if scope == roomScope {
+		return a.EnsureSession()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.scopedGenerations == nil {
+		a.scopedGenerations = make(map[string]int64)
+	}
+	if a.scopedGenerations[scope] == 0 {
+		a.scopedGenerations[scope] = int64(len(a.scopedGenerations) + 1)
+	}
+	return nil
+}
+
+func (a *fakeAdapter) SessionGenerationFor(scope string) int64 {
+	if scope == roomScope {
+		return a.SessionGeneration()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.scopedGenerations[scope]
 }
 
 func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput, expectedGeneration int64) (types.HarnessTurnResult, error) {
@@ -890,6 +918,66 @@ func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput, expectedGeneration i
 		Text:                 "reply-" + itoa(int64(count)),
 		TargetParticipantIDs: targets,
 	}, nil
+}
+
+func (a *fakeAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expectedGeneration int64) (types.HarnessTurnResult, error) {
+	if scope == roomScope {
+		return a.RunTurn(input, expectedGeneration)
+	}
+	a.mu.Lock()
+	if a.scopedGenerations[scope] != expectedGeneration {
+		a.mu.Unlock()
+		return types.HarnessTurnResult{}, types.ErrHarnessSessionGenerationChanged
+	}
+	if a.scopedTurnDetails == nil {
+		a.scopedTurnDetails = make(map[string][]string)
+	}
+	if a.scopedSessionNews == nil {
+		a.scopedSessionNews = make(map[string][]bool)
+	}
+	texts := make([]string, 0, len(input.Events))
+	for _, event := range input.Events {
+		if event.Text != "" {
+			texts = append(texts, event.Text)
+		}
+	}
+	combined := strings.Join(texts, ",")
+	a.scopedRuns = append(a.scopedRuns, scope)
+	a.scopedTurnDetails[scope] = append(a.scopedTurnDetails[scope], combined)
+	a.scopedSessionNews[scope] = append(a.scopedSessionNews[scope], input.Session != nil && input.Session.New)
+	if a.turnErr != nil {
+		err := a.turnErr
+		a.mu.Unlock()
+		return types.HarnessTurnResult{}, err
+	}
+	a.mu.Unlock()
+	return types.HarnessTurnResult{Text: "reply-" + scope}, nil
+}
+
+func (a *fakeAdapter) scopedRunSnapshot() ([]string, map[string][]string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	runs := append([]string(nil), a.scopedRuns...)
+	details := make(map[string][]string, len(a.scopedTurnDetails))
+	for scope, entries := range a.scopedTurnDetails {
+		details[scope] = append([]string(nil), entries...)
+	}
+	return runs, details
+}
+
+func (a *fakeAdapter) recreateScopedSession(scope string) {
+	a.mu.Lock()
+	if a.scopedGenerations == nil {
+		a.scopedGenerations = make(map[string]int64)
+	}
+	a.scopedGenerations[scope]++
+	a.mu.Unlock()
+}
+
+func (a *fakeAdapter) scopedSessionNewSnapshot(scope string) []bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]bool(nil), a.scopedSessionNews[scope]...)
 }
 
 func (a *fakeAdapter) sessionsInt() int {

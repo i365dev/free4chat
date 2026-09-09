@@ -17,6 +17,21 @@ import (
 
 const runtimeProviderClaimDomain = "free4chat-runtime-provider-v1"
 
+// MaxLogicalTaskScopes bounds the resident-local non-Room cognition
+// conversations retained by one Agent process. It is a safety limit for this
+// spike, not a product entitlement or a task lifecycle policy.
+const MaxLogicalTaskScopes = 8
+
+// MaxLogicalScopeLength bounds the opaque scope label carried by the narrow
+// Agent wire projection. Producers must reject longer labels rather than
+// silently rewriting them into the ordinary Room scope.
+const MaxLogicalScopeLength = 128
+
+// MaxLogicalSourceCursors bounds the source-local checkpoints retained per
+// logical scope. Current producers are a small fixed set; this keeps an
+// accidental arbitrary source label from becoming another unbounded map.
+const MaxLogicalSourceCursors = 8
+
 // ValidRuntimeProviderCredential accepts an opaque 256-bit base64url value.
 // It is deliberately distinct from the public Runtime Host id grammar.
 func ValidRuntimeProviderCredential(value string) bool {
@@ -228,9 +243,14 @@ type RoomPermissionEvent struct {
 
 // RoomEvent is one room event delivered through wait_for_events.
 type RoomEvent struct {
-	Sequence      int64                   `json:"sequence"`
-	Type          string                  `json:"type"` // text | action | image
-	Participant   ParticipantIdentity     `json:"participant"`
+	Sequence    int64               `json:"sequence"`
+	Type        string              `json:"type"` // text | action | image
+	Participant ParticipantIdentity `json:"participant"`
+	// ScopeID is an optional bounded cognition-routing hint. Empty means the
+	// ordinary Room conversation; task/request producers may set it to route
+	// an addressed event to one logical Agent scope without changing Room
+	// transport ownership.
+	ScopeID       string                  `json:"scopeId,omitempty"`
 	Text          string                  `json:"text,omitempty"`
 	ActionType    string                  `json:"actionType,omitempty"`
 	ActionPayload map[string]string       `json:"actionPayload,omitempty"`
@@ -472,6 +492,17 @@ type HarnessAdapter interface {
 	OnFailure(handler AdapterFailureHandler)
 	CancelTurn() error
 	Close() error
+}
+
+// ScopedHarnessAdapter is the small optional seam for one resident Agent to
+// retain more than one logical Harness conversation. Scope is an opaque
+// Runtime-owned value; ACP session ids never leave the adapter.
+// Implementations may serialize turns across scopes while preserving each
+// scope's conversation and generation independently.
+type ScopedHarnessAdapter interface {
+	EnsureSessionFor(scope string) error
+	SessionGenerationFor(scope string) int64
+	RunTurnFor(scope string, input HarnessTurnInput, expectedSessionGeneration int64) (HarnessTurnResult, error)
 }
 
 // JoinResult is what join_room returns; the participantHandle is the bearer

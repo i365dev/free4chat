@@ -256,10 +256,14 @@ func (r *ResidentRuntime) voiceOutput() *voice.Speaker {
 // so failed/ambiguous prompts retry the same local speech while unchanged
 // (including empty) snapshots do not consume prompt context.
 func (r *ResidentRuntime) attachTranscript(input *types.HarnessTurnInput) int64 {
+	return r.attachTranscriptFor(roomScope, input)
+}
+
+func (r *ResidentRuntime) attachTranscriptFor(scope string, input *types.HarnessTurnInput) int64 {
 	if r.transcript == nil {
 		return 0
 	}
-	meetingDelivered, _ := r.transcriptDeliveryMarkers()
+	meetingDelivered, _ := r.transcriptDeliveryMarkersFor(scope)
 	snapshot := r.transcript.Snapshot()
 	segments := make([]types.HarnessTranscriptSegment, 0, len(snapshot.Segments))
 	var through int64

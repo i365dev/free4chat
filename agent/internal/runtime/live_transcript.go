@@ -176,6 +176,10 @@ func (r *ResidentRuntime) publishLiveTranscriptSegment(generation uint64, source
 // delivered to the retained Harness. A refresh failure never blocks ordinary
 // collaboration and a returned marker is acknowledged only after RunTurn.
 func (r *ResidentRuntime) attachLiveTranscript(input *types.HarnessTurnInput) int64 {
+	return r.attachLiveTranscriptFor(roomScope, input)
+}
+
+func (r *ResidentRuntime) attachLiveTranscriptFor(scope string, input *types.HarnessTurnInput) int64 {
 	roomID := r.activeRoomID()
 	if roomID == "" {
 		return 0
@@ -188,7 +192,7 @@ func (r *ResidentRuntime) attachLiveTranscript(input *types.HarnessTurnInput) in
 	if len(info.LiveTranscriptSegments) == 0 {
 		return 0
 	}
-	_, delivered := r.transcriptDeliveryMarkers()
+	_, delivered := r.transcriptDeliveryMarkersFor(scope)
 	segments := make([]types.LiveTranscriptSegment, 0, len(info.LiveTranscriptSegments))
 	var through int64
 	for _, segment := range info.LiveTranscriptSegments {

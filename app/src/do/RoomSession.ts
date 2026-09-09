@@ -1736,9 +1736,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     message: RoomMessage,
     participantId: string
   ): AgentEvent {
+    // #303: reuse the already validated structured collaboration correlation
+    // instead of storing a second scope field in Room state. Only the target
+    // Agent receives this task scope; ordinary text and non-target context
+    // remain in the default Room conversation.
+    const scopeId =
+      message.collab?.targetParticipantId === participantId &&
+      message.collab.requestId
+        ? `task:${message.collab.requestId}`
+        : undefined
     return {
       sequence: message.sequence,
       type: message.type,
+      ...(scopeId === undefined ? {} : { scopeId }),
       participant: {
         id: message.peerId,
         name: message.name,

@@ -465,6 +465,9 @@ export interface RoomCapabilities {
 export interface AgentEvent {
   sequence: number
   type: "text" | "action" | "image"
+  // #303: only the sanitized addressed projection of a structured collab
+  // event carries its task correlation scope. Ordinary Room text has none.
+  scopeId?: string
   participant: {
     id: string
     name: string
