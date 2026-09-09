@@ -799,6 +799,44 @@ func TestStatusPayloadShowsResidentAfterDaemonAutoStart(t *testing.T) {
 	}
 }
 
+func TestStatusCLIPrintsHarnessSessionDiagnostics(t *testing.T) {
+	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+		if request.Op != "status" {
+			return daemon.IpcResponse{OK: false, Error: "unexpected fake daemon operation"}
+		}
+		return daemon.IpcResponse{OK: true, Result: []any{
+			map[string]any{
+				"instanceId": "resident-status",
+				"harnessSessions": []map[string]any{
+					{"scope": "room", "sessionId": "room-session", "generation": 1},
+					{"scope": "task:T", "sessionId": "task-session", "generation": 1},
+				},
+			},
+		}}
+	})
+
+	output, code := runCliWithFakeDaemon(t, fixture, "status")
+	if code != 0 {
+		t.Fatalf("status exited %d: %q", code, output)
+	}
+	var residents []struct {
+		HarnessSessions []struct {
+			Scope      string `json:"scope"`
+			SessionID  string `json:"sessionId"`
+			Generation int64  `json:"generation"`
+		} `json:"harnessSessions"`
+	}
+	if err := json.Unmarshal([]byte(output), &residents); err != nil {
+		t.Fatalf("status output was not JSON: %v (%q)", err, output)
+	}
+	if len(residents) != 1 || len(residents[0].HarnessSessions) != 2 ||
+		residents[0].HarnessSessions[0].Scope != "room" ||
+		residents[0].HarnessSessions[0].SessionID != "room-session" ||
+		residents[0].HarnessSessions[1].Scope != "task:T" {
+		t.Fatalf("status CLI altered or omitted Harness session diagnostics: %q", output)
+	}
+}
+
 func TestRunViaDaemonRejectsStaleResidentBeforeJoin(t *testing.T) {
 	dir, err := os.MkdirTemp("", "fcagent-")
 	if err != nil {

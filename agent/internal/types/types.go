@@ -94,6 +94,23 @@ type HarnessCapabilities struct {
 	Resume bool
 }
 
+// HarnessSessionDiagnostic is bounded local diagnostic information for one
+// retained Harness conversation. ACP session ids are opaque adapter-local
+// identities: this type is used only at the daemon/CLI status boundary and
+// must never enter Room state, prompts, telemetry, or public responses.
+type HarnessSessionDiagnostic struct {
+	Scope      string `json:"scope"`
+	SessionID  string `json:"sessionId"`
+	Generation int64  `json:"generation"`
+}
+
+// HarnessSessionDiagnostics is an optional adapter capability for local
+// status observability. It deliberately does not broaden HarnessAdapter, so
+// legacy/custom adapters remain compatible and simply omit diagnostics.
+type HarnessSessionDiagnostics interface {
+	SessionDiagnostics() []HarnessSessionDiagnostic
+}
+
 // RuntimeHostProjection is the complete, secret-free capability projection a
 // Runtime Host shares about itself (#176 Phase A). runtimeHostId is a stable
 // opaque grouping key for one local Runtime installation/root; the speech

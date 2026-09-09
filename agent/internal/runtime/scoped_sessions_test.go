@@ -79,6 +79,46 @@ func (a *legacyOnlyAdapter) OnFailure(types.AdapterFailureHandler) {}
 func (a *legacyOnlyAdapter) CancelTurn() error                     { return nil }
 func (a *legacyOnlyAdapter) Close() error                          { return nil }
 
+type diagnosticFakeAdapter struct {
+	*fakeAdapter
+	diagnostics []types.HarnessSessionDiagnostic
+}
+
+func (a *diagnosticFakeAdapter) SessionDiagnostics() []types.HarnessSessionDiagnostic {
+	return append([]types.HarnessSessionDiagnostic(nil), a.diagnostics...)
+}
+
+func TestStatusProjectsOptionalHarnessSessionDiagnostics(t *testing.T) {
+	want := []types.HarnessSessionDiagnostic{
+		{Scope: "room", SessionID: "room-session", Generation: 1},
+		{Scope: "task:T", SessionID: "task-session", Generation: 1},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "status-test",
+		RoomID:     "room-status",
+		Name:       "Agent",
+		Client:     &fakeClient{},
+		Adapter: &diagnosticFakeAdapter{
+			fakeAdapter: &fakeAdapter{name: "pi"},
+			diagnostics: want,
+		},
+	})
+	defer rt.Stop()
+
+	status := rt.Status()
+	if !reflect.DeepEqual(status.HarnessSessions, want) {
+		t.Fatalf("Runtime status lost optional Harness session diagnostics: got=%+v want=%+v", status.HarnessSessions, want)
+	}
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal status: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"harnessSessions"`) ||
+		!strings.Contains(string(encoded), `"sessionId":"room-session"`) {
+		t.Fatalf("status JSON omitted Harness session diagnostics: %s", encoded)
+	}
+}
+
 func TestLogicalScopesReuseIsolatedHarnessSessions(t *testing.T) {
 	adapter := &fakeAdapter{name: "pi"}
 	rt := newScopedRuntimeFixture(t, adapter)
@@ -157,6 +197,9 @@ func TestLegacyAdapterFailsClosedForTaskScope(t *testing.T) {
 	}
 	if status := rt.Status(); status.LastError != errScopedHarnessUnsupported.Error() {
 		t.Fatalf("unsupported task scope was not reported explicitly: %+v", status)
+	}
+	if status := rt.Status(); len(status.HarnessSessions) != 0 {
+		t.Fatalf("legacy adapter unexpectedly exposed Harness session diagnostics: %+v", status.HarnessSessions)
 	}
 
 	if err := rt.ensureHarnessSession("task:T"); !errors.Is(err, errScopedHarnessUnsupported) {
