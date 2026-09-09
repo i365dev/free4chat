@@ -85,6 +85,9 @@ func (*fakeRoomClient) WaitForEvents(string, int64, int) (types.WaitResult, erro
 func (*fakeRoomClient) SendText(string, string, []string) (types.SendTextResult, error) {
 	return types.SendTextResult{}, nil
 }
+func (*fakeRoomClient) SendTextForTask(string, string, []string, string) (types.SendTextResult, error) {
+	return types.SendTextResult{}, nil
+}
 func (*fakeRoomClient) ReadAttachment(string, string) (types.AttachmentRead, error) {
 	return types.AttachmentRead{}, errors.New("not used")
 }

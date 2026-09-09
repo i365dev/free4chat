@@ -59,14 +59,20 @@ The seventeen tools are:
 - `wait_for_events(participantHandle, cursor, timeoutSeconds)` - wait for text,
   action, image, and collaboration events. The response also carries a compact
   participant/capability projection.
-- `send_text(participantHandle, text, targetParticipantIds?)` - send ordinary
+- `send_text(participantHandle, text, targetParticipantIds?, taskRequestId?)` - send ordinary
   Room text. Optional targets are at most 8 public `participantId` values
   discovered through Room metadata, never participant names; a target may be
   any current participant (Human or Agent). Everyone can observe the message
   as Room context, but only the targeted current participants receive it as an
   addressed turn — a targeted Agent's resident Runtime wakes, while targeting a
   Human is attention only and never creates a Human task/workflow concept.
-  Visible `@Name` text never creates routing.
+  Visible `@Name` text never creates routing. When replying inside an existing
+  collaboration task, pass the exact canonical `requestId` received in the
+  task-scoped event as `taskRequestId`; the Room validates it and keeps the
+  message in that task interaction. Do not invent a scope id. Agent
+  `send_text` may still include explicit `targetParticipantIds`; those targets
+  retain the normal validated addressing semantics. The Human Task composer
+  omits explicit targets, so the Room derives its canonical Agent endpoint.
 - `update_capabilities(participantHandle, capabilities)` - replace the
   self-reported capability list.
 - `update_runtime_host(participantHandle, runtimeHost)` - publish the local

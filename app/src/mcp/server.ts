@@ -514,7 +514,7 @@ function createMcpServer(context: McpRequestContext) {
     "send_text",
     {
       description:
-        "Send one text message to the room as the joined Agent. Optionally pass explicit target participant IDs (from room_info/wait_for_events roster metadata) to address the message: every participant still sees it as room context, but only the targeted current participants receive it as a new addressed turn — targets may be Humans or Agents. Targeting decides attention only — never authorization. Plain text without targets stays an ordinary unaddressed message.",
+        "Send one text message to the room as the joined Agent. Optionally pass explicit target participant IDs (from room_info/wait_for_events roster metadata) to address the message: every participant still sees it as room context, but only the targeted current participants receive it as a new addressed turn — targets may be Humans or Agents. A taskRequestId keeps the text in that existing task interaction and is validated by the Room. Targeting decides attention only — never authorization. Plain text without targets stays an ordinary unaddressed message.",
       inputSchema: {
         participantHandle: z.string().min(1),
         text: z.string().trim().min(1).max(MAX_TEXT_LENGTH),
@@ -522,9 +522,15 @@ function createMcpServer(context: McpRequestContext) {
           .array(z.string().trim().min(1).max(MAX_TARGET_ID_LENGTH))
           .max(MAX_TARGETS)
           .optional(),
+        taskRequestId: z.string().trim().min(1).max(64).optional(),
       },
     },
-    async ({ participantHandle, text, targetParticipantIds }) => {
+    async ({
+      participantHandle,
+      text,
+      targetParticipantIds,
+      taskRequestId,
+    }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
       const result = await roomControl(env, handle.room, {
@@ -533,6 +539,7 @@ function createMcpServer(context: McpRequestContext) {
         token: handle.participantToken,
         text,
         ...(targetParticipantIds?.length ? { targetParticipantIds } : {}),
+        ...(taskRequestId ? { taskRequestId } : {}),
       })
       return result.ok
         ? toolResult(result.data)

@@ -116,7 +116,8 @@ type fakeClient struct {
 	sent  []string
 	// sentTargets mirrors sent: the explicit targets (#165) each reply
 	// carried, nil for ordinary unaddressed sends.
-	sentTargets [][]string
+	sentTargets        [][]string
+	sentTaskRequestIDs []string
 	// hostsSeen records the #176 Runtime Host projection each join carried
 	// (nil = legacy caller); hostUpdates records hot-reload pushes.
 	hostsSeen   []*types.RuntimeHostProjection
@@ -447,6 +448,13 @@ func (c *fakeClient) SendText(_ string, text string, targets []string) (types.Se
 		c.sendHook(text)
 	}
 	return types.SendTextResult{Sequence: int64(len(c.sent))}, nil
+}
+
+func (c *fakeClient) SendTextForTask(handle, text string, targets []string, taskRequestID string) (types.SendTextResult, error) {
+	c.mu.Lock()
+	c.sentTaskRequestIDs = append(c.sentTaskRequestIDs, taskRequestID)
+	c.mu.Unlock()
+	return c.SendText(handle, text, targets)
 }
 
 func (*fakeClient) ReadAttachment(_, _ string) (types.AttachmentRead, error) {
@@ -984,6 +992,12 @@ func (a *fakeAdapter) scopedSessionNewSnapshot(scope string) []bool {
 	return append([]bool(nil), a.scopedSessionNews[scope]...)
 }
 
+func (a *fakeAdapter) scopedGenerationSnapshot(scope string) int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.scopedGenerations[scope]
+}
+
 func (a *fakeAdapter) sessionsInt() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1079,6 +1093,12 @@ func (c *fakeClient) snapshotSentTargets() [][]string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([][]string(nil), c.sentTargets...)
+}
+
+func (c *fakeClient) snapshotSentTaskRequestIDs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.sentTaskRequestIDs...)
 }
 
 // snapshotHosts mirrors snapshotSent with the #176 Runtime Host projection

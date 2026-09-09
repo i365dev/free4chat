@@ -28,6 +28,8 @@ const (
 
 const roomScope = "room"
 
+var errTaskTextUnsupported = errors.New("task-scoped text transport is unavailable")
+
 // logicalSessionState is Runtime-local cognition state for one logical
 // scope. Room transport, participant credentials, roster, and the bounded
 // source event buffer remain ResidentRuntime-level state.
@@ -1177,7 +1179,7 @@ func (r *ResidentRuntime) drainTurns() {
 			r.log("turn_failed", nil)
 			return
 		}
-		sent, err := r.options.Client.SendText(handle, text, result.TargetParticipantIDs)
+		sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
@@ -1204,6 +1206,25 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Speak(text)
 		}
 	}
+}
+
+func taskRequestIDForScope(scope string) string {
+	scope = normalizeScope(scope)
+	if strings.HasPrefix(scope, "task:") {
+		return strings.TrimPrefix(scope, "task:")
+	}
+	return ""
+}
+
+func (r *ResidentRuntime) sendHarnessText(scope, handle, text string, targets []string) (types.SendTextResult, error) {
+	if requestID := taskRequestIDForScope(scope); requestID != "" {
+		client, ok := r.options.Client.(types.TaskTextClient)
+		if !ok {
+			return types.SendTextResult{}, errTaskTextUnsupported
+		}
+		return client.SendTextForTask(handle, text, targets, requestID)
+	}
+	return r.options.Client.SendText(handle, text, targets)
 }
 
 // enrichAttachments applies the shared enrichment pass with the negotiated

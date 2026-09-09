@@ -305,6 +305,9 @@ func (c *recordingClient) SendText(_ string, text string, _ []string) (types.Sen
 	c.mu.Unlock()
 	return types.SendTextResult{Sequence: int64(len(c.sent))}, nil
 }
+func (c *recordingClient) SendTextForTask(handle, text string, targets []string, _ string) (types.SendTextResult, error) {
+	return c.SendText(handle, text, targets)
+}
 func (*recordingClient) ReadAttachment(string, string) (types.AttachmentRead, error) {
 	return types.AttachmentRead{}, errors.New("not used")
 }

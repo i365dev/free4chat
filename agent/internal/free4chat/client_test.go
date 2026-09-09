@@ -494,6 +494,31 @@ func TestSendTextCarriesExplicitTargets(t *testing.T) {
 	}
 }
 
+func TestSendTextForTaskCarriesExistingRequestCorrelation(t *testing.T) {
+	var seenArgs map[string]any
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		switch toolNameOf(body) {
+		case "":
+			respondToolsList(w)
+		case "send_text":
+			seenArgs = toolArgs(body)
+			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
+		default:
+			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
+		}
+	})
+
+	if _, err := client.SendTextForTask("h", "task output", nil, "request-T"); err != nil {
+		t.Fatalf("task send failed: %v", err)
+	}
+	if seenArgs["taskRequestId"] != "request-T" {
+		t.Fatalf("task request correlation missing: %#v", seenArgs)
+	}
+	if _, present := seenArgs["targetParticipantIds"]; present {
+		t.Fatalf("task send unexpectedly invented targets: %#v", seenArgs)
+	}
+}
+
 func TestHTTPStatusClassification(t *testing.T) {
 	for _, tc := range []struct {
 		status   int

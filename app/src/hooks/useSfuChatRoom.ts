@@ -440,6 +440,7 @@ const roomMessageToMessage = (
     actionPayload: message.actionPayload,
     collab: message.collab,
     permission: message.permission,
+    taskRequestId: message.taskRequestId,
     targets: message.targets,
   }
 }
@@ -2990,8 +2991,13 @@ export function useSfuChatRoom(
   ])
 
   const sendTextMessage = useCallback(
-    (text: string, targets: string[] = []) => {
-      sendSocketMessage({ type: "chat", text, targets })
+    (text: string, targets: string[] = [], taskRequestId?: string) => {
+      sendSocketMessage({
+        type: "chat",
+        text,
+        targets,
+        ...(taskRequestId ? { taskRequestId } : {}),
+      })
     },
     [sendSocketMessage]
   )

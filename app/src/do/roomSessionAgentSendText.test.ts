@@ -6,7 +6,10 @@ const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 
 // #165 fixture: one Human plus N Agents so addressed persistence and the
 // per-agent addressed projection can be exercised against the real DO path.
-function buildStoredRoom(agentIds = ["agent-a", "agent-b", "agent-c"]) {
+function buildStoredRoom(
+  agentIds = ["agent-a", "agent-b", "agent-c"],
+  messages: Array<Record<string, unknown>> = []
+) {
   return {
     createdAt: Date.now(),
     expiresAt: FAR_FUTURE,
@@ -35,8 +38,8 @@ function buildStoredRoom(agentIds = ["agent-a", "agent-b", "agent-c"]) {
         ])
       ),
     },
-    messages: [],
-    nextMessageSequence: 1,
+    messages,
+    nextMessageSequence: messages.length + 1,
     meetingNotes: { active: false },
     voiceReply: { active: false },
     pendingMediaCleanup: [],
@@ -74,7 +77,8 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
   const sendText = async (
     participantId: string,
     text: string,
-    targetParticipantIds?: unknown
+    targetParticipantIds?: unknown,
+    taskRequestId?: string
   ) =>
     control({
       action: "agent-send-text",
@@ -82,6 +86,7 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
       token: `tok-${participantId}`,
       text,
       ...(targetParticipantIds === undefined ? {} : { targetParticipantIds }),
+      ...(taskRequestId === undefined ? {} : { taskRequestId }),
     })
   const agentWait = async (participantId: string, cursor = 0) =>
     control({
@@ -93,7 +98,32 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
     })
   const storedMessages = () =>
     (store.get("room") as { messages: Array<Record<string, unknown>> }).messages
-  return { control, sendText, agentWait, storedMessages }
+  return { session: rs, control, sendText, agentWait, storedMessages }
+}
+
+function taskRequest(
+  requestId: string,
+  fromParticipantId: string,
+  targetParticipantId: string
+): Record<string, unknown> {
+  return {
+    id: `message-${requestId}`,
+    peerId: fromParticipantId,
+    name: fromParticipantId,
+    kind: "agent",
+    type: "action",
+    actionType: "collab",
+    sequence: 1,
+    createdAt: 1,
+    targets: [targetParticipantId],
+    collab: {
+      requestId,
+      kind: "request",
+      fromParticipantId,
+      targetParticipantId,
+      summary: `Task ${requestId}`,
+    },
+  }
 }
 
 describe("RoomSession agent-send-text structured addressing (#165)", () => {
@@ -184,6 +214,75 @@ describe("RoomSession agent-send-text structured addressing (#165)", () => {
 
     await room.sendText("agent-a", "for the Human", ["human-1"])
     expect(room.storedMessages()[0].targets).toEqual(["human-1"])
+  })
+
+  it("allows every connected Agent endpoint to continue Agent-originated tasks", async () => {
+    const agentToHuman = makeRoomSession(
+      buildStoredRoom(
+        ["agent-a", "agent-b"],
+        [taskRequest("agent-human", "agent-a", "human-1")]
+      )
+    )
+    const requesterReply = await agentToHuman.sendText(
+      "agent-a",
+      "requester task output",
+      undefined,
+      "agent-human"
+    )
+    expect(requesterReply.status).toBe(200)
+    expect(agentToHuman.storedMessages()[1]).toMatchObject({
+      taskRequestId: "agent-human",
+    })
+    expect(
+      (
+        agentToHuman.session as unknown as {
+          toAgentEvent: (
+            message: unknown,
+            participantId: string
+          ) => {
+            scopeId?: string
+          }
+        }
+      ).toAgentEvent(agentToHuman.storedMessages()[1], "agent-a").scopeId
+    ).toBe("task:agent-human")
+
+    const agentToAgent = makeRoomSession(
+      buildStoredRoom(
+        ["agent-a", "agent-b"],
+        [taskRequest("agent-agent", "agent-a", "agent-b")]
+      )
+    )
+    expect(
+      (
+        await agentToAgent.sendText(
+          "agent-a",
+          "requester output",
+          undefined,
+          "agent-agent"
+        )
+      ).status
+    ).toBe(200)
+    expect(
+      (
+        await agentToAgent.sendText(
+          "agent-b",
+          "target output",
+          undefined,
+          "agent-agent"
+        )
+      ).status
+    ).toBe(200)
+    expect(
+      agentToAgent
+        .storedMessages()
+        .slice(1)
+        .map((m) => m.taskRequestId)
+    ).toEqual(["agent-agent", "agent-agent"])
+    const targetEvents = (await agentToAgent.agentWait("agent-b")).json
+      .events as Array<{ text?: string; scopeId?: string }>
+    expect(
+      targetEvents.find((event) => event.text === "requester output")?.scopeId
+    ).toBe("task:agent-agent")
   })
 
   it("projects addressed=true only to targeted Agents; others see context with addressed=false", async () => {

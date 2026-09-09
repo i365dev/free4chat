@@ -165,6 +165,33 @@ func TestLogicalScopesReuseIsolatedHarnessSessions(t *testing.T) {
 	}
 }
 
+func TestTaskScopedHarnessOutputPreservesRequestCorrelation(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "scoped-output-test",
+		RoomID:     "room-scoped-output",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	rt.acceptEvent(scopedEvent(1, "task:T", "T prompt"))
+	rt.acceptEvent(scopedEvent(2, "task:U", "U prompt"))
+	rt.drainTurns()
+
+	if got := client.snapshotSentTaskRequestIDs(); !reflect.DeepEqual(got, []string{"T", "U"}) {
+		t.Fatalf("task output lost Room request correlation: %v", got)
+	}
+}
+
 func TestLegacyAdapterFailsClosedForTaskScope(t *testing.T) {
 	adapter := &legacyOnlyAdapter{}
 	rt := NewResidentRuntime(Options{
@@ -252,8 +279,13 @@ func TestScopedSessionGenerationAndRoomReconnectAreTruthful(t *testing.T) {
 	rt.drainTurns()
 	rt.acceptEvent(scopedEvent(2, "task:T", "T2"))
 	rt.drainTurns()
-	if got := adapter.scopedSessionNewSnapshot("task:T"); !reflect.DeepEqual(got, []bool{true, false}) {
+	rt.acceptEvent(scopedEvent(3, "task:T", "T3"))
+	rt.drainTurns()
+	if got := adapter.scopedSessionNewSnapshot("task:T"); !reflect.DeepEqual(got, []bool{true, false, false}) {
 		t.Fatalf("same scope did not reuse its retained conversation: %v", got)
+	}
+	if got := adapter.scopedGenerationSnapshot("task:T"); got != 1 {
+		t.Fatalf("same task follow-ups changed ACP generation: %d", got)
 	}
 
 	// A Room reconnect replaces transport credentials but does not create a
@@ -264,20 +296,26 @@ func TestScopedSessionGenerationAndRoomReconnectAreTruthful(t *testing.T) {
 		Cursor:            10,
 		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
 	})
-	rt.acceptEvent(scopedEvent(3, "task:T", "T3"))
+	rt.acceptEvent(scopedEvent(4, "task:T", "T4"))
 	rt.drainTurns()
-	if got := adapter.scopedSessionNewSnapshot("task:T"); !reflect.DeepEqual(got, []bool{true, false, false}) {
+	if got := adapter.scopedSessionNewSnapshot("task:T"); !reflect.DeepEqual(got, []bool{true, false, false, false}) {
 		t.Fatalf("Room reconnect reset task Harness session: %v", got)
+	}
+	if got := adapter.scopedGenerationSnapshot("task:T"); got != 1 {
+		t.Fatalf("Room reconnect changed ACP generation: %d", got)
 	}
 
 	adapter.recreateScopedSession("task:T")
-	rt.acceptEvent(scopedEvent(4, "task:T", "T4"))
+	rt.acceptEvent(scopedEvent(5, "task:T", "T5"))
 	rt.drainTurns()
-	if got := adapter.scopedSessionNewSnapshot("task:T"); !reflect.DeepEqual(got, []bool{true, false, false, true}) {
+	if got := adapter.scopedSessionNewSnapshot("task:T"); !reflect.DeepEqual(got, []bool{true, false, false, false, true}) {
 		t.Fatalf("scoped Harness replacement did not request bootstrap: %v", got)
 	}
+	if got := adapter.scopedGenerationSnapshot("task:T"); got != 2 {
+		t.Fatalf("replacement did not advance ACP generation: %d", got)
+	}
 	_, details := adapter.scopedRunSnapshot()
-	if !reflect.DeepEqual(details["task:T"], []string{"T1", "T2", "T3", "T4"}) {
+	if !reflect.DeepEqual(details["task:T"], []string{"T1", "T2", "T3", "T4", "T5"}) {
 		t.Fatalf("new session replayed unrelated private context: %#v", details)
 	}
 }
