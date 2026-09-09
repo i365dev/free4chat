@@ -397,6 +397,42 @@ export interface RoomState {
   // Coarse Worker media admission switch. Per-Agent UI availability still
   // comes from the Runtime Host's TTS readiness, never from this field.
   agentVoiceMediaAvailable: boolean
+  // Experimental Room-rendezvous fixture. This is the shared, secret-free
+  // task description and Counter state; participant capabilities stay in the
+  // RoomSession record and are only used through the authenticated bridge.
+  counterTask?: CounterTaskPublic
+}
+
+export interface CounterTaskSurface {
+  kind: "counter"
+  version: 1
+  title: string
+  actions: [{ id: "increment"; name: "increment"; label: string }]
+}
+
+export interface CounterTaskParticipant {
+  participantId: string
+  displayName: string
+  isCurrentTurn: boolean
+}
+
+export interface CounterTaskPublic {
+  taskId: string
+  surface: CounterTaskSurface
+  value: number
+  revision: number
+  currentTurnParticipantId: string | null
+  participants: CounterTaskParticipant[]
+}
+
+// Server-private RoomSession state for the local Counter experiment. The
+// access tokens are never passed to RoomState, Room messages, or Agent input.
+export interface CounterTaskRecord extends CounterTaskPublic {
+  instanceId: string
+  capabilities: Record<
+    string,
+    { participantId: string; displayName: string; accessToken: string }
+  >
 }
 
 // A Cloudflare Realtime track-close attempt that hasn't been confirmed
@@ -450,6 +486,9 @@ export interface RoomRecord {
   meetingNotes: MeetingNotesState
   agentVoice: AgentVoiceState
   pendingMediaCleanup: PendingMediaCleanup[]
+  // Optional so existing Room records remain valid when the experiment is
+  // disabled or when a room predates this field.
+  counterTask?: CounterTaskRecord
 }
 
 export interface RoomCapabilities {

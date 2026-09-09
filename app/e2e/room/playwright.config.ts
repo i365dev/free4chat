@@ -13,7 +13,7 @@ export default defineConfig({
   // same way they do for the homepage suite; the testMatch keeps this config
   // scoped to the Room spec only.
   testDir: "../..",
-  testMatch: "**/room.spec.ts",
+  testMatch: "**/room/*.spec.ts",
   timeout: 60_000,
   workers: 1,
   fullyParallel: false,

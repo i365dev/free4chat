@@ -110,6 +110,14 @@ import {
   hashRuntimeProviderHandle,
   isRuntimeProviderClaimHash,
 } from "../common/runtimeProviderCredential"
+import {
+  CounterBridgeError,
+  createCounterInstance,
+  incrementCounter,
+  joinCounter,
+  readCounterProjection,
+  type CounterProjection,
+} from "../room/counterBridge"
 import type {
   AgentCapabilities,
   AgentEvent,
@@ -130,6 +138,8 @@ import type {
   PermissionEvent,
   PermissionRequestRecord,
   RuntimeHostProjection,
+  CounterTaskRecord,
+  CounterTaskPublic,
 } from "../room/types"
 
 const RECONNECT_GRACE_MS = 30 * 1000
@@ -140,6 +150,7 @@ const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
 const MAX_PENDING_PERMISSION_REQUESTS = 32
+const MAX_COUNTER_PARTICIPANTS = 2
 // The resident event stream is intentionally one bounded frame. The 2 MiB
 // cap covers the retained 100-message/8-attachment event window (including
 // worst-case UTF-8 text), plus JSON, roster, and Runtime Host overhead; the
@@ -229,6 +240,9 @@ export interface RoomSessionEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   AGENT_MEDIA_ENABLED?: string
+  // Explicit local-only bridge gate and external Counter authority URL.
+  ROOM_COUNTER_EXPERIMENT?: string
+  COUNTER_BASE_URL?: string
   // #228: preconfigured production Worker secret for Room-authoritative
   // collaboration analytics (direct Mixpanel /import). Absent in
   // local/test environments: analytics safely no-ops.
@@ -289,6 +303,118 @@ interface StoredRoom
   runtimeHostProviders?: unknown
   runtimeHostProviderClaims?: unknown
   permissionRequests?: unknown
+}
+
+function normalizeStoredCounterTask(value: unknown): {
+  task?: CounterTaskRecord
+  changed: boolean
+} {
+  if (value === undefined) return { changed: false }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return { changed: true }
+  const candidate = value as Partial<CounterTaskRecord>
+  const surface = candidate.surface
+  const actions = surface?.actions
+  if (
+    typeof candidate.taskId !== "string" ||
+    candidate.taskId.length === 0 ||
+    candidate.taskId.length > 128 ||
+    typeof candidate.instanceId !== "string" ||
+    candidate.instanceId.length === 0 ||
+    candidate.instanceId.length > 128 ||
+    !surface ||
+    surface.kind !== "counter" ||
+    surface.version !== 1 ||
+    typeof surface.title !== "string" ||
+    surface.title.length === 0 ||
+    surface.title.length > 120 ||
+    !Array.isArray(actions) ||
+    actions.length !== 1 ||
+    actions[0]?.id !== "increment" ||
+    actions[0]?.name !== "increment" ||
+    typeof actions[0]?.label !== "string" ||
+    actions[0].label.length === 0 ||
+    actions[0].label.length > 32 ||
+    typeof candidate.value !== "number" ||
+    !Number.isSafeInteger(candidate.value) ||
+    typeof candidate.revision !== "number" ||
+    !Number.isSafeInteger(candidate.revision) ||
+    !(
+      candidate.currentTurnParticipantId === null ||
+      typeof candidate.currentTurnParticipantId === "string"
+    ) ||
+    !Array.isArray(candidate.participants) ||
+    candidate.participants.length > MAX_COUNTER_PARTICIPANTS ||
+    !candidate.participants.every(
+      (participant) =>
+        participant &&
+        typeof participant.participantId === "string" &&
+        participant.participantId.length > 0 &&
+        participant.participantId.length <= 80 &&
+        typeof participant.displayName === "string" &&
+        typeof participant.isCurrentTurn === "boolean"
+    ) ||
+    !candidate.capabilities ||
+    typeof candidate.capabilities !== "object" ||
+    Array.isArray(candidate.capabilities)
+  )
+    return { changed: true }
+
+  const capabilities: CounterTaskRecord["capabilities"] = {}
+  for (const [participantId, rawCapability] of Object.entries(
+    candidate.capabilities
+  )) {
+    if (
+      Object.keys(capabilities).length >= MAX_COUNTER_PARTICIPANTS ||
+      !rawCapability ||
+      typeof rawCapability !== "object" ||
+      rawCapability.participantId !== participantId ||
+      typeof rawCapability.displayName !== "string" ||
+      typeof rawCapability.accessToken !== "string" ||
+      rawCapability.accessToken.length === 0
+    )
+      return { changed: true }
+    capabilities[participantId] = {
+      participantId,
+      displayName: rawCapability.displayName,
+      accessToken: rawCapability.accessToken,
+    }
+  }
+  const participantIds = new Set(
+    candidate.participants.map((participant) => participant.participantId)
+  )
+  if (
+    Object.keys(capabilities).length !== candidate.participants.length ||
+    Object.keys(capabilities).some(
+      (participantId) => !participantIds.has(participantId)
+    )
+  )
+    return { changed: true }
+
+  return {
+    changed: false,
+    task: {
+      taskId: candidate.taskId,
+      instanceId: candidate.instanceId,
+      surface: {
+        kind: "counter",
+        version: 1,
+        title: surface.title,
+        actions: [
+          { id: "increment", name: "increment", label: actions[0].label },
+        ],
+      },
+      value: candidate.value,
+      revision: candidate.revision,
+      currentTurnParticipantId: candidate.currentTurnParticipantId,
+      participants: candidate.participants.map((participant) => ({
+        participantId: participant.participantId,
+        displayName: participant.displayName,
+        isCurrentTurn: participant.isCurrentTurn,
+      })),
+      capabilities,
+    },
+  }
 }
 
 interface StoredLiveTranscript {
@@ -387,6 +513,26 @@ type ControlRequest =
       token: string
     }
   | { action: "room-info"; participantId?: string }
+  | {
+      action: "counter-start"
+      participantId: string
+      token: string
+    }
+  | {
+      action: "counter-join"
+      participantId: string
+      token: string
+    }
+  | {
+      action: "counter-state"
+      participantId: string
+      token: string
+    }
+  | {
+      action: "counter-increment"
+      participantId: string
+      token: string
+    }
   | {
       action: "agent-register"
       // #176 Phase A wire shape: the Runtime Host arrives as a full
@@ -968,6 +1114,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       changed = true
     }
 
+    const normalizedCounterTask = normalizeStoredCounterTask(stored.counterTask)
+    if (normalizedCounterTask.changed) changed = true
+
     // #170 migration deliberately ignores every legacy singleton
     // voiceReply as authorization. Before dropping that state, however,
     // durable-stage its known outbound mid: an established Cloudflare track
@@ -1057,6 +1206,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         meetingNotes,
         agentVoice,
         pendingMediaCleanup,
+        counterTask: normalizedCounterTask.task,
       },
       changed,
     }
@@ -1202,6 +1352,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }))
   }
 
+  private counterTaskPublic(
+    task: CounterTaskRecord | undefined
+  ): CounterTaskPublic | undefined {
+    if (!task) return undefined
+    const {
+      instanceId: _instanceId,
+      capabilities: _capabilities,
+      ...publicTask
+    } = task
+    return publicTask
+  }
+
   private stateFor(room: RoomRecord): RoomState {
     return {
       createdAt: room.createdAt,
@@ -1245,6 +1407,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
       agentVoice: room.agentVoice,
       agentVoiceMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+      counterTask: this.counterTaskPublic(room.counterTask),
     }
   }
 
@@ -2346,7 +2509,225 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     })
   }
 
+  private counterFailure(error: unknown): Response {
+    if (error instanceof CounterBridgeError)
+      return this.json({ error: error.code }, error.status)
+    return this.json({ error: "counter_unavailable" }, 503)
+  }
+
+  private counterParticipant(
+    room: RoomRecord,
+    participantId: string,
+    token: string
+  ): RoomParticipant | Response {
+    const participant = this.findParticipant(room, participantId, token)
+    if (!participant) return this.json({ error: "unauthorized" }, 401)
+    if (participant.kind !== "human")
+      return this.json({ error: "human_only" }, 403)
+    return participant
+  }
+
+  private applyCounterProjection(
+    task: CounterTaskRecord,
+    projection: CounterProjection
+  ): void {
+    task.value = projection.value
+    task.revision = projection.revision
+    task.currentTurnParticipantId = projection.currentTurnParticipantId
+    task.participants = projection.participants.map((participant) => ({
+      participantId: participant.participantId,
+      displayName: participant.displayName,
+      isCurrentTurn: participant.isCurrentTurn,
+    }))
+  }
+
+  private async refreshCounterProjections(
+    task: CounterTaskRecord
+  ): Promise<Record<string, CounterProjection>> {
+    const projections: Record<string, CounterProjection> = {}
+    await Promise.all(
+      Object.entries(task.capabilities).map(
+        async ([participantId, capability]) => {
+          try {
+            const projection = await readCounterProjection(
+              this.env.COUNTER_BASE_URL ?? "",
+              task.instanceId,
+              capability.accessToken
+            )
+            if (projection.participant.participantId === participantId)
+              projections[participantId] = projection
+          } catch {
+            // A participant refresh is observation-only. The committed Counter
+            // action remains authoritative even if another refresh is transiently
+            // unavailable; the caller's projection is preferred below.
+          }
+        }
+      )
+    )
+    const current =
+      projections[task.currentTurnParticipantId ?? ""] ??
+      Object.values(projections)[0]
+    if (current) this.applyCounterProjection(task, current)
+    return projections
+  }
+
+  private counterProjectionResponse(
+    task: CounterTaskRecord,
+    projection: CounterProjection
+  ): Response {
+    return this.json({
+      taskId: task.taskId,
+      surface: task.surface,
+      projection,
+    })
+  }
+
+  private async handleCounterControl(
+    request: Extract<ControlRequest, { action: `counter-${string}` }>
+  ): Promise<Response> {
+    if (this.env.ROOM_COUNTER_EXPERIMENT !== "true")
+      return this.json({ error: "experiment_disabled" }, 404)
+    const room = await this.activeRoom()
+    if (!room) return this.json({ error: "room_expired" }, 410)
+    const participant = this.counterParticipant(
+      room,
+      request.participantId,
+      request.token
+    )
+    if (participant instanceof Response) return participant
+    const baseUrl = this.env.COUNTER_BASE_URL ?? ""
+
+    try {
+      if (request.action === "counter-start") {
+        if (room.counterTask)
+          return this.json({ error: "counter_task_exists" }, 409)
+        const instanceId = await createCounterInstance(baseUrl)
+        const joined = await joinCounter(
+          baseUrl,
+          instanceId,
+          participant.id,
+          participant.name
+        )
+        if (joined.projection.participant.participantId !== participant.id)
+          return this.json({ error: "invalid_counter_projection" }, 502)
+        const task: CounterTaskRecord = {
+          taskId: crypto.randomUUID(),
+          instanceId,
+          surface: {
+            kind: "counter",
+            version: 1,
+            title: "Shared Counter",
+            actions: [{ id: "increment", name: "increment", label: "+1" }],
+          },
+          value: joined.projection.value,
+          revision: joined.projection.revision,
+          currentTurnParticipantId: joined.projection.currentTurnParticipantId,
+          participants: joined.projection.participants,
+          capabilities: {
+            [participant.id]: {
+              participantId: participant.id,
+              displayName: participant.name,
+              accessToken: joined.accessToken,
+            },
+          },
+        }
+        room.counterTask = task
+        await this.saveRoom(room)
+        await this.broadcastState(room)
+        return this.counterProjectionResponse(task, joined.projection)
+      }
+
+      const task = room.counterTask
+      if (!task) return this.json({ error: "counter_task_missing" }, 404)
+      const existingCapability = task.capabilities[participant.id]
+
+      if (request.action === "counter-join") {
+        if (existingCapability) {
+          const projection = await readCounterProjection(
+            baseUrl,
+            task.instanceId,
+            existingCapability.accessToken
+          )
+          if (projection.participant.participantId !== participant.id)
+            return this.json({ error: "invalid_counter_projection" }, 502)
+          return this.counterProjectionResponse(task, projection)
+        }
+        if (Object.keys(task.capabilities).length >= MAX_COUNTER_PARTICIPANTS)
+          return this.json({ error: "counter_task_full" }, 409)
+        const joined = await joinCounter(
+          baseUrl,
+          task.instanceId,
+          participant.id,
+          participant.name
+        )
+        if (joined.projection.participant.participantId !== participant.id)
+          return this.json({ error: "invalid_counter_projection" }, 502)
+        task.capabilities[participant.id] = {
+          participantId: participant.id,
+          displayName: participant.name,
+          accessToken: joined.accessToken,
+        }
+        this.applyCounterProjection(task, joined.projection)
+        const projections = await this.refreshCounterProjections(task)
+        const callerProjection =
+          projections[participant.id] ?? joined.projection
+        await this.saveRoom(room)
+        await this.broadcastState(room)
+        return this.counterProjectionResponse(task, callerProjection)
+      }
+
+      if (!existingCapability)
+        return this.json({ error: "counter_not_joined" }, 403)
+
+      if (request.action === "counter-state") {
+        const projection = await readCounterProjection(
+          baseUrl,
+          task.instanceId,
+          existingCapability.accessToken
+        )
+        if (projection.participant.participantId !== participant.id)
+          return this.json({ error: "invalid_counter_projection" }, 502)
+        return this.counterProjectionResponse(task, projection)
+      }
+
+      const current = await readCounterProjection(
+        baseUrl,
+        task.instanceId,
+        existingCapability.accessToken
+      )
+      if (current.participant.participantId !== participant.id)
+        return this.json({ error: "invalid_counter_projection" }, 502)
+      const result = await incrementCounter(
+        baseUrl,
+        task.instanceId,
+        existingCapability.accessToken,
+        crypto.randomUUID(),
+        current.revision
+      )
+      const projections = await this.refreshCounterProjections(task)
+      const callerProjection = projections[participant.id]
+      if (!callerProjection) {
+        task.value = result.value
+        task.revision = result.revision
+      }
+      await this.saveRoom(room)
+      await this.broadcastState(room)
+      return this.json({
+        taskId: task.taskId,
+        surface: task.surface,
+        result,
+        projection: callerProjection ?? current,
+      })
+    } catch (error) {
+      return this.counterFailure(error)
+    }
+  }
+
   private async handleControl(request: ControlRequest): Promise<Response> {
+    if (request.action.startsWith("counter-"))
+      return this.handleCounterControl(
+        request as Extract<ControlRequest, { action: `counter-${string}` }>
+      )
     if (request.action === "room-info") {
       const room = await this.activeRoom()
       return this.json({

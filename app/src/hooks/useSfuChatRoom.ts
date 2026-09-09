@@ -481,6 +481,7 @@ export function useSfuChatRoom(
   const [agentVoice, setAgentVoiceState] = useState<SfuAgentVoiceState>({})
   const [agentVoiceMediaAvailable, setAgentVoiceMediaAvailable] =
     useState(false)
+  const [counterTask, setCounterTask] = useState<SfuRoomState["counterTask"]>()
   const [runtimeConnectionStatus, setRuntimeConnectionStatus] = useState<
     "idle" | "preparing" | "copied"
   >("idle")
@@ -2225,6 +2226,7 @@ export function useSfuChatRoom(
       setLiveTranscriptMediaAvailable(state.meetingNotesMediaAvailable)
       setAgentVoiceState(state.agentVoice)
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
+      setCounterTask(state.counterTask)
       const localParticipantId = sessionRef.current?.participantId
       const currentParticipantIds = new Set(
         state.participants.map((participant) => participant.id)
@@ -3370,5 +3372,6 @@ export function useSfuChatRoom(
     createRuntimeProviderClaim,
     connectLocalRuntime,
     runtimeConnectionStatus,
+    counterTask,
   }
 }

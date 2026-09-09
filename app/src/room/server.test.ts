@@ -17,6 +17,7 @@ const ORIGIN = "http://localhost:3000"
 describe("Worker Room route dispatch", () => {
   it("dispatches the Runtime permission request path to the Room handler", () => {
     expect(isRoomRequestPath("/api/room/permissions/request")).toBe(true)
+    expect(isRoomRequestPath("/api/room/experiments/counter")).toBe(true)
     expect(isRoomRequestPath("/api/room/not-a-protocol-route")).toBe(false)
   })
 })
@@ -418,5 +419,54 @@ describe("Runtime provider connection gate", () => {
     const env = liveTranscriptEnv([])
     const response = await handleRoomRequest(request, env)
     expect(response.status).toBe(400)
+  })
+})
+
+describe("Counter experiment transport gate", () => {
+  it("forwards only the Room-authenticated control envelope", async () => {
+    const captured: CapturedControl[] = []
+    const base = liveTranscriptEnv(captured)
+    const response = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/experiments/counter", {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "Content-Type": "application/json",
+          "X-Room-Id": "room-counter",
+          "X-Room-Participant-Id": "room-a",
+          "X-Room-Participant-Token": "room-token-a",
+        },
+        body: JSON.stringify({
+          operation: "increment",
+          accessToken: "must-not-forward",
+        }),
+      }),
+      { ...base, ROOM_COUNTER_EXPERIMENT: "true" }
+    )
+    expect(response.status).toBe(200)
+    expect(captured[0]?.body).toEqual({
+      action: "counter-increment",
+      participantId: "room-a",
+      token: "room-token-a",
+    })
+    expect(JSON.stringify(captured[0]?.body)).not.toContain("must-not-forward")
+  })
+
+  it("keeps the experiment disabled unless explicitly enabled", async () => {
+    const env = liveTranscriptEnv([])
+    const response = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/experiments/counter", {
+        method: "POST",
+        headers: {
+          Origin: ORIGIN,
+          "X-Room-Id": "room-counter",
+          "X-Room-Participant-Id": "room-a",
+          "X-Room-Participant-Token": "room-token-a",
+        },
+        body: JSON.stringify({ operation: "start" }),
+      }),
+      env
+    )
+    expect(response.status).toBe(404)
   })
 })

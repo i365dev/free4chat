@@ -192,6 +192,10 @@ async function main() {
           TURNSTILE_SECRET_KEY: "",
           TURNSTILE_DISABLED: "true",
           AGENT_MEDIA_ENABLED: "false",
+          ROOM_COUNTER_EXPERIMENT:
+            process.env.ROOM_COUNTER_EXPERIMENT ?? "false",
+          COUNTER_BASE_URL:
+            process.env.COUNTER_BASE_URL ?? "http://127.0.0.1:8787",
         },
         secrets: {
           SFU_APP_SECRET: DUMMY_APP_SECRET,

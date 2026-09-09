@@ -5,6 +5,7 @@ import { useRouter } from "next/router"
 import { LOCAL_PEER_ID } from "@common/consts"
 
 import AgentInviteControl from "./AgentInviteControl"
+import CounterExperiment from "./CounterExperiment"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
@@ -152,11 +153,14 @@ export default function RoomContent({
     runtimeConnectionStatus,
     leaveRoom,
     localParticipantId,
+    counterTask,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
+  const counterExperimentEnabled =
+    process.env.NEXT_PUBLIC_ROOM_COUNTER_EXPERIMENT === "true"
 
   const toggleAgentVoice = useCallback(
     (participantId: string, enabled: boolean) => {
@@ -647,6 +651,12 @@ export default function RoomContent({
           className="room-panel room-participants-panel flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
           style={isMd ? { width: `${splitRatio}%` } : undefined}
         >
+          {counterExperimentEnabled && (
+            <CounterExperiment
+              counterTask={counterTask}
+              auth={getLocalRoomAuth()}
+            />
+          )}
           {/* #111: Agent workspace snapshots — observation only, available in
               every room type; Human screen share is untouched below. */}
           <WorkspaceSnapshots

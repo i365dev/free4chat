@@ -7,6 +7,7 @@ const MAX_ROOM_LENGTH = 64
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const MAX_PERMISSION_REQUEST_BODY_BYTES = 64 * 1024
 const AGENT_EVENT_PATH = "/api/room/agent-events"
+const COUNTER_EXPERIMENT_PATH = "/api/room/experiments/counter"
 const ROOM_REQUEST_PATHS = new Set([
   "/api/room/attachments",
   "/api/room/live-transcript/append",
@@ -15,6 +16,7 @@ const ROOM_REQUEST_PATHS = new Set([
   "/api/room/runtime-provider/connect",
   "/api/room/surfaces/read",
   "/api/room/attachments/read",
+  COUNTER_EXPERIMENT_PATH,
 ])
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -31,6 +33,7 @@ const SUPPORTED_IMAGE_TYPES = new Set([
 
 export interface RoomProtocolEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
+  ROOM_COUNTER_EXPERIMENT?: string
 }
 
 // Keep the Worker entrypoint and the protocol handler on the same allowlist.
@@ -91,6 +94,44 @@ export async function handleRoomRequest(
     const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
     const doRequest = new Request("https://room/agent-events", request)
     return stub.fetch(doRequest)
+  }
+
+  // Explicitly gated local experiment. Room admission proves the caller to
+  // the DO; the DO performs the separate external Counter join and keeps its
+  // downstream capability private.
+  if (pathname === COUNTER_EXPERIMENT_PATH) {
+    if (env.ROOM_COUNTER_EXPERIMENT !== "true")
+      return json({ error: "experiment_disabled" }, 404)
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    let body: { operation?: unknown }
+    try {
+      body = (await request.json()) as typeof body
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (
+      body.operation !== "start" &&
+      body.operation !== "join" &&
+      body.operation !== "state" &&
+      body.operation !== "increment"
+    )
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: `counter-${body.operation}`,
+        participantId,
+        token,
+      }),
+    })
   }
 
   // Runtime-only control transport for a committed STT result. This is not
