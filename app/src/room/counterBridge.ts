@@ -16,11 +16,18 @@ export interface CounterProjection {
   currentTurnParticipantId: string | null
 }
 
+export interface CounterAttention {
+  type: "your_turn"
+  participantId: string
+  revision: number
+}
+
 export interface CounterIncrementResult {
   value: number
   revision: number
   participantId: string
   duplicate: boolean
+  attention: CounterAttention | null
 }
 
 export class CounterBridgeError extends Error {
@@ -49,6 +56,7 @@ interface CounterIncrementResponse {
   revision?: unknown
   participantId?: unknown
   duplicate?: unknown
+  attention?: unknown
 }
 
 const PARTICIPANT_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,80}$/
@@ -171,6 +179,34 @@ function validateProjection(value: unknown): CounterProjection {
   }
 }
 
+function validateAttention(value: unknown): CounterAttention | null {
+  if (value === null) return null
+  if (!value || typeof value !== "object")
+    throw new CounterBridgeError(
+      502,
+      "invalid_counter_result",
+      "Counter attention is invalid"
+    )
+  const attention = value as Partial<CounterAttention>
+  if (
+    attention.type !== "your_turn" ||
+    typeof attention.participantId !== "string" ||
+    !PARTICIPANT_ID_PATTERN.test(attention.participantId) ||
+    typeof attention.revision !== "number" ||
+    !Number.isSafeInteger(attention.revision)
+  )
+    throw new CounterBridgeError(
+      502,
+      "invalid_counter_result",
+      "Counter attention is invalid"
+    )
+  return {
+    type: "your_turn",
+    participantId: attention.participantId,
+    revision: attention.revision,
+  }
+}
+
 export async function createCounterInstance(baseUrl: string): Promise<string> {
   const response = await requestJson<CounterCreateResponse>(
     baseUrl,
@@ -269,7 +305,8 @@ export async function incrementCounter(
     typeof response.revision !== "number" ||
     !Number.isSafeInteger(response.revision) ||
     typeof response.participantId !== "string" ||
-    typeof response.duplicate !== "boolean"
+    typeof response.duplicate !== "boolean" ||
+    !(response.attention === null || typeof response.attention === "object")
   )
     throw new CounterBridgeError(
       502,
@@ -281,5 +318,6 @@ export async function incrementCounter(
     revision: response.revision,
     participantId: response.participantId,
     duplicate: response.duplicate,
+    attention: validateAttention(response.attention),
   }
 }

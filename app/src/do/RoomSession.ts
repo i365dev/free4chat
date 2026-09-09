@@ -116,6 +116,7 @@ import {
   incrementCounter,
   joinCounter,
   readCounterProjection,
+  type CounterIncrementResult,
   type CounterProjection,
 } from "../room/counterBridge"
 import type {
@@ -1505,6 +1506,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  private clearCounterTaskForHumanDeparture(
+    room: RoomRecord,
+    participant: RoomParticipant
+  ): void {
+    if (
+      participant.kind === "human" &&
+      room.counterTask?.capabilities[participant.id]
+    )
+      delete room.counterTask
+  }
+
   // The sole Room-side media-effect lifecycle. Every caller has already
   // staged the revocation and persisted that authoritative state before it
   // reaches here. This method then has exactly one temporal shape:
@@ -2564,11 +2576,30 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         }
       )
     )
-    const current =
-      projections[task.currentTurnParticipantId ?? ""] ??
-      Object.values(projections)[0]
-    if (current) this.applyCounterProjection(task, current)
     return projections
+  }
+
+  private counterProjectionAfterIncrement(
+    participantId: string,
+    result: CounterIncrementResult,
+    current: CounterProjection
+  ): CounterProjection {
+    const currentTurnParticipantId =
+      result.attention?.participantId ?? participantId
+    return {
+      value: result.value,
+      revision: result.revision,
+      participant: {
+        ...current.participant,
+        participantId,
+        mayAct: currentTurnParticipantId === participantId,
+      },
+      participants: current.participants.map((participant) => ({
+        ...participant,
+        isCurrentTurn: participant.participantId === currentTurnParticipantId,
+      })),
+      currentTurnParticipantId,
+    }
   }
 
   private counterProjectionResponse(
@@ -2610,6 +2641,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
         if (joined.projection.participant.participantId !== participant.id)
           return this.json({ error: "invalid_counter_projection" }, 502)
+        // Counter creation/join is external I/O. Never save the RoomRecord
+        // captured before it: a normal Room mutation may have committed while
+        // these requests were in flight.
+        const freshRoom = await this.activeRoom()
+        if (!freshRoom) return this.json({ error: "room_expired" }, 410)
+        const freshParticipant = this.counterParticipant(
+          freshRoom,
+          request.participantId,
+          request.token
+        )
+        if (freshParticipant instanceof Response) return freshParticipant
+        if (freshRoom.counterTask)
+          return this.json({ error: "counter_task_exists" }, 409)
         const task: CounterTaskRecord = {
           taskId: crypto.randomUUID(),
           instanceId,
@@ -2624,16 +2668,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           currentTurnParticipantId: joined.projection.currentTurnParticipantId,
           participants: joined.projection.participants,
           capabilities: {
-            [participant.id]: {
-              participantId: participant.id,
-              displayName: participant.name,
+            [freshParticipant.id]: {
+              participantId: freshParticipant.id,
+              displayName: freshParticipant.name,
               accessToken: joined.accessToken,
             },
           },
         }
-        room.counterTask = task
-        await this.saveRoom(room)
-        await this.broadcastState(room)
+        freshRoom.counterTask = task
+        await this.saveRoom(freshRoom)
+        await this.broadcastState(freshRoom)
         return this.counterProjectionResponse(task, joined.projection)
       }
 
@@ -2662,18 +2706,67 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
         if (joined.projection.participant.participantId !== participant.id)
           return this.json({ error: "invalid_counter_projection" }, 502)
-        task.capabilities[participant.id] = {
-          participantId: participant.id,
-          displayName: participant.name,
+        // The join response and every projection refresh are external I/O.
+        // Work on an in-memory candidate only, then reload again before the
+        // authoritative Room save.
+        const afterJoinRoom = await this.activeRoom()
+        if (!afterJoinRoom) return this.json({ error: "room_expired" }, 410)
+        const afterJoinParticipant = this.counterParticipant(
+          afterJoinRoom,
+          request.participantId,
+          request.token
+        )
+        if (afterJoinParticipant instanceof Response)
+          return afterJoinParticipant
+        const afterJoinTask = afterJoinRoom.counterTask
+        if (!afterJoinTask || afterJoinTask.taskId !== task.taskId)
+          return this.json({ error: "counter_task_changed" }, 409)
+        if (afterJoinTask.capabilities[participant.id])
+          return this.json({ error: "counter_already_joined" }, 409)
+        if (
+          Object.keys(afterJoinTask.capabilities).length >=
+          MAX_COUNTER_PARTICIPANTS
+        )
+          return this.json({ error: "counter_task_full" }, 409)
+        const joinedCapability = {
+          participantId: afterJoinParticipant.id,
+          displayName: afterJoinParticipant.name,
           accessToken: joined.accessToken,
         }
-        this.applyCounterProjection(task, joined.projection)
-        const projections = await this.refreshCounterProjections(task)
+        const candidateTask: CounterTaskRecord = {
+          ...afterJoinTask,
+          capabilities: {
+            ...afterJoinTask.capabilities,
+            [afterJoinParticipant.id]: joinedCapability,
+          },
+        }
+        const projections = await this.refreshCounterProjections(candidateTask)
         const callerProjection =
           projections[participant.id] ?? joined.projection
-        await this.saveRoom(room)
-        await this.broadcastState(room)
-        return this.counterProjectionResponse(task, callerProjection)
+        const sharedProjection =
+          Object.values(projections)[0] ?? joined.projection
+        const freshRoom = await this.activeRoom()
+        if (!freshRoom) return this.json({ error: "room_expired" }, 410)
+        const freshParticipant = this.counterParticipant(
+          freshRoom,
+          request.participantId,
+          request.token
+        )
+        if (freshParticipant instanceof Response) return freshParticipant
+        const freshTask = freshRoom.counterTask
+        if (!freshTask || freshTask.taskId !== task.taskId)
+          return this.json({ error: "counter_task_changed" }, 409)
+        if (freshTask.capabilities[freshParticipant.id])
+          return this.json({ error: "counter_already_joined" }, 409)
+        if (
+          Object.keys(freshTask.capabilities).length >= MAX_COUNTER_PARTICIPANTS
+        )
+          return this.json({ error: "counter_task_full" }, 409)
+        freshTask.capabilities[freshParticipant.id] = joinedCapability
+        this.applyCounterProjection(freshTask, sharedProjection)
+        await this.saveRoom(freshRoom)
+        await this.broadcastState(freshRoom)
+        return this.counterProjectionResponse(freshTask, callerProjection)
       }
 
       if (!existingCapability)
@@ -2697,26 +2790,79 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       if (current.participant.participantId !== participant.id)
         return this.json({ error: "invalid_counter_projection" }, 502)
+      // The pre-action projection read is external I/O too. Re-load and
+      // re-authenticate before issuing the committed increment so this
+      // request never relies on a stale Room binding after that await.
+      const beforeIncrementRoom = await this.activeRoom()
+      if (!beforeIncrementRoom) return this.json({ error: "room_expired" }, 410)
+      const beforeIncrementParticipant = this.counterParticipant(
+        beforeIncrementRoom,
+        request.participantId,
+        request.token
+      )
+      if (beforeIncrementParticipant instanceof Response)
+        return beforeIncrementParticipant
+      const beforeIncrementTask = beforeIncrementRoom.counterTask
+      const beforeIncrementCapability =
+        beforeIncrementTask?.capabilities[beforeIncrementParticipant.id]
+      if (
+        !beforeIncrementTask ||
+        beforeIncrementTask.taskId !== task.taskId ||
+        beforeIncrementTask.instanceId !== task.instanceId ||
+        !beforeIncrementCapability ||
+        beforeIncrementCapability.accessToken !== existingCapability.accessToken
+      )
+        return this.json({ error: "counter_task_changed" }, 409)
       const result = await incrementCounter(
         baseUrl,
-        task.instanceId,
-        existingCapability.accessToken,
+        beforeIncrementTask.instanceId,
+        beforeIncrementCapability.accessToken,
         crypto.randomUUID(),
         current.revision
       )
-      const projections = await this.refreshCounterProjections(task)
-      const callerProjection = projections[participant.id]
-      if (!callerProjection) {
-        task.value = result.value
-        task.revision = result.revision
-      }
-      await this.saveRoom(room)
-      await this.broadcastState(room)
-      return this.json({
-        taskId: task.taskId,
-        surface: task.surface,
+      // The increment is committed externally. Projection reads are
+      // observation-only and may all fail, so derive a post-action fallback
+      // from the bounded Counter result rather than returning `current`.
+      const projections = await this.refreshCounterProjections(
+        beforeIncrementTask
+      )
+      const fallbackProjection = this.counterProjectionAfterIncrement(
+        beforeIncrementParticipant.id,
         result,
-        projection: callerProjection ?? current,
+        current
+      )
+      const callerProjection = projections[participant.id] ?? fallbackProjection
+      const sharedProjection =
+        Object.values(projections)[0] ?? fallbackProjection
+
+      // Do not save the pre-fetch RoomRecord. Re-authenticate the participant
+      // and task against the newest Room snapshot, then merge only the
+      // Counter-owned result into it.
+      const freshRoom = await this.activeRoom()
+      if (!freshRoom) return this.json({ error: "room_expired" }, 410)
+      const freshParticipant = this.counterParticipant(
+        freshRoom,
+        request.participantId,
+        request.token
+      )
+      if (freshParticipant instanceof Response) return freshParticipant
+      const freshTask = freshRoom.counterTask
+      if (
+        !freshTask ||
+        freshTask.taskId !== beforeIncrementTask.taskId ||
+        freshTask.instanceId !== beforeIncrementTask.instanceId ||
+        freshTask.capabilities[freshParticipant.id]?.accessToken !==
+          beforeIncrementCapability.accessToken
+      )
+        return this.json({ error: "counter_task_changed" }, 409)
+      this.applyCounterProjection(freshTask, sharedProjection)
+      await this.saveRoom(freshRoom)
+      await this.broadcastState(freshRoom)
+      return this.json({
+        taskId: freshTask.taskId,
+        surface: freshTask.surface,
+        result,
+        projection: callerProjection,
       })
     } catch (error) {
       return this.counterFailure(error)
@@ -4469,6 +4615,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.expirePermissionRequests(room, Date.now(), participant.id)
     if (participant.kind === "human")
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
+    this.clearCounterTaskForHumanDeparture(room, participant)
     delete room.participants[participant.id]
     this.garbageCollectRuntimeHostAuthorization(room)
     const pendingDuration = this.updateCollaborationActivity(room)
@@ -4999,6 +5146,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
         this.stageLiveTranscriptMediaRevocation(room)
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
+      this.clearCounterTaskForHumanDeparture(room, participant)
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
       const pendingDuration = this.updateCollaborationActivity(room)
@@ -5734,6 +5882,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           })
         if (expiredHuman)
           this.removeRuntimeHostProviderAuthorizationForHuman(room, id)
+        if (expiredHuman)
+          this.clearCounterTaskForHumanDeparture(room, participant)
         if (expiredAgent && this.expirePermissionRequests(room, now, id)) {
           permissionExpired = true
           changed = true

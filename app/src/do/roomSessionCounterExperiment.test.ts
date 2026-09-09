@@ -13,6 +13,55 @@ type DomainState = {
   tokens: Record<string, string>
 }
 
+type SessionOptions = {
+  deferFirstJoin?: Promise<void>
+  onFirstJoinStarted?: () => void
+  failStateReadsAfterIncrement?: boolean
+}
+
+type Control = (
+  body: Record<string, unknown>
+) => Promise<{ response: Response; json: Record<string, unknown> }>
+
+function humanParticipant(id: string, name: string) {
+  return {
+    id,
+    name,
+    kind: "human",
+    joinedAt: Date.now(),
+    token: `room-token-${id.slice(-1)}`,
+    media: {
+      sessionId: `session-${id.slice(-1)}`,
+      muted: false,
+      fileChannelReady: false,
+      tracks: [],
+    },
+  }
+}
+
+async function registerHuman(control: Control, id = "room-b", name = "B") {
+  return control({
+    action: "register",
+    participant: humanParticipant(id, name),
+  })
+}
+
+async function startCounter(control: Control) {
+  return control({
+    action: "counter-start",
+    participantId: "room-a",
+    token: "room-token-a",
+  })
+}
+
+async function joinCounterAsB(control: Control) {
+  return control({
+    action: "counter-join",
+    participantId: "room-b",
+    token: "room-token-b",
+  })
+}
+
 function projection(state: DomainState, participantId: string) {
   const participant = state.participants[participantId]
   return {
@@ -63,7 +112,7 @@ function makeStoredRoom() {
   }
 }
 
-function makeSession() {
+function makeSession(options: SessionOptions = {}) {
   const store = new Map<string, unknown>([["room", makeStoredRoom()]])
   const domain: DomainState = {
     instanceId: "counter-instance",
@@ -77,6 +126,8 @@ function makeSession() {
     url: string
     init: RequestInit
   }> = []
+  let joinCalls = 0
+  let incrementCommitted = false
   const fetchImpl = vi.fn(
     async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input)
@@ -88,6 +139,11 @@ function makeSession() {
       if (!match) return Response.json({ code: "not_found" }, { status: 404 })
       const path = match[2]
       if (path === "/join") {
+        joinCalls += 1
+        if (joinCalls === 1) {
+          options.onFirstJoinStarted?.()
+          if (options.deferFirstJoin) await options.deferFirstJoin
+        }
         const body = JSON.parse(String(init?.body)) as {
           participantId: string
           displayName: string
@@ -114,8 +170,11 @@ function makeSession() {
       )?.[0]
       if (!participantId)
         return Response.json({ code: "unauthorized" }, { status: 401 })
-      if (path === "/state")
+      if (path === "/state") {
+        if (options.failStateReadsAfterIncrement && incrementCommitted)
+          return Response.json({ code: "state_unavailable" }, { status: 503 })
         return Response.json(projection(domain, participantId))
+      }
       if (path === "/actions/increment") {
         const body = JSON.parse(String(init?.body)) as {
           expectedRevision: number
@@ -129,11 +188,19 @@ function makeSession() {
         domain.currentTurnParticipantId =
           Object.keys(domain.participants).find((id) => id !== participantId) ??
           participantId
+        incrementCommitted = true
         return Response.json({
           value: domain.value,
           revision: domain.revision,
           participantId,
           duplicate: false,
+          attention: domain.currentTurnParticipantId
+            ? {
+                type: "your_turn",
+                participantId: domain.currentTurnParticipantId,
+                revision: domain.revision,
+              }
+            : null,
         })
       }
       return Response.json({ code: "not_found" }, { status: 404 })
@@ -314,5 +381,129 @@ describe("RoomSession Counter bridge experiment", () => {
       "Bearer domain-token-room-a",
       "Bearer domain-token-room-b",
     ])
+  })
+
+  it("reloads the Room after slow Counter start I/O", async () => {
+    let releaseFirstJoin!: () => void
+    let signalFirstJoin!: () => void
+    const firstJoinStarted = new Promise<void>((resolve) => {
+      signalFirstJoin = resolve
+    })
+    const firstJoinGate = new Promise<void>((resolve) => {
+      releaseFirstJoin = resolve
+    })
+    const { store, control } = makeSession({
+      onFirstJoinStarted: signalFirstJoin,
+      deferFirstJoin: firstJoinGate,
+    })
+
+    const startPromise = startCounter(control)
+    await firstJoinStarted
+
+    const ordinaryMutation = await registerHuman(control)
+    expect(ordinaryMutation.response.status).toBe(200)
+    releaseFirstJoin()
+
+    const started = await startPromise
+    expect(started.response.status).toBe(200)
+    const room = store.get("room") as {
+      participants: Record<string, unknown>
+      counterTask?: { instanceId: string }
+    }
+    expect(room.participants["room-b"]).toBeDefined()
+    expect(room.counterTask?.instanceId).toBe("counter-instance")
+  })
+
+  it("clears the Counter task when an attached Human explicitly leaves", async () => {
+    const { store, control } = makeSession()
+    expect((await startCounter(control)).response.status).toBe(200)
+    expect((await registerHuman(control)).response.status).toBe(200)
+    expect((await joinCounterAsB(control)).response.status).toBe(200)
+
+    const left = await control({
+      action: "leave",
+      participantId: "room-b",
+      token: "room-token-b",
+    })
+    expect(left.response.status).toBe(200)
+    const room = store.get("room") as {
+      participants: Record<string, unknown>
+      counterTask?: unknown
+      messages: unknown[]
+    }
+    expect(room.counterTask).toBeUndefined()
+    expect(room.participants["room-a"]).toBeDefined()
+    expect(room.participants["room-b"]).toBeUndefined()
+    expect(room.messages).toHaveLength(0)
+  })
+
+  it("keeps Counter during reconnect grace, then clears it on Human expiry", async () => {
+    const { session, store, control } = makeSession()
+    expect((await startCounter(control)).response.status).toBe(200)
+    expect((await registerHuman(control)).response.status).toBe(200)
+    expect((await joinCounterAsB(control)).response.status).toBe(200)
+
+    const room = store.get("room") as {
+      participants: Record<string, { connected: boolean; lastSeenAt: number }>
+      counterTask?: unknown
+    }
+    room.participants["room-b"]!.connected = false
+    room.participants["room-b"]!.lastSeenAt = Date.now()
+    await (session as any).alarm()
+    expect(room.counterTask).toBeDefined()
+    expect(room.participants["room-b"]).toBeDefined()
+
+    room.participants["room-b"]!.lastSeenAt = Date.now() - 31_000
+    await (session as any).alarm()
+    const expiredRoom = store.get("room") as {
+      participants: Record<string, unknown>
+      counterTask?: unknown
+    }
+    expect(expiredRoom.counterTask).toBeUndefined()
+    expect(expiredRoom.participants["room-a"]).toBeDefined()
+    expect(expiredRoom.participants["room-b"]).toBeUndefined()
+  })
+
+  it("returns post-increment turn state when all projection reads fail", async () => {
+    const { store, domain, control } = makeSession({
+      failStateReadsAfterIncrement: true,
+    })
+    expect((await startCounter(control)).response.status).toBe(200)
+    expect((await registerHuman(control)).response.status).toBe(200)
+    expect((await joinCounterAsB(control)).response.status).toBe(200)
+
+    const incremented = await control({
+      action: "counter-increment",
+      participantId: "room-a",
+      token: "room-token-a",
+    })
+    expect(incremented.response.status).toBe(200)
+    expect(incremented.json.result).toMatchObject({ value: 1, revision: 3 })
+    expect(incremented.json.projection).toMatchObject({
+      value: 1,
+      revision: 3,
+      currentTurnParticipantId: "room-b",
+      participant: { participantId: "room-a", mayAct: false },
+    })
+    expect(
+      (
+        incremented.json.projection as {
+          participants: Array<{
+            participantId: string
+            isCurrentTurn: boolean
+          }>
+        }
+      ).participants
+    ).toContainEqual({
+      participantId: "room-b",
+      displayName: "B",
+      isCurrentTurn: true,
+    })
+    expect(domain.currentTurnParticipantId).toBe("room-b")
+    expect((store.get("room") as any).counterTask).toMatchObject({
+      value: 1,
+      revision: 3,
+      currentTurnParticipantId: "room-b",
+    })
   })
 })
