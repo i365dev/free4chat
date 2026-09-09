@@ -242,6 +242,7 @@ type ACPAdapter struct {
 
 	mu                 sync.Mutex
 	writeMu            sync.Mutex // serializes every stdin frame
+	scopedSessionMu    sync.Mutex // serializes bounded scoped session creation
 	proc               *harnessProcess
 	stdin              io.WriteCloser
 	pending            map[string]*pendingCall
@@ -592,12 +593,28 @@ func (a *ACPAdapter) EnsureSession() error {
 // compatibility path above; task scopes share the process but never share its
 // ACP session id or retained conversation.
 func (a *ACPAdapter) EnsureSessionFor(scope string) error {
-	if strings.TrimSpace(scope) == "" {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
 		return errors.New("ACP logical scope is empty")
 	}
 	if scope == "room" {
 		return a.EnsureSession()
 	}
+	if len(scope) > types.MaxLogicalScopeLength {
+		return errors.New("ACP logical scope is too long")
+	}
+	a.scopedSessionMu.Lock()
+	defer a.scopedSessionMu.Unlock()
+	a.mu.Lock()
+	if session := a.sessions[scope]; session != nil && session.sessionID != "" && a.proc != nil && a.stdin != nil {
+		a.mu.Unlock()
+		return nil
+	}
+	if len(a.sessions) >= types.MaxLogicalTaskScopes {
+		a.mu.Unlock()
+		return errors.New("ACP logical scope capacity reached")
+	}
+	a.mu.Unlock()
 	if err := a.EnsureSession(); err != nil {
 		return err
 	}

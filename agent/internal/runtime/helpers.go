@@ -19,8 +19,6 @@ type pendingTurnContext struct {
 	events []types.RoomEvent
 }
 
-const maxLogicalScopeLength = 128
-
 type logicalSessionRef struct {
 	deliveredThrough               *int64
 	roomDeliveryFloor              *int64
@@ -37,8 +35,11 @@ type logicalSessionRef struct {
 
 func normalizeScope(scope string) string {
 	scope = strings.TrimSpace(scope)
-	if scope == "" || len(scope) > maxLogicalScopeLength {
-		return roomScope
+	if scope == "" {
+		return ""
+	}
+	if len(scope) > types.MaxLogicalScopeLength {
+		return ""
 	}
 	return scope
 }
@@ -51,10 +52,13 @@ func newLogicalSessionState() *logicalSessionState {
 }
 
 // sessionRefLocked keeps the default Room scope on the existing fields while
-// giving task/request scopes their own delivery and source checkpoints.
-// Callers must hold r.mu.
+// reading an already-admitted task/request scope. It never creates a new
+// scope. Callers must hold r.mu.
 func (r *ResidentRuntime) sessionRefLocked(scope string) *logicalSessionRef {
 	scope = normalizeScope(scope)
+	if scope == "" {
+		return nil
+	}
 	if scope == roomScope {
 		return &logicalSessionRef{
 			deliveredThrough:               &r.deliveredThrough,
@@ -71,13 +75,11 @@ func (r *ResidentRuntime) sessionRefLocked(scope string) *logicalSessionRef {
 		}
 	}
 	if r.scopedSessions == nil {
-		r.scopedSessions = make(map[string]*logicalSessionState)
+		return nil
 	}
 	state := r.scopedSessions[scope]
 	if state == nil {
-		state = newLogicalSessionState()
-		r.scopedSessions[scope] = state
-		r.scopeOrder = append(r.scopeOrder, scope)
+		return nil
 	}
 	return &logicalSessionRef{
 		deliveredThrough:               &state.deliveredThrough,
@@ -94,13 +96,52 @@ func (r *ResidentRuntime) sessionRefLocked(scope string) *logicalSessionRef {
 	}
 }
 
+// ensureSessionRefLocked is the only creation path for non-Room logical
+// scopes. A full resident rejects the new scope instead of falling back to
+// the Room session or allocating an unbounded local/ACP conversation.
+func (r *ResidentRuntime) ensureSessionRefLocked(scope string) (*logicalSessionRef, bool) {
+	scope = normalizeScope(scope)
+	if scope == "" {
+		return nil, false
+	}
+	if ref := r.sessionRefLocked(scope); ref != nil {
+		return ref, true
+	}
+	if scope == roomScope || len(r.scopeOrder) >= types.MaxLogicalTaskScopes {
+		return nil, false
+	}
+	if r.scopedSessions == nil {
+		r.scopedSessions = make(map[string]*logicalSessionState)
+	}
+	state := newLogicalSessionState()
+	r.scopedSessions[scope] = state
+	r.scopeOrder = append(r.scopeOrder, scope)
+	return &logicalSessionRef{
+		deliveredThrough:               &state.deliveredThrough,
+		roomDeliveryFloor:              &state.roomDeliveryFloor,
+		pendingAddressed:               &state.pendingAddressed,
+		pendingContexts:                &state.pendingContexts,
+		observedHarnessGeneration:      &state.observedHarnessGeneration,
+		bootstrappedHarnessGeneration:  &state.bootstrappedHarnessGeneration,
+		meetingDeliveredThrough:        &state.meetingDeliveredThrough,
+		meetingDeliveryFloor:           &state.meetingDeliveryFloor,
+		liveTranscriptDeliveredThrough: &state.liveTranscriptDeliveredThrough,
+		liveTranscriptDeliveryFloor:    &state.liveTranscriptDeliveryFloor,
+		sourceCursors:                  &state.sourceCursors,
+	}, true
+}
+
 func (r *ResidentRuntime) scopeStateExistsLocked(scope string) bool {
 	scope = normalizeScope(scope)
-	return scope == roomScope || r.scopedSessions != nil && r.scopedSessions[scope] != nil
+	return scope == roomScope || scope != "" && r.scopedSessions != nil && r.scopedSessions[scope] != nil
 }
 
 func scopeForRoomEvent(event types.RoomEvent) string {
-	if scope := normalizeScope(event.ScopeID); scope != roomScope {
+	if rawScope := strings.TrimSpace(event.ScopeID); rawScope != "" {
+		scope := normalizeScope(rawScope)
+		if scope == "" {
+			return ""
+		}
 		return scope
 	}
 	// A bounded action producer may carry the same hint without requiring a
@@ -212,6 +253,9 @@ func (r *ResidentRuntime) pendingAddressedSnapshotFor(scope string) []int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return nil
+	}
 	return append([]int64(nil), (*ref.pendingAddressed)...)
 }
 
@@ -247,6 +291,9 @@ func (r *ResidentRuntime) peekPendingFor(scope string) (int64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return 0, false
+	}
 	if len(*ref.pendingAddressed) == 0 {
 		return 0, false
 	}
@@ -264,6 +311,9 @@ func (r *ResidentRuntime) ackPendingFor(scope string, sequence int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return
+	}
 	for index, pending := range *ref.pendingAddressed {
 		if pending != sequence {
 			continue
@@ -281,7 +331,11 @@ func (r *ResidentRuntime) deliveredSeq() int64 {
 func (r *ResidentRuntime) deliveredSeqFor(scope string) int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return *r.sessionRefLocked(scope).deliveredThrough
+	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return 0
+	}
+	return *ref.deliveredThrough
 }
 
 // effectiveDeliveryStart is the automatic-push boundary. A new ACP session
@@ -295,6 +349,9 @@ func (r *ResidentRuntime) effectiveDeliveryStartFor(scope string) int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return 0
+	}
 	return max(*ref.deliveredThrough, *ref.roomDeliveryFloor)
 }
 
@@ -308,6 +365,10 @@ func (r *ResidentRuntime) acknowledgeHarnessDelivery(target, through, generation
 func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, through, generation int64) {
 	r.mu.Lock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		r.mu.Unlock()
+		return
+	}
 	if through > *ref.deliveredThrough {
 		*ref.deliveredThrough = through
 	}
@@ -333,6 +394,9 @@ func (r *ResidentRuntime) transcriptDeliveryMarkersFor(scope string) (meeting, l
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return 0, 0
+	}
 	return max(*ref.meetingDeliveryFloor, *ref.meetingDeliveredThrough), max(*ref.liveTranscriptDeliveryFloor, *ref.liveTranscriptDeliveredThrough)
 }
 
@@ -343,6 +407,10 @@ func (r *ResidentRuntime) acknowledgeTranscriptDelivery(meeting, live int64) {
 func (r *ResidentRuntime) acknowledgeTranscriptDeliveryFor(scope string, meeting, live int64) {
 	r.mu.Lock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		r.mu.Unlock()
+		return
+	}
 	if meeting > *ref.meetingDeliveredThrough {
 		*ref.meetingDeliveredThrough = meeting
 	}
@@ -365,6 +433,9 @@ func (r *ResidentRuntime) observeHarnessSessionFor(scope string, generation, tar
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return false
+	}
 	if generation <= 0 {
 		return false
 	}
@@ -414,6 +485,10 @@ func (r *ResidentRuntime) pendingContext(target int64) ([]types.RoomEvent, error
 func (r *ResidentRuntime) pendingContextFor(scope string, target int64) ([]types.RoomEvent, error) {
 	r.mu.Lock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		r.mu.Unlock()
+		return nil, errors.New("logical scope is unavailable")
+	}
 	pending, ok := (*ref.pendingContexts)[target]
 	if !ok {
 		start := max(*ref.deliveredThrough, *ref.roomDeliveryFloor)
@@ -477,6 +552,10 @@ func (r *ResidentRuntime) pendingContextFor(scope string, target int64) ([]types
 	}
 	r.mu.Lock()
 	ref = r.sessionRefLocked(scope)
+	if ref == nil {
+		r.mu.Unlock()
+		return nil, errors.New("logical scope is unavailable")
+	}
 	if current, exists := (*ref.pendingContexts)[target]; exists && len(current.events) == 0 {
 		current.events = cloneRoomEvents(events)
 		(*ref.pendingContexts)[target] = current
@@ -508,7 +587,19 @@ func (r *ResidentRuntime) observeLogicalSource(scope, source string, cursor int6
 		return
 	}
 	r.mu.Lock()
-	ref := r.sessionRefLocked(scope)
+	ref, admitted := r.ensureSessionRefLocked(scope)
+	if !admitted || ref == nil {
+		r.mu.Unlock()
+		return
+	}
+	if ref.sourceCursors == nil {
+		r.mu.Unlock()
+		return
+	}
+	if _, exists := (*ref.sourceCursors)[source]; !exists && len(*ref.sourceCursors) >= types.MaxLogicalSourceCursors {
+		r.mu.Unlock()
+		return
+	}
 	if ref.sourceCursors != nil && cursor > (*ref.sourceCursors)[source] {
 		(*ref.sourceCursors)[source] = cursor
 	}
@@ -519,6 +610,9 @@ func (r *ResidentRuntime) logicalSourceCursor(scope, source string) int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
+	if ref == nil {
+		return 0
+	}
 	if ref.sourceCursors == nil {
 		return 0
 	}

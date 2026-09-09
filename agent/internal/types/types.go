@@ -17,6 +17,21 @@ import (
 
 const runtimeProviderClaimDomain = "free4chat-runtime-provider-v1"
 
+// MaxLogicalTaskScopes bounds the resident-local non-Room cognition
+// conversations retained by one Agent process. It is a safety limit for this
+// spike, not a product entitlement or a task lifecycle policy.
+const MaxLogicalTaskScopes = 8
+
+// MaxLogicalScopeLength bounds the opaque scope label carried by the narrow
+// Agent wire projection. Producers must reject longer labels rather than
+// silently rewriting them into the ordinary Room scope.
+const MaxLogicalScopeLength = 128
+
+// MaxLogicalSourceCursors bounds the source-local checkpoints retained per
+// logical scope. Current producers are a small fixed set; this keeps an
+// accidental arbitrary source label from becoming another unbounded map.
+const MaxLogicalSourceCursors = 8
+
 // ValidRuntimeProviderCredential accepts an opaque 256-bit base64url value.
 // It is deliberately distinct from the public Runtime Host id grammar.
 func ValidRuntimeProviderCredential(value string) bool {

@@ -931,10 +931,20 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	r.mu.Lock()
-	r.eventBuffer.Add(event)
 	scope := scopeForRoomEvent(event)
+	if scope == "" {
+		r.mu.Unlock()
+		r.log("logical_scope_rejected", map[string]string{"reason": "invalid"})
+		return
+	}
 	newScope := scope != roomScope && !r.scopeStateExistsLocked(scope)
-	ref := r.sessionRefLocked(scope)
+	ref, admitted := r.ensureSessionRefLocked(scope)
+	if !admitted {
+		r.mu.Unlock()
+		r.log("logical_scope_rejected", map[string]string{"reason": "capacity"})
+		return
+	}
+	r.eventBuffer.Add(event)
 	if newScope {
 		// A task scope starts at its first task-correlated trigger. Earlier
 		// private Room conversation remains pull-only and is not copied into a

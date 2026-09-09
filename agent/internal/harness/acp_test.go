@@ -257,6 +257,43 @@ func TestACPScopesRetainMultipleConversationsInOneProcess(t *testing.T) {
 	}
 }
 
+func TestACPScopesAreBoundedAndExistingConversationRemainsReusable(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-bound-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_TRACE": tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure Room session failed: %v", err)
+	}
+	for index := 0; index < types.MaxLogicalTaskScopes; index++ {
+		if err := adapter.EnsureSessionFor("task:" + strconv.Itoa(index+1)); err != nil {
+			t.Fatalf("ensure scoped session %d failed: %v", index+1, err)
+		}
+	}
+	if err := adapter.EnsureSessionFor("task:1"); err != nil {
+		t.Fatalf("existing scope was rejected at capacity: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:overflow"); err == nil {
+		t.Fatal("scope above the bound was accepted")
+	}
+
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read ACP trace: %v", err)
+	}
+	newCount := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, `"method":"session/new"`) {
+			newCount++
+		}
+	}
+	if newCount != 1+types.MaxLogicalTaskScopes {
+		t.Fatalf("scope capacity changed ACP session/new count: got=%d want=%d", newCount, 1+types.MaxLogicalTaskScopes)
+	}
+}
+
 func TestACPRetainsAndAppliesAdvertisedSessionControls(t *testing.T) {
 	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
 		"FAKE_POLICY_CAP": "1",
