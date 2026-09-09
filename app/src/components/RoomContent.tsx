@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/router"
 
 import { LOCAL_PEER_ID } from "@common/consts"
+import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import AgentInviteControl from "./AgentInviteControl"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
@@ -20,6 +21,8 @@ import { useSfuChatRoom } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024
+
+type TaskAgent = { peerId: string; name: string }
 
 function ScreenShareViewer({
   stream,
@@ -91,6 +94,9 @@ export default function RoomContent({
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
   const [runtimeConnectError, setRuntimeConnectError] = useState("")
+  const [taskAgent, setTaskAgent] = useState<TaskAgent | null>(null)
+  const [taskInstruction, setTaskInstruction] = useState("")
+  const [taskError, setTaskError] = useState("")
   // #236 follow-up: shared popover state so the Live Transcript setup copy
   // can cross-open the Invite Agent popover (no routing machinery).
   const [agentInviteOpen, setAgentInviteOpen] = useState(false)
@@ -129,6 +135,7 @@ export default function RoomContent({
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,
+    sendCollabRequest,
     sendCollabResponse,
     readRoomAttachment,
     sendCollabResult,
@@ -157,6 +164,39 @@ export default function RoomContent({
   })
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
+
+  const handleStartTask = useCallback(
+    (peerId: string, name: string) => {
+      const participant = participants.find(
+        (candidate) => candidate.peerId === peerId && candidate.kind === "agent"
+      )
+      if (!participant) return
+      setTaskAgent({ peerId, name })
+      setTaskInstruction("")
+      setTaskError("")
+    },
+    [participants]
+  )
+
+  const closeTaskComposer = useCallback(() => {
+    setTaskAgent(null)
+    setTaskInstruction("")
+    setTaskError("")
+  }, [])
+
+  const submitTask = useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      if (!taskAgent) return
+      const sent = sendCollabRequest(taskAgent.peerId, taskInstruction)
+      if (!sent) {
+        setTaskError("Could not start the task. Check your connection.")
+        return
+      }
+      closeTaskComposer()
+    },
+    [closeTaskComposer, sendCollabRequest, taskAgent, taskInstruction]
+  )
 
   const toggleAgentVoice = useCallback(
     (participantId: string, enabled: boolean) => {
@@ -704,6 +744,7 @@ export default function RoomContent({
                         }
                         voiceEnabled={p.voiceEnabled}
                         onToggleAgentVoice={toggleAgentVoice}
+                        onStartTask={handleStartTask}
                         className="w-[84px]"
                         compact
                       />
@@ -734,6 +775,7 @@ export default function RoomContent({
                       }
                       voiceEnabled={p.voiceEnabled}
                       onToggleAgentVoice={toggleAgentVoice}
+                      onStartTask={handleStartTask}
                       screenshareAllowed={screenshareAllowed}
                       className="w-40 flex-none"
                     />
@@ -781,6 +823,74 @@ export default function RoomContent({
           />
         </div>
       </div>
+      {taskAgent && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="start-task-title"
+        >
+          <form
+            onSubmit={submitTask}
+            className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-5 shadow-2xl"
+          >
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 id="start-task-title" className="text-base font-semibold">
+                  Start task with {taskAgent.name}
+                </h2>
+                <p className="mt-1 text-xs text-gray-400">
+                  Give this Agent one thing to work on.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeTaskComposer}
+                className="text-gray-400 hover:text-white"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <label
+              htmlFor="start-task-instruction"
+              className="mb-2 block text-sm text-gray-200"
+            >
+              What should this Agent do?
+            </label>
+            <textarea
+              id="start-task-instruction"
+              value={taskInstruction}
+              onChange={(event) => setTaskInstruction(event.target.value)}
+              maxLength={MAX_COLLAB_SUMMARY_LENGTH}
+              rows={4}
+              autoFocus
+              className="w-full resize-none rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-400"
+            />
+            {taskError && (
+              <p role="alert" className="mt-2 text-xs text-rose-300">
+                {taskError}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeTaskComposer}
+                className="rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!taskInstruction.trim()}
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Send
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   )
 }
