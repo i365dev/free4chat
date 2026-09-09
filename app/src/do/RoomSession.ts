@@ -340,6 +340,10 @@ function normalizeStoredCounterTask(value: unknown): {
     !Number.isSafeInteger(candidate.value) ||
     typeof candidate.revision !== "number" ||
     !Number.isSafeInteger(candidate.revision) ||
+    (candidate.pendingJoinParticipantId !== undefined &&
+      (typeof candidate.pendingJoinParticipantId !== "string" ||
+        candidate.pendingJoinParticipantId.length === 0 ||
+        candidate.pendingJoinParticipantId.length > 80)) ||
     !(
       candidate.currentTurnParticipantId === null ||
       typeof candidate.currentTurnParticipantId === "string"
@@ -397,6 +401,7 @@ function normalizeStoredCounterTask(value: unknown): {
     task: {
       taskId: candidate.taskId,
       instanceId: candidate.instanceId,
+      pendingJoinParticipantId: candidate.pendingJoinParticipantId,
       surface: {
         kind: "counter",
         version: 1,
@@ -1359,6 +1364,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!task) return undefined
     const {
       instanceId: _instanceId,
+      pendingJoinParticipantId: _pendingJoinParticipantId,
       capabilities: _capabilities,
       ...publicTask
     } = task
@@ -1512,7 +1518,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   ): void {
     if (
       participant.kind === "human" &&
-      room.counterTask?.capabilities[participant.id]
+      (room.counterTask?.capabilities[participant.id] ||
+        room.counterTask?.pendingJoinParticipantId === participant.id)
     )
       delete room.counterTask
   }
@@ -2579,6 +2586,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return projections
   }
 
+  private async clearCounterJoinReservation(
+    taskId: string,
+    participantId: string
+  ): Promise<void> {
+    try {
+      const freshRoom = await this.activeRoom()
+      const task = freshRoom?.counterTask
+      if (
+        !freshRoom ||
+        !task ||
+        task.taskId !== taskId ||
+        task.pendingJoinParticipantId !== participantId
+      )
+        return
+      delete task.pendingJoinParticipantId
+      await this.saveRoom(freshRoom)
+    } catch {
+      // The original Counter failure is authoritative for the caller. A
+      // cleanup failure must not turn it into a different response.
+    }
+  }
+
   private counterProjectionAfterIncrement(
     participantId: string,
     result: CounterIncrementResult,
@@ -2627,6 +2656,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
     if (participant instanceof Response) return participant
     const baseUrl = this.env.COUNTER_BASE_URL ?? ""
+    let joinReservation: { taskId: string; participantId: string } | undefined
 
     try {
       if (request.action === "counter-start") {
@@ -2696,16 +2726,46 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             return this.json({ error: "invalid_counter_projection" }, 502)
           return this.counterProjectionResponse(task, projection)
         }
-        if (Object.keys(task.capabilities).length >= MAX_COUNTER_PARTICIPANTS)
+        // Re-load immediately before reserving. The reservation is durable
+        // Room state, so a concurrent join sees it and is rejected before it
+        // can reach the external Counter.
+        const reservationRoom = await this.activeRoom()
+        if (!reservationRoom) return this.json({ error: "room_expired" }, 410)
+        const reservationParticipant = this.counterParticipant(
+          reservationRoom,
+          request.participantId,
+          request.token
+        )
+        if (reservationParticipant instanceof Response)
+          return reservationParticipant
+        const reservationTask = reservationRoom.counterTask
+        if (!reservationTask || reservationTask.taskId !== task.taskId)
+          return this.json({ error: "counter_task_changed" }, 409)
+        if (reservationTask.pendingJoinParticipantId)
+          return this.json({ error: "counter_join_pending" }, 409)
+        if (
+          Object.keys(reservationTask.capabilities).length >=
+          MAX_COUNTER_PARTICIPANTS
+        )
           return this.json({ error: "counter_task_full" }, 409)
+        reservationTask.pendingJoinParticipantId = reservationParticipant.id
+        await this.saveRoom(reservationRoom)
+        joinReservation = {
+          taskId: reservationTask.taskId,
+          participantId: reservationParticipant.id,
+        }
         const joined = await joinCounter(
           baseUrl,
-          task.instanceId,
-          participant.id,
-          participant.name
+          reservationTask.instanceId,
+          reservationParticipant.id,
+          reservationParticipant.name
         )
         if (joined.projection.participant.participantId !== participant.id)
-          return this.json({ error: "invalid_counter_projection" }, 502)
+          throw new CounterBridgeError(
+            502,
+            "invalid_counter_projection",
+            "Counter projection is invalid"
+          )
         // The join response and every projection refresh are external I/O.
         // Work on an in-memory candidate only, then reload again before the
         // authoritative Room save.
@@ -2721,6 +2781,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         const afterJoinTask = afterJoinRoom.counterTask
         if (!afterJoinTask || afterJoinTask.taskId !== task.taskId)
           return this.json({ error: "counter_task_changed" }, 409)
+        if (afterJoinTask.pendingJoinParticipantId !== afterJoinParticipant.id)
+          return this.json({ error: "counter_join_changed" }, 409)
         if (afterJoinTask.capabilities[participant.id])
           return this.json({ error: "counter_already_joined" }, 409)
         if (
@@ -2756,6 +2818,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         const freshTask = freshRoom.counterTask
         if (!freshTask || freshTask.taskId !== task.taskId)
           return this.json({ error: "counter_task_changed" }, 409)
+        if (freshTask.pendingJoinParticipantId !== freshParticipant.id)
+          return this.json({ error: "counter_join_changed" }, 409)
         if (freshTask.capabilities[freshParticipant.id])
           return this.json({ error: "counter_already_joined" }, 409)
         if (
@@ -2763,6 +2827,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
           return this.json({ error: "counter_task_full" }, 409)
         freshTask.capabilities[freshParticipant.id] = joinedCapability
+        delete freshTask.pendingJoinParticipantId
         this.applyCounterProjection(freshTask, sharedProjection)
         await this.saveRoom(freshRoom)
         await this.broadcastState(freshRoom)
@@ -2865,6 +2930,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         projection: callerProjection,
       })
     } catch (error) {
+      if (joinReservation)
+        await this.clearCounterJoinReservation(
+          joinReservation.taskId,
+          joinReservation.participantId
+        )
       return this.counterFailure(error)
     }
   }

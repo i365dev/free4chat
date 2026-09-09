@@ -16,6 +16,9 @@ type DomainState = {
 type SessionOptions = {
   deferFirstJoin?: Promise<void>
   onFirstJoinStarted?: () => void
+  deferJoinParticipantId?: string
+  onJoinStarted?: (participantId: string) => void
+  failNextJoinParticipantId?: string
   failStateReadsAfterIncrement?: boolean
 }
 
@@ -140,13 +143,21 @@ function makeSession(options: SessionOptions = {}) {
       const path = match[2]
       if (path === "/join") {
         joinCalls += 1
-        if (joinCalls === 1) {
-          options.onFirstJoinStarted?.()
-          if (options.deferFirstJoin) await options.deferFirstJoin
-        }
         const body = JSON.parse(String(init?.body)) as {
           participantId: string
           displayName: string
+        }
+        options.onJoinStarted?.(body.participantId)
+        if (joinCalls === 1) options.onFirstJoinStarted?.()
+        if (
+          options.deferFirstJoin &&
+          (options.deferJoinParticipantId === undefined ||
+            options.deferJoinParticipantId === body.participantId)
+        )
+          await options.deferFirstJoin
+        if (options.failNextJoinParticipantId === body.participantId) {
+          options.failNextJoinParticipantId = undefined
+          return Response.json({ code: "counter_unavailable" }, { status: 503 })
         }
         const accessToken = `domain-token-${body.participantId}`
         domain.tokens[body.participantId] = accessToken
@@ -412,6 +423,90 @@ describe("RoomSession Counter bridge experiment", () => {
     }
     expect(room.participants["room-b"]).toBeDefined()
     expect(room.counterTask?.instanceId).toBe("counter-instance")
+  })
+
+  it("reserves the second slot before concurrent joins reach Counter", async () => {
+    let releaseBJoin!: () => void
+    let signalBJoin!: () => void
+    const bJoinStarted = new Promise<void>((resolve) => {
+      signalBJoin = resolve
+    })
+    const bJoinGate = new Promise<void>((resolve) => {
+      releaseBJoin = resolve
+    })
+    const { store, domain, calls, control } = makeSession({
+      deferFirstJoin: bJoinGate,
+      deferJoinParticipantId: "room-b",
+      onJoinStarted: (participantId) => {
+        if (participantId === "room-b") signalBJoin()
+      },
+    })
+
+    expect((await startCounter(control)).response.status).toBe(200)
+    expect((await registerHuman(control, "room-b", "B")).response.status).toBe(
+      200
+    )
+    expect((await registerHuman(control, "room-c", "C")).response.status).toBe(
+      200
+    )
+
+    const bJoinPromise = joinCounterAsB(control)
+    await bJoinStarted
+    const rejectedC = await control({
+      action: "counter-join",
+      participantId: "room-c",
+      token: "room-token-c",
+    })
+    expect(rejectedC.response.status).toBe(409)
+    expect(rejectedC.json.error).toBe("counter_join_pending")
+
+    releaseBJoin()
+    const joinedB = await bJoinPromise
+    expect(joinedB.response.status).toBe(200)
+
+    const room = store.get("room") as {
+      participants: Record<string, unknown>
+      counterTask: {
+        pendingJoinParticipantId?: string
+        capabilities: Record<string, unknown>
+      }
+    }
+    expect(Object.keys(room.participants)).toHaveLength(3)
+    expect(Object.keys(room.counterTask.capabilities)).toEqual([
+      "room-a",
+      "room-b",
+    ])
+    expect(room.counterTask.pendingJoinParticipantId).toBeUndefined()
+    expect(Object.keys(domain.participants)).toEqual(["room-a", "room-b"])
+    expect(
+      calls
+        .filter((call) => call.url.endsWith("/join"))
+        .map(
+          (call) =>
+            (JSON.parse(String(call.init.body)) as { participantId: string })
+              .participantId
+        )
+    ).toEqual(["room-a", "room-b"])
+    expect(domain.currentTurnParticipantId).not.toBe("room-c")
+  })
+
+  it("clears a failed pre-commit join reservation", async () => {
+    const { store, control } = makeSession({
+      failNextJoinParticipantId: "room-b",
+    })
+    expect((await startCounter(control)).response.status).toBe(200)
+    expect((await registerHuman(control)).response.status).toBe(200)
+
+    const failed = await joinCounterAsB(control)
+    expect(failed.response.status).toBe(503)
+    expect(
+      (
+        store.get("room") as {
+          counterTask: { pendingJoinParticipantId?: string }
+        }
+      ).counterTask.pendingJoinParticipantId
+    ).toBeUndefined()
+    expect((await joinCounterAsB(control)).response.status).toBe(200)
   })
 
   it("clears the Counter task when an attached Human explicitly leaves", async () => {

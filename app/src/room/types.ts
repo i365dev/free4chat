@@ -429,6 +429,7 @@ export interface CounterTaskPublic {
 // access tokens are never passed to RoomState, Room messages, or Agent input.
 export interface CounterTaskRecord extends CounterTaskPublic {
   instanceId: string
+  pendingJoinParticipantId?: string
   capabilities: Record<
     string,
     { participantId: string; displayName: string; accessToken: string }
