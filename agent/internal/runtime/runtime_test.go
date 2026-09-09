@@ -992,6 +992,12 @@ func (a *fakeAdapter) scopedSessionNewSnapshot(scope string) []bool {
 	return append([]bool(nil), a.scopedSessionNews[scope]...)
 }
 
+func (a *fakeAdapter) scopedGenerationSnapshot(scope string) int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.scopedGenerations[scope]
+}
+
 func (a *fakeAdapter) sessionsInt() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
