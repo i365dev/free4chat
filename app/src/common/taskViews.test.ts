@@ -105,4 +105,18 @@ describe("task interaction projections (#309)", () => {
     }
     expect(buildTaskProjections([task, terminal])[0]?.status).toBe("Completed")
   })
+
+  it("keeps scoped messages in Room when their canonical request was evicted", () => {
+    const orphan: Message = {
+      peerId: "agent-x",
+      name: "Agent",
+      kind: "agent",
+      type: "text",
+      text: "orphaned task output",
+      taskRequestId: "evicted-request",
+    }
+
+    expect(buildTaskProjections([orphan])).toEqual([])
+    expect(roomMessagesForView([orphan])).toEqual([orphan])
+  })
 })

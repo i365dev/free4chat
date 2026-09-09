@@ -706,14 +706,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   // #309: task text is allowed only when its correlation resolves to a
-  // retained canonical collaboration request whose primary target is still
-  // the connected Agent. This keeps stale/arbitrary client scope labels from
-  // becoming Room state or Runtime routing hints.
+  // retained canonical collaboration request with a connected Agent
+  // endpoint. A request can be Agent→Human or Agent→Agent, so the requester
+  // and target are both considered endpoints rather than assuming the target
+  // is always the sole Agent.
   private taskRequestFor(
     room: RoomRecord,
     rawRequestId: unknown
   ):
-    | { ok: true; requestId: string; targetParticipantId: string }
+    | {
+        ok: true
+        requestId: string
+        primaryAgentParticipantId: string
+        agentParticipantIds: string[]
+      }
     | { ok: false; error: string } {
     if (typeof rawRequestId !== "string")
       return { ok: false, error: "invalid_task_request" }
@@ -722,13 +728,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.warmCollabRegistry(room)
     const record = this.collabRegistry.find(requestId)
     if (!record) return { ok: false, error: "unknown_task_request" }
+    const from = room.participants[record.fromParticipantId]
     const target = room.participants[record.targetParticipantId]
-    if (!target || target.kind !== "agent" || !target.connected)
+    const agentParticipantIds = [from, target]
+      .filter(
+        (participant): participant is NonNullable<typeof participant> =>
+          participant?.kind === "agent" && participant.connected
+      )
+      .map((participant) => participant.id)
+      .filter((id, index, ids) => ids.indexOf(id) === index)
+    if (agentParticipantIds.length === 0)
       return { ok: false, error: "task_target_not_in_room" }
+    const primaryAgentParticipantId =
+      target?.kind === "agent" && target.connected
+        ? target.id
+        : from?.kind === "agent" && from.connected
+        ? from.id
+        : agentParticipantIds[0]
     return {
       ok: true,
       requestId,
-      targetParticipantId: record.targetParticipantId,
+      primaryAgentParticipantId,
+      agentParticipantIds,
     }
   }
 
@@ -1781,13 +1802,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participantId: string
   ): AgentEvent {
     // #303: reuse the already validated structured collaboration correlation
-    // instead of storing a second scope field in Room state. Only the target
-    // Agent receives this task scope; ordinary text and non-target context
-    // remain in the default Room conversation.
+    // instead of storing a second scope field in Room state. Either Agent
+    // endpoint may continue an Agent→Human or Agent→Agent request; ordinary
+    // text and non-endpoint context remain in the default Room conversation.
     const taskRequest = message.taskRequestId
       ? this.collabRegistry.find(message.taskRequestId)
       : undefined
     const scopeId =
+      taskRequest?.fromParticipantId === participantId ||
       taskRequest?.targetParticipantId === participantId
         ? `task:${message.taskRequestId}`
         : message.collab?.targetParticipantId === participantId &&
@@ -2975,7 +2997,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (
         taskRequest &&
         taskRequest.ok === true &&
-        taskRequest.targetParticipantId !== participant.id
+        !taskRequest.agentParticipantIds.includes(participant.id)
       )
         return this.json({ error: "task_target_mismatch" }, 403)
       participant.lastSeenAt = Date.now()
@@ -5060,7 +5082,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(taskRequest && taskRequest.ok === true
           ? {
               taskRequestId: taskRequest.requestId,
-              targets: [taskRequest.targetParticipantId],
+              targets: [taskRequest.primaryAgentParticipantId],
             }
           : (() => {
               const targets = normalizeChatTargets(room, message.targets)

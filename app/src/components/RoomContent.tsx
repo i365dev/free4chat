@@ -100,6 +100,7 @@ export default function RoomContent({
   const [taskError, setTaskError] = useState("")
   const [activeInteraction, setActiveInteraction] = useState("room")
   const pendingLocalTaskSummaries = useRef<string[]>([])
+  const autoOpenedTaskIds = useRef<Set<string>>(new Set())
   // #236 follow-up: shared popover state so the Live Transcript setup copy
   // can cross-open the Invite Agent popover (no routing machinery).
   const [agentInviteOpen, setAgentInviteOpen] = useState(false)
@@ -191,6 +192,7 @@ export default function RoomContent({
         : undefined
     if (created) {
       pending.splice(pending.indexOf(created.title), 1)
+      autoOpenedTaskIds.current.add(created.requestId)
       setActiveInteraction(created.requestId)
       return
     }
@@ -200,9 +202,14 @@ export default function RoomContent({
     // remains visible, while unrelated task views stay behind the switcher.
     if (activeInteraction !== "room" || !effectiveLocalParticipantId) return
     const incoming = taskProjections.find(
-      (task) => task.targetParticipantId === effectiveLocalParticipantId
+      (task) =>
+        task.targetParticipantId === effectiveLocalParticipantId &&
+        !autoOpenedTaskIds.current.has(task.requestId)
     )
-    if (incoming) setActiveInteraction(incoming.requestId)
+    if (incoming) {
+      autoOpenedTaskIds.current.add(incoming.requestId)
+      setActiveInteraction(incoming.requestId)
+    }
   }, [activeInteraction, effectiveLocalParticipantId, taskProjections])
 
   useEffect(() => {
@@ -905,6 +912,7 @@ export default function RoomContent({
           </div>
           <div className="min-h-0 flex-1">
             <TextChatCard
+              key={activeInteraction}
               room={roomName}
               nickName={nickName}
               messages={interactionMessages}

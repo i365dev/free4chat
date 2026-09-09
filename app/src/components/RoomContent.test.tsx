@@ -238,14 +238,77 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByText("T output")).not.toBeInTheDocument()
     expect(screen.queryByText("U output")).not.toBeInTheDocument()
 
+    const composer = screen.getByLabelText(
+      "Message the room or @ an Agent"
+    ) as HTMLTextAreaElement
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set
+    setter!.call(composer, "Room draft must not follow a task")
+    composer.dispatchEvent(new Event("input", { bubbles: true }))
+
     fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
     expect(screen.getByText("T output")).toBeInTheDocument()
     expect(screen.queryByText("ROOM marker")).not.toBeInTheDocument()
     expect(screen.queryByText("U output")).not.toBeInTheDocument()
+    expect(
+      (
+        screen.getByLabelText(
+          "Message the room or @ an Agent"
+        ) as HTMLTextAreaElement
+      ).value
+    ).toBe("")
 
     fireEvent.click(screen.getByTestId("interaction-tab-task-U"))
     expect(screen.getByText("U output")).toBeInTheDocument()
     expect(screen.queryByText("T output")).not.toBeInTheDocument()
+  })
+
+  it("auto-opens an incoming task only once so Room can be selected again", async () => {
+    const incomingTask: Message = {
+      peerId: "agent-x",
+      name: "Agent X",
+      kind: "agent",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "incoming-task",
+        kind: "request",
+        fromParticipantId: "agent-x",
+        targetParticipantId: "human-local",
+        summary: "Incoming task",
+      },
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [incomingTask],
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("interaction-tab-task-incoming-task")
+      ).toHaveAttribute("aria-selected", "true")
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-room"))
+    expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
+    )
   })
 
   it("copies the ordinary Agent invite only through the popover action, without a provider claim", async () => {

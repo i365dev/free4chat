@@ -67,5 +67,13 @@ export function buildTaskProjections(messages: Message[]): TaskProjection[] {
 }
 
 export function roomMessagesForView(messages: Message[]): Message[] {
-  return messages.filter((message) => !isTaskCorrelatedMessage(message))
+  const retainedRequestIds = new Set(
+    messages
+      .filter((message) => message.collab?.kind === "request")
+      .map((message) => message.collab!.requestId)
+  )
+  return messages.filter((message) => {
+    const requestId = message.taskRequestId ?? message.collab?.requestId
+    return !requestId || !retainedRequestIds.has(requestId)
+  })
 }
