@@ -531,6 +531,69 @@ func (c *Client) RequestPermission(
 	return &Error{Message: "Room permission request rejected", Code: CodeToolError}
 }
 
+// UpdateAgentActivity publishes a bounded transient activity transition. The
+// participant handle stays in private request headers; the body contains no
+// Harness payload and an empty state clears the projection.
+func (c *Client) UpdateAgentActivity(
+	participantHandle, scope string, activity types.AgentActivityState,
+) error {
+	if !validAgentActivityScope(scope) || (activity != "" && !activity.Valid()) {
+		return &Error{Message: "invalid Agent activity", Code: CodeToolError}
+	}
+	handle, err := parseRoomControlHandle(participantHandle)
+	if err != nil {
+		return err
+	}
+	endpoint, err := c.roomControlEndpoint("/api/room/agent-activity")
+	if err != nil {
+		return err
+	}
+	var wireActivity any
+	if activity != "" {
+		wireActivity = activity
+	}
+	payload, err := json.Marshal(map[string]any{
+		"scopeId":  scope,
+		"activity": wireActivity,
+	})
+	if err != nil {
+		return &Error{Message: "encode Agent activity", Code: CodeTransient}
+	}
+	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return &Error{Message: "create Agent activity request", Code: CodeTransient}
+	}
+	request.Header.Set("Content-Type", headerContentType)
+	request.Header.Set("Accept", headerContentType)
+	request.Header.Set("User-Agent", defaultUserAgent)
+	request.Header.Set("Origin", endpoint.Scheme+"://"+endpoint.Host)
+	request.Header.Set("X-Room-Id", handle.Room)
+	request.Header.Set("X-Room-Participant-Id", handle.ParticipantID)
+	request.Header.Set("X-Room-Participant-Token", handle.ParticipantToken)
+	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return &Error{Message: "Agent activity request failed", Code: CodeTransient}
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode <= 299 {
+		return nil
+	}
+	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+		return &Error{Message: "Agent activity temporarily unavailable", Code: CodeTransient}
+	}
+	return &Error{Message: "Agent activity rejected", Code: CodeToolError}
+}
+
+func validAgentActivityScope(value string) bool {
+	if len(value) == 0 || len(value) > types.MaxLogicalScopeLength || strings.TrimSpace(value) != value {
+		return false
+	}
+	if value == "room" {
+		return true
+	}
+	return strings.HasPrefix(value, "task:") && validPermissionRequestID(strings.TrimPrefix(value, "task:"))
+}
+
 func validPermissionRequestID(value string) bool {
 	if len(value) < 4 || len(value) > 64 {
 		return false

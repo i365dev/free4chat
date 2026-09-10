@@ -1,6 +1,11 @@
 import { DurableObject } from "cloudflare:workers"
 
 import {
+  agentActivityKey,
+  isAgentActivityScope,
+  isAgentActivityState,
+} from "./agentActivity"
+import {
   agentCapabilitiesFrom,
   CollabRegistry,
   COLLAB_ACTION_TYPE,
@@ -139,6 +144,7 @@ import type {
   PermissionEvent,
   PermissionRequestRecord,
   RuntimeHostProjection,
+  AgentActivityProjection,
 } from "../room/types"
 
 const RECONNECT_GRACE_MS = 30 * 1000
@@ -164,6 +170,7 @@ const RESIDENT_EVENT_MAX_BYTES = 2 << 20
 // silently truncating older, still-active mids — see the
 // "agent-track-subscribed" action.
 const MAX_AGENT_SUBSCRIBED_MIDS = 64
+const MAX_AGENT_ACTIVITY_ENTRIES = 64
 // How soon to retry a failed Cloudflare tracks/close call (Blocker 1): must
 // be much sooner than the lease/reconnect-driven alarm deadlines that
 // otherwise dominate scheduleNextAlarm(), since a stuck pending cleanup
@@ -557,6 +564,15 @@ type ControlRequest =
       transcriptLimit?: number
     }
   | {
+      // Runtime-only coarse Harness activity. This is transient in-memory
+      // state: it never enters RoomRecord, the message ring, or waiters.
+      action: "agent-activity"
+      participantId: string
+      token: string
+      scopeId: unknown
+      activity: unknown
+    }
+  | {
       action: "agent-media-attach"
       participantId: string
       token: string
@@ -687,6 +703,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // after an eviction/restart (collabRebuilt flag below).
   private readonly collabRegistry = new CollabRegistry()
   private collabRebuilt = false
+  private readonly transientAgentActivities = new Map<
+    string,
+    AgentActivityProjection
+  >()
 
   // Correlation must never leak across room generations on the same DO
   // instance (a recycled room name after expiry would otherwise inherit
@@ -1271,6 +1291,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
       agentVoice: room.agentVoice,
       agentVoiceMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+      agentActivities: [...this.transientAgentActivities.values()].filter(
+        (activity) => room.participants[activity.agentParticipantId]?.connected
+      ),
+    }
+  }
+
+  private clearAgentActivitiesForParticipant(participantId: string): void {
+    for (const [key, activity] of this.transientAgentActivities) {
+      if (activity.agentParticipantId === participantId)
+        this.transientAgentActivities.delete(key)
     }
   }
 
@@ -1413,6 +1443,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // A recycled room name must not inherit collaboration bookkeeping from
     // the expired generation (stale requestIds could suppress new ones).
     this.resetCollabTracking()
+    // Activity is transient in-memory state. Clear it at the same generation
+    // boundary so an expired Room cannot consume capacity in its replacement.
+    this.transientAgentActivities.clear()
     // Best-effort, single attempt only — deliberately not retried through
     // the usual pendingMediaCleanup/alarm mechanism like the other
     // revocation sites: room expiry only fires for an *empty* room (see
@@ -2189,6 +2222,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant.connected = false
     participant.connectionNonce = undefined
     participant.lastSeenAt = Date.now()
+    this.clearAgentActivitiesForParticipant(participant.id)
     await this.saveRoom(room)
     await this.scheduleNextAlarm(room)
     await this.broadcastState(room)
@@ -2234,6 +2268,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
     }
     const wasConnected = participant.connected
+    // A reconnect is a fresh transient-activity boundary. Do not replay a
+    // state that belonged to the replaced resident socket.
+    this.clearAgentActivitiesForParticipant(participant.id)
     const connectionNonce = crypto.randomUUID()
     participant.connected = true
     participant.connectionNonce = connectionNonce
@@ -2455,6 +2492,71 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (request.action === "agent-wait") return this.waitForAgent(request)
+
+    if (request.action === "agent-activity") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      if (!isAgentActivityScope(request.scopeId))
+        return this.json({ error: "invalid_activity_scope" }, 400)
+      const activityState = request.activity
+      let normalizedActivity: AgentActivityProjection["state"] | null
+      if (activityState === null) normalizedActivity = null
+      else if (isAgentActivityState(activityState))
+        normalizedActivity = activityState
+      else return this.json({ error: "invalid_activity_state" }, 400)
+      if (normalizedActivity !== null && !participant.connected)
+        return this.json({ error: "agent_disconnected" }, 409)
+
+      if (request.scopeId.startsWith("task:")) {
+        const resolution = resolveTaskRequest(
+          buildTaskProjectionIndex(room.messages, room.participants),
+          request.scopeId.slice("task:".length),
+          room.participants
+        )
+        if (
+          resolution.ok === false ||
+          !resolution.agentParticipantIds.includes(participant.id)
+        )
+          return this.json({ error: "invalid_activity_scope" }, 403)
+      }
+
+      const key = agentActivityKey(participant.id, request.scopeId)
+      const previous = this.transientAgentActivities.get(key)
+      if (normalizedActivity === null) {
+        if (!previous) return this.json({ ok: true, changed: false })
+        this.transientAgentActivities.delete(key)
+        await this.broadcast({
+          type: "agentActivity",
+          activity: null,
+          agentParticipantId: participant.id,
+          scopeId: request.scopeId,
+        })
+        return this.json({ ok: true, changed: true })
+      }
+      if (previous?.state === normalizedActivity)
+        return this.json({ ok: true, changed: false })
+      if (
+        !previous &&
+        this.transientAgentActivities.size >= MAX_AGENT_ACTIVITY_ENTRIES
+      )
+        return this.json({ error: "activity_capacity" }, 429)
+      const activity: AgentActivityProjection = {
+        agentParticipantId: participant.id,
+        scopeId: request.scopeId,
+        state: normalizedActivity,
+      }
+      this.transientAgentActivities.set(key, activity)
+      await this.broadcast({ type: "agentActivity", activity })
+      return this.json({ ok: true, changed: true })
+    }
 
     if (request.action === "agent-read-context") {
       const room = await this.activeRoom()
@@ -3764,6 +3866,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         this.stageAgentMediaRevocation(room, participant.id, "subscribed")
       this.expirePermissionRequests(room, Date.now(), participant.id)
       const departingSurface = participant.surface
+      this.clearAgentActivitiesForParticipant(participant.id)
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
       const pendingDuration = this.updateCollaborationActivity(room)
@@ -4190,6 +4293,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.stageMediaGrantRevocations(room, grantTransition.revocations)
     if (participant.kind === "agent")
       this.expirePermissionRequests(room, Date.now(), participant.id)
+    if (participant.kind === "agent")
+      this.clearAgentActivitiesForParticipant(participant.id)
     if (participant.kind === "human")
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
     delete room.participants[participant.id]
@@ -5530,6 +5635,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           permissionExpired = true
           changed = true
         }
+        if (expiredAgent) this.clearAgentActivitiesForParticipant(id)
         delete room.participants[id]
         this.garbageCollectRuntimeHostAuthorization(room)
         const pendingDuration = this.updateCollaborationActivity(room)

@@ -17,6 +17,13 @@ function card(overrides: Record<string, unknown> = {}) {
 }
 
 describe("UserCard Agent Voice", () => {
+  it("renders only the coarse transient Agent activity label", () => {
+    const { getByTestId } = render(
+      <UserCard {...card({ activity: "using_tools" })} />
+    )
+    expect(getByTestId("agent-activity")).toHaveTextContent("Using tools")
+  })
+
   it("shows an accessible per-Agent enable control", () => {
     const props = card()
     const { getByRole } = render(<UserCard {...props} />)

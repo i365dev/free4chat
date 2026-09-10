@@ -212,6 +212,13 @@ type ResidentRuntime struct {
 	residentMediaStateMu    sync.Mutex
 	residentMediaState      types.ResidentMediaState
 	residentMediaStateValid bool
+	activityMu              sync.Mutex
+	activities              map[string]types.AgentActivityState
+	activityTurnActive      bool
+	activityScope           string
+	activityPublishMu       sync.Mutex
+	activityPublishQueue    map[string]activityPublication
+	activityPublisherActive bool
 	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
 	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
 	// mediaMu; without this generation fence, a late old callback could end a
@@ -345,8 +352,10 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		providerClaim:      providerClaim,
 		providerHandles:    providerHandles,
 		pendingPermissions: make(map[string]*pendingRoomPermission),
+		activities:         make(map[string]types.AgentActivityState),
 	}
 	configurePermissionResponder(runtime)
+	configureActivityHandler(runtime)
 	return runtime
 }
 
@@ -637,6 +646,9 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.participatingSince = time.Now().UnixMilli()
 	}
 	r.mu.Unlock()
+	// The Room clears transient activity when the resident event connection is
+	// replaced. A new join/rejoin therefore starts with a fresh local cache too.
+	r.resetActivityLocal()
 	// Media controller (re)build happens OUTSIDE the runtime lock: it may
 	// stop the previous bridge, create a transcriber, and perform a compatibility
 	// RoomInfo bootstrap — none of that may hold the runtime mutex.
@@ -755,6 +767,7 @@ func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
 		// local bridge can run again.
 		if !r.isStopped() {
 			r.failClosedResidentMediaState()
+			r.clearActivity()
 		}
 		if r.isStopped() {
 			return
@@ -900,13 +913,15 @@ func (r *ResidentRuntime) setResidentStream(
 	stream types.ResidentEventStream,
 ) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.stopped {
+		r.mu.Unlock()
 		return false
 	}
 	r.residentMu.Lock()
 	r.resident = stream
 	r.residentMu.Unlock()
+	r.mu.Unlock()
+	r.resetActivityLocal()
 	return true
 }
 
@@ -1220,7 +1235,9 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Cancel()
 		}
 
+		r.beginActivity(scope)
 		result, err := r.runHarnessTurn(scope, *input, generation)
+		r.finishActivity(scope)
 		if err != nil {
 			r.mu.Lock()
 			r.lastError = err.Error()
@@ -1585,6 +1602,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 		r.eventBuffer.Clear()
 		r.mu.Unlock()
 		r.cancelPendingPermissions(errors.New("runtime stopped"))
+		r.clearActivity()
 		close(r.stopCh)
 		r.closeResidentStream()
 		transitioned = true

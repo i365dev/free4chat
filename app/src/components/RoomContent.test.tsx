@@ -311,6 +311,73 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
   })
 
+  it("shows activity from every connected Agent in the active task", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-t",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-codex",
+        summary: "Review this task",
+      },
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-pi",
+          name: "Pi",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-codex",
+          scopeId: "task:task-t",
+          state: "responding",
+        },
+        {
+          agentParticipantId: "agent-pi",
+          scopeId: "task:task-t",
+          state: "thinking",
+        },
+      ],
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-t"))
+    const activity = screen.getByTestId("task-agent-activity")
+    expect(activity).toHaveTextContent("Codex · Responding…")
+    expect(activity).toHaveTextContent("Pi · Thinking…")
+  })
+
   it("copies the ordinary Agent invite only through the popover action, without a provider claim", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })

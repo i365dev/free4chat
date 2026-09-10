@@ -252,6 +252,15 @@ describe("RoomSession expiry cleanup", () => {
 
   it("allows a fresh create to start without any prior-generation keys", async () => {
     const { session, room, store } = lifecycleHarness()
+    ;(
+      session as unknown as {
+        transientAgentActivities: Map<string, unknown>
+      }
+    ).transientAgentActivities.set("old-agent:room", {
+      agentParticipantId: "agent",
+      scopeId: "room",
+      state: "thinking",
+    })
     await (
       session as unknown as {
         expireRoom: (room: RoomRecord) => Promise<void>
@@ -280,6 +289,13 @@ describe("RoomSession expiry cleanup", () => {
     expect(fresh.messages).toEqual([])
     expect(store.get("live-transcript")).not.toEqual({ stale: true })
     expect(store.has("future-unknown-key")).toBe(false)
+    expect(
+      (
+        session as unknown as {
+          transientAgentActivities: Map<string, unknown>
+        }
+      ).transientAgentActivities.size
+    ).toBe(0)
   })
 
   it("does not expire waiters or sockets from a recycled Room generation", async () => {

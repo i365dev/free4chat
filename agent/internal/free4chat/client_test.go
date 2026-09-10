@@ -203,6 +203,62 @@ func TestRequestPermissionUsesNarrowRoomControlWire(t *testing.T) {
 	}
 }
 
+func TestUpdateAgentActivityUsesBoundedRoomControlWire(t *testing.T) {
+	var seenPath string
+	var seenHeaders http.Header
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenHeaders = r.Header.Clone()
+		if err := json.NewDecoder(r.Body).Decode(&seenBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	handleBytes, _ := json.Marshal(map[string]string{
+		"room": "room-activity", "participantId": "agent-activity", "participantToken": "secret-token",
+	})
+	handle := base64.RawURLEncoding.EncodeToString(handleBytes)
+	client := New(server.URL + "/mcp")
+	if err := client.UpdateAgentActivity(handle, "task:req-1", types.AgentActivityThinking); err != nil {
+		t.Fatal(err)
+	}
+	if seenPath != "/api/room/agent-activity" ||
+		seenHeaders.Get("X-Room-Id") != "room-activity" ||
+		seenHeaders.Get("X-Room-Participant-Id") != "agent-activity" ||
+		seenHeaders.Get("X-Room-Participant-Token") != "secret-token" ||
+		seenBody["scopeId"] != "task:req-1" || seenBody["activity"] != string(types.AgentActivityThinking) {
+		t.Fatalf("wrong activity wire: path=%q headers=%v body=%#v", seenPath, seenHeaders, seenBody)
+	}
+	if err := client.UpdateAgentActivity(handle, "room", ""); err != nil {
+		t.Fatal(err)
+	}
+	if seenBody["activity"] != nil {
+		t.Fatalf("clear activity must be null: %#v", seenBody)
+	}
+}
+
+func TestUpdateAgentActivityRejectsInvalidScopeAndState(t *testing.T) {
+	client := New("http://127.0.0.1:1/mcp")
+	handleBytes, _ := json.Marshal(map[string]string{
+		"room": "room", "participantId": "agent", "participantToken": "token",
+	})
+	handle := base64.RawURLEncoding.EncodeToString(handleBytes)
+	for _, test := range []struct {
+		scope string
+		state types.AgentActivityState
+	}{
+		{"task:", types.AgentActivityWorking},
+		{"room?", types.AgentActivityWorking},
+		{"room", "private"},
+	} {
+		if err := client.UpdateAgentActivity(handle, test.scope, test.state); err == nil || CodeOf(err) != CodeToolError {
+			t.Fatalf("invalid activity %q/%q error = %v", test.scope, test.state, err)
+		}
+	}
+}
+
 // fakeServer emulates the deployed /mcp wire contract closely enough to
 // exercise transport classification and payload parsing.
 type fakeServer struct {

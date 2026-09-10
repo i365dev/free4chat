@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 
+import { agentActivityLabel } from "../common/agentActivity"
 import { UserInfo } from "../common/types"
 import AudioVisualizer from "../components/AudioVisualizer"
 import ParticipantAvatar from "../components/ParticipantAvatar"
@@ -95,6 +96,14 @@ function UserCard(user: UserCardProps) {
           {user.kind === "agent" && (
             <span className="participant-card__kind mt-1 rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
               🤖 Agent
+            </span>
+          )}
+          {user.kind === "agent" && user.activity && (
+            <span
+              data-testid="agent-activity"
+              className="mt-1 max-w-full truncate text-[9px] text-blue-200/80"
+            >
+              {agentActivityLabel(user.activity)}…
             </span>
           )}
           {user.kind === "agent" && user.voiceAvailable && (
@@ -273,6 +282,14 @@ function UserCard(user: UserCardProps) {
           <span className="participant-card__kind rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
             {user.kind === "agent" ? "🤖 Agent" : "Human"}
           </span>
+          {user.kind === "agent" && user.activity && (
+            <span
+              data-testid="agent-activity"
+              className="text-[10px] text-blue-200/80"
+            >
+              {agentActivityLabel(user.activity)}…
+            </span>
+          )}
           {user.kind === "agent" && user.voiceAvailable && (
             <button
               type="button"

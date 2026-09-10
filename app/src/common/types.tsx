@@ -1,4 +1,9 @@
-import type { CollabEvent, PermissionEvent, RoomSurfaceV1 } from "../room/types"
+import type {
+  AgentActivityState,
+  CollabEvent,
+  PermissionEvent,
+  RoomSurfaceV1,
+} from "../room/types"
 
 export interface UserInfo {
   name: string
@@ -19,6 +24,7 @@ export interface UserInfo {
   // participant-specific agentVoice authorization. Never persisted here.
   voiceAvailable?: boolean
   voiceEnabled?: boolean
+  activity?: AgentActivityState
 }
 
 export type MessageType = "text" | "image" | "file" | "action"
