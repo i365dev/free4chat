@@ -144,7 +144,7 @@ describe("composer keyboard semantics", () => {
     )
   })
 
-  it("sends task text with the existing task correlation and no ad hoc picker target", () => {
+  it("sends task text with the existing task correlation and primary routing by default", () => {
     const { composer, onSendText } = renderCard({
       taskRequestId: "task-123",
     })
@@ -152,6 +152,37 @@ describe("composer keyboard semantics", () => {
     fireEvent.keyDown(composer, { key: "Enter" })
     expect(onSendText).toHaveBeenCalledWith("continue the task", [], "task-123")
     expect(screen.queryByLabelText("More actions")).not.toBeInTheDocument()
+  })
+
+  it("sends a selected Agent participant id from a Task composer", async () => {
+    const { composer, onSendText } = renderCard({
+      taskRequestId: "task-123",
+    })
+    typeAtCaret(composer, "@Age please review", 4)
+
+    fireEvent.mouseDown(await screen.findByText("Agent B"))
+    await waitFor(() => expect(composer.value).toContain("@Agent B "))
+    fireEvent.keyDown(composer, { key: "Enter" })
+
+    expect(onSendText).toHaveBeenCalledWith(
+      expect.stringContaining("@Agent B"),
+      ["agent-1"],
+      "task-123"
+    )
+  })
+
+  it("does not route a hand-typed Task @Name without semantic selection", () => {
+    const { composer, onSendText } = renderCard({
+      taskRequestId: "task-123",
+    })
+    typeMessage(composer, "@Agent B please review")
+    fireEvent.keyDown(composer, { key: "Enter" })
+
+    expect(onSendText).toHaveBeenCalledWith(
+      "@Agent B please review",
+      [],
+      "task-123"
+    )
   })
 
   it("dismisses the mention picker with Escape so Enter sends normally", () => {

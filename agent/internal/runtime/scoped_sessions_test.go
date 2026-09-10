@@ -192,6 +192,184 @@ func TestTaskScopedHarnessOutputPreservesRequestCorrelation(t *testing.T) {
 	}
 }
 
+func TestHumanTaskIsAcceptedBeforeFirstScopedHarnessTurn(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "human-task-lifecycle-test",
+		RoomID:     "room-human-task-lifecycle",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	var acceptedBeforeRun bool
+	adapter.scopedRunHook = func(scope string) {
+		if scope != "task:T" {
+			t.Fatalf("unexpected scope: %s", scope)
+		}
+		responses := client.snapshotCollabResponses()
+		if len(responses) != 1 || responses[0].RequestID != "request-T" || responses[0].Decision != "accepted" {
+			t.Fatalf("Human Task was not accepted before Harness execution: %#v", responses)
+		}
+		acceptedBeforeRun = true
+	}
+
+	event := scopedEvent(1, "task:T", "Investigate this")
+	event.Type = "action"
+	event.Participant = types.ParticipantIdentity{ID: "human", Name: "Human", Kind: types.KindHuman}
+	event.Collab = &types.WireCollabEvent{
+		RequestID:           "request-T",
+		Kind:                types.CollabRequest,
+		FromParticipantID:   "human",
+		TargetParticipantID: "agent",
+		Summary:             "Investigate this",
+	}
+	rt.acceptEvent(event)
+	rt.drainTurns()
+
+	if !acceptedBeforeRun {
+		t.Fatal("scoped Harness turn ran without a canonical accepted response")
+	}
+}
+
+func TestHumanTaskAcceptanceFailureDoesNotStartHarnessTurn(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{collabResponseErr: errors.New("accepted failed")}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "human-task-accept-failure-test",
+		RoomID:     "room-human-task-accept-failure",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	event := scopedEvent(1, "task:T", "Investigate this")
+	event.Type = "action"
+	event.Participant = types.ParticipantIdentity{ID: "human", Name: "Human", Kind: types.KindHuman}
+	event.Collab = &types.WireCollabEvent{
+		RequestID:           "request-T",
+		Kind:                types.CollabRequest,
+		FromParticipantID:   "human",
+		TargetParticipantID: "agent",
+	}
+	rt.acceptEvent(event)
+	rt.drainTurns()
+
+	if runs, _ := adapter.scopedRunSnapshot(); len(runs) != 0 {
+		t.Fatalf("Harness ran after accepted failed: %v", runs)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); !reflect.DeepEqual(got, []int64{1}) {
+		t.Fatalf("failed acceptance was incorrectly acknowledged: %v", got)
+	}
+	if status := rt.Status(); status.State != StateReconnecting || status.LastError != "accepted failed" {
+		t.Fatalf("acceptance failure did not preserve retryable failure state: %+v", status)
+	}
+}
+
+func TestHumanTaskAcceptanceRetryTreatsAmbiguousDuplicateAsSuccess(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{
+		// Model a response that committed remotely but whose reply was lost;
+		// the server-side deduplication makes the second call successful.
+		collabResponseErrors: []error{errors.New("accepted committed but response lost"), nil},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "human-task-ambiguous-acceptance-test",
+		RoomID:     "room-human-task-ambiguous-acceptance",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	event := scopedEvent(1, "task:T", "Investigate this")
+	event.Type = "action"
+	event.Participant = types.ParticipantIdentity{ID: "human", Name: "Human", Kind: types.KindHuman}
+	event.Collab = &types.WireCollabEvent{
+		RequestID:           "request-T",
+		Kind:                types.CollabRequest,
+		FromParticipantID:   "human",
+		TargetParticipantID: "agent",
+	}
+	rt.acceptEvent(event)
+	rt.drainTurns()
+	if runs, _ := adapter.scopedRunSnapshot(); len(runs) != 0 {
+		t.Fatalf("Harness ran before duplicate accepted success: %v", runs)
+	}
+	if !rt.shouldRetryHumanTaskAcceptance() {
+		t.Fatal("ambiguous accepted failure did not remain retryable")
+	}
+
+	// A heartbeat invokes the same admission seam without a new Room event.
+	rt.drainTurns()
+	if responses := client.snapshotCollabResponses(); len(responses) != 2 {
+		t.Fatalf("expected one original and one deduplicated accepted call: %#v", responses)
+	}
+	if runs, _ := adapter.scopedRunSnapshot(); len(runs) != 1 {
+		t.Fatalf("ambiguous accepted retry ran Harness %d times", len(runs))
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("successful retry did not acknowledge Task turn: %v", got)
+	}
+}
+
+func TestAgentOriginatedTaskRequestIsNotAutomaticallyAccepted(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "agent-task-lifecycle-test",
+		RoomID:     "room-agent-task-lifecycle",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent-b",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	event := scopedEvent(1, "task:T", "Agent request")
+	event.Type = "action"
+	event.Participant = types.ParticipantIdentity{ID: "agent-a", Name: "Agent A", Kind: types.KindAgent}
+	event.Collab = &types.WireCollabEvent{
+		RequestID:           "request-agent-T",
+		Kind:                types.CollabRequest,
+		FromParticipantID:   "agent-a",
+		TargetParticipantID: "agent-b",
+		Summary:             "Agent request",
+	}
+	rt.acceptEvent(event)
+	rt.drainTurns()
+
+	if responses := client.snapshotCollabResponses(); len(responses) != 0 {
+		t.Fatalf("Agent-originated request was automatically accepted: %#v", responses)
+	}
+}
+
 func TestLegacyAdapterFailsClosedForTaskScope(t *testing.T) {
 	adapter := &legacyOnlyAdapter{}
 	rt := NewResidentRuntime(Options{
@@ -519,6 +697,9 @@ func TestLogicalTaskScopeCapacityEmitsCanonicalFailedCollabResult(t *testing.T) 
 	}
 	if results[0].RequestID != "overflow-request" || results[0].Status != "failed" || results[0].Summary != "Agent cannot start another task right now." {
 		t.Fatalf("unexpected capacity result: %#v", results[0])
+	}
+	if responses := client.snapshotCollabResponses(); len(responses) != 0 {
+		t.Fatalf("capacity rejection claimed Working before failure: %#v", responses)
 	}
 
 	// Existing task scopes and ordinary Room remain usable at capacity.

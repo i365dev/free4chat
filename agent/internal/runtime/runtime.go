@@ -796,6 +796,21 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	heartbeatErrors := make(chan error, 1)
+	retrySignals := make(chan struct{}, 1)
+	type receiveResult struct {
+		result types.WaitResult
+		err    error
+	}
+	receiveResults := make(chan receiveResult, 1)
+	receiveNext := func() {
+		go func() {
+			result, err := stream.Receive(ctx)
+			select {
+			case receiveResults <- receiveResult{result: result, err: err}:
+			case <-ctx.Done():
+			}
+		}()
+	}
 	interval := r.residentHeartbeatInterval()
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -812,28 +827,45 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 					_ = stream.Close()
 					return
 				}
+				// Heartbeats are also the narrow retry clock for a Human Task
+				// whose canonical accepted response failed. Keep the signal
+				// bounded; drainTurns remains the sole serial admission path.
+				select {
+				case retrySignals <- struct{}{}:
+				default:
+				}
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
+	receiveNext()
 	for {
-		result, err := stream.Receive(ctx)
-		if err != nil {
-			select {
-			case heartbeatErr := <-heartbeatErrors:
-				return heartbeatErr
-			default:
+		select {
+		case heartbeatErr := <-heartbeatErrors:
+			return heartbeatErr
+		case <-retrySignals:
+			if r.shouldRetryHumanTaskAcceptance() && !r.isStopped() {
+				r.drainTurns()
 			}
-			if r.isStopped() {
-				return nil
+		case received := <-receiveResults:
+			if received.err != nil {
+				select {
+				case heartbeatErr := <-heartbeatErrors:
+					return heartbeatErr
+				default:
+				}
+				if r.isStopped() {
+					return nil
+				}
+				return received.err
 			}
-			return err
-		}
-		r.advanceFromWait(result)
-		if len(r.pendingScopes()) > 0 && !r.isStopped() {
-			r.drainTurns()
+			r.advanceFromWait(received.result)
+			if len(r.pendingScopes()) > 0 && !r.isStopped() {
+				r.drainTurns()
+			}
+			receiveNext()
 		}
 	}
 }
@@ -1038,7 +1070,7 @@ func (r *ResidentRuntime) drainTurns() {
 		r.mu.Lock()
 		r.turnRunning = false
 		if !r.stopped {
-			if r.harnessFailed {
+			if r.harnessFailed || r.lastErrorSource == "send" {
 				r.state = StateReconnecting
 			} else {
 				r.state = StateWaiting
@@ -1123,6 +1155,34 @@ func (r *ResidentRuntime) drainTurns() {
 		meetingThrough := r.attachTranscriptFor(scope, input)
 		liveThrough := r.attachLiveTranscriptFor(scope, input)
 
+		// A Human-originated Task becomes Working only after its scoped session
+		// is available and immediately before the first real cognition turn.
+		// Agent-originated collaboration keeps its explicit response semantics.
+		if request := humanTaskRequestFor(events, r.currentParticipantID()); request != nil {
+			if _, err := r.CollabResponse(types.CollabResponseArgs{
+				RequestID: request.RequestID,
+				Decision:  "accepted",
+				Summary:   "Agent started working.",
+			}); err != nil {
+				r.mu.Lock()
+				r.lastError = err.Error()
+				r.lastErrorSource = "send"
+				r.state = StateReconnecting
+				r.mu.Unlock()
+				r.log("collab_accept_failed", nil)
+				return
+			}
+			r.mu.Lock()
+			// A successful canonical acceptance resolves the send-origin
+			// admission failure before cognition starts. Do not let the stale
+			// reconnect state survive into the healthy Harness turn.
+			if r.lastErrorSource == "send" {
+				r.lastError = ""
+				r.lastErrorSource = ""
+			}
+			r.mu.Unlock()
+		}
+
 		// A newly addressed turn wins the speaker: stale audio from the
 		// previous response must never keep playing over the new one.
 		if voiceOutput := r.voiceOutput(); voiceOutput != nil {
@@ -1206,6 +1266,41 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Speak(text)
 		}
 	}
+}
+
+// shouldRetryHumanTaskAcceptance is deliberately narrower than a generic
+// retry scheduler. A heartbeat may retry only the admission boundary that can
+// otherwise remain pinned after transport receipt: a Human-originated Task
+// whose canonical accepted response failed. Generic Agent collaboration keeps
+// its existing explicit response semantics and is still driven by its normal
+// event path.
+func (r *ResidentRuntime) shouldRetryHumanTaskAcceptance() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastErrorSource != "send" || r.participantID == "" {
+		return false
+	}
+	hasPendingRequest := func(ref *logicalSessionRef) bool {
+		if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
+			return false
+		}
+		for _, target := range *ref.pendingAddressed {
+			pending, ok := (*ref.pendingContexts)[target]
+			if ok && humanTaskRequestFor(pending.events, r.participantID) != nil {
+				return true
+			}
+		}
+		return false
+	}
+	if hasPendingRequest(r.sessionRefLocked(roomScope)) {
+		return true
+	}
+	for _, scope := range r.scopeOrder {
+		if hasPendingRequest(r.sessionRefLocked(scope)) {
+			return true
+		}
+	}
+	return false
 }
 
 func taskRequestIDForScope(scope string) string {

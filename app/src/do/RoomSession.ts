@@ -106,6 +106,14 @@ import {
   swapSurfaceAfterPersist,
 } from "./surface"
 import {
+  buildTaskProjectionIndex,
+  projectTaskEvent,
+  resolveAgentTaskTargets,
+  resolveHumanTaskTargets,
+  resolveTaskRequest,
+  type TaskProjectionIndex,
+} from "./taskScope"
+import {
   createRuntimeProviderHandle,
   hashRuntimeProviderHandle,
   isRuntimeProviderClaimHash,
@@ -703,54 +711,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }))
     this.collabRegistry.rebuild(entries)
     this.collabRebuilt = true
-  }
-
-  // #309: task text is allowed only when its correlation resolves to a
-  // retained canonical collaboration request with a connected Agent
-  // endpoint. A request can be Agent→Human or Agent→Agent, so the requester
-  // and target are both considered endpoints rather than assuming the target
-  // is always the sole Agent.
-  private taskRequestFor(
-    room: RoomRecord,
-    rawRequestId: unknown
-  ):
-    | {
-        ok: true
-        requestId: string
-        primaryAgentParticipantId: string
-        agentParticipantIds: string[]
-      }
-    | { ok: false; error: string } {
-    if (typeof rawRequestId !== "string")
-      return { ok: false, error: "invalid_task_request" }
-    const requestId = rawRequestId.trim()
-    if (!requestId) return { ok: false, error: "invalid_task_request" }
-    this.warmCollabRegistry(room)
-    const record = this.collabRegistry.find(requestId)
-    if (!record) return { ok: false, error: "unknown_task_request" }
-    const from = room.participants[record.fromParticipantId]
-    const target = room.participants[record.targetParticipantId]
-    const agentParticipantIds = [from, target]
-      .filter(
-        (participant): participant is NonNullable<typeof participant> =>
-          participant?.kind === "agent" && participant.connected
-      )
-      .map((participant) => participant.id)
-      .filter((id, index, ids) => ids.indexOf(id) === index)
-    if (agentParticipantIds.length === 0)
-      return { ok: false, error: "task_target_not_in_room" }
-    const primaryAgentParticipantId =
-      target?.kind === "agent" && target.connected
-        ? target.id
-        : from?.kind === "agent" && from.connected
-        ? from.id
-        : agentParticipantIds[0]
-    return {
-      ok: true,
-      requestId,
-      primaryAgentParticipantId,
-      agentParticipantIds,
-    }
   }
 
   private async loadRoom(): Promise<RoomRecord | null> {
@@ -1799,23 +1759,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private toAgentEvent(
     message: RoomMessage,
-    participantId: string
-  ): AgentEvent {
-    // #303: reuse the already validated structured collaboration correlation
-    // instead of storing a second scope field in Room state. Either Agent
-    // endpoint may continue an Agent→Human or Agent→Agent request; ordinary
-    // text and non-endpoint context remain in the default Room conversation.
-    const taskRequest = message.taskRequestId
-      ? this.collabRegistry.find(message.taskRequestId)
-      : undefined
-    const scopeId =
-      taskRequest?.fromParticipantId === participantId ||
-      taskRequest?.targetParticipantId === participantId
-        ? `task:${message.taskRequestId}`
-        : message.collab?.targetParticipantId === participantId &&
-          message.collab.requestId
-        ? `task:${message.collab.requestId}`
-        : undefined
+    participantId: string,
+    taskProjection: TaskProjectionIndex,
+    historical = false
+  ): AgentEvent | undefined {
+    const task = projectTaskEvent(
+      taskProjection,
+      message,
+      participantId,
+      historical
+    )
+    if (task.kind === "task" && !task.visible) return undefined
+    const scopeId = task.kind === "task" ? task.scopeId : undefined
+    const addressed =
+      task.kind === "task"
+        ? task.addressed
+        : message.targets?.includes(participantId) === true
     return {
       sequence: message.sequence,
       type: message.type,
@@ -1836,7 +1795,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ...(message.permission === undefined
         ? {}
         : { permission: message.permission }),
-      addressed: message.targets?.includes(participantId) === true,
+      addressed,
       createdAt: message.createdAt,
     }
   }
@@ -1872,16 +1831,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     truncated?: boolean
   } {
     this.warmCollabRegistry(room)
+    const taskProjection = buildTaskProjectionIndex(
+      room.messages,
+      room.participants
+    )
     const serverCursor = room.nextMessageSequence
     const clampedCursor = Math.min(Math.max(cursor, 0), serverCursor)
     const events = [
-      ...room.messages.map((message) => ({
-        sequence: message.sequence,
-        event: this.toAgentEvent(message, participantId),
-        peerId: message.peerId,
-        visible: this.isPermissionVisibleToAgent(message, participantId),
-        deliverOwn: this.permissionEventForMessage(message)?.kind === "expired",
-      })),
+      ...room.messages.flatMap((message) => {
+        const event = this.toAgentEvent(message, participantId, taskProjection)
+        return [
+          {
+            sequence: message.sequence,
+            event,
+            peerId: message.peerId,
+            visible: this.isPermissionVisibleToAgent(message, participantId),
+            deliverOwn:
+              this.permissionEventForMessage(message)?.kind === "expired",
+          },
+        ]
+      }),
       ...room.attachments.map((attachment) => ({
         sequence: attachment.sequence,
         event: this.toAttachmentEvent(attachment),
@@ -1899,9 +1868,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           (entry) =>
             entry.sequence > effectiveCursor &&
             (entry.peerId !== participantId || entry.deliverOwn === true) &&
-            entry.visible !== false
+            entry.visible !== false &&
+            entry.event !== undefined
         )
-        .map((entry) => entry.event),
+        .map((entry) => entry.event!),
       cursor: serverCursor,
       expiresAt: room.expiresAt,
       ...(truncated ? { truncated: true } : {}),
@@ -1917,12 +1887,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participantId: string
   ): AgentEvent[] {
     this.warmCollabRegistry(room)
+    const taskProjection = buildTaskProjectionIndex(
+      room.messages,
+      room.participants
+    )
     return [
       ...room.messages
         .filter((message) =>
           this.isPermissionVisibleToAgent(message, participantId)
         )
-        .map((message) => this.toAgentEvent(message, participantId)),
+        .map((message) =>
+          this.toAgentEvent(message, participantId, taskProjection, true)
+        )
+        .filter((event): event is AgentEvent => event !== undefined),
       ...room.attachments.map((attachment) =>
         this.toAttachmentEvent(attachment)
       ),
@@ -2988,18 +2965,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "agent_only" }, 403)
       const text = request.text.trim()
       if (!text) return this.json({ error: "text_required" }, 400)
-      const taskRequest =
+      const taskProjection =
         request.taskRequestId === undefined
           ? undefined
-          : this.taskRequestFor(room, request.taskRequestId)
+          : buildTaskProjectionIndex(room.messages, room.participants)
+      const taskRequest =
+        taskProjection === undefined
+          ? undefined
+          : resolveTaskRequest(
+              taskProjection,
+              request.taskRequestId,
+              room.participants
+            )
       if (taskRequest && taskRequest.ok === false)
         return this.json({ error: taskRequest.error }, 409)
-      if (
-        taskRequest &&
-        taskRequest.ok === true &&
-        !taskRequest.agentParticipantIds.includes(participant.id)
-      )
-        return this.json({ error: "task_target_mismatch" }, 403)
+      const taskTargets =
+        taskRequest && taskRequest.ok === true
+          ? resolveAgentTaskTargets(
+              taskRequest,
+              participant,
+              room.participants,
+              request.targetParticipantIds,
+              MAX_TARGETS
+            )
+          : undefined
+      if (taskTargets && taskTargets.ok === false)
+        return this.json({ error: taskTargets.error }, 409)
       participant.lastSeenAt = Date.now()
       const roomMessage = this.appendMessage(room, {
         id: crypto.randomUUID(),
@@ -3011,14 +3002,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(taskRequest && taskRequest.ok === true
           ? { taskRequestId: taskRequest.requestId }
           : {}),
-        // #165/#234: Agent-originated explicit addressing reuses the exact
-        // Room target semantics of the Human chat path (dedupe, current
-        // participant filter, MAX_TARGETS). Self-targets are dropped so an
-        // Agent can never wake itself into a loop; malformed or stale
-        // entries can only ever degrade to an ordinary unaddressed message.
-        // Human targets are addressed attention for that Human — they never
-        // create a Human workflow/task concept.
-        ...agentTextTargets(request.targetParticipantIds, participant.id, room),
+        // #165/#234: ordinary Agent text reuses the exact Room target
+        // semantics of the Human chat path (dedupe, current participant
+        // filter, MAX_TARGETS). Task text uses the validated task target
+        // result above. Self-targets are dropped so an Agent can never wake
+        // itself into a loop; Human targets are addressed attention for that
+        // Human and never create a Human workflow/task concept.
+        ...(taskTargets && taskTargets.ok === true
+          ? taskTargets.targets.length
+            ? { targets: taskTargets.targets }
+            : {}
+          : agentTextTargets(
+              request.targetParticipantIds,
+              participant.id,
+              room
+            )),
         createdAt: Date.now(),
       })
       await this.saveRoom(room)
@@ -5058,18 +5056,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (message.type === "chat" && message.text.trim()) {
-      const taskRequest =
+      const taskProjection =
         message.taskRequestId === undefined
           ? undefined
-          : this.taskRequestFor(room, message.taskRequestId)
+          : buildTaskProjectionIndex(room.messages, room.participants)
+      const taskRequest =
+        taskProjection === undefined
+          ? undefined
+          : resolveTaskRequest(
+              taskProjection,
+              message.taskRequestId,
+              room.participants
+            )
       if (taskRequest && taskRequest.ok === false) {
         socket.send(JSON.stringify({ type: "error", error: taskRequest.error }))
         return
       }
-      if (taskRequest && message.targets?.length) {
-        socket.send(
-          JSON.stringify({ type: "error", error: "task_targets_forbidden" })
-        )
+      const taskTargets =
+        taskRequest && taskRequest.ok === true
+          ? resolveHumanTaskTargets(
+              taskRequest,
+              participant,
+              room.participants,
+              message.targets,
+              MAX_TARGETS
+            )
+          : undefined
+      if (taskTargets && taskTargets.ok === false) {
+        socket.send(JSON.stringify({ type: "error", error: taskTargets.error }))
         return
       }
       const roomMessage = this.appendMessage(room, {
@@ -5082,7 +5096,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(taskRequest && taskRequest.ok === true
           ? {
               taskRequestId: taskRequest.requestId,
-              targets: [taskRequest.primaryAgentParticipantId],
+              targets: taskTargets?.ok ? taskTargets.targets : [],
             }
           : (() => {
               const targets = normalizeChatTargets(room, message.targets)

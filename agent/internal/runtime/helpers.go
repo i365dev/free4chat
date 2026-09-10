@@ -160,6 +160,23 @@ func scopeForRoomEvent(event types.RoomEvent) string {
 	return roomScope
 }
 
+// humanTaskRequestFor returns the Human-originated Task request that admitted
+// this Runtime's first scoped turn. Agent-originated collaboration requests
+// keep their explicit accepted/declined semantics and are deliberately
+// excluded here.
+func humanTaskRequestFor(events []types.RoomEvent, participantID string) *types.WireCollabEvent {
+	for _, event := range events {
+		if !event.Addressed || event.Participant.Kind != types.KindHuman || event.Collab == nil ||
+			event.Collab.Kind != types.CollabRequest || event.Collab.TargetParticipantID != participantID ||
+			taskRequestIDForScope(scopeForRoomEvent(event)) == "" {
+			continue
+		}
+		request := *event.Collab
+		return &request
+	}
+	return nil
+}
+
 func containsSequence(items []int64, sequence int64) bool {
 	for _, item := range items {
 		if item == sequence {

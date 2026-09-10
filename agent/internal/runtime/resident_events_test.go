@@ -161,6 +161,63 @@ func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
 	}
 }
 
+func TestResidentRuntimeRetriesHumanTaskAcceptanceOnHeartbeat(t *testing.T) {
+	stream := newResidentTestStream()
+	client := &residentTestClient{
+		fakeClient: &fakeClient{
+			collabResponseErrors: []error{errors.New("temporary acceptance failure"), nil},
+		},
+		streams: make(chan *residentTestStream, 1),
+	}
+	client.streams <- stream
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "resident-human-task-retry",
+		RoomID:     "room-human-task-retry",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	waitFor(t, time.Second, func() bool {
+		open, _, _ := client.residentOpenSnapshot()
+		return open == 1
+	}, "resident event stream open")
+
+	event := scopedEvent(1, "task:T", "Investigate this")
+	event.Type = "action"
+	event.Participant = types.ParticipantIdentity{ID: "human", Name: "Human", Kind: types.KindHuman}
+	event.Collab = &types.WireCollabEvent{
+		RequestID:           "request-T",
+		Kind:                types.CollabRequest,
+		FromParticipantID:   "human",
+		TargetParticipantID: "agent-1",
+	}
+	// There is intentionally exactly one Room envelope. The second accepted
+	// call must be caused by the resident lease heartbeat, not another event.
+	stream.results <- types.WaitResult{
+		Events:    []types.RoomEvent{event},
+		Cursor:    1,
+		ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	}
+
+	waitFor(t, time.Second, func() bool {
+		responses := client.snapshotCollabResponses()
+		runs, _ := adapter.scopedRunSnapshot()
+		return len(responses) == 2 && len(runs) == 1 && len(rt.pendingAddressedSnapshotFor("task:T")) == 0
+	}, "heartbeat acceptance retry and single Harness turn")
+	if len(stream.heartbeats) == 0 {
+		t.Fatal("accepted retry completed without a resident heartbeat")
+	}
+	status := rt.Status()
+	if status.LastError != "" || status.State != StateWaiting {
+		t.Fatalf("successful acceptance retry left stale Runtime state: %+v", status)
+	}
+}
+
 func TestResidentRuntimeUsesLeaseParsedFromMCPJoin(t *testing.T) {
 	const leaseMs = 30
 	handlePayload, err := json.Marshal(map[string]string{
