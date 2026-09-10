@@ -65,6 +65,30 @@ function taskText(
   }
 }
 
+function orphanLifecycle(
+  sequence: number,
+  kind: "accepted" | "completed" | "failed"
+): RoomMessage {
+  return {
+    id: `lifecycle-${kind}`,
+    peerId: "agent-a",
+    name: "agent-a",
+    kind: "agent",
+    type: "action",
+    actionType: "collab",
+    collab: {
+      requestId: "task-T",
+      kind,
+      fromParticipantId: "agent-a",
+      targetParticipantId: "agent-b",
+      summary: `private ${kind}`,
+    },
+    targets: ["agent-b"],
+    createdAt: sequence,
+    sequence,
+  }
+}
+
 function participants(): Record<string, RoomParticipant> {
   return {
     human: participant("human", "human"),
@@ -130,17 +154,40 @@ describe("Task scope projection", () => {
     })
   })
 
-  it("fails closed for orphaned explicit Task text", () => {
-    const orphaned = {
-      ...taskText(2, "agent-a", ["human"]),
+  it("fails closed for orphaned Task text and lifecycle after ring eviction", () => {
+    const retained = [
+      ...Array.from({ length: 99 }, (_, index) => ({
+        ...taskText(index + 2, "agent-a"),
+        taskRequestId: undefined,
+        collab: undefined,
+        actionType: undefined,
+        text: `room-${index + 2}`,
+      })),
+      orphanLifecycle(101, "accepted"),
+      orphanLifecycle(102, "completed"),
+      orphanLifecycle(103, "failed"),
+    ].slice(-100)
+    const orphanedText = {
+      ...taskText(104, "agent-a", ["agent-b"]),
       taskRequestId: "evicted-task",
     }
-    const index = buildTaskProjectionIndex([], participants())
+    const index = buildTaskProjectionIndex(retained, participants())
 
-    expect(projectTaskEvent(index, orphaned, "agent-a")).toEqual({
-      kind: "task",
-      visible: false,
-    })
+    for (const message of [
+      orphanedText,
+      ...retained.filter((entry) => entry.collab?.requestId === "task-T"),
+    ]) {
+      for (const participantId of ["agent-a", "agent-b"]) {
+        expect(projectTaskEvent(index, message, participantId)).toEqual({
+          kind: "task",
+          visible: false,
+        })
+        expect(projectTaskEvent(index, message, participantId, true)).toEqual({
+          kind: "task",
+          visible: false,
+        })
+      }
+    }
   })
 
   it("validates Human task targets without falling back", () => {

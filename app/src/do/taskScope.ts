@@ -236,11 +236,9 @@ export function projectTaskEvent(
   const requestId = taskRequestIdFor(message)
   if (!requestId) return { kind: "ordinary" }
   const task = index.tasks.get(requestId)
-  // A structured lifecycle envelope without a retained request is still the
-  // legacy ordinary collaboration projection. Explicit task text carries
-  // taskRequestId, so an orphaned Task message remains fail-closed instead of
-  // falling back to Room context.
-  if (!task && message.taskRequestId === undefined) return { kind: "ordinary" }
+  // Correlation identity can only come from a retained canonical request.
+  // Lifecycle envelopes whose request was evicted therefore fail closed just
+  // like explicit orphaned Task text; they must never become Room context.
   if (!task) return { kind: "task", visible: false }
 
   const participantSet = historical

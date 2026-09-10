@@ -33,17 +33,35 @@ function fixture() {
         },
         messages: [
           {
-            id: "message-1",
+            id: "collab-1",
+            peerId: "agent-b",
+            name: "Agent B",
+            kind: "agent",
+            type: "action",
+            actionType: "collab",
+            collab: {
+              requestId: "request-2",
+              kind: "request",
+              fromParticipantId: "agent-b",
+              targetParticipantId: "agent-a",
+              summary: "review this",
+            },
+            targets: ["agent-a"],
+            createdAt: 1,
+            sequence: 1,
+          },
+          {
+            id: "message-2",
             peerId: "agent-a",
             name: "Agent A",
             kind: "agent",
             type: "text",
             text: "first shared message",
-            createdAt: 1,
-            sequence: 1,
+            createdAt: 2,
+            sequence: 2,
           },
           {
-            id: "collab-2",
+            id: "collab-3",
             peerId: "agent-b",
             name: "Agent B",
             kind: "agent",
@@ -57,22 +75,22 @@ function fixture() {
               summary: "finished review",
             },
             targets: ["agent-a"],
-            createdAt: 2,
-            sequence: 2,
+            createdAt: 3,
+            sequence: 3,
           },
           {
-            id: "message-3",
+            id: "message-4",
             peerId: "agent-b",
             name: "Agent B",
             kind: "agent",
             type: "text",
             text: "third shared message",
-            createdAt: 3,
-            sequence: 3,
+            createdAt: 4,
+            sequence: 4,
           },
         ],
         attachments: [],
-        nextMessageSequence: 3,
+        nextMessageSequence: 4,
         meetingNotes: { active: false },
         agentVoice: {},
         pendingMediaCleanup: [],
@@ -144,15 +162,15 @@ function fixture() {
 describe("RoomSession bounded historical context read (#223)", () => {
   it("is authenticated, paginated, sanitized, and keeps transcript cursors separate", async () => {
     const room = fixture()
-    const first = (await room.read({ limit: 2 })) as {
+    const first = (await room.read({ limit: 3 })) as {
       status: number
       json: Record<string, any>
     }
     expect(first.status).toBe(200)
     expect(
       first.json.events.map((event: { sequence: number }) => event.sequence)
-    ).toEqual([1, 2])
-    expect(first.json.events[1].collab).toMatchObject({
+    ).toEqual([1, 2, 3])
+    expect(first.json.events[2].collab).toMatchObject({
       requestId: "request-2",
       kind: "completed",
       summary: "finished review",
@@ -166,22 +184,22 @@ describe("RoomSession bounded historical context read (#223)", () => {
     expect(JSON.stringify(first.json)).not.toContain("token-a")
     expect(JSON.stringify(first.json)).not.toContain("connectionNonce")
 
-    const forward = (await room.read({ afterSequence: 2, limit: 2 })) as {
+    const forward = (await room.read({ afterSequence: 3, limit: 2 })) as {
       status: number
       json: Record<string, any>
     }
     expect(
       forward.json.events.map((event: { sequence: number }) => event.sequence)
-    ).toEqual([3])
+    ).toEqual([4])
     expect(forward.json.hasMoreBefore).toBe(true)
 
-    const backward = (await room.read({ beforeSequence: 3, limit: 2 })) as {
+    const backward = (await room.read({ beforeSequence: 4, limit: 2 })) as {
       status: number
       json: Record<string, any>
     }
     expect(
       backward.json.events.map((event: { sequence: number }) => event.sequence)
-    ).toEqual([1, 2])
+    ).toEqual([2, 3])
 
     const transcriptPage = (await room.read({
       afterTranscriptSequence: 7,
@@ -191,7 +209,7 @@ describe("RoomSession bounded historical context read (#223)", () => {
       transcriptPage.json.events.map(
         (event: { sequence: number }) => event.sequence
       )
-    ).toEqual([1, 2, 3])
+    ).toEqual([1, 2, 3, 4])
     expect(
       transcriptPage.json.liveTranscript.segments.map(
         (segment: { sequence: number }) => segment.sequence
@@ -212,7 +230,7 @@ describe("RoomSession bounded historical context read (#223)", () => {
     expect(truncated.json.truncated).toBe(true)
     expect(
       truncated.json.events.map((event: { sequence: number }) => event.sequence)
-    ).toEqual([2, 3])
+    ).toEqual([2, 4])
     expect(JSON.stringify(room.store.get("room"))).toBe(beforeRead)
 
     expect((await room.read({ token: "wrong" })).status).toBe(401)
