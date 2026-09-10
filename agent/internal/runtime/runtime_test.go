@@ -141,6 +141,7 @@ type fakeClient struct {
 	collabResults         []types.CollabResultArgs
 	collabResponses       []types.CollabResponseArgs
 	collabResponseHook    func(types.CollabResponseArgs)
+	collabResponseErrors  []error
 	collabResponseErr     error
 }
 
@@ -770,12 +771,17 @@ func (c *fakeClient) SendCollabResponse(_ string, args types.CollabResponseArgs)
 	c.mu.Lock()
 	c.collabResponses = append(c.collabResponses, args)
 	hook := c.collabResponseHook
+	responseErr := c.collabResponseErr
+	if len(c.collabResponseErrors) > 0 {
+		responseErr = c.collabResponseErrors[0]
+		c.collabResponseErrors = c.collabResponseErrors[1:]
+	}
 	c.mu.Unlock()
 	if hook != nil {
 		hook(args)
 	}
-	if c.collabResponseErr != nil {
-		return types.SendTextResult{}, c.collabResponseErr
+	if responseErr != nil {
+		return types.SendTextResult{}, responseErr
 	}
 	return types.SendTextResult{Sequence: 1}, nil
 }

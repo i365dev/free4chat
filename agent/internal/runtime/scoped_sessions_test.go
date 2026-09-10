@@ -281,6 +281,59 @@ func TestHumanTaskAcceptanceFailureDoesNotStartHarnessTurn(t *testing.T) {
 	}
 }
 
+func TestHumanTaskAcceptanceRetryTreatsAmbiguousDuplicateAsSuccess(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	client := &fakeClient{
+		// Model a response that committed remotely but whose reply was lost;
+		// the server-side deduplication makes the second call successful.
+		collabResponseErrors: []error{errors.New("accepted committed but response lost"), nil},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "human-task-ambiguous-acceptance-test",
+		RoomID:     "room-human-task-ambiguous-acceptance",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	event := scopedEvent(1, "task:T", "Investigate this")
+	event.Type = "action"
+	event.Participant = types.ParticipantIdentity{ID: "human", Name: "Human", Kind: types.KindHuman}
+	event.Collab = &types.WireCollabEvent{
+		RequestID:           "request-T",
+		Kind:                types.CollabRequest,
+		FromParticipantID:   "human",
+		TargetParticipantID: "agent",
+	}
+	rt.acceptEvent(event)
+	rt.drainTurns()
+	if runs, _ := adapter.scopedRunSnapshot(); len(runs) != 0 {
+		t.Fatalf("Harness ran before duplicate accepted success: %v", runs)
+	}
+	if !rt.shouldRetryHumanTaskAcceptance() {
+		t.Fatal("ambiguous accepted failure did not remain retryable")
+	}
+
+	// A heartbeat invokes the same admission seam without a new Room event.
+	rt.drainTurns()
+	if responses := client.snapshotCollabResponses(); len(responses) != 2 {
+		t.Fatalf("expected one original and one deduplicated accepted call: %#v", responses)
+	}
+	if runs, _ := adapter.scopedRunSnapshot(); len(runs) != 1 {
+		t.Fatalf("ambiguous accepted retry ran Harness %d times", len(runs))
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("successful retry did not acknowledge Task turn: %v", got)
+	}
+}
+
 func TestAgentOriginatedTaskRequestIsNotAutomaticallyAccepted(t *testing.T) {
 	adapter := &fakeAdapter{name: "pi"}
 	client := &fakeClient{}
