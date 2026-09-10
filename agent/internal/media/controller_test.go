@@ -266,12 +266,15 @@ func waitController(t *testing.T, timeout time.Duration, condition func() bool, 
 	t.Fatalf("timeout waiting for %s", message)
 }
 
-func TestControllerResidentMediaStateIsPushDriven(t *testing.T) {
+func TestControllerPushedMediaStateAtStartupBoundaryAndNoPolling(t *testing.T) {
 	client := &fakeRoomClient{}
 	controller, harness := newControllerHarness(t, client, nil)
 	controller.options.UsePushedMediaState = true
 	defer controller.Stop()
 
+	// This is the resident startup ordering: the Runtime starts the pushed
+	// controller synchronously, then the event stream delivers its first
+	// authorization projection.
 	controller.Start(t.Context())
 	time.Sleep(50 * time.Millisecond)
 	if got := client.roomInfoCallCount(); got != 0 {
@@ -296,7 +299,10 @@ func TestControllerResidentMediaStateIsPushDriven(t *testing.T) {
 }
 
 func TestControllerLiveTranscriptElectsOneVerifiedSameHostProducer(t *testing.T) {
-	client := &fakeRoomClient{live: types.LiveTranscriptInfo{
+	// Production projects the same AGENT_MEDIA_ENABLED master switch into
+	// both compatibility availability fields. Keep the fixture on that
+	// contract so Live Transcript is tested with media enabled as well.
+	client := &fakeRoomClient{mnAvail: true, vrAvail: true, live: types.LiveTranscriptInfo{
 		Active: true, ProducerRuntimeHostID: "host-a", StartedByHumanParticipantID: "human", Epoch: 7, StartedAt: 9,
 	}}
 	coordinator := &testLiveTranscriptCoordinator{}

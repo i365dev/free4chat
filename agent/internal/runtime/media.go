@@ -141,9 +141,16 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	})
 	r.mediaController = controller
 	r.voiceSrc = controller
-	// Non-blocking like the frozen Node reference: the first grant poll must
-	// never gate join()/create() on a room_info round trip.
-	go controller.Start(context.Background())
+	// Pushed-state residents must be started before StartLoop opens the event
+	// stream. Start is local in this mode, so doing it synchronously closes the
+	// assignment -> initial mediaState scheduling gap. Compatibility clients
+	// retain the old non-blocking RoomInfo bootstrap so join/create is never
+	// gated on that network round trip.
+	if usePushedMediaState {
+		controller.Start(context.Background())
+	} else {
+		go controller.Start(context.Background())
+	}
 }
 
 // observeResidentMediaState forwards only the bounded media projection to the
@@ -156,10 +163,31 @@ func (r *ResidentRuntime) observeResidentMediaState(
 		return
 	}
 	r.mediaMu.Lock()
+	r.residentMediaStateMu.Lock()
+	r.residentMediaState = *state
+	r.residentMediaStateValid = true
+	r.residentMediaStateMu.Unlock()
 	controller := r.mediaController
 	r.mediaMu.Unlock()
 	if controller != nil {
 		controller.ObserveMediaState(*state)
+	}
+}
+
+// replayResidentMediaState reapplies the last authenticated projection after
+// a live resident Controller rebuild, without using RoomInfo as a fallback.
+// It must run outside mediaMu because reconciliation may perform SFU I/O and
+// invoke callbacks that briefly inspect the Runtime's media generation.
+func (r *ResidentRuntime) replayResidentMediaState() {
+	r.mediaMu.Lock()
+	controller := r.mediaController
+	r.residentMediaStateMu.Lock()
+	state := r.residentMediaState
+	valid := r.residentMediaStateValid
+	r.residentMediaStateMu.Unlock()
+	r.mediaMu.Unlock()
+	if controller != nil && valid {
+		controller.ObserveMediaState(state)
 	}
 }
 
@@ -168,6 +196,10 @@ func (r *ResidentRuntime) observeResidentMediaState(
 // from a fresh server envelope before media can run again.
 func (r *ResidentRuntime) failClosedResidentMediaState() {
 	r.mediaMu.Lock()
+	r.residentMediaStateMu.Lock()
+	r.residentMediaStateValid = false
+	r.residentMediaState = types.ResidentMediaState{}
+	r.residentMediaStateMu.Unlock()
 	controller := r.mediaController
 	r.mediaMu.Unlock()
 	if controller != nil {

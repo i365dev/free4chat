@@ -202,6 +202,12 @@ type ResidentRuntime struct {
 
 	mediaController *media.Controller
 	mediaMu         sync.Mutex
+	// residentMediaState is the last authenticated media projection. It is
+	// replayed only when a live resident controller is rebuilt (for example by
+	// speech hot reload); transport loss invalidates it before reconnect.
+	residentMediaStateMu    sync.Mutex
+	residentMediaState      types.ResidentMediaState
+	residentMediaStateValid bool
 	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
 	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
 	// mediaMu; without this generation fence, a late old callback could end a
@@ -237,6 +243,7 @@ func (r *ResidentRuntime) ReloadSpeech(config speech.Config) {
 	r.mu.Unlock()
 	if !stopped && handle != "" {
 		r.restartMediaController(handle)
+		r.replayResidentMediaState()
 		r.projectRuntimeHost(handle)
 	}
 }
@@ -630,6 +637,7 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	// stop the previous bridge, create a transcriber, and perform a compatibility
 	// RoomInfo bootstrap — none of that may hold the runtime mutex.
 	r.restartMediaController(joined.ParticipantHandle)
+	r.replayResidentMediaState()
 }
 
 // requireHandle returns the live capability or fails closed.
@@ -1585,6 +1593,10 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 func (r *ResidentRuntime) releaseResources() {
 	r.mediaMu.Lock()
 	defer r.mediaMu.Unlock()
+	r.residentMediaStateMu.Lock()
+	r.residentMediaStateValid = false
+	r.residentMediaState = types.ResidentMediaState{}
+	r.residentMediaStateMu.Unlock()
 	// Invalidate every callback before Controller.Stop tears the bridge down.
 	// Its active-subscription TrackEnded notifications are intentionally
 	// asynchronous to keep this lifecycle mutex non-reentrant.
