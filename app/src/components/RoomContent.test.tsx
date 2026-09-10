@@ -378,6 +378,286 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(activity).toHaveTextContent("Pi · Thinking…")
   })
 
+  it("keeps the interaction shell bounded while Task activity is visible", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-layout",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-codex",
+        summary: "Long-running task",
+      },
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-codex",
+          scopeId: "task:task-layout",
+          state: "using_tools",
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-layout"))
+
+    expect(screen.getByTestId("interaction-tablist")).toHaveClass("flex-none")
+    expect(screen.getByTestId("interaction-content")).toHaveClass(
+      "flex",
+      "min-h-0",
+      "flex-1",
+      "flex-col"
+    )
+    expect(screen.getByTestId("task-agent-activity")).toHaveClass("flex-none")
+    expect(screen.getByTestId("interaction-chat")).toHaveClass(
+      "min-h-0",
+      "flex-1"
+    )
+  })
+
+  it("marks a non-terminal Task unavailable and disables its composer", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-orphan",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-codex",
+        summary: "Orphaned task",
+      },
+    }
+    const accepted: Message = {
+      peerId: "agent-codex",
+      name: "Codex",
+      kind: "agent",
+      type: "action",
+      actionType: "collab",
+      sequence: 2,
+      collab: {
+        requestId: "task-orphan",
+        kind: "accepted",
+        fromParticipantId: "agent-codex",
+        targetParticipantId: "human-local",
+        summary: "working",
+      },
+    }
+    const sendTextMessage = vi.fn()
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest, accepted],
+      sendTextMessage,
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    const { rerender } = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-orphan"))
+
+    expect(screen.getByLabelText("Status Working")).toBeInTheDocument()
+    expect(screen.getByLabelText("Task unavailable")).toBeInTheDocument()
+    expect(screen.getByTestId("task-unavailable")).toHaveTextContent(
+      "No participating Agent is currently available."
+    )
+    expect(
+      screen.getByLabelText("Message the room or @ an Agent")
+    ).toBeDisabled()
+    expect(screen.getByLabelText("Send message")).toBeDisabled()
+    expect(sendTextMessage).not.toHaveBeenCalled()
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest, accepted],
+      sendTextMessage,
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+    })
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    expect(screen.queryByTestId("task-unavailable")).toBeNull()
+    expect(
+      screen.getByLabelText("Message the room or @ an Agent")
+    ).toBeEnabled()
+  })
+
+  it("keeps a Task available when a secondary participating Agent is connected", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-secondary",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-codex",
+        summary: "Secondary Agent task",
+      },
+    }
+    const secondaryTarget: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "text",
+      sequence: 2,
+      taskRequestId: "task-secondary",
+      targets: ["agent-pi"],
+      text: "Pi, continue this task",
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest, secondaryTarget],
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-pi",
+          name: "Pi",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-secondary"))
+
+    expect(screen.getByLabelText("Status Starting")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Task unavailable")).toBeNull()
+    expect(screen.queryByTestId("task-unavailable")).toBeNull()
+    expect(
+      screen.getByLabelText("Message the room or @ an Agent")
+    ).toBeEnabled()
+  })
+
+  it("keeps terminal Task lifecycle status separate from availability", () => {
+    const makeTask = (
+      requestId: string,
+      kind: "completed" | "failed"
+    ): Message[] => [
+      {
+        peerId: "human-local",
+        name: "Hannah",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        sequence: kind === "completed" ? 1 : 3,
+        collab: {
+          requestId,
+          kind: "request",
+          fromParticipantId: "human-local",
+          targetParticipantId: "agent-codex",
+          summary: requestId,
+        },
+      },
+      {
+        peerId: "agent-codex",
+        name: "Codex",
+        kind: "agent",
+        type: "action",
+        actionType: "collab",
+        sequence: kind === "completed" ? 2 : 4,
+        collab: {
+          requestId,
+          kind,
+          fromParticipantId: "agent-codex",
+          targetParticipantId: "human-local",
+          summary: kind,
+        },
+      },
+    ]
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [
+        ...makeTask("task-completed", "completed"),
+        ...makeTask("task-failed", "failed"),
+      ],
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.getByLabelText("Status Completed")).toBeInTheDocument()
+    expect(screen.getByLabelText("Status Failed")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Task unavailable")).toBeNull()
+  })
+
   it("copies the ordinary Agent invite only through the popover action, without a provider claim", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })

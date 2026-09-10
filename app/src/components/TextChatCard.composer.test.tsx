@@ -154,6 +154,44 @@ describe("composer keyboard semantics", () => {
     expect(screen.queryByLabelText("More actions")).not.toBeInTheDocument()
   })
 
+  it("scrolls only the timeline container when messages change", () => {
+    const originalScrollTo = HTMLElement.prototype.scrollTo
+    const scrollTo = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    })
+
+    const { view } = renderCard()
+    scrollTo.mockClear()
+    view.rerender(
+      <TextChatCard
+        room="room"
+        nickName="Human"
+        messages={[
+          {
+            peerId: "agent-1",
+            name: "Agent B",
+            kind: "agent",
+            type: "text",
+            text: "new",
+          },
+        ]}
+        participants={[agentParticipant()]}
+        onSendText={vi.fn()}
+        onSendFile={vi.fn()}
+        onSendAction={vi.fn()}
+      />
+    )
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" })
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled()
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: originalScrollTo,
+    })
+  })
+
   it("sends a selected Agent participant id from a Task composer", async () => {
     const { composer, onSendText } = renderCard({
       taskRequestId: "task-123",

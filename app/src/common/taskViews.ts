@@ -1,4 +1,4 @@
-import type { Message } from "./types"
+import type { Message, UserInfo } from "./types"
 
 export type TaskStatus = "Starting" | "Working" | "Completed" | "Failed"
 
@@ -7,6 +7,8 @@ export interface TaskProjection {
   title: string
   createdByParticipantId: string
   targetParticipantId: string
+  /** Retained Task endpoint ids, filtered to connected Agents at render time. */
+  participatingAgentIds: string[]
   status: TaskStatus
   messages: Message[]
 }
@@ -32,6 +34,44 @@ function applyTaskLifecycle(
   }
 }
 
+function addParticipantId(ids: Set<string>, value: unknown): void {
+  if (typeof value !== "string") return
+  const participantId = value.trim()
+  if (participantId) ids.add(participantId)
+}
+
+function addTaskParticipants(ids: Set<string>, message: Message): void {
+  const collab = message.collab
+  if (collab) {
+    addParticipantId(ids, collab.fromParticipantId)
+    addParticipantId(ids, collab.targetParticipantId)
+  }
+
+  // Task text uses the same structured targets that the Room authorization
+  // projection uses. Keep the ids here and resolve their current presence at
+  // render time; a departed Agent must remain part of Task history so a
+  // returning/secondary Agent can make the Task available again.
+  if (message.taskRequestId)
+    for (const targetId of message.targets ?? [])
+      addParticipantId(ids, targetId)
+}
+
+export function isTaskTerminal(status: TaskStatus): boolean {
+  return status === "Completed" || status === "Failed"
+}
+
+export function taskHasConnectedAgent(
+  task: Pick<TaskProjection, "participatingAgentIds">,
+  participants: Pick<UserInfo, "peerId" | "kind">[]
+): boolean {
+  return task.participatingAgentIds.some((participantId) =>
+    participants.some(
+      (participant) =>
+        participant.peerId === participantId && participant.kind === "agent"
+    )
+  )
+}
+
 /**
  * Derives bounded Task views from the canonical retained Room message log.
  * This is presentation only: the Room collaboration request remains the
@@ -48,6 +88,13 @@ export function buildTaskProjections(messages: Message[]): TaskProjection[] {
         title: collab.summary ?? "Untitled task",
         createdByParticipantId: collab.fromParticipantId,
         targetParticipantId: collab.targetParticipantId,
+        participatingAgentIds: [
+          ...new Set(
+            [collab.fromParticipantId, collab.targetParticipantId].filter(
+              Boolean
+            )
+          ),
+        ],
         status: "Starting",
         messages: [message],
       })
@@ -59,6 +106,9 @@ export function buildTaskProjections(messages: Message[]): TaskProjection[] {
     const projection = projections.get(requestId)
     if (!projection) continue
     projection.messages.push(message)
+    const participants = new Set(projection.participatingAgentIds)
+    addTaskParticipants(participants, message)
+    projection.participatingAgentIds = [...participants]
     if (collab)
       projection.status = applyTaskLifecycle(projection.status, collab.kind)
   }
