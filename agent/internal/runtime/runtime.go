@@ -1038,7 +1038,7 @@ func (r *ResidentRuntime) drainTurns() {
 		r.mu.Lock()
 		r.turnRunning = false
 		if !r.stopped {
-			if r.harnessFailed {
+			if r.harnessFailed || r.lastErrorSource == "send" {
 				r.state = StateReconnecting
 			} else {
 				r.state = StateWaiting
@@ -1122,6 +1122,25 @@ func (r *ResidentRuntime) drainTurns() {
 		r.enrichAttachments(input)
 		meetingThrough := r.attachTranscriptFor(scope, input)
 		liveThrough := r.attachLiveTranscriptFor(scope, input)
+
+		// A Human-originated Task becomes Working only after its scoped session
+		// is available and immediately before the first real cognition turn.
+		// Agent-originated collaboration keeps its explicit response semantics.
+		if request := humanTaskRequestFor(events, r.currentParticipantID()); request != nil {
+			if _, err := r.CollabResponse(types.CollabResponseArgs{
+				RequestID: request.RequestID,
+				Decision:  "accepted",
+				Summary:   "Agent started working.",
+			}); err != nil {
+				r.mu.Lock()
+				r.lastError = err.Error()
+				r.lastErrorSource = "send"
+				r.state = StateReconnecting
+				r.mu.Unlock()
+				r.log("collab_accept_failed", nil)
+				return
+			}
+		}
 
 		// A newly addressed turn wins the speaker: stale audio from the
 		// previous response must never keep playing over the new one.

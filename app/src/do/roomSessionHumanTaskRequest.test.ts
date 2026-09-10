@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { RoomSession } from "./RoomSession"
+import { buildTaskProjectionIndex } from "./taskScope"
 import type { RoomRecord } from "../room/types"
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
@@ -43,6 +44,7 @@ function room(): RoomRecord {
       "human-1": human(),
       "agent-a": agent("agent-a"),
       "agent-b": agent("agent-b"),
+      "agent-c": agent("agent-c"),
     },
     messages: [],
     nextMessageSequence: 0,
@@ -107,6 +109,10 @@ function harness() {
       }
     },
     stored: () => store.get("room") as RoomRecord,
+    taskProjection: () => {
+      const stored = store.get("room") as RoomRecord
+      return buildTaskProjectionIndex(stored.messages, stored.participants)
+    },
   }
 }
 
@@ -139,13 +145,14 @@ describe("RoomSession Human task entry (#305)", () => {
       test.session as unknown as {
         toAgentEvent: (
           message: unknown,
-          participantId: string
+          participantId: string,
+          projection: ReturnType<typeof buildTaskProjectionIndex>
         ) => {
           scopeId?: string
           addressed: boolean
         }
       }
-    ).toAgentEvent(message, "agent-a")
+    ).toAgentEvent(message, "agent-a", test.taskProjection())
     expect(event).toMatchObject({
       scopeId: `task:${requestId}`,
       addressed: true,
@@ -158,12 +165,13 @@ describe("RoomSession Human task entry (#305)", () => {
         test.session as unknown as {
           toAgentEvent: (
             message: unknown,
-            participantId: string
+            participantId: string,
+            projection: ReturnType<typeof buildTaskProjectionIndex>
           ) => {
             scopeId?: string
           }
         }
-      ).toAgentEvent(message, "agent-b").scopeId
+      ).toAgentEvent(message, "agent-b", test.taskProjection())?.scopeId
     ).toBeUndefined()
     expect(message.targets).toEqual(["agent-a"])
 
@@ -180,12 +188,13 @@ describe("RoomSession Human task entry (#305)", () => {
         test.session as unknown as {
           toAgentEvent: (
             message: unknown,
-            participantId: string
+            participantId: string,
+            projection: ReturnType<typeof buildTaskProjectionIndex>
           ) => {
             scopeId?: string
           }
         }
-      ).toAgentEvent(second, "agent-a").scopeId
+      ).toAgentEvent(second, "agent-a", test.taskProjection())?.scopeId
     ).toBe(`task:${second.collab?.requestId}`)
   })
 
@@ -264,14 +273,146 @@ describe("RoomSession Human task entry (#305)", () => {
       test.session as unknown as {
         toAgentEvent: (
           message: unknown,
-          participantId: string
-        ) => { scopeId?: string; addressed: boolean }
+          participantId: string,
+          projection: ReturnType<typeof buildTaskProjectionIndex>
+        ) => { scopeId?: string; addressed: boolean } | undefined
       }
-    ).toAgentEvent(test.stored().messages[2], "agent-a")
+    ).toAgentEvent(test.stored().messages[2], "agent-a", test.taskProjection())
     expect(agentEvent).toMatchObject({
       scopeId: `task:${requestId}`,
       addressed: true,
     })
+  })
+
+  it("allows a Human to explicitly add another Agent to an existing Task", async () => {
+    const test = harness()
+
+    await test.sendHuman({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Bring another reviewer into the task",
+    })
+    const requestId = test.stored().messages[0].collab?.requestId
+    expect(requestId).toEqual(expect.any(String))
+
+    await test.sendHuman({
+      type: "chat",
+      text: "@Other Agent please review this",
+      targets: ["agent-b"],
+      taskRequestId: requestId,
+    })
+    const message = test.stored().messages[1]
+    expect(message).toMatchObject({
+      taskRequestId: requestId,
+      targets: ["agent-b"],
+    })
+
+    const projection = test.taskProjection()
+    const project = (participantId: string) =>
+      (
+        test.session as unknown as {
+          toAgentEvent: (
+            message: unknown,
+            participantId: string,
+            projection: ReturnType<typeof buildTaskProjectionIndex>
+          ) => { scopeId?: string; addressed: boolean } | undefined
+        }
+      ).toAgentEvent(message, participantId, projection)
+    expect(project("agent-a")).toMatchObject({
+      scopeId: `task:${requestId}`,
+      addressed: false,
+    })
+    expect(project("agent-b")).toMatchObject({
+      scopeId: `task:${requestId}`,
+      addressed: true,
+    })
+    expect(project("agent-c")).toBeUndefined()
+  })
+
+  it("keeps unrelated Agents out of live and retained Task context", async () => {
+    const test = harness()
+    await test.sendHuman({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Keep this context scoped",
+    })
+    const requestId = test.stored().messages[0].collab?.requestId
+
+    const wait = async (participantId: string, cursor = 0) =>
+      test.control({
+        action: "agent-wait",
+        participantId,
+        token: `${participantId}-token`,
+        cursor,
+        timeoutSeconds: 0,
+      })
+    const read = async (participantId: string) =>
+      test.control({
+        action: "agent-read-context",
+        participantId,
+        token: `${participantId}-token`,
+        afterSequence: 0,
+        limit: 50,
+      })
+
+    const unrelatedBefore = await wait("agent-c")
+    expect(unrelatedBefore.json.events).toEqual([])
+    expect((await read("agent-c")).json.events).toEqual([])
+
+    await test.sendHuman({
+      type: "chat",
+      text: "@Other Agent join this task",
+      targets: ["agent-b"],
+      taskRequestId: requestId,
+    })
+    const newlyTargeted = await wait("agent-b", 1)
+    expect(newlyTargeted.json.events).toHaveLength(1)
+    expect(newlyTargeted.json.events[0]).toMatchObject({
+      scopeId: `task:${requestId}`,
+      addressed: true,
+    })
+    expect(
+      ((await read("agent-b")).json.events as Array<{ scopeId?: string }>).map(
+        (event: { scopeId?: string }) => event.scopeId
+      )
+    ).toEqual([`task:${requestId}`, `task:${requestId}`])
+    expect((await wait("agent-c", 1)).json.events).toEqual([])
+    expect((await read("agent-c")).json.events).toEqual([])
+  })
+
+  it("rejects invalid explicit Human Task targets without fallback", async () => {
+    const test = harness()
+    await test.sendHuman({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Validate targets",
+    })
+    const requestId = test.stored().messages[0].collab?.requestId
+
+    for (const target of ["human-1", "missing", "agent-b"]) {
+      if (target === "agent-b")
+        test.stored().participants[target].connected = false
+      await test.sendHuman({
+        type: "chat",
+        text: "must reject",
+        targets: [target],
+        taskRequestId: requestId,
+      })
+    }
+
+    expect(test.stored().messages).toHaveLength(1)
+    expect(test.socket.send).toHaveBeenNthCalledWith(
+      1,
+      JSON.stringify({ type: "error", error: "task_target_not_agent" })
+    )
+    expect(test.socket.send).toHaveBeenNthCalledWith(
+      2,
+      JSON.stringify({ type: "error", error: "task_target_not_in_room" })
+    )
+    expect(test.socket.send).toHaveBeenNthCalledWith(
+      3,
+      JSON.stringify({ type: "error", error: "task_target_not_in_room" })
+    )
   })
 
   it("rejects arbitrary task correlation instead of creating a task view", async () => {

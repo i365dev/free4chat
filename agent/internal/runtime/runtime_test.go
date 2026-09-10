@@ -139,6 +139,9 @@ type fakeClient struct {
 	contextCalls          int
 	contextOptions        []types.RoomContextReadOptions
 	collabResults         []types.CollabResultArgs
+	collabResponses       []types.CollabResponseArgs
+	collabResponseHook    func(types.CollabResponseArgs)
+	collabResponseErr     error
 }
 
 type transcriptClient struct {
@@ -763,7 +766,17 @@ func (*fakeClient) SendCollabRequest(string, types.CollabRequestArgs) (types.Col
 	return types.CollabRequestOutcome{RequestID: "req-1", Sequence: 1}, nil
 }
 
-func (*fakeClient) SendCollabResponse(string, types.CollabResponseArgs) (types.SendTextResult, error) {
+func (c *fakeClient) SendCollabResponse(_ string, args types.CollabResponseArgs) (types.SendTextResult, error) {
+	c.mu.Lock()
+	c.collabResponses = append(c.collabResponses, args)
+	hook := c.collabResponseHook
+	c.mu.Unlock()
+	if hook != nil {
+		hook(args)
+	}
+	if c.collabResponseErr != nil {
+		return types.SendTextResult{}, c.collabResponseErr
+	}
 	return types.SendTextResult{Sequence: 1}, nil
 }
 
@@ -831,6 +844,7 @@ type fakeAdapter struct {
 	scopedRuns        []string
 	scopedTurnDetails map[string][]string
 	scopedSessionNews map[string][]bool
+	scopedRunHook     func(string)
 }
 
 // adapterRunTurnHook lets individual tests observe the exact enriched turn
@@ -957,6 +971,12 @@ func (a *fakeAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, exp
 	a.scopedRuns = append(a.scopedRuns, scope)
 	a.scopedTurnDetails[scope] = append(a.scopedTurnDetails[scope], combined)
 	a.scopedSessionNews[scope] = append(a.scopedSessionNews[scope], input.Session != nil && input.Session.New)
+	hook := a.scopedRunHook
+	a.mu.Unlock()
+	if hook != nil {
+		hook(scope)
+	}
+	a.mu.Lock()
 	if a.turnErr != nil {
 		err := a.turnErr
 		a.mu.Unlock()
@@ -1099,6 +1119,12 @@ func (c *fakeClient) snapshotSentTaskRequestIDs() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.sentTaskRequestIDs...)
+}
+
+func (c *fakeClient) snapshotCollabResponses() []types.CollabResponseArgs {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]types.CollabResponseArgs(nil), c.collabResponses...)
 }
 
 // snapshotHosts mirrors snapshotSent with the #176 Runtime Host projection

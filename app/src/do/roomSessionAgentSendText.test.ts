@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { RoomSession } from "./RoomSession"
+import { buildTaskProjectionIndex } from "./taskScope"
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 
@@ -98,7 +99,16 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
     })
   const storedMessages = () =>
     (store.get("room") as { messages: Array<Record<string, unknown>> }).messages
-  return { session: rs, control, sendText, agentWait, storedMessages }
+  const storedRoom = () =>
+    store.get("room") as ReturnType<typeof buildStoredRoom>
+  return {
+    session: rs,
+    control,
+    sendText,
+    agentWait,
+    storedMessages,
+    storedRoom,
+  }
 }
 
 function taskRequest(
@@ -226,24 +236,33 @@ describe("RoomSession agent-send-text structured addressing (#165)", () => {
     const requesterReply = await agentToHuman.sendText(
       "agent-a",
       "requester task output",
-      undefined,
+      ["human-1"],
       "agent-human"
     )
     expect(requesterReply.status).toBe(200)
     expect(agentToHuman.storedMessages()[1]).toMatchObject({
       taskRequestId: "agent-human",
+      targets: ["human-1"],
     })
     expect(
       (
         agentToHuman.session as unknown as {
           toAgentEvent: (
             message: unknown,
-            participantId: string
+            participantId: string,
+            projection: ReturnType<typeof buildTaskProjectionIndex>
           ) => {
             scopeId?: string
           }
         }
-      ).toAgentEvent(agentToHuman.storedMessages()[1], "agent-a").scopeId
+      ).toAgentEvent(
+        agentToHuman.storedMessages()[1] as never,
+        "agent-a",
+        buildTaskProjectionIndex(
+          agentToHuman.storedRoom().messages as never,
+          agentToHuman.storedRoom().participants as never
+        )
+      )?.scopeId
     ).toBe("task:agent-human")
 
     const agentToAgent = makeRoomSession(
@@ -267,11 +286,15 @@ describe("RoomSession agent-send-text structured addressing (#165)", () => {
         await agentToAgent.sendText(
           "agent-b",
           "target output",
-          undefined,
+          ["agent-a"],
           "agent-agent"
         )
       ).status
     ).toBe(200)
+    expect(agentToAgent.storedMessages()[2]).toMatchObject({
+      taskRequestId: "agent-agent",
+      targets: ["agent-a"],
+    })
     expect(
       agentToAgent
         .storedMessages()

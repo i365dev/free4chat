@@ -22,7 +22,10 @@ import {
 } from "./collabUi"
 import HumanCollabResultComposer from "./HumanCollabResultComposer"
 import ParticipantAvatar from "./ParticipantAvatar"
-import { resolveAgentTargetIds } from "../common/agentMentions"
+import {
+  resolveAgentTargetIds,
+  resolveSelectedAgentTargetIds,
+} from "../common/agentMentions"
 import type { UserInfo } from "../common/types"
 import type {
   PermissionEvent,
@@ -1552,7 +1555,7 @@ const TextChatCard = memo(function TextChatCard({
   const sendCurrentMessage = () => {
     if (message.trim() === "") return
     const targets = taskScoped
-      ? []
+      ? resolveSelectedAgentTargetIds(message.trim(), selectedAgents)
       : resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
     if (taskRequestId) onSendText(message.trim(), targets, taskRequestId)
     else onSendText(message.trim(), targets)
@@ -1696,8 +1699,7 @@ const TextChatCard = memo(function TextChatCard({
       : connectedAgents.filter((agent) =>
           agent.name.toLowerCase().startsWith(mentionQuery.toLowerCase())
         )
-  const showAgentPicker =
-    !taskScoped && !pickerDismissed && mentionAgents.length > 0
+  const showAgentPicker = !pickerDismissed && mentionAgents.length > 0
 
   const selectAgent = (agent: UserInfo) => {
     if (!agent) return

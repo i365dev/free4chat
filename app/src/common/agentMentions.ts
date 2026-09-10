@@ -39,3 +39,17 @@ export function resolveAgentTargetIds(
 
   return [...targets]
 }
+
+/**
+ * Task routing is semantic: visible @Name text is presentation only. The
+ * existing picker records participant ids in selectedAgents; Task composers
+ * use those ids without allowing a hand-typed name to become authority.
+ */
+export function resolveSelectedAgentTargetIds(
+  text: string,
+  selectedAgents: SelectedAgentMention[]
+): string[] {
+  return selectedAgents
+    .filter((selected) => hasCompleteMention(text, selected.name))
+    .map((selected) => selected.id)
+}
