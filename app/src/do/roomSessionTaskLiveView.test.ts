@@ -104,10 +104,8 @@ function surface(revision = 1) {
   }
 }
 
-function harness() {
-  const store = new Map<string, unknown>([["room", makeRoom()]])
-  const broadcasts: unknown[] = []
-  const session = new RoomSession(
+function makeSession(store: Map<string, unknown>) {
+  return new RoomSession(
     {
       storage: {
         get: async (key: string) => store.get(key),
@@ -124,20 +122,30 @@ function harness() {
     } as never,
     { SFU_ROOM: {} } as never
   )
-  const control = async (body: Record<string, unknown>) => {
-    const response = await session.fetch(
-      new Request("https://room/control", {
-        method: "POST",
-        body: JSON.stringify(body),
-      })
-    )
-    return { status: response.status, json: await response.json() }
-  }
+}
+
+async function control(session: RoomSession, body: Record<string, unknown>) {
+  const response = await session.fetch(
+    new Request("https://room/control", {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+  )
+  return { status: response.status, json: await response.json() }
+}
+
+function harness() {
+  const store = new Map<string, unknown>([["room", makeRoom()]])
+  const broadcasts: unknown[] = []
+  const session = makeSession(store)
   return {
     session,
     store,
     broadcasts,
-    control,
+    control: (body: Record<string, unknown>) => control(session, body),
+    controlWith: (other: RoomSession, body: Record<string, unknown>) =>
+      control(other, body),
+    newSession: () => makeSession(store),
     room: () => store.get("room") as RoomRecord,
   }
 }
@@ -218,5 +226,47 @@ describe("RoomSession Task Live View (#316)", () => {
     })
     expect(rejected.status).toBe(400)
     expect(test.room().taskLiveViews).toEqual({})
+  })
+
+  it("keeps Live View authority with the initial Agent after it leaves", async () => {
+    const test = harness()
+    expect(
+      (
+        await test.control({
+          action: "agent-publish-live-view",
+          participantId: "agent-a",
+          token: "agent-a-token",
+          taskRequestId: "task-1",
+          surface: surface(),
+        })
+      ).status
+    ).toBe(200)
+
+    delete test.room().participants["agent-a"]
+    const reloaded = test.newSession()
+    const secondary = await test.controlWith(reloaded, {
+      action: "agent-publish-live-view",
+      participantId: "agent-b",
+      token: "agent-b-token",
+      taskRequestId: "task-1",
+      surface: surface(2),
+    })
+    expect(secondary.status).toBe(403)
+    expect((secondary.json as { error: string }).error).toBe(
+      "live_view_not_authorized"
+    )
+    expect(test.room().taskLiveViews?.["task-1"]).toMatchObject({
+      authorityAgentId: "agent-a",
+      revision: 1,
+    })
+    const browserState = (
+      reloaded as unknown as {
+        stateFor: (room: RoomRecord) => { taskLiveViews?: unknown }
+      }
+    ).stateFor(test.room())
+    expect(browserState.taskLiveViews?.["task-1"]).toMatchObject({
+      authorityAgentId: "agent-a",
+      revision: 1,
+    })
   })
 })

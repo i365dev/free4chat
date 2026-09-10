@@ -114,6 +114,7 @@ import {
 } from "./surface"
 import {
   buildTaskProjectionIndex,
+  initialTaskAgentParticipantId,
   projectTaskEvent,
   resolveAgentTaskTargets,
   resolveHumanTaskTargets,
@@ -897,12 +898,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )) {
           const validation = validateTaskLiveViewSnapshot(rawSnapshot)
           const snapshot = validation.ok ? validation.snapshot : undefined
+          const task = snapshot && taskIndex.tasks.get(taskRequestId)
           const authority = snapshot && participants[snapshot.authorityAgentId]
+          const authorityIsTaskEndpoint =
+            task !== undefined &&
+            (snapshot.authorityAgentId === task.request.fromParticipantId ||
+              snapshot.authorityAgentId === task.request.targetParticipantId)
           if (
             !snapshot ||
             taskRequestId !== snapshot.taskRequestId ||
-            !taskIndex.tasks.has(taskRequestId) ||
-            authority?.kind !== "agent"
+            !task ||
+            !authorityIsTaskEndpoint ||
+            (authority !== undefined && authority.kind !== "agent")
           ) {
             changed = true
             continue
@@ -3165,17 +3172,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
         return this.json({ error: "invalid_task_request" }, 400)
 
-      const resolution = resolveTaskRequest(
-        buildTaskProjectionIndex(room.messages, room.participants),
-        request.taskRequestId,
+      const task = buildTaskProjectionIndex(
+        room.messages,
         room.participants
-      )
-      if (resolution.ok === false)
-        return this.json({ error: resolution.error }, 409)
-      if (resolution.primaryAgentParticipantId !== participant.id)
+      ).tasks.get(request.taskRequestId)
+      if (!task) return this.json({ error: "unknown_task_request" }, 409)
+      const current = room.taskLiveViews?.[request.taskRequestId]
+      const authorityAgentId =
+        current?.authorityAgentId ??
+        initialTaskAgentParticipantId(task.request, room.participants)
+      if (authorityAgentId !== participant.id)
         return this.json({ error: "live_view_not_authorized" }, 403)
 
-      const current = room.taskLiveViews?.[resolution.requestId]
       if (current) {
         if (current.surfaceId !== validation.snapshot.surfaceId)
           return this.json({ error: "live_view_surface_mismatch" }, 409)
@@ -3192,12 +3200,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
       const snapshot: TaskLiveViewSnapshot = {
         ...validation.snapshot,
-        taskRequestId: resolution.requestId,
+        taskRequestId: request.taskRequestId,
         authorityAgentId: participant.id,
       }
       room.taskLiveViews = {
         ...(room.taskLiveViews ?? {}),
-        [resolution.requestId]: snapshot,
+        [request.taskRequestId]: snapshot,
       }
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)

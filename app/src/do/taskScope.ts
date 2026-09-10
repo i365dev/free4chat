@@ -44,6 +44,23 @@ function connectedAgent(
   return participant?.kind === "agent" && participant.connected
 }
 
+/**
+ * Returns the Agent endpoint that was canonical when the Task request was
+ * created. This intentionally never falls back to another participating
+ * Agent after the original endpoint disconnects.
+ */
+export function initialTaskAgentParticipantId(
+  request: CollabEvent,
+  participants: Record<string, RoomParticipant>
+): string | undefined {
+  const target = participants[request.targetParticipantId]
+  if (!target) return undefined
+  if (target?.kind === "agent") return target.id
+  const source = participants[request.fromParticipantId]
+  if (source?.kind === "agent") return source.id
+  return undefined
+}
+
 function addAgentEndpoint(
   task: TaskProjectionTask,
   participants: Record<string, RoomParticipant>,

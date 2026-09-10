@@ -94,7 +94,8 @@ function validateAction(value: unknown): value is TaskLiveViewAction {
 function validateComponent(
   value: unknown,
   depth: number,
-  count: { value: number }
+  count: { value: number },
+  data: Record<string, TaskLiveViewScalar>
 ): value is TaskLiveViewComponent {
   if (!isRecord(value) || typeof value.type !== "string") return false
   if (depth > MAX_TASK_LIVE_VIEW_DEPTH) return false
@@ -124,6 +125,7 @@ function validateComponent(
         hasOnlyKeys(value, ["type", "path", "placeholder"]) &&
         typeof value.path === "string" &&
         PATH_PATTERN.test(value.path) &&
+        typeof data[value.path] === "string" &&
         (value.placeholder === undefined ||
           isSafeText(value.placeholder, MAX_LABEL_LENGTH))
       )
@@ -136,7 +138,7 @@ function validateComponent(
         value.children.length > 0 &&
         value.children.length <= MAX_TASK_LIVE_VIEW_COMPONENTS &&
         value.children.every((child) =>
-          validateComponent(child, depth + 1, count)
+          validateComponent(child, depth + 1, count, data)
         )
       )
     default:
@@ -154,7 +156,9 @@ export function validateTaskLiveViewSnapshot(
   } catch {
     return { ok: false, error: "invalid_live_view" }
   }
-  if (serialized.length > MAX_TASK_LIVE_VIEW_BYTES)
+  if (
+    new TextEncoder().encode(serialized).byteLength > MAX_TASK_LIVE_VIEW_BYTES
+  )
     return { ok: false, error: "live_view_too_large" }
   if (
     !hasOnlyKeys(raw, [
@@ -184,7 +188,8 @@ export function validateTaskLiveViewSnapshot(
       return { ok: false, error: "invalid_live_view_data" }
 
   const count = { value: 0 }
-  if (!validateComponent(raw.root, 1, count))
+  const data = raw.data as Record<string, TaskLiveViewScalar>
+  if (!validateComponent(raw.root, 1, count, data))
     return { ok: false, error: "invalid_live_view_component" }
 
   return {

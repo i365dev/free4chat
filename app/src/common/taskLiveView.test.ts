@@ -95,4 +95,31 @@ describe("Task Live View contract", () => {
       })
     ).toMatchObject({ ok: false, error: "live_view_too_large" })
   })
+
+  it("counts UTF-8 bytes rather than JavaScript string length", () => {
+    const data = Object.fromEntries(
+      Array.from({ length: 32 }, (_, index) => [`k${index}`, "界".repeat(400)])
+    )
+    const serialized = JSON.stringify({ ...snapshot(), data })
+    expect(serialized.length).toBeLessThan(32 * 1024)
+    expect(new TextEncoder().encode(serialized).byteLength).toBeGreaterThan(
+      32 * 1024
+    )
+    expect(validateTaskLiveViewSnapshot({ ...snapshot(), data })).toMatchObject(
+      { ok: false, error: "live_view_too_large" }
+    )
+  })
+
+  it("only allows Input to bind a declared string data key", () => {
+    const input = (data: Record<string, unknown>, path: string) =>
+      validateTaskLiveViewSnapshot({
+        ...snapshot(),
+        data,
+        root: { type: "Input", path },
+      })
+
+    expect(input({ name: "Ada" }, "name").ok).toBe(true)
+    expect(input({ count: 0 }, "count").ok).toBe(false)
+    expect(input({}, "name").ok).toBe(false)
+  })
 })
