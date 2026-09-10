@@ -218,7 +218,12 @@ func TestResidentRuntimeRetriesHumanTaskAcceptanceOnHeartbeat(t *testing.T) {
 	waitFor(t, time.Second, func() bool {
 		responses := client.snapshotCollabResponses()
 		runs, _ := adapter.scopedRunSnapshot()
-		return len(responses) == 2 && len(runs) == 1 && len(rt.pendingAddressedSnapshotFor("task:T")) == 0
+		status := rt.Status()
+		return len(responses) == 2 &&
+			len(runs) == 1 &&
+			len(rt.pendingAddressedSnapshotFor("task:T")) == 0 &&
+			status.LastError == "" &&
+			status.State == StateWaiting
 	}, "heartbeat acceptance retry and single Harness turn")
 	if len(stream.heartbeats) == 0 {
 		t.Fatal("accepted retry completed without a resident heartbeat")
