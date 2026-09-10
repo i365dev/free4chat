@@ -473,6 +473,7 @@ func (c *Client) RequestPermission(
 	request types.RoomPermissionRequest,
 ) error {
 	if !validPermissionRequestID(request.RequestID) ||
+		(request.TaskRequestID != "" && !validPermissionRequestID(request.TaskRequestID)) ||
 		!validBoundedText(request.ToolCall.Title, 200) ||
 		(request.ToolCall.Kind != "" && !validBoundedText(request.ToolCall.Kind, 64)) ||
 		len(request.Options) == 0 || len(request.Options) > 8 {

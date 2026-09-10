@@ -560,6 +560,116 @@ func TestACPDelayedPermissionSelectionContinuesSameTurn(t *testing.T) {
 	}
 }
 
+func TestACPPermissionCarriesTheLogicalSessionScope(t *testing.T) {
+	requests := make(chan ACPPermissionRequest, 2)
+	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
+		PermissionResponder: func(_ context.Context, request ACPPermissionRequest) (ACPPermissionResponse, error) {
+			requests <- request
+			return ACPPermissionResponse{OptionID: "allow-once"}, nil
+		},
+	})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure Room session failed: %v", err)
+	}
+	if _, err := adapter.RunTurn(turnInput("permission-test"), adapter.SessionGeneration()); err != nil {
+		t.Fatalf("Room permission turn failed: %v", err)
+	}
+	select {
+	case request := <-requests:
+		if request.Scope != "room" {
+			t.Fatalf("Room permission carried wrong scope: %+v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Room permission was not observed")
+	}
+
+	if err := adapter.EnsureSessionFor("task:task-T"); err != nil {
+		t.Fatalf("ensure Task session failed: %v", err)
+	}
+	result, err := adapter.RunTurnFor(
+		"task:task-T",
+		turnInput("permission-test"),
+		adapter.SessionGenerationFor("task:task-T"),
+	)
+	if err != nil || result.Text != "permission-approved" {
+		t.Fatalf("Task permission turn failed: %+v %v", result, err)
+	}
+	select {
+	case request := <-requests:
+		if request.Scope != "task:task-T" {
+			t.Fatalf("Task permission carried wrong scope: %+v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Task permission was not observed")
+	}
+}
+
+func TestACPSessionScopeLookupFailsClosedForUnknownSession(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", nil), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure Room session failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:task-T"); err != nil {
+		t.Fatalf("ensure Task session failed: %v", err)
+	}
+
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if scope := adapter.scopeForSessionIDLocked("unknown-session"); scope != "" {
+		t.Fatalf("unknown ACP session was projected into scope %q", scope)
+	}
+}
+
+func TestACPPermissionFromUnknownOrInactiveSessionFailsClosed(t *testing.T) {
+	called := make(chan struct{}, 1)
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", nil), AdapterOptions{
+		PermissionResponder: func(context.Context, ACPPermissionRequest) (ACPPermissionResponse, error) {
+			called <- struct{}{}
+			return ACPPermissionResponse{OptionID: "allow-once"}, nil
+		},
+	})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure Room session failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:task-T"); err != nil {
+		t.Fatalf("ensure Task session failed: %v", err)
+	}
+	diagnostics := adapter.SessionDiagnostics()
+	if len(diagnostics) != 2 || diagnostics[1].SessionID == "" {
+		t.Fatalf("Task ACP session was not established: %+v", diagnostics)
+	}
+
+	for index, sessionID := range []string{"unknown-session", diagnostics[1].SessionID} {
+		params, err := json.Marshal(map[string]any{
+			"sessionId": sessionID,
+			"toolCall": map[string]any{
+				"title": "Needs approval",
+			},
+			"options": []map[string]string{{"optionId": "allow-once", "name": "Allow once"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		adapter.dispatchPermission(&acpMessage{
+			ID:     json.RawMessage(strconv.Itoa(index + 100)),
+			Method: "session/request_permission",
+			Params: params,
+		})
+	}
+	if adapter.PendingPermissionCount() != 0 {
+		t.Fatal("unknown or inactive session created a pending permission")
+	}
+	select {
+	case <-called:
+		t.Fatal("unknown or inactive session reached the permission responder")
+	default:
+	}
+}
+
 func TestACPRejectsInvalidPermissionOptionAndKeepsFailClosed(t *testing.T) {
 	adapter, _ := newTestAdapter(t, scriptLauncher("permission_wait", nil), AdapterOptions{
 		PermissionResponder: func(context.Context, ACPPermissionRequest) (ACPPermissionResponse, error) {

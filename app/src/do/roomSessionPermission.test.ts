@@ -4,6 +4,14 @@ import { RoomSession } from "./RoomSession"
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 
+function collabRequestId(message: Record<string, unknown> | undefined) {
+  const collab = message?.collab
+  if (!collab || typeof collab !== "object" || Array.isArray(collab))
+    return undefined
+  const requestId = (collab as Record<string, unknown>).requestId
+  return typeof requestId === "string" ? requestId : undefined
+}
+
 function buildStoredRoom() {
   const participant = (id: string, kind: "human" | "agent") => ({
     id,
@@ -23,6 +31,7 @@ function buildStoredRoom() {
       "human-2": participant("human-2", "human"),
       "agent-a": participant("agent-a", "agent"),
       "agent-b": participant("agent-b", "agent"),
+      "agent-z": participant("agent-z", "agent"),
     },
     messages: [],
     nextMessageSequence: 0,
@@ -72,7 +81,8 @@ function makeRoomSession() {
   }
   const requestPermission = (
     participantId = "agent-a",
-    requestId = "permission-1"
+    requestId = "permission-1",
+    taskRequestId?: string
   ) =>
     control({
       action: "agent-send-permission",
@@ -93,6 +103,7 @@ function makeRoomSession() {
           { optionId: "deny", name: "Deny", kind: "reject_once" },
         ],
         expiresInMs: 60_000,
+        ...(taskRequestId === undefined ? {} : { taskRequestId }),
       },
     })
   const sendHuman = async (
@@ -156,6 +167,7 @@ describe("RoomSession structured permission lifecycle (#286)", () => {
     const message = room.storedRoom().messages[0]!
     expect(message.actionType).toBe("permission")
     expect(message.peerId).toBe("agent-a")
+    expect(message.taskRequestId).toBeUndefined()
     expect(message.targets).toEqual(["agent-a"])
     expect(message.permission).toMatchObject({
       requestId: "permission-1",
@@ -171,6 +183,122 @@ describe("RoomSession structured permission lifecycle (#286)", () => {
         { optionId: "deny", name: "Deny", kind: "reject_once" },
       ],
     })
+  })
+
+  it("keeps Task permission correlation through duplicate, resolution, and expiry", async () => {
+    const room = makeRoomSession()
+    await room.sendHuman("human-1", {
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Task T",
+    })
+    const taskRequestId = collabRequestId(room.storedRoom().messages[0])
+    if (typeof taskRequestId !== "string")
+      throw new Error("Task was not created")
+
+    const first = await room.requestPermission(
+      "agent-a",
+      "permission-task",
+      taskRequestId
+    )
+    expect(first.status).toBe(200)
+    expect(room.storedRoom().messages[1]).toMatchObject({
+      taskRequestId,
+      permission: { requestId: "permission-task", kind: "request" },
+    })
+    expect(
+      room.storedRoom().permissionRequests?.["permission-task"]
+    ).toMatchObject({
+      taskRequestId,
+    })
+
+    const duplicate = await room.requestPermission(
+      "agent-a",
+      "permission-task",
+      taskRequestId
+    )
+    expect(duplicate.status).toBe(200)
+    expect(duplicate.json.duplicate).toBe(true)
+
+    await room.sendHuman("human-1", {
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Task U",
+    })
+    const taskURequestId = collabRequestId(room.storedRoom().messages[2])
+    if (typeof taskURequestId !== "string")
+      throw new Error("Task U was not created")
+    const conflict = await room.requestPermission(
+      "agent-a",
+      "permission-task",
+      taskURequestId
+    )
+    expect(conflict.status).toBe(409)
+
+    await room.sendHuman("human-1", {
+      type: "permission-response",
+      requestId: "permission-task",
+      selectedOptionId: "allow-once",
+    })
+    expect(room.storedRoom().messages.at(-1)).toMatchObject({
+      taskRequestId,
+      permission: { requestId: "permission-task", kind: "resolved" },
+    })
+
+    const expiry = await room.requestPermission(
+      "agent-a",
+      "permission-expiry",
+      taskRequestId
+    )
+    expect(expiry.status).toBe(200)
+    const pending = room.storedRoom().permissionRequests?.["permission-expiry"]
+    ;(pending?.event as Record<string, unknown>).expiresAt = Date.now() - 1
+    await room.roomSession.alarm()
+    expect(room.storedRoom().messages.at(-1)).toMatchObject({
+      taskRequestId,
+      permission: { requestId: "permission-expiry", kind: "expired" },
+    })
+  })
+
+  it("authorizes Task permission for later participating Agents only", async () => {
+    const room = makeRoomSession()
+    await room.sendHuman("human-1", {
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Task T",
+    })
+    const taskRequestId = collabRequestId(room.storedRoom().messages[0])
+    if (typeof taskRequestId !== "string")
+      throw new Error("Task was not created")
+
+    await room.sendHuman("human-1", {
+      type: "chat",
+      text: "@Agent agent-b review this",
+      taskRequestId,
+      targets: ["agent-b"],
+    })
+    const participating = await room.requestPermission(
+      "agent-b",
+      "permission-agent-b",
+      taskRequestId
+    )
+    expect(participating.status).toBe(200)
+
+    const unrelated = await room.requestPermission(
+      "agent-z",
+      "permission-agent-z",
+      taskRequestId
+    )
+    expect(unrelated.status).toBe(400)
+    expect(unrelated.json.error).toBe("permission_task_participant_mismatch")
+
+    const stale = await room.requestPermission(
+      "agent-a",
+      "permission-stale-task",
+      "unknown-task"
+    )
+    expect(stale.status).toBe(400)
+    expect(stale.json.error).toBe("unknown_task_request")
   })
 
   it("deduplicates the same request and rejects conflicting reuse", async () => {

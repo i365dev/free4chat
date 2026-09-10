@@ -106,6 +106,58 @@ describe("task interaction projections (#309)", () => {
     expect(buildTaskProjections([task, terminal])[0]?.status).toBe("Completed")
   })
 
+  it("keeps Task-scoped permission lifecycle messages in the Task view", () => {
+    const task = request("T", "Task")
+    const taskU = request("U", "Other task")
+    const permissionRequest: Message = {
+      peerId: "agent-x",
+      name: "Agent",
+      kind: "agent",
+      type: "action",
+      actionType: "permission",
+      taskRequestId: "T",
+      permission: {
+        requestId: "permission-T",
+        kind: "request",
+        agentParticipantId: "agent-x",
+        toolCall: { title: "Run command" },
+        options: [{ optionId: "allow", name: "Allow" }],
+        createdAt: 2,
+        expiresAt: 100,
+      },
+    }
+    const permissionResolved: Message = {
+      peerId: "human",
+      name: "Human",
+      kind: "human",
+      type: "action",
+      actionType: "permission",
+      taskRequestId: "T",
+      permission: {
+        requestId: "permission-T",
+        kind: "resolved",
+        agentParticipantId: "agent-x",
+        selectedOptionId: "allow",
+        humanParticipantId: "human",
+        humanName: "Human",
+        createdAt: 3,
+        expiresAt: 100,
+      },
+    }
+
+    const messages = [task, permissionRequest, permissionResolved, taskU]
+    expect(buildTaskProjections(messages)[0]?.messages).toEqual([
+      task,
+      permissionRequest,
+      permissionResolved,
+    ])
+    expect(buildTaskProjections(messages)[1]?.messages).toEqual([taskU])
+    expect(
+      buildTaskProjections(messages)[1]?.messages.includes(permissionRequest)
+    ).toBe(false)
+    expect(roomMessagesForView(messages)).toEqual([])
+  })
+
   it("keeps scoped messages in Room when their canonical request was evicted", () => {
     const orphan: Message = {
       peerId: "agent-x",

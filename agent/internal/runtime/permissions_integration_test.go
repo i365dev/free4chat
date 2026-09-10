@@ -80,6 +80,7 @@ func TestRoomPermissionMappingUsesFreshIdsAndRejectsStaleOrInvalidResponses(t *t
 	request := harness.ACPPermissionRequest{
 		RequestID: "78",
 		SessionID: "session-local-only",
+		Scope:     "room",
 		ToolCall: harness.ACPToolCall{
 			Title:    "Run command",
 			Kind:     "execute",
@@ -108,6 +109,9 @@ func TestRoomPermissionMappingUsesFreshIdsAndRejectsStaleOrInvalidResponses(t *t
 	}
 	if first.request.RequestID == request.RequestID || first.request.RequestID == "78" {
 		t.Fatalf("ACP JSON-RPC id was reused as Room correlation id: %q", first.request.RequestID)
+	}
+	if first.request.TaskRequestID != "" {
+		t.Fatalf("Room-scoped permission unexpectedly carried Task correlation: %q", first.request.TaskRequestID)
 	}
 	if !looksLikeUUID(first.request.RequestID) {
 		t.Fatalf("Room correlation id is not a UUID: %q", first.request.RequestID)
@@ -170,6 +174,77 @@ func TestRoomPermissionMappingUsesFreshIdsAndRejectsStaleOrInvalidResponses(t *t
 	}
 	if err := <-secondErr; err != nil {
 		t.Fatalf("valid Room response failed: %v", err)
+	}
+}
+
+func TestRoomPermissionMappingCarriesCanonicalTaskCorrelation(t *testing.T) {
+	client := newPermissionResidentClient()
+	rt := NewResidentRuntime(Options{
+		RoomID: "room", Client: client, Adapter: &fakeAdapter{name: "pi"},
+	})
+	rt.mu.Lock()
+	rt.participantHandle = "private-handle"
+	rt.participantID = "agent-1"
+	rt.mu.Unlock()
+
+	result := make(chan harness.ACPPermissionResponse, 1)
+	errResult := make(chan error, 1)
+	go func() {
+		response, err := rt.respondToPermission(context.Background(), harness.ACPPermissionRequest{
+			RequestID: "78",
+			SessionID: "session-local-only",
+			Scope:     "task:task-T",
+			ToolCall:  harness.ACPToolCall{Title: "Needs approval"},
+			Options:   []harness.ACPPermissionOption{{OptionID: "allow", Name: "Allow"}},
+		})
+		result <- response
+		errResult <- err
+	}()
+
+	var observed permissionRequestObservation
+	select {
+	case observed = <-client.requests:
+	case <-time.After(time.Second):
+		t.Fatal("Task permission request was not registered")
+	}
+	if observed.request.TaskRequestID != "task-T" {
+		t.Fatalf("canonical Task correlation was not projected: %+v", observed.request)
+	}
+	rt.handleRoomPermissionEvent(
+		roomPermissionResponseEvent(observed.request.RequestID, "agent-1", "resolved", "allow"),
+	)
+	if response := <-result; response.OptionID != "allow" {
+		t.Fatalf("Task permission response did not resolve: %+v", response)
+	}
+	if err := <-errResult; err != nil {
+		t.Fatalf("Task permission response failed: %v", err)
+	}
+}
+
+func TestRoomPermissionMappingRejectsUnscopedTaskCorrelation(t *testing.T) {
+	client := newPermissionResidentClient()
+	rt := NewResidentRuntime(Options{
+		RoomID: "room", Client: client, Adapter: &fakeAdapter{name: "pi"},
+	})
+	rt.mu.Lock()
+	rt.participantHandle = "private-handle"
+	rt.participantID = "agent-1"
+	rt.mu.Unlock()
+
+	_, err := rt.respondToPermission(context.Background(), harness.ACPPermissionRequest{
+		RequestID: "78",
+		SessionID: "session-local-only",
+		Scope:     "task:bad scope",
+		ToolCall:  harness.ACPToolCall{Title: "Needs approval"},
+		Options:   []harness.ACPPermissionOption{{OptionID: "allow", Name: "Allow"}},
+	})
+	if err == nil {
+		t.Fatal("malformed Task scope did not fail closed")
+	}
+	select {
+	case request := <-client.requests:
+		t.Fatalf("malformed Task scope reached Room: %+v", request)
+	default:
 	}
 }
 
@@ -362,6 +437,7 @@ func TestResidentPermissionCancellationClearsLocalMapping(t *testing.T) {
 	go func() {
 		_, err := rt.respondToPermission(ctx, harness.ACPPermissionRequest{
 			RequestID: "78",
+			Scope:     "room",
 			ToolCall:  harness.ACPToolCall{Title: "Needs approval"},
 			Options:   []harness.ACPPermissionOption{{OptionID: "allow", Name: "Allow"}},
 		})
@@ -404,6 +480,7 @@ func TestResidentPermissionStreamFailureClearsLocalMapping(t *testing.T) {
 	go func() {
 		_, err := rt.respondToPermission(context.Background(), harness.ACPPermissionRequest{
 			RequestID: "78",
+			Scope:     "room",
 			ToolCall:  harness.ACPToolCall{Title: "Needs approval"},
 			Options:   []harness.ACPPermissionOption{{OptionID: "allow", Name: "Allow"}},
 		})

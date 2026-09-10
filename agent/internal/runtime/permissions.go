@@ -102,10 +102,15 @@ func (r *ResidentRuntime) respondToPermission(
 	if participantID == "" {
 		return harness.ACPPermissionResponse{}, errRoomPermissionCancelled
 	}
+	taskRequestID, err := permissionTaskRequestIDForScope(request.Scope)
+	if err != nil {
+		return harness.ACPPermissionResponse{}, err
+	}
 	projected, offered, err := projectRoomPermission(request)
 	if err != nil {
 		return harness.ACPPermissionResponse{}, err
 	}
+	projected.TaskRequestID = taskRequestID
 	correlationID, err := newRoomPermissionCorrelationID()
 	if err != nil {
 		return harness.ACPPermissionResponse{}, errors.New("could not create Room permission correlation")
@@ -149,6 +154,40 @@ func (r *ResidentRuntime) respondToPermission(
 		r.removePendingPermission(correlationID, pending)
 		return harness.ACPPermissionResponse{}, errRoomPermissionCancelled
 	}
+}
+
+// permissionTaskRequestIDForScope converts the adapter-owned logical scope to
+// the canonical collaboration request correlation used by Room. An empty or
+// malformed scope fails closed; it must never silently become a Room approval.
+func permissionTaskRequestIDForScope(scope string) (string, error) {
+	scope = normalizeScope(scope)
+	if scope == roomScope {
+		return "", nil
+	}
+	requestID := taskRequestIDForScope(scope)
+	if requestID == "" || !validPermissionTaskRequestID(requestID) {
+		return "", errors.New("invalid Harness permission scope")
+	}
+	return requestID, nil
+}
+
+func validPermissionTaskRequestID(value string) bool {
+	if len(value) < 4 || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		if index == 0 {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')) {
+				return false
+			}
+			continue
+		}
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '.' || char == '_' || char == ':' || char == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func projectRoomPermission(

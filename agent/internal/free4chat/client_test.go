@@ -178,7 +178,8 @@ func TestRequestPermissionUsesNarrowRoomControlWire(t *testing.T) {
 	handle := base64.RawURLEncoding.EncodeToString(handleBytes)
 	client := New(server.URL + "/mcp")
 	err := client.RequestPermission(handle, types.RoomPermissionRequest{
-		RequestID: "550e8400-e29b-41d4-a716-446655440000",
+		RequestID:     "550e8400-e29b-41d4-a716-446655440000",
+		TaskRequestID: "task-request-1",
 		ToolCall: types.RoomPermissionToolCall{
 			Title: "Run command", Kind: "execute", Summary: "safe presentation",
 		},
@@ -197,6 +198,7 @@ func TestRequestPermissionUsesNarrowRoomControlWire(t *testing.T) {
 		t.Fatalf("wrong permission control wire: path=%q headers=%v", seenPath, seenHeaders)
 	}
 	if seenBody.RequestID != "550e8400-e29b-41d4-a716-446655440000" ||
+		seenBody.TaskRequestID != "task-request-1" ||
 		seenBody.ToolCall.Title != "Run command" || seenBody.ToolCall.Kind != "execute" ||
 		seenBody.Options[0].OptionID != "allow-once" || seenBody.ExpiresInMs != 119_000 {
 		t.Fatalf("permission presentation was not preserved: %+v", seenBody)

@@ -50,6 +50,7 @@ import {
   resolveAgentPurposePermission,
 } from "./meetingNotesAuth"
 import {
+  isValidPermissionTaskRequestId,
   isPermissionEvent,
   pendingPermissionRequestIsEquivalent,
   PERMISSION_ACTION_TYPE,
@@ -882,6 +883,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           }
           const record = rawRecord as Partial<PermissionRequestRecord>
           const event = record.event
+          const taskRequestId =
+            typeof record.taskRequestId === "string"
+              ? record.taskRequestId
+              : undefined
           const agent =
             typeof record.agentParticipantId === "string"
               ? participants[record.agentParticipantId]
@@ -896,7 +901,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             !isPermissionEvent(event) ||
             event.kind !== "request" ||
             event.requestId !== requestId ||
-            event.agentParticipantId !== record.agentParticipantId
+            event.agentParticipantId !== record.agentParticipantId ||
+            (record.taskRequestId !== undefined &&
+              (taskRequestId === undefined ||
+                !isValidPermissionTaskRequestId(taskRequestId)))
           ) {
             changed = true
             continue
@@ -904,6 +912,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           permissionRequests[requestId] = {
             requestId,
             agentParticipantId: record.agentParticipantId,
+            ...(taskRequestId === undefined ? {} : { taskRequestId }),
             sequence: record.sequence,
             event,
           }
@@ -1710,15 +1719,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       : undefined
   }
 
+  private latestPermissionRequest(
+    room: RoomRecord,
+    requestId: string
+  ):
+    | {
+        event: PermissionEvent
+        taskRequestId?: string
+      }
+    | undefined {
+    for (let index = room.messages.length - 1; index >= 0; index -= 1) {
+      const message = room.messages[index]!
+      const event = this.permissionEventForMessage(message)
+      if (event?.requestId === requestId)
+        return {
+          event,
+          ...(message.taskRequestId === undefined
+            ? {}
+            : { taskRequestId: message.taskRequestId }),
+        }
+    }
+    return undefined
+  }
+
   private latestPermissionEvent(
     room: RoomRecord,
     requestId: string
   ): PermissionEvent | undefined {
-    for (let index = room.messages.length - 1; index >= 0; index -= 1) {
-      const event = this.permissionEventForMessage(room.messages[index]!)
-      if (event?.requestId === requestId) return event
-    }
-    return undefined
+    return this.latestPermissionRequest(room, requestId)?.event
   }
 
   // Permission events are private to the Agent that originated the request.
@@ -1768,6 +1796,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           createdAt: now,
           expiresAt: record.event.expiresAt,
         },
+        ...(record.taskRequestId === undefined
+          ? {}
+          : { taskRequestId: record.taskRequestId }),
         targets: [record.agentParticipantId],
         createdAt: now,
       })
@@ -4328,6 +4359,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const validated = validatePermissionRequest(input ?? {}, now)
     if (validated.ok === false)
       return { status: "rejected", error: validated.error }
+    if (validated.taskRequestId !== undefined) {
+      const task = resolveTaskRequest(
+        buildTaskProjectionIndex(room.messages, room.participants),
+        validated.taskRequestId,
+        room.participants
+      )
+      if (task.ok === false) return { status: "rejected", error: task.error }
+      if (!task.agentParticipantIds.includes(agent.id))
+        return {
+          status: "rejected",
+          error: "permission_task_participant_mismatch",
+        }
+    }
     const event: Extract<PermissionEvent, { kind: "request" }> = {
       requestId: validated.requestId,
       kind: "request",
@@ -4340,7 +4384,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const pending = room.permissionRequests ?? {}
     const existing = pending[event.requestId]
     if (existing) {
-      if (!pendingPermissionRequestIsEquivalent(existing, event))
+      if (
+        !pendingPermissionRequestIsEquivalent(
+          existing,
+          event,
+          validated.taskRequestId
+        )
+      )
         return { status: "rejected", error: "permission_request_conflict" }
       const message = room.messages.find(
         (candidate) =>
@@ -4361,6 +4411,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           type: "action",
           actionType: PERMISSION_ACTION_TYPE,
           permission: existing.event,
+          ...(existing.taskRequestId === undefined
+            ? {}
+            : { taskRequestId: existing.taskRequestId }),
           targets: [agent.id],
           createdAt: existing.event.createdAt,
         })
@@ -4380,24 +4433,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
     }
 
-    const previous = this.latestPermissionEvent(room, event.requestId)
+    const previous = this.latestPermissionRequest(room, event.requestId)
     if (previous) {
       if (
-        previous.kind !== "request" ||
+        previous.event.kind !== "request" ||
         pendingPermissionRequestIsEquivalent(
           {
-            requestId: previous.requestId,
-            agentParticipantId: previous.agentParticipantId,
+            requestId: previous.event.requestId,
+            agentParticipantId: previous.event.agentParticipantId,
+            ...(previous.taskRequestId === undefined
+              ? {}
+              : { taskRequestId: previous.taskRequestId }),
             sequence: 0,
-            event: previous,
+            event: previous.event,
           },
-          event
+          event,
+          validated.taskRequestId
         ) === false
       )
         return {
           status: "rejected",
           error:
-            previous.kind === "request"
+            previous.event.kind === "request"
               ? "permission_request_conflict"
               : "permission_request_closed",
         }
@@ -4412,7 +4469,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return {
         status: "duplicate",
         sequence: message.sequence,
-        event: previous,
+        event: previous.event,
         message,
       }
     }
@@ -4427,6 +4484,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       type: "action",
       actionType: PERMISSION_ACTION_TYPE,
       permission: event,
+      ...(validated.taskRequestId === undefined
+        ? {}
+        : { taskRequestId: validated.taskRequestId }),
       // This target is also persisted for the addressed Agent event
       // contract; the DO additionally filters permission events by the
       // envelope's authenticated agentParticipantId.
@@ -4436,6 +4496,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     pending[event.requestId] = {
       requestId: event.requestId,
       agentParticipantId: agent.id,
+      ...(validated.taskRequestId === undefined
+        ? {}
+        : { taskRequestId: validated.taskRequestId }),
       sequence: message.sequence,
       event,
     }
@@ -4507,6 +4570,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       type: "action",
       actionType: PERMISSION_ACTION_TYPE,
       permission: event,
+      ...(record.taskRequestId === undefined
+        ? {}
+        : { taskRequestId: record.taskRequestId }),
       targets: [record.agentParticipantId],
       createdAt: now,
     })

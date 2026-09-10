@@ -188,6 +188,9 @@ export type PermissionEvent =
 export interface PermissionRequestRecord {
   requestId: string
   agentParticipantId: string
+  // Canonical collaboration Task correlation for a Task-scoped permission;
+  // absent for the ordinary Room conversation.
+  taskRequestId?: string
   sequence: number
   event: Extract<PermissionEvent, { kind: "request" }>
 }

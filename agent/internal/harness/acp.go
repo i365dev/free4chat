@@ -137,8 +137,12 @@ type ACPPermissionOption struct {
 type ACPPermissionRequest struct {
 	RequestID string
 	SessionID string
-	ToolCall  ACPToolCall
-	Options   []ACPPermissionOption
+	// Scope is the adapter-owned logical scope of the ACP session that emitted
+	// this request. It is local correlation only; it is never sent to the
+	// Harness or projected directly into Room state.
+	Scope    string
+	ToolCall ACPToolCall
+	Options  []ACPPermissionOption
 }
 
 // ACPPermissionResponse selects one exact option previously offered in the
@@ -1008,21 +1012,30 @@ func (a *ACPAdapter) dispatchActivity(params json.RawMessage) {
 		a.mu.Unlock()
 		return
 	}
-	scope := "room"
-	if envelope.SessionID != a.sessionID {
-		scope = ""
-		for logicalScope, session := range a.sessions {
-			if session != nil && session.sessionID == envelope.SessionID {
-				scope = logicalScope
-				break
-			}
-		}
-	}
+	scope := a.scopeForSessionIDLocked(envelope.SessionID)
 	handler := a.options.ActivityHandler
 	a.mu.Unlock()
 	if handler != nil && scope != "" {
 		handler(scope, state)
 	}
+}
+
+// scopeForSessionIDLocked is the one adapter-local session-to-cognition-scope
+// mapping shared by activity and permission projections. Callers must hold
+// a.mu. An unknown session fails closed instead of being treated as Room.
+func (a *ACPAdapter) scopeForSessionIDLocked(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	if sessionID == a.sessionID {
+		return "room"
+	}
+	for logicalScope, session := range a.sessions {
+		if session != nil && session.sessionID == sessionID {
+			return logicalScope
+		}
+	}
+	return ""
 }
 
 func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
@@ -1035,6 +1048,12 @@ func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
 	key := message.idKey()
 	a.mu.Lock()
 	if a.closing || !a.promptActive || a.turnContext == nil || a.turnSessionID == "" || request.SessionID != a.turnSessionID {
+		a.mu.Unlock()
+		_ = a.writeFrame(cancelPermissionFrame(message.ID))
+		return
+	}
+	request.Scope = a.scopeForSessionIDLocked(request.SessionID)
+	if request.Scope == "" {
 		a.mu.Unlock()
 		_ = a.writeFrame(cancelPermissionFrame(message.ID))
 		return
