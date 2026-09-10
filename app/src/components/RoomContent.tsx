@@ -12,7 +12,14 @@ import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
-import { buildTaskProjections, roomMessagesForView } from "../common/taskViews"
+import {
+  buildTaskProjections,
+  isTaskTerminal,
+  roomMessagesForView,
+  taskHasConnectedAgent,
+  type TaskProjection,
+} from "../common/taskViews"
+import type { UserInfo } from "../common/types"
 import {
   umamiEvent,
   trackAnalyticsEvent,
@@ -25,6 +32,15 @@ import { useTurnstile } from "../hooks/useTurnstile"
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
 type TaskAgent = { peerId: string; name: string }
+
+function taskIsUnavailable(
+  task: Pick<TaskProjection, "participatingAgentIds" | "status">,
+  participants: Pick<UserInfo, "peerId" | "kind">[]
+): boolean {
+  return (
+    !isTaskTerminal(task.status) && !taskHasConnectedAgent(task, participants)
+  )
+}
 
 function ScreenShareViewer({
   stream,
@@ -192,6 +208,9 @@ export default function RoomContent({
           )
       )
     : []
+  const activeTaskUnavailable = Boolean(
+    activeTask && taskIsUnavailable(activeTask, participants)
+  )
 
   useEffect(() => {
     const pending = pendingLocalTaskSummaries.current
@@ -879,6 +898,7 @@ export default function RoomContent({
           <div
             role="tablist"
             aria-label="Room interactions"
+            data-testid="interaction-tablist"
             className="scrollbar-thin flex flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/60 px-3 py-2"
           >
             <button
@@ -903,13 +923,18 @@ export default function RoomContent({
                 aria-selected={activeInteraction === task.requestId}
                 data-testid={`interaction-tab-task-${task.requestId}`}
                 onClick={() => setActiveInteraction(task.requestId)}
+                title={
+                  taskIsUnavailable(task, participants)
+                    ? `${task.title} — unavailable`
+                    : task.title
+                }
                 className={`flex max-w-52 shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition ${
                   activeInteraction === task.requestId
                     ? "bg-blue-600 text-white"
                     : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
                 }`}
               >
-                <span className="truncate">{task.title}</span>
+                <span className="min-w-0 flex-1 truncate">{task.title}</span>
                 <span
                   aria-label={`Status ${task.status}`}
                   className="text-[10px] opacity-70"
@@ -920,14 +945,25 @@ export default function RoomContent({
                     ? "×"
                     : "●"}
                 </span>
+                {taskIsUnavailable(task, participants) && (
+                  <span
+                    aria-label="Task unavailable"
+                    className="text-[10px] text-amber-300"
+                  >
+                    !
+                  </span>
+                )}
               </button>
             ))}
           </div>
-          <div className="min-h-0 flex-1">
+          <div
+            data-testid="interaction-content"
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
+          >
             {activeTaskActivities.length > 0 && (
               <div
                 data-testid="task-agent-activity"
-                className="flex flex-wrap gap-x-3 gap-y-1 border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
+                className="flex flex-none flex-wrap gap-x-3 gap-y-1 border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
               >
                 {activeTaskActivities.map((activity) => {
                   const participant = participants.find(
@@ -943,24 +979,27 @@ export default function RoomContent({
                 })}
               </div>
             )}
-            <TextChatCard
-              key={activeInteraction}
-              room={roomName}
-              nickName={nickName}
-              messages={interactionMessages}
-              attachments={activeTask ? [] : attachments}
-              participants={participants}
-              pendingFiles={activeTask ? [] : pendingFiles}
-              onSendText={wrappedSendText}
-              onSendFile={wrappedSendFile}
-              onSendAction={sendActionMessage}
-              localParticipantId={effectiveLocalParticipantId}
-              onCollabRespond={handleCollabRespond}
-              onReadArtifact={handleReadArtifact}
-              onCollabResult={handleCollabResult}
-              onPermissionRespond={handlePermissionResponse}
-              taskRequestId={activeTask?.requestId}
-            />
+            <div data-testid="interaction-chat" className="min-h-0 flex-1">
+              <TextChatCard
+                key={activeInteraction}
+                room={roomName}
+                nickName={nickName}
+                messages={interactionMessages}
+                attachments={activeTask ? [] : attachments}
+                participants={participants}
+                pendingFiles={activeTask ? [] : pendingFiles}
+                onSendText={wrappedSendText}
+                onSendFile={wrappedSendFile}
+                onSendAction={sendActionMessage}
+                localParticipantId={effectiveLocalParticipantId}
+                onCollabRespond={handleCollabRespond}
+                onReadArtifact={handleReadArtifact}
+                onCollabResult={handleCollabResult}
+                onPermissionRespond={handlePermissionResponse}
+                taskAvailable={!activeTaskUnavailable}
+                taskRequestId={activeTask?.requestId}
+              />
+            </div>
           </div>
         </div>
       </div>

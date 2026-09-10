@@ -86,6 +86,8 @@ interface TextChatCardProps {
   /** #309: when set, this composer sends ordinary text into one existing
    * canonical task and targets its primary Agent only. */
   taskRequestId?: string
+  /** Current presentation availability for the active Task. */
+  taskAvailable?: boolean
 }
 
 const GAMES = [
@@ -1187,10 +1189,14 @@ const RoomTimeline = memo(function RoomTimeline({
   onOpenResultComposer,
   onPermissionRespond,
 }: RoomTimelineProps) {
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const timelineRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    const timeline = timelineRef.current
+    if (!timeline) return
+    if (typeof timeline.scrollTo === "function")
+      timeline.scrollTo({ top: timeline.scrollHeight, behavior: "smooth" })
+    else timeline.scrollTop = timeline.scrollHeight
   }, [messages, pendingFiles])
 
   const timeline = useMemo(
@@ -1227,7 +1233,11 @@ const RoomTimeline = memo(function RoomTimeline({
   }, [participants, timeline])
 
   return (
-    <div className="scrollbar-thin flex-1 overflow-y-auto p-4 text-sm">
+    <div
+      ref={timelineRef}
+      data-testid="room-timeline"
+      className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-4 text-sm"
+    >
       {messages.length === 0 && attachments.length === 0 && (
         <p className="mt-4 text-center text-xs text-gray-500">
           No messages yet
@@ -1351,7 +1361,6 @@ const RoomTimeline = memo(function RoomTimeline({
           </div>
         </div>
       ))}
-      <div ref={messagesEndRef} />
     </div>
   )
 })
@@ -1486,8 +1495,10 @@ const TextChatCard = memo(function TextChatCard({
   onCollabResult,
   onPermissionRespond,
   taskRequestId,
+  taskAvailable = true,
 }: TextChatCardProps) {
   const taskScoped = Boolean(taskRequestId)
+  const taskUnavailable = taskScoped && !taskAvailable
   const [message, setMessage] = useState<string>("")
   const [submenu, setSubmenu] = useState<"more" | "games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
@@ -1553,7 +1564,7 @@ const TextChatCard = memo(function TextChatCard({
   }
 
   const sendCurrentMessage = () => {
-    if (message.trim() === "") return
+    if (message.trim() === "" || taskUnavailable) return
     const targets = taskScoped
       ? resolveSelectedAgentTargetIds(message.trim(), selectedAgents)
       : resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
@@ -1788,6 +1799,15 @@ const TextChatCard = memo(function TextChatCard({
           />
         )}
 
+        {taskUnavailable && (
+          <p
+            data-testid="task-unavailable"
+            role="status"
+            className="flex-none border-t border-gray-700 px-3 pt-2 text-xs text-amber-200/80"
+          >
+            No participating Agent is currently available.
+          </p>
+        )}
         <div className="relative flex flex-none items-end gap-2 border-t border-gray-700 p-3">
           {pickerVisible && (
             <div className="absolute bottom-full left-3 right-3 mb-1 overflow-hidden rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
@@ -1922,6 +1942,7 @@ const TextChatCard = memo(function TextChatCard({
             rows={1}
             className="scrollbar-thin max-h-40 flex-1 resize-none overflow-y-auto rounded-xl bg-gray-900 px-3 py-2 text-sm leading-relaxed text-white placeholder-gray-500 focus:outline-none"
             value={message}
+            disabled={taskUnavailable}
             onKeyDown={handleKeyDown}
             onChange={(e) => {
               const nextMessage = e.target.value
@@ -1948,7 +1969,7 @@ const TextChatCard = memo(function TextChatCard({
           <button
             type="button"
             onClick={handleSend}
-            disabled={message.trim() === ""}
+            disabled={message.trim() === "" || taskUnavailable}
             className="rounded-lg bg-blue-600 p-2 transition hover:bg-blue-500 disabled:opacity-30"
             title="Send"
             aria-label="Send message"

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { buildTaskProjections, roomMessagesForView } from "./taskViews"
+import {
+  buildTaskProjections,
+  roomMessagesForView,
+  taskHasConnectedAgent,
+} from "./taskViews"
 import type { Message } from "./types"
 
 const request = (requestId: string, summary: string): Message => ({
@@ -104,6 +108,29 @@ describe("task interaction projections (#309)", () => {
       },
     }
     expect(buildTaskProjections([task, terminal])[0]?.status).toBe("Completed")
+  })
+
+  it("keeps secondary Task Agents available from structured Task targets", () => {
+    const task = request("T", "Task")
+    const followUp: Message = {
+      peerId: "human",
+      name: "Human",
+      kind: "human",
+      type: "text",
+      taskRequestId: "T",
+      targets: ["agent-pi"],
+      text: "Pi, please continue this Task",
+    }
+    const projection = buildTaskProjections([task, followUp])[0]
+
+    expect(projection?.participatingAgentIds).toContain("agent-x")
+    expect(projection?.participatingAgentIds).toContain("agent-pi")
+    expect(
+      taskHasConnectedAgent(projection!, [
+        { peerId: "agent-pi", kind: "agent" },
+      ])
+    ).toBe(true)
+    expect(taskHasConnectedAgent(projection!, [])).toBe(false)
   })
 
   it("keeps Task-scoped permission lifecycle messages in the Task view", () => {
