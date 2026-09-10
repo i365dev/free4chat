@@ -474,7 +474,37 @@ describe("RoomSession expiry cleanup", () => {
     }
     vi.stubGlobal("Response", UpgradeResponse)
 
-    const store = new Map<string, unknown>([["room", agentEventRoom()]])
+    const room = agentEventRoom()
+    room.meetingNotes = {
+      active: true,
+      agentParticipantId: "agent",
+      startedAt: 11,
+    }
+    room.agentVoice = { agent: { enabled: true, enabledAt: 22 } }
+    const runtimeHostId = "11111111-2222-3333-4444-555555555555"
+    room.participants.agent.runtimeHostId = runtimeHostId
+    room.runtimeHosts = {
+      [runtimeHostId]: {
+        runtimeHostId,
+        speech: { stt: true, tts: true },
+      },
+    }
+    room.runtimeHostProviders = {
+      [runtimeHostId]: {
+        humanParticipantId: "human",
+        claimedAt: 1,
+        providerHandleHash: "A".repeat(43),
+        verifiedParticipantIds: ["agent"],
+      },
+    }
+    room.liveTranscript = {
+      active: true,
+      producerRuntimeHostId: runtimeHostId,
+      startedByHumanParticipantId: "human",
+      epoch: 7,
+      startedAt: 8,
+    }
+    const store = new Map<string, unknown>([["room", room]])
     const sockets: TestAgentEventSocket[] = []
     const tags = new Map<TestAgentEventSocket, string[]>()
     const ctx = {
@@ -502,7 +532,10 @@ describe("RoomSession expiry cleanup", () => {
         }
       ),
     }
-    const session = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
+    const session = new RoomSession(
+      ctx as never,
+      { SFU_ROOM: {}, AGENT_MEDIA_ENABLED: "true" } as never
+    )
     const first = {
       0: new TestAgentEventSocket(),
       1: new TestAgentEventSocket(),
@@ -511,9 +544,17 @@ describe("RoomSession expiry cleanup", () => {
       0: new TestAgentEventSocket(),
       1: new TestAgentEventSocket(),
     }
+    const third = {
+      0: new TestAgentEventSocket(),
+      1: new TestAgentEventSocket(),
+    }
     vi.stubGlobal(
       "WebSocketPair",
-      vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second)
+      vi
+        .fn()
+        .mockReturnValueOnce(first)
+        .mockReturnValueOnce(second)
+        .mockReturnValueOnce(third)
     )
     const request = () =>
       new Request("https://room/agent-events", {
@@ -540,6 +581,16 @@ describe("RoomSession expiry cleanup", () => {
     expect(JSON.parse(first[1].sent[0])).toMatchObject({
       type: "events",
       cursor: 0,
+      mediaState: {
+        meetingNotes: { active: true, startedAt: 11 },
+        agentVoiceEnabledAt: 22,
+        mediaAvailable: true,
+        liveTranscript: {
+          active: true,
+          producerRuntimeHostId: runtimeHostId,
+          epoch: 7,
+        },
+      },
     })
 
     const secondResponse = await (
@@ -549,6 +600,9 @@ describe("RoomSession expiry cleanup", () => {
     ).handleAgentEventConnection(request())
     expect(secondResponse.status).toBe(101)
     expect(first[1].closed).toContainEqual({ code: 4000, reason: "Replaced" })
+    expect(JSON.parse(second[1].sent[0]).mediaState).toEqual(
+      JSON.parse(first[1].sent[0]).mediaState
+    )
 
     // A delayed close from the replaced socket cannot revoke the new nonce.
     await session.webSocketClose(first[1] as never, 4000, "Replaced", true)
@@ -562,6 +616,25 @@ describe("RoomSession expiry cleanup", () => {
     current = store.get("room") as RoomRecord
     expect(current.participants.agent.connected).toBe(true)
     expect(current.nextMessageSequence).toBe(0)
+
+    current.meetingNotes = { active: false }
+    current.agentVoice = {}
+    current.liveTranscript = { active: false }
+    await (
+      session as unknown as {
+        saveRoom: (room: RoomRecord) => Promise<void>
+      }
+    ).saveRoom(current)
+    await (
+      session as unknown as {
+        broadcastState: (room: RoomRecord) => Promise<void>
+      }
+    ).broadcastState(current)
+    expect(JSON.parse(second[1].sent.at(-1) ?? "{}").mediaState).toEqual({
+      meetingNotes: { active: false },
+      mediaAvailable: true,
+      liveTranscript: { active: false },
+    })
 
     current.messages.push({
       id: "message-1",
@@ -586,7 +659,24 @@ describe("RoomSession expiry cleanup", () => {
       text: "hello",
     })
 
-    await session.webSocketClose(second[1] as never, 1000, "closed", true)
+    await (
+      session as unknown as {
+        saveRoom: (room: RoomRecord) => Promise<void>
+      }
+    ).saveRoom(current)
+    const thirdResponse = await (
+      session as unknown as {
+        handleAgentEventConnection: (request: Request) => Promise<Response>
+      }
+    ).handleAgentEventConnection(request())
+    expect(thirdResponse.status).toBe(101)
+    expect(JSON.parse(third[1].sent[0]).mediaState).toEqual({
+      meetingNotes: { active: false },
+      mediaAvailable: true,
+      liveTranscript: { active: false },
+    })
+
+    await session.webSocketClose(third[1] as never, 1000, "closed", true)
     current = store.get("room") as RoomRecord
     expect(current.participants.agent.connected).toBe(false)
   })

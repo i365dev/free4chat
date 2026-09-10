@@ -14,17 +14,18 @@ import (
 
 // fakeRoomClient scripts RoomInfo responses.
 type fakeRoomClient struct {
-	mu        sync.Mutex
-	mnActive  bool
-	mnAvail   bool
-	mnAgent   string
-	mnStarted int64
-	vrActive  bool
-	vrAvail   bool
-	vrAgent   string
-	vrStarted int64
-	live      types.LiveTranscriptInfo
-	err       error
+	mu            sync.Mutex
+	mnActive      bool
+	mnAvail       bool
+	mnAgent       string
+	mnStarted     int64
+	vrActive      bool
+	vrAvail       bool
+	vrAgent       string
+	vrStarted     int64
+	live          types.LiveTranscriptInfo
+	err           error
+	roomInfoCalls int
 }
 
 func (f *fakeRoomClient) setRoom(mnActive, mnAvail, mnAgent string, mnStarted int64,
@@ -45,6 +46,7 @@ func (f *fakeRoomClient) setRoom(mnActive, mnAvail, mnAgent string, mnStarted in
 func (f *fakeRoomClient) RoomInfo(string) (types.RoomInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.roomInfoCalls++
 	if f.err != nil {
 		return types.RoomInfo{}, f.err
 	}
@@ -65,6 +67,12 @@ func (f *fakeRoomClient) RoomInfo(string) (types.RoomInfo, error) {
 		AgentVoiceMediaAvailable: f.vrAvail,
 		LiveTranscript:           f.live,
 	}, nil
+}
+
+func (f *fakeRoomClient) roomInfoCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roomInfoCalls
 }
 
 func (*fakeRoomClient) Connect() error               { return nil }
@@ -256,6 +264,35 @@ func waitController(t *testing.T, timeout time.Duration, condition func() bool, 
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for %s", message)
+}
+
+func TestControllerResidentMediaStateIsPushDriven(t *testing.T) {
+	client := &fakeRoomClient{}
+	controller, harness := newControllerHarness(t, client, nil)
+	controller.options.UsePushedMediaState = true
+	defer controller.Stop()
+
+	controller.Start(t.Context())
+	time.Sleep(50 * time.Millisecond)
+	if got := client.roomInfoCallCount(); got != 0 {
+		t.Fatalf("resident controller RoomInfo calls before state push = %d, want 0", got)
+	}
+
+	controller.ObserveMediaState(types.ResidentMediaState{
+		MeetingNotes:   types.ResidentMeetingNotesState{Active: true, StartedAt: 111},
+		MediaAvailable: true,
+	})
+	waitController(t, time.Second, func() bool { return harness.bridgeCount() == 1 }, "pushed Meeting Notes grant")
+	time.Sleep(50 * time.Millisecond)
+	if got := client.roomInfoCallCount(); got != 0 {
+		t.Fatalf("resident controller RoomInfo calls after state push = %d, want 0", got)
+	}
+
+	controller.ObserveMediaState(types.ResidentMediaState{})
+	waitController(t, time.Second, func() bool {
+		engine := harness.engineAt(0)
+		return engine != nil && engine.closeCalls == 1
+	}, "pushed media revocation")
 }
 
 func TestControllerLiveTranscriptElectsOneVerifiedSameHostProducer(t *testing.T) {

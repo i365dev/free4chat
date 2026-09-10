@@ -419,6 +419,27 @@ type LiveTranscriptInfo struct {
 	StartedAt                   int64  `json:"startedAt,omitempty"`
 }
 
+// ResidentMediaState is the self-targeted media projection delivered on the
+// private resident event stream. It contains authorization epochs only; it
+// never carries media/session identifiers or another Agent's grants.
+type ResidentMediaState struct {
+	MeetingNotes        ResidentMeetingNotesState   `json:"meetingNotes"`
+	AgentVoiceEnabledAt int64                       `json:"agentVoiceEnabledAt,omitempty"`
+	MediaAvailable      bool                        `json:"mediaAvailable"`
+	LiveTranscript      ResidentLiveTranscriptState `json:"liveTranscript"`
+}
+
+type ResidentMeetingNotesState struct {
+	Active    bool  `json:"active"`
+	StartedAt int64 `json:"startedAt,omitempty"`
+}
+
+type ResidentLiveTranscriptState struct {
+	Active                bool   `json:"active"`
+	ProducerRuntimeHostID string `json:"producerRuntimeHostId,omitempty"`
+	Epoch                 int64  `json:"epoch,omitempty"`
+}
+
 // LiveTranscriptSegment is one committed Room-shared utterance. It is
 // bounded by the Room Durable Object and intentionally has no audio or media
 // identifiers.
@@ -574,8 +595,9 @@ type RoomInfo struct {
 	Exists       bool                     `json:"exists"`
 	Participants []ParticipantRosterEntry `json:"participants,omitempty"`
 	MeetingNotes MeetingNotesInfo         `json:"meetingNotes"`
-	// Fail closed: only explicit true counts. Media is PR 2 scope in the Go
-	// runtime; these fields remain part of the transport contract.
+	// Fail closed: only explicit true counts. The resident event stream carries
+	// the equivalent bounded self-targeted projection; these fields remain part
+	// of the compatibility transport contract.
 	MeetingNotesMediaAvailable bool                       `json:"meetingNotesMediaAvailable"`
 	AgentVoice                 map[string]AgentVoiceGrant `json:"agentVoice"`
 	AgentVoiceMediaAvailable   bool                       `json:"agentVoiceMediaAvailable"`
@@ -636,6 +658,9 @@ type WaitResult struct {
 	// RuntimeHosts (#176 Phase A): one coarse readiness projection per
 	// Runtime Host id present in the Room, shared by all same-host Agents.
 	RuntimeHosts map[string]RuntimeHostProjection
+	// MediaState is populated only by the private resident event stream. The
+	// public wait_for_events contract remains text/roster-only.
+	MediaState *ResidentMediaState `json:"mediaState,omitempty"`
 }
 
 // CollabRequestArgs are the arguments for send_collab_request.

@@ -35,6 +35,7 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	}
 	client := r.options.Client
 	siteOrigin := r.options.SiteOrigin
+	_, usePushedMediaState := client.(types.ResidentEventClient)
 	r.mu.Unlock()
 
 	previous := r.mediaController
@@ -95,6 +96,7 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 		ParticipantID:             handle.ParticipantID,
 		SiteOrigin:                siteOrigin,
 		Handle:                    handle,
+		UsePushedMediaState:       usePushedMediaState,
 		RuntimeHostID:             runtimeHostID,
 		RuntimeInstanceID:         r.options.InstanceID,
 		LiveTranscriptCoordinator: r.options.TranscriptProducers,
@@ -142,6 +144,35 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 	// Non-blocking like the frozen Node reference: the first grant poll must
 	// never gate join()/create() on a room_info round trip.
 	go controller.Start(context.Background())
+}
+
+// observeResidentMediaState forwards only the bounded media projection to the
+// current controller. It never enters the event buffer or pending-turn queue,
+// so media transitions cannot wake a Harness turn.
+func (r *ResidentRuntime) observeResidentMediaState(
+	state *types.ResidentMediaState,
+) {
+	if state == nil {
+		return
+	}
+	r.mediaMu.Lock()
+	controller := r.mediaController
+	r.mediaMu.Unlock()
+	if controller != nil {
+		controller.ObserveMediaState(*state)
+	}
+}
+
+// failClosedResidentMediaState revokes local media whenever the authenticated
+// resident state source is unavailable. The next reconnect must re-authorize
+// from a fresh server envelope before media can run again.
+func (r *ResidentRuntime) failClosedResidentMediaState() {
+	r.mediaMu.Lock()
+	controller := r.mediaController
+	r.mediaMu.Unlock()
+	if controller != nil {
+		controller.FailClosedMediaState()
+	}
 }
 
 func (r *ResidentRuntime) withCurrentMediaGeneration(

@@ -627,8 +627,8 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	}
 	r.mu.Unlock()
 	// Media controller (re)build happens OUTSIDE the runtime lock: it may
-	// stop the previous bridge, create a transcriber, and poll room_info —
-	// none of that may hold the runtime mutex.
+	// stop the previous bridge, create a transcriber, and perform a compatibility
+	// RoomInfo bootstrap — none of that may hold the runtime mutex.
 	r.restartMediaController(joined.ParticipantHandle)
 }
 
@@ -738,6 +738,12 @@ func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
 			_ = stream.Close()
 		}
 
+		// Media authorization is fail-closed at the transport boundary. A
+		// reconnect must receive a fresh current media projection before any
+		// local bridge can run again.
+		if !r.isStopped() {
+			r.failClosedResidentMediaState()
+		}
 		if r.isStopped() {
 			return
 		}
@@ -861,8 +867,16 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 				}
 				return received.err
 			}
+			if received.result.MediaState == nil {
+				// A resident envelope without the mandatory media projection is
+				// not an authorization observation. Keep event delivery alive,
+				// but revoke local media until a complete envelope arrives.
+				r.failClosedResidentMediaState()
+			}
 			r.advanceFromWait(received.result)
-			if len(r.pendingScopes()) > 0 && !r.isStopped() {
+			// A media-only envelope is observation, not an activation event. Do
+			// not use it as a Harness wakeup/retry boundary for pre-existing work.
+			if len(received.result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
 				r.drainTurns()
 			}
 			receiveNext()
@@ -942,6 +956,11 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 		r.roster = append([]types.ParticipantRosterEntry(nil), result.Participants...)
 	}
 	r.mu.Unlock()
+
+	// Media state is observation-only runtime input. It is deliberately
+	// processed outside the Runtime event queue so a grant transition never
+	// wakes or creates a Harness turn.
+	r.observeResidentMediaState(result.MediaState)
 
 	// Deduplicate within the envelope as well as against the prior transport
 	// receipt boundary. This map is intentionally envelope-local: the monotonic

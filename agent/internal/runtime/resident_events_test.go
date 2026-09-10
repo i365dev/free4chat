@@ -139,6 +139,17 @@ func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
 		return open == 1
 	}, "resident event stream open")
 	stream.results <- types.WaitResult{
+		MediaState: &types.ResidentMediaState{
+			MediaAvailable: true,
+			MeetingNotes:   types.ResidentMeetingNotesState{Active: true, StartedAt: 7},
+		},
+		Cursor: 0, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := adapter.sessionsInt(); got != 0 {
+		t.Fatalf("media-only resident state must not wake Harness, turns=%d", got)
+	}
+	stream.results <- types.WaitResult{
 		Events: []types.RoomEvent{roomEvent(1, true)},
 		Cursor: 1, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 	}

@@ -445,13 +445,15 @@ func (c *fakeClient) SendText(_ string, text string, targets []string) (types.Se
 		c.mu.Unlock()
 		return types.SendTextResult{}, errors.New("send failed")
 	}
-	c.mu.Unlock()
 	c.sent = append(c.sent, text)
 	c.sentTargets = append(c.sentTargets, append([]string(nil), targets...))
-	if c.sendHook != nil {
-		c.sendHook(text)
+	sequence := len(c.sent)
+	hook := c.sendHook
+	c.mu.Unlock()
+	if hook != nil {
+		hook(text)
 	}
-	return types.SendTextResult{Sequence: int64(len(c.sent))}, nil
+	return types.SendTextResult{Sequence: int64(sequence)}, nil
 }
 
 func (c *fakeClient) SendTextForTask(handle, text string, targets []string, taskRequestID string) (types.SendTextResult, error) {
