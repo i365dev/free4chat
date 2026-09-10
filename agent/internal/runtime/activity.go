@@ -181,6 +181,14 @@ func (r *ResidentRuntime) resetActivityLocal() {
 	r.activityScope = ""
 	r.activityMu.Unlock()
 	r.activityPublishMu.Lock()
-	r.activityPublishQueue = nil
+	// A normal resident stream reconnect keeps the same participant handle.
+	// Preserve a queued clear behind any in-flight publication so the old
+	// state cannot be resurrected after the server has fail-closed it. Any
+	// queued non-empty state is stale at this boundary and must not be replayed.
+	for scope, publication := range r.activityPublishQueue {
+		if publication.state != "" {
+			delete(r.activityPublishQueue, scope)
+		}
+	}
 	r.activityPublishMu.Unlock()
 }

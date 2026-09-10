@@ -188,3 +188,38 @@ func TestResidentActivityPublisherDoesNotBlockTurnPath(t *testing.T) {
 		return len(updates) > 0 && updates[len(updates)-1].state == ""
 	}, "final activity clear")
 }
+
+func TestResidentActivityReconnectRetainsQueuedClear(t *testing.T) {
+	client := &activityClient{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	runtime := NewResidentRuntime(Options{Client: client})
+	runtime.mu.Lock()
+	runtime.participantHandle = "private-handle"
+	runtime.mu.Unlock()
+
+	runtime.beginActivity("room")
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the in-flight Working publication")
+	}
+
+	// Stream loss fail-closes the public state while the old HTTP request is
+	// still in flight. A reconnect resets local state but must retain this
+	// queued clear because the participant handle remains valid.
+	runtime.clearActivity()
+	runtime.resetActivityLocal()
+	close(client.release)
+
+	waitFor(t, time.Second, func() bool {
+		updates := client.snapshot()
+		return len(updates) == 2 && updates[1].state == ""
+	}, "reconnect activity clear")
+	updates := client.snapshot()
+	if updates[0] != (activityUpdate{scope: "room", state: types.AgentActivityWorking}) ||
+		updates[1] != (activityUpdate{scope: "room", state: ""}) {
+		t.Fatalf("reconnect activity lifecycle = %#v", updates)
+	}
+}
