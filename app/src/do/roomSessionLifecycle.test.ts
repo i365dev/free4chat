@@ -131,6 +131,26 @@ class TestAgentEventSocket {
   }
 }
 
+type TestWebSocketPair = {
+  0: TestAgentEventSocket
+  1: TestAgentEventSocket
+}
+
+function stubWebSocketPairs(...pairs: TestWebSocketPair[]) {
+  let nextPair = 0
+  class WebSocketPairMock {
+    0: TestAgentEventSocket
+    1: TestAgentEventSocket
+
+    constructor() {
+      const pair = pairs[Math.min(nextPair++, pairs.length - 1)]
+      this[0] = pair[0]
+      this[1] = pair[1]
+    }
+  }
+  vi.stubGlobal("WebSocketPair", WebSocketPairMock)
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((resolvePromise) => {
@@ -368,13 +388,7 @@ describe("RoomSession expiry cleanup", () => {
       }
     }
     vi.stubGlobal("Response", UpgradeResponse)
-    vi.stubGlobal(
-      "WebSocketPair",
-      vi.fn().mockReturnValue({
-        0: new TestAgentEventSocket(),
-        1: freshSocket,
-      })
-    )
+    stubWebSocketPairs({ 0: new TestAgentEventSocket(), 1: freshSocket })
     const freshConnection = await (
       session as unknown as {
         handleAgentEventConnection: (request: Request) => Promise<Response>
@@ -548,14 +562,7 @@ describe("RoomSession expiry cleanup", () => {
       0: new TestAgentEventSocket(),
       1: new TestAgentEventSocket(),
     }
-    vi.stubGlobal(
-      "WebSocketPair",
-      vi
-        .fn()
-        .mockReturnValueOnce(first)
-        .mockReturnValueOnce(second)
-        .mockReturnValueOnce(third)
-    )
+    stubWebSocketPairs(first, second, third)
     const request = () =>
       new Request("https://room/agent-events", {
         method: "GET",
@@ -739,7 +746,7 @@ describe("RoomSession expiry cleanup", () => {
     }
     const session = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
     const pair = { 0: new TestAgentEventSocket(), 1: socket }
-    vi.stubGlobal("WebSocketPair", vi.fn().mockReturnValue(pair))
+    stubWebSocketPairs(pair)
 
     const response = await (
       session as unknown as {

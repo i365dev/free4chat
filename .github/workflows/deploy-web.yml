@@ -60,9 +60,31 @@ jobs:
         run: npx vitest run src/__tests__/docs src/__tests__/discovery/crawl-surface.test.ts
         working-directory: app
 
+  app-tests:
+    name: App Tests
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.nvmrc
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: app
+
+      - name: Full App test suite
+        run: yarn test
+        working-directory: app
+
   deploy:
     name: Build & Deploy
-    needs: lint
+    needs: [lint, app-tests]
     if: >-
       github.ref == 'refs/heads/cf-sfu' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
