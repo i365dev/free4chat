@@ -161,6 +161,7 @@ const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
 const MAX_TASK_LIVE_VIEWS = 16
+const TASK_LIVE_VIEW_KEY_PREFIX = "task-live-view:"
 const MAX_PENDING_PERMISSION_REQUESTS = 32
 // The resident event stream is intentionally one bounded frame. The 2 MiB
 // cap covers the retained 100-message/8-attachment event window (including
@@ -771,7 +772,57 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.saveRoom(normalized.room)
       await this.scheduleNextAlarm(normalized.room)
     }
+    normalized.room.taskLiveViews = await this.loadTaskLiveViews(
+      normalized.room
+    )
     return normalized.room
+  }
+
+  private taskLiveViewKey(taskRequestId: string): string {
+    return `${TASK_LIVE_VIEW_KEY_PREFIX}${taskRequestId}`
+  }
+
+  private async loadTaskLiveViews(
+    room: RoomRecord
+  ): Promise<Record<string, TaskLiveViewSnapshot>> {
+    const taskIndex = buildTaskProjectionIndex(room.messages, room.participants)
+    const taskLiveViews: Record<string, TaskLiveViewSnapshot> = {}
+    const staleKeys: string[] = []
+    const storage = this.ctx.storage as unknown as {
+      list?: (options: {
+        prefix: string
+        limit: number
+      }) => Promise<Map<string, unknown>>
+    }
+    if (typeof storage.list !== "function") return taskLiveViews
+    const entries = await storage.list({
+      prefix: TASK_LIVE_VIEW_KEY_PREFIX,
+      limit: MAX_TASK_LIVE_VIEWS,
+    })
+    for (const [key, rawSnapshot] of entries) {
+      const taskRequestId = key.slice(TASK_LIVE_VIEW_KEY_PREFIX.length)
+      const validation = validateTaskLiveViewSnapshot(rawSnapshot)
+      const snapshot = validation.ok ? validation.snapshot : undefined
+      const task = snapshot && taskIndex.tasks.get(taskRequestId)
+      const authority = snapshot && room.participants[snapshot.authorityAgentId]
+      const authorityIsTaskEndpoint =
+        task !== undefined &&
+        (snapshot.authorityAgentId === task.request.fromParticipantId ||
+          snapshot.authorityAgentId === task.request.targetParticipantId)
+      if (
+        !snapshot ||
+        taskRequestId !== snapshot.taskRequestId ||
+        !task ||
+        !authorityIsTaskEndpoint ||
+        (authority !== undefined && authority.kind !== "agent")
+      ) {
+        staleKeys.push(key)
+        continue
+      }
+      taskLiveViews[taskRequestId] = snapshot
+    }
+    if (staleKeys.length > 0) await this.ctx.storage.delete(staleKeys)
+    return taskLiveViews
   }
 
   private normalizeRoom(
@@ -880,45 +931,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(targets?.length ? { targets } : {}),
       })
     }
-    const taskLiveViews: Record<string, TaskLiveViewSnapshot> = {}
-    if (stored.taskLiveViews !== undefined) {
-      if (
-        !stored.taskLiveViews ||
-        typeof stored.taskLiveViews !== "object" ||
-        Array.isArray(stored.taskLiveViews)
-      ) {
-        changed = true
-      } else {
-        const taskIndex = buildTaskProjectionIndex(messages, participants)
-        const entries = Object.entries(
-          stored.taskLiveViews as Record<string, unknown>
-        )
-        for (const [taskRequestId, rawSnapshot] of entries.slice(
-          -MAX_TASK_LIVE_VIEWS
-        )) {
-          const validation = validateTaskLiveViewSnapshot(rawSnapshot)
-          const snapshot = validation.ok ? validation.snapshot : undefined
-          const task = snapshot && taskIndex.tasks.get(taskRequestId)
-          const authority = snapshot && participants[snapshot.authorityAgentId]
-          const authorityIsTaskEndpoint =
-            task !== undefined &&
-            (snapshot.authorityAgentId === task.request.fromParticipantId ||
-              snapshot.authorityAgentId === task.request.targetParticipantId)
-          if (
-            !snapshot ||
-            taskRequestId !== snapshot.taskRequestId ||
-            !task ||
-            !authorityIsTaskEndpoint ||
-            (authority !== undefined && authority.kind !== "agent")
-          ) {
-            changed = true
-            continue
-          }
-          taskLiveViews[taskRequestId] = snapshot
-        }
-        if (Object.keys(taskLiveViews).length !== entries.length) changed = true
-      }
-    }
+    // #316 originally stored Live View payloads inside the primary Room KV
+    // value. Mark that legacy field for removal; current snapshots are loaded
+    // from bounded task-live-view:* keys after the Room is normalized.
+    if (stored.taskLiveViews !== undefined) changed = true
     const permissionRequests: Record<string, PermissionRequestRecord> = {}
     if (stored.permissionRequests !== undefined) {
       if (
@@ -1158,7 +1174,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         runtimeHostProviders: normalizedRuntimeHostProviders.providers,
         runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
-        taskLiveViews,
+        taskLiveViews: {},
         permissionRequests,
         liveTranscript: normalizedLiveProducer.liveTranscript,
         liveTranscriptSegments: normalizedLiveTranscript.liveTranscriptSegments,
@@ -1208,6 +1224,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       liveTranscriptSegments,
       nextLiveTranscriptEpoch,
       nextTranscriptSequence,
+      taskLiveViews: _taskLiveViews,
       ...storedRoom
     } = room
     // Start both storage writes before awaiting. Durable Object storage input
@@ -3208,7 +3225,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         [request.taskRequestId]: snapshot,
       }
       participant.lastSeenAt = Date.now()
-      await this.saveRoom(room)
+      await Promise.all([
+        this.saveRoom(room),
+        this.ctx.storage.put(
+          this.taskLiveViewKey(request.taskRequestId),
+          snapshot
+        ),
+      ])
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
       return this.json({ snapshot, expiresAt: room.expiresAt })
