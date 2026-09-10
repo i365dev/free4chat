@@ -7,6 +7,7 @@ import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import AgentInviteControl from "./AgentInviteControl"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
+import TaskLiveView from "./TaskLiveView"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
@@ -116,6 +117,8 @@ export default function RoomContent({
   const [taskInstruction, setTaskInstruction] = useState("")
   const [taskError, setTaskError] = useState("")
   const [activeInteraction, setActiveInteraction] = useState("room")
+  const [stageView, setStageView] = useState<"screen" | "live-view">("screen")
+  const taskLiveViewState = useRef(new Map())
   const pendingLocalTaskSummaries = useRef<string[]>([])
   const autoOpenedTaskIds = useRef<Set<string>>(new Set())
   // #236 follow-up: shared popover state so the Live Transcript setup copy
@@ -153,6 +156,7 @@ export default function RoomContent({
     getLocalRoomAuth,
     messages,
     attachments,
+    taskLiveViews,
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,
@@ -194,6 +198,9 @@ export default function RoomContent({
   const activeTask = taskProjections.find(
     (task) => task.requestId === activeInteraction
   )
+  const activeTaskLiveView = activeTask
+    ? taskLiveViews?.[activeTask.requestId]
+    : undefined
   const interactionMessages = activeTask
     ? activeTask.messages
     : roomMessagesForView(messages)
@@ -335,6 +342,14 @@ export default function RoomContent({
     activeScreenShares.find((p) => p.peerId === activeSharePeerId) ??
     activeScreenShares[0] ??
     null
+
+  const showTaskLiveView = Boolean(
+    activeTaskLiveView && (!activeShare || stageView === "live-view")
+  )
+  const activeSharePeerIdForStage = activeShare?.peerId
+  useEffect(() => {
+    setStageView(activeSharePeerIdForStage ? "screen" : "live-view")
+  }, [activeSharePeerIdForStage, activeTask?.requestId])
 
   const containerRef = useRef<HTMLDivElement>(null)
   const isDragging = useRef(false)
@@ -784,13 +799,57 @@ export default function RoomContent({
             getLocalRoomAuth={getLocalRoomAuth}
           />
           <div className="relative flex flex-1 flex-col overflow-hidden">
+            {activeScreenShares.length > 0 && activeTaskLiveView && (
+              <div
+                data-testid="task-live-view-switcher"
+                className="z-10 flex flex-none gap-1 border-b border-gray-800 bg-gray-950/80 p-2"
+              >
+                <button
+                  type="button"
+                  onClick={() => setStageView("screen")}
+                  aria-pressed={stageView === "screen"}
+                  className={`rounded px-2 py-1 text-xs ${
+                    stageView === "screen"
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-400 hover:bg-gray-800"
+                  }`}
+                >
+                  Screen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStageView("live-view")}
+                  aria-pressed={stageView === "live-view"}
+                  className={`rounded px-2 py-1 text-xs ${
+                    stageView === "live-view"
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-400 hover:bg-gray-800"
+                  }`}
+                >
+                  Live View
+                </button>
+              </div>
+            )}
             {activeScreenShares.length > 0 ? (
               <>
-                {activeShare && (
-                  <ScreenShareViewer
-                    key={activeShare.peerId}
-                    stream={activeShare.screenShareStream!}
-                    name={activeShare.name}
+                <div
+                  className={
+                    showTaskLiveView ? "hidden" : "flex min-h-0 flex-1"
+                  }
+                >
+                  {activeShare && (
+                    <ScreenShareViewer
+                      key={activeShare.peerId}
+                      stream={activeShare.screenShareStream!}
+                      name={activeShare.name}
+                    />
+                  )}
+                </div>
+                {showTaskLiveView && activeTaskLiveView && (
+                  <TaskLiveView
+                    key={activeTask!.requestId}
+                    snapshot={activeTaskLiveView}
+                    stateStore={taskLiveViewState}
                   />
                 )}
                 <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
@@ -842,6 +901,12 @@ export default function RoomContent({
                   ))}
                 </div>
               </>
+            ) : showTaskLiveView && activeTaskLiveView ? (
+              <TaskLiveView
+                key={activeTask!.requestId}
+                snapshot={activeTaskLiveView}
+                stateStore={taskLiveViewState}
+              />
             ) : (
               <div className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3">
                 {participants.map((p) => (

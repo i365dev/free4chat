@@ -1277,6 +1277,26 @@ func (c *Client) PublishSurface(participantHandle string, payload types.SurfaceP
 	return *surface, nil
 }
 
+// PublishLiveView publishes or replaces the current Task Live View snapshot.
+// The Room validates component safety, Task authority, and revision ordering.
+func (c *Client) PublishLiveView(participantHandle, taskRequestID string, surface map[string]any) (map[string]any, error) {
+	result, err := c.callTool("publish_live_view", map[string]any{
+		"participantHandle": participantHandle,
+		"taskRequestId":     taskRequestID,
+		"surface":           surface,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := result["snapshot"].(map[string]any); !ok {
+		return nil, &Error{
+			Message: "Free4Chat returned an invalid Task Live View payload",
+			Code:    CodeToolError,
+		}
+	}
+	return result, nil
+}
+
 // ClearSurface removes the published snapshot.
 func (c *Client) ClearSurface(participantHandle string) error {
 	_, err := c.callTool("clear_surface", map[string]any{"participantHandle": participantHandle})

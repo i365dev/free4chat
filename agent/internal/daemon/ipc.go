@@ -66,6 +66,8 @@ type IpcRequest struct {
 	Summary                  string            `json:"summary,omitempty"`
 	Details                  map[string]string `json:"details,omitempty"`
 	AttachmentIDs            []string          `json:"attachmentIds,omitempty"`
+	TaskRequestID            string            `json:"taskRequestId,omitempty"`
+	Surface                  map[string]any    `json:"surface,omitempty"`
 	FileName                 string            `json:"fileName,omitempty"`
 	MimeType                 string            `json:"mimeType,omitempty"`
 	DataBase64               string            `json:"dataBase64,omitempty"`

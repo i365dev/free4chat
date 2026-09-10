@@ -23,6 +23,7 @@ import (
 
 const maxAttachmentBytes = attachments.MaxAttachmentBytes
 const maxSurfaceBytes = attachments.MaxSurfaceBytes
+const maxTaskLiveViewBytes = 32 * 1024
 
 const mcpEndpointDefault = "https://www.free4.chat/mcp"
 
@@ -55,6 +56,7 @@ func usageText() string {
   free4chat-agent surface publish --file <snapshot.jpeg|png|webp> [--instance <id>]
   free4chat-agent surface clear [--instance <id>]
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
+  free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [--instance <id>]
   free4chat-agent context read [--before-sequence <n>] [--after-sequence <n>] [--limit <1-50>] [--before-transcript-sequence <n>] [--after-transcript-sequence <n>] [--transcript-limit <1-50>] [--instance <id>]
   free4chat-agent version [--json]
   free4chat-agent doctor [--json]
@@ -468,6 +470,30 @@ func run(args []string) error {
 		default:
 			return errUsage()
 		}
+
+	case "live-view":
+		if len(rest) == 0 || rest[0] != "publish" {
+			return errUsage()
+		}
+		filePath := option(rest[1:], "--file")
+		taskRequestID := option(rest[1:], "--task-request-id")
+		if filePath == "" || taskRequestID == "" {
+			return errUsage()
+		}
+		data, err := attachments.ReadBounded(filePath, maxTaskLiveViewBytes)
+		if err != nil {
+			return fmt.Errorf("Live View JSON must be a non-empty file up to %d bytes", maxTaskLiveViewBytes)
+		}
+		var surface map[string]any
+		if err := json.Unmarshal(data, &surface); err != nil || len(surface) == 0 {
+			return errors.New("Live View JSON must be an object")
+		}
+		return runViaDaemon(&daemon.IpcRequest{
+			Op:            "live-view-publish",
+			InstanceID:    option(rest[1:], "--instance"),
+			TaskRequestID: taskRequestID,
+			Surface:       surface,
+		})
 
 	case "readiness":
 		return runReadiness(rest)

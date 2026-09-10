@@ -1519,6 +1519,21 @@ func (r *ResidentRuntime) PublishSurface(payload types.SurfacePublishPayload) (t
 	return r.options.Client.PublishSurface(handle, payload)
 }
 
+// PublishLiveView publishes the current declarative surface for one Task.
+// This is a narrow optional transport extension; the Room remains
+// authoritative for task ownership and snapshot validation.
+func (r *ResidentRuntime) PublishLiveView(taskRequestID string, surface map[string]any) (map[string]any, error) {
+	handle, err := r.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	client, ok := r.options.Client.(types.TaskLiveViewClient)
+	if !ok {
+		return nil, errors.New("task live view is unavailable")
+	}
+	return client.PublishLiveView(handle, taskRequestID, surface)
+}
+
 // ClearSurface removes the published snapshot.
 func (r *ResidentRuntime) ClearSurface() error {
 	handle, err := r.requireHandle()

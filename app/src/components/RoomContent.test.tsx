@@ -1029,4 +1029,87 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     fireEvent.click(screen.getByText("Carol"))
     await waitFor(() => expect(preview().srcObject).toBe(streamB))
   })
+
+  it("shows a Task Live View beside screen share without touching media", async () => {
+    const stream = {} as MediaStream
+    const taskRequest: Message = {
+      peerId: "local-peer",
+      name: "Alice",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-live",
+        kind: "request",
+        fromParticipantId: "local-peer",
+        targetParticipantId: "agent-a",
+        summary: "Counter",
+      },
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      resolvedRoomType: "screenshare",
+      messages: [taskRequest],
+      participants: [
+        {
+          peerId: "local-peer",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+          screenShareEnabled: false,
+          screenShareStream: null,
+        },
+        {
+          peerId: "publisher-a",
+          name: "Bob",
+          kind: "human",
+          room: "test-room",
+          screenShareEnabled: true,
+          screenShareStream: stream,
+        },
+      ],
+      taskLiveViews: {
+        "task-live": {
+          taskRequestId: "task-live",
+          surfaceId: "counter",
+          authorityAgentId: "agent-a",
+          revision: 1,
+          root: {
+            type: "Column",
+            children: [
+              { type: "Text", text: "Count" },
+              { type: "Value", path: "count" },
+              {
+                type: "Button",
+                label: "+1",
+                action: { type: "increment", path: "count", amount: 1 },
+              },
+            ],
+          },
+          data: { count: 0 },
+        },
+      },
+    })
+
+    render(
+      <RoomContent
+        roomName="test-room"
+        nickName="Alice"
+        roomType="screenshare"
+      />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+    expect(screen.getByTestId("task-live-view-switcher")).toBeInTheDocument()
+    expect(screen.queryByTestId("task-live-view")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Live View" }))
+    expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+    expect(document.querySelector("video")).toBeInTheDocument()
+    expect(baseHookReturn.toggleScreenShare).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Screen" }))
+    expect(screen.queryByTestId("task-live-view")).toBeNull()
+    expect(document.querySelector("video")).toBeInTheDocument()
+  })
 })

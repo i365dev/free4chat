@@ -1,5 +1,13 @@
 export type ParticipantKind = "human" | "agent"
 
+export type {
+  TaskLiveViewComponent,
+  TaskLiveViewAction,
+  TaskLiveViewScalar,
+  TaskLiveViewSnapshot,
+} from "../common/taskLiveView"
+import type { TaskLiveViewSnapshot } from "../common/taskLiveView"
+
 export type AgentActivityState =
   | "working"
   | "thinking"
@@ -416,6 +424,9 @@ export interface RoomState {
   // The corresponding claim/provider-handle material is server-private.
   runtimeHostProviders?: Record<string, RuntimeHostProviderPublicAssociation>
   messages: RoomMessage[]
+  // #316: one current, server-validated declarative Live View per Task.
+  // Local button/input state never returns to RoomState.
+  taskLiveViews?: Record<string, TaskLiveViewSnapshot>
   // #234: bounded standalone Room attachment metadata for the Human
   // timeline, with server-resolved sender kind. Optional in the wire
   // contract so older browser clients that cached the prior state shape
@@ -480,6 +491,8 @@ export interface RoomRecord {
   runtimeHostProviders?: Record<string, RuntimeHostProviderAssociation>
   runtimeHostProviderClaims?: Record<string, PendingRuntimeHostProviderClaim>
   messages: RoomMessage[]
+  // #316: ephemeral current Task Live View snapshots; no history.
+  taskLiveViews?: Record<string, TaskLiveViewSnapshot>
   // #286: bounded pending permission requests. Resolved/expired requests are
   // represented in the canonical message ring and removed from this index.
   permissionRequests?: Record<string, PermissionRequestRecord>

@@ -125,6 +125,10 @@ import {
   hashRuntimeProviderHandle,
   isRuntimeProviderClaimHash,
 } from "../common/runtimeProviderCredential"
+import {
+  validateTaskLiveViewSnapshot,
+  type TaskLiveViewSnapshot,
+} from "../common/taskLiveView"
 import type {
   AgentCapabilities,
   AgentEvent,
@@ -155,6 +159,7 @@ const MAX_AGENT_ATTACHMENTS = 8
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
+const MAX_TASK_LIVE_VIEWS = 16
 const MAX_PENDING_PERMISSION_REQUESTS = 32
 // The resident event stream is intentionally one bounded frame. The 2 MiB
 // cap covers the retained 100-message/8-attachment event window (including
@@ -289,6 +294,7 @@ interface StoredRoom
     | "runtimeHostProviders"
     | "runtimeHostProviderClaims"
     | "permissionRequests"
+    | "taskLiveViews"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
@@ -306,6 +312,7 @@ interface StoredRoom
   runtimeHostProviders?: unknown
   runtimeHostProviderClaims?: unknown
   permissionRequests?: unknown
+  taskLiveViews?: unknown
 }
 
 interface StoredLiveTranscript {
@@ -456,6 +463,16 @@ type ControlRequest =
       // MAX_TARGETS; targeting controls attention/wakeup only, never
       // authorization, and may name Human or Agent participants.
       targetParticipantIds?: unknown
+    }
+  | {
+      // #316: one current declarative Live View snapshot for a canonical
+      // Task. The Room validates the snapshot and derives authority from the
+      // authenticated Agent rather than trusting either client field.
+      action: "agent-publish-live-view"
+      participantId: string
+      token: string
+      taskRequestId: unknown
+      surface: unknown
     }
   | {
       // Internal Runtime infrastructure for PR2. This is intentionally not
@@ -862,6 +879,39 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(targets?.length ? { targets } : {}),
       })
     }
+    const taskLiveViews: Record<string, TaskLiveViewSnapshot> = {}
+    if (stored.taskLiveViews !== undefined) {
+      if (
+        !stored.taskLiveViews ||
+        typeof stored.taskLiveViews !== "object" ||
+        Array.isArray(stored.taskLiveViews)
+      ) {
+        changed = true
+      } else {
+        const taskIndex = buildTaskProjectionIndex(messages, participants)
+        const entries = Object.entries(
+          stored.taskLiveViews as Record<string, unknown>
+        )
+        for (const [taskRequestId, rawSnapshot] of entries.slice(
+          -MAX_TASK_LIVE_VIEWS
+        )) {
+          const validation = validateTaskLiveViewSnapshot(rawSnapshot)
+          const snapshot = validation.ok ? validation.snapshot : undefined
+          const authority = snapshot && participants[snapshot.authorityAgentId]
+          if (
+            !snapshot ||
+            taskRequestId !== snapshot.taskRequestId ||
+            !taskIndex.tasks.has(taskRequestId) ||
+            authority?.kind !== "agent"
+          ) {
+            changed = true
+            continue
+          }
+          taskLiveViews[taskRequestId] = snapshot
+        }
+        if (Object.keys(taskLiveViews).length !== entries.length) changed = true
+      }
+    }
     const permissionRequests: Record<string, PermissionRequestRecord> = {}
     if (stored.permissionRequests !== undefined) {
       if (
@@ -1101,6 +1151,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         runtimeHostProviders: normalizedRuntimeHostProviders.providers,
         runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
+        taskLiveViews,
         permissionRequests,
         liveTranscript: normalizedLiveProducer.liveTranscript,
         liveTranscriptSegments: normalizedLiveTranscript.liveTranscriptSegments,
@@ -1291,6 +1342,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room.runtimeHostProviders
       ),
       messages: room.messages,
+      taskLiveViews: room.taskLiveViews,
       // #234: standalone Room attachment metadata (senderKind-resolved) so
       // the Human Browser can render Agent-authored artifacts directly.
       attachments: this.projectRoomAttachments(room),
@@ -3091,6 +3143,67 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         segment: appended.segment,
         expiresAt: room.expiresAt,
       })
+    }
+
+    if (request.action === "agent-publish-live-view") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      const validation = validateTaskLiveViewSnapshot(request.surface)
+      if (validation.ok === false)
+        return this.json({ error: validation.error }, 400)
+      if (
+        typeof request.taskRequestId !== "string" ||
+        request.taskRequestId.trim() !== validation.snapshot.taskRequestId
+      )
+        return this.json({ error: "invalid_task_request" }, 400)
+
+      const resolution = resolveTaskRequest(
+        buildTaskProjectionIndex(room.messages, room.participants),
+        request.taskRequestId,
+        room.participants
+      )
+      if (resolution.ok === false)
+        return this.json({ error: resolution.error }, 409)
+      if (resolution.primaryAgentParticipantId !== participant.id)
+        return this.json({ error: "live_view_not_authorized" }, 403)
+
+      const current = room.taskLiveViews?.[resolution.requestId]
+      if (current) {
+        if (current.surfaceId !== validation.snapshot.surfaceId)
+          return this.json({ error: "live_view_surface_mismatch" }, 409)
+        if (validation.snapshot.revision <= current.revision)
+          return this.json({ error: "live_view_revision_conflict" }, 409)
+      } else if (validation.snapshot.revision !== 1) {
+        return this.json({ error: "live_view_revision_conflict" }, 409)
+      }
+      if (
+        !current &&
+        Object.keys(room.taskLiveViews ?? {}).length >= MAX_TASK_LIVE_VIEWS
+      )
+        return this.json({ error: "live_view_capacity" }, 409)
+
+      const snapshot: TaskLiveViewSnapshot = {
+        ...validation.snapshot,
+        taskRequestId: resolution.requestId,
+        authorityAgentId: participant.id,
+      }
+      room.taskLiveViews = {
+        ...(room.taskLiveViews ?? {}),
+        [resolution.requestId]: snapshot,
+      }
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      return this.json({ snapshot, expiresAt: room.expiresAt })
     }
 
     if (request.action === "agent-send-text") {

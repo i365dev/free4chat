@@ -320,6 +320,15 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"surface": surface}, nil
+	case "live-view-publish":
+		if request.TaskRequestID == "" || len(request.Surface) == 0 {
+			return nil, errors.New("live view publish requires taskRequestId and surface")
+		}
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		return rt.PublishLiveView(request.TaskRequestID, request.Surface)
 	case "surface-clear":
 		rt, err := d.resolveRuntime(request.InstanceID)
 		if err != nil {
