@@ -27,6 +27,7 @@ import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 import type {
   LiveTranscriptSegment,
   LiveTranscriptState,
+  AgentActivityProjection,
   RoomAttachmentProjection,
   RoomAttachmentRead,
   RuntimeHostProjection,
@@ -408,6 +409,7 @@ interface SfuServerMessage {
     | "expired"
     | "error"
     | "runtime-provider-claim-created"
+    | "agentActivity"
   state?: SfuRoomState
   attachment?: RoomAttachmentProjection
   participant?: Partial<SfuParticipant> & {
@@ -420,6 +422,9 @@ interface SfuServerMessage {
   error?: string
   requestId?: string
   expiresAt?: number
+  activity?: AgentActivityProjection | null
+  agentParticipantId?: string
+  scopeId?: string
 }
 
 const roomMessageToMessage = (
@@ -488,12 +493,16 @@ export function useSfuChatRoom(
   const [agentVoice, setAgentVoiceState] = useState<SfuAgentVoiceState>({})
   const [agentVoiceMediaAvailable, setAgentVoiceMediaAvailable] =
     useState(false)
+  const [agentActivities, setAgentActivities] = useState<
+    AgentActivityProjection[]
+  >([])
   const [runtimeConnectionStatus, setRuntimeConnectionStatus] = useState<
     "idle" | "preparing" | "copied"
   >("idle")
 
   const sessionRef = useRef<SfuSession | null>(null)
   const roomStateRef = useRef<SfuRoomState | null>(null)
+  const agentActivitiesRef = useRef<AgentActivityProjection[]>([])
   const websocketRef = useRef<WebSocket | null>(null)
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null)
@@ -679,6 +688,14 @@ export function useSfuChatRoom(
         voiceEnabled:
           participant.kind === "agent" &&
           state?.agentVoice?.[participant.id]?.enabled === true,
+        activity:
+          participant.kind === "agent"
+            ? agentActivitiesRef.current.find(
+                (activity) =>
+                  activity.agentParticipantId === participant.id &&
+                  activity.scopeId === "room"
+              )?.state
+            : undefined,
         audioStream: remoteAudioStreamsRef.current.get(participant.id) ?? null,
         screenShareEnabled: hasScreenShare,
         screenShareStream:
@@ -2232,6 +2249,9 @@ export function useSfuChatRoom(
       setLiveTranscriptMediaAvailable(state.meetingNotesMediaAvailable)
       setAgentVoiceState(state.agentVoice)
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
+      const nextActivities = state.agentActivities ?? []
+      agentActivitiesRef.current = nextActivities
+      setAgentActivities(nextActivities)
       const localParticipantId = sessionRef.current?.participantId
       const currentParticipantIds = new Set(
         state.participants.map((participant) => participant.id)
@@ -2435,6 +2455,34 @@ export function useSfuChatRoom(
       const message = JSON.parse(event.data) as SfuServerMessage
       if (message.type === "state" && message.state) {
         applyRoomState(message.state)
+      } else if (message.type === "agentActivity") {
+        if (message.activity) {
+          const next = [
+            ...agentActivitiesRef.current.filter(
+              (activity) =>
+                !(
+                  activity.agentParticipantId ===
+                    message.activity!.agentParticipantId &&
+                  activity.scopeId === message.activity!.scopeId
+                )
+            ),
+            message.activity,
+          ]
+          agentActivitiesRef.current = next
+          setAgentActivities(next)
+          rebuildParticipants()
+        } else if (message.agentParticipantId && message.scopeId) {
+          const next = agentActivitiesRef.current.filter(
+            (activity) =>
+              !(
+                activity.agentParticipantId === message.agentParticipantId &&
+                activity.scopeId === message.scopeId
+              )
+          )
+          agentActivitiesRef.current = next
+          setAgentActivities(next)
+          rebuildParticipants()
+        }
       } else if (
         message.type === "trackPublished" &&
         message.participant?.track
@@ -3398,6 +3446,7 @@ export function useSfuChatRoom(
     leaveRoom,
     agentVoice,
     agentVoiceMediaAvailable,
+    agentActivities,
     setAgentVoice,
     createRuntimeProviderClaim,
     connectLocalRuntime,

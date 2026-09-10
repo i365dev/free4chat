@@ -217,6 +217,28 @@ const (
 	KindAgent ParticipantKind = "agent"
 )
 
+// AgentActivityState is the deliberately coarse, transient activity
+// projection shown to other Room participants. It is not a Harness trace and
+// must never carry thought text, tool arguments, commands, or paths.
+type AgentActivityState string
+
+const (
+	AgentActivityWorking    AgentActivityState = "working"
+	AgentActivityThinking   AgentActivityState = "thinking"
+	AgentActivityUsingTools AgentActivityState = "using_tools"
+	AgentActivityResponding AgentActivityState = "responding"
+)
+
+func (state AgentActivityState) Valid() bool {
+	switch state {
+	case AgentActivityWorking, AgentActivityThinking,
+		AgentActivityUsingTools, AgentActivityResponding:
+		return true
+	default:
+		return false
+	}
+}
+
 // RoomPermissionToolCall is the bounded Human-facing projection of one ACP
 // tool call. Raw ACP input/content and native protocol identifiers stay local
 // to the Harness adapter.
@@ -826,6 +848,15 @@ type LiveTranscriptAppendClient interface {
 // clients and compatibility adapters do not acquire a new mutation surface.
 type PermissionRequestClient interface {
 	RequestPermission(participantHandle string, request RoomPermissionRequest) error
+}
+
+// ResidentActivityClient is an optional narrow Runtime-to-Room transport for
+// coarse transient Harness activity. Empty activity means clear. Keeping it
+// outside Free4ChatClient preserves existing test doubles and compatibility
+// clients while allowing the production client to expose only this bounded
+// mutation.
+type ResidentActivityClient interface {
+	UpdateAgentActivity(participantHandle, scope string, activity AgentActivityState) error
 }
 
 // AttachmentRead is read_attachment's normalized result: either an image

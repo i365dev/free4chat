@@ -10,6 +10,7 @@ import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
+import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import { buildTaskProjections, roomMessagesForView } from "../common/taskViews"
 import {
@@ -163,6 +164,7 @@ export default function RoomContent({
     runtimeConnectionStatus,
     leaveRoom,
     localParticipantId,
+    agentActivities,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
@@ -179,6 +181,27 @@ export default function RoomContent({
   const interactionMessages = activeTask
     ? activeTask.messages
     : roomMessagesForView(messages)
+  const activeTaskActivity = activeTask
+    ? (agentActivities ?? []).find(
+        (activity) =>
+          activity.scopeId === `task:${activeTask.requestId}` &&
+          [
+            activeTask.targetParticipantId,
+            activeTask.createdByParticipantId,
+          ].includes(activity.agentParticipantId) &&
+          participants.some(
+            (participant) =>
+              participant.peerId === activity.agentParticipantId &&
+              participant.kind === "agent"
+          )
+      )
+    : undefined
+  const activeTaskActivityAgent = activeTaskActivity
+    ? participants.find(
+        (participant) =>
+          participant.peerId === activeTaskActivity.agentParticipantId
+      )
+    : undefined
 
   useEffect(() => {
     const pending = pendingLocalTaskSummaries.current
@@ -911,6 +934,15 @@ export default function RoomContent({
             ))}
           </div>
           <div className="min-h-0 flex-1">
+            {activeTaskActivity && (
+              <div
+                data-testid="task-agent-activity"
+                className="border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
+              >
+                {activeTaskActivityAgent?.name ?? "Agent"} ·{" "}
+                {agentActivityLabel(activeTaskActivity.state)}…
+              </div>
+            )}
             <TextChatCard
               key={activeInteraction}
               room={roomName}

@@ -53,6 +53,9 @@ type AdapterOptions struct {
 	// ACP session/request_permission calls. A nil responder preserves the
 	// production fail-closed behavior and cancels the request immediately.
 	PermissionResponder ACPPermissionResponder
+	// ActivityHandler is an optional transient projection callback. Repeated
+	// ACP chunks are coalesced by the Runtime before any Room request.
+	ActivityHandler ACPActivityHandler
 }
 
 // ACPMode is the Harness-native session mode advertised by session/new.
@@ -149,6 +152,10 @@ type ACPPermissionResponse struct {
 // chooses one of the Harness-provided options.
 type ACPPermissionResponder func(context.Context, ACPPermissionRequest) (ACPPermissionResponse, error)
 
+// ACPActivityHandler receives only a logical scope and coarse normalized
+// state. The ACP payload remains private to the adapter.
+type ACPActivityHandler func(scope string, state types.AgentActivityState)
+
 // ACPCapabilities is the parsed initialize response projection.
 type ACPCapabilities struct {
 	Images bool
@@ -203,6 +210,7 @@ type acpSession struct {
 	sessionID  string
 	caps       *ACPCapabilities
 	generation int64
+	scope      string
 }
 
 // harnessProcess owns the ONE cmd.Wait() call for a child lifecycle. Both
@@ -331,6 +339,14 @@ func (a *ACPAdapter) PendingPermissionCount() int {
 func (a *ACPAdapter) SetPermissionResponder(responder ACPPermissionResponder) {
 	a.mu.Lock()
 	a.options.PermissionResponder = responder
+	a.mu.Unlock()
+}
+
+// SetActivityHandler installs the coarse Runtime projection seam. It never
+// exposes native ACP payloads outside this process.
+func (a *ACPAdapter) SetActivityHandler(handler ACPActivityHandler) {
+	a.mu.Lock()
+	a.options.ActivityHandler = handler
 	a.mu.Unlock()
 }
 
@@ -684,6 +700,7 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 		sessionID:  sessionResponse.SessionID,
 		caps:       base,
 		generation: a.nextScopeGeneration,
+		scope:      scope,
 	}
 	return nil
 }
@@ -960,6 +977,7 @@ func (a *ACPAdapter) dispatch(message *acpMessage) {
 	// Notification.
 	if message.Method == "session/update" {
 		a.applySessionUpdate(message.Params)
+		a.dispatchActivity(message.Params)
 		if chunk, ok := extractTextChunk(message.Params); ok && chunk != "" {
 			a.mu.Lock()
 			if a.promptActive {
@@ -967,6 +985,43 @@ func (a *ACPAdapter) dispatch(message *acpMessage) {
 			}
 			a.mu.Unlock()
 		}
+	}
+}
+
+func (a *ACPAdapter) dispatchActivity(params json.RawMessage) {
+	state, ok := mapACPActivity(params)
+	if !ok {
+		return
+	}
+	var envelope struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(params, &envelope) != nil || envelope.SessionID == "" {
+		return
+	}
+	a.mu.Lock()
+	// ACP notifications arriving after session/prompt settles must not
+	// resurrect a cleared activity state or bleed into the next serialized
+	// turn. The current prompt/session fence is the adapter-local ordering
+	// boundary.
+	if !a.promptActive || a.turnSessionID != envelope.SessionID {
+		a.mu.Unlock()
+		return
+	}
+	scope := "room"
+	if envelope.SessionID != a.sessionID {
+		scope = ""
+		for logicalScope, session := range a.sessions {
+			if session != nil && session.sessionID == envelope.SessionID {
+				scope = logicalScope
+				break
+			}
+		}
+	}
+	handler := a.options.ActivityHandler
+	a.mu.Unlock()
+	if handler != nil && scope != "" {
+		handler(scope, state)
 	}
 }
 

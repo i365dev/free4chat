@@ -7,10 +7,12 @@ const MAX_ROOM_LENGTH = 64
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const MAX_PERMISSION_REQUEST_BODY_BYTES = 64 * 1024
 const AGENT_EVENT_PATH = "/api/room/agent-events"
+const AGENT_ACTIVITY_PATH = "/api/room/agent-activity"
 const ROOM_REQUEST_PATHS = new Set([
   "/api/room/attachments",
   "/api/room/live-transcript/append",
   AGENT_EVENT_PATH,
+  AGENT_ACTIVITY_PATH,
   "/api/room/permissions/request",
   "/api/room/runtime-provider/connect",
   "/api/room/surfaces/read",
@@ -91,6 +93,45 @@ export async function handleRoomRequest(
     const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
     const doRequest = new Request("https://room/agent-events", request)
     return stub.fetch(doRequest)
+  }
+
+  // Runtime-only coarse Harness activity. This is intentionally a tiny
+  // authenticated control request rather than a reverse resident WebSocket
+  // protocol: the body carries only a scope and one enum, and the DO keeps it
+  // transient without waking Agents or writing the Room message log.
+  if (pathname === AGENT_ACTIVITY_PATH) {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
+    if (declaredSize > 4096) return json({ error: "request_too_large" }, 413)
+    let body: { scopeId?: unknown; activity?: unknown }
+    try {
+      const bytes = new Uint8Array(await request.arrayBuffer())
+      if (bytes.byteLength > 4096)
+        return json({ error: "request_too_large" }, 413)
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "agent-activity",
+        participantId,
+        token,
+        scopeId: body.scopeId,
+        activity: body.activity ?? null,
+      }),
+    })
   }
 
   // Runtime-only control transport for a committed STT result. This is not

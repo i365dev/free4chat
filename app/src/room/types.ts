@@ -1,5 +1,17 @@
 export type ParticipantKind = "human" | "agent"
 
+export type AgentActivityState =
+  | "working"
+  | "thinking"
+  | "using_tools"
+  | "responding"
+
+export interface AgentActivityProjection {
+  agentParticipantId: string
+  scopeId: string
+  state: AgentActivityState
+}
+
 export type RoomMediaTrackKind = "audio" | "video"
 
 export interface RoomMediaTrack {
@@ -420,6 +432,9 @@ export interface RoomState {
   // room-visible grant.
   meetingNotesMediaAvailable: boolean
   agentVoice: AgentVoiceState
+  // Transient coarse Runtime activity. This is kept outside RoomRecord and
+  // disappears on Runtime disconnect or Durable Object restart.
+  agentActivities?: AgentActivityProjection[]
   // Coarse Worker media admission switch. Per-Agent UI availability still
   // comes from the Runtime Host's TTS readiness, never from this field.
   agentVoiceMediaAvailable: boolean
