@@ -257,6 +257,7 @@ describe("Runtime permission request transport gate", () => {
         },
         body: JSON.stringify({
           requestId: "permission-1",
+          taskRequestId: "task-T",
           agentParticipantId: "spoofed-agent",
           toolCall: { title: "Run command" },
           options: [{ optionId: "allow-once", name: "Allow once" }],
@@ -272,6 +273,7 @@ describe("Runtime permission request transport gate", () => {
       token: "private-agent-token",
       request: {
         requestId: "permission-1",
+        taskRequestId: "task-T",
         agentParticipantId: "spoofed-agent",
         toolCall: { title: "Run command" },
         options: [{ optionId: "allow-once", name: "Allow once" }],
