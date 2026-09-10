@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { RoomSession } from "./RoomSession"
+import { buildTaskProjectionIndex, resolveTaskRequest } from "./taskScope"
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 
@@ -136,6 +137,7 @@ function makeRoomSession() {
       messages: Array<Record<string, unknown>>
       permissionRequests?: Record<string, Record<string, unknown>>
       nextMessageSequence: number
+      participants: Record<string, Record<string, unknown>>
     }
   const agentWait = async (participantId: string, cursor = 0) =>
     control({
@@ -384,6 +386,129 @@ describe("RoomSession structured permission lifecycle (#286)", () => {
       kind: "resolved",
       selectedOptionId: "allow-once",
     })
+  })
+
+  it("delivers an admitted Task permission after the Task root is evicted", async () => {
+    const room = makeRoomSession()
+    await room.sendHuman("human-1", {
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Task T",
+    })
+    const taskRequestId = collabRequestId(room.storedRoom().messages[0])
+    if (typeof taskRequestId !== "string")
+      throw new Error("Task was not created")
+
+    await room.requestPermission("agent-a", "permission-evicted", taskRequestId)
+    for (let index = 0; index < 101; index += 1) {
+      const result = await room.control({
+        action: "agent-send-text",
+        participantId: "agent-a",
+        token: "tok-agent-a",
+        text: `eviction-${index}`,
+      })
+      expect(result.status).toBe(200)
+    }
+
+    const stored = room.storedRoom()
+    expect(stored.messages.some((message) => message.collab)).toBe(false)
+    const projection = buildTaskProjectionIndex(
+      stored.messages as never,
+      stored.participants as never
+    )
+    expect(
+      resolveTaskRequest(
+        projection,
+        taskRequestId,
+        stored.participants as never
+      )
+    ).toEqual({
+      ok: false,
+      error: "unknown_task_request",
+    })
+
+    await room.sendHuman("human-1", {
+      type: "permission-response",
+      requestId: "permission-evicted",
+      selectedOptionId: "allow-once",
+    })
+    const target = await room.agentWait("agent-a")
+    expect(target.json.events).toContainEqual(
+      expect.objectContaining({
+        scopeId: `task:${taskRequestId}`,
+        addressed: true,
+        permission: expect.objectContaining({
+          requestId: "permission-evicted",
+          kind: "resolved",
+          selectedOptionId: "allow-once",
+        }),
+      })
+    )
+    expect(room.storedRoom().permissionRequests).toEqual({})
+
+    const unrelated = await room.agentWait("agent-b")
+    expect(
+      (unrelated.json.events as Array<Record<string, unknown>>).some(
+        (event) => event.permission !== undefined
+      )
+    ).toBe(false)
+  })
+
+  it("delivers Deny and expiry terminals through the same evicted Task correlation", async () => {
+    for (const [permissionId, selectedOptionId] of [
+      ["permission-deny", "deny"],
+      ["permission-expired", undefined],
+    ] as const) {
+      const room = makeRoomSession()
+      await room.sendHuman("human-1", {
+        type: "collab-request",
+        targetParticipantId: "agent-a",
+        summary: "Task T",
+      })
+      const taskRequestId = collabRequestId(room.storedRoom().messages[0])
+      if (typeof taskRequestId !== "string")
+        throw new Error("Task was not created")
+      await room.requestPermission("agent-a", permissionId, taskRequestId)
+      for (let index = 0; index < 101; index += 1) {
+        const result = await room.control({
+          action: "agent-send-text",
+          participantId: "agent-a",
+          token: "tok-agent-a",
+          text: `eviction-${index}`,
+        })
+        expect(result.status).toBe(200)
+      }
+
+      if (selectedOptionId !== undefined) {
+        await room.sendHuman("human-1", {
+          type: "permission-response",
+          requestId: permissionId,
+          selectedOptionId,
+        })
+      } else {
+        const pending = room.storedRoom().permissionRequests?.[permissionId]
+        ;(pending?.event as Record<string, unknown>).expiresAt = Date.now() - 1
+        await room.roomSession.alarm()
+      }
+
+      const target = await room.agentWait("agent-a")
+      expect(target.json.events).toContainEqual(
+        expect.objectContaining({
+          scopeId: `task:${taskRequestId}`,
+          permission: expect.objectContaining({
+            requestId: permissionId,
+            kind: selectedOptionId === undefined ? "expired" : "resolved",
+            ...(selectedOptionId === undefined ? {} : { selectedOptionId }),
+          }),
+        })
+      )
+      const unrelated = await room.agentWait("agent-b")
+      expect(
+        (unrelated.json.events as Array<Record<string, unknown>>).some(
+          (event) => event.permission !== undefined
+        )
+      ).toBe(false)
+    }
   })
 
   it("derives the Agent identity from authentication and exposes the request to Humans", async () => {

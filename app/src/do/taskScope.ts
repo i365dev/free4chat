@@ -239,7 +239,28 @@ export function projectTaskEvent(
   // Correlation identity can only come from a retained canonical request.
   // Lifecycle envelopes whose request was evicted therefore fail closed just
   // like explicit orphaned Task text; they must never become Room context.
-  if (!task) return { kind: "task", visible: false }
+  if (!task) {
+    const permission = message.permission
+    // A permission terminal is the one narrow exception: Room can only append
+    // this structured event after a matching pending permission was admitted,
+    // and the server copies both the exact originating Agent and Task id from
+    // that record. Keep this exception scoped to that Agent and terminal
+    // lifecycle; generic orphaned Task events remain invisible.
+    if (
+      message.actionType === "permission" &&
+      permission !== undefined &&
+      (permission.kind === "resolved" || permission.kind === "expired") &&
+      permission.agentParticipantId === participantId &&
+      message.targets?.includes(participantId) === true
+    )
+      return {
+        kind: "task",
+        visible: true,
+        scopeId: `task:${requestId}`,
+        addressed: true,
+      }
+    return { kind: "task", visible: false }
+  }
 
   const participantSet = historical
     ? task.participatingAgentIds

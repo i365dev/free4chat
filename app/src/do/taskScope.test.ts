@@ -190,6 +190,59 @@ describe("Task scope projection", () => {
     }
   })
 
+  it("delivers only an admitted permission terminal to its originating Agent after eviction", () => {
+    const terminal: RoomMessage = {
+      id: "permission-terminal",
+      peerId: "human",
+      name: "human",
+      kind: "human",
+      type: "action",
+      actionType: "permission",
+      taskRequestId: "task-T",
+      permission: {
+        requestId: "task-T-permission",
+        kind: "resolved",
+        agentParticipantId: "agent-a",
+        selectedOptionId: "allow-once",
+        humanParticipantId: "human",
+        humanName: "human",
+        createdAt: 10,
+        expiresAt: 100,
+      },
+      targets: ["agent-a"],
+      createdAt: 10,
+      sequence: 10,
+    }
+    const index = buildTaskProjectionIndex([], participants())
+
+    expect(projectTaskEvent(index, terminal, "agent-a")).toEqual({
+      kind: "task",
+      visible: true,
+      scopeId: "task:task-T",
+      addressed: true,
+    })
+    expect(projectTaskEvent(index, terminal, "agent-b")).toEqual({
+      kind: "task",
+      visible: false,
+    })
+    const requestTerminal = {
+      ...terminal,
+      permission: {
+        requestId: "task-T-permission",
+        kind: "request" as const,
+        agentParticipantId: "agent-a",
+        toolCall: { title: "Run command" },
+        options: [{ optionId: "allow-once", name: "Allow once" }],
+        createdAt: 10,
+        expiresAt: 100,
+      },
+    }
+    expect(projectTaskEvent(index, requestTerminal, "agent-a")).toEqual({
+      kind: "task",
+      visible: false,
+    })
+  })
+
   it("validates Human task targets without falling back", () => {
     const index = buildTaskProjectionIndex([request()], participants())
     const resolution = resolveTaskRequest(index, "task-T", participants())
