@@ -771,7 +771,11 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     })
 
     expect(pc.connectionState).toBe("closed")
-    expect(TestPeerConnection.instances).toHaveLength(2)
+    vi.useRealTimers()
+    await waitFor(() => {
+      expect(TestPeerConnection.instances).toHaveLength(2)
+      expect(TestWebSocket.instances).toHaveLength(2)
+    })
     const newPc = TestPeerConnection.instances[1]
     const newSocket = TestWebSocket.instances[1]
     sendState(newSocket, state)
