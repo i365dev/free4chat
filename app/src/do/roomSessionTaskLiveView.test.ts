@@ -137,21 +137,46 @@ function appendTask(room: RoomRecord, taskRequestId: string) {
   room.nextMessageSequence = sequence
 }
 
-function makeSession(store: Map<string, unknown>) {
+type StorageOperations = {
+  roomWrites: number
+  taskLiveViewLists: number
+  taskLiveViewWrites: string[]
+  taskLiveViewDeletes: string[]
+  deleteAll: number
+}
+
+function makeSession(
+  store: Map<string, unknown>,
+  operations: StorageOperations
+) {
   return new RoomSession(
     {
       storage: {
         get: async (key: string) => store.get(key),
-        put: async (key: string, value: unknown) => void store.set(key, value),
+        put: async (key: string, value: unknown) => {
+          if (key === "room") operations.roomWrites += 1
+          if (key.startsWith("task-live-view:"))
+            operations.taskLiveViewWrites.push(key)
+          store.set(key, value)
+        },
         delete: async (key: string | string[]) => {
+          for (const candidate of Array.isArray(key) ? key : [key])
+            if (candidate.startsWith("task-live-view:"))
+              operations.taskLiveViewDeletes.push(candidate)
           for (const candidate of Array.isArray(key) ? key : [key])
             store.delete(candidate)
         },
         list: async (options?: { prefix?: string; limit?: number }) => {
+          if (options?.prefix === "task-live-view:")
+            operations.taskLiveViewLists += 1
           const entries = [...store.entries()].filter(([key]) =>
             options?.prefix ? key.startsWith(options.prefix) : true
           )
           return new Map(entries.slice(0, options?.limit ?? entries.length))
+        },
+        deleteAll: async () => {
+          operations.deleteAll += 1
+          store.clear()
         },
         setAlarm: async () => undefined,
         deleteAlarm: async () => undefined,
@@ -178,15 +203,23 @@ async function control(session: RoomSession, body: Record<string, unknown>) {
 function harness() {
   const store = new Map<string, unknown>([["room", makeRoom()]])
   const broadcasts: unknown[] = []
-  const session = makeSession(store)
+  const operations: StorageOperations = {
+    roomWrites: 0,
+    taskLiveViewLists: 0,
+    taskLiveViewWrites: [],
+    taskLiveViewDeletes: [],
+    deleteAll: 0,
+  }
+  const session = makeSession(store, operations)
   return {
     session,
     store,
     broadcasts,
+    operations,
     control: (body: Record<string, unknown>) => control(session, body),
     controlWith: (other: RoomSession, body: Record<string, unknown>) =>
       control(other, body),
-    newSession: () => makeSession(store),
+    newSession: () => makeSession(store, operations),
     load: () =>
       (
         session as unknown as { loadRoom: () => Promise<RoomRecord | null> }
@@ -218,6 +251,7 @@ describe("RoomSession Task Live View (#316)", () => {
     })
     expect(test.room().messages).toHaveLength(2)
     const firstLoaded = await test.load()
+    expect(test.operations.taskLiveViewLists).toBe(1)
     expect(firstLoaded?.taskLiveViews?.["task-1"]).toMatchObject({
       revision: 1,
     })
@@ -233,6 +267,11 @@ describe("RoomSession Task Live View (#316)", () => {
     expect(
       (test.store.get("task-live-view:task-1") as { revision: number }).revision
     ).toBe(2)
+    expect(test.operations.taskLiveViewWrites).toEqual([
+      "task-live-view:task-1",
+      "task-live-view:task-1",
+    ])
+    expect(test.operations.taskLiveViewLists).toBe(1)
     expect((await test.load())?.taskLiveViews?.["task-1"]?.revision).toBe(2)
 
     const stale = await test.control({
@@ -415,5 +454,114 @@ describe("RoomSession Task Live View (#316)", () => {
     expect(
       [...test.store.keys()].filter((key) => key.startsWith("task-live-view:"))
     ).toHaveLength(16)
+  })
+
+  it("reconstructs dedicated views once and reuses the warm cache", async () => {
+    const test = harness()
+    expect((await test.load())?.taskLiveViews).toEqual({})
+    expect(test.operations.taskLiveViewLists).toBe(1)
+
+    await test.load()
+    await test.load()
+    const ordinaryMutation = await test.control({
+      action: "agent-send-text",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      text: "ordinary room mutation",
+    })
+    expect(ordinaryMutation.status).toBe(200)
+    const rejected = await test.control({
+      action: "agent-publish-live-view",
+      participantId: "agent-b",
+      token: "agent-b-token",
+      taskRequestId: "task-1",
+      surface: surface(),
+    })
+    expect(rejected.status).toBe(403)
+    expect(test.operations.taskLiveViewLists).toBe(1)
+    expect(test.operations.taskLiveViewWrites).toEqual([])
+  })
+
+  it("publishes a replacement with only one dedicated Live View write", async () => {
+    const test = harness()
+    appendTask(test.room(), "task-2")
+    await test.control({
+      action: "agent-publish-live-view",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      taskRequestId: "task-1",
+      surface: surface(),
+    })
+    await test.control({
+      action: "agent-publish-live-view",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      taskRequestId: "task-2",
+      surface: surface(1, "task-2"),
+    })
+    test.operations.taskLiveViewWrites.length = 0
+
+    const replacement = await test.control({
+      action: "agent-publish-live-view",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      taskRequestId: "task-1",
+      surface: surface(2),
+    })
+    expect(replacement.status).toBe(200)
+    expect(test.operations.taskLiveViewWrites).toEqual([
+      "task-live-view:task-1",
+    ])
+    expect(test.operations.taskLiveViewLists).toBe(1)
+    expect(test.store.has("task-live-view:task-2")).toBe(true)
+  })
+
+  it("prunes a stale cached view and deletes its key only once", async () => {
+    const test = harness()
+    await test.control({
+      action: "agent-publish-live-view",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      taskRequestId: "task-1",
+      surface: surface(),
+    })
+    await test.load()
+    test.room().messages = test
+      .room()
+      .messages.filter((message) => message.collab?.requestId !== "task-1")
+
+    await test.load()
+    expect(test.operations.taskLiveViewDeletes).toEqual([
+      "task-live-view:task-1",
+    ])
+    await test.load()
+    expect(test.operations.taskLiveViewDeletes).toEqual([
+      "task-live-view:task-1",
+    ])
+    expect(test.store.has("task-live-view:task-1")).toBe(false)
+  })
+
+  it("resets the cache at Room generation expiry", async () => {
+    const test = harness()
+    await test.control({
+      action: "agent-publish-live-view",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      taskRequestId: "task-1",
+      surface: surface(),
+    })
+    const oldRoom = (await test.load()) as RoomRecord
+    await (
+      test.session as unknown as {
+        expireRoom: (room: RoomRecord) => Promise<void>
+      }
+    ).expireRoom(oldRoom)
+    expect(test.operations.deleteAll).toBe(1)
+
+    test.store.set("room", makeRoom())
+    const newRoom = await test.load()
+    expect(newRoom?.taskLiveViews).toEqual({})
+    expect(test.operations.taskLiveViewLists).toBe(2)
+    expect(test.store.has("task-live-view:task-1")).toBe(false)
   })
 })

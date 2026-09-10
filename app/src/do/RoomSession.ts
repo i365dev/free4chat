@@ -727,6 +727,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     string,
     AgentActivityProjection
   >()
+  private taskLiveViewsCache: Map<string, TaskLiveViewSnapshot> | null = null
+  private taskLiveViewsLoad: {
+    generation: number
+    promise: Promise<Map<string, TaskLiveViewSnapshot>>
+  } | null = null
+  private readonly taskLiveViewDeletedKeys = new Set<string>()
+  private taskLiveViewGeneration = 0
 
   // Correlation must never leak across room generations on the same DO
   // instance (a recycled room name after expiry would otherwise inherit
@@ -734,6 +741,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private resetCollabTracking(): void {
     this.collabRegistry.clear()
     this.collabRebuilt = false
+    this.taskLiveViewsCache = null
+    this.taskLiveViewsLoad = null
+    this.taskLiveViewDeletedKeys.clear()
+    this.taskLiveViewGeneration += 1
   }
 
   // Restores routing/dedup state from the bounded durable message log once
@@ -785,8 +796,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private async loadTaskLiveViews(
     room: RoomRecord
   ): Promise<Record<string, TaskLiveViewSnapshot>> {
+    const generation = this.taskLiveViewGeneration
+    if (this.taskLiveViewsCache === null) {
+      if (
+        this.taskLiveViewsLoad === null ||
+        this.taskLiveViewsLoad.generation !== generation
+      ) {
+        this.taskLiveViewsLoad = {
+          generation,
+          promise: this.reconstructTaskLiveViews(room, generation),
+        }
+      }
+      const load = this.taskLiveViewsLoad
+      const reconstructed = await load.promise
+      if (generation !== this.taskLiveViewGeneration) return {}
+      this.taskLiveViewsCache = reconstructed
+    }
+
+    if (generation !== this.taskLiveViewGeneration) return {}
+    await this.pruneTaskLiveViews(room)
+    return Object.fromEntries(this.taskLiveViewsCache)
+  }
+
+  private async reconstructTaskLiveViews(
+    room: RoomRecord,
+    generation: number
+  ): Promise<Map<string, TaskLiveViewSnapshot>> {
     const taskIndex = buildTaskProjectionIndex(room.messages, room.participants)
-    const taskLiveViews: Record<string, TaskLiveViewSnapshot> = {}
+    const taskLiveViews = new Map<string, TaskLiveViewSnapshot>()
     const staleKeys: string[] = []
     const storage = this.ctx.storage as unknown as {
       list?: (options: {
@@ -803,26 +840,55 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const taskRequestId = key.slice(TASK_LIVE_VIEW_KEY_PREFIX.length)
       const validation = validateTaskLiveViewSnapshot(rawSnapshot)
       const snapshot = validation.ok ? validation.snapshot : undefined
-      const task = snapshot && taskIndex.tasks.get(taskRequestId)
-      const authority = snapshot && room.participants[snapshot.authorityAgentId]
-      const authorityIsTaskEndpoint =
-        task !== undefined &&
-        (snapshot.authorityAgentId === task.request.fromParticipantId ||
-          snapshot.authorityAgentId === task.request.targetParticipantId)
       if (
         !snapshot ||
-        taskRequestId !== snapshot.taskRequestId ||
-        !task ||
-        !authorityIsTaskEndpoint ||
-        (authority !== undefined && authority.kind !== "agent")
-      ) {
+        !this.isCurrentTaskLiveView(room, taskIndex, taskRequestId, snapshot)
+      )
         staleKeys.push(key)
-        continue
-      }
-      taskLiveViews[taskRequestId] = snapshot
+      else taskLiveViews.set(taskRequestId, snapshot)
     }
-    if (staleKeys.length > 0) await this.ctx.storage.delete(staleKeys)
+    if (generation === this.taskLiveViewGeneration)
+      await this.deleteTaskLiveViewKeysOnce(staleKeys)
     return taskLiveViews
+  }
+
+  private isCurrentTaskLiveView(
+    room: RoomRecord,
+    taskIndex: TaskProjectionIndex,
+    taskRequestId: string,
+    snapshot: TaskLiveViewSnapshot
+  ): boolean {
+    const task = taskIndex.tasks.get(taskRequestId)
+    const authority = room.participants[snapshot.authorityAgentId]
+    return (
+      taskRequestId === snapshot.taskRequestId &&
+      task !== undefined &&
+      (snapshot.authorityAgentId === task.request.fromParticipantId ||
+        snapshot.authorityAgentId === task.request.targetParticipantId) &&
+      (authority === undefined || authority.kind === "agent")
+    )
+  }
+
+  private async pruneTaskLiveViews(room: RoomRecord): Promise<void> {
+    if (this.taskLiveViewsCache === null) return
+    const taskIndex = buildTaskProjectionIndex(room.messages, room.participants)
+    const staleKeys: string[] = []
+    for (const [taskRequestId, snapshot] of this.taskLiveViewsCache) {
+      if (
+        !this.isCurrentTaskLiveView(room, taskIndex, taskRequestId, snapshot)
+      ) {
+        this.taskLiveViewsCache.delete(taskRequestId)
+        staleKeys.push(this.taskLiveViewKey(taskRequestId))
+      }
+    }
+    await this.deleteTaskLiveViewKeysOnce(staleKeys)
+  }
+
+  private async deleteTaskLiveViewKeysOnce(keys: string[]): Promise<void> {
+    const pending = keys.filter((key) => !this.taskLiveViewDeletedKeys.has(key))
+    if (pending.length === 0) return
+    await this.ctx.storage.delete(pending)
+    for (const key of pending) this.taskLiveViewDeletedKeys.add(key)
   }
 
   private normalizeRoom(
@@ -3224,6 +3290,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...(room.taskLiveViews ?? {}),
         [request.taskRequestId]: snapshot,
       }
+      if (this.taskLiveViewsCache === null) this.taskLiveViewsCache = new Map()
+      this.taskLiveViewsCache.set(request.taskRequestId, snapshot)
+      this.taskLiveViewDeletedKeys.delete(
+        this.taskLiveViewKey(request.taskRequestId)
+      )
       participant.lastSeenAt = Date.now()
       await Promise.all([
         this.saveRoom(room),
