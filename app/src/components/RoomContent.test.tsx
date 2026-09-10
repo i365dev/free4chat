@@ -13,10 +13,11 @@ vi.mock("next/router", () => ({
 }))
 
 // Observe the long-lived analytics calls (AgentInviteCopied,
-// LiveTranscriptStarted/Stopped) without changing any other utility behavior.
+// LiveTranscriptStarted/Stopped) without allowing the browser analytics
+// fallback timer to outlive jsdom teardown.
 vi.mock("@common/utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@common/utils")>()
-  return { ...actual, trackAnalyticsEvent: vi.fn() }
+  return { ...actual, trackAnalyticsEvent: vi.fn(), umamiEvent: vi.fn() }
 })
 
 const mockUseSfuChatRoom = vi.fn()
