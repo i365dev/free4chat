@@ -334,6 +334,29 @@ export type LiveTranscriptState =
       startedAt: number
     }
 
+// Private resident event-stream projection. It is self-targeted and contains
+// only the grant epochs needed to reconcile one local media controller; it is
+// not part of browser RoomState or the public room_info projection.
+export interface ResidentMeetingNotesState {
+  active: boolean
+  startedAt?: number
+}
+
+export type ResidentLiveTranscriptState =
+  | { active: false }
+  | {
+      active: true
+      producerRuntimeHostId: string
+      epoch: number
+    }
+
+export interface ResidentMediaState {
+  meetingNotes: ResidentMeetingNotesState
+  agentVoiceEnabledAt?: number
+  mediaAvailable: boolean
+  liveTranscript: ResidentLiveTranscriptState
+}
+
 // A committed, Room-scoped STT result. Sequence and createdAt are assigned by
 // RoomSession; speaker is derived from the current Human participant rather
 // than trusted from a Runtime callback.

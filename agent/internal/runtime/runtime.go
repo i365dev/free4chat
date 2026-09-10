@@ -202,6 +202,16 @@ type ResidentRuntime struct {
 
 	mediaController *media.Controller
 	mediaMu         sync.Mutex
+	// residentMediaStateApplyMu serializes cache changes with their Controller
+	// application. It is held across the apply call so a replay cannot take a
+	// stale snapshot, yield to revocation, and then re-enable media afterward.
+	residentMediaStateApplyMu sync.Mutex
+	// residentMediaState is the last authenticated media projection. It is
+	// replayed only when a live resident controller is rebuilt (for example by
+	// speech hot reload); transport loss invalidates it before reconnect.
+	residentMediaStateMu    sync.Mutex
+	residentMediaState      types.ResidentMediaState
+	residentMediaStateValid bool
 	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
 	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
 	// mediaMu; without this generation fence, a late old callback could end a
@@ -237,6 +247,7 @@ func (r *ResidentRuntime) ReloadSpeech(config speech.Config) {
 	r.mu.Unlock()
 	if !stopped && handle != "" {
 		r.restartMediaController(handle)
+		r.replayResidentMediaState()
 		r.projectRuntimeHost(handle)
 	}
 }
@@ -627,9 +638,10 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 	}
 	r.mu.Unlock()
 	// Media controller (re)build happens OUTSIDE the runtime lock: it may
-	// stop the previous bridge, create a transcriber, and poll room_info —
-	// none of that may hold the runtime mutex.
+	// stop the previous bridge, create a transcriber, and perform a compatibility
+	// RoomInfo bootstrap — none of that may hold the runtime mutex.
 	r.restartMediaController(joined.ParticipantHandle)
+	r.replayResidentMediaState()
 }
 
 // requireHandle returns the live capability or fails closed.
@@ -738,6 +750,12 @@ func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
 			_ = stream.Close()
 		}
 
+		// Media authorization is fail-closed at the transport boundary. A
+		// reconnect must receive a fresh current media projection before any
+		// local bridge can run again.
+		if !r.isStopped() {
+			r.failClosedResidentMediaState()
+		}
 		if r.isStopped() {
 			return
 		}
@@ -861,8 +879,16 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 				}
 				return received.err
 			}
+			if received.result.MediaState == nil {
+				// A resident envelope without the mandatory media projection is
+				// not an authorization observation. Keep event delivery alive,
+				// but revoke local media until a complete envelope arrives.
+				r.failClosedResidentMediaState()
+			}
 			r.advanceFromWait(received.result)
-			if len(r.pendingScopes()) > 0 && !r.isStopped() {
+			// A media-only envelope is observation, not an activation event. Do
+			// not use it as a Harness wakeup/retry boundary for pre-existing work.
+			if len(received.result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
 				r.drainTurns()
 			}
 			receiveNext()
@@ -942,6 +968,11 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 		r.roster = append([]types.ParticipantRosterEntry(nil), result.Participants...)
 	}
 	r.mu.Unlock()
+
+	// Media state is observation-only runtime input. It is deliberately
+	// processed outside the Runtime event queue so a grant transition never
+	// wakes or creates a Harness turn.
+	r.observeResidentMediaState(result.MediaState)
 
 	// Deduplicate within the envelope as well as against the prior transport
 	// receipt boundary. This map is intentionally envelope-local: the monotonic
@@ -1564,8 +1595,14 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 // releaseResources mirrors the Node cleanupResources ordering: media first
 // (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
+	r.residentMediaStateApplyMu.Lock()
+	defer r.residentMediaStateApplyMu.Unlock()
 	r.mediaMu.Lock()
 	defer r.mediaMu.Unlock()
+	r.residentMediaStateMu.Lock()
+	r.residentMediaStateValid = false
+	r.residentMediaState = types.ResidentMediaState{}
+	r.residentMediaStateMu.Unlock()
 	// Invalidate every callback before Controller.Stop tears the bridge down.
 	// Its active-subscription TrackEnded notifications are intentionally
 	// asynchronous to keep this lifecycle mutex non-reentrant.

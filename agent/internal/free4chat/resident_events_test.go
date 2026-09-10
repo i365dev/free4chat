@@ -58,6 +58,14 @@ func TestResidentEventStreamUsesHeadersAndDecodesEnvelope(t *testing.T) {
 					"speech":        map[string]any{"stt": true, "tts": false},
 				},
 			},
+			"mediaState": map[string]any{
+				"meetingNotes":        map[string]any{"active": true, "startedAt": 11},
+				"agentVoiceEnabledAt": float64(22),
+				"mediaAvailable":      true,
+				"liveTranscript": map[string]any{
+					"active": true, "producerRuntimeHostId": "host-a", "epoch": float64(7),
+				},
+			},
 		})
 		_ = conn.Write(context.Background(), websocket.MessageText, payload)
 	}))
@@ -84,6 +92,13 @@ func TestResidentEventStreamUsesHeadersAndDecodesEnvelope(t *testing.T) {
 	host := wait.RuntimeHosts["11111111-2222-3333-4444-555555555555"]
 	if !host.Speech.STT || host.Speech.TTS {
 		t.Fatalf("runtime host envelope mismatch: %+v", wait.RuntimeHosts)
+	}
+	if wait.MediaState == nil || !wait.MediaState.MediaAvailable ||
+		!wait.MediaState.MeetingNotes.Active || wait.MediaState.AgentVoiceEnabledAt != 22 ||
+		!wait.MediaState.LiveTranscript.Active ||
+		wait.MediaState.LiveTranscript.ProducerRuntimeHostID != "host-a" ||
+		wait.MediaState.LiveTranscript.Epoch != 7 {
+		t.Fatalf("media state envelope mismatch: %+v", wait.MediaState)
 	}
 	if strings.Contains(requestURL, token) || requestURL != "/api/room/agent-events" {
 		t.Fatalf("capability leaked into resident URL: %q", requestURL)

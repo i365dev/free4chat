@@ -58,6 +58,7 @@ import {
   stageAgentMediaRevocation,
   type AgentMediaRevocationDirection,
 } from "./realtimeMedia"
+import { projectResidentMediaState } from "./residentMediaState"
 import {
   buildAgentJoinedEvent,
   buildCollabOutcomeEvent,
@@ -2054,6 +2055,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ...result,
         participants: rosterProjection(room.participants),
         runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
+        mediaState: projectResidentMediaState({
+          participantId: attachment.participantId,
+          meetingNotes: room.meetingNotes,
+          agentVoice: room.agentVoice,
+          liveTranscript: room.liveTranscript,
+          mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+        }),
       })
       if (
         new TextEncoder().encode(encoded).byteLength > RESIDENT_EVENT_MAX_BYTES

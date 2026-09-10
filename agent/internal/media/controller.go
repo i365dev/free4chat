@@ -14,11 +14,20 @@ import (
 
 // ControllerOptions wires the media grant controller into the runtime.
 type ControllerOptions struct {
-	Client        types.Free4ChatClient // RoomInfo (sanitized room state)
+	Client        types.Free4ChatClient // RoomInfo fallback (sanitized room state)
 	RoomID        string
 	ParticipantID string
 	SiteOrigin    string
 	Handle        DecodedHandle
+	// UsePushedMediaState is true for the resident Runtime, whose existing
+	// hibernatable event stream carries the current self-targeted media state.
+	// The compatibility path keeps one startup RoomInfo observation for clients
+	// that do not implement that stream, but never starts a recurring ticker.
+	UsePushedMediaState bool
+	// PollIntervalMs is retained for source compatibility with older injected
+	// callers. Controller no longer starts a RoomInfo ticker, so this value is
+	// ignored; BridgeOptions owns the independent SFU track-discovery cadence.
+	PollIntervalMs int
 	// RuntimeHostID is the room-scoped public host identity of this local
 	// Runtime. Live Transcript must match it exactly.
 	RuntimeHostID string
@@ -31,8 +40,6 @@ type ControllerOptions struct {
 	// CanProduceLiveTranscript proves this daemon still holds the private
 	// provider association for RuntimeHostID. Nil/false fails closed.
 	CanProduceLiveTranscript func() bool
-	// PollIntervalMs defaults to 5s.
-	PollIntervalMs int
 	// OnAudioFrame receives attributed SFU audio frames (wire to the
 	// transcriber).
 	OnAudioFrame func(source speech.AudioSource, frame speech.AudioFrame)
@@ -42,7 +49,7 @@ type ControllerOptions struct {
 	// OnGrantActivated fires on each grant activation EDGE (#171): a grant
 	// newly targeting this participant, or a fresh epoch of it. The runtime
 	// uses it to evaluate that grant's own speech prerequisite once — never
-	// per poll.
+	// for an unchanged state observation.
 	OnGrantActivated func(kind GrantKind)
 	// OnLiveTranscriptState tells the runtime whether this resident owns the
 	// active local producer lease. It is a state edge, never a Harness wakeup.
@@ -88,15 +95,19 @@ const (
 	GrantVoiceReply = GrantAgentVoice
 )
 
-// Controller owns the Runtime-side half of the media lifecycle: it polls
-// room_info for the Meeting Notes and Agent Voice grants and starts/stops the
-// ONE shared Bridge accordingly. This is the ONLY thing that decides when
-// this process may hold an active media session — authorization always comes
-// from the room-visible grant, never from a local decision.
+// Controller owns the Runtime-side half of the media lifecycle: it reconciles
+// the Meeting Notes, Agent Voice, and Live Transcript grants and starts/stops
+// the ONE shared Bridge accordingly. Resident Runtimes receive this state from
+// the authenticated event stream; RoomInfo remains only as a one-shot
+// compatibility bootstrap for non-resident clients. This is the ONLY thing
+// that decides when this process may hold an active media session —
+// authorization always comes from the room-visible grant, never from a local
+// decision.
 type Controller struct {
 	options ControllerOptions
 	log     func(event string, details map[string]string)
 
+	reconcileMu        sync.Mutex
 	mu                 sync.Mutex
 	state              string // idle | starting | running
 	generation         int
@@ -113,20 +124,23 @@ type Controller struct {
 	liveProducing     bool
 	// #171 grant-announcement state: the last grant instance (kind + epoch)
 	// whose activation edge was already reported, so an unchanged grant
-	// never re-fires while polls continue. Re-armed when the grant stops
+	// never re-fires while observations continue. Re-armed when the grant stops
 	// targeting this participant.
-	mnAnnounced      bool
-	mnAnnouncedEpoch *int64
-	vrAnnounced      bool
-	vrAnnouncedEpoch *int64
-	bridge           *Bridge
-	speaker          *voice.Speaker
-	voiceStarting    bool
-	stopped          bool
-	cancel           context.CancelFunc
-	ctx              context.Context
-	bridgeCancel     context.CancelFunc
-	now              func() time.Time
+	mnAnnounced             bool
+	mnAnnouncedEpoch        *int64
+	vrAnnounced             bool
+	vrAnnouncedEpoch        *int64
+	bridge                  *Bridge
+	speaker                 *voice.Speaker
+	voiceStarting           bool
+	stopped                 bool
+	mediaStateObserved      bool
+	lastMediaState          types.ResidentMediaState
+	lastMediaStateConfirmed bool
+	cancel                  context.CancelFunc
+	ctx                     context.Context
+	bridgeCancel            context.CancelFunc
+	now                     func() time.Time
 }
 
 // NewController builds an idle controller.
@@ -149,8 +163,9 @@ func NewController(options ControllerOptions) *Controller {
 	}
 }
 
-// Start runs the first poll synchronously, then arms the ticker — a caller
-// awaiting Start sees the first authorization check settle deterministically.
+// Start performs one compatibility bootstrap unless the Runtime is receiving
+// its initial state from the resident event stream. It never arms a recurring
+// RoomInfo ticker: subsequent transitions are pushed over that stream.
 func (c *Controller) Start(parent context.Context) {
 	if parent == nil {
 		parent = context.Background()
@@ -163,27 +178,16 @@ func (c *Controller) Start(parent context.Context) {
 		return
 	}
 	c.stopped = false
+	c.mediaStateObserved = false
+	c.lastMediaState = types.ResidentMediaState{}
+	c.lastMediaStateConfirmed = false
 	c.cancel = cancel
 	c.ctx = ctx
 	c.mu.Unlock()
 
-	c.poll()
-	interval := c.options.PollIntervalMs
-	if interval <= 0 {
-		interval = DefaultPollIntervalMs
+	if !c.options.UsePushedMediaState {
+		c.poll()
 	}
-	go func() {
-		ticker := time.NewTicker(time.Duration(interval) * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				c.poll()
-			}
-		}
-	}()
 }
 
 // Stop tears everything down (bridge + speaker), bounded.
@@ -194,6 +198,9 @@ func (c *Controller) Stop() {
 		return
 	}
 	c.stopped = true
+	c.mediaStateObserved = false
+	c.lastMediaState = types.ResidentMediaState{}
+	c.lastMediaStateConfirmed = false
 	cancel := c.cancel
 	c.cancel = nil
 	c.ctx = nil
@@ -232,7 +239,8 @@ func (c *Controller) HasVoiceOutput() bool {
 	return c.speaker != nil
 }
 
-// poll samples room_info and reconciles grants (fail-closed on error).
+// poll is a one-shot compatibility/helper path. Resident Runtimes use
+// ObserveMediaState instead, so an idle resident never sends room_info.
 func (c *Controller) poll() {
 	c.mu.Lock()
 	stopped := c.stopped
@@ -240,72 +248,134 @@ func (c *Controller) poll() {
 	if stopped {
 		return
 	}
-
-	authorized := false
-	var epoch *int64
-	vrAuthorized := false
-	var vrEpoch *int64
-	liveAuthorized := false
-	var liveInfo types.LiveTranscriptInfo
-	// #175 review fix: only a SUCCESSFUL RoomInfo observation may re-arm the
-	// announcement state. A transient failure leaves the grants unknown —
-	// the last announced epoch must survive it, so a recovery that observes
-	// the SAME grant epoch never re-announces the prerequisite.
-	roomInfoObserved := false
-
 	info, err := c.options.Client.RoomInfo(c.options.RoomID)
 	if err != nil {
-		// A transient room_info failure fails closed for BOTH grants.
-		authorized = false
-		vrAuthorized = false
+		// A transient RoomInfo failure fails closed for both grants but does not
+		// count as a confirmed inactive Room observation. This preserves the
+		// activation-edge behavior of the old polling controller.
 		c.log("voice_reply_room_info_failed", map[string]string{"code": safeDiagnosticCode(err)})
-	} else {
-		roomInfoObserved = true
-		liveInfo = info.LiveTranscript
-		if c.options.Voice != nil {
-			grant, vrTargetsSelf := info.AgentVoice[c.options.ParticipantID]
-			vrAuthorized = info.AgentVoiceMediaAvailable && vrTargetsSelf && grant.EnabledAt > 0
-			if grant.EnabledAt > 0 {
-				value := grant.EnabledAt
-				vrEpoch = &value
-			}
-			c.mu.Lock()
-			epochChanged := c.voiceObservedInit && !int64Equal(c.voiceObservedEpoch, vrEpoch)
-			c.voiceObservedEpoch = vrEpoch
-			c.voiceObservedInit = true
-			c.mu.Unlock()
-			c.log("voice_reply_state", map[string]string{
-				"agent_voice_media_available":     bool01(info.AgentVoiceMediaAvailable),
-				"agent_voice_enabled":             bool01(vrAuthorized),
-				"voice_reply_targets_self":        bool01(vrTargetsSelf),
-				"voice_reply_grant_epoch_present": bool01(vrEpoch != nil),
-				"voice_reply_grant_epoch_changed": bool01(epochChanged),
-			})
-		}
-		authorized = info.MeetingNotesMediaAvailable &&
-			info.MeetingNotes.Active &&
-			info.MeetingNotes.AgentParticipantID == c.options.ParticipantID
-		if info.MeetingNotes.StartedAt > 0 {
-			value := info.MeetingNotes.StartedAt
-			epoch = &value
-		}
-		liveAuthorized = c.acquireLiveTranscriptLease(info.LiveTranscript)
+		c.observeMediaState(types.ResidentMediaState{}, false)
+		return
 	}
+	c.observeMediaState(residentMediaStateFromRoomInfo(info, c.options.ParticipantID), true)
+}
+
+// ObserveMediaState reconciles one self-targeted state envelope from the
+// resident event stream. Identical envelopes are ignored so ordinary event
+// traffic does not restart media or emit repeated diagnostics.
+func (c *Controller) ObserveMediaState(state types.ResidentMediaState) {
+	c.observeMediaState(state, true)
+}
+
+// FailClosedMediaState stops local media after the resident event stream loses
+// its authenticated state source. It deliberately is not a confirmed Room
+// revocation, so a reconnect observing the same grant does not re-announce the
+// grant prerequisite.
+func (c *Controller) FailClosedMediaState() {
+	c.observeMediaState(types.ResidentMediaState{}, false)
+}
+
+func (c *Controller) observeMediaState(
+	state types.ResidentMediaState,
+	confirmed bool,
+) {
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	if c.mediaStateObserved && c.lastMediaState == state &&
+		(!confirmed || c.lastMediaStateConfirmed) {
+		c.mu.Unlock()
+		return
+	}
+	c.mediaStateObserved = true
+	c.lastMediaState = state
+	c.lastMediaStateConfirmed = confirmed
+	c.mu.Unlock()
+	c.reconcileMediaState(state, confirmed)
+}
+
+func residentMediaStateFromRoomInfo(
+	info types.RoomInfo,
+	participantID string,
+) types.ResidentMediaState {
+	state := types.ResidentMediaState{
+		MediaAvailable: info.MeetingNotesMediaAvailable || info.AgentVoiceMediaAvailable,
+		LiveTranscript: types.ResidentLiveTranscriptState{
+			Active:                info.LiveTranscript.Active,
+			ProducerRuntimeHostID: info.LiveTranscript.ProducerRuntimeHostID,
+			Epoch:                 info.LiveTranscript.Epoch,
+		},
+		MeetingNotes: types.ResidentMeetingNotesState{
+			Active: info.MeetingNotesMediaAvailable &&
+				info.MeetingNotes.Active &&
+				info.MeetingNotes.AgentParticipantID == participantID,
+			StartedAt: info.MeetingNotes.StartedAt,
+		},
+	}
+	if grant, ok := info.AgentVoice[participantID]; ok &&
+		info.AgentVoiceMediaAvailable && grant.EnabledAt > 0 {
+		state.AgentVoiceEnabledAt = grant.EnabledAt
+	}
+	return state
+}
+
+func (c *Controller) reconcileMediaState(
+	mediaState types.ResidentMediaState,
+	roomInfoObserved bool,
+) {
+	authorized := mediaState.MediaAvailable && mediaState.MeetingNotes.Active
+	var epoch *int64
+	if mediaState.MeetingNotes.StartedAt > 0 {
+		value := mediaState.MeetingNotes.StartedAt
+		epoch = &value
+	}
+	vrAuthorized := c.options.Voice != nil &&
+		mediaState.MediaAvailable && mediaState.AgentVoiceEnabledAt > 0
+	var vrEpoch *int64
+	if mediaState.AgentVoiceEnabledAt > 0 {
+		value := mediaState.AgentVoiceEnabledAt
+		vrEpoch = &value
+	}
+	liveInfo := types.LiveTranscriptInfo{
+		Active:                mediaState.LiveTranscript.Active,
+		ProducerRuntimeHostID: mediaState.LiveTranscript.ProducerRuntimeHostID,
+		Epoch:                 mediaState.LiveTranscript.Epoch,
+	}
+	liveAuthorized := mediaState.MediaAvailable && c.acquireLiveTranscriptLease(liveInfo)
 	if !liveAuthorized {
 		c.releaseLiveTranscriptLease()
 	}
 	c.notifyLiveTranscriptState(liveInfo, liveAuthorized)
 
+	if c.options.Voice != nil {
+		c.mu.Lock()
+		epochChanged := c.voiceObservedInit && !int64Equal(c.voiceObservedEpoch, vrEpoch)
+		c.voiceObservedEpoch = vrEpoch
+		c.voiceObservedInit = true
+		c.mu.Unlock()
+		c.log("voice_reply_state", map[string]string{
+			"agent_voice_media_available":     bool01(mediaState.MediaAvailable),
+			"agent_voice_enabled":             bool01(vrAuthorized),
+			"voice_reply_targets_self":        bool01(vrEpoch != nil),
+			"voice_reply_grant_epoch_present": bool01(vrEpoch != nil),
+			"voice_reply_grant_epoch_changed": bool01(epochChanged),
+		})
+	}
+
 	// #171: per-grant activation edges. Each grant announces ONCE per grant
-	// instance (kind + epoch): a grant that stays active across polls never
-	// re-fires; a stop/start (new epoch) or a reassignment to this
+	// instance (kind + epoch): a grant that stays active across observations
+	// never re-fires; a stop/start (new epoch) or a reassignment to this
 	// participant produces a fresh edge. Edges fire even while the shared
 	// bridge is already running, so a second grant added later still gets
 	// its own prerequisite evaluation without splitting the bridge.
 	c.mu.Lock()
-	stopped = c.stopped
-	// A missing epoch (malformed/partial room_info) never participates in
-	// edge comparison: an already-announced grant cannot re-fire from it.
+	stopped := c.stopped
+	// A missing epoch (malformed/partial state) never participates in edge
+	// comparison: an already-announced grant cannot re-fire from it.
 	mnEdge := authorized &&
 		(!c.mnAnnounced || (epoch != nil && !int64Equal(c.mnAnnouncedEpoch, epoch)))
 	vrEdge := vrAuthorized &&
@@ -353,21 +423,18 @@ func (c *Controller) poll() {
 		return
 	}
 
-	// Epoch changes between polls mean the server already closed the old
-	// grant's tracks. Meeting Notes and Voice Reply need a whole-session
-	// rebuild. Live Transcript needs only its remote subscriptions cleared
-	// when another independent grant keeps the shared bridge alive; retaining
-	// those old local reservations would suppress tracks/new in the new epoch.
+	// Epoch changes mean the server already closed the old grant's tracks.
+	// Meeting Notes and Voice Reply need a whole-session rebuild. Live
+	// Transcript needs only its remote subscriptions cleared when another
+	// independent grant keeps the shared bridge alive.
 	c.mu.Lock()
 	mnStale := authorized && c.state != "idle" && !int64Equal(c.grantEpoch, epoch)
 	vrStale := vrAuthorized && c.state != "idle" && !int64Equal(c.voiceEpoch, vrEpoch)
 	liveWasBound := c.liveEpoch != nil
 	liveStarted := liveAuthorized && !liveWasBound
 	liveStale := liveAuthorized && liveWasBound && !int64Equal(c.liveEpoch, &liveInfo.Epoch)
-	// A successful room_info observation of Live Transcript Off means the
-	// server is revoking its remote subscriptions. A transport failure is
-	// deliberately excluded: it fails local processing closed but does not
-	// invent a server-side revocation.
+	// A confirmed inactive Live Transcript state means the server is revoking
+	// its remote subscriptions. A transport failure is deliberately excluded.
 	liveStopped := roomInfoObserved && !liveAuthorized && liveWasBound
 	rebuildBridge := mnStale || vrStale || (liveStale && !authorized && !vrAuthorized)
 	if liveStopped {
@@ -471,7 +538,7 @@ func (c *Controller) acquireLiveTranscriptLease(state types.LiveTranscriptInfo) 
 }
 
 // releaseLiveTranscriptLease only releases the exact epoch this resident
-// acquired. It is safe to call on every failed poll and during shutdown.
+// acquired. It is safe to call on every failed observation and during shutdown.
 func (c *Controller) releaseLiveTranscriptLease() {
 	if c.options.LiveTranscriptCoordinator == nil || c.options.RuntimeHostID == "" || c.options.RuntimeInstanceID == "" {
 		return

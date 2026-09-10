@@ -36,6 +36,7 @@ type residentEventEnvelope struct {
 	ExpiresAt    int64                      `json:"expiresAt"`
 	Participants []json.RawMessage          `json:"participants"`
 	RuntimeHosts map[string]json.RawMessage `json:"runtimeHosts"`
+	MediaState   *types.ResidentMediaState  `json:"mediaState,omitempty"`
 	Expired      bool                       `json:"expired,omitempty"`
 	Truncated    bool                       `json:"truncated,omitempty"`
 }
@@ -135,9 +136,10 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 		return types.WaitResult{}, &Error{Message: "resident event stream returned an invalid envelope", Code: CodeToolError}
 	}
 	wait := types.WaitResult{
-		Events:    envelope.Events,
-		Cursor:    envelope.Cursor,
-		ExpiresAt: envelope.ExpiresAt,
+		Events:     envelope.Events,
+		Cursor:     envelope.Cursor,
+		ExpiresAt:  envelope.ExpiresAt,
+		MediaState: envelope.MediaState,
 	}
 	if envelope.Participants != nil {
 		raw := make([]any, 0, len(envelope.Participants))
