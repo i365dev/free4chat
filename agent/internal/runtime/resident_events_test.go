@@ -229,6 +229,89 @@ func TestResidentRuntimeRetriesHumanTaskAcceptanceOnHeartbeat(t *testing.T) {
 	}
 }
 
+func TestResidentMediaReplaySerializesWithTransportFailClosed(t *testing.T) {
+	rt := NewResidentRuntime(Options{})
+	rt.observeResidentMediaState(&types.ResidentMediaState{
+		MediaAvailable: true,
+		MeetingNotes:   types.ResidentMeetingNotesState{Active: true, StartedAt: 7},
+	})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	replayDone := make(chan struct{})
+	go func() {
+		rt.replayResidentMediaStateWithBarrier(func() {
+			close(entered)
+			<-release
+		})
+		close(replayDone)
+	}()
+	<-entered
+
+	failClosedDone := make(chan struct{})
+	go func() {
+		rt.failClosedResidentMediaState()
+		close(failClosedDone)
+	}()
+	select {
+	case <-failClosedDone:
+		t.Fatal("fail-closed must wait for an in-flight replay application")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-replayDone
+	<-failClosedDone
+
+	rt.residentMediaStateMu.Lock()
+	valid := rt.residentMediaStateValid
+	rt.residentMediaStateMu.Unlock()
+	if valid {
+		t.Fatal("transport fail-closed must invalidate the replay cache")
+	}
+}
+
+func TestResidentMediaReplaySerializesWithNewInactiveState(t *testing.T) {
+	rt := NewResidentRuntime(Options{})
+	rt.observeResidentMediaState(&types.ResidentMediaState{
+		MediaAvailable: true,
+		MeetingNotes:   types.ResidentMeetingNotesState{Active: true, StartedAt: 7},
+	})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	replayDone := make(chan struct{})
+	go func() {
+		rt.replayResidentMediaStateWithBarrier(func() {
+			close(entered)
+			<-release
+		})
+		close(replayDone)
+	}()
+	<-entered
+
+	inactiveDone := make(chan struct{})
+	go func() {
+		rt.observeResidentMediaState(&types.ResidentMediaState{})
+		close(inactiveDone)
+	}()
+	select {
+	case <-inactiveDone:
+		t.Fatal("new inactive state must wait for an in-flight replay application")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	<-replayDone
+	<-inactiveDone
+
+	rt.residentMediaStateMu.Lock()
+	state := rt.residentMediaState
+	valid := rt.residentMediaStateValid
+	rt.residentMediaStateMu.Unlock()
+	if !valid || state.MediaAvailable || state.MeetingNotes.Active {
+		t.Fatalf("new inactive state lost after replay: valid=%v state=%+v", valid, state)
+	}
+}
+
 func TestResidentRuntimeUsesLeaseParsedFromMCPJoin(t *testing.T) {
 	const leaseMs = 30
 	handlePayload, err := json.Marshal(map[string]string{

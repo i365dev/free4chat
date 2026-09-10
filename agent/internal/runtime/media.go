@@ -18,7 +18,10 @@ import (
 // decoded token discarded first. A failure here is logged and never fails
 // the join itself — media is strictly additive to text/ACP.
 func (r *ResidentRuntime) restartMediaController(participantHandle string) {
-	// Lock ordering is always mediaMu -> mu here and in releaseResources.
+	r.residentMediaStateApplyMu.Lock()
+	defer r.residentMediaStateApplyMu.Unlock()
+	// Lock ordering is always residentMediaStateApplyMu -> mediaMu -> mu here
+	// and in releaseResources.
 	// Stop sets stopped under mu before it waits for mediaMu, so a reload that
 	// begins after shutdown cannot create a controller against a closed client.
 	r.mediaMu.Lock()
@@ -162,6 +165,8 @@ func (r *ResidentRuntime) observeResidentMediaState(
 	if state == nil {
 		return
 	}
+	r.residentMediaStateApplyMu.Lock()
+	defer r.residentMediaStateApplyMu.Unlock()
 	r.mediaMu.Lock()
 	r.residentMediaStateMu.Lock()
 	r.residentMediaState = *state
@@ -179,6 +184,18 @@ func (r *ResidentRuntime) observeResidentMediaState(
 // It must run outside mediaMu because reconciliation may perform SFU I/O and
 // invoke callbacks that briefly inspect the Runtime's media generation.
 func (r *ResidentRuntime) replayResidentMediaState() {
+	r.replayResidentMediaStateWithBarrier(nil)
+}
+
+// replayResidentMediaStateWithBarrier contains the serialized replay path.
+// The barrier is nil in production; tests use it to pause exactly after the
+// cached snapshot is taken and prove revocations/new observations cannot pass
+// an in-flight replay.
+func (r *ResidentRuntime) replayResidentMediaStateWithBarrier(
+	barrier func(),
+) {
+	r.residentMediaStateApplyMu.Lock()
+	defer r.residentMediaStateApplyMu.Unlock()
 	r.mediaMu.Lock()
 	controller := r.mediaController
 	r.residentMediaStateMu.Lock()
@@ -186,6 +203,9 @@ func (r *ResidentRuntime) replayResidentMediaState() {
 	valid := r.residentMediaStateValid
 	r.residentMediaStateMu.Unlock()
 	r.mediaMu.Unlock()
+	if barrier != nil {
+		barrier()
+	}
 	if controller != nil && valid {
 		controller.ObserveMediaState(state)
 	}
@@ -195,6 +215,8 @@ func (r *ResidentRuntime) replayResidentMediaState() {
 // resident state source is unavailable. The next reconnect must re-authorize
 // from a fresh server envelope before media can run again.
 func (r *ResidentRuntime) failClosedResidentMediaState() {
+	r.residentMediaStateApplyMu.Lock()
+	defer r.residentMediaStateApplyMu.Unlock()
 	r.mediaMu.Lock()
 	r.residentMediaStateMu.Lock()
 	r.residentMediaStateValid = false

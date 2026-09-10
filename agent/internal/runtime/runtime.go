@@ -202,6 +202,10 @@ type ResidentRuntime struct {
 
 	mediaController *media.Controller
 	mediaMu         sync.Mutex
+	// residentMediaStateApplyMu serializes cache changes with their Controller
+	// application. It is held across the apply call so a replay cannot take a
+	// stale snapshot, yield to revocation, and then re-enable media afterward.
+	residentMediaStateApplyMu sync.Mutex
 	// residentMediaState is the last authenticated media projection. It is
 	// replayed only when a live resident controller is rebuilt (for example by
 	// speech hot reload); transport loss invalidates it before reconnect.
@@ -1591,6 +1595,8 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 // releaseResources mirrors the Node cleanupResources ordering: media first
 // (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
+	r.residentMediaStateApplyMu.Lock()
+	defer r.residentMediaStateApplyMu.Unlock()
 	r.mediaMu.Lock()
 	defer r.mediaMu.Unlock()
 	r.residentMediaStateMu.Lock()
