@@ -216,6 +216,9 @@ type ResidentRuntime struct {
 	activities              map[string]types.AgentActivityState
 	activityTurnActive      bool
 	activityScope           string
+	activityPublishMu       sync.Mutex
+	activityPublishQueue    map[string]activityPublication
+	activityPublisherActive bool
 	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
 	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
 	// mediaMu; without this generation fence, a late old callback could end a

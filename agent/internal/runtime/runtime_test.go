@@ -840,6 +840,7 @@ type fakeAdapter struct {
 	// turnResults scripts complete Harness results for lifecycle tests. When
 	// absent, the legacy reply-N/turnTargets behavior stays unchanged.
 	turnResults []types.HarnessTurnResult
+	turnWait    <-chan struct{}
 	onFail      func(error)
 	sessions    int
 	generation  int64
@@ -927,7 +928,12 @@ func (a *fakeAdapter) RunTurn(input types.HarnessTurnInput, expectedGeneration i
 	combined := strings.Join(texts, ",")
 	err := a.turnErr
 	delay := a.delay
+	turnWait := a.turnWait
+	a.turnWait = nil
 	a.mu.Unlock()
+	if turnWait != nil {
+		<-turnWait
+	}
 	if delay > 0 {
 		time.Sleep(delay)
 	}

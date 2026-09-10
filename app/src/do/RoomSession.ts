@@ -1443,6 +1443,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // A recycled room name must not inherit collaboration bookkeeping from
     // the expired generation (stale requestIds could suppress new ones).
     this.resetCollabTracking()
+    // Activity is transient in-memory state. Clear it at the same generation
+    // boundary so an expired Room cannot consume capacity in its replacement.
+    this.transientAgentActivities.clear()
     // Best-effort, single attempt only — deliberately not retried through
     // the usual pendingMediaCleanup/alarm mechanism like the other
     // revocation sites: room expiry only fires for an *empty* room (see

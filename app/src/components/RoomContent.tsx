@@ -181,27 +181,17 @@ export default function RoomContent({
   const interactionMessages = activeTask
     ? activeTask.messages
     : roomMessagesForView(messages)
-  const activeTaskActivity = activeTask
-    ? (agentActivities ?? []).find(
+  const activeTaskActivities = activeTask
+    ? (agentActivities ?? []).filter(
         (activity) =>
           activity.scopeId === `task:${activeTask.requestId}` &&
-          [
-            activeTask.targetParticipantId,
-            activeTask.createdByParticipantId,
-          ].includes(activity.agentParticipantId) &&
           participants.some(
             (participant) =>
               participant.peerId === activity.agentParticipantId &&
               participant.kind === "agent"
           )
       )
-    : undefined
-  const activeTaskActivityAgent = activeTaskActivity
-    ? participants.find(
-        (participant) =>
-          participant.peerId === activeTaskActivity.agentParticipantId
-      )
-    : undefined
+    : []
 
   useEffect(() => {
     const pending = pendingLocalTaskSummaries.current
@@ -934,13 +924,23 @@ export default function RoomContent({
             ))}
           </div>
           <div className="min-h-0 flex-1">
-            {activeTaskActivity && (
+            {activeTaskActivities.length > 0 && (
               <div
                 data-testid="task-agent-activity"
-                className="border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
+                className="flex flex-wrap gap-x-3 gap-y-1 border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
               >
-                {activeTaskActivityAgent?.name ?? "Agent"} ·{" "}
-                {agentActivityLabel(activeTaskActivity.state)}…
+                {activeTaskActivities.map((activity) => {
+                  const participant = participants.find(
+                    (candidate) =>
+                      candidate.peerId === activity.agentParticipantId
+                  )
+                  return (
+                    <span key={activity.agentParticipantId}>
+                      {participant?.name ?? "Agent"} ·{" "}
+                      {agentActivityLabel(activity.state)}…
+                    </span>
+                  )
+                })}
               </div>
             )}
             <TextChatCard

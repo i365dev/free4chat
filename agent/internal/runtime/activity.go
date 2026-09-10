@@ -34,13 +34,61 @@ func validActivityScope(scope string) bool {
 	return strings.HasPrefix(scope, "task:") && len(strings.TrimPrefix(scope, "task:")) >= 4
 }
 
+type activityPublication struct {
+	handle string
+	state  types.AgentActivityState
+}
+
+// publishActivity enqueues only the newest state for each scope. It is called
+// from the ACP reader and serialized turn path, so it must never wait for
+// Room/HTTP I/O.
 func (r *ResidentRuntime) publishActivity(scope string, state types.AgentActivityState) {
-	client, ok := r.options.Client.(types.ResidentActivityClient)
-	if !ok {
-		return
-	}
 	handle := r.currentHandle()
 	if handle == "" {
+		return
+	}
+	r.activityPublishMu.Lock()
+	if r.activityPublishQueue == nil {
+		r.activityPublishQueue = make(map[string]activityPublication)
+	}
+	r.activityPublishQueue[scope] = activityPublication{handle: handle, state: state}
+	if r.activityPublisherActive {
+		r.activityPublishMu.Unlock()
+		return
+	}
+	r.activityPublisherActive = true
+	r.activityPublishMu.Unlock()
+	go r.drainActivityPublications()
+}
+
+// drainActivityPublications is deliberately a small, per-Runtime publisher,
+// not a general event bus. A single sender preserves application order for a
+// scope: if an old state is already in flight, a later clear waits behind it;
+// if it is still queued, latest-state replacement removes it. Thus a final
+// clear cannot be overtaken by stale Working/Thinking network traffic.
+func (r *ResidentRuntime) drainActivityPublications() {
+	for {
+		r.activityPublishMu.Lock()
+		if len(r.activityPublishQueue) == 0 {
+			r.activityPublisherActive = false
+			r.activityPublishMu.Unlock()
+			return
+		}
+		var scope string
+		var publication activityPublication
+		for queuedScope, queuedPublication := range r.activityPublishQueue {
+			scope, publication = queuedScope, queuedPublication
+			break
+		}
+		delete(r.activityPublishQueue, scope)
+		r.activityPublishMu.Unlock()
+		r.publishActivityNow(publication.handle, scope, publication.state)
+	}
+}
+
+func (r *ResidentRuntime) publishActivityNow(handle, scope string, state types.AgentActivityState) {
+	client, ok := r.options.Client.(types.ResidentActivityClient)
+	if !ok {
 		return
 	}
 	if err := client.UpdateAgentActivity(handle, scope, state); err != nil {
@@ -132,4 +180,7 @@ func (r *ResidentRuntime) resetActivityLocal() {
 	r.activityTurnActive = false
 	r.activityScope = ""
 	r.activityMu.Unlock()
+	r.activityPublishMu.Lock()
+	r.activityPublishQueue = nil
+	r.activityPublishMu.Unlock()
 }
