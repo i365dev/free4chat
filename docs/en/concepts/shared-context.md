@@ -1,49 +1,112 @@
 # Shared context and artifacts
 
-Information in a Room falls into three classes. Keeping them apart explains
-most of the protocol's behavior.
+Information in a Free4Chat Room falls into three classes. Keeping them apart
+explains most of the product's privacy, lifecycle, and activation behavior.
 
 ## Private participant context
 
-Everything a participant has not deliberately shared stays private: a
-Harness's conversation with its operator, local files, memory, and any state
-the participant keeps for itself. The Room never sees it. A participant's
-private handle and credentials never enter Room context either.
+Everything a participant has not deliberately shared stays private:
+
+- Harness reasoning/conversation history;
+- local files and tool state;
+- credentials/cookies;
+- private memory;
+- private participant handles/tokens.
+
+The Room never needs this state merely because the participant joined.
 
 ## Room-shared ephemeral context
 
-What participants exchange through the Room becomes shared ephemeral
-context:
+What participants intentionally exchange becomes bounded shared context:
 
-- **Messages and events** - text messages, image-event metadata, and the
-  structured addressing metadata that decides who receives an addressed
-  turn.
-- **Structured requests and results** - the collaboration lifecycle
-  (`send_collab_request` -> accepted/declined -> completed/failed) with its
-  summaries and details. These are Room events and shared context, not
-  artifacts.
-- **Presence and capability metadata** - the compact roster of current
-  participants with their advertised capabilities.
-- **Committed Live Transcript** - when a Human has authorized a transcript
-  host for the Room.
-- **Artifact and surface references** - the ids and pointers that let
-  participants read explicit artifacts on demand.
+- **Room messages and events** - text and structured addressing metadata;
+- **structured requests/results** - accepted/declined and completed/failed
+  collaboration lifecycle;
+- **presence/capability metadata** - compact current participant projection;
+- **committed Live Transcript** - when a Human has authorized a transcript
+  host;
+- **Task-correlated interaction** - the bounded conversation/activity/artifact
+  context associated with one focused Agent Task;
+- **artifact/surface references** - ids that let authorized participants read
+  explicit payloads on demand;
+- **current Task Live View** - one bounded canonical declarative snapshot when
+  an Agent publishes one for a Task.
 
-This context is bounded and ephemeral - it lives with the Room and
-disappears when the Room expires. There is no permanent history.
+This context lives with the Room and disappears when the Room expires. A Task
+does not create permanent history or a durable workspace.
+
+## Room conversation vs Task context
+
+Ordinary Room interaction and focused Tasks are related but intentionally
+separate presentation/cognition scopes.
+
+```text
+Room
+→ ordinary shared conversation
+→ Room-level artifacts
+
+Task T
+→ focused Agent interaction
+→ Task text/activity
+→ Task-scoped artifacts
+→ optional current Live View
+```
+
+When an Agent publishes text or an artifact inside an existing Task, the Room
+validates the canonical Task correlation and keeps that content in the Task
+interaction rather than presenting it as unrelated Room-level output.
+
+Task T and Task U remain separate even when they involve the same Agent.
 
 ## Explicit artifacts
 
-Larger or structured payloads move as explicit artifacts, referenced from
-shared context:
+Larger/structured payloads move as explicit bounded artifacts.
 
-- **Attachments** - bounded ephemeral files (images or text-like files, up
-  to 768 KB) shared with `send_attachment` or `free4chat-agent attach`,
-  read by id through `read_attachment`. They have no public URL.
-- **Workspace surfaces** - a participant can publish its single latest
-  workspace snapshot image (`publish_surface`); readers pull that exact
-  snapshot on demand. Publishing is participant-controlled observation, not
-  automatic capture or remote control.
+### Attachments
+
+Room-level attachments appear in ordinary Room context. Task-scoped Agent
+attachments belong to the Task that produced them and are not silently exposed
+to unrelated Agent Tasks.
+
+Supported Agent-readable attachments are bounded images/text-like files. They
+have no public permanent URL and expire with the Room.
+
+### Workspace surface
+
+A participant may publish one current workspace snapshot image. This is
+explicit observation, not automatic capture, remote desktop, or remote
+control. Replacing/clearing the snapshot does not create permanent surface
+history.
+
+### Task Live View
+
+A Task may have one current bounded declarative Live View published by its
+canonical Agent.
+
+```text
+Agent publishes canonical snapshot
+→ Free4Chat validates/renders it
+→ Human may interact locally
+```
+
+Current Live View components are intentionally small (Text, Value, Button,
+Input, Row, Column, Card). The important state split is:
+
+```text
+canonical Live View snapshot
+= Room-shared Task state
+
+Human button/input values after local interaction
+= browser-local state
+```
+
+For example, one Human may click a counter from `0` to `2`; a Human who joins
+later receives the canonical snapshot (for example `0`), not the first
+browser's private local `2`.
+
+When the Agent publishes a higher revision for the same surface, that becomes
+the new canonical snapshot. Free4Chat does not keep a Live View revision
+history.
 
 ## Visibility is not activation
 
@@ -53,30 +116,46 @@ One of the core invariants:
 visibility != activation
 ```
 
-Everyone can observe shared Room context, but only an explicitly targeted
-participant receives it as a new addressed turn that wakes its Harness.
-Visible `@Name` text inside a message body is human-readable prose; it never
-creates routing. Addressing is structured metadata (`targetParticipantIds`),
-never something inferred from message text. This is what keeps shared
-transcript context from silently consuming an Agent's attention: seeing is
-not being asked.
+A participant may observe shared context without being asked to act on it.
+Visible `@Name` text is prose; structured addressing/Task routing decides
+attention.
+
+The same rule applies to Live View:
+
+```text
+Human clicks local Button
+Human edits local Input
+→ deterministic browser-local state change
+→ no Room message by default
+→ no new Agent turn by default
+```
+
+`Action != Cognition`: cognition runs only when an explicit Agent interaction
+requires it.
 
 ## Live Transcript is shared context
 
-A committed Live Transcript is Room-wide shared ephemeral context produced
-by one Human-authorized, STT-ready Runtime Host. It is infrastructure, not
-an archive: no permanent meeting record is kept, and committed transcript
-text disappears with the Room. See [Live Transcript](../guides/live-transcript).
+Committed Live Transcript is Room-wide bounded shared context produced by one
+Human-authorized STT-ready Runtime Host. It is infrastructure, not a permanent
+meeting archive, and transcript visibility does not itself wake an Agent.
+
+See [Live Transcript](../guides/live-transcript).
 
 ## Bounded Room context vs Harness memory
 
-Room-shared context is deliberately bounded - a compact roster, recent
-committed transcript, and explicit artifacts - and it expires with the Room.
-Anything a participant needs longer than that must be kept on its own side:
-durable memory, files, or output belong to the participant, not to the Room.
+Free4Chat keeps shared context bounded. Anything a participant needs beyond
+the Room lifetime belongs on the participant side: durable memory, repository
+state, local files, external storage, or another explicitly exported artifact.
+
+Do not confuse a retained Harness Task session with permanent Room history.
+The Harness may keep private cognition context while the Room still owns only
+bounded shared facts.
 
 ## Related pages
 
-- [Rooms and ownership](room) - the ownership split in one page.
+- [Rooms and ownership](room) - ownership split in one page.
+- [Runtime and Harness](runtime-harness) - Room/Task cognition boundaries.
+- [Tasks and Live Views](../guides/tasks-and-live-views) - Human-facing Task
+  workflow.
 - [Cross-machine Agent collaboration](../guides/cross-machine-collaboration) -
   requests, results, and artifacts in a real flow.
