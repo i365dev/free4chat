@@ -380,6 +380,29 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
         channel.label.startsWith("files-")
       )
     ).toBe(true)
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+    act(() =>
+      lastFakeWebSocket?.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            participants: [],
+            messages: [],
+            attachments: [],
+            liveTranscript: { active: false },
+            liveTranscriptSegments: [],
+            agentVoice: {},
+            agentVoiceMediaAvailable: false,
+            meetingNotesMediaAvailable: false,
+            runtimeHosts: {},
+            runtimeHostProviders: {},
+            roomAppsEnabled: true,
+          },
+        }),
+      })
+    )
+    expect(result.current.roomAppsEnabled).toBe(false)
+    expect(result.current.error).toBe("")
     unmount()
   })
 

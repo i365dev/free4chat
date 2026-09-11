@@ -618,6 +618,7 @@ export function useSfuChatRoom(
     bytesReceived: 0,
     droppedMessages: 0,
   })
+  const roomAppsServerEnabledRef = useRef(false)
   const roomAppsEnabledRef = useRef(false)
   const roomAppChannelsReadyRef = useRef(false)
   const dataChannelsRef = useRef(new Set<RTCDataChannel>())
@@ -1697,7 +1698,7 @@ export function useSfuChatRoom(
     localFileChannelRef.current = channel
     localFileChannelIdRef.current = channelId
     dataChannelReadyRef.current = true
-    if (roomAppsEnabledRef.current) {
+    if (roomAppsServerEnabledRef.current) {
       const appChannelNames = (["reliable", "realtime"] as const).map(
         (lane) => ({
           lane,
@@ -1745,6 +1746,8 @@ export function useSfuChatRoom(
           localRoomAppChannelsRef.current.set(lane, channel)
         }
         roomAppChannelsReadyRef.current = true
+        roomAppsEnabledRef.current = roomAppsServerEnabledRef.current
+        setRoomAppsEnabled(roomAppsEnabledRef.current)
       } catch {
         for (const channel of localRoomAppChannelsRef.current.values()) {
           dataChannelsRef.current.delete(channel)
@@ -2610,7 +2613,10 @@ export function useSfuChatRoom(
       setLiveTranscriptMediaAvailable(state.meetingNotesMediaAvailable)
       setAgentVoiceState(state.agentVoice)
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
-      setRoomAppsEnabled(state.roomAppsEnabled === true)
+      roomAppsServerEnabledRef.current = state.roomAppsEnabled === true
+      roomAppsEnabledRef.current =
+        roomAppsServerEnabledRef.current && roomAppChannelsReadyRef.current
+      setRoomAppsEnabled(roomAppsEnabledRef.current)
       const nextActivities = state.agentActivities ?? []
       agentActivitiesRef.current = nextActivities
       setAgentActivities(nextActivities)
@@ -3103,6 +3109,7 @@ export function useSfuChatRoom(
         localFileChannelRef.current = null
         localFileChannelIdRef.current = null
         localRoomAppChannelsRef.current.clear()
+        roomAppsServerEnabledRef.current = false
         roomAppChannelsReadyRef.current = false
         const oldPeerConnection = peerConnectionRef.current
         if (oldPeerConnection) {
@@ -3191,8 +3198,9 @@ export function useSfuChatRoom(
       }
       const session = (await response.json()) as SfuSessionResponse
       sessionRef.current = { ...session, room: roomName }
-      roomAppsEnabledRef.current = session.roomAppsEnabled === true
-      setRoomAppsEnabled(roomAppsEnabledRef.current)
+      roomAppsServerEnabledRef.current = session.roomAppsEnabled === true
+      roomAppsEnabledRef.current = false
+      setRoomAppsEnabled(false)
       await establishDataChannelTransport()
       await publishTrack(audioTrack, "audio", `audio-${session.participantId}`)
       if (screenTrack && screenTrack.readyState === "live") {
@@ -3323,6 +3331,7 @@ export function useSfuChatRoom(
       localFileChannelRef.current = null
       for (const channel of localRoomAppChannels.values()) channel.close()
       localRoomAppChannels.clear()
+      roomAppsServerEnabledRef.current = false
       roomAppChannelsReadyRef.current = false
       roomAppsEnabledRef.current = false
       for (const channel of dataChannels) channel.close()
