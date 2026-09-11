@@ -200,12 +200,14 @@ describe("RoomAppHost", () => {
         protocolVersion: 1,
         appInstanceId: "shared-canvas:room",
         lane: "realtime",
+        sourceParticipantId: "human-b",
         payload: { type: "cursor", x: 2 },
       })
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
       type: "realtime",
       appInstanceId: "shared-canvas:room",
+      sourceParticipantId: "human-b",
       payload: { type: "cursor", x: 2 },
     })
     rerender(

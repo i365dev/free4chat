@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSfuChatRoom } from "./useSfuChatRoom"
+import { roomAppInstanceId } from "../common/roomApp"
 
 class FakeTrack {
   kind: "audio" | "video" = "audio"
@@ -11,7 +12,10 @@ class FakeTrack {
 }
 
 class FakeDataChannel {
-  constructor(public label = "") {}
+  constructor(
+    public label = "",
+    public options: Record<string, unknown> = {}
+  ) {}
   binaryType = ""
   bufferedAmountLowThreshold = 0
   bufferedAmount = 0
@@ -25,6 +29,9 @@ class FakeDataChannel {
   }
   removeEventListener(type: string, handler: (event: unknown) => void) {
     this.listeners.get(type)?.delete(handler)
+  }
+  emit(type: string, event: unknown) {
+    for (const handler of this.listeners.get(type) ?? []) handler(event)
   }
 }
 
@@ -69,8 +76,8 @@ class FakePeerConnection {
   setRemoteDescription() {
     return Promise.resolve()
   }
-  createDataChannel(label: string) {
-    const channel = new FakeDataChannel(label)
+  createDataChannel(label: string, options: Record<string, unknown> = {}) {
+    const channel = new FakeDataChannel(label, options)
     FakePeerConnection.dataChannels.push(channel)
     return channel
   }
@@ -98,6 +105,11 @@ function localTrackResponse(init?: RequestInit) {
     tracks: [{ mid: track.mid ?? "0", trackName: track.trackName }],
   })
 }
+
+let lastFakeWebSocket: {
+  onopen: (() => void) | null
+  onmessage: ((event: { data: string }) => void) | null
+} | null = null
 
 describe("useSfuChatRoom — Turnstile boundary", () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -129,7 +141,9 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       onmessage: ((event: { data: string }) => void) | null = null
       onerror: (() => void) | null = null
       onclose: (() => void) | null = null
-      constructor(public url: string) {}
+      constructor(public url: string) {
+        lastFakeWebSocket = this
+      }
       send() {}
       close() {}
     }
@@ -168,6 +182,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 
   afterEach(() => {
+    lastFakeWebSocket = null
     vi.restoreAllMocks()
   })
 
@@ -255,6 +270,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 
   it("dispatches reliable and realtime Room App messages on the shared transport", async () => {
+    const appInstanceId = roomAppInstanceId("room-app", "shared-canvas")
     fetchMock.mockImplementation(
       (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input.toString()
@@ -302,12 +318,12 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
 
     act(() => {
       expect(
-        result.current.sendRoomAppMessage("reliable", "shared-canvas:room", {
+        result.current.sendRoomAppMessage("reliable", appInstanceId, {
           type: "stroke",
         })
       ).toBe(true)
       expect(
-        result.current.sendRoomAppMessage("realtime", "shared-canvas:room", {
+        result.current.sendRoomAppMessage("realtime", appInstanceId, {
           type: "cursor",
         })
       ).toBe(true)
@@ -318,11 +334,290 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     )
     expect(
       JSON.parse(String(channels[0]!.send.mock.calls[0]![0]))
-    ).toMatchObject({ lane: "reliable", appInstanceId: "shared-canvas:room" })
+    ).toMatchObject({ lane: "reliable", appInstanceId })
     expect(
       JSON.parse(String(channels[1]!.send.mock.calls[0]![0]))
-    ).toMatchObject({ lane: "realtime", appInstanceId: "shared-canvas:room" })
+    ).toMatchObject({ lane: "realtime", appInstanceId })
     unmount()
+  })
+
+  it("isolates optional Room App channel setup failures from the Room connection", async () => {
+    let dataChannelNewCalls = 0
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            roomAppsEnabled: true,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new")) {
+          dataChannelNewCalls += 1
+          if (dataChannelNewCalls === 2)
+            return Promise.reject(new Error("room_app_channels_unavailable"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        }
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-app-failure", "alice", "audio", {})
+    )
+
+    await waitFor(() => expect(dataChannelNewCalls).toBe(2))
+    expect(result.current.roomAppsEnabled).toBe(false)
+    expect(result.current.error).toBe("")
+    expect(
+      FakePeerConnection.dataChannels.some((channel) =>
+        channel.label.startsWith("files-")
+      )
+    ).toBe(true)
+    unmount()
+  })
+
+  it("subscribes to remote Room App lanes, tags the bound sender, retries, and cleans up", async () => {
+    const appInstanceId = roomAppInstanceId("remote-app-room", "shared-canvas")
+    let dataChannelNewCalls = 0
+    let remoteFailureCount = 0
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            roomAppsEnabled: true,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new")) {
+          dataChannelNewCalls += 1
+          const body = JSON.parse(String(init?.body ?? "{}")) as {
+            publisherSessionId?: string
+            dataChannels?: Array<{ dataChannelName?: string }>
+          }
+          if (body.publisherSessionId && remoteFailureCount === 0) {
+            remoteFailureCount += 1
+            return Promise.reject(new Error("remote_channel_retry"))
+          }
+          const count = body.dataChannels?.length ?? 0
+          return jsonResponse({
+            dataChannels: Array.from({ length: count }, () => ({
+              id: dataChannelNewCalls + 10,
+            })),
+          })
+        }
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const received: unknown[] = []
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("remote-app-room", "alice", "audio", {})
+    )
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+    act(() => lastFakeWebSocket?.onopen?.())
+    act(() => {
+      result.current.subscribeRoomAppMessages((message) =>
+        received.push(message)
+      )
+      lastFakeWebSocket?.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 1,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: [
+              {
+                id: "participant-1",
+                name: "Alice",
+                kind: "human",
+                connected: true,
+                joinedAt: 1,
+                lastSeenAt: 1,
+                media: {
+                  sessionId: "session-1",
+                  muted: false,
+                  fileChannelReady: false,
+                  appDataChannelReady: false,
+                  tracks: [],
+                },
+              },
+              {
+                id: "human-b",
+                name: "Bob",
+                kind: "human",
+                connected: true,
+                joinedAt: 1,
+                lastSeenAt: 1,
+                media: {
+                  sessionId: "session-b",
+                  muted: false,
+                  fileChannelReady: false,
+                  appDataChannelReady: true,
+                  tracks: [],
+                },
+              },
+            ],
+            messages: [],
+            liveTranscript: { active: false },
+            liveTranscriptSegments: [],
+            meetingNotes: { active: false },
+            meetingNotesMediaAvailable: false,
+            agentVoice: {},
+            agentVoiceMediaAvailable: false,
+            roomAppsEnabled: true,
+          },
+        }),
+      })
+    })
+
+    await waitFor(() =>
+      expect(
+        FakePeerConnection.dataChannels.filter((channel) =>
+          channel.label.endsWith("-subscriber")
+        )
+      ).toHaveLength(2)
+    )
+    expect(dataChannelNewCalls).toBeGreaterThanOrEqual(5)
+    const remoteChannels = FakePeerConnection.dataChannels.filter((channel) =>
+      channel.label.endsWith("-subscriber")
+    )
+    expect(
+      remoteChannels.find((channel) => channel.label.includes("reliable"))
+        ?.options
+    ).toMatchObject({ ordered: true })
+    expect(
+      remoteChannels.find((channel) => channel.label.includes("realtime"))
+        ?.options
+    ).toMatchObject({ ordered: false, maxRetransmits: 0 })
+
+    const reliable = remoteChannels.find((channel) =>
+      channel.label.includes("reliable")
+    )!
+    const realtime = remoteChannels.find((channel) =>
+      channel.label.includes("realtime")
+    )!
+    act(() => {
+      reliable.emit("message", {
+        data: JSON.stringify({
+          protocolVersion: 1,
+          appInstanceId,
+          lane: "reliable",
+          payload: { type: "cursor", sourceParticipantId: "spoofed" },
+        }),
+      })
+      realtime.emit("message", {
+        data: JSON.stringify({
+          protocolVersion: 1,
+          appInstanceId: "shared-canvas:deadbeef",
+          lane: "realtime",
+          payload: { type: "cursor" },
+        }),
+      })
+    })
+    expect(received).toEqual([])
+
+    act(() =>
+      reliable.emit("message", {
+        data: JSON.stringify({
+          protocolVersion: 1,
+          appInstanceId,
+          lane: "reliable",
+          payload: { type: "cursor", x: 1 },
+        }),
+      })
+    )
+    expect(received).toMatchObject([
+      {
+        appInstanceId,
+        lane: "reliable",
+        sourceParticipantId: "human-b",
+        payload: { type: "cursor", x: 1 },
+      },
+    ])
+
+    const oldRemoteChannels = [...remoteChannels]
+    act(() =>
+      lastFakeWebSocket?.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 1,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: [
+              {
+                id: "participant-1",
+                name: "Alice",
+                kind: "human",
+                connected: true,
+                joinedAt: 1,
+                lastSeenAt: 1,
+                media: {
+                  sessionId: "session-1",
+                  muted: false,
+                  fileChannelReady: false,
+                  appDataChannelReady: false,
+                  tracks: [],
+                },
+              },
+              {
+                id: "human-b",
+                name: "Bob",
+                kind: "human",
+                connected: true,
+                joinedAt: 1,
+                lastSeenAt: 1,
+                media: {
+                  sessionId: "session-b2",
+                  muted: false,
+                  fileChannelReady: false,
+                  appDataChannelReady: true,
+                  tracks: [],
+                },
+              },
+            ],
+            messages: [],
+            liveTranscript: { active: false },
+            liveTranscriptSegments: [],
+            meetingNotes: { active: false },
+            meetingNotesMediaAvailable: false,
+            agentVoice: {},
+            agentVoiceMediaAvailable: false,
+            roomAppsEnabled: true,
+          },
+        }),
+      })
+    )
+    await waitFor(() =>
+      expect(
+        FakePeerConnection.dataChannels.filter((channel) =>
+          channel.label.endsWith("-subscriber")
+        )
+      ).toHaveLength(4)
+    )
+    expect(
+      oldRemoteChannels.every((channel) => channel.close.mock.calls.length)
+    ).toBeTruthy()
+    const currentRemoteChannels = FakePeerConnection.dataChannels.filter(
+      (channel) => channel.label.endsWith("-subscriber")
+    )
+    unmount()
+    expect(
+      currentRemoteChannels.every((channel) => channel.close.mock.calls.length)
+    ).toBeTruthy()
   })
 
   it("does not request a Turnstile token at all when the caller provides no getTurnstileToken", async () => {

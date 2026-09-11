@@ -67,8 +67,11 @@ export interface RoomAppTransportEnvelope {
   protocolVersion: typeof ROOM_APP_PROTOCOL_VERSION
   appInstanceId: string
   lane: RoomAppLane
+  sourceParticipantId: string
   payload: Record<string, unknown>
 }
+
+type RoomAppWireEnvelope = Omit<RoomAppTransportEnvelope, "sourceParticipantId">
 
 export type RoomAppHostMessage =
   | {
@@ -86,6 +89,7 @@ export type RoomAppHostMessage =
   | {
       type: RoomAppLane
       appInstanceId: string
+      sourceParticipantId: string
       payload: Record<string, unknown>
     }
   | {
@@ -124,19 +128,19 @@ export function validateRoomAppPayload(
 ):
   | { ok: true; payload: Record<string, unknown>; bytes: number }
   | { ok: false } {
-  if (!isRecord(value)) return { ok: false }
+  if (!isRecord(value) || "sourceParticipantId" in value) return { ok: false }
   const bytes = serializedRoomAppBytes(value)
   if (bytes === null || bytes > ROOM_APP_MAX_PAYLOAD_BYTES) return { ok: false }
   return { ok: true, payload: value, bytes }
 }
 
 export function encodeRoomAppEnvelope(
-  envelope: Omit<RoomAppTransportEnvelope, "protocolVersion">
+  envelope: Omit<RoomAppWireEnvelope, "protocolVersion">
 ): string | null {
   const payload = validateRoomAppPayload(envelope.payload)
   if (!payload.ok || !/^[a-z0-9][a-z0-9:-]{0,95}$/.test(envelope.appInstanceId))
     return null
-  const full: RoomAppTransportEnvelope = {
+  const full: RoomAppWireEnvelope = {
     protocolVersion: ROOM_APP_PROTOCOL_VERSION,
     appInstanceId: envelope.appInstanceId,
     lane: envelope.lane,
@@ -149,7 +153,7 @@ export function encodeRoomAppEnvelope(
 
 export function decodeRoomAppEnvelope(
   value: unknown
-): RoomAppTransportEnvelope | null {
+): RoomAppWireEnvelope | null {
   if (typeof value !== "string") return null
   let parsed: unknown
   try {
@@ -212,6 +216,18 @@ export function roomAppInstanceId(roomName: string, appId: string): string {
   return `${appId}:${hash.toString(16).padStart(8, "0")}`
 }
 
+export function isRoomAppInstanceForRoom(
+  roomName: string,
+  appInstanceId: string
+): boolean {
+  return experimentalRoomAppCatalog().some(
+    (app) =>
+      validateRoomAppDefinition(app) &&
+      isRoomAppAllowlisted(app) &&
+      roomAppInstanceId(roomName, app.id) === appInstanceId
+  )
+}
+
 export function validateRoomAppDefinition(app: RoomAppDefinition): boolean {
   try {
     const url = new URL(app.url)
@@ -267,8 +283,11 @@ export function roomAppRateGuard() {
   return {
     allow(lane: RoomAppLane, bytes: number, now = Date.now()): boolean {
       const windowStart = now - 1000
-      const samples = events[lane].filter((sample) => sample.at > windowStart)
-      events[lane] = samples
+      for (const currentLane of ["reliable", "realtime"] as const)
+        events[currentLane] = events[currentLane].filter(
+          (sample) => sample.at > windowStart
+        )
+      const samples = events[lane]
       const countLimit =
         lane === "reliable"
           ? ROOM_APP_RELIABLE_MESSAGES_PER_SECOND

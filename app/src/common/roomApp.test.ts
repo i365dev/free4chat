@@ -6,9 +6,11 @@ import {
   decodeRoomAppClientMessage,
   decodeRoomAppEnvelope,
   encodeRoomAppEnvelope,
+  isRoomAppInstanceForRoom,
   isRoomAppAllowlisted,
   projectRoomAppParticipants,
   roomAppRateGuard,
+  roomAppInstanceId,
   validateRoomAppDefinition,
 } from "./roomApp"
 
@@ -51,6 +53,13 @@ describe("Room App Phase 0 bridge contract", () => {
         payload: { text: "界".repeat(ROOM_APP_MAX_PAYLOAD_BYTES) },
       })
     ).toBeNull()
+    expect(
+      encodeRoomAppEnvelope({
+        appInstanceId: "shared-canvas:abc123",
+        lane: "reliable",
+        payload: { sourceParticipantId: "spoofed" },
+      })
+    ).toBeNull()
     expect(decodeRoomAppEnvelope(JSON.stringify({ type: "bogus" }))).toBeNull()
   })
 
@@ -77,6 +86,18 @@ describe("Room App Phase 0 bridge contract", () => {
     ).toBeNull()
   })
 
+  it("accepts only curated instances for the current Room", () => {
+    expect(isRoomAppInstanceForRoom("room-a", "shared-canvas:00000000")).toBe(
+      false
+    )
+    expect(
+      isRoomAppInstanceForRoom(
+        "room-a",
+        roomAppInstanceId("room-a", "shared-canvas")
+      )
+    ).toBe(true)
+  })
+
   it("bounds the participant projection and separates reliable/realtime rate", () => {
     expect(
       projectRoomAppParticipants([
@@ -93,5 +114,11 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(guard.allow("reliable", 1, 1000)).toBe(false)
     expect(guard.allow("realtime", 1, 1000)).toBe(true)
     expect(guard.allow("reliable", 1, 2001)).toBe(true)
+  })
+
+  it("prunes stale bytes from both lanes before applying the shared budget", () => {
+    const guard = roomAppRateGuard()
+    expect(guard.allow("realtime", 200_000, 1000)).toBe(true)
+    expect(guard.allow("reliable", 100_000, 2001)).toBe(true)
   })
 })

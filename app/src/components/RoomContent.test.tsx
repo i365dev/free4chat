@@ -89,6 +89,9 @@ const baseHookReturn = {
   connectLocalRuntime: vi.fn(),
   runtimeConnectionStatus: "idle" as const,
   leaveRoom: vi.fn(),
+  roomAppsEnabled: false,
+  sendRoomAppMessage: vi.fn(() => false),
+  subscribeRoomAppMessages: vi.fn(() => () => undefined),
 }
 
 const LATE_JOIN_EXPIRY = Date.now() + 365 * 24 * 60 * 60 * 1000
@@ -1083,6 +1086,34 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       screen.queryByText("Connection command copied")
     ).not.toBeInTheDocument()
     expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
+  })
+
+  it("keeps a selected Room App tab mounted instead of treating it as a stale Task", async () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      roomAppsEnabled: true,
+      participants: [
+        {
+          peerId: "local-peer",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+
+    const appTab = screen.getByTestId("interaction-tab-app-shared-canvas")
+    fireEvent.click(appTab)
+    expect(appTab).toHaveAttribute("aria-selected", "true")
+    await waitFor(() =>
+      expect(screen.getByTestId("room-app-host")).toBeInTheDocument()
+    )
   })
 
   it("uses the intentional two-row mobile header layout with a truncating Room id", () => {

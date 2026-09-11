@@ -330,12 +330,16 @@ export default function RoomContent({
   }, [activeInteraction, effectiveLocalParticipantId, taskProjections])
 
   useEffect(() => {
+    const isRoomAppInteraction =
+      activeInteraction.startsWith("app:") &&
+      roomApps.some((app) => activeInteraction === `app:${app.id}`)
     if (
       activeInteraction !== "room" &&
-      !taskProjections.some((task) => task.requestId === activeInteraction)
+      !taskProjections.some((task) => task.requestId === activeInteraction) &&
+      !isRoomAppInteraction
     )
       setActiveInteraction("room")
-  }, [activeInteraction, taskProjections])
+  }, [activeInteraction, roomApps, taskProjections])
 
   useEffect(() => {
     if (

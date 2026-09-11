@@ -138,6 +138,7 @@ export default function RoomAppHost({
       post({
         type: message.lane,
         appInstanceId,
+        sourceParticipantId: message.sourceParticipantId,
         payload: message.payload,
       })
     })

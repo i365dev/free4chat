@@ -8,6 +8,7 @@ import {
 import {
   decodeRoomAppEnvelope,
   encodeRoomAppEnvelope,
+  isRoomAppInstanceForRoom,
   roomAppRateGuard,
   type RoomAppLane,
   type RoomAppTransportEnvelope,
@@ -1406,9 +1407,13 @@ export function useSfuChatRoom(
   )
 
   const handleRoomAppChannelMessage = useCallback(
-    (lane: RoomAppLane, event: MessageEvent) => {
+    (sourceParticipantId: string, lane: RoomAppLane, event: MessageEvent) => {
       const envelope = decodeRoomAppEnvelope(event.data)
-      if (!envelope || envelope.lane !== lane) {
+      if (
+        !envelope ||
+        envelope.lane !== lane ||
+        !isRoomAppInstanceForRoom(roomName, envelope.appInstanceId)
+      ) {
         roomAppStatsRef.current.droppedMessages += 1
         return
       }
@@ -1422,9 +1427,10 @@ export function useSfuChatRoom(
       roomAppStatsRef.current.bytesReceived += bytes
       if (lane === "reliable") roomAppStatsRef.current.reliableMessages += 1
       else roomAppStatsRef.current.realtimeMessages += 1
-      for (const listener of roomAppListenersRef.current) listener(envelope)
+      const received = { ...envelope, sourceParticipantId }
+      for (const listener of roomAppListenersRef.current) listener(received)
     },
-    []
+    [roomName]
   )
 
   const cleanupRemoteRoomAppChannel = useCallback(
@@ -1585,7 +1591,7 @@ export function useSfuChatRoom(
         dataChannelsRef.current.add(channel)
         dataChannelIdsRef.current.add(channelId)
         channel.addEventListener("message", (event) =>
-          handleRoomAppChannelMessage(lane, event)
+          handleRoomAppChannelMessage(participant.id, lane, event)
         )
         const cleanup = () =>
           cleanupRemoteRoomAppChannel(key, channelAttempt, "closed")
@@ -1698,40 +1704,59 @@ export function useSfuChatRoom(
           dataChannelName: roomAppChannelName(session.participantId, lane),
         })
       )
-      const appResponse = await apiRequest("datachannels/new", {
-        room: roomName,
-        participantId: session.participantId,
-        token: session.participantToken,
-        sessionId: session.sessionId,
-        dataChannels: appChannelNames.map(({ lane, dataChannelName }) => ({
-          location: "local",
-          dataChannelName,
-          ordered: lane === "reliable",
-          ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
-        })),
-      })
-      const channelIds = appResponse.dataChannels ?? []
-      if (
-        channelIds.length !== appChannelNames.length ||
-        channelIds.some((entry) => typeof entry.id !== "number")
-      )
-        throw new Error("SFU Room App data channels were not created")
-      for (const [
-        index,
-        { lane, dataChannelName },
-      ] of appChannelNames.entries()) {
-        const channelId = channelIds[index].id as number
-        const channel = pc.createDataChannel(dataChannelName, {
-          negotiated: true,
-          id: channelId,
-          ordered: lane === "reliable",
-          ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
+      const appChannelIds: number[] = []
+      try {
+        const appResponse = await apiRequest("datachannels/new", {
+          room: roomName,
+          participantId: session.participantId,
+          token: session.participantToken,
+          sessionId: session.sessionId,
+          dataChannels: appChannelNames.map(({ lane, dataChannelName }) => ({
+            location: "local",
+            dataChannelName,
+            ordered: lane === "reliable",
+            ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
+          })),
         })
-        dataChannelsRef.current.add(channel)
-        dataChannelIdsRef.current.add(channelId)
-        localRoomAppChannelsRef.current.set(lane, channel)
+        const channelIds = appResponse.dataChannels ?? []
+        appChannelIds.push(
+          ...channelIds.flatMap((entry) =>
+            typeof entry.id === "number" ? [entry.id] : []
+          )
+        )
+        if (
+          channelIds.length !== appChannelNames.length ||
+          channelIds.some((entry) => typeof entry.id !== "number")
+        )
+          throw new Error("SFU Room App data channels were not created")
+        for (const [
+          index,
+          { lane, dataChannelName },
+        ] of appChannelNames.entries()) {
+          const channelId = channelIds[index].id as number
+          const channel = pc.createDataChannel(dataChannelName, {
+            negotiated: true,
+            id: channelId,
+            ordered: lane === "reliable",
+            ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
+          })
+          dataChannelsRef.current.add(channel)
+          dataChannelIdsRef.current.add(channelId)
+          localRoomAppChannelsRef.current.set(lane, channel)
+        }
+        roomAppChannelsReadyRef.current = true
+      } catch {
+        for (const channel of localRoomAppChannelsRef.current.values()) {
+          dataChannelsRef.current.delete(channel)
+          channel.close()
+        }
+        localRoomAppChannelsRef.current.clear()
+        for (const appChannelId of appChannelIds)
+          dataChannelIdsRef.current.delete(appChannelId)
+        roomAppChannelsReadyRef.current = false
+        roomAppsEnabledRef.current = false
+        setRoomAppsEnabled(false)
       }
-      roomAppChannelsReadyRef.current = true
     }
   }, [apiRequest, roomAppChannelName, roomName])
 
@@ -3429,7 +3454,11 @@ export function useSfuChatRoom(
       appInstanceId: string,
       payload: Record<string, unknown>
     ): boolean => {
-      if (!roomAppsEnabledRef.current || !roomAppChannelsReadyRef.current)
+      if (
+        !roomAppsEnabledRef.current ||
+        !roomAppChannelsReadyRef.current ||
+        !isRoomAppInstanceForRoom(roomName, appInstanceId)
+      )
         return false
       const encoded = encodeRoomAppEnvelope({
         appInstanceId,
@@ -3450,7 +3479,7 @@ export function useSfuChatRoom(
       else roomAppStatsRef.current.realtimeMessages += 1
       return true
     },
-    []
+    [roomName]
   )
 
   const subscribeRoomAppMessages = useCallback(

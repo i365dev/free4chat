@@ -31,10 +31,17 @@ lane: reliable | realtime
 payload: bounded JSON object
 ```
 
+Messages delivered from the host to the App also contain the host-derived
+`sourceParticipantId`. It is bound to the remote SFU channel owner; an App
+payload cannot set or override it, and payloads using that reserved field are
+rejected.
+
 The iframe may request `sendReliable` or `sendRealtime`. The host validates
-the current instance, payload shape, UTF-8 size, and local rate budget before
-sending. Join/leave notifications are host-generated from the current Room
-participant projection. The App cannot choose a relay destination.
+the current curated Room instance, payload shape, UTF-8 size, and local rate
+budget before sending. Unknown instances are rejected before rate accounting
+or listener dispatch. Join/leave notifications are host-generated from the
+current Room participant projection. The App cannot choose a relay
+destination.
 
 The App receives no Room message ring or persistent App state. A closed or
 failed iframe only removes its MessagePort; ordinary Room chat, media, Tasks,
