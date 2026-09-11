@@ -746,6 +746,13 @@ type SurfaceReadResult struct {
 	Data    string // base64 image bytes
 }
 
+// TaskLiveViewClient is the optional Runtime transport extension for #316.
+// The Room remains the authority: the Runtime only keeps the participant
+// handle private while forwarding the bounded declarative snapshot.
+type TaskLiveViewClient interface {
+	PublishLiveView(participantHandle, taskRequestID string, surface map[string]any) (map[string]any, error)
+}
+
 // SendTextResult is send_text's reply.
 type SendTextResult struct {
 	Sequence int64 `json:"sequence"`

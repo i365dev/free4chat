@@ -469,6 +469,9 @@ export function useSfuChatRoom(
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [attachments, setAttachments] = useState<RoomAttachmentProjection[]>([])
+  const [taskLiveViews, setTaskLiveViews] = useState<
+    SfuRoomState["taskLiveViews"]
+  >({})
   const [error, setError] = useState("")
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
@@ -2217,6 +2220,7 @@ export function useSfuChatRoom(
       const nextAttachments = state.attachments ?? []
       attachmentsRef.current = nextAttachments
       setAttachments(nextAttachments)
+      setTaskLiveViews(state.taskLiveViews ?? {})
       const agentAudioTrackCount = state.participants.reduce(
         (count, participant) =>
           count +
@@ -3421,6 +3425,7 @@ export function useSfuChatRoom(
     getLocalRoomAuth,
     messages,
     attachments,
+    taskLiveViews,
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,

@@ -39,7 +39,8 @@ describe("public MCP tool surface", () => {
     expect(names).not.toContain("connect_runtime_provider")
     expect(names).not.toContain("runtimeProviderHandle")
     expect(names).toContain("read_room_context")
-    expect(names).toHaveLength(17)
+    expect(names).toContain("publish_live_view")
+    expect(names).toHaveLength(18)
   })
 
   it("preserves legacy Room ids and the server Agent lease", async () => {

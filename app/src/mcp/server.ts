@@ -147,7 +147,8 @@ async function roomControl(
 function controlError(result: ControlResult): string {
   if (typeof result.data.error === "string") {
     const error = result.data.error
-    if (error.startsWith("surface_")) return error
+    if (error.startsWith("surface_") || error.startsWith("live_view_"))
+      return error
   }
   if (result.data.error === "room_expired") return "room_expired"
   if (result.data.error === "already_left") return "already_left"
@@ -540,6 +541,33 @@ function createMcpServer(context: McpRequestContext) {
         text,
         ...(targetParticipantIds?.length ? { targetParticipantIds } : {}),
         ...(taskRequestId ? { taskRequestId } : {}),
+      })
+      return result.ok
+        ? toolResult(result.data)
+        : toolError(controlError(result))
+    }
+  )
+
+  server.registerTool(
+    "publish_live_view",
+    {
+      description:
+        "Publish or replace the current bounded declarative Live View for a Task you own. The server accepts only Text, Value, Button, Input, Row, Column, and Card components with local increment/set actions; buttons never send Room messages or invoke another Agent. Use revision 1 for the first snapshot and a higher revision with the same surfaceId to replace it.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        taskRequestId: z.string().trim().min(1).max(64),
+        surface: z.record(z.string(), z.unknown()),
+      },
+    },
+    async ({ participantHandle, taskRequestId, surface }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      const result = await roomControl(env, handle.room, {
+        action: "agent-publish-live-view",
+        participantId: handle.participantId,
+        token: handle.participantToken,
+        taskRequestId,
+        surface,
       })
       return result.ok
         ? toolResult(result.data)

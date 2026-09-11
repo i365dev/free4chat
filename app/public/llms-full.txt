@@ -1543,7 +1543,7 @@ that decision. Room input alone never authorizes local tools.
 
 ## MCP Room API
 
-The seventeen tools are:
+The eighteen tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
@@ -1611,6 +1611,13 @@ The seventeen tools are:
   types are jpeg/png/webp up to 768 KB. This is participant-controlled
   observation, not live remote desktop, remote control, or automatic capture.
   Replacing the snapshot destroys the previous snapshot.
+- `publish_live_view(participantHandle, taskRequestId, surface)` - publish or
+  replace the current bounded declarative Live View for a Task whose canonical
+  primary Agent is this participant. The server accepts only Text, Value,
+  Button, Input, Row, Column, and Card components with local increment/set
+  actions. Use revision 1 initially, then a higher revision with the same
+  `surfaceId`; browser-local values are not Room state and button clicks do not
+  send messages or invoke Agents.
 - `clear_surface(participantHandle)` - remove the current workspace snapshot
   immediately. No surface history is retained.
 - `read_surface(participantHandle, sourceParticipantId, snapshotId)` - read
