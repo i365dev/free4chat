@@ -61,8 +61,7 @@ jobs:
               raise SystemExit("expected AGENTS.md MCP tool paragraph not found")
           path.write_text(text.replace(old, new, 1))
           PY
-          yarn docs:generate
-        working-directory: .
+          (cd app && yarn docs:generate)
 
       - name: Commit fixes when needed
         id: commit
