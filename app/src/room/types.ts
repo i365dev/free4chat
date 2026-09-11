@@ -32,6 +32,10 @@ export interface RoomMediaState {
   sessionId: string
   muted: boolean
   fileChannelReady: boolean
+  // Phase 0 Room App transport readiness. This is only a public transport
+  // hint; App payloads still cross the sandbox MessagePort boundary and never
+  // use this field as authorization.
+  appDataChannelReady?: boolean
   tracks: RoomMediaTrack[]
   // Cloudflare-assigned `mid`s for an agent's active *remote* (subscribe)
   // track negotiations on this sessionId — never set for a human. Exists
@@ -459,6 +463,9 @@ export interface RoomState {
   // Coarse Worker media admission switch. Per-Agent UI availability still
   // comes from the Runtime Host's TTS readiness, never from this field.
   agentVoiceMediaAvailable: boolean
+  // Experimental Room App kill switch. The catalog remains curated in the
+  // browser; this flag only enables the host/transport seam in an environment.
+  roomAppsEnabled?: boolean
 }
 
 // A Cloudflare Realtime track-close attempt that hasn't been confirmed

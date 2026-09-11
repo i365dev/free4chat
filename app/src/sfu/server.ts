@@ -38,6 +38,8 @@ export interface SfuEnv {
   // itself give any Agent audio access. The production deploy workflow
   // (deploy-web.yml) sets it to "true".
   AGENT_MEDIA_ENABLED?: string
+  // Experimental Room App host/transport kill switch. Defaults to off.
+  ROOM_APPS_ENABLED?: string
 }
 
 function json(data: unknown, status = 200): Response {
@@ -519,6 +521,7 @@ export async function handleSfuRequest(
               sessionId: session.sessionId,
               muted: false,
               fileChannelReady: false,
+              appDataChannelReady: false,
               tracks: [],
             },
             joinedAt: Date.now(),
@@ -540,6 +543,9 @@ export async function handleSfuRequest(
       // RoomSession's empty-room expiry); this is only a defensive fallback
       // for the (should-never-happen) case where the DO's response omits it.
       expiresAt: registered.expiresAt ?? Date.now() + 365 * 24 * 60 * 60 * 1000,
+      ...(env.ROOM_APPS_ENABLED !== undefined
+        ? { roomAppsEnabled: env.ROOM_APPS_ENABLED === "true" }
+        : {}),
     }
     return json(result)
   }

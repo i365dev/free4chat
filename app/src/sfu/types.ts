@@ -24,4 +24,5 @@ export interface SfuSessionResponse {
   participantToken: string
   sessionId: string
   expiresAt: number
+  roomAppsEnabled?: boolean
 }

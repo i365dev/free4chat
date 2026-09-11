@@ -11,6 +11,7 @@ class FakeTrack {
 }
 
 class FakeDataChannel {
+  constructor(public label = "") {}
   binaryType = ""
   bufferedAmountLowThreshold = 0
   bufferedAmount = 0
@@ -29,6 +30,7 @@ class FakeDataChannel {
 
 class FakePeerConnection {
   static instances: FakePeerConnection[] = []
+  static dataChannels: FakeDataChannel[] = []
   connectionState = "connected"
   ontrack: ((event: unknown) => void) | null = null
   onconnectionstatechange: (() => void) | null = null
@@ -67,8 +69,10 @@ class FakePeerConnection {
   setRemoteDescription() {
     return Promise.resolve()
   }
-  createDataChannel() {
-    return new FakeDataChannel()
+  createDataChannel(label: string) {
+    const channel = new FakeDataChannel(label)
+    FakePeerConnection.dataChannels.push(channel)
+    return channel
   }
   removeTrack() {}
   close() {}
@@ -101,6 +105,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
 
   beforeEach(() => {
     FakePeerConnection.instances.length = 0
+    FakePeerConnection.dataChannels.length = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       FakePeerConnection
     class FakeMediaStream {
@@ -246,6 +251,77 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     expect(sessionStorage.getItem("ts_token")).toBeNull()
     expect(localStorage.getItem("ts_token")).toBeNull()
 
+    unmount()
+  })
+
+  it("dispatches reliable and realtime Room App messages on the shared transport", async () => {
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            roomAppsEnabled: true,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as {
+            dataChannels?: Array<{ dataChannelName?: string }>
+          }
+          const appChannels = body.dataChannels?.filter((channel) =>
+            channel.dataChannelName?.startsWith("room-app-")
+          )
+          if (appChannels?.length)
+            return jsonResponse({
+              dataChannels: appChannels.map((_, index) => ({ id: index + 2 })),
+            })
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        }
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-app", "alice", "audio", {})
+    )
+
+    await waitFor(() => expect(result.current.roomAppsEnabled).toBe(true))
+    await waitFor(() =>
+      expect(
+        FakePeerConnection.dataChannels.filter((channel) =>
+          channel.label.startsWith("room-app-")
+        )
+      ).toHaveLength(2)
+    )
+
+    act(() => {
+      expect(
+        result.current.sendRoomAppMessage("reliable", "shared-canvas:room", {
+          type: "stroke",
+        })
+      ).toBe(true)
+      expect(
+        result.current.sendRoomAppMessage("realtime", "shared-canvas:room", {
+          type: "cursor",
+        })
+      ).toBe(true)
+    })
+
+    const channels = FakePeerConnection.dataChannels.filter((channel) =>
+      channel.label.startsWith("room-app-")
+    )
+    expect(
+      JSON.parse(String(channels[0]!.send.mock.calls[0]![0]))
+    ).toMatchObject({ lane: "reliable", appInstanceId: "shared-canvas:room" })
+    expect(
+      JSON.parse(String(channels[1]!.send.mock.calls[0]![0]))
+    ).toMatchObject({ lane: "realtime", appInstanceId: "shared-canvas:room" })
     unmount()
   })
 
