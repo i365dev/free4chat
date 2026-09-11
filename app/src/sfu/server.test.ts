@@ -2153,3 +2153,73 @@ describe("#83 review P1: datachannels/close authorize parameter mapping", () => 
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
+
+describe("malformed track arrays fail closed before any side effect", () => {
+  const malformed: Array<[string, unknown]> = [
+    ["null element", [null]],
+    ["string element", ["not-a-track"]],
+    ["number element", [7]],
+    ["array element", [[{ location: "remote" }]]],
+    ["non-array value", "not-an-array"],
+  ]
+
+  it.each(malformed)(
+    "/tracks rejects a payload with a %s",
+    async (_label, tracks) => {
+      const fetchMock = vi.fn(async () => Response.json({ tracks: [] }))
+      vi.stubGlobal("fetch", fetchMock)
+      const doCalls: Array<Record<string, unknown>> = []
+      const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+        doCalls.push(body)
+        return { status: 200, body: { ok: true } }
+      })
+      const res = await handleSfuRequest(
+        req("tracks", {
+          body: JSON.stringify({
+            room: "room-1",
+            participantId: "human-1",
+            token: "tok-1",
+            sessionId: "sess-1",
+            tracks,
+          }),
+        }),
+        env
+      )
+      expect(res.status).toBe(400)
+      expect((await json(res)).error).toBe("invalid_tracks")
+      // Rejected before authorization and before any Cloudflare Realtime call,
+      // so a malformed element can neither mutate Room state nor create a track.
+      expect(doCalls).toHaveLength(0)
+      expect(fetchMock).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    }
+  )
+
+  it("/tracks still accepts an absent tracks value as no tracks", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ sessionDescription: { type: "answer", sdp: "sdp" } })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const doCalls: Array<Record<string, unknown>> = []
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      doCalls.push(body)
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("tracks", {
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "human-1",
+          token: "tok-1",
+          sessionId: "sess-1",
+        }),
+      }),
+      env
+    )
+    // Not a 400: an absent list is still "no tracks", so the request proceeds
+    // to authorization exactly as it did before validation was added.
+    expect(res.status).not.toBe(400)
+    expect(doCalls.length).toBeGreaterThan(0)
+    vi.unstubAllGlobals()
+  })
+})

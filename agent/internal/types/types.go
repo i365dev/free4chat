@@ -87,11 +87,14 @@ type AgentLauncher struct {
 	Environment map[string]string `json:"-"`
 }
 
-// HarnessCapabilities reports what the negotiated Harness session supports.
+// HarnessCapabilities reports what the negotiated Harness session supports
+// and that Free4Chat can actually use. There is deliberately no Resume field:
+// the adapter observes the Harness's sessionCapabilities.resume advertisement
+// but Free4Chat has no `session/load` implementation, so it must not report
+// usable resume to any upper layer.
 type HarnessCapabilities struct {
 	Text   bool
 	Images bool
-	Resume bool
 }
 
 // HarnessSessionDiagnostic is bounded local diagnostic information for one

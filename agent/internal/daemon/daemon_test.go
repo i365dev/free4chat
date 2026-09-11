@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
+	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/runtime"
 	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -675,13 +676,9 @@ func TestResolveRuntimeAmbiguityContract(t *testing.T) {
 
 // writeModernMCPTools answers tools/list with the full required tool set so
 // prepareLifecycle's Connect step succeeds before the (failing) Harness spawn.
+// The set comes from the client's own handshake contract so it cannot drift.
 func writeModernMCPTools(w http.ResponseWriter) {
-	names := []string{
-		"room_info", "read_room_context", "join_room", "create_room", "wait_for_events",
-		"send_text", "read_attachment", "leave_room", "update_capabilities",
-		"send_collab_request", "send_collab_response", "send_collab_result",
-		"send_attachment", "publish_surface", "clear_surface", "read_surface",
-	}
+	names := free4chat.RequiredToolNames()
 	tools := make([]map[string]string, 0, len(names))
 	for _, name := range names {
 		tools = append(tools, map[string]string{"name": name})

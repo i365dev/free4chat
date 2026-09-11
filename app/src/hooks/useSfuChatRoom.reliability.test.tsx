@@ -532,6 +532,37 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
+  it("publishes the microphone through a dedicated sendonly transceiver", async () => {
+    // The microphone is the other dynamic Human publication, and it must use
+    // the same dedicated-transceiver path as screen share: addTrack() may
+    // reuse an eligible remote recvonly m-line, which can make the next
+    // multi-publication SDP answer invalid.
+    const addTransceiver = vi.spyOn(
+      TestPeerConnection.prototype,
+      "addTransceiver"
+    )
+    const addTrack = vi.spyOn(TestPeerConnection.prototype, "addTrack")
+
+    const { pc, unmount } = await connect()
+
+    const micTrack = addTransceiver.mock.calls
+      .map(([track]) => track)
+      .find((track) => (track as TestTrack | null)?.kind === "audio")
+    expect(micTrack).toBeDefined()
+    expect(addTransceiver).toHaveBeenCalledWith(
+      micTrack,
+      expect.objectContaining({ direction: "sendonly" })
+    )
+    // Regression fence: publishing through addTrack() would allow m-line reuse.
+    expect(addTrack).not.toHaveBeenCalled()
+    expect(
+      pc
+        .getTransceivers()
+        .find((transceiver) => transceiver.sender.track === micTrack)?.direction
+    ).toBe("sendonly")
+    unmount()
+  })
+
   it("keeps mixed audio and video subscriptions independent across publishers", async () => {
     const { result, socket, pc, unmount } = await connect()
     sendState(

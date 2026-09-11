@@ -214,3 +214,63 @@ describe("standalone Agent attachment rendering (#234)", () => {
     })
   })
 })
+
+describe("buildRoomTimeline orders by Room sequence, never by wall clock", () => {
+  // Deliberately non-monotonic timestamps: the sequence order below is the
+  // exact reverse of the createdAt order, so any implementation that sorted by
+  // wall clock instead of the canonical sequence would fail here.
+  const messages: Message[] = [
+    {
+      messageId: "m-first",
+      peerId: "human-1",
+      name: "Ada",
+      type: "text",
+      text: "sent first, newest clock",
+      sequence: 1,
+      createdAt: 9_000,
+    },
+    {
+      messageId: "m-second",
+      peerId: "human-1",
+      name: "Ada",
+      type: "text",
+      text: "sent second, oldest clock",
+      sequence: 2,
+      createdAt: 1_000,
+    },
+    {
+      // An ephemeral browser file carries no Room sequence: its causal anchor
+      // places it right after the Room sequence observed at transfer start.
+      messageId: "m-file",
+      peerId: "human-1",
+      name: "Ada",
+      type: "file",
+      fileName: "notes.txt",
+      afterSequence: 1,
+      createdAt: 5_000,
+    },
+  ]
+
+  it("keeps canonical sequence order when createdAt disagrees", () => {
+    const timeline = buildRoomTimeline(messages)
+    expect(timeline.map((item) => item.message?.messageId)).toEqual([
+      "m-first",
+      "m-file",
+      "m-second",
+    ])
+  })
+
+  it("orders an Agent attachment by its Room sequence, not by its age", () => {
+    const timeline = buildRoomTimeline(messages, [
+      // Sequence 2 sits after the anchored file (1.5); createdAt is the newest
+      // value in the whole fixture, so wall-clock ordering would move it last.
+      { ...AGENT_ATTACHMENT, id: "att-late", sequence: 2, createdAt: 99_999 },
+      { ...AGENT_ATTACHMENT, id: "att-anchored", sequence: 1, createdAt: 1 },
+    ])
+    // Equal sequences keep the stable insertion order: messages before
+    // attachments.
+    expect(
+      timeline.map((item) => item.attachment?.id ?? item.message?.messageId)
+    ).toEqual(["m-first", "att-anchored", "m-file", "m-second", "att-late"])
+  })
+})

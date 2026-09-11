@@ -13,7 +13,13 @@
   "services": [
     { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" }
   ],
-  "observability": { "enabled": true },
+  // Observability stays on, but request URLs are persisted without their query
+  // string. The SFU WebSocket bootstrap carries the participant bearer token in
+  // query parameters (browsers cannot set headers on a WebSocket upgrade), and
+  // invocation logs record "<method> <url>" — so without this, a participant
+  // capability would be retained in Workers Logs. redact_query_string requires
+  // wrangler >= 4.128.0; the transport itself is unchanged.
+  "observability": { "enabled": true, "redact_query_string": true },
   // Explicitly empty: clears a stale Cron Trigger left over from the removed
   // legacy RTK cleanup handler. Without this, wrangler deploy leaves
   // whatever cron triggers already exist on the zone untouched, and

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -357,6 +359,86 @@ func TestConnectVerifiesRequiredToolSet(t *testing.T) {
 	e, ok := err.(*Error)
 	if !ok || e.Code != CodeToolError || !strings.Contains(e.Message, "join_room") {
 		t.Fatalf("incomplete tool set must fail: %v", err)
+	}
+}
+
+// invokedToolNames derives the MCP tools this client calls straight from the
+// production source, so the required handshake set cannot silently drift from
+// real usage. Every call form in client.go names its tool in one of three
+// places; a new call form has to be added here deliberately.
+func invokedToolNames(t *testing.T) map[string]bool {
+	t.Helper()
+	source, err := os.ReadFile("client.go")
+	if err != nil {
+		t.Fatalf("read client source: %v", err)
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`callTool\("([a-z_]+)"`),
+		regexp.MustCompile(`sendSequence\(c, "([a-z_]+)"`),
+		regexp.MustCompile(`"Mcp-Name":\s+"([a-z_]+)"`),
+	}
+	names := map[string]bool{}
+	for _, pattern := range patterns {
+		for _, match := range pattern.FindAllStringSubmatch(string(source), -1) {
+			names[match[1]] = true
+		}
+	}
+	if len(names) != 18 {
+		t.Fatalf("derived %d invoked tools, want the shipped eighteen: %v", len(names), names)
+	}
+	return names
+}
+
+// TestRequiredToolsCoverEveryInvokedTool keeps requiredTools and real usage
+// in step in both directions: a tool the client calls but does not require
+// would let Connect accept a server that fails mid-turn.
+func TestRequiredToolsCoverEveryInvokedTool(t *testing.T) {
+	invoked := invokedToolNames(t)
+	required := map[string]bool{}
+	for _, name := range requiredTools {
+		if required[name] {
+			t.Fatalf("requiredTools lists %q twice", name)
+		}
+		required[name] = true
+	}
+	for name := range invoked {
+		if !required[name] {
+			t.Errorf("client calls %q but requiredTools does not require it", name)
+		}
+	}
+	for name := range required {
+		if !invoked[name] {
+			t.Errorf("requiredTools requires %q but this client never calls it", name)
+		}
+	}
+}
+
+// TestConnectRejectsServerMissingAnyRequiredTool proves the handshake is
+// actually enforced for every required tool, including the two this client
+// gained after the original sixteen-entry list (update_runtime_host and
+// publish_live_view).
+func TestConnectRejectsServerMissingAnyRequiredTool(t *testing.T) {
+	for _, missing := range requiredTools {
+		t.Run(missing, func(t *testing.T) {
+			client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+				tools := make([]map[string]string, 0, len(requiredTools))
+				for _, name := range requiredTools {
+					if name == missing {
+						continue
+					}
+					tools = append(tools, map[string]string{"name": name})
+				}
+				writeJSON(w, map[string]any{
+					"jsonrpc": "2.0", "id": 1,
+					"result": map[string]any{"tools": tools},
+				})
+			})
+			err := client.Connect()
+			e, ok := err.(*Error)
+			if !ok || e.Code != CodeToolError || !strings.Contains(e.Message, missing) {
+				t.Fatalf("a server missing %q must fail Connect naming it: %v", missing, err)
+			}
+		})
 	}
 }
 

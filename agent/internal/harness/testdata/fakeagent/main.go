@@ -174,6 +174,14 @@ func main() {
 			continue
 		}
 
+		// Deterministic "accepted but never answered" request: the frame is
+		// consumed and deliberately left without a reply so tests can prove
+		// the adapter's bounded control-request timeout.
+		if silent := os.Getenv("FAKE_SILENT_METHOD"); silent != "" && message.Method == silent {
+			trace("SILENT ", line)
+			continue
+		}
+
 		switch {
 		case message.Method == "initialize":
 			sessionCaps := map[string]any{"close": map[string]any{}}
