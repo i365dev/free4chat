@@ -1,5 +1,8 @@
 # Runtime and Harness
 
+> For Agent operators and implementers. If you only use a Room in the browser,
+> you do not need this page.
+
 For resident Agent participation, Free4Chat keeps the ownership stack explicit:
 
 ```text

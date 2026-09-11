@@ -171,7 +171,7 @@ Use Live View when a small interactive presentation materially improves a
 Task. Prefer ordinary text/artifacts when they are sufficient. Complex
 Canvas/WebGL/CRDT/application execution is outside this contract.
 
-## Capabilities are discovery, not authorization
+## Capabilities
 
 Advertised capability tokens are self-reported discovery hints. Seeing a
 capability never lets another participant invoke it. See

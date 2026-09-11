@@ -1,5 +1,8 @@
 # Agent Voice
 
+> For Runtime operators configuring local TTS. The Human side is just a grant
+> and a control in the Room.
+
 Agent Voice lets a Human grant one Agent permission to speak its replies as
 Room audio. The reply text is synthesized into audio by the Agent's
 configured speech provider, and the Agent's Runtime relays the result

@@ -13,88 +13,54 @@ install, nothing to host. Agents are optional.
 ## What you can do in a Room
 
 - **Voice chat** - Human-to-Human voice in the Room.
-- **Text chat** - shared Room conversation with emoji.
-- **Files and images** - bounded ephemeral transfers with inline previews.
+- **Text chat** - shared Room conversation with emoji and `@` addressing.
+- **Files and images** - send a file straight to the other browsers in the
+  Room, with inline previews. Transfers are peer-to-peer, up to **20 MB** per
+  file, and are never stored on the Free4Chat side.
 - **Screen sharing** - share your screen with other participants.
-- **Lightweight shared tools** - current UI may expose Poll, Whiteboard, or
-  external play-together entries; these remain optional Room interactions.
+- **Lightweight shared tools** - the current UI may expose Poll, Whiteboard, or
+  external play-together entries. These remain optional Room interactions.
+
+Agent-readable Room attachments are a separate, smaller path: when an Agent
+needs to read an attachment, Free4Chat keeps a bounded copy of at most
+**768 KB** for the lifetime of the Room. See
+[Shared context and artifacts](../concepts/shared-context).
 
 Everything is Room-scoped and ephemeral. When the Room expires, its shared
 state goes with it.
 
-## Bring an Agent in (optional)
+## Bring an Agent in
 
-Use **Invite Agent** in the Room. It copies a Room-scoped prompt that bootstraps
-the official local Runtime and joins an independently running Agent.
+Use **Invite Agent** when you want an independently running local Agent to join
+the Room. It copies a Room-scoped prompt that you paste into that Agent.
 
-See [Agent Room quick start](agent-room).
+There is no Agent hosting on the Free4Chat side: the Agent and its Harness run
+where its tools, credentials, and private memory already live. See
+[Agent Room quick start](agent-room).
 
-There is no centralized Agent hosting on the Free4Chat side: the Agent/Harness
-runs where its tools, credentials, and private memory already live.
+An already-running local Runtime can also back Room-level features such as
+Live Transcript; see [Live Transcript](../guides/live-transcript).
 
-## Ordinary Room chat vs a Task
+## Tasks and Live Views
 
-When an Agent is present, two interaction shapes are useful.
+When an Agent is present, a **Task** gives one Agent a focused work scope with
+its own conversation, activity, artifacts, and approvals. An Agent may also
+publish a small **Live View** - a bounded interactive panel such as a counter
+or a form - when plain text is not enough.
 
-### Room conversation
-
-Use ordinary Room chat for shared discussion, quick questions, coordination,
-or messages that should remain part of the general Room context.
-
-### Task
-
-Use a Task when you want one Agent to perform a focused piece of work with its
-own temporary interaction scope.
-
-A Task may contain:
-
-- focused Human/Agent conversation;
-- Agent activity/progress;
-- approvals when the Harness requests them;
-- Task-scoped artifacts;
-- optionally one current interactive Live View.
-
-A Task is still part of the temporary Room. It is not a saved project, Thread,
-or permanent Agent workspace.
-
-See [Tasks and Live Views](../guides/tasks-and-live-views).
-
-## Live View when the Agent needs one
-
-An Agent may choose to publish a small Live View when a Task benefits from a
-bounded interactive UI such as a counter, form, or control panel.
-
-You do not need to learn a schema or explicitly enable the feature. The Agent
-chooses it when useful; ordinary text and artifacts remain the default when
-they are enough.
-
-Live View interactions such as changing an input or clicking a local button
-can update immediately in your browser without calling the Agent on every
-click. That local state is not another participant's state and is not permanent
-Room history.
-
-Screen Share is different: it is a live media view of a participant's screen.
-Live View is a small declarative Task interface rendered by Free4Chat.
+Both are optional, both are part of the temporary Room, and neither turns the
+Room into a saved project. See
+[Tasks and Live Views](../guides/tasks-and-live-views).
 
 ## Late join and expiry
 
-A Human who joins later can receive the current canonical Task/Live View state
-that still exists in the Room. Browser-local interaction state from someone
-else is not copied across browsers.
+A Human who joins later receives the current Room state that still exists,
+including any current Task and Live View. Browser-local interaction state from
+someone else is not copied across browsers.
 
 When the Room expires, Tasks and Live Views expire with it. Keep durable output
 in your own files, repository, Agent/Harness, or other participant-owned
 storage.
-
-## Using an already-running local Runtime for Room features (optional)
-
-If a Free4Chat Runtime is already running on your computer, use the Room's
-**Live Transcript** control and its **Copy connection command** setup flow.
-This associates the local Runtime Host for Room features such as local
-transcription support. It is not an Agent invitation and does not bring a new
-Agent participant into the Room.
-
-See [Live Transcript](../guides/live-transcript).
 
 ## What a Room is not
 

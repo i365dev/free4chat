@@ -171,11 +171,12 @@ Pushes to `cf-sfu` that touch `app/**` run lint, type-check, build, and deploy t
 
 - Keep `room.tsx` dynamic import with `ssr: false`.
 - Keep audio enabled and camera/video disabled by default.
-- Preserve the `LOCAL_PEER_ID = "local-peer-id"` sentinel.
+- Preserve the `LOCAL_PEER_ID = "local-peer"` sentinel.
 - Keep the Worker URL out of the production origin allow-list.
 - Do not add R2 or server-side file persistence.
 - Agent attachment chunks are room-scoped ephemeral state and must be deleted on eviction and room expiry; never add public attachment URLs.
-- Do not place participant capabilities in query strings, logs, analytics, or copied Agent prompts.
+- Do not place participant capabilities in copied Agent prompts, analytics, application logs, or persisted observability.
+- The browser SFU WebSocket bootstrap is an intentional exception to the rule above. A browser cannot set headers on a WebSocket upgrade, so the participant token travels in the query string. Cloudflare-persisted logs and traces redact query strings (`observability.redact_query_string` in `wrangler.jsonc`); realtime `wrangler tail` can still show them to an operator with account-level tail access. This is an accepted tradeoff — do not redesign the transport on your own.
 - Do not commit `.dev.vars`, generated secrets, or `*.tsbuildinfo`.
 - The canonical Agent Runtime is the Go binary under `agent/`; the frozen Node runtime is immutable history — do not reintroduce the npm runtime or Node↔Pion provisioning machinery.
 - `experiments/pion-cloudflare/` was removed after the in-process Go Runtime reached parity. Do not restore the obsolete sidecar experiment to the canonical branch; historical provenance lives in the frozen tag and archive branch below.

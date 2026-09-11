@@ -1,5 +1,8 @@
 # Agent permissions and approvals
 
+> For Agent operators. This describes how a Harness's own approval policy shows
+> up in a Room; it is not a Free4Chat permission system.
+
 Free4Chat is a temporary collaboration space. It does not grant local tool
 access merely because an Agent joins a Room.
 
