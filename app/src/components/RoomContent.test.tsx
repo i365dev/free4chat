@@ -29,6 +29,8 @@ import type { Message } from "@common/types"
 import { trackAnalyticsEvent } from "@common/utils"
 
 import RoomContent from "./RoomContent"
+import { RoomSession } from "../do/RoomSession"
+import type { RoomRecord, RoomState } from "../room/types"
 
 interface RenderOptions {
   callback: (token: string) => void
@@ -87,6 +89,127 @@ const baseHookReturn = {
   connectLocalRuntime: vi.fn(),
   runtimeConnectionStatus: "idle" as const,
   leaveRoom: vi.fn(),
+}
+
+const LATE_JOIN_EXPIRY = Date.now() + 365 * 24 * 60 * 60 * 1000
+
+function lateJoinRoom(): RoomRecord {
+  return {
+    createdAt: 1,
+    expiresAt: LATE_JOIN_EXPIRY,
+    participants: {
+      "human-a": {
+        id: "human-a",
+        name: "Human A",
+        kind: "human",
+        connected: true,
+        joinedAt: 1,
+        lastSeenAt: 1,
+        token: "human-a-token",
+      },
+      "agent-a": {
+        id: "agent-a",
+        name: "Agent A",
+        kind: "agent",
+        connected: true,
+        joinedAt: 1,
+        lastSeenAt: 1,
+        token: "agent-a-token",
+      },
+    },
+    messages: [
+      {
+        id: "late-join-task-request",
+        peerId: "human-a",
+        name: "Human A",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        sequence: 1,
+        createdAt: 1,
+        collab: {
+          requestId: "late-join-task",
+          kind: "request",
+          fromParticipantId: "human-a",
+          targetParticipantId: "agent-a",
+          summary: "Existing Task",
+        },
+        targets: ["agent-a"],
+      },
+    ],
+    nextMessageSequence: 1,
+    liveTranscript: { active: false },
+    liveTranscriptSegments: [],
+    nextLiveTranscriptEpoch: 1,
+    nextTranscriptSequence: 1,
+    attachments: [],
+    meetingNotes: { active: false },
+    agentVoice: {},
+    pendingMediaCleanup: [],
+  }
+}
+
+function lateJoinSurface() {
+  return {
+    taskRequestId: "late-join-task",
+    surfaceId: "counter",
+    authorityAgentId: "agent-a",
+    revision: 1,
+    root: {
+      type: "Card",
+      children: [
+        { type: "Text", text: "Count" },
+        { type: "Value", path: "count" },
+      ],
+    },
+    data: { count: 0 },
+  }
+}
+
+function lateJoinSession(store: Map<string, unknown>) {
+  return new RoomSession(
+    {
+      storage: {
+        get: async (key: string) => store.get(key),
+        put: async (key: string, value: unknown) => {
+          store.set(key, value)
+        },
+        delete: async (key: string | string[]) => {
+          for (const candidate of Array.isArray(key) ? key : [key])
+            store.delete(candidate)
+        },
+        list: async (options?: { prefix?: string; limit?: number }) => {
+          const entries = [...store.entries()].filter(([key]) =>
+            options?.prefix ? key.startsWith(options.prefix) : true
+          )
+          return new Map(entries.slice(0, options?.limit ?? entries.length))
+        },
+        deleteAll: async () => {
+          store.clear()
+        },
+        setAlarm: async () => undefined,
+        deleteAlarm: async () => undefined,
+        getAlarm: async () => undefined,
+      },
+      getWebSockets: () => [],
+      waitUntil: (promise: Promise<unknown>) => void promise,
+      id: { toString: () => "late-join-room" },
+    } as never,
+    { SFU_ROOM: {} } as never
+  )
+}
+
+async function lateJoinControl(
+  session: RoomSession,
+  body: Record<string, unknown>
+) {
+  const response = await session.fetch(
+    new Request("https://room/control", {
+      method: "POST",
+      body: JSON.stringify(body),
+    })
+  )
+  return { status: response.status, json: await response.json() }
 }
 
 describe("RoomContent — Turnstile widget lifecycle", () => {
@@ -310,6 +433,81 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         "true"
       )
     )
+  })
+
+  it("carries a persisted Task Live View from late Human registration to the selected Task", async () => {
+    const store = new Map<string, unknown>([["room", lateJoinRoom()]])
+    const publisher = lateJoinSession(store)
+    const published = await lateJoinControl(publisher, {
+      action: "agent-publish-live-view",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      taskRequestId: "late-join-task",
+      surface: lateJoinSurface(),
+    })
+    expect(published.status).toBe(200)
+    expect(store.has("task-live-view:late-join-task")).toBe(true)
+
+    // A new Session models a late Human joining after the original DO has
+    // persisted the canonical snapshot. This exercises the real register
+    // response rather than seeding taskLiveViews directly into the browser.
+    const lateHuman = lateJoinSession(store)
+    const registered = await lateJoinControl(lateHuman, {
+      action: "register",
+      participant: {
+        id: "human-b",
+        name: "Human B",
+        kind: "human",
+        joinedAt: 2,
+        token: "human-b-token",
+        media: {
+          sessionId: "late-human-session",
+          muted: false,
+          fileChannelReady: false,
+          tracks: [],
+        },
+      },
+    })
+    expect(registered.status).toBe(200)
+
+    const state = (registered.json as { state: RoomState }).state
+    expect(state.taskLiveViews?.["late-join-task"]).toMatchObject({
+      taskRequestId: "late-join-task",
+      authorityAgentId: "agent-a",
+      revision: 1,
+    })
+
+    // This is the browser's state-frame boundary: useSfuChatRoom receives
+    // register's state and applies state.taskLiveViews before RoomContent
+    // resolves the selected Task's snapshot.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: state.messages as Message[],
+      participants: state.participants.map((participant) => ({
+        peerId: participant.id,
+        name: participant.name,
+        kind: participant.kind,
+        room: "test-room",
+        muteState: false,
+        screenShareEnabled: false,
+        screenShareStream: null,
+      })),
+      taskLiveViews: state.taskLiveViews,
+      localParticipantId: "human-b",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-b" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Human B" roomType="audio" />
+    )
+
+    expect(
+      screen.getByTestId("interaction-tab-task-late-join-task")
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("interaction-tab-task-late-join-task"))
+    expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+    expect(screen.getByText("Count")).toBeInTheDocument()
   })
 
   it("shows activity from every connected Agent in the active task", () => {
