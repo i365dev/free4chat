@@ -97,7 +97,7 @@ func validLiveViewScalar(value any) bool {
 	case float64:
 		return true
 	case string:
-		return len(typed) > 0 && len(typed) <= maxLiveViewText && !strings.ContainsAny(typed, "<>") &&
+		return javascriptStringLength(typed) > 0 && javascriptStringLength(typed) <= maxLiveViewText && !strings.ContainsAny(typed, "<>") &&
 			!strings.Contains(strings.ToLower(typed), "javascript:") &&
 			!strings.Contains(strings.ToLower(typed), "http://") &&
 			!strings.Contains(strings.ToLower(typed), "https://") &&
@@ -239,9 +239,24 @@ func liveViewPath(value map[string]any, label string) (string, error) {
 
 func safeLiveViewText(value string, max int) bool {
 	lower := strings.ToLower(value)
-	return len(value) > 0 && len(value) <= max && !strings.ContainsAny(value, "<>") &&
+	return javascriptStringLength(value) > 0 && javascriptStringLength(value) <= max && !strings.ContainsAny(value, "<>") &&
 		!strings.Contains(lower, "javascript:") &&
 		!strings.Contains(lower, "http://") &&
 		!strings.Contains(lower, "https://") &&
 		!strings.Contains(lower, "data:")
+}
+
+// javascriptStringLength matches JS String.length, which counts UTF-16 code
+// units rather than UTF-8 bytes or Unicode scalar values. The Room validator
+// is authoritative and uses the same semantics for bounded text fields.
+func javascriptStringLength(value string) int {
+	length := 0
+	for _, r := range value {
+		if r > 0xffff {
+			length += 2
+		} else {
+			length++
+		}
+	}
+	return length
 }

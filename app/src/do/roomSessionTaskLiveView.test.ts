@@ -298,6 +298,22 @@ describe("RoomSession Task Live View (#316)", () => {
     expect(uploaded.json).toMatchObject({
       attachment: { taskRequestId: "task-1" },
     })
+    const attachmentId = (uploaded.json as { attachment: { id: string } })
+      .attachment.id
+    const unrelatedRead = await test.control({
+      action: "agent-read-attachment",
+      participantId: "agent-c",
+      token: "agent-c-token",
+      attachmentId,
+    })
+    expect(unrelatedRead.status).toBe(404)
+    const participatingRead = await test.control({
+      action: "agent-read-attachment",
+      participantId: "agent-b",
+      token: "agent-b-token",
+      attachmentId,
+    })
+    expect(participatingRead.status).toBe(200)
     const room = test.room()
     expect(room.attachments[0]?.taskRequestId).toBe("task-1")
     const projected = (
@@ -332,6 +348,61 @@ describe("RoomSession Task Live View (#316)", () => {
         expect.objectContaining({ scopeId: "task:task-1" }),
       ])
     )
+  })
+
+  it("keeps hidden Task attachments in cursor coverage as placeholders", () => {
+    const test = harness()
+    const room = test.room()
+    room.messages = [
+      {
+        id: "ordinary-10",
+        peerId: "human",
+        name: "Human",
+        kind: "human",
+        type: "text",
+        text: "visible before",
+        sequence: 10,
+        createdAt: 10,
+      },
+      {
+        id: "ordinary-12",
+        peerId: "human",
+        name: "Human",
+        kind: "human",
+        type: "text",
+        text: "visible after",
+        sequence: 12,
+        createdAt: 12,
+      },
+    ]
+    room.nextMessageSequence = 12
+    room.attachments = [
+      {
+        id: "hidden-task-artifact",
+        senderId: "agent-a",
+        senderName: "Agent A",
+        senderKind: "agent",
+        mimeType: "text/plain",
+        fileName: "private.txt",
+        size: 1,
+        chunkCount: 1,
+        createdAt: 11,
+        sequence: 11,
+        taskRequestId: "task-1",
+      },
+    ]
+    const agentEvents = (
+      test.session as unknown as {
+        agentEvents: (
+          room: RoomRecord,
+          participantId: string,
+          cursor: number
+        ) => { events: Array<{ sequence: number }>; truncated?: boolean }
+      }
+    ).agentEvents
+    const result = agentEvents.call(test.session, room, "agent-c", 9)
+    expect(result.truncated ?? false).toBe(false)
+    expect(result.events.map((event) => event.sequence)).toEqual([10, 12])
   })
 
   it("publishes the canonical primary Agent view and replaces it by revision", async () => {

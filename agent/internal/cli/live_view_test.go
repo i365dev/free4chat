@@ -66,3 +66,20 @@ func TestValidateTaskLiveViewJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateTaskLiveViewJSONUsesJavaScriptUTF16Length(t *testing.T) {
+	for _, value := range []string{
+		strings.Repeat("界", 200),
+		strings.Repeat("😀", 200),
+	} {
+		surface := validLiveViewDraft()
+		surface["data"] = map[string]any{"count": 0, "label": value}
+		data, err := json.Marshal(surface)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateTaskLiveViewJSON(data); err != nil {
+			t.Fatalf("server-compatible UTF-16 text rejected: %v", err)
+		}
+	}
+}

@@ -2092,17 +2092,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           participantId,
           taskProjection
         )
-        return event
-          ? [
-              {
-                sequence: attachment.sequence,
-                event,
-                peerId: attachment.senderId,
-                visible: true,
-                deliverOwn: false,
-              },
-            ]
-          : []
+        // Keep an invisible attachment as a sequence placeholder. The
+        // cursor coverage calculation runs over the shared Room sequence
+        // domain; dropping this entry would make a hidden Task artifact look
+        // like an eviction gap to an Agent that cannot see that Task.
+        return [
+          {
+            sequence: attachment.sequence,
+            event,
+            peerId: attachment.senderId,
+            visible: event !== undefined,
+            deliverOwn: false,
+          },
+        ]
       }),
     ].sort((left, right) => left.sequence - right.sequence)
     const coverageFloor = this.retainedEventCoverageFloor(events)
@@ -4066,6 +4068,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      const attachment = room.attachments.find(
+        (candidate) => candidate.id === request.attachmentId
+      )
+      if (!attachment)
+        return this.json({ error: "attachment_unavailable" }, 404)
+      if (
+        attachment.taskRequestId !== undefined &&
+        !taskAgentParticipates(
+          buildTaskProjectionIndex(room.messages, room.participants),
+          attachment.taskRequestId,
+          participant.id
+        )
+      )
+        return this.json({ error: "attachment_unavailable" }, 404)
       // #117: reconstruction shared with the Human browser read path;
       // authorization stays here at the ingress boundary.
       const payload = await this.readAttachmentPayload(

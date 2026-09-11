@@ -164,7 +164,7 @@ export interface CollabEventInput {
 export interface CollabValidationContext {
   senderParticipantId: string
   participants: Record<string, RoomParticipant>
-  attachments: Array<Pick<{ id: string }, "id">>
+  attachments: Array<{ id: string; taskRequestId?: string }>
 }
 
 type CollabValidationResult =
@@ -198,7 +198,8 @@ function validateCollabDetails(input: unknown): {
 
 function validateCollabAttachmentRefs(
   input: unknown,
-  context: CollabValidationContext
+  context: CollabValidationContext,
+  requestId: string
 ): { ok: boolean; error?: string; ids?: string[] } {
   if (input === undefined) return { ok: true }
   if (!Array.isArray(input) || input.some((id) => typeof id !== "string"))
@@ -206,9 +207,17 @@ function validateCollabAttachmentRefs(
   const unique = [...new Set(input as string[])]
   if (unique.length > MAX_COLLAB_ATTACHMENT_REFS)
     return { ok: false, error: "too_many_attachment_refs" }
-  for (const id of unique)
-    if (!context.attachments.some((attachment) => attachment.id === id))
-      return { ok: false, error: "unknown_attachment" }
+  for (const id of unique) {
+    const attachment = context.attachments.find(
+      (candidate) => candidate.id === id
+    )
+    if (!attachment) return { ok: false, error: "unknown_attachment" }
+    if (
+      attachment.taskRequestId !== undefined &&
+      attachment.taskRequestId !== requestId
+    )
+      return { ok: false, error: "attachment_task_mismatch" }
+  }
   return { ok: true, ids: unique }
 }
 
@@ -270,7 +279,11 @@ export function validateCollabEvent(
     if (!summary) return { ok: false, error: "summary_required" }
     const details = validateCollabDetails(input.details)
     if (!details.ok) return { ok: false, error: details.error! }
-    const refs = validateCollabAttachmentRefs(input.attachmentIds, context)
+    const refs = validateCollabAttachmentRefs(
+      input.attachmentIds,
+      context,
+      requestId
+    )
     if (!refs.ok) return { ok: false, error: refs.error! }
     return {
       ok: true,
@@ -294,7 +307,11 @@ export function validateCollabEvent(
   const summary = boundedSummary(input.summary)
   const details = validateCollabDetails(input.details)
   if (!details.ok) return { ok: false, error: details.error! }
-  const refs = validateCollabAttachmentRefs(input.attachmentIds, context)
+  const refs = validateCollabAttachmentRefs(
+    input.attachmentIds,
+    context,
+    requestId
+  )
   if (!refs.ok) return { ok: false, error: refs.error! }
   return {
     ok: true,
