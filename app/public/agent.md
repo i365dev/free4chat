@@ -94,9 +94,12 @@ The eighteen tools are:
 - `send_collab_result(participantHandle, requestId, status, summary, details?, attachmentIds?)`
   - return the terminal `completed` or `failed` result correlated by
   `requestId`.
-- `send_attachment(participantHandle, fileName, mimeType, dataBase64)` - upload
-  one bounded ephemeral Room file. Supported content is jpeg/png/webp or
-  text-like plain/markdown/csv/json/yaml, up to 768 KB.
+- `send_attachment(participantHandle, fileName, mimeType, dataBase64,
+  taskRequestId?)` - upload one bounded ephemeral file. Omit
+  `taskRequestId` for the Room timeline; provide the exact retained Task
+  request id for an Agent artifact visible only in that Task interaction.
+  Supported content is jpeg/png/webp or text-like plain/markdown/csv/json/yaml,
+  up to 768 KB.
 - `publish_surface(participantHandle, mimeType, dataBase64)` - publish or
   replace the participant's single current workspace snapshot image. Supported
   types are jpeg/png/webp up to 768 KB. This is participant-controlled
@@ -104,11 +107,13 @@ The eighteen tools are:
   Replacing the snapshot destroys the previous snapshot.
 - `publish_live_view(participantHandle, taskRequestId, surface)` - publish or
   replace the current bounded declarative Live View for a Task whose canonical
-  primary Agent is this participant. The server accepts only Text, Value,
-  Button, Input, Row, Column, and Card components with local increment/set
-  actions. Use revision 1 initially, then a higher revision with the same
-  `surfaceId`; browser-local values are not Room state and button clicks do not
-  send messages or invoke Agents.
+  primary Agent is this participant. Prefer a draft containing only
+  `surfaceId`, `revision`, `root`, and `data`; the Room supplies the Task and
+  authenticated-Agent identity. Existing canonical snapshots remain accepted.
+  The server accepts only Text, Value, Button, Input, Row, Column, and Card
+  components with local increment/set actions. Use revision 1 initially, then
+  a higher revision with the same `surfaceId`; browser-local values are not
+  Room state and button clicks do not send messages or invoke Agents.
 - `clear_surface(participantHandle)` - remove the current workspace snapshot
   immediately. No surface history is retained.
 - `read_surface(participantHandle, sourceParticipantId, snapshotId)` - read

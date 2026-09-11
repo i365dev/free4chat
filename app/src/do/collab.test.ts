@@ -835,4 +835,32 @@ describe("#123 attachment refs against CURRENT attachments", () => {
     )
     expect(mixed.ok).toBe(false)
   })
+
+  it("keeps Task-scoped attachment refs on their canonical request only", () => {
+    const context = collabContext({
+      attachments: [{ id: "task-att", taskRequestId: "task-1" }],
+    })
+    expect(
+      validateCollabEvent(
+        {
+          kind: "completed",
+          requestId: "task-2",
+          summary: "wrong task",
+          attachmentIds: ["task-att"],
+        },
+        context
+      )
+    ).toEqual({ ok: false, error: "attachment_task_mismatch" })
+    expect(
+      validateCollabEvent(
+        {
+          kind: "completed",
+          requestId: "task-1",
+          summary: "same task",
+          attachmentIds: ["task-att"],
+        },
+        context
+      ).ok
+    ).toBe(true)
+  })
 })

@@ -36,7 +36,8 @@ function componentClass(type: TaskLiveViewComponent["type"]): string {
 function renderComponent(
   component: TaskLiveViewComponent,
   data: Record<string, TaskLiveViewScalar>,
-  dispatch: (action: TaskLiveViewAction) => void
+  dispatch: (action: TaskLiveViewAction) => void,
+  onInteract: () => void
 ): React.ReactNode {
   switch (component.type) {
     case "Text":
@@ -52,7 +53,10 @@ function renderComponent(
         <button
           type="button"
           className="rounded-md border border-blue-400/60 bg-blue-600/80 px-3 py-1.5 text-sm text-white hover:bg-blue-500"
-          onClick={() => dispatch(component.action)}
+          onClick={() => {
+            onInteract()
+            dispatch(component.action)
+          }}
         >
           {component.label}
         </button>
@@ -63,13 +67,15 @@ function renderComponent(
           className="min-w-0 rounded-md border border-gray-700 bg-gray-900 px-2 py-1 text-sm text-white"
           value={valueFor(data, component.path)}
           placeholder={component.placeholder}
-          onChange={(event) =>
+          onChange={(event) => {
+            if (event.target.value !== valueFor(data, component.path))
+              onInteract()
             dispatch({
               type: "set",
               path: component.path,
               value: event.target.value,
             })
-          }
+          }}
         />
       )
     case "Row":
@@ -79,7 +85,7 @@ function renderComponent(
         <div className={componentClass(component.type)}>
           {component.children.map((child, index) => (
             <span key={`${child.type}-${index}`}>
-              {renderComponent(child, data, dispatch)}
+              {renderComponent(child, data, dispatch, onInteract)}
             </span>
           ))}
         </div>
@@ -90,9 +96,13 @@ function renderComponent(
 export default function TaskLiveView({
   snapshot,
   stateStore,
+  onVisible,
+  onInteract,
 }: {
   snapshot: TaskLiveViewSnapshot
   stateStore: TaskLiveViewStateStore
+  onVisible?: (taskRequestId: string, surfaceId: string) => void
+  onInteract?: (taskRequestId: string, surfaceId: string) => void
 }) {
   const validation = useMemo(
     () => validateTaskLiveViewSnapshot(snapshot),
@@ -127,6 +137,11 @@ export default function TaskLiveView({
     stateStore,
   ])
 
+  useEffect(() => {
+    if (!validation.ok) return
+    onVisible?.(snapshot.taskRequestId, snapshot.surfaceId)
+  }, [onVisible, snapshot.surfaceId, snapshot.taskRequestId, validation.ok])
+
   if (!validation.ok) return null
 
   const dispatch = (action: TaskLiveViewAction) => {
@@ -140,13 +155,22 @@ export default function TaskLiveView({
     })
   }
 
+  const reportInteraction = () => {
+    onInteract?.(snapshot.taskRequestId, snapshot.surfaceId)
+  }
+
   return (
     <section
       aria-label="Task Live View"
       data-testid="task-live-view"
       className="flex min-h-0 flex-1 flex-col overflow-auto bg-gray-950 p-4 text-gray-100"
     >
-      {renderComponent(validation.snapshot.root, localState.data, dispatch)}
+      {renderComponent(
+        validation.snapshot.root,
+        localState.data,
+        dispatch,
+        reportInteraction
+      )}
     </section>
   )
 }

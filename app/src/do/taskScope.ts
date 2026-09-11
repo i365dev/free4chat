@@ -10,6 +10,17 @@ type TaskProjectionTask = {
   agentsBySequence: Map<number, Set<string>>
 }
 
+export function taskAgentParticipates(
+  index: TaskProjectionIndex,
+  requestId: string,
+  participantId: string
+): boolean {
+  return (
+    index.tasks.get(requestId)?.participatingAgentIds.has(participantId) ===
+    true
+  )
+}
+
 export type TaskRequestResolution = {
   ok: true
   requestId: string

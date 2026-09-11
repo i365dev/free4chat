@@ -180,10 +180,11 @@ func DeriveRuntimeHostID(seed, roomID string) (string, error) {
 // RoomAttachmentMetadata is the sanitized attachment projection carried on
 // room events and upload results.
 type RoomAttachmentMetadata struct {
-	ID       string `json:"id"`
-	FileName string `json:"fileName"`
-	MimeType string `json:"mimeType"`
-	Size     int64  `json:"size"`
+	ID            string `json:"id"`
+	FileName      string `json:"fileName"`
+	MimeType      string `json:"mimeType"`
+	Size          int64  `json:"size"`
+	TaskRequestID string `json:"taskRequestId,omitempty"`
 }
 
 // CollabKind enumerates the collaboration envelope kinds (#106 Phase B).
@@ -721,9 +722,10 @@ type CollabResultArgs struct {
 
 // AttachmentUpload is a caller-provided file for send_attachment.
 type AttachmentUpload struct {
-	FileName   string
-	MimeType   string
-	DataBase64 string
+	FileName      string
+	MimeType      string
+	DataBase64    string
+	TaskRequestID string
 }
 
 // UploadedAttachment is the stored attachment metadata; the ID is what a

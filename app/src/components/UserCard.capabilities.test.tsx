@@ -14,6 +14,29 @@ function base(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Agent advertised capabilities (#234)", () => {
+  it("keeps compact Agent voice and Task controls inside the compact card", () => {
+    const { getByTestId, getByRole } = render(
+      <UserCard
+        {...base({
+          name: "Pi",
+          kind: "agent",
+          peerId: "agent-pi",
+          compact: true,
+          voiceAvailable: true,
+          onStartTask: () => undefined,
+        })}
+      />
+    )
+    expect(getByTestId("compact-agent-controls")).toBeTruthy()
+    expect(getByRole("button", { name: "Enable voice for Pi" })).toBeTruthy()
+    expect(getByRole("button", { name: "Start task with Pi" })).toBeTruthy()
+    expect(
+      getByTestId("compact-agent-controls").closest(
+        ".participant-card-shell--compact"
+      )
+    ).toBeTruthy()
+  })
+
   it("keeps advertised capabilities out of the default full card UI", () => {
     const { queryByText } = render(
       <UserCard

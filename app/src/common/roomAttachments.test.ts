@@ -34,6 +34,29 @@ describe("validateRoomAttachmentRead (#117)", () => {
     }
   })
 
+  it("preserves a valid Task correlation and rejects malformed correlation", () => {
+    const valid = validateRoomAttachmentRead(
+      validPayload({
+        attachment: {
+          ...validPayload().attachment,
+          taskRequestId: "task-1",
+        },
+      }),
+      REQUESTED_ID
+    )
+    expect(valid.ok).toBe(true)
+    if (valid.ok) expect(valid.read.attachment.taskRequestId).toBe("task-1")
+
+    expect(
+      validateRoomAttachmentRead(
+        validPayload({
+          attachment: { ...validPayload().attachment, taskRequestId: 42 },
+        }),
+        REQUESTED_ID
+      ).ok
+    ).toBe(false)
+  })
+
   it("rejects when returned id differs from the requested artifact", () => {
     const result = validateRoomAttachmentRead(
       validPayload({

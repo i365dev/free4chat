@@ -362,6 +362,9 @@ export async function handleRoomRequest(
   headers.set("X-Room-Participant-Token", token)
   const fileName = request.headers.get("X-File-Name")
   if (fileName) headers.set("X-File-Name", fileName.slice(0, 512))
+  const taskRequestId = request.headers.get("X-Task-Request-Id")?.trim()
+  if (taskRequestId)
+    headers.set("X-Task-Request-Id", taskRequestId.slice(0, 64))
   return stub.fetch("https://room/attachment", {
     method: "POST",
     headers,

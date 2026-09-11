@@ -290,7 +290,10 @@ export const ROOM_ATTACHMENT_MIME_TYPES: readonly AgentAttachmentMimeType[] = [
  * Metadata is the safe public subset; `data` is base64 bytes validated
  * strictly against this metadata before any rendering. */
 export interface RoomAttachmentRead {
-  attachment: Pick<RoomAttachment, "id" | "fileName" | "mimeType" | "size">
+  attachment: Pick<
+    RoomAttachment,
+    "id" | "fileName" | "mimeType" | "size" | "taskRequestId"
+  >
   data: string
 }
 
@@ -308,6 +311,9 @@ export interface RoomAttachment {
   chunkCount: number
   createdAt: number
   sequence: number
+  // Present only for an Agent artifact explicitly correlated with a retained
+  // Task request. Omitted means the ordinary Room artifact timeline.
+  taskRequestId?: string
 }
 
 // #234: browser-safe standalone Room attachment projection. Bounded metadata
@@ -330,6 +336,7 @@ export interface RoomAttachmentProjection {
   size: number
   sequence: number
   createdAt: number
+  taskRequestId?: string
 }
 
 // Room-scoped Meeting Notes media-listening grant (#82). Visible to every
@@ -535,7 +542,10 @@ export interface AgentEvent {
   actionPayload?: Record<string, string>
   collab?: CollabEvent
   permission?: PermissionEvent
-  attachment?: Pick<RoomAttachment, "id" | "fileName" | "mimeType" | "size">
+  attachment?: Pick<
+    RoomAttachment,
+    "id" | "fileName" | "mimeType" | "size" | "taskRequestId"
+  >
   addressed: boolean
   createdAt: number
 }

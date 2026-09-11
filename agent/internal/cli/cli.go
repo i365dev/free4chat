@@ -52,7 +52,7 @@ func usageText() string {
   free4chat-agent collab request --target <participant-id> --summary <text> [--request-id <id>] [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
   free4chat-agent collab respond --request-id <id> --decision <accepted|declined> [--summary <text>] [--instance <id>]
   free4chat-agent collab result --request-id <id> --status <completed|failed> --summary <text> [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
-  free4chat-agent attach --file <path> [--name <file-name>] [--instance <id>]
+  free4chat-agent attach --file <path> [--name <file-name>] [--task-request-id <id>] [--instance <id>]
   free4chat-agent surface publish --file <snapshot.jpeg|png|webp> [--instance <id>]
   free4chat-agent surface clear [--instance <id>]
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
@@ -420,11 +420,12 @@ func run(args []string) error {
 			fileName = base
 		}
 		return runViaDaemon(&daemon.IpcRequest{
-			Op:         "attach",
-			InstanceID: option(rest, "--instance"),
-			FileName:   fileName,
-			MimeType:   attachments.AttachmentMIME(filePath, option(rest, "--mime")),
-			DataBase64: encodeBase64(data),
+			Op:            "attach",
+			InstanceID:    option(rest, "--instance"),
+			FileName:      fileName,
+			MimeType:      attachments.AttachmentMIME(filePath, option(rest, "--mime")),
+			DataBase64:    encodeBase64(data),
+			TaskRequestID: option(rest, "--task-request-id"),
 		})
 
 	case "surface":
@@ -487,6 +488,9 @@ func run(args []string) error {
 		var surface map[string]any
 		if err := json.Unmarshal(data, &surface); err != nil || len(surface) == 0 {
 			return errors.New("Live View JSON must be an object")
+		}
+		if err := validateTaskLiveViewJSON(data); err != nil {
+			return err
 		}
 		return runViaDaemon(&daemon.IpcRequest{
 			Op:            "live-view-publish",

@@ -1,8 +1,9 @@
 import type { RoomParticipant } from "../room/types"
 
 /**
- * #228: Room-authoritative collaboration-truth analytics. These three
- * canonical events (AgentJoined / CollabRequested / CollabOutcome) move from
+ * #228: Room-authoritative collaboration-truth analytics. Canonical Room
+ * transitions (AgentJoined / CollabRequested / CollabOutcome / LiveViewPublished)
+ * move from
  * Human-browser observation to the Room/DO mutation boundary so browserless
  * and Agent-only Rooms are counted. Emission happens only at canonical,
  * already-deduplicated Room transitions.
@@ -54,6 +55,7 @@ export interface RoomAnalyticsEvent {
     | "CollabRequested"
     | "CollabOutcome"
     | "CollaborationDuration"
+    | "LiveViewPublished"
   properties: Record<string, unknown>
 }
 
@@ -279,6 +281,23 @@ export function buildTargetedMessageEvent(args: {
   }
 }
 
+export function buildLiveViewPublishedEvent(args: {
+  roomName: string
+  participants: RoomParticipant[]
+  phase: "first" | "replacement"
+}): RoomAnalyticsEvent {
+  return {
+    name: "LiveViewPublished",
+    properties: {
+      phase: args.phase,
+      roomType: "unknown",
+      roomHash: hashRoom(args.roomName),
+      participantBucket: participantsBucket(args.participants.length),
+      roomComposition: roomComposition(args.participants),
+    },
+  }
+}
+
 /**
  * Advance the OPEN 2+-participant collaboration interval (#228 extension).
  * Count is the number of CURRENT canonical participants in the Room record.
@@ -392,6 +411,13 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
     "roomType",
     "roomHash",
     "hasArtifact",
+    "roomComposition",
+  ],
+  LiveViewPublished: [
+    "phase",
+    "roomType",
+    "roomHash",
+    "participantBucket",
     "roomComposition",
   ],
 }

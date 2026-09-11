@@ -98,44 +98,51 @@ function UserCard(user: UserCardProps) {
               🤖 Agent
             </span>
           )}
-          {user.kind === "agent" && user.activity && (
-            <span
-              data-testid="agent-activity"
-              className="mt-1 max-w-full truncate text-[9px] text-blue-200/80"
+          {user.kind === "agent" && (
+            <div
+              data-testid="compact-agent-controls"
+              className="mt-1 flex max-w-full flex-wrap items-center justify-center gap-1"
             >
-              {agentActivityLabel(user.activity)}…
-            </span>
-          )}
-          {user.kind === "agent" && user.voiceAvailable && (
-            <button
-              type="button"
-              onClick={() =>
-                user.onToggleAgentVoice?.(user.peerId, !user.voiceEnabled)
-              }
-              title={
-                user.voiceEnabled
-                  ? `Mute ${user.name}`
-                  : `Enable voice for ${user.name}`
-              }
-              aria-label={
-                user.voiceEnabled
-                  ? `Mute ${user.name}`
-                  : `Enable voice for ${user.name}`
-              }
-              className="participant-card__voice-button participant-card__voice-button--compact mt-1 min-h-6 rounded-full border border-gray-500 px-2 text-[9px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {user.voiceEnabled ? "VOICE ●" : "VOICE"}
-            </button>
-          )}
-          {user.kind === "agent" && !isSelf && user.onStartTask && (
-            <button
-              type="button"
-              onClick={() => user.onStartTask?.(user.peerId, user.name)}
-              aria-label={`Start task with ${user.name}`}
-              className="mt-1 min-h-6 rounded-full border border-blue-400/60 px-2 text-[9px] text-blue-200 hover:bg-blue-500/20"
-            >
-              TASK
-            </button>
+              {user.activity && (
+                <span
+                  data-testid="agent-activity"
+                  className="max-w-full truncate text-[9px] text-blue-200/80"
+                >
+                  {agentActivityLabel(user.activity)}…
+                </span>
+              )}
+              {user.voiceAvailable && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    user.onToggleAgentVoice?.(user.peerId, !user.voiceEnabled)
+                  }
+                  title={
+                    user.voiceEnabled
+                      ? `Mute ${user.name}`
+                      : `Enable voice for ${user.name}`
+                  }
+                  aria-label={
+                    user.voiceEnabled
+                      ? `Mute ${user.name}`
+                      : `Enable voice for ${user.name}`
+                  }
+                  className="participant-card__voice-button participant-card__voice-button--compact min-h-6 rounded-full border border-gray-500 px-2 text-[9px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {user.voiceEnabled ? "VOICE ●" : "VOICE"}
+                </button>
+              )}
+              {!isSelf && user.onStartTask && (
+                <button
+                  type="button"
+                  onClick={() => user.onStartTask?.(user.peerId, user.name)}
+                  aria-label={`Start task with ${user.name}`}
+                  className="min-h-6 rounded-full border border-blue-400/60 px-2 text-[9px] text-blue-200 hover:bg-blue-500/20"
+                >
+                  TASK
+                </button>
+              )}
+            </div>
           )}
           {isSelf && (
             <div className="mt-1 flex gap-1">

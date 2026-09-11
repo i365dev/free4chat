@@ -19,6 +19,7 @@ export interface UploadedRoomAttachment {
   fileName: string
   mimeType: AgentAttachmentMimeType
   size: number
+  taskRequestId?: string
 }
 
 /** #123: strict browser-boundary validation for one upload-response
@@ -51,11 +52,21 @@ export function validateUploadedRoomAttachment(
     attachment.size > MAX_ROOM_ATTACHMENT_BYTES
   )
     return null
+  if (
+    attachment.taskRequestId !== undefined &&
+    (typeof attachment.taskRequestId !== "string" ||
+      attachment.taskRequestId.length === 0 ||
+      attachment.taskRequestId.length > 64)
+  )
+    return null
   return {
     id: attachment.id,
     fileName: attachment.fileName,
     mimeType: attachment.mimeType as AgentAttachmentMimeType,
     size: attachment.size,
+    ...(typeof attachment.taskRequestId === "string"
+      ? { taskRequestId: attachment.taskRequestId }
+      : {}),
   }
 }
 
@@ -98,6 +109,13 @@ export function validateRoomAttachmentRead(
     typeof record.data !== "string"
   )
     return { ok: false, error: "invalid_attachment_payload" }
+  if (
+    attachment.taskRequestId !== undefined &&
+    (typeof attachment.taskRequestId !== "string" ||
+      attachment.taskRequestId.length === 0 ||
+      attachment.taskRequestId.length > 64)
+  )
+    return { ok: false, error: "invalid_attachment_payload" }
 
   // The response must be for EXACTLY the requested artifact — never a
   // near-miss or a different participant's file.
@@ -125,6 +143,9 @@ export function validateRoomAttachmentRead(
         mimeType:
           attachment.mimeType as RoomAttachmentRead["attachment"]["mimeType"],
         size: attachment.size,
+        ...(typeof attachment.taskRequestId === "string"
+          ? { taskRequestId: attachment.taskRequestId }
+          : {}),
       },
       data: record.data,
     },
