@@ -296,9 +296,10 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 			return nil, err
 		}
 		uploaded, err := rt.UploadAttachment(types.AttachmentUpload{
-			FileName:   request.FileName,
-			MimeType:   request.MimeType,
-			DataBase64: request.DataBase64,
+			FileName:      request.FileName,
+			MimeType:      request.MimeType,
+			DataBase64:    request.DataBase64,
+			TaskRequestID: request.TaskRequestID,
 		})
 		if err != nil {
 			return nil, err

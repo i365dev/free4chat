@@ -35,6 +35,16 @@ export interface TaskLiveViewSnapshot {
   data: Record<string, TaskLiveViewScalar>
 }
 
+// Agent-authored input deliberately excludes Room-owned identity. The
+// Runtime supplies the task id and the authenticated Agent; the Room then
+// creates the canonical snapshot below.
+export interface TaskLiveViewDraft {
+  surfaceId: string
+  revision: number
+  root: TaskLiveViewComponent
+  data: Record<string, TaskLiveViewScalar>
+}
+
 export interface TaskLiveViewLocalState {
   surfaceId: string
   revision: number
@@ -43,6 +53,10 @@ export interface TaskLiveViewLocalState {
 
 export type TaskLiveViewValidation =
   | { ok: true; snapshot: TaskLiveViewSnapshot }
+  | { ok: false; error: string }
+
+export type TaskLiveViewDraftValidation =
+  | { ok: true; draft: TaskLiveViewDraft }
   | { ok: false; error: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -70,7 +84,10 @@ function isScalar(value: unknown): value is TaskLiveViewScalar {
   )
 }
 
-function validateAction(value: unknown): value is TaskLiveViewAction {
+function validateAction(
+  value: unknown,
+  data: Record<string, TaskLiveViewScalar>
+): value is TaskLiveViewAction {
   if (!isRecord(value) || typeof value.type !== "string") return false
   if (value.type === "increment")
     return (
@@ -80,7 +97,8 @@ function validateAction(value: unknown): value is TaskLiveViewAction {
       typeof value.amount === "number" &&
       Number.isSafeInteger(value.amount) &&
       value.amount !== 0 &&
-      Math.abs(value.amount) <= 1000
+      Math.abs(value.amount) <= 1000 &&
+      typeof data[value.path] === "number"
     )
   return (
     value.type === "set" &&
@@ -118,7 +136,7 @@ function validateComponent(
       return (
         hasOnlyKeys(value, ["type", "label", "action"]) &&
         isSafeText(value.label, MAX_LABEL_LENGTH) &&
-        validateAction(value.action)
+        validateAction(value.action, data)
       )
     case "Input":
       return (
@@ -201,6 +219,52 @@ export function validateTaskLiveViewSnapshot(
       revision: raw.revision,
       root: raw.root,
       data: { ...(raw.data as Record<string, TaskLiveViewScalar>) },
+    },
+  }
+}
+
+export function validateTaskLiveViewDraft(
+  raw: unknown
+): TaskLiveViewDraftValidation {
+  if (!isRecord(raw)) return { ok: false, error: "invalid_live_view" }
+  let serialized: string
+  try {
+    serialized = JSON.stringify(raw)
+  } catch {
+    return { ok: false, error: "invalid_live_view" }
+  }
+  if (
+    new TextEncoder().encode(serialized).byteLength > MAX_TASK_LIVE_VIEW_BYTES
+  )
+    return { ok: false, error: "live_view_too_large" }
+  if (
+    !hasOnlyKeys(raw, ["surfaceId", "revision", "root", "data"]) ||
+    typeof raw.surfaceId !== "string" ||
+    !ID_PATTERN.test(raw.surfaceId) ||
+    typeof raw.revision !== "number" ||
+    !Number.isSafeInteger(raw.revision) ||
+    raw.revision < 1 ||
+    !isRecord(raw.data) ||
+    Object.keys(raw.data).length > MAX_TASK_LIVE_VIEW_DATA_KEYS
+  )
+    return { ok: false, error: "invalid_live_view" }
+
+  for (const [key, value] of Object.entries(raw.data))
+    if (!DATA_KEY_PATTERN.test(key) || !isScalar(value))
+      return { ok: false, error: "invalid_live_view_data" }
+
+  const count = { value: 0 }
+  const data = raw.data as Record<string, TaskLiveViewScalar>
+  if (!validateComponent(raw.root, 1, count, data))
+    return { ok: false, error: "invalid_live_view_component" }
+
+  return {
+    ok: true,
+    draft: {
+      surfaceId: raw.surfaceId,
+      revision: raw.revision,
+      root: raw.root,
+      data: { ...data },
     },
   }
 }

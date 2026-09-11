@@ -435,6 +435,75 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
   })
 
+  it("keeps Task artifacts in their Task scope and avoids duplicate collab cards", () => {
+    const task = (requestId: string, sequence: number): Message => ({
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence,
+      collab: {
+        requestId,
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-x",
+        summary: requestId,
+        attachmentIds: requestId === "T" ? ["task-artifact"] : undefined,
+      },
+    })
+    const attachment = (id: string, taskRequestId?: string) => ({
+      id,
+      senderId: "agent-x",
+      senderName: "Agent X",
+      senderKind: "agent" as const,
+      fileName: `${id}.txt`,
+      mimeType: "text/plain" as const,
+      size: 4,
+      sequence: 10,
+      createdAt: 10,
+      ...(taskRequestId ? { taskRequestId } : {}),
+    })
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [task("T", 1), task("U", 2)],
+      attachments: [
+        attachment("room-artifact"),
+        attachment("task-artifact", "T"),
+        attachment("other-artifact", "U"),
+      ],
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-x",
+          name: "Agent X",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      localParticipantId: "human-local",
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Hannah" roomType="audio" />
+    )
+    expect(screen.getByText("room-artifact.txt")).toBeInTheDocument()
+    expect(screen.queryByText("task-artifact.txt")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
+    expect(
+      screen.getByRole("button", { name: /View artifact/ })
+    ).toBeInTheDocument()
+    expect(screen.queryByText("task-artifact.txt")).not.toBeInTheDocument()
+    expect(screen.queryByText("room-artifact.txt")).not.toBeInTheDocument()
+    expect(screen.queryByText("other-artifact.txt")).not.toBeInTheDocument()
+  })
+
   it("carries a persisted Task Live View from late Human registration to the selected Task", async () => {
     const store = new Map<string, unknown>([["room", lateJoinRoom()]])
     const publisher = lateJoinSession(store)

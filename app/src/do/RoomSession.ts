@@ -119,6 +119,7 @@ import {
   resolveAgentTaskTargets,
   resolveHumanTaskTargets,
   resolveTaskRequest,
+  taskAgentParticipates,
   type TaskProjectionIndex,
 } from "./taskScope"
 import {
@@ -127,6 +128,7 @@ import {
   isRuntimeProviderClaimHash,
 } from "../common/runtimeProviderCredential"
 import {
+  validateTaskLiveViewDraft,
   validateTaskLiveViewSnapshot,
   type TaskLiveViewSnapshot,
 } from "../common/taskLiveView"
@@ -1339,7 +1341,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       attachment.chunkCount <=
         Math.ceil(MAX_AGENT_ATTACHMENT_BYTES / ATTACHMENT_CHUNK_SIZE) &&
       typeof attachment.createdAt === "number" &&
-      typeof attachment.sequence === "number"
+      typeof attachment.sequence === "number" &&
+      (attachment.taskRequestId === undefined ||
+        (typeof attachment.taskRequestId === "string" &&
+          attachment.taskRequestId.length > 0 &&
+          attachment.taskRequestId.length <= 64))
     )
   }
 
@@ -1395,6 +1401,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       size: attachment.size,
       sequence: attachment.sequence,
       createdAt: attachment.createdAt,
+      ...(attachment.taskRequestId
+        ? { taskRequestId: attachment.taskRequestId }
+        : {}),
     }))
   }
 
@@ -2007,10 +2016,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
-  private toAttachmentEvent(attachment: RoomAttachment): AgentEvent {
+  private toAttachmentEvent(
+    attachment: RoomAttachment,
+    participantId: string,
+    taskProjection: TaskProjectionIndex
+  ): AgentEvent | undefined {
+    if (
+      attachment.taskRequestId !== undefined &&
+      !taskAgentParticipates(
+        taskProjection,
+        attachment.taskRequestId,
+        participantId
+      )
+    )
+      return undefined
     return {
       sequence: attachment.sequence,
       type: "image",
+      ...(attachment.taskRequestId
+        ? { scopeId: `task:${attachment.taskRequestId}` }
+        : {}),
       participant: {
         id: attachment.senderId,
         name: attachment.senderName,
@@ -2021,6 +2046,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         fileName: attachment.fileName,
         mimeType: attachment.mimeType,
         size: attachment.size,
+        ...(attachment.taskRequestId
+          ? { taskRequestId: attachment.taskRequestId }
+          : {}),
       },
       addressed: false,
       createdAt: attachment.createdAt,
@@ -2058,13 +2086,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           },
         ]
       }),
-      ...room.attachments.map((attachment) => ({
-        sequence: attachment.sequence,
-        event: this.toAttachmentEvent(attachment),
-        peerId: attachment.senderId,
-        visible: true,
-        deliverOwn: false,
-      })),
+      ...room.attachments.flatMap((attachment) => {
+        const event = this.toAttachmentEvent(
+          attachment,
+          participantId,
+          taskProjection
+        )
+        return event
+          ? [
+              {
+                sequence: attachment.sequence,
+                event,
+                peerId: attachment.senderId,
+                visible: true,
+                deliverOwn: false,
+              },
+            ]
+          : []
+      }),
     ].sort((left, right) => left.sequence - right.sequence)
     const coverageFloor = this.retainedEventCoverageFloor(events)
     const truncated = coverageFloor > 0 && clampedCursor < coverageFloor - 1
@@ -2107,9 +2146,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.toAgentEvent(message, participantId, taskProjection, true)
         )
         .filter((event): event is AgentEvent => event !== undefined),
-      ...room.attachments.map((attachment) =>
-        this.toAttachmentEvent(attachment)
-      ),
+      ...room.attachments
+        .map((attachment) =>
+          this.toAttachmentEvent(attachment, participantId, taskProjection)
+        )
+        .filter((event): event is AgentEvent => event !== undefined),
     ].sort((left, right) => left.sequence - right.sequence)
   }
 
@@ -3246,21 +3287,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
-      const validation = validateTaskLiveViewSnapshot(request.surface)
-      if (validation.ok === false)
-        return this.json({ error: validation.error }, 400)
       if (
         typeof request.taskRequestId !== "string" ||
-        request.taskRequestId.trim() !== validation.snapshot.taskRequestId
+        !request.taskRequestId.trim()
       )
+        return this.json({ error: "invalid_task_request" }, 400)
+      const taskRequestId = request.taskRequestId.trim()
+      const canonical = validateTaskLiveViewSnapshot(request.surface)
+      const draft = canonical.ok
+        ? {
+            ok: true as const,
+            draft: {
+              surfaceId: canonical.snapshot.surfaceId,
+              revision: canonical.snapshot.revision,
+              root: canonical.snapshot.root,
+              data: canonical.snapshot.data,
+            },
+          }
+        : validateTaskLiveViewDraft(request.surface)
+      if (draft.ok === false) return this.json({ error: draft.error }, 400)
+      if (canonical.ok && canonical.snapshot.taskRequestId !== taskRequestId)
         return this.json({ error: "invalid_task_request" }, 400)
 
       const task = buildTaskProjectionIndex(
         room.messages,
         room.participants
-      ).tasks.get(request.taskRequestId)
+      ).tasks.get(taskRequestId)
       if (!task) return this.json({ error: "unknown_task_request" }, 409)
-      const current = room.taskLiveViews?.[request.taskRequestId]
+      const current = room.taskLiveViews?.[taskRequestId]
       const authorityAgentId =
         current?.authorityAgentId ??
         initialTaskAgentParticipantId(task.request, room.participants)
@@ -3268,11 +3322,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "live_view_not_authorized" }, 403)
 
       if (current) {
-        if (current.surfaceId !== validation.snapshot.surfaceId)
+        if (current.surfaceId !== draft.draft.surfaceId)
           return this.json({ error: "live_view_surface_mismatch" }, 409)
-        if (validation.snapshot.revision <= current.revision)
+        if (draft.draft.revision <= current.revision)
           return this.json({ error: "live_view_revision_conflict" }, 409)
-      } else if (validation.snapshot.revision !== 1) {
+      } else if (draft.draft.revision !== 1) {
         return this.json({ error: "live_view_revision_conflict" }, 409)
       }
       if (
@@ -3282,19 +3336,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "live_view_capacity" }, 409)
 
       const snapshot: TaskLiveViewSnapshot = {
-        ...validation.snapshot,
-        taskRequestId: request.taskRequestId,
+        ...draft.draft,
+        taskRequestId,
         authorityAgentId: participant.id,
       }
       room.taskLiveViews = {
         ...(room.taskLiveViews ?? {}),
-        [request.taskRequestId]: snapshot,
+        [taskRequestId]: snapshot,
       }
       if (this.taskLiveViewsCache === null) this.taskLiveViewsCache = new Map()
-      this.taskLiveViewsCache.set(request.taskRequestId, snapshot)
-      this.taskLiveViewDeletedKeys.delete(
-        this.taskLiveViewKey(request.taskRequestId)
-      )
+      this.taskLiveViewsCache.set(taskRequestId, snapshot)
+      this.taskLiveViewDeletedKeys.delete(this.taskLiveViewKey(taskRequestId))
       participant.lastSeenAt = Date.now()
       await Promise.all([
         this.saveRoom(room),
@@ -4030,6 +4082,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           fileName: payload.attachment.fileName,
           mimeType: payload.attachment.mimeType,
           size: payload.attachment.size,
+          ...(payload.attachment.taskRequestId
+            ? { taskRequestId: payload.attachment.taskRequestId }
+            : {}),
         },
         data: payload.data,
         expiresAt: room.expiresAt,
@@ -4069,6 +4124,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             fileName: payload.attachment.fileName,
             mimeType: payload.attachment.mimeType,
             size: payload.attachment.size,
+            ...(payload.attachment.taskRequestId
+              ? { taskRequestId: payload.attachment.taskRequestId }
+              : {}),
           },
           data: payload.data,
           expiresAt: room.expiresAt,
@@ -5701,6 +5759,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const token = request.headers.get("X-Room-Participant-Token") ?? ""
     const participant = this.findParticipant(room, participantId, token)
     if (!participant) return this.json({ error: "unauthorized" }, 401)
+    const requestedTaskRequestId =
+      request.headers.get("X-Task-Request-Id")?.trim() || undefined
+    if (requestedTaskRequestId !== undefined) {
+      if (participant.kind !== "agent")
+        return this.json({ error: "task_attachment_agent_only" }, 403)
+      const taskResolution = resolveTaskRequest(
+        buildTaskProjectionIndex(room.messages, room.participants),
+        requestedTaskRequestId,
+        room.participants
+      )
+      if ("error" in taskResolution)
+        return this.json(
+          { error: taskResolution.error },
+          taskResolution.error === "unknown_task_request" ? 409 : 403
+        )
+      if (!taskResolution.agentParticipantIds.includes(participant.id))
+        return this.json({ error: "task_attachment_not_participant" }, 403)
+    }
     // #106: agents as well as humans may contribute to the room's bounded
     // ephemeral attachment set — a collaborating agent's screenshot/log/JSON
     // artifact rides the exact same store, limits, and eviction rules as
@@ -5744,6 +5820,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       chunkCount,
       createdAt: Date.now(),
       sequence: room.nextMessageSequence + 1,
+      ...(requestedTaskRequestId
+        ? { taskRequestId: requestedTaskRequestId }
+        : {}),
     }
     try {
       for (let index = 0; index < chunkCount; index += 1) {

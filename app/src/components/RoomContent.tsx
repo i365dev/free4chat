@@ -204,6 +204,23 @@ export default function RoomContent({
   const interactionMessages = activeTask
     ? activeTask.messages
     : roomMessagesForView(messages)
+  const referencedAttachmentIds = new Set(
+    interactionMessages.flatMap(
+      (message) => message.collab?.attachmentIds ?? []
+    )
+  )
+  const roomAttachments = attachments ?? []
+  const interactionAttachments = activeTask
+    ? roomAttachments.filter(
+        (attachment) =>
+          attachment.taskRequestId === activeTask.requestId &&
+          !referencedAttachmentIds.has(attachment.id)
+      )
+    : roomAttachments.filter(
+        (attachment) =>
+          attachment.taskRequestId === undefined &&
+          !referencedAttachmentIds.has(attachment.id)
+      )
   const activeTaskActivities = activeTask
     ? (agentActivities ?? []).filter(
         (activity) =>
@@ -1050,7 +1067,7 @@ export default function RoomContent({
                 room={roomName}
                 nickName={nickName}
                 messages={interactionMessages}
-                attachments={activeTask ? [] : attachments}
+                attachments={interactionAttachments}
                 participants={participants}
                 pendingFiles={activeTask ? [] : pendingFiles}
                 onSendText={wrappedSendText}

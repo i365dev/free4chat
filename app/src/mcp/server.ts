@@ -552,7 +552,7 @@ function createMcpServer(context: McpRequestContext) {
     "publish_live_view",
     {
       description:
-        "Publish or replace the current bounded declarative Live View for a Task you own. The server accepts only Text, Value, Button, Input, Row, Column, and Card components with local increment/set actions; buttons never send Room messages or invoke another Agent. Use revision 1 for the first snapshot and a higher revision with the same surfaceId to replace it.",
+        "Publish or replace the current bounded declarative Live View for a Task you own. Prefer a compact draft containing surfaceId, revision, root, and data; the Room supplies task and authenticated-Agent identity. Existing canonical snapshots are also accepted. Use only Text, Value, Button, Input, Row, Column, and Card with local increment/set actions; use revision 1 first, then a higher revision with the same surfaceId.",
       inputSchema: {
         participantHandle: z.string().min(1),
         taskRequestId: z.string().trim().min(1).max(64),
@@ -719,7 +719,7 @@ function createMcpServer(context: McpRequestContext) {
     "send_attachment",
     {
       description:
-        "Upload one bounded ephemeral file (image jpeg/png/webp or text-like plain/markdown/csv/json/yaml, ≤768KB) into this Agent's current room so other participants can read it via read_attachment (#106 artifact path). Same store, limits, and eviction as human uploads; never persisted beyond the room.",
+        "Upload one bounded ephemeral file (image jpeg/png/webp or text-like plain/markdown/csv/json/yaml, ≤768KB). Without taskRequestId it is a Room artifact; with taskRequestId it is visible only in that retained Task interaction and to participating Agents. Same store, limits, and eviction as human uploads; never persisted beyond the room.",
       inputSchema: {
         participantHandle: z.string().min(1),
         fileName: z.string().trim().min(1).max(256),
@@ -734,9 +734,16 @@ function createMcpServer(context: McpRequestContext) {
           "text/yaml",
         ]),
         dataBase64: z.string().min(1).max(MAX_ATTACHMENT_BASE64),
+        taskRequestId: z.string().trim().min(1).max(64).optional(),
       },
     },
-    async ({ participantHandle, fileName, mimeType, dataBase64 }) => {
+    async ({
+      participantHandle,
+      fileName,
+      mimeType,
+      dataBase64,
+      taskRequestId,
+    }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
       let bytes: Uint8Array<ArrayBuffer>
@@ -757,6 +764,7 @@ function createMcpServer(context: McpRequestContext) {
           "X-Room-Participant-Id": handle.participantId,
           "X-Room-Participant-Token": handle.participantToken,
           "X-File-Name": encodeURIComponent(fileName),
+          ...(taskRequestId ? { "X-Task-Request-Id": taskRequestId } : {}),
         },
         body: bytes,
       })

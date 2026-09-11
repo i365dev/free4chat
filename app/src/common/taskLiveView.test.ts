@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   applyTaskLiveViewAction,
   reconcileTaskLiveViewState,
+  validateTaskLiveViewDraft,
   validateTaskLiveViewSnapshot,
 } from "./taskLiveView"
 
@@ -32,6 +33,18 @@ const snapshot = (revision = 1, count = 0) => ({
 })
 
 describe("Task Live View contract", () => {
+  it("accepts the compact Agent-authored draft without Room-owned identity", () => {
+    const {
+      taskRequestId: _task,
+      authorityAgentId: _authority,
+      ...draft
+    } = snapshot()
+    expect(validateTaskLiveViewDraft(draft)).toMatchObject({
+      ok: true,
+      draft: { surfaceId: "counter", revision: 1 },
+    })
+  })
+
   it("accepts the bounded counter surface and applies actions locally", () => {
     const result = validateTaskLiveViewSnapshot(snapshot())
     expect(result.ok).toBe(true)

@@ -799,23 +799,31 @@ func TestCollabAndSurfaceSurfaces(t *testing.T) {
 
 func TestUploadAttachment(t *testing.T) {
 	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		params, _ := body["params"].(map[string]any)
+		arguments, _ := params["arguments"].(map[string]any)
+		if arguments["taskRequestId"] != "task-1" {
+			t.Fatalf("task correlation was not sent: %#v", body)
+		}
 		writeJSON(w, callResult(map[string]any{
 			"attachment": map[string]any{
-				"id":       "att-9",
-				"fileName": "report.md",
-				"mimeType": "text/markdown",
-				"size":     float64(120),
-				"sequence": float64(14),
+				"id":            "att-9",
+				"fileName":      "report.md",
+				"mimeType":      "text/markdown",
+				"size":          float64(120),
+				"sequence":      float64(14),
+				"taskRequestId": "task-1",
 			},
 		}))
 	})
 	uploaded, err := client.UploadAttachment("h", types.AttachmentUpload{
-		FileName:   "report.md",
-		MimeType:   "text/markdown",
-		DataBase64: "IyByZXBvcnQ=",
+		FileName:      "report.md",
+		MimeType:      "text/markdown",
+		DataBase64:    "IyByZXBvcnQ=",
+		TaskRequestID: "task-1",
 	})
 	if err != nil || uploaded.ID != "att-9" || uploaded.Size != 120 ||
-		uploaded.FileName != "report.md" || uploaded.MimeType != "text/markdown" {
+		uploaded.FileName != "report.md" || uploaded.MimeType != "text/markdown" ||
+		uploaded.TaskRequestID != "task-1" {
 		t.Fatalf("upload mismatch: %+v %v", uploaded, err)
 	}
 }

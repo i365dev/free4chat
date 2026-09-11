@@ -1213,12 +1213,16 @@ func sendSequence(c *Client, tool string, payload map[string]any) (types.SendTex
 
 // UploadAttachment stores an artifact in the room's ephemeral attachment store.
 func (c *Client) UploadAttachment(participantHandle string, file types.AttachmentUpload) (types.UploadedAttachment, error) {
-	result, err := c.callTool("send_attachment", map[string]any{
+	payload := map[string]any{
 		"participantHandle": participantHandle,
 		"fileName":          file.FileName,
 		"mimeType":          file.MimeType,
 		"dataBase64":        file.DataBase64,
-	})
+	}
+	if file.TaskRequestID != "" {
+		payload["taskRequestId"] = file.TaskRequestID
+	}
+	result, err := c.callTool("send_attachment", payload)
 	if err != nil {
 		return types.UploadedAttachment{}, err
 	}
@@ -1246,12 +1250,14 @@ func (c *Client) UploadAttachment(participantHandle string, file types.Attachmen
 	if mimeType == "" {
 		mimeType = file.MimeType
 	}
+	taskRequestID, _ := attachment["taskRequestId"].(string)
 	return types.UploadedAttachment{
 		RoomAttachmentMetadata: types.RoomAttachmentMetadata{
-			ID:       id,
-			FileName: fileName,
-			MimeType: mimeType,
-			Size:     size,
+			ID:            id,
+			FileName:      fileName,
+			MimeType:      mimeType,
+			Size:          size,
+			TaskRequestID: taskRequestID,
 		},
 		Sequence: sequence,
 	}, nil
