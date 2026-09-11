@@ -5,6 +5,9 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - "app/**"
+      - "docs/**"
+      - "AGENTS.md"
+      - "README.md"
       - ".github/workflows/pr-autofix.yml"
 
 permissions:
@@ -45,6 +48,22 @@ jobs:
           yarn lint
         working-directory: app
 
+      - name: Sync Task / Live View docs assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("AGENTS.md")
+          text = path.read_text()
+          old = '`/mcp` is a stateless MCP v2 endpoint built with `createMcpHandler` from `agents/mcp/server` and `McpServer` from `@modelcontextprotocol/server`. It exposes seventeen tools — `room_info`, `read_room_context`, `join_room`, `create_room`, `wait_for_events`, `send_text`, `update_capabilities`, `update_runtime_host`, `send_collab_request`, `send_collab_response`, `send_collab_result`, `send_attachment`, `publish_surface`, `clear_surface`, `read_surface`, `read_attachment`, and `leave_room`; `app/public/agent.md` is the canonical contract.'
+          new = '`/mcp` is a stateless MCP v2 endpoint built with `createMcpHandler` from `agents/mcp/server` and `McpServer` from `@modelcontextprotocol/server`. It exposes eighteen tools — `room_info`, `read_room_context`, `join_room`, `create_room`, `wait_for_events`, `send_text`, `update_capabilities`, `update_runtime_host`, `send_collab_request`, `send_collab_response`, `send_collab_result`, `send_attachment`, `publish_surface`, `clear_surface`, `read_surface`, `read_attachment`, `publish_live_view`, and `leave_room`; `app/public/agent.md` is the canonical contract.'
+          if old not in text:
+              raise SystemExit("expected AGENTS.md MCP tool paragraph not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          yarn docs:generate
+        working-directory: .
+
       - name: Commit fixes when needed
         id: commit
         run: |
@@ -55,14 +74,11 @@ jobs:
 
           git config user.name "free4chat-autofix[bot]"
           git config user.email "free4chat-autofix[bot]@users.noreply.github.com"
-          git add app
-          git commit -m "chore: apply automated frontend fixes"
+          git add app AGENTS.md
+          git commit -m "docs: regenerate discovery assets"
           git push origin "HEAD:$HEAD_REF"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
-      # Commits created with GITHUB_TOKEN do not normally start another
-      # pull_request workflow. Explicitly dispatch the normal CI workflow on
-      # the updated branch so the new head SHA gets fresh validation.
       - name: Validate autofixed head
         if: steps.commit.outputs.changed == 'true'
         env:
