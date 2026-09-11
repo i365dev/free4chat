@@ -111,20 +111,71 @@ type staleSinkError struct{}
 
 func (*staleSinkError) Error() string { return "sink broken" }
 
+// eventRecorder collects SpeakerEvents. OnEvent fires from the speaker's own
+// drain goroutine, so every read and write is mutex-guarded: a bare slice here
+// makes the test itself racy (and is invisible without -race).
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []SpeakerEvent
+}
+
+func (r *eventRecorder) record(event SpeakerEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *eventRecorder) snapshot() []SpeakerEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]SpeakerEvent(nil), r.events...)
+}
+
+func (r *eventRecorder) hasEvent(kind string) bool {
+	for _, event := range r.snapshot() {
+		if event.Type == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *eventRecorder) hasCancelledTurn(turn int) bool {
+	for _, event := range r.snapshot() {
+		if event.Type == "turnCancelled" && event.Turn == turn {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForEvent polls until kind arrives or the timeout expires.
+func (r *eventRecorder) waitForEvent(t *testing.T, kind string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if r.hasEvent(kind) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("event %q never arrived: %v", kind, r.snapshot())
+}
+
 func TestSpeakerFIFOAndNewTurnCancelsOld(t *testing.T) {
 	sink := &recordingSink{}
 	provider := &fakeTtsProvider{}
-	events := []SpeakerEvent{}
+	recorder := &eventRecorder{}
 	speaker := NewSpeaker(Options{
 		Provider:      provider,
 		CreateSink:    func(uint64) (Sink, error) { return sink, nil },
 		MaxChunkChars: 6,
-		OnEvent:       func(event SpeakerEvent) { events = append(events, event) },
+		OnEvent:       recorder.record,
 	})
 	// A first speak has no previous turn: no spurious cancel; a normal
 	// completion must endTurn exactly once.
 	speaker.Speak("aaaaaa，bbbbbb")
-	waitForFinished(t, &events, 2*time.Second)
+	recorder.waitForEvent(t, "turnFinished", 2*time.Second)
 	if sink.cancelCount() != 0 {
 		t.Fatalf("first speak must not cancel anything, got %d", sink.cancelCount())
 	}
@@ -136,12 +187,12 @@ func TestSpeakerFIFOAndNewTurnCancelsOld(t *testing.T) {
 
 func TestSpeakerSecondSpeakCancelsFirstSynchronously(t *testing.T) {
 	sink := &recordingSink{}
-	events := []SpeakerEvent{}
+	recorder := &eventRecorder{}
 	speaker := NewSpeaker(Options{
 		Provider:      &fakeTtsProvider{},
 		CreateSink:    func(uint64) (Sink, error) { return sink, nil },
 		MaxChunkChars: 6,
-		OnEvent:       func(event SpeakerEvent) { events = append(events, event) },
+		OnEvent:       recorder.record,
 	})
 	// Back-to-back speaks: the newest addressed turn wins deterministically
 	// (Speak cancels synchronously before starting its own drain). The
@@ -150,20 +201,11 @@ func TestSpeakerSecondSpeakCancelsFirstSynchronously(t *testing.T) {
 	// was lazily created — Node parity).
 	speaker.Speak("aaaaaa")
 	speaker.Speak("bbbbbb")
-	if !hasCancelledTurn(events, 1) {
-		t.Fatalf("second speak must cancel the first turn: %v", events)
+	if !recorder.hasCancelledTurn(1) {
+		t.Fatalf("second speak must cancel the first turn: %v", recorder.snapshot())
 	}
-	waitForFinished(t, &events, 2*time.Second)
+	recorder.waitForEvent(t, "turnFinished", 2*time.Second)
 	_ = speaker.Close()
-}
-
-func hasCancelledTurn(events []SpeakerEvent, turn int) bool {
-	for _, event := range events {
-		if event.Type == "turnCancelled" && event.Turn == turn {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *recordingSink) cancelCount() int {
@@ -180,20 +222,14 @@ func (s *recordingSink) endCount() int {
 
 func TestSpeakerProviderFailureIsTextSafe(t *testing.T) {
 	sink := &recordingSink{}
-	events := []SpeakerEvent{}
+	recorder := &eventRecorder{}
 	speaker := NewSpeaker(Options{
 		Provider:   &failingProvider{},
 		CreateSink: func(uint64) (Sink, error) { return sink, nil },
-		OnEvent:    func(event SpeakerEvent) { events = append(events, event) },
+		OnEvent:    recorder.record,
 	})
 	speaker.Speak("hello there")
-	deadline := time.Now().Add(2 * time.Second)
-	for !hasEvent(events, "turnFailed") && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !hasEvent(events, "turnFailed") {
-		t.Fatalf("provider failure must surface as turnFailed: %v", events)
-	}
+	recorder.waitForEvent(t, "turnFailed", 2*time.Second)
 	// The speaker itself must remain usable (a fresh provider round would
 	// succeed in production; here Close must be clean and bounded).
 	if err := speaker.Close(); err != nil {
@@ -207,43 +243,19 @@ func (*failingProvider) CreateSession() (speech.StreamingTtsSession, error) {
 	return nil, errSinkBroken
 }
 
-func hasEvent(events []SpeakerEvent, kind string) bool {
-	for _, event := range events {
-		if event.Type == kind {
-			return true
-		}
-	}
-	return false
-}
-
-func waitForFinished(t *testing.T, events *[]SpeakerEvent, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if hasEvent(*events, "turnFinished") {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("turn never finished: %v", *events)
-}
-
 func TestSpeakerCancelDiscardsStaleAudio(t *testing.T) {
 	sink := &recordingSink{}
-	events := []SpeakerEvent{}
+	recorder := &eventRecorder{}
 	speaker := NewSpeaker(Options{
 		Provider:      &fakeTtsProvider{},
 		CreateSink:    func(uint64) (Sink, error) { return sink, nil },
 		MaxChunkChars: 4,
-		OnEvent:       func(event SpeakerEvent) { events = append(events, event) },
+		OnEvent:       recorder.record,
 	})
 	speaker.Speak("aaaa，bbbb，cccc")
 	time.Sleep(2 * time.Millisecond) // mid-drain: first chunk synthesized only
 	speaker.Cancel()
-	time.Sleep(50 * time.Millisecond)
-	if !hasEvent(events, "turnCancelled") {
-		t.Fatalf("cancel must report turnCancelled: %v", events)
-	}
+	recorder.waitForEvent(t, "turnCancelled", 2*time.Second)
 	if sink.endCount() != 0 {
 		t.Fatal("cancelled turn must never endTurn")
 	}

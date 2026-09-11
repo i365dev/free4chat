@@ -341,13 +341,11 @@ func TestResidentRuntimeUsesLeaseParsedFromMCPJoin(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if body.Method == "tools/list" {
-			tools := make([]map[string]string, 0, 16)
-			for _, name := range []string{
-				"room_info", "read_room_context", "join_room", "create_room", "wait_for_events",
-				"send_text", "read_attachment", "leave_room", "update_capabilities",
-				"send_collab_request", "send_collab_response", "send_collab_result",
-				"send_attachment", "publish_surface", "clear_surface", "read_surface",
-			} {
+			// Derived from the client's own handshake contract so this double
+			// cannot silently fall behind it.
+			names := free4chat.RequiredToolNames()
+			tools := make([]map[string]string, 0, len(names))
+			for _, name := range names {
 				tools = append(tools, map[string]string{"name": name})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{

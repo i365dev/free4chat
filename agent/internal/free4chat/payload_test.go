@@ -2,6 +2,7 @@ package free4chat
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -224,5 +225,117 @@ func TestParseRuntimeHostStrictFailsClosed(t *testing.T) {
 		if host := ParseRuntimeHostStrict(payload); host != nil {
 			t.Fatalf("%s: malformed payload must fail closed, got %+v", name, host)
 		}
+	}
+}
+
+func validRoomEventPayload() map[string]any {
+	return map[string]any{
+		"sequence":  7,
+		"type":      "text",
+		"text":      "hello room",
+		"addressed": true,
+		"createdAt": 1700000000000,
+		"participant": map[string]any{
+			"id":   "human-1",
+			"name": "Ada",
+			"kind": "human",
+		},
+	}
+}
+
+func TestParseRoomEventsFailsClosedOnMalformedElements(t *testing.T) {
+	malformed := map[string]any{
+		"object with wrong field type": map[string]any{"sequence": "not-a-number", "type": "text"},
+		"null element":                 nil,
+		"scalar element":               42,
+		"string element":               "not-an-event",
+		"participant wrong type":       map[string]any{"sequence": 1, "type": "text", "participant": "human-1"},
+	}
+	for name, element := range malformed {
+		if events, err := parseRoomEvents([]any{element}); err == nil {
+			t.Fatalf("%s: malformed element must fail closed, got %d events", name, len(events))
+		}
+	}
+}
+
+func TestParseRoomEventsRejectsPartialSuccess(t *testing.T) {
+	// A valid event followed by a malformed one must not yield the valid
+	// prefix: the caller pairs this list with a server cursor, so accepting a
+	// partial list would advance past the event that was dropped.
+	events, err := parseRoomEvents([]any{
+		validRoomEventPayload(),
+		map[string]any{"sequence": "not-a-number"},
+	})
+	if err == nil {
+		t.Fatalf("partial event list must not succeed, got %d events", len(events))
+	}
+	if events != nil {
+		t.Fatalf("partial parse must not return events, got %+v", events)
+	}
+	// The mutation is detected before the short-circuit, proving the failure
+	// is not merely a later-element accident.
+	if _, err := parseRoomEvents([]any{map[string]any{"sequence": "not-a-number"}, validRoomEventPayload()}); err == nil {
+		t.Fatal("malformed leading element must fail closed")
+	}
+}
+
+func TestParseRoomEventsRejectsNonArrayPayload(t *testing.T) {
+	for name, raw := range map[string]any{
+		"object": map[string]any{"sequence": 1},
+		"string": "events",
+		"number": 3,
+	} {
+		if _, err := parseRoomEvents(raw); err == nil {
+			t.Fatalf("%s: a present non-array event list must fail closed", name)
+		}
+	}
+	if events, err := parseRoomEvents(nil); err != nil || len(events) != 0 {
+		t.Fatalf("an absent event list is still no events: %v %+v", err, events)
+	}
+}
+
+func TestParseRoomEventsKeepsForwardCompatibleFields(t *testing.T) {
+	payload := validRoomEventPayload()
+	payload["futureField"] = map[string]any{"nested": []any{1, 2, 3}}
+	payload["anotherFutureField"] = "ignored"
+	events, err := parseRoomEvents([]any{payload})
+	if err != nil {
+		t.Fatalf("unknown forward-compatible fields must stay accepted: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("want 1 event, got %d", len(events))
+	}
+	if events[0].Sequence != 7 || events[0].Text != "hello room" || !events[0].Addressed {
+		t.Fatalf("known fields must survive: %+v", events[0])
+	}
+}
+
+// TestWaitForEventsDoesNotAdvanceCursorOnMalformedEvent is the caller-level
+// half of the fail-closed contract: a malformed event must leave the caller
+// with an error and no cursor to adopt.
+func TestWaitForEventsDoesNotAdvanceCursorOnMalformedEvent(t *testing.T) {
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		if toolNameOf(body) != "" && toolNameOf(body) != "wait_for_events" {
+			t.Fatalf("unexpected tool: %q", toolNameOf(body))
+		}
+		if toolNameOf(body) == "" {
+			respondToolsList(w)
+			return
+		}
+		writeJSON(w, callResult(map[string]any{
+			"events":    []any{map[string]any{"sequence": "not-a-number"}},
+			"cursor":    99,
+			"expiresAt": 1700000000000,
+		}))
+	})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("connect failed: %v", err)
+	}
+	wait, err := client.WaitForEvents("handle", 5, 1)
+	if err == nil {
+		t.Fatal("malformed event must fail the wait")
+	}
+	if wait.Cursor != 0 || len(wait.Events) != 0 {
+		t.Fatalf("cancelled wait must not surface a cursor or events: %+v", wait)
 	}
 }

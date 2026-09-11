@@ -183,23 +183,48 @@ func NormalizeRoster(raw []any) []types.ParticipantRosterEntry {
 	return entries
 }
 
-// parseRoomEvents coerces a raw events array into typed room events; the
-// server payloads are trusted to carry the documented wire shape while
-// missing optional fields stay absent.
+// parseRoomEvents coerces a raw events array into typed room events. It fails
+// closed: an element that cannot be decoded is an error, not a silently
+// shortened list. Both callers pair these events with a server cursor, so a
+// dropped element would let the Runtime adopt a newer cursor while an event it
+// was told about never reached the Harness. Unknown fields on an otherwise
+// valid event stay forward-compatible. An absent list (nil) is still "no
+// events"; only a present-but-wrong-typed list is malformed.
 func parseRoomEvents(raw any) ([]types.RoomEvent, error) {
+	if raw == nil {
+		return []types.RoomEvent{}, nil
+	}
 	list, ok := raw.([]any)
 	if !ok {
-		return nil, nil
+		return nil, &Error{
+			Message: fmt.Sprintf("Free4Chat returned a malformed room event list (%T)", raw),
+			Code:    CodeToolError,
+		}
 	}
 	events := make([]types.RoomEvent, 0, len(list))
-	for _, item := range list {
-		data, err := json.Marshal(item)
+	for index, item := range list {
+		// A JSON null unmarshals into a zero-value struct without error, so
+		// the element has to be an object before it is decoded at all.
+		object, ok := item.(map[string]any)
+		if !ok {
+			return nil, &Error{
+				Message: fmt.Sprintf("Free4Chat room event %d is not an object (%T)", index, item),
+				Code:    CodeToolError,
+			}
+		}
+		data, err := json.Marshal(object)
 		if err != nil {
-			continue
+			return nil, &Error{
+				Message: fmt.Sprintf("Free4Chat room event %d could not be encoded: %v", index, err),
+				Code:    CodeToolError,
+			}
 		}
 		var event types.RoomEvent
 		if err := json.Unmarshal(data, &event); err != nil {
-			continue
+			return nil, &Error{
+				Message: fmt.Sprintf("Free4Chat room event %d is malformed: %v", index, err),
+				Code:    CodeToolError,
+			}
 		}
 		events = append(events, event)
 	}

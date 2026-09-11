@@ -24,6 +24,13 @@ const (
 	defaultCancelGraceMs   = 2_000
 	maxPromptImagesPerTurn = 2
 
+	// defaultControlTimeoutMs bounds every non-turn ACP control request
+	// (initialize, session/new, session/set_mode, session/set_config_option).
+	// A Harness that stays alive but never answers must not be able to block
+	// Runtime setup or control forever. Turn execution has its own
+	// TurnTimeoutMs lifecycle and is deliberately not governed by this.
+	defaultControlTimeoutMs = 20_000
+
 	protocolVersion = 1
 	clientName      = "free4chat-agent-runtime"
 	clientVersion   = "0.1.0"
@@ -40,6 +47,12 @@ func (e *TurnTimeoutError) Error() string {
 type AdapterOptions struct {
 	TurnTimeoutMs int64
 	CancelGraceMs int64
+	// ControlTimeoutMs bounds every non-turn ACP control request. A control
+	// request that never answers leaves the Harness's state ambiguous — it may
+	// have applied the change and lost the reply — so a timeout tears the
+	// affected child down and lets the next EnsureSession renegotiate a
+	// known-clean session rather than continuing on top of unknown state.
+	ControlTimeoutMs int64
 	// AgentEnv is a map of explicitly authorized Harness environment variable
 	// NAMES -> VALUES resolved from the CLI process at join/create time.
 	// It is ephemeral launch material: never returned in daemon responses,
@@ -164,7 +177,10 @@ type ACPActivityHandler func(scope string, state types.AgentActivityState)
 type ACPCapabilities struct {
 	Images bool
 	// ResumePresent mirrors the Node `resume != null` check: the mere
-	// presence of the sessionCapabilities.resume key counts as support.
+	// presence of the sessionCapabilities.resume key counts as the Harness
+	// advertising resume. It is recorded for diagnostics only and is
+	// deliberately NOT projected into types.HarnessCapabilities: Free4Chat
+	// never sends `session/load`, so it cannot offer usable resume.
 	ResumePresent bool
 	// ClosePresent gates the graceful session/close attempt on shutdown.
 	ClosePresent bool
@@ -288,6 +304,9 @@ func NewACPAdapter(launcher types.AgentLauncher, workingDir string, options Adap
 	if options.CancelGraceMs <= 0 {
 		options.CancelGraceMs = defaultCancelGraceMs
 	}
+	if options.ControlTimeoutMs <= 0 {
+		options.ControlTimeoutMs = defaultControlTimeoutMs
+	}
 	return &ACPAdapter{
 		launcher:           launcher,
 		workingDir:         workingDir,
@@ -312,7 +331,6 @@ func (a *ACPAdapter) Capabilities() *types.HarnessCapabilities {
 	return &types.HarnessCapabilities{
 		Text:   true,
 		Images: a.caps.Images,
-		Resume: a.caps.ResumePresent,
 	}
 }
 
@@ -609,7 +627,9 @@ func (a *ACPAdapter) EnsureSession() error {
 	proc := newHarnessProcess(command)
 	a.proc = proc
 	a.stdin = stdinPipe
-	a.nextID = 0
+	// Request ids stay monotonic for the whole adapter lifetime rather than
+	// restarting per child: a late reply from a torn-down child must never be
+	// able to match a later call that happened to reuse the same id.
 	a.gen++
 	a.sessionID = ""
 	a.caps = nil
@@ -1343,7 +1363,11 @@ func (a *ACPAdapter) writeFrame(frame []byte) error {
 	return nil
 }
 
-// request sends a JSON-RPC request and awaits its response.
+// request sends a JSON-RPC request and awaits its response. Every caller is a
+// non-turn control request, so the wait is bounded by ControlTimeoutMs: a
+// Harness that stays alive but never answers must not be able to block Runtime
+// setup or control forever. Turn execution uses session/prompt and its own
+// turn timeout, and never goes through here.
 func (a *ACPAdapter) request(method string, params []byte) (*acpMessage, error) {
 	a.mu.Lock()
 	if a.stdin == nil {
@@ -1352,6 +1376,7 @@ func (a *ACPAdapter) request(method string, params []byte) (*acpMessage, error) 
 	}
 	a.nextID++
 	id, _ := json.Marshal(a.nextID)
+	key := compactJSON(id)
 	envelope, _ := json.Marshal(acpMessage{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -1359,20 +1384,60 @@ func (a *ACPAdapter) request(method string, params []byte) (*acpMessage, error) 
 		Params:  params,
 	})
 	call := &pendingCall{result: make(chan *acpMessage, 1)}
-	a.pending[compactJSON(id)] = call
+	a.pending[key] = call
 	a.mu.Unlock()
 
 	if err := a.writeFrame(envelope); err != nil {
+		a.releasePending(key, call)
 		return nil, fmt.Errorf("ACP write failed: %w", err)
 	}
-	response := <-call.result
-	if response == nil {
-		return nil, errors.New("ACP process exited")
+	timeout := time.Duration(a.options.ControlTimeoutMs) * time.Millisecond
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case response := <-call.result:
+		if response == nil {
+			return nil, errors.New("ACP process exited")
+		}
+		if response.Error != nil {
+			return response, fmt.Errorf("ACP %s failed: %s", method, response.Error.Message)
+		}
+		return response, nil
+	case <-timer.C:
+		// The Harness accepted the frame and never answered, so its state is
+		// ambiguous: the change may or may not have been applied. Drop the
+		// call so any late reply is discarded by dispatch, then fail closed on
+		// the child instead of continuing with a session whose state no longer
+		// matches ours. The next EnsureSession spawns and renegotiates.
+		a.releasePending(key, call)
+		a.forceClose()
+		return nil, &ControlRequestTimeoutError{
+			Method:    method,
+			TimeoutMs: a.options.ControlTimeoutMs,
+		}
 	}
-	if response.Error != nil {
-		return response, fmt.Errorf("ACP %s failed: %s", method, response.Error.Message)
+}
+
+// ControlRequestTimeoutError reports a non-turn ACP control request that never
+// answered. The adapter has already torn the affected child down by the time
+// this is returned, so the caller must treat the session as gone.
+type ControlRequestTimeoutError struct {
+	Method    string
+	TimeoutMs int64
+}
+
+func (e *ControlRequestTimeoutError) Error() string {
+	return fmt.Sprintf("ACP %s timed out after %dms", e.Method, e.TimeoutMs)
+}
+
+// releasePending drops one in-flight call so a late reply is discarded. The
+// identity check keeps it from deleting a newer call that reused the key.
+func (a *ACPAdapter) releasePending(key string, call *pendingCall) {
+	a.mu.Lock()
+	if a.pending[key] == call {
+		delete(a.pending, key)
 	}
-	return response, nil
+	a.mu.Unlock()
 }
 
 func responseFrame(id json.RawMessage, result any) []byte {

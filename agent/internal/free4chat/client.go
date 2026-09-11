@@ -41,12 +41,28 @@ const (
 // reference sent "node" for the same reason).
 var defaultUserAgent = "free4chat-agent/" + doctor.Version
 
+// requiredTools is the exact tool set Connect must find before the Runtime
+// treats an endpoint as usable. It has to stay in step with the tools this
+// file actually calls: a tool missing here lets the Runtime connect to a
+// server that only fails later, mid-turn, instead of at the handshake.
+// TestRequiredToolsCoverEveryInvokedTool derives the invoked set from this
+// file so the two cannot drift apart silently.
 var requiredTools = []string{
-	"room_info", "join_room", "create_room", "wait_for_events",
-	"read_room_context",
-	"send_text", "read_attachment", "leave_room", "update_capabilities",
+	"room_info", "read_room_context", "join_room", "create_room",
+	"wait_for_events", "send_text", "update_capabilities",
+	"update_runtime_host",
 	"send_collab_request", "send_collab_response", "send_collab_result",
-	"send_attachment", "publish_surface", "clear_surface", "read_surface",
+	"send_attachment", "read_attachment",
+	"publish_surface", "clear_surface", "read_surface",
+	"publish_live_view",
+	"leave_room",
+}
+
+// RequiredToolNames returns the tool set Connect requires. Test doubles in
+// other packages serve a complete tools/list from this, so the handshake
+// contract never has to be copied into a second list that can go stale.
+func RequiredToolNames() []string {
+	return append([]string(nil), requiredTools...)
 }
 
 // lifecycleErrorStrings are server strings that may surface at the HTTP

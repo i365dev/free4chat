@@ -85,6 +85,17 @@ if grep -rn --exclude-dir=scripts "pionProvision\|provisionPion\|ensurePionBinar
   fail=1
 fi
 
+# Test-only helpers must live in _test.go compilation scope. A regular .go
+# file importing "testing" is linked into the shipped package, so the test
+# framework would end up inside the released binary. testdata fixtures are
+# excluded: they are separate programs, never compiled into a shipped package.
+test_importers=$(grep -rl --include='*.go' --exclude='*_test.go' --exclude-dir=testdata '"testing"' agent/ 2>/dev/null || true)
+if [ -n "$test_importers" ]; then
+  note "non-test Go file imports testing (move it into _test.go scope):" >&2
+  echo "$test_importers" >&2
+  fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   note "FAILED" >&2
   exit 1

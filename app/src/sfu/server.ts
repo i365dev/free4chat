@@ -50,6 +50,26 @@ function badRequest(message: string): Response {
   return json({ error: message }, 400)
 }
 
+// One entry of a client-supplied `tracks` array. Callers must never read a
+// field off an element before this predicate has accepted it: a payload such
+// as `tracks: [null]` otherwise throws a TypeError out of the handler and
+// turns a malformed request into an unshaped 500.
+function isTrackObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+// trackObjects accepts the optional `tracks` array and rejects it as a whole
+// when any element is not a track object. Rejecting beats filtering here: a
+// silently shortened list would create fewer subscriptions than the client
+// asked for without telling it. An absent value stays "no tracks", which is
+// what the previous cast-as-array behavior produced.
+function trackObjects(value: unknown): Array<Record<string, unknown>> | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return null
+  if (!value.every(isTrackObject)) return null
+  return value
+}
+
 // Routes the non-browser Runtime (MediaBridge) legitimately calls with no
 // Origin header at all. Scoped deliberately narrow: "session" (initial
 // Human creation, Turnstile-gated) and "ws" keep requiring a real browser
@@ -739,9 +759,11 @@ export async function handleSfuRequest(
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
     if (!room || !participantId || !token || !sessionId)
       return badRequest("missing_session")
-    const requestedTracks = Array.isArray(body.tracks)
-      ? (body.tracks as Array<Record<string, unknown>>)
-      : []
+    const requestedTracks = trackObjects(body.tracks)
+    // Validated before authorize() and before any Cloudflare call, so a
+    // malformed element can neither mutate Room state nor create an upstream
+    // track.
+    if (requestedTracks === null) return badRequest("invalid_tracks")
     // Round 5 (P2): known *before* any Cloudflare call — how many new
     // remote-subscribe tracks this request would create, so the DO can
     // preflight-check capacity and reject before tracks/new ever runs
@@ -1026,10 +1048,7 @@ export async function handleSfuRequest(
     const token = typeof body.token === "string" ? body.token : ""
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
     const tracks = Array.isArray(body.tracks)
-      ? body.tracks.filter(
-          (track): track is Record<string, unknown> =>
-            Boolean(track) && typeof track === "object"
-        )
+      ? body.tracks.filter(isTrackObject)
       : []
     if (!room || !participantId || !token || !sessionId || !tracks.length)
       return badRequest("missing_track")

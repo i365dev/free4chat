@@ -40,6 +40,11 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test ./... -count=1 -timeout 300s
+      # Targeted race gate: internal/voice drives TTS drain callbacks from a
+      # separate goroutine, which a plain `go test` cannot observe. Scoped to
+      # this package (about 2s) rather than the whole module.
+      - name: go test -race (voice)
+        run: go test -race -count=1 ./internal/voice
       - name: go build
         run: go build ./cmd/free4chat-agent
 

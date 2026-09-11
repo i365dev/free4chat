@@ -175,7 +175,7 @@ func TestACPNegotiatesOnceAndReusesOneSession(t *testing.T) {
 		t.Fatalf("same retained ACP session changed generation: generation=%d err=%v", adapter.SessionGeneration(), err)
 	}
 	caps := adapter.Capabilities()
-	if caps == nil || !caps.Text || caps.Images || caps.Resume {
+	if caps == nil || !caps.Text || caps.Images {
 		t.Fatalf("capability projection mismatch: %+v", caps)
 	}
 
@@ -1430,11 +1430,38 @@ func TestParseAgentCapabilitiesResumeAndClosePresence(t *testing.T) {
 		t.Fatal("empty capability document must fail")
 	}
 
-	// The fake agent without FAKE_RESUME_CAP must project resume=false.
+	// The fake agent without FAKE_RESUME_CAP must observe resume=false.
 	noResume, err := parseAgentCapabilities(json.RawMessage(
 		`{"promptCapabilities":{},"sessionCapabilities":{"close":{}}}`))
 	if err != nil || noResume.ResumePresent {
 		t.Fatalf("absent resume key must be false: %+v", noResume)
+	}
+}
+
+// TestCapabilitiesNeverAdvertiseResume proves Free4Chat does not report usable
+// resume even when the Harness advertises sessionCapabilities.resume. The
+// adapter still records the advertisement for diagnostics, but the Runtime has
+// no `session/load` implementation, so a resume-capable Harness must project
+// exactly the same capability surface as one that is not.
+func TestCapabilitiesNeverAdvertiseResume(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{"FAKE_RESUME_CAP": "1"}), AdapterOptions{})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	if adapter.caps == nil || !adapter.caps.ResumePresent {
+		t.Fatalf("harness resume advertisement must still be observed: %+v", adapter.caps)
+	}
+	caps := adapter.Capabilities()
+	if caps == nil || !caps.Text || caps.Images {
+		t.Fatalf("capability projection mismatch: %+v", caps)
+	}
+	// Regression fence: types.HarnessCapabilities carries only Text and
+	// Images. Reintroducing a resume field would silently re-advertise a
+	// capability Free4Chat cannot honour.
+	if fields := reflect.TypeOf(*caps).NumField(); fields != 2 {
+		t.Fatalf("HarnessCapabilities must stay Text+Images only, got %d fields: %+v", fields, caps)
 	}
 }
 
@@ -1862,5 +1889,104 @@ func TestCollabReferencedArtifactsRenderTextAndRespectImageLimits(t *testing.T) 
 	withoutImages := promptBlocks(input, false)
 	if len(withoutImages) != 1 || strings.Contains(withoutImages[0]["text"].(string), "IMAGE_ONE") {
 		t.Fatalf("unsupported image capability leaked image content: %#v", withoutImages)
+	}
+}
+
+// adapterStateSnapshot reads the adapter's lifecycle state under its own lock so
+// assertions stay race-clean against the child watcher goroutine.
+func adapterStateSnapshot(a *ACPAdapter) (sessionID string, hasProc, hasStdin bool, pending int, nextID int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessionID, a.proc != nil, a.stdin != nil, len(a.pending), a.nextID
+}
+
+// TestControlRequestTimeoutTearsDownSilentHarness proves a non-turn control
+// request cannot block Runtime setup forever, and that the adapter fails closed
+// instead of continuing on a Harness whose state is now ambiguous.
+func TestControlRequestTimeoutTearsDownSilentHarness(t *testing.T) {
+	adapter := NewACPAdapter(
+		scriptLauncher("normal", map[string]string{"FAKE_SILENT_METHOD": "initialize"}),
+		t.TempDir(),
+		AdapterOptions{ControlTimeoutMs: 250},
+	)
+	defer adapter.Close()
+
+	started := time.Now()
+	err := adapter.EnsureSession()
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("a Harness that never answers initialize must not complete EnsureSession")
+	}
+	var timeoutErr *ControlRequestTimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Method != "initialize" {
+		t.Fatalf("want a control timeout naming initialize, got %v", err)
+	}
+	// Bounded by ControlTimeoutMs plus the process teardown budget.
+	if elapsed > 8*time.Second {
+		t.Fatalf("control timeout must stay bounded, took %s", elapsed)
+	}
+	sessionID, hasProc, hasStdin, pending, _ := adapterStateSnapshot(adapter)
+	if sessionID != "" || hasProc || hasStdin {
+		t.Fatalf("timed-out control request must fail closed: session=%q proc=%v stdin=%v", sessionID, hasProc, hasStdin)
+	}
+	if pending != 0 {
+		t.Fatalf("a timed-out call must not stay pending: %d entries", pending)
+	}
+}
+
+// TestControlRequestTimeoutReestablishesKnownSession covers the post-handshake
+// case: a state-changing control request times out, so the child is torn down
+// and the next EnsureSession must renegotiate a known-clean session rather than
+// continue on top of the ambiguous one.
+func TestControlRequestTimeoutReestablishesKnownSession(t *testing.T) {
+	adapter := NewACPAdapter(
+		scriptLauncher("normal", map[string]string{
+			"FAKE_POLICY_CAP": "1",
+			// Session ids embed the pid so a respawned child is distinguishable.
+			"FAKE_UNIQUE_SESSION_IDS": "1",
+			"FAKE_SILENT_METHOD":      "session/set_mode",
+		}),
+		t.TempDir(),
+		AdapterOptions{ControlTimeoutMs: 250},
+	)
+	defer adapter.Close()
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	firstSession, hasProc, _, _, idsAfterHandshake := adapterStateSnapshot(adapter)
+	firstGeneration := adapter.SessionGeneration()
+	if firstSession == "" || !hasProc || firstGeneration == 0 {
+		t.Fatalf("handshake did not establish a session: %q gen=%d", firstSession, firstGeneration)
+	}
+
+	err := adapter.SetMode("workspace")
+	var timeoutErr *ControlRequestTimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Method != "session/set_mode" {
+		t.Fatalf("want a session/set_mode control timeout, got %v", err)
+	}
+	sessionID, hasProc, hasStdin, pending, _ := adapterStateSnapshot(adapter)
+	if sessionID != "" || hasProc || hasStdin || pending != 0 {
+		t.Fatalf("ambiguous control timeout must invalidate the child: session=%q proc=%v stdin=%v pending=%d",
+			sessionID, hasProc, hasStdin, pending)
+	}
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("a timed-out child must be replaceable: %v", err)
+	}
+	recoveredSession, recoveredProc, _, _, recoveredIDs := adapterStateSnapshot(adapter)
+	if recoveredSession == "" || !recoveredProc {
+		t.Fatalf("recovery did not re-establish a session: %q", recoveredSession)
+	}
+	if recoveredSession == firstSession {
+		t.Fatalf("recovery must negotiate a fresh session, got %q", recoveredSession)
+	}
+	if generation := adapter.SessionGeneration(); generation <= firstGeneration {
+		t.Fatalf("recovery must advance the session generation: %d -> %d", firstGeneration, generation)
+	}
+	// Ids must not restart with the new child, otherwise a late reply from the
+	// old one could be routed to a new call that reused the same id.
+	if recoveredIDs <= idsAfterHandshake {
+		t.Fatalf("request ids restarted across respawn: %d -> %d", idsAfterHandshake, recoveredIDs)
 	}
 }
