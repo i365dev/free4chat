@@ -22,7 +22,10 @@
   "triggers": { "crons": [] },
   "vars": {
     // The production App ID is injected by GitHub Actions at deploy time.
-    "SFU_APP_ID": "set-during-deployment"
+    "SFU_APP_ID": "set-during-deployment",
+    // Phase 0 Room Apps stay disabled until the curated Lab fixtures are
+    // deliberately deployed and enabled.
+    "ROOM_APPS_ENABLED": "false"
   },
   "kv_namespaces": [
     {

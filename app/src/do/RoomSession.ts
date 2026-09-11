@@ -256,6 +256,7 @@ export interface RoomSessionEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   AGENT_MEDIA_ENABLED?: string
+  ROOM_APPS_ENABLED?: string
   // #228: preconfigured production Worker secret for Room-authoritative
   // collaboration analytics (direct Mixpanel /import). Absent in
   // local/test environments: analytics safely no-ops.
@@ -279,6 +280,7 @@ interface StoredParticipant extends RoomParticipant {
   sessionId?: string
   muted?: boolean
   fileChannelReady?: boolean
+  appDataChannelReady?: boolean
   tracks?: RoomMediaTrack[]
 }
 
@@ -684,7 +686,7 @@ type ClientMessage =
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
-  | { type: "datachannel-ready" }
+  | { type: "datachannel-ready"; appDataChannelReady?: boolean }
   | { type: "resync" }
   | { type: "leave" }
   | { type: "meeting-notes-start"; agentParticipantId: string }
@@ -931,6 +933,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           "sessionId",
           "muted",
           "fileChannelReady",
+          "appDataChannelReady",
           "tracks",
         ] as const) {
           if (key in participant) {
@@ -959,6 +962,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           sessionId: participant.sessionId,
           muted: participant.muted === true,
           fileChannelReady: participant.fileChannelReady === true,
+          appDataChannelReady: participant.appDataChannelReady === true,
           tracks: participant.tracks ?? [],
         }
         delete participant.sessionId
@@ -1452,6 +1456,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       meetingNotesMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
       agentVoice: room.agentVoice,
       agentVoiceMediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
+      ...(this.env.ROOM_APPS_ENABLED !== undefined
+        ? { roomAppsEnabled: this.env.ROOM_APPS_ENABLED === "true" }
+        : {}),
       agentActivities: [...this.transientAgentActivities.values()].filter(
         (activity) => room.participants[activity.agentParticipantId]?.connected
       ),
@@ -5219,6 +5226,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "datachannel-ready") {
       participant.media.fileChannelReady = true
+      participant.media.appDataChannelReady =
+        message.appDataChannelReady === true
       await this.saveRoom(room)
       await this.broadcastState(room)
       return

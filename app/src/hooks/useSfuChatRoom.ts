@@ -5,6 +5,14 @@ import {
   mergeRoomAndEphemeralMessages,
   reconcileCanonicalRoomMessages,
 } from "@common/messageReconciliation"
+import {
+  decodeRoomAppEnvelope,
+  encodeRoomAppEnvelope,
+  isRoomAppInstanceForRoom,
+  roomAppRateGuard,
+  type RoomAppLane,
+  type RoomAppTransportEnvelope,
+} from "@common/roomApp"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
 import {
   createRuntimeProviderClaim as createRuntimeProviderCredential,
@@ -95,6 +103,8 @@ const REMOTE_TRACK_SUBSCRIPTION_RETRY_DELAYS_MS = [
 ] as const
 const REMOTE_TRACK_READY_TIMEOUT_MS = 5000
 const REMOTE_FILE_CHANNEL_OPEN_TIMEOUT_MS = 5000
+const ROOM_APP_CHANNEL_OPEN_TIMEOUT_MS = 5000
+const ROOM_APP_RETRY_DELAYS_MS = [100, 500, 2000] as const
 
 const runtimeReattachStorageKey = (room: string) =>
   `free4chat:runtime-reattach:${room}`
@@ -194,6 +204,25 @@ interface RemoteFileChannelAttempt {
   attempt: number
   channel: RTCDataChannel | null
   channelId: number | null
+}
+
+interface RemoteRoomAppChannelAttempt {
+  peerConnection: RTCPeerConnection
+  subscriberSessionId: string
+  publisherSessionId: string
+  participantKind: "human" | "agent"
+  lane: RoomAppLane
+  attempt: number
+  channel: RTCDataChannel | null
+  channelId: number | null
+}
+
+export interface RoomAppTransportStats {
+  reliableMessages: number
+  realtimeMessages: number
+  bytesSent: number
+  bytesReceived: number
+  droppedMessages: number
 }
 
 function hasUsableSessionDescription(response: SfuApiResponse): boolean {
@@ -417,6 +446,7 @@ interface SfuServerMessage {
     sessionId?: string
     muted?: boolean
     fileChannelReady?: boolean
+    appDataChannelReady?: boolean
   }
   message?: SfuMessage
   error?: string
@@ -475,6 +505,7 @@ export function useSfuChatRoom(
   const [error, setError] = useState("")
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
+  const [roomAppsEnabled, setRoomAppsEnabled] = useState(false)
   const [resolvedRoomType] = useState<"audio" | "screenshare">(roomType)
   const [liveTranscript, setLiveTranscript] = useState<LiveTranscriptState>({
     active: false,
@@ -568,6 +599,28 @@ export function useSfuChatRoom(
   )
   const remoteFileChannelAttemptCountsRef = useRef(new Map<string, number>())
   const remoteFileChannelIdsRef = useRef(new Map<string, number>())
+  const localRoomAppChannelsRef = useRef(new Map<RoomAppLane, RTCDataChannel>())
+  const remoteRoomAppChannelsRef = useRef(new Map<string, RTCDataChannel>())
+  const remoteRoomAppChannelIdsRef = useRef(new Map<string, number>())
+  const remoteRoomAppChannelAttemptsRef = useRef(
+    new Map<string, RemoteRoomAppChannelAttempt>()
+  )
+  const remoteRoomAppChannelAttemptCountsRef = useRef(new Map<string, number>())
+  const roomAppListenersRef = useRef(
+    new Set<(message: RoomAppTransportEnvelope) => void>()
+  )
+  const roomAppOutboundRateRef = useRef(roomAppRateGuard())
+  const roomAppInboundRateRef = useRef(roomAppRateGuard())
+  const roomAppStatsRef = useRef<RoomAppTransportStats>({
+    reliableMessages: 0,
+    realtimeMessages: 0,
+    bytesSent: 0,
+    bytesReceived: 0,
+    droppedMessages: 0,
+  })
+  const roomAppsServerEnabledRef = useRef(false)
+  const roomAppsEnabledRef = useRef(false)
+  const roomAppChannelsReadyRef = useRef(false)
   const dataChannelsRef = useRef(new Set<RTCDataChannel>())
   const dataChannelIdsRef = useRef(new Set<number>())
   const localFileChannelIdRef = useRef<number | null>(null)
@@ -1017,7 +1070,10 @@ export function useSfuChatRoom(
 
   const closeDataChannels = useCallback(
     async (session: SfuSession | null = sessionRef.current) => {
-      if (!session || dataChannelIdsRef.current.size === 0) return
+      if (!session || dataChannelIdsRef.current.size === 0) {
+        remoteRoomAppChannelIdsRef.current.clear()
+        return
+      }
       const dataChannels = [...dataChannelIdsRef.current].map((id) => ({ id }))
       try {
         await apiRequest("datachannels/close", {
@@ -1033,6 +1089,9 @@ export function useSfuChatRoom(
         dataChannelIdsRef.current.clear()
         localFileChannelIdRef.current = null
         remoteFileChannelIdsRef.current.clear()
+        remoteRoomAppChannelIdsRef.current.clear()
+        localRoomAppChannelsRef.current.clear()
+        roomAppChannelsReadyRef.current = false
       }
     },
     [apiRequest, roomName]
@@ -1337,6 +1396,240 @@ export function useSfuChatRoom(
     [addReceivedFileMessage]
   )
 
+  const roomAppChannelName = useCallback(
+    (participantId: string, lane: RoomAppLane) =>
+      `room-app-${lane}-${participantId}`,
+    []
+  )
+
+  const roomAppChannelKey = useCallback(
+    (participantId: string, lane: RoomAppLane) => `${participantId}:${lane}`,
+    []
+  )
+
+  const handleRoomAppChannelMessage = useCallback(
+    (sourceParticipantId: string, lane: RoomAppLane, event: MessageEvent) => {
+      const envelope = decodeRoomAppEnvelope(event.data)
+      if (
+        !envelope ||
+        envelope.lane !== lane ||
+        !isRoomAppInstanceForRoom(roomName, envelope.appInstanceId)
+      ) {
+        roomAppStatsRef.current.droppedMessages += 1
+        return
+      }
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(envelope)
+      ).byteLength
+      if (!roomAppInboundRateRef.current.allow(lane, bytes)) {
+        roomAppStatsRef.current.droppedMessages += 1
+        return
+      }
+      roomAppStatsRef.current.bytesReceived += bytes
+      if (lane === "reliable") roomAppStatsRef.current.reliableMessages += 1
+      else roomAppStatsRef.current.realtimeMessages += 1
+      const received = { ...envelope, sourceParticipantId }
+      for (const listener of roomAppListenersRef.current) listener(received)
+    },
+    [roomName]
+  )
+
+  const cleanupRemoteRoomAppChannel = useCallback(
+    (key: string, attempt: RemoteRoomAppChannelAttempt, reason: string) => {
+      const activeAttempt = remoteRoomAppChannelAttemptsRef.current.get(key)
+      const readyChannel = remoteRoomAppChannelsRef.current.get(key)
+      const ownsAttempt = activeAttempt === attempt
+      const ownsReadyChannel = readyChannel === attempt.channel
+      if (!ownsAttempt && !ownsReadyChannel) return false
+      if (ownsAttempt) remoteRoomAppChannelAttemptsRef.current.delete(key)
+      if (ownsReadyChannel) remoteRoomAppChannelsRef.current.delete(key)
+      if (attempt.channel) {
+        dataChannelsRef.current.delete(attempt.channel)
+        attempt.channel.close()
+      }
+      const channelId =
+        attempt.channelId ?? remoteRoomAppChannelIdsRef.current.get(key) ?? null
+      if (channelId !== null) dataChannelIdsRef.current.delete(channelId)
+      if (ownsReadyChannel || ownsAttempt)
+        remoteRoomAppChannelIdsRef.current.delete(key)
+      sfuClientDiagnostic("room_app_channel_cleanup", { reason })
+      return true
+    },
+    []
+  )
+
+  const clearAllRemoteRoomAppChannels = useCallback(
+    (reason: string) => {
+      const keys = new Set([
+        ...remoteRoomAppChannelAttemptsRef.current.keys(),
+        ...remoteRoomAppChannelsRef.current.keys(),
+      ])
+      for (const key of keys) {
+        const attempt =
+          remoteRoomAppChannelAttemptsRef.current.get(key) ??
+          (() => {
+            const channel = remoteRoomAppChannelsRef.current.get(key)
+            if (!channel) return null
+            const lane = key.split(":")[1] as RoomAppLane
+            return {
+              peerConnection: peerConnectionRef.current!,
+              subscriberSessionId: sessionRef.current?.sessionId ?? "",
+              publisherSessionId: "",
+              participantKind: "human" as const,
+              lane,
+              attempt: 0,
+              channel,
+              channelId: remoteRoomAppChannelIdsRef.current.get(key) ?? null,
+            }
+          })()
+        if (attempt) cleanupRemoteRoomAppChannel(key, attempt, reason)
+      }
+      remoteRoomAppChannelAttemptCountsRef.current.clear()
+    },
+    [cleanupRemoteRoomAppChannel]
+  )
+
+  const resetRemoteRoomAppParticipant = useCallback(
+    (participantId: string, reason: string) => {
+      for (const lane of ["reliable", "realtime"] as const) {
+        const key = roomAppChannelKey(participantId, lane)
+        const attempt =
+          remoteRoomAppChannelAttemptsRef.current.get(key) ??
+          (() => {
+            const channel = remoteRoomAppChannelsRef.current.get(key)
+            if (!channel) return null
+            return {
+              peerConnection: peerConnectionRef.current!,
+              subscriberSessionId: sessionRef.current?.sessionId ?? "",
+              publisherSessionId: "",
+              participantKind: "human" as const,
+              lane,
+              attempt: 0,
+              channel,
+              channelId: remoteRoomAppChannelIdsRef.current.get(key) ?? null,
+            }
+          })()
+        if (attempt) cleanupRemoteRoomAppChannel(key, attempt, reason)
+        remoteRoomAppChannelAttemptCountsRef.current.delete(key)
+      }
+    },
+    [cleanupRemoteRoomAppChannel, roomAppChannelKey]
+  )
+
+  const subscribeRoomAppChannel = useCallback(
+    async (participant: SfuParticipant, lane: RoomAppLane, attempt = 1) => {
+      const pc = peerConnectionRef.current
+      const session = sessionRef.current
+      const media = participant.media
+      const key = roomAppChannelKey(participant.id, lane)
+      if (
+        !roomAppsEnabledRef.current ||
+        !pc ||
+        !session ||
+        participant.id === session.participantId ||
+        participant.kind !== "human" ||
+        !media?.appDataChannelReady ||
+        remoteRoomAppChannelsRef.current.has(key) ||
+        remoteRoomAppChannelAttemptsRef.current.has(key) ||
+        pc.connectionState !== "connected"
+      )
+        return
+      const attemptKey =
+        (remoteRoomAppChannelAttemptCountsRef.current.get(key) ?? 0) + 1
+      remoteRoomAppChannelAttemptCountsRef.current.set(key, attemptKey)
+      const channelAttempt: RemoteRoomAppChannelAttempt = {
+        peerConnection: pc,
+        subscriberSessionId: session.sessionId,
+        publisherSessionId: media.sessionId,
+        participantKind: participant.kind,
+        lane,
+        attempt: attemptKey,
+        channel: null,
+        channelId: null,
+      }
+      remoteRoomAppChannelAttemptsRef.current.set(key, channelAttempt)
+      try {
+        const response = await apiRequest("datachannels/new", {
+          room: roomName,
+          participantId: session.participantId,
+          token: session.participantToken,
+          sessionId: session.sessionId,
+          publisherSessionId: media.sessionId,
+          dataChannels: [
+            {
+              location: "remote",
+              sessionId: media.sessionId,
+              dataChannelName: roomAppChannelName(participant.id, lane),
+              ordered: lane === "reliable",
+              ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
+              waitForAck: true,
+            },
+          ],
+        })
+        const channelId = response.dataChannels?.[0]?.id
+        if (typeof channelId !== "number")
+          throw new Error("SFU Room App data channel was not created")
+        if (
+          remoteRoomAppChannelAttemptsRef.current.get(key) !== channelAttempt ||
+          peerConnectionRef.current !== pc ||
+          sessionRef.current?.sessionId !== session.sessionId ||
+          participantMapRef.current.get(participant.id)?.media?.sessionId !==
+            media.sessionId
+        )
+          throw new Error("SFU Room App data channel became stale")
+        const channel = pc.createDataChannel(
+          `${roomAppChannelName(participant.id, lane)}-subscriber`,
+          {
+            negotiated: true,
+            id: channelId,
+            ordered: lane === "reliable",
+            ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
+          }
+        )
+        channelAttempt.channel = channel
+        channelAttempt.channelId = channelId
+        remoteRoomAppChannelIdsRef.current.set(key, channelId)
+        dataChannelsRef.current.add(channel)
+        dataChannelIdsRef.current.add(channelId)
+        channel.addEventListener("message", (event) =>
+          handleRoomAppChannelMessage(participant.id, lane, event)
+        )
+        const cleanup = () =>
+          cleanupRemoteRoomAppChannel(key, channelAttempt, "closed")
+        channel.addEventListener("close", cleanup)
+        channel.addEventListener("error", cleanup)
+        await waitForDataChannelOpen(channel, ROOM_APP_CHANNEL_OPEN_TIMEOUT_MS)
+        if (
+          remoteRoomAppChannelAttemptsRef.current.get(key) !== channelAttempt ||
+          channel.readyState !== "open"
+        )
+          throw new Error("SFU Room App data channel became stale")
+        channel.send("ack")
+        remoteRoomAppChannelAttemptsRef.current.delete(key)
+        remoteRoomAppChannelsRef.current.set(key, channel)
+      } catch {
+        cleanupRemoteRoomAppChannel(key, channelAttempt, "establishment_failed")
+        const delay = ROOM_APP_RETRY_DELAYS_MS[attempt - 1]
+        if (delay !== undefined && roomAppsEnabledRef.current) {
+          window.setTimeout(() => {
+            const current = participantMapRef.current.get(participant.id)
+            if (current)
+              void subscribeRoomAppChannel(current, lane, attempt + 1)
+          }, delay)
+        }
+      }
+    },
+    [
+      apiRequest,
+      cleanupRemoteRoomAppChannel,
+      handleRoomAppChannelMessage,
+      roomAppChannelKey,
+      roomAppChannelName,
+      roomName,
+      waitForDataChannelOpen,
+    ]
+  )
+
   const establishDataChannelTransport = useCallback(async () => {
     const pc = peerConnectionRef.current
     const session = sessionRef.current
@@ -1405,7 +1698,70 @@ export function useSfuChatRoom(
     localFileChannelRef.current = channel
     localFileChannelIdRef.current = channelId
     dataChannelReadyRef.current = true
-  }, [apiRequest, roomName])
+    if (roomAppsServerEnabledRef.current) {
+      const appChannelNames = (["reliable", "realtime"] as const).map(
+        (lane) => ({
+          lane,
+          dataChannelName: roomAppChannelName(session.participantId, lane),
+        })
+      )
+      const appChannelIds: number[] = []
+      try {
+        const appResponse = await apiRequest("datachannels/new", {
+          room: roomName,
+          participantId: session.participantId,
+          token: session.participantToken,
+          sessionId: session.sessionId,
+          dataChannels: appChannelNames.map(({ lane, dataChannelName }) => ({
+            location: "local",
+            dataChannelName,
+            ordered: lane === "reliable",
+            ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
+          })),
+        })
+        const channelIds = appResponse.dataChannels ?? []
+        appChannelIds.push(
+          ...channelIds.flatMap((entry) =>
+            typeof entry.id === "number" ? [entry.id] : []
+          )
+        )
+        if (
+          channelIds.length !== appChannelNames.length ||
+          channelIds.some((entry) => typeof entry.id !== "number")
+        )
+          throw new Error("SFU Room App data channels were not created")
+        for (const [
+          index,
+          { lane, dataChannelName },
+        ] of appChannelNames.entries()) {
+          const channelId = channelIds[index].id as number
+          const channel = pc.createDataChannel(dataChannelName, {
+            negotiated: true,
+            id: channelId,
+            ordered: lane === "reliable",
+            ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
+          })
+          dataChannelsRef.current.add(channel)
+          dataChannelIdsRef.current.add(channelId)
+          localRoomAppChannelsRef.current.set(lane, channel)
+        }
+        roomAppChannelsReadyRef.current = true
+        roomAppsEnabledRef.current = roomAppsServerEnabledRef.current
+        setRoomAppsEnabled(roomAppsEnabledRef.current)
+      } catch {
+        for (const channel of localRoomAppChannelsRef.current.values()) {
+          dataChannelsRef.current.delete(channel)
+          channel.close()
+        }
+        localRoomAppChannelsRef.current.clear()
+        for (const appChannelId of appChannelIds)
+          dataChannelIdsRef.current.delete(appChannelId)
+        roomAppChannelsReadyRef.current = false
+        roomAppsEnabledRef.current = false
+        setRoomAppsEnabled(false)
+      }
+    }
+  }, [apiRequest, roomAppChannelName, roomName])
 
   const subscribeFileChannel = useCallback(
     async (participant: SfuParticipant) => {
@@ -2211,8 +2567,12 @@ export function useSfuChatRoom(
         void subscribeTrack(participant, track)
       if (participant.media?.fileChannelReady)
         void subscribeFileChannel(participant)
+      if (participant.media?.appDataChannelReady) {
+        void subscribeRoomAppChannel(participant, "reliable")
+        void subscribeRoomAppChannel(participant, "realtime")
+      }
     }
-  }, [subscribeFileChannel, subscribeTrack])
+  }, [subscribeFileChannel, subscribeRoomAppChannel, subscribeTrack])
 
   const applyRoomState = useCallback(
     (state: SfuRoomState) => {
@@ -2253,6 +2613,10 @@ export function useSfuChatRoom(
       setLiveTranscriptMediaAvailable(state.meetingNotesMediaAvailable)
       setAgentVoiceState(state.agentVoice)
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
+      roomAppsServerEnabledRef.current = state.roomAppsEnabled === true
+      roomAppsEnabledRef.current =
+        roomAppsServerEnabledRef.current && roomAppChannelsReadyRef.current
+      setRoomAppsEnabled(roomAppsEnabledRef.current)
       const nextActivities = state.agentActivities ?? []
       agentActivitiesRef.current = nextActivities
       setAgentActivities(nextActivities)
@@ -2264,8 +2628,13 @@ export function useSfuChatRoom(
         if (
           previousParticipantId !== localParticipantId &&
           !currentParticipantIds.has(previousParticipantId)
-        )
+        ) {
           resetRemoteParticipant(previousParticipantId)
+          resetRemoteRoomAppParticipant(
+            previousParticipantId,
+            "participant_left"
+          )
+        }
       }
       for (const participant of state.participants) {
         const previous = participantMapRef.current.get(participant.id)
@@ -2289,6 +2658,7 @@ export function useSfuChatRoom(
         )
         if (mediaSessionChanged || agentAudioTrackRemoved) {
           resetRemoteParticipant(participant.id)
+          resetRemoteRoomAppParticipant(participant.id, "session_changed")
         } else if (previous?.media) {
           for (const previousTrack of previousTracks) {
             if (
@@ -2325,6 +2695,7 @@ export function useSfuChatRoom(
       rebuildParticipants,
       resetRemoteParticipant,
       resetRemoteTrackSubscription,
+      resetRemoteRoomAppParticipant,
       replaceRoomMessages,
       resubscribeRemoteMedia,
     ]
@@ -2334,6 +2705,7 @@ export function useSfuChatRoom(
     clearAllRemoteTrackSubscriptionRetries("peer_connection_replaced")
     clearRemoteTrackBindings()
     clearAllRemoteFileChannels("peer_connection_replaced")
+    clearAllRemoteRoomAppChannels("peer_connection_replaced")
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
     })
@@ -2429,6 +2801,7 @@ export function useSfuChatRoom(
     return pc
   }, [
     clearAllRemoteFileChannels,
+    clearAllRemoteRoomAppChannels,
     clearAllRemoteTrackSubscriptionRetries,
     clearRemoteTrackBindings,
     rebuildParticipants,
@@ -2453,7 +2826,10 @@ export function useSfuChatRoom(
       setError("")
       sendSocketMessage({ type: "resync" })
       if (dataChannelReadyRef.current)
-        sendSocketMessage({ type: "datachannel-ready" })
+        sendSocketMessage({
+          type: "datachannel-ready",
+          appDataChannelReady: roomAppChannelsReadyRef.current,
+        })
     }
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data) as SfuServerMessage
@@ -2616,6 +2992,15 @@ export function useSfuChatRoom(
           void subscribeFileChannel(participant)
           rebuildParticipants()
         }
+        if (
+          participant?.media &&
+          message.participant.appDataChannelReady === true
+        ) {
+          participant.media.appDataChannelReady = true
+          void subscribeRoomAppChannel(participant, "reliable")
+          void subscribeRoomAppChannel(participant, "realtime")
+          rebuildParticipants()
+        }
       } else if (message.type === "message" && message.message) {
         const localParticipantId = sessionRef.current?.participantId
         appendRoomMessage(
@@ -2691,6 +3076,7 @@ export function useSfuChatRoom(
     resetRemoteTrackSubscription,
     sendSocketMessage,
     subscribeFileChannel,
+    subscribeRoomAppChannel,
     subscribeTrack,
   ])
 
@@ -2714,6 +3100,7 @@ export function useSfuChatRoom(
         }
         await closeDataChannels(previousSession)
         clearAllRemoteFileChannels("media_reconnect")
+        clearAllRemoteRoomAppChannels("media_reconnect")
         clearRemoteTrackBindings()
         for (const channel of dataChannelsRef.current) channel.close()
         dataChannelsRef.current.clear()
@@ -2721,6 +3108,9 @@ export function useSfuChatRoom(
         incomingFilesRef.current.clear()
         localFileChannelRef.current = null
         localFileChannelIdRef.current = null
+        localRoomAppChannelsRef.current.clear()
+        roomAppsServerEnabledRef.current = false
+        roomAppChannelsReadyRef.current = false
         const oldPeerConnection = peerConnectionRef.current
         if (oldPeerConnection) {
           sampleSfuEgress("disconnect", oldPeerConnection)
@@ -2728,6 +3118,7 @@ export function useSfuChatRoom(
         }
         peerConnectionRef.current = null
         dataChannelReadyRef.current = false
+        roomAppsEnabledRef.current = false
         localTrackMidsRef.current.clear()
         clearAllAgentAudioSubscriptionRetries("media_reconnect")
         clearAllRemoteTrackSubscriptionRetries("media_reconnect")
@@ -2807,6 +3198,9 @@ export function useSfuChatRoom(
       }
       const session = (await response.json()) as SfuSessionResponse
       sessionRef.current = { ...session, room: roomName }
+      roomAppsServerEnabledRef.current = session.roomAppsEnabled === true
+      roomAppsEnabledRef.current = false
+      setRoomAppsEnabled(false)
       await establishDataChannelTransport()
       await publishTrack(audioTrack, "audio", `audio-${session.participantId}`)
       if (screenTrack && screenTrack.readyState === "live") {
@@ -2823,6 +3217,7 @@ export function useSfuChatRoom(
       clearAllAgentAudioSubscriptionRetries,
       clearAllRemoteTrackSubscriptionRetries,
       clearAllRemoteFileChannels,
+      clearAllRemoteRoomAppChannels,
       clearRemoteTrackBindings,
       connectWebSocket,
       createPeerConnection,
@@ -2910,6 +3305,7 @@ export function useSfuChatRoom(
     const objectUrls = objectUrlsRef.current
     const dataChannels = dataChannelsRef.current
     const localTrackMids = localTrackMidsRef.current
+    const localRoomAppChannels = localRoomAppChannelsRef.current
 
     return () => {
       closingRef.current = true
@@ -2926,12 +3322,18 @@ export function useSfuChatRoom(
       window.removeEventListener("pagehide", handlePageHide)
       void closeDataChannels(sessionRef.current)
       clearAllRemoteFileChannels("unmount")
+      clearAllRemoteRoomAppChannels("unmount")
       clearRemoteTrackBindings()
       websocketRef.current?.close()
       localAudioTrackRef.current?.stop()
       localScreenTrackRef.current?.stop()
       localFileChannelRef.current?.close()
       localFileChannelRef.current = null
+      for (const channel of localRoomAppChannels.values()) channel.close()
+      localRoomAppChannels.clear()
+      roomAppsServerEnabledRef.current = false
+      roomAppChannelsReadyRef.current = false
+      roomAppsEnabledRef.current = false
       for (const channel of dataChannels) channel.close()
       dataChannels.clear()
       for (const channel of remoteFileChannels.values()) channel.close()
@@ -2956,6 +3358,7 @@ export function useSfuChatRoom(
     clearAllAgentAudioSubscriptionRetries,
     clearAllRemoteTrackSubscriptionRetries,
     clearAllRemoteFileChannels,
+    clearAllRemoteRoomAppChannels,
     connectMediaSession,
     clearRemoteTrackBindings,
     enabled,
@@ -3052,6 +3455,53 @@ export function useSfuChatRoom(
       })
     },
     [sendSocketMessage]
+  )
+
+  const sendRoomAppMessage = useCallback(
+    (
+      lane: RoomAppLane,
+      appInstanceId: string,
+      payload: Record<string, unknown>
+    ): boolean => {
+      if (
+        !roomAppsEnabledRef.current ||
+        !roomAppChannelsReadyRef.current ||
+        !isRoomAppInstanceForRoom(roomName, appInstanceId)
+      )
+        return false
+      const encoded = encodeRoomAppEnvelope({
+        appInstanceId,
+        lane,
+        payload,
+      })
+      if (!encoded) return false
+      const bytes = new TextEncoder().encode(encoded).byteLength
+      if (!roomAppOutboundRateRef.current.allow(lane, bytes)) {
+        roomAppStatsRef.current.droppedMessages += 1
+        return false
+      }
+      const channel = localRoomAppChannelsRef.current.get(lane)
+      if (!channel || channel.readyState !== "open") return false
+      channel.send(encoded)
+      roomAppStatsRef.current.bytesSent += bytes
+      if (lane === "reliable") roomAppStatsRef.current.reliableMessages += 1
+      else roomAppStatsRef.current.realtimeMessages += 1
+      return true
+    },
+    [roomName]
+  )
+
+  const subscribeRoomAppMessages = useCallback(
+    (listener: (message: RoomAppTransportEnvelope) => void) => {
+      roomAppListenersRef.current.add(listener)
+      return () => roomAppListenersRef.current.delete(listener)
+    },
+    []
+  )
+
+  const getRoomAppStats = useCallback(
+    (): RoomAppTransportStats => ({ ...roomAppStatsRef.current }),
+    []
   )
 
   const sendActionMessage = useCallback(
@@ -3426,6 +3876,10 @@ export function useSfuChatRoom(
     messages,
     attachments,
     taskLiveViews,
+    roomAppsEnabled,
+    sendRoomAppMessage,
+    subscribeRoomAppMessages,
+    getRoomAppStats,
     sendTextMessage,
     sendFileMessage,
     sendActionMessage,

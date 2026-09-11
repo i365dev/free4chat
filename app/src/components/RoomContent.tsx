@@ -7,12 +7,21 @@ import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import AgentInviteControl from "./AgentInviteControl"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
+import RoomAppHost from "./RoomAppHost"
 import TaskLiveView from "./TaskLiveView"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
+import {
+  experimentalRoomAppCatalog,
+  isRoomAppAllowlisted,
+  ROOM_APP_MAX_INSTANCES,
+  projectRoomAppParticipants,
+  roomAppInstanceId,
+  validateRoomAppDefinition,
+} from "../common/roomApp"
 import {
   buildTaskProjections,
   isTaskTerminal,
@@ -117,6 +126,7 @@ export default function RoomContent({
   const [taskInstruction, setTaskInstruction] = useState("")
   const [taskError, setTaskError] = useState("")
   const [activeInteraction, setActiveInteraction] = useState("room")
+  const [activeRoomAppId, setActiveRoomAppId] = useState<string | null>(null)
   const [stageView, setStageView] = useState<"screen" | "live-view">("screen")
   const taskLiveViewState = useRef(new Map())
   const observedLiveViewKeys = useRef(new Set<string>())
@@ -187,6 +197,9 @@ export default function RoomContent({
     leaveRoom,
     localParticipantId,
     agentActivities,
+    roomAppsEnabled,
+    sendRoomAppMessage,
+    subscribeRoomAppMessages,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
@@ -197,6 +210,34 @@ export default function RoomContent({
   )
   const effectiveLocalParticipantId =
     localParticipantId ?? getLocalRoomAuth()?.participantId
+  const roomApps = useMemo(
+    () =>
+      roomAppsEnabled
+        ? experimentalRoomAppCatalog()
+            .filter(
+              (app) =>
+                validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+            )
+            .slice(0, ROOM_APP_MAX_INSTANCES)
+        : [],
+    [roomAppsEnabled]
+  )
+  const activeRoomApp = roomApps.find(
+    (app) => activeRoomAppId === app.id && activeInteraction === `app:${app.id}`
+  )
+  const roomAppParticipants = projectRoomAppParticipants(
+    participants.map((participant) => ({
+      participantId:
+        participant.peerId === LOCAL_PEER_ID
+          ? effectiveLocalParticipantId ?? ""
+          : participant.peerId,
+      name: participant.name,
+      kind: participant.kind,
+    }))
+  )
+  const roomAppSelf = roomAppParticipants.find(
+    (participant) => participant.participantId === effectiveLocalParticipantId
+  )
   const activeTask = taskProjections.find(
     (task) => task.requestId === activeInteraction
   )
@@ -289,12 +330,27 @@ export default function RoomContent({
   }, [activeInteraction, effectiveLocalParticipantId, taskProjections])
 
   useEffect(() => {
+    const isRoomAppInteraction =
+      activeInteraction.startsWith("app:") &&
+      roomApps.some((app) => activeInteraction === `app:${app.id}`)
     if (
       activeInteraction !== "room" &&
-      !taskProjections.some((task) => task.requestId === activeInteraction)
+      !taskProjections.some((task) => task.requestId === activeInteraction) &&
+      !isRoomAppInteraction
     )
       setActiveInteraction("room")
-  }, [activeInteraction, taskProjections])
+  }, [activeInteraction, roomApps, taskProjections])
+
+  useEffect(() => {
+    if (
+      activeRoomAppId &&
+      (!roomApps.some((app) => app.id === activeRoomAppId) ||
+        activeInteraction !== `app:${activeRoomAppId}`)
+    ) {
+      setActiveRoomAppId(null)
+      if (activeInteraction.startsWith("app:")) setActiveInteraction("room")
+    }
+  }, [activeInteraction, activeRoomAppId, roomApps])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -1061,6 +1117,26 @@ export default function RoomContent({
                 )}
               </button>
             ))}
+            {roomApps.map((app) => (
+              <button
+                key={app.id}
+                type="button"
+                role="tab"
+                aria-selected={activeInteraction === `app:${app.id}`}
+                data-testid={`interaction-tab-app-${app.id}`}
+                onClick={() => {
+                  setActiveRoomAppId(app.id)
+                  setActiveInteraction(`app:${app.id}`)
+                }}
+                className={`flex max-w-52 shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition ${
+                  activeInteraction === `app:${app.id}`
+                    ? "bg-blue-600 text-white"
+                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                }`}
+              >
+                <span className="truncate">{app.label}</span>
+              </button>
+            ))}
           </div>
           <div
             data-testid="interaction-content"
@@ -1086,25 +1162,40 @@ export default function RoomContent({
               </div>
             )}
             <div data-testid="interaction-chat" className="min-h-0 flex-1">
-              <TextChatCard
-                key={activeInteraction}
-                room={roomName}
-                nickName={nickName}
-                messages={interactionMessages}
-                attachments={interactionAttachments}
-                participants={participants}
-                pendingFiles={activeTask ? [] : pendingFiles}
-                onSendText={wrappedSendText}
-                onSendFile={wrappedSendFile}
-                onSendAction={sendActionMessage}
-                localParticipantId={effectiveLocalParticipantId}
-                onCollabRespond={handleCollabRespond}
-                onReadArtifact={handleReadArtifact}
-                onCollabResult={handleCollabResult}
-                onPermissionRespond={handlePermissionResponse}
-                taskAvailable={!activeTaskUnavailable}
-                taskRequestId={activeTask?.requestId}
-              />
+              {activeRoomApp && roomAppSelf ? (
+                <RoomAppHost
+                  app={activeRoomApp}
+                  appInstanceId={roomAppInstanceId(roomName, activeRoomApp.id)}
+                  self={roomAppSelf}
+                  participants={roomAppParticipants}
+                  subscribe={subscribeRoomAppMessages}
+                  send={sendRoomAppMessage}
+                  onClose={() => {
+                    setActiveRoomAppId(null)
+                    setActiveInteraction("room")
+                  }}
+                />
+              ) : (
+                <TextChatCard
+                  key={activeInteraction}
+                  room={roomName}
+                  nickName={nickName}
+                  messages={interactionMessages}
+                  attachments={interactionAttachments}
+                  participants={participants}
+                  pendingFiles={activeTask ? [] : pendingFiles}
+                  onSendText={wrappedSendText}
+                  onSendFile={wrappedSendFile}
+                  onSendAction={sendActionMessage}
+                  localParticipantId={effectiveLocalParticipantId}
+                  onCollabRespond={handleCollabRespond}
+                  onReadArtifact={handleReadArtifact}
+                  onCollabResult={handleCollabResult}
+                  onPermissionRespond={handlePermissionResponse}
+                  taskAvailable={!activeTaskUnavailable}
+                  taskRequestId={activeTask?.requestId}
+                />
+              )}
             </div>
           </div>
         </div>
