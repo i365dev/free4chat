@@ -1354,9 +1354,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
                 label: "+1",
                 action: { type: "increment", path: "count", amount: 1 },
               },
+              { type: "Input", path: "query", placeholder: "Filter" },
             ],
           },
-          data: { count: 0 },
+          data: { count: 0, query: "initial" },
         },
       },
     })
@@ -1368,15 +1369,57 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         roomType="screenshare"
       />
     )
+    vi.mocked(trackAnalyticsEvent).mockClear()
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
     expect(screen.getByTestId("task-live-view-switcher")).toBeInTheDocument()
     expect(screen.queryByTestId("task-live-view")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Live View" }))
     expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+    await waitFor(() => {
+      expect(
+        vi
+          .mocked(trackAnalyticsEvent)
+          .mock.calls.filter(([name]) => name === "LiveViewVisible")
+      ).toHaveLength(1)
+    })
+    fireEvent.change(screen.getByPlaceholderText("Filter"), {
+      target: { value: "first" },
+    })
+    fireEvent.change(screen.getByPlaceholderText("Filter"), {
+      target: { value: "second" },
+    })
+    expect(
+      vi
+        .mocked(trackAnalyticsEvent)
+        .mock.calls.filter(([name]) => name === "LiveViewInteracted")
+    ).toHaveLength(1)
+    fireEvent.click(screen.getByRole("button", { name: "+1" }))
+    fireEvent.click(screen.getByRole("button", { name: "+1" }))
+    expect(
+      vi
+        .mocked(trackAnalyticsEvent)
+        .mock.calls.filter(([name]) => name === "LiveViewInteracted")
+    ).toHaveLength(1)
+    for (const call of vi
+      .mocked(trackAnalyticsEvent)
+      .mock.calls.filter(([name]) =>
+        ["LiveViewVisible", "LiveViewInteracted"].includes(name)
+      )) {
+      expect(call).toHaveLength(1)
+      expect(JSON.stringify(call)).not.toContain("task-live")
+      expect(JSON.stringify(call)).not.toContain("agent-a")
+    }
     expect(document.querySelector("video")).toBeInTheDocument()
     expect(baseHookReturn.toggleScreenShare).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole("button", { name: "Screen" }))
     expect(screen.queryByTestId("task-live-view")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Live View" }))
+    expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+    expect(
+      vi
+        .mocked(trackAnalyticsEvent)
+        .mock.calls.filter(([name]) => name === "LiveViewVisible")
+    ).toHaveLength(1)
     expect(document.querySelector("video")).toBeInTheDocument()
   })
 })

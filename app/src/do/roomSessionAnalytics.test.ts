@@ -44,9 +44,10 @@ function buildStoredRoom() {
 
 function makeRoomSession(
   fetchCalls: Array<{ url: string; init: RequestInit }>,
-  projectToken?: string
+  projectToken?: string,
+  storedRoom: unknown = buildStoredRoom()
 ) {
-  const store = new Map<string, unknown>([["room", buildStoredRoom()]])
+  const store = new Map<string, unknown>([["room", storedRoom]])
   const ctx = {
     storage: {
       get: async (key: string) => store.get(key),
@@ -214,6 +215,118 @@ describe("Room-authoritative collaboration analytics (#228)", () => {
     const properties = requested[0].properties as Record<string, unknown>
     expect(properties.requesterKind).toBe("agent")
     expect(properties.targetKind).toBe("agent")
+  })
+
+  it("emits one coarse LiveViewPublished event for first and replacement publishes only", async () => {
+    const baseRoom = buildStoredRoom()
+    const taskRoom = {
+      ...baseRoom,
+      participants: {
+        ...baseRoom.participants,
+        human: {
+          id: "human",
+          name: "Human",
+          kind: "human",
+          connected: true,
+          joinedAt: 1,
+          lastSeenAt: 1,
+          token: "human-token",
+        },
+      },
+      messages: [
+        {
+          id: "task-request",
+          peerId: "human",
+          name: "Human",
+          kind: "human",
+          type: "action",
+          actionType: "collab",
+          sequence: 1,
+          createdAt: 1,
+          collab: {
+            requestId: "task-1",
+            kind: "request",
+            fromParticipantId: "human",
+            targetParticipantId: "agent-pi",
+            summary: "Build a counter",
+          },
+          targets: ["agent-pi"],
+        },
+      ],
+      nextMessageSequence: 1,
+    }
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const { control } = makeRoomSession(calls, "project-token", taskRoom)
+    const publish = (revision: number) =>
+      control({
+        action: "agent-publish-live-view",
+        participantId: "agent-pi",
+        token: "tok-pi",
+        taskRequestId: "task-1",
+        surface: {
+          surfaceId: "counter",
+          revision,
+          root: {
+            type: "Value",
+            path: "count",
+          },
+          data: { count: 0 },
+        },
+      })
+
+    expect((await publish(1)).status).toBe(200)
+    await flushMicrotasks()
+    let rows = mixpanelBodies(calls).filter(
+      (row) => row.event === "LiveViewPublished"
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0].properties).toMatchObject({ phase: "first" })
+    expect(JSON.stringify(rows[0].properties)).not.toContain("task-1")
+    expect(JSON.stringify(rows[0].properties)).not.toContain("agent-pi")
+
+    calls.length = 0
+    expect((await publish(2)).status).toBe(200)
+    await flushMicrotasks()
+    rows = mixpanelBodies(calls).filter(
+      (row) => row.event === "LiveViewPublished"
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0].properties).toMatchObject({ phase: "replacement" })
+
+    calls.length = 0
+    expect((await publish(2)).status).toBe(409)
+    await control({
+      action: "agent-publish-live-view",
+      participantId: "human",
+      token: "human-token",
+      taskRequestId: "task-1",
+      surface: {
+        surfaceId: "counter",
+        revision: 3,
+        root: { type: "Value", path: "count" },
+        data: { count: 0 },
+      },
+    })
+    expect(
+      (
+        await control({
+          action: "agent-publish-live-view",
+          participantId: "agent-pi",
+          token: "tok-pi",
+          taskRequestId: "task-1",
+          surface: {
+            surfaceId: "counter",
+            revision: 3,
+            root: { type: "Html", html: "<b>unsafe</b>" },
+            data: { count: 0 },
+          },
+        })
+      ).status
+    ).toBe(400)
+    await flushMicrotasks()
+    expect(
+      mixpanelBodies(calls).filter((row) => row.event === "LiveViewPublished")
+    ).toHaveLength(0)
   })
 
   it("absent Mixpanel secret is a harmless no-op", async () => {

@@ -119,6 +119,8 @@ export default function RoomContent({
   const [activeInteraction, setActiveInteraction] = useState("room")
   const [stageView, setStageView] = useState<"screen" | "live-view">("screen")
   const taskLiveViewState = useRef(new Map())
+  const observedLiveViewKeys = useRef(new Set<string>())
+  const interactedLiveViewKeys = useRef(new Set<string>())
   const pendingLocalTaskSummaries = useRef<string[]>([])
   const autoOpenedTaskIds = useRef<Set<string>>(new Set())
   // #236 follow-up: shared popover state so the Live Transcript setup copy
@@ -201,6 +203,24 @@ export default function RoomContent({
   const activeTaskLiveView = activeTask
     ? taskLiveViews?.[activeTask.requestId]
     : undefined
+  const handleLiveViewVisible = useCallback(
+    (taskRequestId: string, surfaceId: string) => {
+      const key = `${taskRequestId}:${surfaceId}`
+      if (observedLiveViewKeys.current.has(key)) return
+      observedLiveViewKeys.current.add(key)
+      trackAnalyticsEvent("LiveViewVisible")
+    },
+    []
+  )
+  const handleLiveViewInteracted = useCallback(
+    (taskRequestId: string, surfaceId: string) => {
+      const key = `${taskRequestId}:${surfaceId}`
+      if (interactedLiveViewKeys.current.has(key)) return
+      interactedLiveViewKeys.current.add(key)
+      trackAnalyticsEvent("LiveViewInteracted")
+    },
+    []
+  )
   const interactionMessages = activeTask
     ? activeTask.messages
     : roomMessagesForView(messages)
@@ -867,6 +887,8 @@ export default function RoomContent({
                     key={activeTask!.requestId}
                     snapshot={activeTaskLiveView}
                     stateStore={taskLiveViewState}
+                    onVisible={handleLiveViewVisible}
+                    onInteract={handleLiveViewInteracted}
                   />
                 )}
                 <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
@@ -923,6 +945,8 @@ export default function RoomContent({
                 key={activeTask!.requestId}
                 snapshot={activeTaskLiveView}
                 stateStore={taskLiveViewState}
+                onVisible={handleLiveViewVisible}
+                onInteract={handleLiveViewInteracted}
               />
             ) : (
               <div className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3">

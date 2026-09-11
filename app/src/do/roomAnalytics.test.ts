@@ -8,6 +8,7 @@ import {
   buildCollabRequestedEvent,
   buildCollabOutcomeEvent,
   buildCollaborationDurationEvent,
+  buildLiveViewPublishedEvent,
   importAnalyticsEvents,
   mixpanelImportRow,
   hashRoom as hashRoomServer,
@@ -94,6 +95,25 @@ describe("room analytics builders (#228)", () => {
   it("server hashRoom matches the browser hashRoom convention exactly", () => {
     for (const name of ["test", "free4chat2", "", "房间-名称", "a.b-c_d:e"]) {
       expect(hashRoomServer(name)).toBe(hashRoom(name))
+    }
+  })
+
+  it("LiveViewPublished carries only coarse approved properties", () => {
+    for (const phase of ["first", "replacement"] as const) {
+      const event = buildLiveViewPublishedEvent({
+        roomName: "test",
+        participants: PARTICIPANTS,
+        phase,
+      })
+      expect(event.name).toBe("LiveViewPublished")
+      expect(event.properties.phase).toBe(phase)
+      expect(Object.keys(event.properties).sort()).toEqual(
+        [...APPROVED_ANALYTICS_PROPERTIES.LiveViewPublished].sort()
+      )
+      const serialized = JSON.stringify(event.properties)
+      expect(serialized).not.toContain("task-")
+      expect(serialized).not.toContain("agent-")
+      expect(serialized).not.toContain("Pi")
     }
   })
 })

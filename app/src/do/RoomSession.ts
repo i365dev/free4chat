@@ -76,6 +76,7 @@ import {
   buildCollaborationDurationEvent,
   buildTargetedMessageEvent,
   buildRoomCreatedEvent,
+  buildLiveViewPublishedEvent,
   type RoomCreationSource,
 } from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
@@ -3336,6 +3337,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         Object.keys(room.taskLiveViews ?? {}).length >= MAX_TASK_LIVE_VIEWS
       )
         return this.json({ error: "live_view_capacity" }, 409)
+      const publicationPhase = current ? "replacement" : "first"
 
       const snapshot: TaskLiveViewSnapshot = {
         ...draft.draft,
@@ -3359,6 +3361,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ])
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
+      this.trackRoomAnalytics([
+        buildLiveViewPublishedEvent({
+          roomName: this.roomAnalyticsName(),
+          participants: Object.values(room.participants),
+          phase: publicationPhase,
+        }),
+      ])
       return this.json({ snapshot, expiresAt: room.expiresAt })
     }
 
