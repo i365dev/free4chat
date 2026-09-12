@@ -339,7 +339,7 @@ describe("useSfuChatRoom task + compose-first attachments (#363)", () => {
     })
 
     await act(async () => {
-      await result.current.sendTaskAttachment(file, "task-1")
+      await result.current.sendTaskAttachment(file, "task-1", true)
     })
 
     const upload = taskUploadCall()
@@ -351,10 +351,30 @@ describe("useSfuChatRoom task + compose-first attachments (#363)", () => {
     expect(headers["X-Room-Participant-Token"]).toBe("participant-token")
     expect(headers["Content-Type"]).toBe("text/markdown")
     expect(headers["X-File-Name"]).toBe(encodeURIComponent("notes.md"))
+    // Attachment-only Task submission: the persisted wake intent addresses
+    // the participating Task Agent.
+    expect(headers["X-Task-Attachment-Wake"]).toBe("1")
     expect(upload![1].method).toBe("POST")
 
     // The 20 MB Human browser transfer is never used for a Task attachment.
     expect(localFileChannel().send).not.toHaveBeenCalled()
+  })
+
+  it("carries the composer's context-only intent for an attachment + text submission", async () => {
+    const { result } = await connect()
+    const file = new File([new Uint8Array([1, 2, 3, 4])], "notes.md", {
+      type: "text/markdown",
+    })
+
+    await act(async () => {
+      await result.current.sendTaskAttachment(file, "task-1", false)
+    })
+
+    // The following Task text is the single wake boundary; the attachment is
+    // persisted as Task context and must not wake the Agent on its own.
+    const headers = taskUploadCall()![1].headers as Record<string, string>
+    expect(headers["X-Task-Request-Id"]).toBe("task-1")
+    expect(headers["X-Task-Attachment-Wake"]).toBe("0")
   })
 
   it("keeps the exact active Task id when the Task is no longer valid (fail closed)", async () => {
@@ -368,7 +388,7 @@ describe("useSfuChatRoom task + compose-first attachments (#363)", () => {
     let caught: unknown
     await act(async () => {
       caught = await result.current
-        .sendTaskAttachment(file, "task-stale")
+        .sendTaskAttachment(file, "task-stale", false)
         .catch((error: unknown) => error)
     })
 
@@ -389,7 +409,7 @@ describe("useSfuChatRoom task + compose-first attachments (#363)", () => {
     let caught: unknown
     await act(async () => {
       caught = await result.current
-        .sendTaskAttachment(file, "   ")
+        .sendTaskAttachment(file, "   ", false)
         .catch((error: unknown) => error)
     })
 
@@ -409,7 +429,7 @@ describe("useSfuChatRoom task + compose-first attachments (#363)", () => {
     let caught: unknown
     await act(async () => {
       caught = await result.current
-        .sendTaskAttachment(oversized, "task-1")
+        .sendTaskAttachment(oversized, "task-1", false)
         .catch((error: unknown) => error)
     })
 
@@ -474,7 +494,7 @@ describe("useSfuChatRoom task + compose-first attachments (#363)", () => {
     })
 
     await act(async () => {
-      await result.current.sendTaskAttachment(file, "task-1")
+      await result.current.sendTaskAttachment(file, "task-1", false)
     })
 
     // The larger-than-768-KB source is accepted, and the DERIVED uploaded
@@ -505,7 +525,7 @@ describe("useSfuChatRoom task + compose-first attachments (#363)", () => {
     let caught: unknown
     await act(async () => {
       caught = await result.current
-        .sendTaskAttachment(file, "task-1")
+        .sendTaskAttachment(file, "task-1", true)
         .catch((error: unknown) => error)
     })
 

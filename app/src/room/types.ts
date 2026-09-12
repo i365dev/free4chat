@@ -318,6 +318,16 @@ export interface RoomAttachment {
   // Present only for an Agent artifact explicitly correlated with a retained
   // Task request. Omitted means the ordinary Room artifact timeline.
   taskRequestId?: string
+  // #363 (second review): the composer's explicit wake intent for a
+  // Task-correlated Human attachment, persisted with the record so a
+  // reconnect/replay rebuilds the exact same `addressed` value. It is never
+  // derived from the Task correlation alone: `true` means an attachment-only
+  // Task submission that addresses the participating Task Agent(s), while
+  // `false`/absent means Task context only — the following addressed Task text
+  // stays the single wake boundary. An Agent-authored Task artifact always
+  // persists `false`, and a Room-scope attachment carries no wake intent at
+  // all.
+  taskWake?: boolean
 }
 
 // #234: browser-safe standalone Room attachment projection. Bounded metadata

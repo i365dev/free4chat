@@ -349,12 +349,37 @@ describe("Active Task attachment path (#363 A2)", () => {
     fireEvent.click(screen.getByLabelText("Send message"))
 
     await waitFor(() =>
-      expect(sendTaskAttachment).toHaveBeenCalledWith(file, "T")
+      expect(sendTaskAttachment).toHaveBeenCalledWith(file, "T", false)
     )
     expect(sendFileMessage).not.toHaveBeenCalled()
     await waitFor(() =>
       expect(sendTextMessage).toHaveBeenCalledWith("use this", [], "T")
     )
+  })
+
+  it("asks the Room to wake the Task Agent for an attachment-only submission", async () => {
+    const sendFileMessage = vi.fn()
+    const sendTaskAttachment = vi.fn().mockResolvedValue(undefined)
+    const sendTextMessage = vi.fn()
+    const { container } = renderRoom({
+      messages: [taskRequest("T", 1)],
+      sendFileMessage,
+      sendTaskAttachment,
+      sendTextMessage,
+    })
+    const file = fileFixture("task-note.md", "text/markdown")
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
+    pickFile(container, file)
+    fireEvent.click(screen.getByLabelText("Send message"))
+
+    // No text: the attachment is the whole submission and must wake the
+    // participating Task Agent on its own.
+    await waitFor(() =>
+      expect(sendTaskAttachment).toHaveBeenCalledWith(file, "T", true)
+    )
+    expect(sendFileMessage).not.toHaveBeenCalled()
+    expect(sendTextMessage).not.toHaveBeenCalled()
   })
 
   it("never falls back to Room scope when the Task correlation fails", async () => {

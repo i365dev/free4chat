@@ -129,6 +129,10 @@ import {
   isRuntimeProviderClaimHash,
 } from "../common/runtimeProviderCredential"
 import {
+  parseTaskAttachmentWake,
+  TASK_ATTACHMENT_WAKE_HEADER,
+} from "../common/taskAttachmentWake"
+import {
   validateTaskLiveViewDraft,
   validateTaskLiveViewSnapshot,
   type TaskLiveViewSnapshot,
@@ -1350,7 +1354,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       (attachment.taskRequestId === undefined ||
         (typeof attachment.taskRequestId === "string" &&
           attachment.taskRequestId.length > 0 &&
-          attachment.taskRequestId.length <= 64))
+          attachment.taskRequestId.length <= 64)) &&
+      // #363 second review: the persisted wake intent is a bounded boolean (or
+      // absent). It has to survive normalization for replay to stay truthful;
+      // a malformed value invalidates the record exactly like a malformed
+      // Task correlation, and `toAttachmentEvent` additionally fails closed on
+      // anything that is not literally `true`.
+      (attachment.taskWake === undefined ||
+        typeof attachment.taskWake === "boolean")
     )
   }
 
@@ -2039,15 +2050,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
     )
       return undefined
-    // #363 review (point 3): a Human attachment correlated with an ACTIVE
-    // Task is new Task input, so it addresses the canonical participating
-    // Task Agent(s) and wakes an idle Harness exactly like Task text does.
-    // The correlation is resolved from the retained canonical Task log and
-    // fails closed; an Agent-authored Task artifact and every ordinary
+    // #363 second review: a Human attachment correlated with an ACTIVE Task
+    // is new Task input, but whether it INDEPENDENTLY addresses the canonical
+    // participating Task Agent(s) is the composer's PERSISTED wake intent,
+    // never the correlation alone. An attachment-only Task submission
+    // persists `taskWake: true` and wakes an idle Harness exactly like Task
+    // text; an attachment + text submission persists `taskWake: false`, so
+    // the attachment is Task context inside the turn and the following
+    // addressed Task text remains the single wake boundary. Because the
+    // intent lives on the record, a reconnect/replay rebuilds the same
+    // `addressed` value instead of depending on an immediate broadcast.
+    // The correlation is still resolved from the retained canonical Task log
+    // and fails closed; an Agent-authored Task artifact and every ordinary
     // Room-scope attachment stay unaddressed.
     const taskResolution =
       attachment.taskRequestId !== undefined &&
-      attachment.senderKind === "human"
+      attachment.senderKind === "human" &&
+      attachment.taskWake === true
         ? resolveTaskRequest(
             taskProjection,
             attachment.taskRequestId,
@@ -5844,6 +5863,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "task_attachment_not_participant" }, 403)
       }
     }
+    // #363 second review: the composer's wake intent for this Task
+    // submission. It is bounded to the two exact transport tokens, is only
+    // meaningful together with a validated Task correlation, and is only
+    // honored for an authenticated Human: an Agent-authored Task artifact is
+    // always context, never addressing. An absent/unknown intent fails closed
+    // to "context only" so the attachment can never wake an Agent by itself.
+    const requestedTaskWake =
+      requestedTaskRequestId !== undefined &&
+      participant.kind === "human" &&
+      parseTaskAttachmentWake(
+        request.headers.get(TASK_ATTACHMENT_WAKE_HEADER)
+      ) === true
     // #106: agents as well as humans may contribute to the room's bounded
     // ephemeral attachment set — a collaborating agent's screenshot/log/JSON
     // artifact rides the exact same store, limits, and eviction rules as
@@ -5888,7 +5919,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       createdAt: Date.now(),
       sequence: room.nextMessageSequence + 1,
       ...(requestedTaskRequestId
-        ? { taskRequestId: requestedTaskRequestId }
+        ? {
+            taskRequestId: requestedTaskRequestId,
+            // Persisted so replay/reconnect rebuilds the same `addressed`
+            // value (see toAttachmentEvent). Room-scope uploads never carry a
+            // wake intent at all.
+            taskWake: requestedTaskWake,
+          }
         : {}),
     }
     try {

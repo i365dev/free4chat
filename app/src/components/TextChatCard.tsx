@@ -65,8 +65,17 @@ interface TextChatCardProps {
   onSendFile: (file: File) => Promise<void> | void
   /** #363 A2: Human attachment inside the ACTIVE Task. Travels the existing
    * bounded, task-correlated Room attachment path — never the Room
-   * DataChannel transfer. */
-  onSendTaskFile?: (file: File, taskRequestId: string) => Promise<void> | void
+   * DataChannel transfer. `wakeAgent` is the composer's explicit submission
+   * intent (`text === ""`): an attachment-only submission wakes the
+   * participating Task Agent, while an attachment + text submission keeps the
+   * attachment as Task context so the following Task text is the single
+   * addressed wake boundary. The Room persists the choice, so replay rebuilds
+   * the same Agent event. */
+  onSendTaskFile?: (
+    file: File,
+    taskRequestId: string,
+    wakeAgent: boolean
+  ) => Promise<void> | void
   onSendAction: (
     actionType: ActionType,
     actionPayload: Record<string, string>
@@ -1597,6 +1606,11 @@ const TextChatCard = memo(function TextChatCard({
     const text = message.trim()
     const attachment = draftAttachment
     if (text === "" && !attachment) return
+    // #363 second review: one Send can carry an attachment and text together.
+    // The composer — not the Room — decides whether the attachment is a whole
+    // Task submission that wakes the Task Agent, or context that must be
+    // persisted before the single addressed Task text turn.
+    const wakeAgent = text === ""
     const targets =
       text === ""
         ? []
@@ -1621,7 +1635,7 @@ const TextChatCard = memo(function TextChatCard({
           // closed instead.
           if (!onSendTaskFile || !taskRequestId)
             throw new Error("Attachments aren't available in this task")
-          await onSendTaskFile(attachment, taskRequestId)
+          await onSendTaskFile(attachment, taskRequestId, wakeAgent)
         } else {
           await onSendFile(attachment)
         }

@@ -616,13 +616,20 @@ export default function RoomContent({
 
   // #363 A2: a Human attachment inside the ACTIVE Task rides the existing
   // bounded, task-correlated Room attachment API — never the 20 MB Room
-  // DataChannel transfer — and never falls back to Room scope.
+  // DataChannel transfer — and never falls back to Room scope. The composer
+  // owns the wake intent: an attachment-only submission wakes the Task Agent,
+  // an attachment + text submission keeps the attachment as Task context so
+  // the following text is the single addressed wake boundary.
   const activeTaskRequestId = activeTask?.requestId
   const wrappedSendTaskFile = useCallback(
-    async (file: File, taskRequestId: string): Promise<void> => {
+    async (
+      file: File,
+      taskRequestId: string,
+      wakeAgent: boolean
+    ): Promise<void> => {
       if (!activeTaskRequestId || activeTaskRequestId !== taskRequestId)
         throw new Error("This task is no longer active")
-      await sendTaskAttachment(file, taskRequestId)
+      await sendTaskAttachment(file, taskRequestId, wakeAgent)
     },
     [activeTaskRequestId, sendTaskAttachment]
   )

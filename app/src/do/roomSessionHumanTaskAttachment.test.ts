@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { RoomSession } from "./RoomSession"
+import { encodeTaskAttachmentWake } from "../common/taskAttachmentWake"
 import type { RoomRecord } from "../room/types"
 
 /**
@@ -9,6 +10,10 @@ import type { RoomRecord } from "../room/types"
  * server-side and fails closed — unknown/expired Tasks or a Task with no
  * participating Agent in the Room are rejected before any bytes are stored,
  * and nothing is ever silently downgraded to ordinary Room scope.
+ *
+ * #363 second review: the composer's explicit wake intent rides the same
+ * upload and is PERSISTED with the attachment, so the Agent event rebuilt from
+ * Room state carries exactly the same `addressed` value as the live one.
  */
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
@@ -26,6 +31,12 @@ function buildStoredRoom(): RoomRecord {
         joinedAt: 1,
         lastSeenAt: Date.now(),
         token: "tok-human",
+        media: {
+          sessionId: "human-session",
+          muted: false,
+          fileChannelReady: true,
+          tracks: [],
+        },
       },
       "agent-a": {
         id: "agent-a",
@@ -119,7 +130,13 @@ function makeRoom() {
   const upload = (
     sender: { id: string; token: string },
     body = "task context",
-    options: { taskRequestId?: string; contentType?: string } = {}
+    options: {
+      taskRequestId?: string
+      contentType?: string
+      /** The composer's wake intent. Left undefined to exercise an upload
+       * that carries no explicit intent at all. */
+      wakeAgent?: boolean
+    } = {}
   ) =>
     session.fetch(
       new Request("https://room/attachment", {
@@ -133,9 +150,40 @@ function makeRoom() {
           ...(options.taskRequestId
             ? { "X-Task-Request-Id": options.taskRequestId }
             : {}),
+          ...(options.wakeAgent === undefined
+            ? {}
+            : {
+                "X-Task-Attachment-Wake": encodeTaskAttachmentWake(
+                  options.wakeAgent
+                ),
+              }),
         },
         body,
       })
+    )
+  // The browser's human Task text half: the ordinary authenticated Room
+  // WebSocket chat message carrying the canonical task correlation.
+  const humanSocket = {
+    send: () => undefined,
+    close: () => undefined,
+  } as unknown as WebSocket
+  const sendHumanTaskText = (text: string, taskRequestId = "task-1") =>
+    (
+      session as unknown as {
+        handleClientMessage: (
+          socket: WebSocket,
+          attachment: unknown,
+          message: unknown
+        ) => Promise<void>
+      }
+    ).handleClientMessage(
+      humanSocket,
+      {
+        participantId: "human-1",
+        token: "tok-human",
+        connectionNonce: "human-connection",
+      },
+      { type: "chat", text, taskRequestId }
     )
   const control = async (body: Record<string, unknown>) => {
     const response = await session.fetch(
@@ -159,14 +207,14 @@ function makeRoom() {
         cursor,
         timeoutSeconds,
       })
-    ).json as { events: AgentEventProjection[] }
-  const readContext = async (participantId: string) =>
+    ).json as { events: AgentEventProjection[]; cursor: number }
+  const readContext = async (participantId: string, afterSequence = 0) =>
     (
       await control({
         action: "agent-read-context",
         participantId,
         token: `tok-${participantId}`,
-        afterSequence: 0,
+        afterSequence,
       })
     ).json as { events: AgentEventProjection[] }
   const room = () => store.get("room") as RoomRecord
@@ -176,6 +224,7 @@ function makeRoom() {
     control,
     agentWait,
     readContext,
+    sendHumanTaskText,
     room,
     broadcasts,
     store,
@@ -183,9 +232,11 @@ function makeRoom() {
 }
 
 type AgentEventProjection = {
+  sequence?: number
   type?: string
   addressed?: boolean
   scopeId?: string
+  text?: string
   attachment?: { id: string; taskRequestId?: string }
 }
 
@@ -372,17 +423,21 @@ describe("Human Task attachments (#363 A2)", () => {
 })
 
 /**
- * #363 review (point 3): a Human attachment correlated with an ACTIVE Task is
- * new Task input. It must address the canonical participating Task Agent(s)
- * so an idle Harness actually runs, stay inside its own Task scope, never
- * leak to Room scope, and fail closed for an unknown/expired Task.
+ * #363 review (point 3) / second review: a Human attachment correlated with an
+ * ACTIVE Task is new Task input and can address the canonical participating
+ * Task Agent(s) — but only when the composer explicitly said so. The wake
+ * intent is persisted with the attachment, so the live event and the event
+ * rebuilt from Room state agree.
  */
 describe("Human Task attachment Agent addressing (#363 review point 3)", () => {
-  async function uploadTaskAttachment(test: ReturnType<typeof makeRoom>) {
+  async function uploadTaskAttachment(
+    test: ReturnType<typeof makeRoom>,
+    wakeAgent?: boolean
+  ) {
     const response = await test.upload(
       { id: "human-1", token: "tok-human" },
       "task context",
-      { taskRequestId: "task-1" }
+      { taskRequestId: "task-1", wakeAgent }
     )
     const payload = (await response.json()) as { attachment: { id: string } }
     return { response, attachmentId: payload.attachment.id }
@@ -395,9 +450,9 @@ describe("Human Task attachment Agent addressing (#363 review point 3)", () => {
     return events.find((event) => event.attachment?.id === attachmentId)
   }
 
-  it("addresses the canonical participating Task Agent", async () => {
+  it("addresses the canonical participating Task Agent for an attachment-only submission", async () => {
     const test = makeRoom()
-    const { response, attachmentId } = await uploadTaskAttachment(test)
+    const { response, attachmentId } = await uploadTaskAttachment(test, true)
     expect(response.status).toBe(200)
 
     const { events } = await test.agentWait("agent-a", 0)
@@ -419,7 +474,7 @@ describe("Human Task attachment Agent addressing (#363 review point 3)", () => {
       25
     )
     await new Promise((resolve) => setTimeout(resolve, 0))
-    const { attachmentId } = await uploadTaskAttachment(test)
+    const { attachmentId } = await uploadTaskAttachment(test, true)
 
     const { events } = await parked
     expect(attachmentEvent(events, attachmentId)).toMatchObject({
@@ -428,9 +483,23 @@ describe("Human Task attachment Agent addressing (#363 review point 3)", () => {
     })
   })
 
-  it("never exposes or addresses the Task attachment to a non-participating Agent", async () => {
+  it("does not address a Task attachment that carries no explicit wake intent", async () => {
     const test = makeRoom()
     const { attachmentId } = await uploadTaskAttachment(test)
+
+    // Absent intent fails closed: the record is stored with `taskWake: false`
+    // and the event rebuilt from Room state stays unaddressed.
+    expect(test.room().attachments[0].taskWake).toBe(false)
+    const { events } = await test.readContext("agent-a")
+    expect(attachmentEvent(events, attachmentId)).toMatchObject({
+      addressed: false,
+      scopeId: "task:task-1",
+    })
+  })
+
+  it("never exposes or addresses the Task attachment to a non-participating Agent", async () => {
+    const test = makeRoom()
+    const { attachmentId } = await uploadTaskAttachment(test, true)
 
     const { events } = await test.agentWait("agent-b", 0)
     expect(attachmentEvent(events, attachmentId)).toBeUndefined()
@@ -444,21 +513,26 @@ describe("Human Task attachment Agent addressing (#363 review point 3)", () => {
     )
     const payload = (await response.json()) as { attachment: { id: string } }
 
+    // Room scope never even persists a wake intent.
+    expect(test.room().attachments[0].taskWake).toBeUndefined()
     const { events } = await test.agentWait("agent-a", 0)
     const event = attachmentEvent(events, payload.attachment.id)
     expect(event).toMatchObject({ addressed: false })
     expect(event?.scopeId).toBeUndefined()
   })
 
-  it("keeps an Agent-authored Task attachment unaddressed", async () => {
+  it("keeps an Agent-authored Task attachment unaddressed even with a wake intent", async () => {
     const test = makeRoom()
     const response = await test.upload(
       { id: "agent-a", token: "tok-agent-a" },
       "agent artifact",
-      { taskRequestId: "task-1" }
+      { taskRequestId: "task-1", wakeAgent: true }
     )
     const payload = (await response.json()) as { attachment: { id: string } }
 
+    // An Agent can never choose the Human wake intent, and the persisted
+    // record stays unaddressed on replay too.
+    expect(test.room().attachments[0].taskWake).toBe(false)
     const { events } = await test.readContext("agent-a")
     expect(attachmentEvent(events, payload.attachment.id)).toMatchObject({
       addressed: false,
@@ -471,11 +545,147 @@ describe("Human Task attachment Agent addressing (#363 review point 3)", () => {
     const response = await test.upload(
       { id: "human-1", token: "tok-human" },
       "task context",
-      { taskRequestId: "task-missing" }
+      { taskRequestId: "task-missing", wakeAgent: true }
     )
     expect(response.status).toBe(409)
 
     const { events } = await test.agentWait("agent-a", 0)
     expect(events.some((event) => event.attachment !== undefined)).toBe(false)
+  })
+})
+
+/**
+ * #363 second review: one composer Send can carry an attachment and text
+ * together. The Task attachment must be persisted first as Task context
+ * WITHOUT independently waking the Task Agent, and the following addressed
+ * Task text must be the single wake/turn boundary — with the attachment
+ * visible in that first turn. An attachment-only Send still wakes.
+ */
+describe("Single Task wake boundary per composer submission (#363 second review)", () => {
+  function attachmentEvent(
+    events: AgentEventProjection[],
+    attachmentId: string
+  ) {
+    return events.find((event) => event.attachment?.id === attachmentId)
+  }
+
+  function addressedEvents(events: AgentEventProjection[]) {
+    return events.filter((event) => event.addressed === true)
+  }
+
+  async function uploadTaskAttachment(
+    test: ReturnType<typeof makeRoom>,
+    wakeAgent: boolean
+  ) {
+    const response = await test.upload(
+      { id: "human-1", token: "tok-human" },
+      "screenshot bytes",
+      { taskRequestId: "task-1", wakeAgent }
+    )
+    const payload = (await response.json()) as { attachment: { id: string } }
+    return payload.attachment.id
+  }
+
+  it("yields exactly one wake boundary for `attachment + text`, with the attachment inside it", async () => {
+    const test = makeRoom()
+    // Everything already retained (the original Task request) is outside this
+    // composer submission.
+    const submissionStart = test.room().nextMessageSequence
+    // The composer decides: text is present, so the attachment is context.
+    const text: string = "please inspect this"
+    const attachmentId = await uploadTaskAttachment(test, text === "")
+    await test.sendHumanTaskText(text)
+
+    // Live delivery: exactly one addressed event, and it is the Task text.
+    const { events } = await test.agentWait("agent-a", submissionStart)
+    const addressed = addressedEvents(events)
+    expect(addressed).toHaveLength(1)
+    expect(addressed[0]).toMatchObject({
+      type: "text",
+      text,
+      scopeId: "task:task-1",
+    })
+    // The attachment is Task context inside that same turn, not a wake.
+    const attachment = attachmentEvent(events, attachmentId)
+    expect(attachment).toMatchObject({
+      addressed: false,
+      scopeId: "task:task-1",
+    })
+    expect(attachment!.sequence!).toBeLessThan(addressed[0].sequence!)
+    // ...and the Task Agent can still read its bytes in that turn.
+    expect(
+      await readAttachment(test.session, "agent-a", "tok-agent-a", attachmentId)
+    ).toBe(200)
+
+    // Replay/reconstruction from persisted Room state, not the live
+    // broadcast, produces the identical boundary.
+    const retained = (await test.readContext("agent-a", submissionStart)).events
+    const replayed = addressedEvents(retained)
+    expect(replayed).toHaveLength(1)
+    expect(replayed[0]).toMatchObject({ type: "text", text })
+    const replayedAttachment = attachmentEvent(retained, attachmentId)
+    expect(replayedAttachment).toMatchObject({ addressed: false })
+    expect(replayedAttachment!.sequence!).toBeLessThan(replayed[0].sequence!)
+  })
+
+  it("does not resolve an idle Harness on the attachment half of `attachment + text`", async () => {
+    const test = makeRoom()
+    const parked = test.agentWait(
+      "agent-a",
+      test.room().nextMessageSequence,
+      25
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const attachmentId = await uploadTaskAttachment(test, false)
+
+    // The attachment alone produces no addressed event...
+    const first = await parked
+    expect(attachmentEvent(first.events, attachmentId)).toMatchObject({
+      addressed: false,
+    })
+    expect(addressedEvents(first.events)).toHaveLength(0)
+
+    // ...so the following Task text is the single wake boundary, and the
+    // attachment is already persisted inside its context window.
+    await test.sendHumanTaskText("please inspect this")
+    const { events } = await test.agentWait("agent-a", first.cursor)
+    const addressed = addressedEvents(events)
+    expect(addressed).toHaveLength(1)
+    expect(addressed[0]).toMatchObject({ type: "text", scopeId: "task:task-1" })
+    // The retained Room state still shows the unaddressed attachment strictly
+    // before the addressed Task text, inside the same Task scope.
+    const retained = await test.readContext("agent-a")
+    const attachment = attachmentEvent(retained.events, attachmentId)
+    expect(attachment).toMatchObject({
+      addressed: false,
+      scopeId: "task:task-1",
+    })
+    expect(attachment!.sequence!).toBeLessThan(addressed[0].sequence!)
+  })
+
+  it("still wakes an idle Harness for an `attachment only` submission", async () => {
+    const test = makeRoom()
+    const parked = test.agentWait(
+      "agent-a",
+      test.room().nextMessageSequence,
+      25
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const attachmentId = await uploadTaskAttachment(test, true)
+
+    const { events } = await parked
+    const addressed = addressedEvents(events)
+    expect(addressed).toHaveLength(1)
+    expect(addressed[0]).toMatchObject({
+      type: "image",
+      scopeId: "task:task-1",
+      attachment: { id: attachmentId, taskRequestId: "task-1" },
+    })
+
+    // The persisted intent reproduces the same wake on replay.
+    expect(test.room().attachments[0].taskWake).toBe(true)
+    expect(
+      attachmentEvent((await test.readContext("agent-a")).events, attachmentId)
+    ).toMatchObject({ addressed: true })
   })
 })

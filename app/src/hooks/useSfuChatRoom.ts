@@ -24,6 +24,10 @@ import {
   SFU_EGRESS_SAMPLE_INTERVAL_MS,
   type SfuEgressSampleReason,
 } from "@common/sfuEgress"
+import {
+  encodeTaskAttachmentWake,
+  TASK_ATTACHMENT_WAKE_HEADER,
+} from "@common/taskAttachmentWake"
 import { ActionType, Message, UserInfo } from "@common/types"
 import {
   hashRoom,
@@ -3922,8 +3926,20 @@ export function useSfuChatRoom(
   // Agent-readable bound, same ephemeral Room store) instead of the 20 MB
   // Human DataChannel transfer, and it always carries the exact active
   // taskRequestId so the Room can fail closed on a stale or unknown Task.
+  //
+  // #363 second review: `wakeAgent` is the composer's explicit submission
+  // intent. It is persisted with the attachment so the Agent event can be
+  // rebuilt identically after a reconnect/replay: an attachment-only Task
+  // submission wakes the participating Task Agent(s), while an attachment +
+  // text submission keeps the attachment as Task context and leaves the
+  // following Task text as the single addressed wake boundary. The Room never
+  // derives this from the Task correlation alone.
   const sendTaskAttachment = useCallback(
-    async (file: File, taskRequestId: string): Promise<void> => {
+    async (
+      file: File,
+      taskRequestId: string,
+      wakeAgent: boolean
+    ): Promise<void> => {
       const requestId = taskRequestId.trim()
       if (!requestId) throw new Error("This task is no longer active")
       const session = sessionRef.current
@@ -3957,6 +3973,7 @@ export function useSfuChatRoom(
           "X-Room-Participant-Token": session.participantToken,
           "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
           "X-Task-Request-Id": requestId,
+          [TASK_ATTACHMENT_WAKE_HEADER]: encodeTaskAttachmentWake(wakeAgent),
         },
         body: uploadBody,
       })

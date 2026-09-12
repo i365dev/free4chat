@@ -308,7 +308,8 @@ describe("Active Task composer attachments (#363 A2)", () => {
     pickFile(fileInput, file)
     await pressSend()
 
-    expect(onSendTaskFile).toHaveBeenCalledWith(file, "task-42")
+    // Attachment only: the composer asks the Room to wake the Task Agent.
+    expect(onSendTaskFile).toHaveBeenCalledWith(file, "task-42", true)
     // Never the ordinary 20 MB Room DataChannel transfer.
     expect(onSendFile).not.toHaveBeenCalled()
     expect(screen.queryByTestId("composer-attachment")).toBeNull()
@@ -327,7 +328,33 @@ describe("Active Task composer attachments (#363 A2)", () => {
     await waitFor(() =>
       expect(onSendText).toHaveBeenCalledWith("summarize this", [], "task-42")
     )
-    expect(onSendTaskFile).toHaveBeenCalledWith(file, "task-42")
+    // Text present: the attachment is Task context only, so the following
+    // addressed Task text stays the single wake boundary.
+    expect(onSendTaskFile).toHaveBeenCalledWith(file, "task-42", false)
+  })
+
+  it("recomputes the Task wake intent for each submission", async () => {
+    const { composer, fileInput, onSendTaskFile } = renderCard({
+      taskRequestId: "task-42",
+    })
+    const withText = fileFixture("with-text.md", "text/markdown")
+
+    // First submission: attachment + text => context only.
+    typeMessage(composer, "please inspect this")
+    pickFile(fileInput, withText)
+    await pressSend()
+    expect(onSendTaskFile).toHaveBeenNthCalledWith(
+      1,
+      withText,
+      "task-42",
+      false
+    )
+
+    // Second submission from the same composer: attachment only => wakes.
+    const onlyFile = fileFixture("only.md", "text/markdown")
+    pickFile(fileInput, onlyFile)
+    await pressSend()
+    expect(onSendTaskFile).toHaveBeenNthCalledWith(2, onlyFile, "task-42", true)
   })
 
   it("keeps the Task draft when the task correlation fails closed", async () => {

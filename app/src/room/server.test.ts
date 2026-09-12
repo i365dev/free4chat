@@ -21,19 +21,19 @@ describe("Worker Room route dispatch", () => {
   })
 })
 
-type CapturedUpload = { contentType: string | null }
+type CapturedUpload = { contentType: string | null; taskWake: string | null }
 type CapturedControl = {
   body: Record<string, unknown>
   contentType: string | null
 }
 
 function makeEnv(
-  doFetch: (upload: { contentType: string | null }) => Response
+  doFetch: (upload: CapturedUpload) => Response
 ): RoomProtocolEnv {
   const namespace = {
     idFromName: (name: string) => ({ name }),
     // handleRoomRequest calls stub.fetch(url, init); capture the forwarded
-    // Content-Type from the init headers.
+    // Content-Type and the bounded Task wake token from the init headers.
     get: () => ({
       fetch: (
         _url: string | URL,
@@ -44,6 +44,10 @@ function makeEnv(
             contentType:
               init?.headers?.get("Content-Type") ??
               init?.headers?.get("content-type") ??
+              null,
+            taskWake:
+              init?.headers?.get("X-Task-Attachment-Wake") ??
+              init?.headers?.get("x-task-attachment-wake") ??
               null,
           })
         ),
@@ -88,7 +92,8 @@ function liveTranscriptEnv(captured: CapturedControl[]): RoomProtocolEnv {
 function uploadRequest(
   mimeType: string,
   body: string,
-  participant?: { id: string; token: string }
+  participant?: { id: string; token: string },
+  options: { taskRequestId?: string; taskWake?: string } = {}
 ): Request {
   return new Request("https://www.free4.chat/api/room/attachments", {
     method: "POST",
@@ -103,6 +108,12 @@ function uploadRequest(
           }
         : {}),
       "X-File-Name": encodeURIComponent("notes.md"),
+      ...(options.taskRequestId
+        ? { "X-Task-Request-Id": options.taskRequestId }
+        : {}),
+      ...(options.taskWake === undefined
+        ? {}
+        : { "X-Task-Attachment-Wake": options.taskWake }),
     },
     body,
   })
@@ -125,7 +136,7 @@ describe("room attachment upload gate", () => {
       env
     )
     expect(response.status).toBe(200)
-    expect(uploads).toEqual([{ contentType: "text/markdown" }])
+    expect(uploads).toEqual([{ contentType: "text/markdown", taskWake: null }])
   })
 
   it("accepts text/plain, text/csv and application/json", async () => {
@@ -170,6 +181,54 @@ describe("room attachment upload gate", () => {
     const env = makeEnv(() => Response.json({}))
     const response = await handleRoomRequest(request, env)
     expect(response.status).toBe(403)
+  })
+})
+
+describe("Task attachment wake intent transport (#363 second review)", () => {
+  let uploads: CapturedUpload[]
+
+  beforeEach(() => {
+    uploads = []
+  })
+
+  it("forwards the composer's bounded wake tokens to the Room", async () => {
+    for (const [token, forwarded] of [
+      ["1", "1"],
+      ["0", "0"],
+    ] as const) {
+      uploads = []
+      const response = await handleRoomRequest(
+        uploadRequest(
+          "text/plain",
+          "task context",
+          { id: "human-1", token: "tok-1" },
+          { taskRequestId: "task-1", taskWake: token }
+        ),
+        envCapturing(uploads)
+      )
+      expect(response.status).toBe(200)
+      expect(uploads[0]).toMatchObject({
+        contentType: "text/plain",
+        taskWake: forwarded,
+      })
+    }
+  })
+
+  it("never invents a wake intent for an unknown or absent token", async () => {
+    for (const token of [undefined, "true", "yes", "2", ""]) {
+      uploads = []
+      const response = await handleRoomRequest(
+        uploadRequest(
+          "text/plain",
+          "task context",
+          { id: "human-1", token: "tok-1" },
+          { taskRequestId: "task-1", taskWake: token }
+        ),
+        envCapturing(uploads)
+      )
+      expect(response.status).toBe(200)
+      expect(uploads[0]?.taskWake).toBeNull()
+    }
   })
 })
 

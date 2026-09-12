@@ -1,5 +1,10 @@
 import { isAllowedOrigin } from "../common/origin"
 import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
+import {
+  encodeTaskAttachmentWake,
+  parseTaskAttachmentWake,
+  TASK_ATTACHMENT_WAKE_HEADER,
+} from "../common/taskAttachmentWake"
 import type { RoomSession } from "../do/RoomSession"
 import { validateRuntimeHost } from "../do/runtimeHost"
 
@@ -365,6 +370,15 @@ export async function handleRoomRequest(
   const taskRequestId = request.headers.get("X-Task-Request-Id")?.trim()
   if (taskRequestId)
     headers.set("X-Task-Request-Id", taskRequestId.slice(0, 64))
+  // #363 second review: the composer's Task wake intent crosses the transport
+  // as exactly one bounded token. Only the two recognized tokens are
+  // forwarded; an unknown value or an absent header is simply not forwarded,
+  // which the Room reads as "no explicit wake intent" — never a wake.
+  const taskWake = parseTaskAttachmentWake(
+    request.headers.get(TASK_ATTACHMENT_WAKE_HEADER)
+  )
+  if (taskWake !== undefined)
+    headers.set(TASK_ATTACHMENT_WAKE_HEADER, encodeTaskAttachmentWake(taskWake))
   return stub.fetch("https://room/attachment", {
     method: "POST",
     headers,
