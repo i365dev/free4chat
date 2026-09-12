@@ -127,6 +127,8 @@ export default function RoomContent({
   const [taskError, setTaskError] = useState("")
   const [activeInteraction, setActiveInteraction] = useState("room")
   const [activeRoomAppId, setActiveRoomAppId] = useState<string | null>(null)
+  // Browser-local resident App sessions, bounded by the curated catalog size.
+  const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
   const [stageView, setStageView] = useState<"screen" | "live-view">("screen")
   const taskLiveViewState = useRef(new Map())
   const observedLiveViewKeys = useRef(new Set<string>())
@@ -211,18 +213,20 @@ export default function RoomContent({
   )
   const effectiveLocalParticipantId =
     localParticipantId ?? getLocalRoomAuth()?.participantId
-  const roomApps = useMemo(
+  // The validated curated catalog is stable while the Room content is mounted.
+  // `roomAppsEnabled` is not a pure catalog/kill-switch signal: it also drops
+  // while an ordinary SFU/media reconnect rebuilds the App DataChannels, and
+  // that transient false must never be mistaken for a catalog removal.
+  const curatedRoomApps = useMemo(
     () =>
-      roomAppsEnabled
-        ? experimentalRoomAppCatalog()
-            .filter(
-              (app) =>
-                validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
-            )
-            .slice(0, ROOM_APP_MAX_INSTANCES)
-        : [],
-    [roomAppsEnabled]
+      experimentalRoomAppCatalog()
+        .filter(
+          (app) => validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+        )
+        .slice(0, ROOM_APP_MAX_INSTANCES),
+    []
   )
+  const roomApps = roomAppsEnabled ? curatedRoomApps : []
   // Conversation scope and visual Stage are independent selections: an active
   // Room App lives on the Stage and never replaces the Room/Task conversation.
   const activeRoomApp = roomApps.find((app) => activeRoomAppId === app.id)
@@ -239,6 +243,21 @@ export default function RoomContent({
   const roomAppSelf = roomAppParticipants.find(
     (participant) => participant.participantId === effectiveLocalParticipantId
   )
+  // Hosts are mounted on first launch and then stay resident for this browser's
+  // Room session: Stage navigation only changes which one is visible, so an App
+  // never loses its iframe/MessagePort/App-local state to visual navigation.
+  // Resident resolution uses the stable curated catalog, not the transient
+  // transport-readiness flag.
+  const residentRoomApps = useMemo(
+    () =>
+      launchedRoomAppIds.flatMap((id) => {
+        const app = curatedRoomApps.find((candidate) => candidate.id === id)
+        return app ? [app] : []
+      }),
+    [curatedRoomApps, launchedRoomAppIds]
+  )
+  const visibleRoomApp =
+    activeRoomApp && roomAppSelf ? activeRoomApp : undefined
   const activeTask = taskProjections.find(
     (task) => task.requestId === activeInteraction
   )
@@ -341,11 +360,30 @@ export default function RoomContent({
   }, [activeInteraction, taskProjections])
 
   useEffect(() => {
-    // Only catalog availability controls an open App; changing the conversation
-    // scope or the Stage view must not tear down its iframe/MessagePort.
-    if (activeRoomAppId && !roomApps.some((app) => app.id === activeRoomAppId))
-      setActiveRoomAppId(null)
-  }, [activeRoomAppId, roomApps])
+    // Resident hosts survive presentation changes and ordinary transport
+    // reconnects; they are torn down only when Room Apps are stably unavailable
+    // (the Room is connected/failed and the flag is still off, which covers
+    // ROOM_APPS_ENABLED being turned off) or when the curated catalog truly no
+    // longer offers the entry. Unmounting the Room closes them as well.
+    const stablyUnavailable =
+      !roomAppsEnabled &&
+      (connectionStatus === "connected" || connectionStatus === "failed")
+    const hostIsGone = (id: string) =>
+      stablyUnavailable || !curatedRoomApps.some((app) => app.id === id)
+    if (activeRoomAppId && hostIsGone(activeRoomAppId)) setActiveRoomAppId(null)
+    setLaunchedRoomAppIds((previous) => {
+      const next = previous.filter((id) => !hostIsGone(id))
+      return next.length === previous.length ? previous : next
+    })
+  }, [activeRoomAppId, connectionStatus, curatedRoomApps, roomAppsEnabled])
+
+  const launchRoomApp = useCallback((appId: string) => {
+    setLaunchedRoomAppIds((previous) =>
+      previous.includes(appId)
+        ? previous
+        : [...previous, appId].slice(-ROOM_APP_MAX_INSTANCES)
+    )
+  }, [])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -454,9 +492,9 @@ export default function RoomContent({
   useEffect(() => {
     // A Room App is a large visual surface like screen share, so it gets the
     // wide Stage rather than a conversation-sized pane.
-    setSplitRatio(activeScreenShares.length > 0 || activeRoomApp ? 75 : 50)
+    setSplitRatio(activeScreenShares.length > 0 || visibleRoomApp ? 75 : 50)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScreenShares.length > 0, Boolean(activeRoomApp)])
+  }, [activeScreenShares.length > 0, Boolean(visibleRoomApp)])
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
@@ -941,9 +979,16 @@ export default function RoomContent({
                       type="button"
                       aria-pressed={selected}
                       data-testid={`stage-app-${app.id}`}
-                      onClick={() =>
-                        setActiveRoomAppId(selected ? null : app.id)
-                      }
+                      onClick={() => {
+                        if (selected) {
+                          // Hide, do not destroy: the resident host keeps its
+                          // iframe, MessagePort and App-local state.
+                          setActiveRoomAppId(null)
+                          return
+                        }
+                        launchRoomApp(app.id)
+                        setActiveRoomAppId(app.id)
+                      }}
                       className={`shrink-0 rounded px-2 py-1 text-xs ${
                         selected
                           ? "bg-blue-600 text-white"
@@ -962,9 +1007,9 @@ export default function RoomContent({
                       setStageView("screen")
                       setActiveRoomAppId(null)
                     }}
-                    aria-pressed={stageView === "screen" && !activeRoomApp}
+                    aria-pressed={stageView === "screen" && !visibleRoomApp}
                     className={`shrink-0 rounded px-2 py-1 text-xs ${
-                      stageView === "screen" && !activeRoomApp
+                      stageView === "screen" && !visibleRoomApp
                         ? "bg-blue-600 text-white"
                         : "text-gray-400 hover:bg-gray-800"
                     }`}
@@ -980,9 +1025,9 @@ export default function RoomContent({
                       setStageView("live-view")
                       setActiveRoomAppId(null)
                     }}
-                    aria-pressed={stageView === "live-view" && !activeRoomApp}
+                    aria-pressed={stageView === "live-view" && !visibleRoomApp}
                     className={`shrink-0 rounded px-2 py-1 text-xs ${
-                      stageView === "live-view" && !activeRoomApp
+                      stageView === "live-view" && !visibleRoomApp
                         ? "bg-blue-600 text-white"
                         : "text-gray-400 hover:bg-gray-800"
                     }`}
@@ -992,66 +1037,128 @@ export default function RoomContent({
                 )}
               </div>
             )}
-            {activeRoomApp && roomAppSelf ? (
-              // Keyed per App: switching Apps unmounts the previous host, which
-              // closes its MessagePort, instead of reusing one iframe/instance.
-              <RoomAppHost
-                key={activeRoomApp.id}
-                app={activeRoomApp}
-                appInstanceId={roomAppInstanceId(roomName, activeRoomApp.id)}
-                self={roomAppSelf}
-                participants={roomAppParticipants}
-                subscribe={subscribeRoomAppMessages}
-                send={sendRoomAppMessage}
-                onClose={() => setActiveRoomAppId(null)}
-              />
-            ) : activeScreenShares.length > 0 ? (
-              <>
-                <div
-                  className={
-                    showTaskLiveView ? "hidden" : "flex min-h-0 flex-1"
-                  }
-                >
-                  {activeShare && (
-                    <ScreenShareViewer
-                      key={activeShare.peerId}
-                      stream={activeShare.screenShareStream!}
-                      name={activeShare.name}
+            {/* Resident App hosts: every launched App stays mounted for this
+                browser Room session. Stage navigation only toggles visibility,
+                so hiding one never destroys its iframe or MessagePort. Hidden
+                slots are display:none + inert + aria-hidden, which keeps them
+                out of hit-testing, focus and the accessibility tree while they
+                keep receiving the bounded App messages. */}
+            {roomAppSelf &&
+              residentRoomApps.map((app) => {
+                const visible = visibleRoomApp?.id === app.id
+                return (
+                  <div
+                    key={app.id}
+                    data-testid={`room-app-slot-${app.id}`}
+                    aria-hidden={!visible}
+                    inert={!visible}
+                    className={
+                      visible ? "flex min-h-0 flex-1 flex-col" : "hidden"
+                    }
+                  >
+                    <RoomAppHost
+                      app={app}
+                      appInstanceId={roomAppInstanceId(roomName, app.id)}
+                      self={roomAppSelf}
+                      participants={roomAppParticipants}
+                      subscribe={subscribeRoomAppMessages}
+                      send={sendRoomAppMessage}
+                      onClose={() => setActiveRoomAppId(null)}
+                    />
+                  </div>
+                )
+              })}
+            {!visibleRoomApp &&
+              (activeScreenShares.length > 0 ? (
+                <>
+                  <div
+                    className={
+                      showTaskLiveView ? "hidden" : "flex min-h-0 flex-1"
+                    }
+                  >
+                    {activeShare && (
+                      <ScreenShareViewer
+                        key={activeShare.peerId}
+                        stream={activeShare.screenShareStream!}
+                        name={activeShare.name}
+                      />
+                    )}
+                  </div>
+                  {showTaskLiveView && activeTaskLiveView && (
+                    <TaskLiveView
+                      key={activeTask!.requestId}
+                      snapshot={activeTaskLiveView}
+                      stateStore={taskLiveViewState}
+                      onVisible={handleLiveViewVisible}
+                      onInteract={handleLiveViewInteracted}
                     />
                   )}
-                </div>
-                {showTaskLiveView && activeTaskLiveView && (
-                  <TaskLiveView
-                    key={activeTask!.requestId}
-                    snapshot={activeTaskLiveView}
-                    stateStore={taskLiveViewState}
-                    onVisible={handleLiveViewVisible}
-                    onInteract={handleLiveViewInteracted}
-                  />
-                )}
-                <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                  <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                    {participants.map((p) => (
+                      <div
+                        key={p.peerId}
+                        className={`flex-shrink-0 rounded-xl transition-all ${
+                          p.screenShareEnabled &&
+                          p.peerId !== LOCAL_PEER_ID &&
+                          p.peerId === activeSharePeerId
+                            ? "ring-2 ring-blue-400"
+                            : ""
+                        } ${
+                          p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
+                            ? "cursor-pointer"
+                            : ""
+                        }`}
+                        onClick={() => {
+                          if (
+                            p.screenShareEnabled &&
+                            p.peerId !== LOCAL_PEER_ID
+                          ) {
+                            setActiveSharePeerId(p.peerId)
+                          }
+                        }}
+                      >
+                        <UserCard
+                          peerId={p.peerId}
+                          name={p.name}
+                          kind={p.kind}
+                          room={p.room}
+                          muteState={p.muteState}
+                          audioStream={p.audioStream}
+                          screenShareStream={p.screenShareStream}
+                          screenShareEnabled={p.screenShareEnabled}
+                          onMuteSelf={muteSelf}
+                          onToggleScreenShare={wrappedToggleScreenShare}
+                          screenshareAllowed={screenshareAllowed}
+                          voiceAvailable={
+                            p.voiceAvailable && agentVoiceMediaAvailable
+                          }
+                          voiceEnabled={p.voiceEnabled}
+                          onToggleAgentVoice={toggleAgentVoice}
+                          onStartTask={handleStartTask}
+                          className="w-[84px]"
+                          compact
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : showTaskLiveView && activeTaskLiveView ? (
+                <TaskLiveView
+                  key={activeTask!.requestId}
+                  snapshot={activeTaskLiveView}
+                  stateStore={taskLiveViewState}
+                  onVisible={handleLiveViewVisible}
+                  onInteract={handleLiveViewInteracted}
+                />
+              ) : (
+                <div
+                  data-testid="room-stage-participants"
+                  className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3"
+                >
                   {participants.map((p) => (
                     <div
                       key={p.peerId}
-                      className={`flex-shrink-0 rounded-xl transition-all ${
-                        p.screenShareEnabled &&
-                        p.peerId !== LOCAL_PEER_ID &&
-                        p.peerId === activeSharePeerId
-                          ? "ring-2 ring-blue-400"
-                          : ""
-                      } ${
-                        p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
-                          ? "cursor-pointer"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        if (
-                          p.screenShareEnabled &&
-                          p.peerId !== LOCAL_PEER_ID
-                        ) {
-                          setActiveSharePeerId(p.peerId)
-                        }
-                      }}
+                      className="flex flex-col items-center gap-1"
                     >
                       <UserCard
                         peerId={p.peerId}
@@ -1064,62 +1171,19 @@ export default function RoomContent({
                         screenShareEnabled={p.screenShareEnabled}
                         onMuteSelf={muteSelf}
                         onToggleScreenShare={wrappedToggleScreenShare}
-                        screenshareAllowed={screenshareAllowed}
                         voiceAvailable={
                           p.voiceAvailable && agentVoiceMediaAvailable
                         }
                         voiceEnabled={p.voiceEnabled}
                         onToggleAgentVoice={toggleAgentVoice}
                         onStartTask={handleStartTask}
-                        className="w-[84px]"
-                        compact
+                        screenshareAllowed={screenshareAllowed}
+                        className="w-40 flex-none"
                       />
                     </div>
                   ))}
                 </div>
-              </>
-            ) : showTaskLiveView && activeTaskLiveView ? (
-              <TaskLiveView
-                key={activeTask!.requestId}
-                snapshot={activeTaskLiveView}
-                stateStore={taskLiveViewState}
-                onVisible={handleLiveViewVisible}
-                onInteract={handleLiveViewInteracted}
-              />
-            ) : (
-              <div
-                data-testid="room-stage-participants"
-                className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3"
-              >
-                {participants.map((p) => (
-                  <div
-                    key={p.peerId}
-                    className="flex flex-col items-center gap-1"
-                  >
-                    <UserCard
-                      peerId={p.peerId}
-                      name={p.name}
-                      kind={p.kind}
-                      room={p.room}
-                      muteState={p.muteState}
-                      audioStream={p.audioStream}
-                      screenShareStream={p.screenShareStream}
-                      screenShareEnabled={p.screenShareEnabled}
-                      onMuteSelf={muteSelf}
-                      onToggleScreenShare={wrappedToggleScreenShare}
-                      voiceAvailable={
-                        p.voiceAvailable && agentVoiceMediaAvailable
-                      }
-                      voiceEnabled={p.voiceEnabled}
-                      onToggleAgentVoice={toggleAgentVoice}
-                      onStartTask={handleStartTask}
-                      screenshareAllowed={screenshareAllowed}
-                      className="w-40 flex-none"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
+              ))}
 
             {floatingReactions.map((r) => (
               <div

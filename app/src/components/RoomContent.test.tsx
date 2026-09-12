@@ -29,6 +29,7 @@ import type { Message } from "@common/types"
 import { trackAnalyticsEvent } from "@common/utils"
 
 import RoomContent from "./RoomContent"
+import { roomAppInstanceId } from "../common/roomApp"
 import { RoomSession } from "../do/RoomSession"
 import type { RoomRecord, RoomState } from "../room/types"
 
@@ -1126,12 +1127,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
   })
 
-  describe("Room App Stage placement", () => {
+  describe("Room App Stage placement and residency", () => {
     class TestPort {
       onmessage: ((event: MessageEvent) => void) | null = null
       postMessage = vi.fn()
       start = vi.fn()
       close = vi.fn()
+
+      emit(data: unknown) {
+        this.onmessage?.({ data } as MessageEvent)
+      }
     }
 
     let channels: { port1: TestPort; port2: TestPort }[] = []
@@ -1145,20 +1150,29 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       }
     }
 
+    const localParticipant = {
+      peerId: "local-peer",
+      name: "Alice",
+      kind: "human",
+      room: "test-room",
+      muteState: false,
+    }
+
+    const remoteScreenShare = {
+      peerId: "publisher-a",
+      name: "Bob",
+      kind: "human",
+      room: "test-room",
+      screenShareEnabled: true,
+      screenShareStream: {} as MediaStream,
+    }
+
     function renderAppRoom(overrides: Record<string, unknown> = {}) {
       mockUseSfuChatRoom.mockReturnValue({
         ...baseHookReturn,
         connectionStatus: "connected",
         roomAppsEnabled: true,
-        participants: [
-          {
-            peerId: "local-peer",
-            name: "Alice",
-            kind: "human",
-            room: "test-room",
-            muteState: false,
-          },
-        ],
+        participants: [localParticipant],
         ...overrides,
       })
       return render(
@@ -1174,33 +1188,60 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       return frameWindow
     }
 
+    /** Answers the bootstrap so the host forwards live App messages. */
+    function completeHandshake(
+      frameWindow: { postMessage: ReturnType<typeof vi.fn> },
+      appId: string,
+      port: TestPort
+    ) {
+      const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+      act(() => {
+        port.emit({
+          type: "ready",
+          appInstanceId: roomAppInstanceId("test-room", appId),
+          handshakeToken: bootstrap.handshakeToken,
+        })
+      })
+    }
+
+    const slot = (appId: string) => screen.getByTestId(`room-app-slot-${appId}`)
+    const slotHidden = (appId: string) =>
+      slot(appId).className.includes("hidden")
+    const slotIframe = (appId: string) =>
+      within(slot(appId)).getByTestId("room-app-iframe") as HTMLIFrameElement
+    const slotHost = (appId: string) =>
+      within(slot(appId)).getByTestId("room-app-host")
+
     beforeEach(() => {
       channels = []
       vi.stubGlobal("MessageChannel", TestMessageChannel)
     })
 
-    it("mounts the active Room App on the visual Stage while the Room conversation stays", async () => {
+    it("mounts a first launch on the visual Stage while the Room conversation stays", async () => {
       renderAppRoom()
 
-      // Conversation scope starts on Room; the Stage starts on participants.
+      // Nothing is resident before the first launch, and the Stage idles on
+      // participants.
+      expect(screen.queryByTestId("room-app-iframe")).toBeNull()
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
       expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
         "aria-selected",
         "true"
       )
-      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
 
       fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
 
       const host = await screen.findByTestId("room-app-host")
       const stage = screen.getByTestId("room-stage")
       expect(stage.contains(host)).toBe(true)
-      // The App is Stage content, never conversation content: the same
-      // structure keeps it out of the stacked mobile conversation pane.
+      // Stage content, never conversation content: the same structure keeps it
+      // out of the stacked mobile conversation pane.
       expect(host.closest(".room-participants-panel")).not.toBeNull()
       expect(host.closest(".room-chat-panel")).toBeNull()
       expect(screen.getByTestId("interaction-chat").contains(host)).toBe(false)
       // A Room App is a large visual surface, like screen share.
       expect(stage).toHaveStyle({ width: "75%" })
+      expect(screen.queryByTestId("room-stage-participants")).toBeNull()
 
       // Room conversation remains selected and rendered beside the App.
       expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
@@ -1211,35 +1252,19 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         screen.getByPlaceholderText("Message the room or @ an Agent…")
       ).toBeInTheDocument()
 
-      const iframe = screen.getByTestId("room-app-iframe")
+      // One launch means one iframe and one MessagePort.
+      expect(screen.getAllByTestId("room-app-iframe")).toHaveLength(1)
+      const iframe = slotIframe("shared-canvas")
       expect(iframe).toHaveAttribute(
         "src",
         expect.stringContaining("/shared-canvas")
       )
       expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+      loadAppIframe(iframe)
+      expect(channels).toHaveLength(1)
     })
 
-    it("closes the Room App back to the participant Stage", async () => {
-      renderAppRoom()
-
-      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
-      const host = await screen.findByTestId("room-app-host")
-      expect(screen.getByTestId("room-app-iframe")).toHaveAttribute(
-        "src",
-        expect.stringContaining("/tiny-arena")
-      )
-
-      fireEvent.click(within(host).getByRole("button", { name: "Close" }))
-
-      expect(screen.queryByTestId("room-app-host")).toBeNull()
-      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
-      expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
-        "aria-selected",
-        "true"
-      )
-    })
-
-    it("keeps the App open while the conversation switches between Room and Task", async () => {
+    it("keeps the resident App while the conversation switches between Room and Task", async () => {
       renderAppRoom({ messages: [taskRequestMessage] })
 
       fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
@@ -1262,56 +1287,219 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       ).toBeInTheDocument()
     })
 
-    it("switches Canvas to Arena without a duplicate iframe or MessagePort", async () => {
+    it("launches once and reuses the same iframe and MessagePort when hidden and shown again", async () => {
+      const send = vi.fn(() => false)
+      renderAppRoom({ sendRoomAppMessage: send })
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+      expect(channels).toHaveLength(1)
+
+      // Hide by toggling the Stage entry off.
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+
+      // Show it again: same host, same session, no new MessagePort.
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(slotHidden("shared-canvas")).toBe(false)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+      // Visibility is presentation only: it never becomes host traffic.
+      expect(send).not.toHaveBeenCalled()
+    })
+
+    it("treats visual Close as Hide and restores the same session on reopen", async () => {
+      renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+      const iframe = slotIframe("tiny-arena")
+      loadAppIframe(iframe)
+      expect(channels).toHaveLength(1)
+
+      fireEvent.click(
+        within(slotHost("tiny-arena")).getByRole("button", { name: "Close" })
+      )
+
+      // The Stage returns to participants; the session stays resident.
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+      expect(slotHidden("tiny-arena")).toBe(true)
+      expect(slotIframe("tiny-arena")).toBe(iframe)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+      expect(slotHidden("tiny-arena")).toBe(false)
+      expect(slotIframe("tiny-arena")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+    })
+
+    it("keeps Canvas resident while Arena is shown and restores the same Canvas iframe", async () => {
       renderAppRoom()
 
       fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
-      const canvasIframe = screen.getByTestId(
-        "room-app-iframe"
-      ) as HTMLIFrameElement
+      const canvasIframe = slotIframe("shared-canvas")
       loadAppIframe(canvasIframe)
-      expect(channels).toHaveLength(1)
       const canvasPort = channels[0].port1
+      expect(channels).toHaveLength(1)
 
       fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
 
-      const iframes = screen.getAllByTestId("room-app-iframe")
-      expect(iframes).toHaveLength(1)
-      // A clean unmount/remount, not one iframe re-pointed at a second App.
-      expect(iframes[0]).not.toBe(canvasIframe)
-      expect(iframes[0]).toHaveAttribute(
-        "src",
-        expect.stringContaining("/tiny-arena")
-      )
-      expect(canvasPort.close).toHaveBeenCalled()
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(slotHidden("tiny-arena")).toBe(false)
+      // Both sessions exist; Canvas was hidden, not destroyed.
+      expect(screen.getAllByTestId("room-app-iframe")).toHaveLength(2)
+      expect(screen.getAllByTestId("room-app-host")).toHaveLength(2)
+      expect(slotIframe("shared-canvas")).toBe(canvasIframe)
+      expect(canvasPort.close).not.toHaveBeenCalled()
 
-      loadAppIframe(iframes[0] as HTMLIFrameElement)
+      const arenaIframe = slotIframe("tiny-arena")
+      loadAppIframe(arenaIframe)
       expect(channels).toHaveLength(2)
-      expect(screen.getAllByTestId("room-app-iframe")).toHaveLength(1)
+
+      // Back to Canvas: the exact same iframe/port/App-local state.
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(slotHidden("shared-canvas")).toBe(false)
+      expect(slotIframe("shared-canvas")).toBe(canvasIframe)
+      expect(canvasPort.close).not.toHaveBeenCalled()
+      expect(channels).toHaveLength(2)
+      // Arena stays resident behind it.
+      expect(slotHidden("tiny-arena")).toBe(true)
+      expect(slotIframe("tiny-arena")).toBe(arenaIframe)
+    })
+
+    it("keeps both Humans' resident Canvas sessions when both hide and reopen", async () => {
+      const humanHook = (name: string) => ({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [{ ...localParticipant, name }],
+      })
+      mockUseSfuChatRoom.mockImplementation((_room: unknown, nick: unknown) =>
+        humanHook(nick === "Alice" ? "Alice" : "Bob")
+      )
+      const alice = render(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      const bob = render(
+        <RoomContent roomName="test-room" nickName="Bob" roomType="audio" />
+      )
+      const aliceView = within(alice.container)
+      const bobView = within(bob.container)
+
+      fireEvent.click(aliceView.getByTestId("stage-app-shared-canvas"))
+      fireEvent.click(bobView.getByTestId("stage-app-shared-canvas"))
+      const aliceIframe = aliceView.getByTestId(
+        "room-app-iframe"
+      ) as HTMLIFrameElement
+      const bobIframe = bobView.getByTestId(
+        "room-app-iframe"
+      ) as HTMLIFrameElement
+      loadAppIframe(aliceIframe)
+      loadAppIframe(bobIframe)
+      expect(channels).toHaveLength(2)
+
+      // Both Humans hide Canvas for this browser session.
+      fireEvent.click(aliceView.getByTestId("stage-app-shared-canvas"))
+      fireEvent.click(bobView.getByTestId("stage-app-shared-canvas"))
+      expect(
+        aliceView.getByTestId("room-app-slot-shared-canvas").className
+      ).toContain("hidden")
+      expect(
+        bobView.getByTestId("room-app-slot-shared-canvas").className
+      ).toContain("hidden")
+      // Neither resident session was destroyed, so an incumbent Canvas can
+      // still answer the bounded canonical bootstrap when it is reopened.
+      for (const channel of channels)
+        expect(channel.port1.close).not.toHaveBeenCalled()
+
+      // Reopening restores the same iframes and sessions on both browsers.
+      fireEvent.click(aliceView.getByTestId("stage-app-shared-canvas"))
+      fireEvent.click(bobView.getByTestId("stage-app-shared-canvas"))
+      expect(aliceView.getByTestId("room-app-iframe")).toBe(aliceIframe)
+      expect(bobView.getByTestId("room-app-iframe")).toBe(bobIframe)
+      expect(channels).toHaveLength(2)
+    })
+
+    it("keeps a hidden App's session live without adding outbound traffic", async () => {
+      let listener: ((message: unknown) => void) | undefined
+      const subscribe = vi.fn((next: (message: unknown) => void) => {
+        listener = next
+        return () => undefined
+      })
+      const send = vi.fn(() => true)
+      renderAppRoom({
+        subscribeRoomAppMessages: subscribe,
+        sendRoomAppMessage: send,
+      })
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const frameWindow = loadAppIframe(slotIframe("shared-canvas"))
+      completeHandshake(frameWindow, "shared-canvas", channels[0].port1)
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(slotHidden("shared-canvas")).toBe(true)
+
+      // A hidden resident App still receives the bounded logical messages it
+      // needs to preserve and reconcile its own state.
+      const payload = { type: "stroke", points: [[1, 2]] }
+      act(() => {
+        listener?.({
+          protocolVersion: 1,
+          appInstanceId: roomAppInstanceId("test-room", "shared-canvas"),
+          lane: "reliable",
+          sourceParticipantId: "other-human",
+          payload,
+        })
+      })
+      expect(channels[0].port1.postMessage).toHaveBeenCalledWith({
+        type: "reliable",
+        appInstanceId: roomAppInstanceId("test-room", "shared-canvas"),
+        sourceParticipantId: "other-human",
+        payload,
+      })
+      // Hiding is never host traffic: no heartbeat was introduced.
+      expect(send).not.toHaveBeenCalled()
+    })
+
+    it("hides the App when the Stage switches back to Screen or Live View", async () => {
+      renderAppRoom({
+        resolvedRoomType: "screenshare",
+        messages: [taskRequestMessage],
+        participants: [localParticipant, remoteScreenShare],
+        taskLiveViews: { "task-live": taskLiveViewSnapshot },
+      })
+
+      fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+
+      fireEvent.click(screen.getByTestId("stage-view-live-view"))
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(slotHidden("shared-canvas")).toBe(false)
+
+      fireEvent.click(screen.getByTestId("stage-view-screen"))
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(document.querySelector("video")).toBeInTheDocument()
+      // The Task conversation scope is untouched by Stage switching, and the
+      // App session survived both switches.
+      expect(
+        screen.getByTestId("interaction-tab-task-task-live")
+      ).toHaveAttribute("aria-selected", "true")
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
     })
 
     it("offers Screen while an App is open even without a Task Live View", async () => {
       renderAppRoom({
         resolvedRoomType: "screenshare",
-        participants: [
-          {
-            peerId: "local-peer",
-            name: "Alice",
-            kind: "human",
-            room: "test-room",
-            muteState: false,
-            screenShareEnabled: false,
-            screenShareStream: null,
-          },
-          {
-            peerId: "publisher-a",
-            name: "Bob",
-            kind: "human",
-            room: "test-room",
-            screenShareEnabled: true,
-            screenShareStream: {} as MediaStream,
-          },
-        ],
+        participants: [localParticipant, remoteScreenShare],
       })
 
       fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
@@ -1321,7 +1509,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       // Screen is a Stage surface in its own right: it must stay reachable
       // while an App is open, with no Live View sharing the switcher.
       fireEvent.click(screen.getByTestId("stage-view-screen"))
-      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(slotHidden("shared-canvas")).toBe(true)
       expect(document.querySelector("video")).toBeInTheDocument()
     })
 
@@ -1338,55 +1526,116 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
       // Live View is likewise reachable on its own availability.
       fireEvent.click(screen.getByTestId("stage-view-live-view"))
-      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(slotHidden("tiny-arena")).toBe(true)
       expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
     })
 
-    it("leaves the App when the Stage switches back to Screen or Live View", async () => {
-      renderAppRoom({
-        resolvedRoomType: "screenshare",
-        messages: [taskRequestMessage],
-        participants: [
-          {
-            peerId: "local-peer",
-            name: "Alice",
-            kind: "human",
-            room: "test-room",
-            muteState: false,
-            screenShareEnabled: false,
-            screenShareStream: null,
-          },
-          {
-            peerId: "publisher-a",
-            name: "Bob",
-            kind: "human",
-            room: "test-room",
-            screenShareEnabled: true,
-            screenShareStream: {} as MediaStream,
-          },
-        ],
-        taskLiveViews: { "task-live": taskLiveViewSnapshot },
-      })
+    it("keeps hidden App slots non-interactive", async () => {
+      renderAppRoom()
 
-      // The Task Live View is the selected Task's surface, as before.
-      fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
       fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
-      expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
-
-      fireEvent.click(screen.getByTestId("stage-view-live-view"))
-      expect(screen.queryByTestId("room-app-host")).toBeNull()
-      expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
-
       fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
-      expect(screen.getByTestId("room-app-host")).toBeInTheDocument()
 
-      fireEvent.click(screen.getByTestId("stage-view-screen"))
-      expect(screen.queryByTestId("room-app-host")).toBeNull()
-      expect(document.querySelector("video")).toBeInTheDocument()
-      // The Task conversation scope is untouched by Stage switching.
-      expect(
-        screen.getByTestId("interaction-tab-task-task-live")
-      ).toHaveAttribute("aria-selected", "true")
+      // display:none removes the hidden host from hit-testing and tab order;
+      // inert + aria-hidden state the intent explicitly.
+      const hidden = slot("shared-canvas")
+      expect(hidden.className).toContain("hidden")
+      expect(hidden).toHaveAttribute("aria-hidden", "true")
+      expect(hidden).toHaveAttribute("inert")
+
+      const visible = slot("tiny-arena")
+      expect(visible.className).not.toContain("hidden")
+      expect(visible).toHaveAttribute("aria-hidden", "false")
+      expect(visible).not.toHaveAttribute("inert")
+    })
+
+    it("keeps resident hosts across an ordinary transport reconnect", async () => {
+      const view = renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+      expect(channels).toHaveLength(1)
+
+      // Ordinary SFU/media reconnect: useSfuChatRoom drops the exposed flag
+      // while it rebuilds the App DataChannels. That is not a catalog removal.
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "reconnecting",
+        roomAppsEnabled: false,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+
+      // The App is hidden while the transport is unavailable, but its host and
+      // MessagePort stay resident.
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+
+      // Reconnect succeeds: same host, same Stage selection.
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+
+      expect(slotHidden("shared-canvas")).toBe(false)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+    })
+
+    it("tears resident hosts down on a stable disable, closing each port once", async () => {
+      const view = renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+      loadAppIframe(slotIframe("shared-canvas"))
+      loadAppIframe(slotIframe("tiny-arena"))
+      expect(channels).toHaveLength(2)
+
+      // ROOM_APPS_ENABLED off while the Room stays connected: a real disable,
+      // not a reconnect.
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: false,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+
+      await waitFor(() =>
+        expect(screen.queryByTestId("room-app-slot-shared-canvas")).toBeNull()
+      )
+      expect(screen.queryByTestId("room-app-slot-tiny-arena")).toBeNull()
+      expect(channels[0].port1.close).toHaveBeenCalledTimes(1)
+      expect(channels[1].port1.close).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+    })
+
+    it("closes every resident MessagePort exactly once when the Room unmounts", async () => {
+      const view = renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+      loadAppIframe(slotIframe("shared-canvas"))
+      loadAppIframe(slotIframe("tiny-arena"))
+      expect(channels).toHaveLength(2)
+
+      view.unmount()
+
+      expect(channels[0].port1.close).toHaveBeenCalledTimes(1)
+      expect(channels[1].port1.close).toHaveBeenCalledTimes(1)
     })
   })
 
