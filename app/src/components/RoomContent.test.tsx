@@ -1517,6 +1517,14 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       )
       expect(host).toHaveAttribute("data-layout", "fullscreen")
       expect(screen.getByTestId("room-app-host")).toBe(host)
+      const slot = screen.getByTestId("room-app-slot-shared-canvas")
+      const reconnectGuard = screen.getByTestId("room-reconnect-guard")
+      expect(reconnectGuard).toBeVisible()
+      expect(reconnectGuard).toHaveAttribute("role", "alert")
+      expect(reconnectGuard).not.toHaveAttribute("inert")
+      expect(reconnectGuard).not.toHaveAttribute("aria-hidden", "true")
+      expect(slot).toHaveAttribute("inert")
+      expect(slot).toHaveAttribute("aria-hidden", "true")
       expect(screen.getByRole("main")).toHaveAttribute(
         "data-room-app-focus",
         "true"
@@ -1525,8 +1533,12 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(
         screen.getByTestId("interaction-chat").closest(".room-chat-panel")
       ).not.toBeVisible()
+      expect(
+        screen.getByPlaceholderText("Message the room or @ an Agent…")
+      ).not.toBeVisible()
       expect(slotIframe("shared-canvas")).toBe(iframe)
       expect(channels[0].port1).toBe(port)
+      expect(port.close).not.toHaveBeenCalled()
 
       mockUseSfuChatRoom.mockReturnValue({
         ...baseHookReturn,
@@ -1539,6 +1551,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       )
       expect(host).toHaveAttribute("data-layout", "fullscreen")
       expect(screen.getByTestId("room-app-host")).toBe(host)
+      expect(
+        screen.queryByTestId("room-reconnect-guard")
+      ).not.toBeInTheDocument()
+      expect(slot).not.toHaveAttribute("inert")
+      expect(slot).not.toHaveAttribute("aria-hidden", "true")
       expect(screen.getByRole("main")).toHaveAttribute(
         "data-room-app-focus",
         "true"
@@ -1549,7 +1566,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(slotIframe("shared-canvas")).toBe(iframe)
       expect(channels[0].port1).toBe(port)
       expect(channels).toHaveLength(1)
-      expect(channels[0].port1.close).not.toHaveBeenCalled()
+      expect(port.close).not.toHaveBeenCalled()
     })
 
     it("leaves focus mode if the active App becomes unavailable", async () => {

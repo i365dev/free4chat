@@ -921,14 +921,10 @@ export default function RoomContent({
     >
       {connectionStatus === "reconnecting" && (
         <div
-          className={`fixed inset-0 z-50 bg-black/60 ${
-            isRoomAppFullscreen
-              ? "hidden"
-              : "flex flex-col items-center justify-center"
-          }`}
-          hidden={isRoomAppFullscreen}
-          aria-hidden={isRoomAppFullscreen}
-          inert={isRoomAppFullscreen}
+          data-testid="room-reconnect-guard"
+          role="alert"
+          aria-live="assertive"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60"
         >
           <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
           <p className="text-sm text-gray-400">Reconnecting...</p>
@@ -1215,12 +1211,14 @@ export default function RoomContent({
                 const isFullscreen =
                   expandedRoomAppId === app.id && activeRoomAppId === app.id
                 const visible = visibleRoomApp?.id === app.id || isFullscreen
+                const reconnectBlocked =
+                  isFullscreen && connectionStatus === "reconnecting"
                 return (
                   <div
                     key={app.id}
                     data-testid={`room-app-slot-${app.id}`}
-                    aria-hidden={!visible}
-                    inert={!visible}
+                    aria-hidden={!visible || reconnectBlocked}
+                    inert={!visible || reconnectBlocked}
                     className={
                       visible ? "flex min-h-0 flex-1 flex-col" : "hidden"
                     }
