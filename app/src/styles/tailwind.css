@@ -602,6 +602,41 @@ html {
   color: #64748b !important;
 }
 
+/*
+ * #348: in the compact participant strip the Agent Voice/Task controls are
+ * icon-sized toggles. The shared voice-button min-width (3.8rem) is wider than
+ * the whole compact card content box, which is what forced the old action row
+ * to wrap and push TASK below the card shell. Keep both controls at one fixed
+ * 1.5rem target inside the single non-wrapping action row.
+ */
+.participant-card__voice-button--compact,
+.participant-card__task-button--compact {
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  place-items: center;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 0.4rem !important;
+}
+
+.participant-card__task-button--compact {
+  border: 1px solid rgba(96, 165, 250, 0.55);
+  background: rgba(30, 58, 138, 0.24) !important;
+  color: #bfdbfe !important;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.participant-card__task-button--compact:hover,
+.participant-card__task-button--compact:focus-visible {
+  border-color: rgba(147, 197, 253, 0.9);
+  background: rgba(37, 99, 235, 0.32) !important;
+  outline: none;
+}
+
 .participant-card__self-action {
   display: grid;
   width: 1.55rem;
