@@ -119,8 +119,13 @@ export type RoomAppHostMessage =
   | {
       type: "error"
       appInstanceId: string
+      error: "unsupported_message" | "rate_limited"
+    }
+  | {
+      type: "error"
+      appInstanceId: string
+      requestId: string
       error:
-        | "unsupported_message"
         | "rate_limited"
         | "payload_too_large"
         | "delivery_unavailable"

@@ -70,7 +70,10 @@ socket. The target host receives `unicast` with a server-derived
 `sourceParticipantId`; the sender receives a bounded `unicast_result` with the
 same App-provided `requestId`. The request ID is only a correlation key: it
 does not affect identity, authorization, or routing. The host rejects an ID
-that is already pending, and self-targeted sends return `invalid_target`.
+that is already pending, and self-targeted sends return `invalid_target`. Any
+host-local rejection of a valid `sendReliableTo` request also includes that
+request's ID, so local errors and asynchronous server results share one
+correlation contract. Errors for broadcast sends remain uncorrelated.
 
 This is private from other Room participants, not end-to-end encrypted: the
 Free4Chat server handles the payload while relaying it. Unicast payloads are

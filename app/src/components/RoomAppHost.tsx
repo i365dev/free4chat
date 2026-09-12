@@ -138,6 +138,7 @@ export default function RoomAppHost({
           post({
             type: "error",
             appInstanceId,
+            requestId: message.requestId,
             error: "duplicate_request_id",
           })
           return
@@ -146,6 +147,7 @@ export default function RoomAppHost({
           post({
             type: "error",
             appInstanceId,
+            requestId: message.requestId,
             error: "too_many_pending",
           })
           return
@@ -163,6 +165,7 @@ export default function RoomAppHost({
           post({
             type: "error",
             appInstanceId,
+            requestId,
             error:
               result === "rate_limited"
                 ? "rate_limited"

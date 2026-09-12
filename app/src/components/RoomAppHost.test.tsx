@@ -220,7 +220,95 @@ describe("RoomAppHost", () => {
     expect(port.postMessage).toHaveBeenCalledWith({
       type: "error",
       appInstanceId: "whiteboard:room",
+      requestId: "private_request_1",
       error: "duplicate_request_id",
+    })
+  })
+
+  it("correlates host-local unicast rejection without changing broadcast errors", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    let resultListener: ((result: RoomAppUnicastResult) => void) | undefined
+    const subscribeUnicastResults = vi.fn((next: typeof resultListener) => {
+      resultListener = next
+      return () => undefined
+    })
+    const send = vi.fn(() => false)
+    const sendUnicast = vi
+      .fn()
+      .mockReturnValueOnce("sent" as const)
+      .mockReturnValueOnce("rate_limited" as const)
+    render(
+      <RoomAppHost
+        app={app}
+        appInstanceId="whiteboard:room"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={send}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={subscribeUnicastResults}
+        sendUnicast={sendUnicast}
+        onClose={() => undefined}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    const port = lastChannel!.port1
+    act(() => {
+      port.emit({
+        type: "ready",
+        appInstanceId: "whiteboard:room",
+        handshakeToken: bootstrap.handshakeToken,
+      })
+      port.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "req-A",
+        targetParticipantId: "human-b",
+        payload: { type: "secret", word: "otter" },
+      })
+      port.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "req-B",
+        targetParticipantId: "human-c",
+        payload: { type: "secret", word: "fox" },
+      })
+      port.emit({
+        type: "sendReliable",
+        appInstanceId: "whiteboard:room",
+        payload: { type: "stroke" },
+      })
+    })
+
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "error",
+      appInstanceId: "whiteboard:room",
+      requestId: "req-B",
+      error: "rate_limited",
+    })
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "error",
+      appInstanceId: "whiteboard:room",
+      error: "rate_limited",
+    })
+    expect(sendUnicast).toHaveBeenCalledTimes(2)
+
+    act(() => {
+      resultListener?.({
+        requestId: "req-A",
+        appInstanceId: "whiteboard:room",
+        ok: true,
+      })
+    })
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "unicast_result",
+      requestId: "req-A",
+      appInstanceId: "whiteboard:room",
+      ok: true,
     })
   })
 
