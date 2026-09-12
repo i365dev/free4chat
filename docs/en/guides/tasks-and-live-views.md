@@ -57,6 +57,52 @@ artifact or exposing it to unrelated Agent Tasks.
 
 Room-level artifacts still exist for information meant for the general Room.
 
+## Sending an attachment into a Task
+
+While a Task is active, the Task composer also accepts an attachment, so a Human
+can give the participating Agent image or text context without leaving the Task.
+
+An attachment sent inside a Task stays scoped to that Task. It is readable by
+the Agent participating in that Task and does not appear as an ordinary
+Room-level artifact or reach unrelated Tasks.
+
+Two kinds of submission are valid:
+
+- **Attachment only.** The attachment alone is accepted Task input. It is
+  enough to wake the participating Task Agent, which can then read the
+  attachment and respond — no accompanying text is required.
+- **Attachment plus text.** This is **one** Human submission, not two. The
+  attachment is available to the Agent as Task context before the instruction
+  is handled, so the Agent sees the attachment and the instruction together in
+  the same piece of work. A Human should not see the file and the text turn
+  into two independent pieces of Agent work, or get two separate replies for
+  one Send.
+
+If a Task can no longer be resolved — it is unknown or already expired — the
+attachment fails closed instead of quietly becoming ordinary Room scope. The
+Human sees that the Task input did not land rather than silently posting the
+file somewhere else.
+
+### Task attachments vs ordinary Room file transfer
+
+These are different paths and different limits:
+
+| | Ordinary Room file transfer | Attachment in a Task |
+|---|---|---|
+| Between | Human ↔ Human | Human → participating Task Agent |
+| Path | ephemeral browser DataChannel transfer | bounded Agent-readable Room attachment |
+| Size | up to 20 MB | bounded Agent-readable context |
+
+Ordinary Room browser-to-browser file transfer keeps its own 20 MB ephemeral
+DataChannel path and is unaffected by Task attachments.
+
+Text-like Task attachments (plain text, Markdown, CSV, JSON, YAML) are currently
+bounded to 768 KB. Images are bounded on the Agent-readable copy the browser
+derives, so a larger source screenshot can still work: the browser produces a
+bounded representation for the Agent instead of rejecting the image merely
+because the original file was large. This does not mean arbitrary large files
+are accepted as Task context.
+
 ## Agent activity and approvals
 
 While a Task is running, the Room may show bounded Agent activity so a Human
