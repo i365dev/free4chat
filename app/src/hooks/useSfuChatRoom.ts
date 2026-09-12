@@ -24,6 +24,10 @@ import {
   SFU_EGRESS_SAMPLE_INTERVAL_MS,
   type SfuEgressSampleReason,
 } from "@common/sfuEgress"
+import {
+  encodeTaskAttachmentWake,
+  TASK_ATTACHMENT_WAKE_HEADER,
+} from "@common/taskAttachmentWake"
 import { ActionType, Message, UserInfo } from "@common/types"
 import {
   hashRoom,
@@ -374,6 +378,27 @@ function isAgentImage(file: File): boolean {
   return AGENT_IMAGE_TYPES.has(file.type)
 }
 
+/** #363 A2: Task attachments reuse the existing bounded Room attachment API,
+ * whose bounded failure surface is mapped to Human-readable text. */
+function taskAttachmentErrorMessage(error: unknown): string {
+  switch (error) {
+    case "attachment_too_large":
+      return "Task attachments are limited to 768 KB"
+    case "unsupported_image_type":
+    case "unsupported_attachment_type":
+      return "Only images and text files can be attached to a task"
+    case "task_target_not_in_room":
+    case "unknown_task_request":
+      return "This task is no longer active"
+    case "task_attachment_not_participant":
+      return "This task is no longer available"
+    case "room_expired":
+      return "This Room has expired"
+    default:
+      return "Couldn't attach the file to this task"
+  }
+}
+
 /** Text-like files are uploaded for read_attachment too; the MCP layer
  * returns them as decoded text instead of ImageContent. */
 function isAgentTextFile(file: File): boolean {
@@ -422,6 +447,20 @@ async function createAgentVisionCopy(file: File): Promise<Blob> {
   } finally {
     URL.revokeObjectURL(sourceUrl)
   }
+}
+
+/**
+ * #363 review (point 1): the composer's release edge for one Room file
+ * submission. `onReadiness` fires exactly once — after the Human DataChannel
+ * transfer has genuinely begun and, when a bounded Agent-readable copy applies
+ * to this file, after that bounded copy has been published. It receives an
+ * error instead when an applicable bounded copy could not be published, so the
+ * composer keeps its draft truthful rather than releasing text into an Agent
+ * context that is missing the attachment. The full 20 MB transfer is
+ * deliberately never awaited here.
+ */
+interface RoomFileSendHooks {
+  onReadiness?: (error?: unknown) => void
 }
 
 interface SfuSession extends SfuSessionResponse {
@@ -3750,8 +3789,50 @@ export function useSfuChatRoom(
     }
   }, [createRuntimeProviderClaim, roomName])
 
+  /** #363 review (point 1): a bounded Agent-readable copy applies to a
+   * supported image/text-like file while at least one Agent is connected. */
+  const agentReadableCopyApplies = useCallback((file: File): boolean => {
+    if (!sessionRef.current) return false
+    const hasConnectedAgent = [...participantMapRef.current.values()].some(
+      (participant) => participant.kind === "agent" && participant.connected
+    )
+    return hasConnectedAgent && (isAgentImage(file) || isAgentTextFile(file))
+  }, [])
+
+  /** #363 review (point 1): publish the bounded Agent-readable copy of one
+   * Human Room file. This resolves only once the Room has accepted it, which
+   * is what the composer's release edge waits for — never the whole 20 MB
+   * DataChannel transfer. */
+  const publishAgentReadableCopy = useCallback(
+    async (session: SfuSession, file: File): Promise<void> => {
+      let uploadType = file.type
+      let uploadBody: ArrayBuffer | Blob = file
+      if (isAgentImage(file)) {
+        const visionCopy = await createAgentVisionCopy(file)
+        uploadType = visionCopy.type || file.type
+        uploadBody = await visionCopy.arrayBuffer()
+      } else {
+        uploadType = agentTextMime(file) ?? file.type
+      }
+      const response = await fetch("/api/room/attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": uploadType,
+          "X-Room-Id": roomName,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+          "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
+        },
+        body: uploadBody,
+      })
+      if (!response.ok)
+        throw new Error("Couldn't publish the Agent-readable copy of this file")
+    },
+    [roomName]
+  )
+
   const sendFileMessage = useCallback(
-    async (file: File) => {
+    async (file: File, hooks?: RoomFileSendHooks) => {
       // Allocate the transfer id before queueing so the queued wire messages
       // and the eventual local bubble share one stable identity.
       const id = crypto.randomUUID()
@@ -3776,6 +3857,22 @@ export function useSfuChatRoom(
             afterSequence,
           })
         )
+        // #363 review (point 1): decide the bounded Agent-readable copy up
+        // front and publish it concurrently with the Human transfer, so the
+        // composer's release edge never waits for the whole 20 MB transfer. A
+        // file with no applicable bounded copy keeps today's plain initiation
+        // edge, and a failed applicable copy is reported truthfully instead of
+        // silently releasing the text.
+        const copyApplies = agentReadableCopyApplies(file)
+        const copySession = sessionRef.current
+        if (copyApplies && copySession) {
+          void publishAgentReadableCopy(copySession, file).then(
+            () => hooks?.onReadiness?.(),
+            (error: unknown) => hooks?.onReadiness?.(error)
+          )
+        } else {
+          hooks?.onReadiness?.()
+        }
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
           await waitForSendCapacity(channel)
           const chunk = await file
@@ -3797,42 +3894,14 @@ export function useSfuChatRoom(
           fileName: file.name,
           fileSize: file.size,
         })
-        const session = sessionRef.current
-        const hasConnectedAgent = [...participantMapRef.current.values()].some(
-          (participant) => participant.kind === "agent" && participant.connected
-        )
-        if (
-          session &&
-          hasConnectedAgent &&
-          (isAgentImage(file) || isAgentTextFile(file))
-        ) {
-          void (async () => {
-            try {
-              let uploadType = file.type
-              let uploadBody: ArrayBuffer | Blob = file
-              if (isAgentImage(file)) {
-                const visionCopy = await createAgentVisionCopy(file)
-                uploadType = visionCopy.type || file.type
-                uploadBody = await visionCopy.arrayBuffer()
-              } else {
-                uploadType = agentTextMime(file) ?? file.type
-              }
-              await fetch("/api/room/attachments", {
-                method: "POST",
-                headers: {
-                  "Content-Type": uploadType,
-                  "X-Room-Id": roomName,
-                  "X-Room-Participant-Id": session.participantId,
-                  "X-Room-Participant-Token": session.participantToken,
-                  "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
-                },
-                body: uploadBody,
-              })
-            } catch {
-              // Agent vision is secondary; human DataChannel delivery already succeeded.
-            }
-          })()
-        }
+        // Existing best-effort behaviour is preserved for the one case the
+        // release edge cannot cover: an Agent that only becomes connected while
+        // this transfer is already in flight still gets its bounded copy.
+        const lateSession = sessionRef.current
+        if (!copyApplies && lateSession && agentReadableCopyApplies(file))
+          void publishAgentReadableCopy(lateSession, file).catch(
+            () => undefined
+          )
       }
       const next = fileSendQueueRef.current.then(send, send)
       fileSendQueueRef.current = next.then(
@@ -3842,13 +3911,80 @@ export function useSfuChatRoom(
       return next
     },
     [
+      agentReadableCopyApplies,
       appendEphemeralMessage,
       latestObservedRoomSequence,
       nickName,
-      roomName,
+      publishAgentReadableCopy,
       waitForDataChannelOpen,
       waitForSendCapacity,
     ]
+  )
+
+  // #363 A2: Human attachment inside an ACTIVE Task. This deliberately reuses
+  // the existing bounded, task-correlated Room attachment API (same 768 KB
+  // Agent-readable bound, same ephemeral Room store) instead of the 20 MB
+  // Human DataChannel transfer, and it always carries the exact active
+  // taskRequestId so the Room can fail closed on a stale or unknown Task.
+  //
+  // #363 second review: `wakeAgent` is the composer's explicit submission
+  // intent. It is persisted with the attachment so the Agent event can be
+  // rebuilt identically after a reconnect/replay: an attachment-only Task
+  // submission wakes the participating Task Agent(s), while an attachment +
+  // text submission keeps the attachment as Task context and leaves the
+  // following Task text as the single addressed wake boundary. The Room never
+  // derives this from the Task correlation alone.
+  const sendTaskAttachment = useCallback(
+    async (
+      file: File,
+      taskRequestId: string,
+      wakeAgent: boolean
+    ): Promise<void> => {
+      const requestId = taskRequestId.trim()
+      if (!requestId) throw new Error("This task is no longer active")
+      const session = sessionRef.current
+      if (!session) throw new Error("Not connected to the room")
+      if (file.size === 0) throw new Error("Empty files can't be attached")
+      let uploadType = agentTextMime(file)
+      let uploadBody: ArrayBuffer | Blob = file
+      if (isAgentImage(file)) {
+        // #363 review (point 2): the Agent-readable 768 KB bound applies to the
+        // DERIVED uploaded copy, not to the source screenshot — the same
+        // resize/re-encode the ordinary Room path uses. A normal multi-MB
+        // screenshot therefore works here too.
+        const visionCopy = await createAgentVisionCopy(file)
+        if (visionCopy.size > MAX_AGENT_ATTACHMENT_BYTES)
+          throw new Error("Task attachments are limited to 768 KB")
+        uploadType = visionCopy.type || file.type
+        uploadBody = await visionCopy.arrayBuffer()
+      } else if (file.size > MAX_AGENT_ATTACHMENT_BYTES) {
+        // A text-like source has no derived copy, so the raw Agent-readable
+        // bound still applies to it.
+        throw new Error("Task attachments are limited to 768 KB")
+      }
+      if (!uploadType)
+        throw new Error("Only images and text files can be attached to a task")
+      const response = await fetch("/api/room/attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": uploadType,
+          "X-Room-Id": roomName,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+          "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
+          "X-Task-Request-Id": requestId,
+          [TASK_ATTACHMENT_WAKE_HEADER]: encodeTaskAttachmentWake(wakeAgent),
+        },
+        body: uploadBody,
+      })
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as {
+          error?: unknown
+        } | null
+        throw new Error(taskAttachmentErrorMessage(payload?.error))
+      }
+    },
+    [roomName]
   )
 
   const retryVerification = useCallback(() => {
@@ -3882,6 +4018,7 @@ export function useSfuChatRoom(
     getRoomAppStats,
     sendTextMessage,
     sendFileMessage,
+    sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
