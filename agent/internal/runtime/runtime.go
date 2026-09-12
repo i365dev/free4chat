@@ -161,6 +161,19 @@ type ResidentRuntime struct {
 	// turn; observing a session is never an acknowledgement.
 	observedHarnessGeneration     int64
 	bootstrappedHarnessGeneration int64
+	// turnRetry is the bounded autonomous retry clock for the canonical
+	// pending turn whose Harness turn failed (#364 B). It is keyed by
+	// (scope, target) so a later Room event can never reset the retry budget
+	// of the same still-pending turn; only a different canonical turn or a
+	// successful delivery starts a new budget.
+	turnRetryScope   string
+	turnRetryTarget  int64
+	turnRetryAttempt int
+	turnRetryPlan    *turnRetryPlan
+	// turnRetryDelay overrides the delay before retry attempt N (0-based).
+	// Nil uses the shared reconnect back-off; tests override it to drive the
+	// policy deterministically without wall-clock waits.
+	turnRetryDelay func(attempt int) time.Duration
 	// Transcript delivery keeps a per-ACP-session success marker plus a
 	// baseline captured at session/new. The baseline deliberately leaves old
 	// shared context pullable instead of dumping it into a new conversation.
@@ -715,8 +728,12 @@ func (r *ResidentRuntime) waitLoop() {
 
 		retryAttempt = 0
 		r.advanceFromWait(result)
-		if len(r.pendingScopes()) > 0 && !r.isStopped() {
-			r.drainTurns()
+		// A wait that returned no Room event is observation, not an activation
+		// boundary: like the resident event stream, it must not re-run
+		// pre-existing work. A failed Harness turn is retried by the bounded
+		// autonomous clock instead of by every poll.
+		if len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
+			r.drainTurnsWithRetryClock()
 		}
 	}
 }
@@ -878,7 +895,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			return heartbeatErr
 		case <-retrySignals:
 			if r.shouldRetryHumanTaskAcceptance() && !r.isStopped() {
-				r.drainTurns()
+				r.drainTurnsWithRetryClock()
 			}
 		case received := <-receiveResults:
 			if received.err != nil {
@@ -902,7 +919,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			// A media-only envelope is observation, not an activation event. Do
 			// not use it as a Harness wakeup/retry boundary for pre-existing work.
 			if len(received.result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
-				r.drainTurns()
+				r.drainTurnsWithRetryClock()
 			}
 			receiveNext()
 		}
@@ -1116,7 +1133,11 @@ func (r *ResidentRuntime) drainTurns() {
 		r.mu.Lock()
 		r.turnRunning = false
 		if !r.stopped {
-			if r.harnessFailed || r.lastErrorSource == "send" {
+			// A pending bounded retry and an exhausted retry budget are both
+			// truthful reconnect states: the resident still holds
+			// unacknowledged work it could not hand to the Harness.
+			if r.harnessFailed || r.lastErrorSource == "send" ||
+				r.turnRetryPlan != nil || r.turnRetryAttempt > maxTurnRetryAttempts {
 				r.state = StateReconnecting
 			} else {
 				r.state = StateWaiting
@@ -1135,25 +1156,20 @@ func (r *ResidentRuntime) drainTurns() {
 		if !ok {
 			continue
 		}
+		started := time.Now()
+		r.log("turn_started", map[string]string{
+			"scopeKind":    scopeKindOf(scope),
+			"retryAttempt": strconv.Itoa(r.turnRetryIndexFor(scope, target)),
+		})
 		// Ensure before rendering so the prompt accurately knows whether this
 		// is the same retained ACP conversation or a real session/new.
 		if err := r.ensureHarnessSession(scope); err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}
 		generation, err := r.harnessSessionGeneration(scope)
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}
 		newSession := r.observeHarnessSessionFor(scope, generation, target)
@@ -1164,7 +1180,14 @@ func (r *ResidentRuntime) drainTurns() {
 			r.lastErrorSource = "harness"
 			r.state = StateReconnecting
 			r.mu.Unlock()
-			r.log("turn_context_unavailable", nil)
+			r.log("turn_context_unavailable", map[string]string{
+				"scopeKind":    scopeKindOf(scope),
+				"failureClass": turnFailureOther,
+				"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+			})
+			// The frozen delta may have failed on a transient Room read, so
+			// the bounded retry clock still applies to this canonical turn.
+			r.scheduleTurnRetry(scope, target, turnFailureOther, time.Since(started).Milliseconds())
 			return
 		}
 		if len(events) == 0 {
@@ -1176,7 +1199,11 @@ func (r *ResidentRuntime) drainTurns() {
 				r.ackPendingFor(scope, target)
 				continue
 			}
-			r.log("turn_context_unavailable", nil)
+			r.log("turn_context_unavailable", map[string]string{
+				"scopeKind":    scopeKindOf(scope),
+				"failureClass": turnFailureOther,
+				"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+			})
 			return
 		}
 		maxSeq := events[0].Sequence
@@ -1215,7 +1242,10 @@ func (r *ResidentRuntime) drainTurns() {
 				r.lastErrorSource = "send"
 				r.state = StateReconnecting
 				r.mu.Unlock()
-				r.log("collab_accept_failed", nil)
+				r.log("collab_accept_failed", map[string]string{
+					"scopeKind":    scopeKindOf(scope),
+					"failureClass": turnFailureSend,
+				})
 				return
 			}
 			r.mu.Lock()
@@ -1239,14 +1269,13 @@ func (r *ResidentRuntime) drainTurns() {
 		result, err := r.runHarnessTurn(scope, *input, generation)
 		r.finishActivity(scope)
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}
+		r.log("turn_succeeded", map[string]string{
+			"scopeKind": scopeKindOf(scope),
+			"elapsedMs": strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+		})
 		if r.isStopped() {
 			return
 		}
@@ -1256,6 +1285,9 @@ func (r *ResidentRuntime) drainTurns() {
 		// fails, replaying this already-consumed Harness prompt would be wrong.
 		r.acknowledgeHarnessDeliveryFor(scope, target, maxSeq, generation)
 		r.acknowledgeTranscriptDeliveryFor(scope, meetingThrough, liveThrough)
+		// The canonical turn is delivered: its bounded autonomous retry budget
+		// is spent and a later send failure must never replay cognition.
+		r.clearTurnRetry(scope, target)
 		r.mu.Lock()
 		r.harnessFailed = false
 		// #228: a successful turn proves the Harness recovered — clear ONLY
@@ -1279,22 +1311,12 @@ func (r *ResidentRuntime) drainTurns() {
 		}
 		handle, err := r.requireHandle()
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureSend, started, err, false)
 			return
 		}
 		sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "send"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "send", turnFailureSend, started, err, false)
 			return
 		}
 		r.mu.Lock()
