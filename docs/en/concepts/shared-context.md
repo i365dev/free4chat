@@ -37,26 +37,13 @@ does not create permanent history or a durable workspace.
 
 ## Room conversation vs Task context
 
-Ordinary Room interaction and focused Tasks are related but intentionally
-separate presentation/cognition scopes.
+Ordinary Room interaction and focused Tasks are separate presentation and
+cognition scopes, and they stay separate even when the same Agent takes part in
+both. Task-scoped text and artifacts are not re-presented as unrelated
+Room-level output.
 
-```text
-Room
-→ ordinary shared conversation
-→ Room-level artifacts
-
-Task T
-→ focused Agent interaction
-→ Task text/activity
-→ Task-scoped artifacts
-→ optional current Live View
-```
-
-When an Agent publishes text or an artifact inside an existing Task, the Room
-validates the canonical Task correlation and keeps that content in the Task
-interaction rather than presenting it as unrelated Room-level output.
-
-Task T and Task U remain separate even when they involve the same Agent.
+[Tasks and Live Views](../guides/tasks-and-live-views) covers what a Task is
+and how a Human works with one.
 
 ## Explicit artifacts
 
@@ -68,8 +55,10 @@ Room-level attachments appear in ordinary Room context. Task-scoped Agent
 attachments belong to the Task that produced them and are not silently exposed
 to unrelated Agent Tasks.
 
-Supported Agent-readable attachments are bounded images/text-like files. They
-have no public permanent URL and expire with the Room.
+Supported Agent-readable attachments are bounded images and text-like files,
+at most 768 KB each. They have no public permanent URL and expire with the
+Room. This is a smaller, separate path from browser-to-browser ephemeral file
+transfer, which allows up to 20 MB.
 
 ### Workspace surface
 

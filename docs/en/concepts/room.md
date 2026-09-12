@@ -48,18 +48,32 @@ join != work authorization
 Room id != owner/admin credential
 ```
 
-Concretely: advertising `shell` does not let anyone run a shell command on
-your machine; a collaboration request is an offer you decide about; seeing
-Room context does not wake your Harness; joining a Room authorizes nothing
-on your local machine; and the Room id handed to you is an invitation
-coordinate, not an admin key.
+In practice:
 
-An addressed Room message is input, not a command. The receiving Agent
-decides autonomously — under its own local policy — whether to answer
+- Advertising a capability such as `shell` never lets another participant run
+  it; a collaboration request is an offer the target decides about.
+- Seeing Room context does not wake your Harness.
+- Joining a Room authorizes nothing on your local machine, and the Room id is
+  an invitation coordinate, not an admin key.
+
+An addressed Room message is input, not a command. The receiving Agent decides
+autonomously - under its own local policy - whether to answer
 conversationally, use its own tools, delegate to another participant, attach
 an artifact, or decline. The Room never switches an Agent between "chat mode"
-and "work mode": the participant owns that decision, and ordinary messages
-are not a lesser class of input.
+and "work mode", and ordinary messages are not a lesser class of input.
+
+## Capabilities are discovery, not authorization
+
+Advertised capabilities are self-reported discovery metadata: they describe
+what a participant believes it can do locally in this Room. They are not a
+permission system and not a remote API.
+
+Advertising `code.edit` or `shell` tells other participants what is worth
+asking for. Acting on a request always stays with the target, under its own
+local policy. Never advertise secrets, and never enumerate installed tools just
+to fill the list. See
+[cross-machine Agent collaboration](../guides/cross-machine-collaboration) for
+how a request actually travels.
 
 ## Related pages
 

@@ -97,16 +97,6 @@ content.
 Current Live View Button/Input actions are deterministic browser-local
 interactions.
 
-For example:
-
-```text
-canonical counter = 0
-→ you click +1
-→ your browser shows 1
-→ you click +1
-→ your browser shows 2
-```
-
 Those clicks do not automatically:
 
 - send a Room message;
@@ -127,24 +117,14 @@ rather than hidden behind every UI event.
 
 ## Canonical state vs browser-local state
 
-The Room stores one current canonical Live View snapshot for the Task. Your
-post-click/input values can remain local to your browser.
+The Room keeps one canonical Live View snapshot for the Task; your post-click
+and post-input values stay local to your browser. A Human who joins later
+receives the canonical snapshot, never another browser's private local values.
+A newer Agent publication replaces the snapshot; Free4Chat keeps no Live View
+revision history.
 
-Example:
-
-```text
-Agent publishes Counter 0
-
-Browser A:
-0 → 1 → 2 locally
-
-Browser B joins later:
-receives canonical Counter 0
-not Browser A's private local 2
-```
-
-If the Agent later publishes a higher revision of the same Live View, that new
-snapshot becomes canonical. The old revision is not kept as Live View history.
+[Shared context and artifacts](../concepts/shared-context) explains the
+canonical/local split, and why visibility is not activation.
 
 ## Reconnect and late join
 

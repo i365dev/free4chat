@@ -148,11 +148,13 @@ Live Transcript sequences remain separate domains.
 free4chat-agent version [--json]
 free4chat-agent doctor [--json]
 free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
+free4chat-agent logs [--instance <id>] [--tail 200]
 ```
 
 `version` reports the binary version; `doctor` diagnoses Runtime/Harness
-readiness; `readiness` is the machine-readable pre-join/pre-action check. See
-[Troubleshooting](troubleshooting).
+readiness; `readiness` is the machine-readable pre-join/pre-action check;
+`logs` prints the resident Runtime's local log lines for one instance or all of
+them. See [Troubleshooting](troubleshooting).
 
 ## Speech credentials
 

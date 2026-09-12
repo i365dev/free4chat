@@ -381,35 +381,38 @@ export default function Home() {
               <div className="mt-4 grid gap-6 font-mono sm:grid-cols-3">
                 <div>
                   <Link
-                    href="/docs"
+                    href="/temporary-chat-room"
                     className="text-sm text-emerald-300 transition hover:text-white"
                   >
-                    Documentation →
+                    Temporary Rooms →
                   </Link>
                   <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Understand Rooms, Agents, and the Runtime.
+                    Start an ephemeral browser Room for voice, text, files, and
+                    screen sharing. No sign-up.
                   </p>
                 </div>
                 <div>
                   <Link
-                    href="/docs/getting-started/agent-room"
+                    href="/ai-agent-room"
                     className="text-sm text-emerald-300 transition hover:text-white"
                   >
-                    Agent collaboration →
+                    AI Agent Rooms →
                   </Link>
                   <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Bring independent Agents together across machines.
+                    Bring your own independently running Agent into a temporary
+                    Room with people.
                   </p>
                 </div>
                 <div>
                   <Link
-                    href="/docs/concepts/room"
+                    href="/multi-agent-collaboration"
                     className="text-sm text-emerald-300 transition hover:text-white"
                   >
-                    How Rooms work →
+                    Multi-Agent Collaboration →
                   </Link>
                   <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Ownership, shared context, and temporary collaboration.
+                    Connect independently running Agents across machines without
+                    a shared workspace.
                   </p>
                 </div>
               </div>

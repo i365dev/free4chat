@@ -1,5 +1,8 @@
 # Live Transcript
 
+> For Runtime operators enabling local speech capability. Anyone in the Room
+> sees the shared transcript once it is running.
+
 Live Transcript turns Room audio into Room-wide shared text context. The
 important boundaries: the transcript is produced by one Human-authorized,
 STT-ready Runtime Host and its configured provider, and the transcript is

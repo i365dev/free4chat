@@ -67,15 +67,16 @@ export default function PrivacyPage() {
         </li>
         <li>
           <strong>Bounded Agent-readable Room artifacts.</strong> Human file
-          transfer stays peer-to-peer, but a Human-shared image is not something
-          a text-only Agent can read off a DataChannel. When an Agent is
-          connected, Free4Chat may store one bounded temporary vision copy of a
-          shared image (capped in size and count, resized or re-encoded only
-          when needed to fit those caps) in that room&apos;s Durable Object so
-          the Agent can read it. Separately, participants can explicitly publish
-          bounded Room attachments: jpeg/png/webp images and plain text,
-          Markdown, CSV, JSON, or YAML. These attachment chunks are Room state,
-          never permanent files, and are removed by eviction or Room expiry.
+          transfer uses the Room&apos;s Cloudflare Realtime/SFU DataChannel path
+          and is not kept as durable Room history. When an Agent is connected,
+          supported image/text files may also get a separate bounded temporary
+          copy in that room&apos;s Durable Object so the Agent can read them.
+          Those copies are capped in size and count; images are resized or
+          re-encoded only when needed to fit the caps. Separately, participants
+          can explicitly publish bounded Room attachments: jpeg/png/webp images
+          and plain text, Markdown, CSV, JSON, or YAML. These copies and
+          attachment chunks are ephemeral Room state, never permanent files, and
+          are removed by eviction or Room expiry.
         </li>
         <li>
           <strong>Committed Live Transcript.</strong> If a Human starts Live

@@ -44,12 +44,12 @@
         {
           "slug": "concepts/runtime-harness",
           "title": "Runtime and Harness",
-          "description": "How the Room protocol, Go Runtime, ACP, and Harness relate, including ordinary Room cognition and isolated retained Task scopes."
+          "description": "For Agent operators and implementers: how the Room protocol, Go Runtime, ACP, and Harness relate, including ordinary Room cognition and isolated retained Task scopes."
         },
         {
           "slug": "concepts/agent-permissions",
           "title": "Agent permissions and approvals",
-          "description": "How ACP permission requests reach Human approval in a Room, and how supervised and headless Harnesses behave."
+          "description": "For Agent operators: how ACP permission requests reach Human approval in a Room, and how supervised and headless Harnesses behave."
         }
       ]
     },
@@ -69,24 +69,24 @@
       "title": "Guides",
       "pages": [
         {
-          "slug": "guides/cross-machine-collaboration",
-          "title": "Cross-machine Agent collaboration",
-          "description": "A production-proven flow: one machine creates a Room, another joins, participants discover each other and exchange structured requests and artifacts."
-        },
-        {
           "slug": "guides/tasks-and-live-views",
           "title": "Tasks and Live Views",
-          "description": "Use focused Agent Tasks, Task-scoped artifacts, approvals, and optional bounded Live Views without turning the Room into a permanent workspace."
+          "description": "For Humans working with an Agent: focused Agent Tasks, Task-scoped artifacts, approvals, and optional bounded Live Views, without turning the Room into a permanent workspace."
         },
         {
           "slug": "guides/live-transcript",
           "title": "Live Transcript",
-          "description": "How one Human-authorized STT-ready Runtime Host produces a bounded, Room-shared Live Transcript, and why transcript visibility never wakes an Agent."
+          "description": "For Runtime operators: how one Human-authorized STT-ready Runtime Host produces a bounded, Room-shared Live Transcript, and why transcript visibility never wakes an Agent."
         },
         {
           "slug": "guides/agent-voice",
           "title": "Agent Voice",
-          "description": "How a Human voiceReply grant plus local TTS readiness turns Harness replies into Room audio through Cloudflare Realtime SFU."
+          "description": "For Runtime operators: how a Human voiceReply grant plus local TTS readiness turns Harness replies into Room audio through Cloudflare Realtime SFU."
+        },
+        {
+          "slug": "guides/cross-machine-collaboration",
+          "title": "Cross-machine Agent collaboration",
+          "description": "For Agent operators: the production-proven flow where one machine creates a Room, another joins, and participants exchange structured requests and artifacts."
         }
       ]
     },
