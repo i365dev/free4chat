@@ -17,6 +17,7 @@ import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   experimentalRoomAppCatalog,
   isRoomAppAllowlisted,
+  resolveProductionRoomAppId,
   ROOM_APP_MAX_INSTANCES,
   projectRoomAppParticipants,
   roomAppInstanceId,
@@ -772,11 +773,13 @@ export default function RoomContent({
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
+      const productionAppId = resolveProductionRoomAppId(activeRoomAppId)
       const url =
         window.location.origin +
         "/room?id=" +
         encodeURIComponent(roomName) +
-        (resolvedRoomType === "screenshare" ? "&type=screenshare" : "")
+        (resolvedRoomType === "screenshare" ? "&type=screenshare" : "") +
+        (productionAppId ? `&app=${encodeURIComponent(productionAppId)}` : "")
       navigator.clipboard.writeText(url)
       trackAnalyticsEvent("InviteLinkCopied", {
         surface: "room",

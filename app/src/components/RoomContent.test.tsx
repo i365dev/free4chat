@@ -1212,6 +1212,58 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     const slotHost = (appId: string) =>
       within(slot(appId)).getByTestId("room-app-host")
 
+    it("includes the curated production App id in copied Whiteboard Room links", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="whiteboard"
+        />
+      )
+
+      await waitFor(() =>
+        expect(screen.getByTestId("stage-app-whiteboard")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+
+      expect(writeText).toHaveBeenCalledWith(
+        `${window.location.origin}/room?id=test-room&app=whiteboard`
+      )
+    })
+
+    it("keeps copied ordinary Room links unchanged", () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+
+      expect(writeText).toHaveBeenCalledWith(
+        `${window.location.origin}/room?id=test-room`
+      )
+    })
+
     beforeEach(() => {
       channels = []
       vi.stubGlobal("MessageChannel", TestMessageChannel)
