@@ -6,11 +6,17 @@ import {
   reconcileCanonicalRoomMessages,
 } from "@common/messageReconciliation"
 import {
+  decodeRoomAppUnicastEnvelope,
+  decodeRoomAppUnicastResult,
   decodeRoomAppEnvelope,
+  encodeRoomAppUnicastRequest,
   encodeRoomAppEnvelope,
   isRoomAppInstanceForRoom,
   roomAppRateGuard,
+  roomAppUnicastRateGuard,
   type RoomAppLane,
+  type RoomAppUnicastEnvelope,
+  type RoomAppUnicastResult,
   type RoomAppTransportEnvelope,
 } from "@common/roomApp"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
@@ -478,6 +484,8 @@ interface SfuServerMessage {
     | "error"
     | "runtime-provider-claim-created"
     | "agentActivity"
+    | "room-app-unicast"
+    | "room-app-unicast-result"
   state?: SfuRoomState
   attachment?: RoomAttachmentProjection
   participant?: Partial<SfuParticipant> & {
@@ -494,6 +502,11 @@ interface SfuServerMessage {
   activity?: AgentActivityProjection | null
   agentParticipantId?: string
   scopeId?: string
+  protocolVersion?: number
+  appInstanceId?: string
+  sourceParticipantId?: string
+  payload?: Record<string, unknown>
+  ok?: boolean
 }
 
 const roomMessageToMessage = (
@@ -648,8 +661,15 @@ export function useSfuChatRoom(
   const roomAppListenersRef = useRef(
     new Set<(message: RoomAppTransportEnvelope) => void>()
   )
+  const roomAppUnicastListenersRef = useRef(
+    new Set<(message: RoomAppUnicastEnvelope) => void>()
+  )
+  const roomAppUnicastResultListenersRef = useRef(
+    new Set<(result: RoomAppUnicastResult) => void>()
+  )
   const roomAppOutboundRateRef = useRef(roomAppRateGuard())
   const roomAppInboundRateRef = useRef(roomAppRateGuard())
+  const roomAppUnicastRateRef = useRef(roomAppUnicastRateGuard())
   const roomAppStatsRef = useRef<RoomAppTransportStats>({
     reliableMessages: 0,
     realtimeMessages: 0,
@@ -2874,6 +2894,16 @@ export function useSfuChatRoom(
       const message = JSON.parse(event.data) as SfuServerMessage
       if (message.type === "state" && message.state) {
         applyRoomState(message.state)
+      } else if (message.type === "room-app-unicast") {
+        const envelope = decodeRoomAppUnicastEnvelope(message, roomName)
+        if (!envelope) return
+        for (const listener of roomAppUnicastListenersRef.current)
+          listener(envelope)
+      } else if (message.type === "room-app-unicast-result") {
+        const result = decodeRoomAppUnicastResult(message, roomName)
+        if (!result) return
+        for (const listener of roomAppUnicastResultListenersRef.current)
+          listener(result)
       } else if (message.type === "agentActivity") {
         if (message.activity) {
           const next = [
@@ -3113,6 +3143,7 @@ export function useSfuChatRoom(
     rebuildParticipants,
     resetRemoteParticipant,
     resetRemoteTrackSubscription,
+    roomName,
     sendSocketMessage,
     subscribeFileChannel,
     subscribeRoomAppChannel,
@@ -3530,10 +3561,62 @@ export function useSfuChatRoom(
     [roomName]
   )
 
+  const sendRoomAppUnicast = useCallback(
+    (
+      requestId: string,
+      targetParticipantId: string,
+      appInstanceId: string,
+      payload: Record<string, unknown>
+    ):
+      | "sent"
+      | "rate_limited"
+      | "payload_too_large"
+      | "delivery_unavailable" => {
+      if (
+        !roomAppsEnabledRef.current ||
+        !isRoomAppInstanceForRoom(roomName, appInstanceId)
+      )
+        return "delivery_unavailable"
+      const encoded = encodeRoomAppUnicastRequest({
+        requestId,
+        targetParticipantId,
+        appInstanceId,
+        payload,
+      })
+      if (!encoded) return "payload_too_large"
+      const bytes = new TextEncoder().encode(encoded).byteLength
+      if (!roomAppUnicastRateRef.current.allow(bytes)) return "rate_limited"
+      let message: object
+      try {
+        message = JSON.parse(encoded) as object
+      } catch {
+        return "payload_too_large"
+      }
+      return sendSocketMessage(message) ? "sent" : "delivery_unavailable"
+    },
+    [roomName, sendSocketMessage]
+  )
+
   const subscribeRoomAppMessages = useCallback(
     (listener: (message: RoomAppTransportEnvelope) => void) => {
       roomAppListenersRef.current.add(listener)
       return () => roomAppListenersRef.current.delete(listener)
+    },
+    []
+  )
+
+  const subscribeRoomAppUnicast = useCallback(
+    (listener: (message: RoomAppUnicastEnvelope) => void) => {
+      roomAppUnicastListenersRef.current.add(listener)
+      return () => roomAppUnicastListenersRef.current.delete(listener)
+    },
+    []
+  )
+
+  const subscribeRoomAppUnicastResults = useCallback(
+    (listener: (result: RoomAppUnicastResult) => void) => {
+      roomAppUnicastResultListenersRef.current.add(listener)
+      return () => roomAppUnicastResultListenersRef.current.delete(listener)
     },
     []
   )
@@ -4015,6 +4098,9 @@ export function useSfuChatRoom(
     roomAppsEnabled,
     sendRoomAppMessage,
     subscribeRoomAppMessages,
+    sendRoomAppUnicast,
+    subscribeRoomAppUnicast,
+    subscribeRoomAppUnicastResults,
     getRoomAppStats,
     sendTextMessage,
     sendFileMessage,

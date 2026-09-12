@@ -93,6 +93,9 @@ const baseHookReturn = {
   roomAppsEnabled: false,
   sendRoomAppMessage: vi.fn(() => false),
   subscribeRoomAppMessages: vi.fn(() => () => undefined),
+  sendRoomAppUnicast: vi.fn(() => "delivery_unavailable"),
+  subscribeRoomAppUnicast: vi.fn(() => () => undefined),
+  subscribeRoomAppUnicastResults: vi.fn(() => () => undefined),
 }
 
 const LATE_JOIN_EXPIRY = Date.now() + 365 * 24 * 60 * 60 * 1000

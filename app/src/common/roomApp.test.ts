@@ -6,11 +6,15 @@ import {
   ROOM_APP_MAX_PAYLOAD_BYTES,
   decodeRoomAppClientMessage,
   decodeRoomAppEnvelope,
+  decodeRoomAppUnicastEnvelope,
+  decodeRoomAppUnicastResult,
+  encodeRoomAppUnicastRequest,
   encodeRoomAppEnvelope,
   isRoomAppInstanceForRoom,
   isRoomAppAllowlisted,
   projectRoomAppParticipants,
   roomAppRateGuard,
+  roomAppUnicastRateGuard,
   roomAppInstanceId,
   resolveProductionRoomAppId,
   validateRoomAppDefinition,
@@ -109,6 +113,98 @@ describe("Room App Phase 0 bridge contract", () => {
         "shared-canvas:abc123"
       )
     ).toBeNull()
+    expect(
+      decodeRoomAppClientMessage(
+        {
+          type: "sendReliableTo",
+          appInstanceId: "shared-canvas:abc123",
+          requestId: "guess-1",
+          targetParticipantId: "human-b",
+          payload: { type: "private" },
+        },
+        "shared-canvas:abc123"
+      )
+    ).toEqual({
+      type: "sendReliableTo",
+      appInstanceId: "shared-canvas:abc123",
+      requestId: "guess-1",
+      targetParticipantId: "human-b",
+      payload: { type: "private" },
+    })
+    expect(
+      decodeRoomAppClientMessage(
+        {
+          type: "sendReliableTo",
+          appInstanceId: "shared-canvas:abc123",
+          requestId: "guess-1",
+          targetParticipantId: "bad target",
+          payload: { type: "private" },
+        },
+        "shared-canvas:abc123"
+      )
+    ).toBeNull()
+    expect(
+      decodeRoomAppClientMessage(
+        {
+          type: "sendReliableTo",
+          appInstanceId: "shared-canvas:abc123",
+          requestId: "contains spaces",
+          targetParticipantId: "human-b",
+          payload: { type: "private" },
+        },
+        "shared-canvas:abc123"
+      )
+    ).toBeNull()
+  })
+
+  it("bounds reliable unicast requests and accepts only current-room deliveries/results", () => {
+    const appInstanceId = roomAppInstanceId("room-a", "whiteboard")
+    const encoded = encodeRoomAppUnicastRequest({
+      requestId: "request_1",
+      targetParticipantId: "human-b",
+      appInstanceId,
+      payload: { type: "secret", word: "otter" },
+    })
+    expect(JSON.parse(encoded!)).toMatchObject({
+      type: "room-app-unicast",
+      requestId: "request_1",
+      targetParticipantId: "human-b",
+      appInstanceId,
+      payload: { word: "otter" },
+    })
+    expect(
+      encodeRoomAppUnicastRequest({
+        requestId: "request_1",
+        targetParticipantId: "human-b",
+        appInstanceId,
+        payload: { word: "界".repeat(ROOM_APP_MAX_PAYLOAD_BYTES) },
+      })
+    ).toBeNull()
+
+    const delivery = {
+      type: "room-app-unicast",
+      protocolVersion: 1,
+      appInstanceId,
+      sourceParticipantId: "human-a",
+      payload: { word: "otter" },
+    }
+    expect(decodeRoomAppUnicastEnvelope(delivery, "room-a")).toMatchObject({
+      sourceParticipantId: "human-a",
+      payload: { word: "otter" },
+    })
+    expect(decodeRoomAppUnicastEnvelope(delivery, "room-b")).toBeNull()
+    expect(
+      decodeRoomAppUnicastResult(
+        {
+          type: "room-app-unicast-result",
+          requestId: "request_1",
+          appInstanceId,
+          ok: false,
+          error: "target_unavailable",
+        },
+        "room-a"
+      )
+    ).toMatchObject({ ok: false, error: "target_unavailable" })
   })
 
   it("accepts only curated instances for the current Room", () => {
@@ -145,5 +241,16 @@ describe("Room App Phase 0 bridge contract", () => {
     const guard = roomAppRateGuard()
     expect(guard.allow("realtime", 200_000, 1000)).toBe(true)
     expect(guard.allow("reliable", 100_000, 2001)).toBe(true)
+  })
+
+  it("bounds unicast message count and bytes per sender window", () => {
+    const guard = roomAppUnicastRateGuard()
+    for (let index = 0; index < 10; index += 1)
+      expect(guard.allow(1, 1000)).toBe(true)
+    expect(guard.allow(1, 1000)).toBe(false)
+    expect(guard.allow(1, 2001)).toBe(true)
+    const bytesGuard = roomAppUnicastRateGuard()
+    expect(bytesGuard.allow(64 * 1024, 1000)).toBe(true)
+    expect(bytesGuard.allow(1, 1000)).toBe(false)
   })
 })

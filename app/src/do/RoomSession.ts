@@ -124,6 +124,18 @@ import {
   type TaskProjectionIndex,
 } from "./taskScope"
 import {
+  ROOM_APP_MAX_PAYLOAD_BYTES,
+  ROOM_APP_PROTOCOL_VERSION,
+  ROOM_APP_UNICAST_BYTES_PER_SECOND,
+  ROOM_APP_UNICAST_MESSAGES_PER_SECOND,
+  isRoomAppInstanceForRoom,
+  isValidRoomAppInstanceId,
+  isValidRoomAppParticipantId,
+  isValidRoomAppRequestId,
+  serializedRoomAppBytes,
+  validateRoomAppPayload,
+} from "../common/roomApp"
+import {
   createRuntimeProviderHandle,
   hashRuntimeProviderHandle,
   isRuntimeProviderClaimHash,
@@ -271,6 +283,7 @@ interface ConnectionAttachment {
   participantId: string
   token: string
   connectionNonce: string
+  roomAppUnicastRateSamples?: Array<{ at: number; bytes: number }>
 }
 
 interface AgentEventSocketAttachment {
@@ -720,6 +733,16 @@ type ClientMessage =
       requestId: string
       providerClaimHash: string
       reattachProofHash?: string
+    }
+  | {
+      // Ephemeral private Room App control-plane message. The Room derives
+      // sender identity from the authenticated WebSocket attachment and
+      // delivers only to the current target Human socket.
+      type: "room-app-unicast"
+      requestId: string
+      targetParticipantId: string
+      appInstanceId: string
+      payload: Record<string, unknown>
     }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
@@ -5168,6 +5191,203 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return { attachment, data: btoa(binary) }
   }
 
+  private sendRoomAppUnicastResult(
+    socket: WebSocket,
+    message: Extract<ClientMessage, { type: "room-app-unicast" }>,
+    ok: boolean,
+    error?:
+      | "invalid_request"
+      | "app_unavailable"
+      | "invalid_target"
+      | "target_unavailable"
+      | "rate_limited"
+      | "delivery_failed"
+  ): void {
+    if (
+      !isValidRoomAppRequestId(message.requestId) ||
+      !isValidRoomAppInstanceId(message.appInstanceId)
+    )
+      return
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "room-app-unicast-result",
+          requestId: message.requestId,
+          appInstanceId: message.appInstanceId,
+          ok,
+          ...(error ? { error } : {}),
+        })
+      )
+    } catch {
+      // Result delivery is best-effort and never changes Room state.
+    }
+  }
+
+  private consumeRoomAppUnicastBudget(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    bytes: number,
+    now: number
+  ): "allowed" | "rate_limited" | "delivery_failed" {
+    const windowStart = now - 1000
+    const samples = (attachment.roomAppUnicastRateSamples ?? [])
+      .slice(-ROOM_APP_UNICAST_MESSAGES_PER_SECOND)
+      .filter(
+        (sample) =>
+          Number.isSafeInteger(sample.at) &&
+          sample.at > windowStart &&
+          sample.at <= now &&
+          Number.isSafeInteger(sample.bytes) &&
+          sample.bytes >= 0 &&
+          sample.bytes <= ROOM_APP_MAX_PAYLOAD_BYTES
+      )
+    const totalBytes = samples.reduce((sum, sample) => sum + sample.bytes, 0)
+    if (
+      samples.length >= ROOM_APP_UNICAST_MESSAGES_PER_SECOND ||
+      totalBytes + bytes > ROOM_APP_UNICAST_BYTES_PER_SECOND
+    )
+      return "rate_limited"
+    try {
+      socket.serializeAttachment({
+        ...attachment,
+        roomAppUnicastRateSamples: [...samples, { at: now, bytes }],
+      } satisfies ConnectionAttachment)
+      return "allowed"
+    } catch {
+      // Fail closed if the bounded control-plane budget cannot survive socket
+      // hibernation. The attachment contains counters only, never payloads.
+      return "delivery_failed"
+    }
+  }
+
+  private async handleRoomAppUnicast(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    room: RoomRecord,
+    message: Extract<ClientMessage, { type: "room-app-unicast" }>
+  ): Promise<void> {
+    if (
+      !isValidRoomAppRequestId(message.requestId) ||
+      !isValidRoomAppInstanceId(message.appInstanceId)
+    )
+      return
+    if (
+      this.env.ROOM_APPS_ENABLED !== "true" ||
+      !isRoomAppInstanceForRoom(this.roomAnalyticsName(), message.appInstanceId)
+    ) {
+      this.sendRoomAppUnicastResult(socket, message, false, "app_unavailable")
+      return
+    }
+    const sender = room.participants[attachment.participantId]
+    if (
+      !sender ||
+      sender.kind !== "human" ||
+      !sender.connected ||
+      sender.connectionNonce !== attachment.connectionNonce
+    ) {
+      this.sendRoomAppUnicastResult(socket, message, false, "invalid_request")
+      return
+    }
+    if (!isValidRoomAppParticipantId(message.targetParticipantId)) {
+      this.sendRoomAppUnicastResult(socket, message, false, "invalid_target")
+      return
+    }
+    if (message.targetParticipantId === sender.id) {
+      this.sendRoomAppUnicastResult(socket, message, false, "invalid_target")
+      return
+    }
+    const payload = validateRoomAppPayload(message.payload)
+    const requestBytes = serializedRoomAppBytes(message)
+    if (
+      !payload.ok ||
+      requestBytes === null ||
+      requestBytes > ROOM_APP_MAX_PAYLOAD_BYTES
+    ) {
+      this.sendRoomAppUnicastResult(socket, message, false, "invalid_request")
+      return
+    }
+    const now = Date.now()
+    const budget = this.consumeRoomAppUnicastBudget(
+      socket,
+      attachment,
+      requestBytes,
+      now
+    )
+    if (budget !== "allowed") {
+      this.sendRoomAppUnicastResult(
+        socket,
+        message,
+        false,
+        budget === "rate_limited" ? "rate_limited" : "delivery_failed"
+      )
+      return
+    }
+    const target = room.participants[message.targetParticipantId]
+    if (
+      !target ||
+      target.kind !== "human" ||
+      !target.connected ||
+      !target.token ||
+      !target.connectionNonce
+    ) {
+      this.sendRoomAppUnicastResult(
+        socket,
+        message,
+        false,
+        "target_unavailable"
+      )
+      return
+    }
+    let targetSocket: WebSocket | null = null
+    for (const candidate of this.ctx.getWebSockets()) {
+      if (this.deserializeAgentEventAttachment(candidate)) continue
+      let targetAttachment: Partial<ConnectionAttachment> | null = null
+      try {
+        targetAttachment =
+          candidate.deserializeAttachment() as Partial<ConnectionAttachment> | null
+      } catch {
+        continue
+      }
+      if (
+        targetAttachment?.participantId === target.id &&
+        targetAttachment.token === target.token &&
+        targetAttachment.connectionNonce === target.connectionNonce &&
+        candidate.readyState === 1
+      ) {
+        targetSocket = candidate
+        break
+      }
+    }
+    if (!targetSocket) {
+      this.sendRoomAppUnicastResult(
+        socket,
+        message,
+        false,
+        "target_unavailable"
+      )
+      return
+    }
+    const delivery = {
+      type: "room-app-unicast",
+      protocolVersion: ROOM_APP_PROTOCOL_VERSION,
+      appInstanceId: message.appInstanceId,
+      sourceParticipantId: sender.id,
+      payload: payload.payload,
+    }
+    const deliveryBytes = serializedRoomAppBytes(delivery)
+    if (deliveryBytes === null || deliveryBytes > ROOM_APP_MAX_PAYLOAD_BYTES) {
+      this.sendRoomAppUnicastResult(socket, message, false, "invalid_request")
+      return
+    }
+    try {
+      targetSocket.send(JSON.stringify(delivery))
+    } catch {
+      this.sendRoomAppUnicastResult(socket, message, false, "delivery_failed")
+      return
+    }
+    this.sendRoomAppUnicastResult(socket, message, true)
+  }
+
   private async handleClientMessage(
     socket: WebSocket,
     attachment: ConnectionAttachment,
@@ -5186,6 +5406,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
     if (!participant || participant.kind !== "human" || !participant.media) {
       socket.close(4003, "Unauthorized")
+      return
+    }
+    if (message.type === "room-app-unicast") {
+      await this.handleRoomAppUnicast(socket, attachment, room, message)
       return
     }
     participant.lastSeenAt = Date.now()

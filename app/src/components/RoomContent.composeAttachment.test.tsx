@@ -64,6 +64,9 @@ const baseHookReturn = {
   roomAppsEnabled: false,
   sendRoomAppMessage: vi.fn(() => false),
   subscribeRoomAppMessages: vi.fn(() => () => undefined),
+  sendRoomAppUnicast: vi.fn(() => "delivery_unavailable"),
+  subscribeRoomAppUnicast: vi.fn(() => () => undefined),
+  subscribeRoomAppUnicastResults: vi.fn(() => () => undefined),
 }
 
 const ROOM_PARTICIPANTS = [

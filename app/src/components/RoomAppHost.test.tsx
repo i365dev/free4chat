@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import RoomAppHost from "./RoomAppHost"
 import type {
   RoomAppParticipantProjection,
+  RoomAppUnicastEnvelope,
+  RoomAppUnicastResult,
   RoomAppTransportEnvelope,
 } from "../common/roomApp"
 
@@ -59,6 +61,14 @@ describe("RoomAppHost", () => {
     const onClose = vi.fn()
     const subscribe = vi.fn(() => () => undefined)
     const send = vi.fn(() => true)
+    const sendUnicast = vi.fn(
+      (
+        _requestId: string,
+        _targetParticipantId: string,
+        _appInstanceId: string,
+        _payload: Record<string, unknown>
+      ) => "sent" as const
+    )
     const rendered = render(
       <RoomAppHost
         app={app}
@@ -68,6 +78,9 @@ describe("RoomAppHost", () => {
         subscribe={subscribe}
         send={send}
         onReady={onReady}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={sendUnicast}
         onClose={onClose}
       />
     )
@@ -130,6 +143,7 @@ describe("RoomAppHost", () => {
   it("rejects malformed or wrong-instance messages and forwards bounded lanes", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const send = vi.fn(() => true)
+    const sendUnicast = vi.fn(() => "sent" as const)
     render(
       <RoomAppHost
         app={app}
@@ -138,6 +152,9 @@ describe("RoomAppHost", () => {
         participants={participants}
         subscribe={() => () => undefined}
         send={send}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={sendUnicast}
         onClose={() => undefined}
       />
     )
@@ -177,15 +194,149 @@ describe("RoomAppHost", () => {
       type: "stroke",
       points: [[1, 2]],
     })
+    act(() => {
+      port.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "private_request_1",
+        targetParticipantId: "human-b",
+        payload: { type: "private", word: "otter" },
+      })
+      port.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "private_request_1",
+        targetParticipantId: "human-b",
+        payload: { type: "private", word: "duplicate" },
+      })
+    })
+    expect(sendUnicast).toHaveBeenCalledWith(
+      "private_request_1",
+      "human-b",
+      "whiteboard:room",
+      { type: "private", word: "otter" }
+    )
+    expect(sendUnicast).toHaveBeenCalledTimes(1)
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "error",
+      appInstanceId: "whiteboard:room",
+      requestId: "private_request_1",
+      error: "duplicate_request_id",
+    })
+  })
+
+  it("correlates host-local unicast rejection without changing broadcast errors", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    let resultListener: ((result: RoomAppUnicastResult) => void) | undefined
+    const subscribeUnicastResults = vi.fn((next: typeof resultListener) => {
+      resultListener = next
+      return () => undefined
+    })
+    const send = vi.fn(() => false)
+    const sendUnicast = vi
+      .fn()
+      .mockReturnValueOnce("sent" as const)
+      .mockReturnValueOnce("rate_limited" as const)
+    render(
+      <RoomAppHost
+        app={app}
+        appInstanceId="whiteboard:room"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={send}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={subscribeUnicastResults}
+        sendUnicast={sendUnicast}
+        onClose={() => undefined}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    const port = lastChannel!.port1
+    act(() => {
+      port.emit({
+        type: "ready",
+        appInstanceId: "whiteboard:room",
+        handshakeToken: bootstrap.handshakeToken,
+      })
+      port.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "req-A",
+        targetParticipantId: "human-b",
+        payload: { type: "secret", word: "otter" },
+      })
+      port.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "req-B",
+        targetParticipantId: "human-c",
+        payload: { type: "secret", word: "fox" },
+      })
+      port.emit({
+        type: "sendReliable",
+        appInstanceId: "whiteboard:room",
+        payload: { type: "stroke" },
+      })
+    })
+
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "error",
+      appInstanceId: "whiteboard:room",
+      requestId: "req-B",
+      error: "rate_limited",
+    })
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "error",
+      appInstanceId: "whiteboard:room",
+      error: "rate_limited",
+    })
+    expect(sendUnicast).toHaveBeenCalledTimes(2)
+
+    act(() => {
+      resultListener?.({
+        requestId: "req-A",
+        appInstanceId: "whiteboard:room",
+        ok: true,
+      })
+    })
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "unicast_result",
+      requestId: "req-A",
+      appInstanceId: "whiteboard:room",
+      ok: true,
+    })
   })
 
   it("forwards remote lanes and emits participant lifecycle changes", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     let listener: ((message: RoomAppTransportEnvelope) => void) | undefined
+    let unicastListener: ((message: RoomAppUnicastEnvelope) => void) | undefined
+    let resultListener: ((result: RoomAppUnicastResult) => void) | undefined
     const subscribe = vi.fn((next: typeof listener) => {
       listener = next
       return () => undefined
     })
+    const subscribeUnicast = vi.fn((next: typeof unicastListener) => {
+      unicastListener = next
+      return () => undefined
+    })
+    const subscribeUnicastResults = vi.fn((next: typeof resultListener) => {
+      resultListener = next
+      return () => undefined
+    })
+    const sendUnicast = vi.fn(
+      (
+        _requestId: string,
+        _targetParticipantId: string,
+        _appInstanceId: string,
+        _payload: Record<string, unknown>
+      ) => "sent" as const
+    )
     const { rerender } = render(
       <RoomAppHost
         app={app}
@@ -194,6 +345,9 @@ describe("RoomAppHost", () => {
         participants={participants}
         subscribe={subscribe}
         send={() => true}
+        subscribeUnicast={subscribeUnicast}
+        subscribeUnicastResults={subscribeUnicastResults}
+        sendUnicast={sendUnicast}
         onClose={() => undefined}
       />
     )
@@ -208,6 +362,20 @@ describe("RoomAppHost", () => {
         appInstanceId: "whiteboard:room",
         handshakeToken: bootstrap.handshakeToken,
       })
+      lastChannel!.port1.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "secret_for_bob",
+        targetParticipantId: "human-b",
+        payload: { type: "secret", word: "otter" },
+      })
+      lastChannel!.port1.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "secret_for_carol",
+        targetParticipantId: "human-c",
+        payload: { type: "secret", word: "fox" },
+      })
       listener?.({
         protocolVersion: 1,
         appInstanceId: "whiteboard:room",
@@ -215,12 +383,74 @@ describe("RoomAppHost", () => {
         sourceParticipantId: "human-b",
         payload: { type: "cursor", x: 2 },
       })
+      unicastListener?.({
+        protocolVersion: 1,
+        appInstanceId: "whiteboard:room",
+        sourceParticipantId: "human-b",
+        payload: { type: "secret", word: "otter" },
+      })
+    })
+    expect(sendUnicast).toHaveBeenNthCalledWith(
+      1,
+      "secret_for_bob",
+      "human-b",
+      "whiteboard:room",
+      { type: "secret", word: "otter" }
+    )
+    expect(sendUnicast).toHaveBeenNthCalledWith(
+      2,
+      "secret_for_carol",
+      "human-c",
+      "whiteboard:room",
+      { type: "secret", word: "fox" }
+    )
+    act(() => {
+      resultListener?.({
+        requestId: "another-request",
+        appInstanceId: "whiteboard:room",
+        ok: true,
+      })
+    })
+    expect(lastChannel!.port1.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "unicast_result" })
+    )
+    act(() => {
+      resultListener?.({
+        requestId: "secret_for_carol",
+        appInstanceId: "whiteboard:room",
+        ok: false,
+        error: "target_unavailable",
+      })
+      resultListener?.({
+        requestId: "secret_for_bob",
+        appInstanceId: "whiteboard:room",
+        ok: true,
+      })
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
       type: "realtime",
       appInstanceId: "whiteboard:room",
       sourceParticipantId: "human-b",
       payload: { type: "cursor", x: 2 },
+    })
+    expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
+      type: "unicast",
+      appInstanceId: "whiteboard:room",
+      sourceParticipantId: "human-b",
+      payload: { type: "secret", word: "otter" },
+    })
+    expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
+      type: "unicast_result",
+      requestId: "secret_for_carol",
+      appInstanceId: "whiteboard:room",
+      ok: false,
+      error: "target_unavailable",
+    })
+    expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
+      type: "unicast_result",
+      requestId: "secret_for_bob",
+      appInstanceId: "whiteboard:room",
+      ok: true,
     })
     rerender(
       <RoomAppHost
@@ -230,6 +460,9 @@ describe("RoomAppHost", () => {
         participants={[self]}
         subscribe={subscribe}
         send={() => true}
+        subscribeUnicast={subscribeUnicast}
+        subscribeUnicastResults={subscribeUnicastResults}
+        sendUnicast={sendUnicast}
         onClose={() => undefined}
       />
     )
