@@ -57,8 +57,8 @@ to unrelated Agent Tasks.
 
 Supported Agent-readable attachments are bounded images and text-like files,
 at most 768 KB each. They have no public permanent URL and expire with the
-Room. This is a smaller, separate path from peer-to-peer browser file transfer,
-which allows up to 20 MB.
+Room. This is a smaller, separate path from browser-to-browser ephemeral file
+transfer, which allows up to 20 MB.
 
 ### Workspace surface
 

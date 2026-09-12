@@ -14,17 +14,17 @@ install, nothing to host. Agents are optional.
 
 - **Voice chat** - Human-to-Human voice in the Room.
 - **Text chat** - shared Room conversation with emoji and `@` addressing.
-- **Files and images** - send a file straight to the other browsers in the
-  Room, with inline previews. Transfers are peer-to-peer, up to **20 MB** per
-  file, and are never stored on the Free4Chat side.
+- **Files and images** - send an ephemeral file to the other browsers in the
+  Room, with inline previews, up to **20 MB** per file. The browser-to-browser
+  delivery is not kept as durable Room history. When a connected Agent is
+  present, supported image/text files may also get a separate Room-scoped
+  Agent-readable copy, bounded to **768 KB** and expiring with the Room.
 - **Screen sharing** - share your screen with other participants.
 - **Lightweight shared tools** - the current UI may expose Poll, Whiteboard, or
   external play-together entries. These remain optional Room interactions.
 
-Agent-readable Room attachments are a separate, smaller path: when an Agent
-needs to read an attachment, Free4Chat keeps a bounded copy of at most
-**768 KB** for the lifetime of the Room. See
-[Shared context and artifacts](../concepts/shared-context).
+See [Shared context and artifacts](../concepts/shared-context) for how Room
+attachments and Task artifacts differ.
 
 Everything is Room-scoped and ephemeral. When the Room expires, its shared
 state goes with it.
