@@ -278,7 +278,9 @@ func (r *ResidentRuntime) closeTurnRecoveryLocked(scope string, target int64) {
 }
 
 // forgetTurnRecoveryLocked drops a closed-recovery marker for a canonical
-// turn that settled. Callers must hold r.mu.
+// turn that settled. Callers must hold r.mu. The map is deliberately left
+// non-nil when it drains: emptiness, never non-nilness, is the condition every
+// caller must test (see unresolvedTurnFailureLocked).
 func (r *ResidentRuntime) forgetTurnRecoveryLocked(scope string, target int64) {
 	if len(r.closedTurnRecovery) == 0 {
 		return
@@ -290,7 +292,8 @@ func (r *ResidentRuntime) forgetTurnRecoveryLocked(scope string, target int64) {
 // trigger for the scope re-arms the parked canonical turn(s) of that scope and
 // restarts the bounded budget of the one whose budget was spent, so the
 // diagnostic retryAttempt count can never exceed its documented bound.
-// Callers must hold r.mu.
+// Deleting the last marker intentionally leaves an empty (possibly non-nil)
+// map: no caller may branch on non-nilness. Callers must hold r.mu.
 func (r *ResidentRuntime) reopenTurnRecoveryLocked(scope string) {
 	if len(r.closedTurnRecovery) == 0 {
 		return

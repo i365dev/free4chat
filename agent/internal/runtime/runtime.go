@@ -176,6 +176,10 @@ type ResidentRuntime struct {
 	// pending and unacknowledged, but the serial drain never re-executes it
 	// for unrelated later Room traffic. Only an explicit recovery boundary —
 	// a new addressed trigger for the same scope — reopens it.
+	//
+	// Markers are deleted without resetting the map to nil, so an empty map
+	// may still be non-nil. Non-nilness is therefore NEVER a truthful-state
+	// condition: use len(...) or unresolvedTurnFailureLocked() instead.
 	closedTurnRecovery map[canonicalTurnKey]struct{}
 	// turnRetryDelay overrides the delay before retry attempt N (0-based).
 	// Nil uses the shared reconnect back-off; tests override it to drive the
@@ -658,11 +662,15 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.scopedSessions = nil
 		r.scopeOrder = nil
 	}
-	if r.closedTurnRecovery != nil {
+	if r.unresolvedTurnFailureLocked() {
 		// A transport join/rejoin is not an explicit recovery boundary: a
 		// canonical turn whose autonomous recovery is closed stays pinned and
 		// keeps reporting the truthful reconnect state until a new addressed
-		// trigger re-arms it.
+		// trigger re-arms it. The shared unresolved-work predicate is used
+		// instead of testing closedTurnRecovery for non-nilness: drained
+		// markers are deleted without resetting the map, so an empty-but-non-nil
+		// map would otherwise look like a parked turn (and an armed retry or an
+		// unresolved Harness/send failure must keep the state truthful too).
 		r.state = StateReconnecting
 	} else {
 		r.state = StateWaiting

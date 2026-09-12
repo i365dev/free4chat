@@ -464,6 +464,119 @@ func TestClosedTurnRecoveryDoesNotBlockAnotherScope(t *testing.T) {
 	}
 }
 
+// TestExplicitReAddressThenSuccessLeavesNoStaleClosedRecovery is the
+// stale-truthful-state regression for the closed-recovery lifecycle: exhaustion
+// parks a turn, an explicit same-scope re-address reopens it, the successful
+// recovery deletes the last marker, and a later transport rejoin must then
+// report the healthy waiting state. Branching on the marker map's non-nilness
+// instead of its emptiness reported a stale "reconnecting" here, because the
+// drained map is never reset to nil.
+func TestExplicitReAddressThenSuccessLeavesNoStaleClosedRecovery(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi", turnErr: &harness.TurnTimeoutError{TimeoutMs: 120_000}}
+	rt := newTurnRetryRuntime(t, adapter, &fakeClient{}, silentLog)
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	rt.acceptEvent(roomEvent(1, true))
+
+	// Each direct drain entry is one attempt; the third spends the bounded
+	// budget and parks the canonical turn.
+	for attempt := 0; attempt < 1+maxTurnRetryAttempts; attempt++ {
+		rt.drainTurns()
+	}
+	if !rt.turnRecoveryClosed(roomScope, 1) {
+		t.Fatal("exhausted canonical turn did not close its autonomous recovery")
+	}
+	if got := rt.pendingAddressedSnapshot(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("parked canonical turn was silently acknowledged: %v", got)
+	}
+
+	// Step 2: an explicit same-scope re-address reopens the parked turn. The
+	// Harness has recovered, so both the pinned turn and the new trigger are
+	// delivered in FIFO order.
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	rt.acceptEvent(roomEvent(2, true))
+	rt.drainTurns()
+
+	// Step 3: the successful recovery is complete BEFORE any rejoin — the
+	// delivery markers advanced, no closed marker survives for a settled turn,
+	// and the runtime already reports itself healthy.
+	if got := rt.pendingAddressedSnapshot(); len(got) != 0 {
+		t.Fatalf("explicit re-address did not deliver the pinned turn: %v", got)
+	}
+	if got := rt.deliveredSeq(); got != 2 {
+		t.Fatalf("successful recovery advanced delivery to %d, want 2", got)
+	}
+	if rt.turnRecoveryClosed(roomScope, 1) {
+		t.Fatal("delivered canonical turn kept a closed-recovery marker")
+	}
+	markers := closedTurnRecoverySnapshot(rt)
+	if len(markers) != 0 {
+		t.Fatalf("closed-recovery marker count = %d, want 0: %+v", len(markers), markers)
+	}
+	// A surviving marker would only be legitimate while its canonical turn is
+	// still genuinely parked (unacknowledged).
+	for _, key := range markers {
+		if !containsSequence(rt.pendingAddressedSnapshotFor(key.scope), key.target) {
+			t.Fatalf("closed-recovery marker outlived its settled turn: %+v", key)
+		}
+	}
+	if status := rt.Status(); status.State != StateWaiting || status.LastError != "" {
+		t.Fatalf("successful recovery left a stale local state: %+v", status)
+	}
+
+	// Step 4: a transport rejoin is not an explicit recovery boundary, but the
+	// runtime holds no unresolved work any more, so it must report a healthy
+	// waiting state with no resurrected Harness error.
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent-2", ParticipantHandle: "secret-2", Cursor: 10})
+	status := rt.Status()
+	if status.State != StateWaiting {
+		t.Fatalf("transport rejoin after recovery reported State:%s, want %s", status.State, StateWaiting)
+	}
+	if status.LastError != "" {
+		t.Fatalf("transport rejoin resurrected a stale Harness error: %+v", status)
+	}
+
+	// A genuinely still-parked turn must keep the truthful reconnect state:
+	// the condition is unresolved work, not "never reconnecting again".
+	adapter.mu.Lock()
+	adapter.turnErr = &harness.TurnTimeoutError{TimeoutMs: 120_000}
+	adapter.mu.Unlock()
+	rt.acceptEvent(scopedEvent(3, "task:T", "T1"))
+	for attempt := 0; attempt < 1+maxTurnRetryAttempts; attempt++ {
+		rt.drainTurns()
+	}
+	parkedMarkers := closedTurnRecoverySnapshot(rt)
+	if len(parkedMarkers) != 1 || parkedMarkers[0] != (canonicalTurnKey{scope: "task:T", target: 3}) {
+		t.Fatalf("still-parked scope has the wrong marker set: %+v", parkedMarkers)
+	}
+	for _, key := range parkedMarkers {
+		if !containsSequence(rt.pendingAddressedSnapshotFor(key.scope), key.target) {
+			t.Fatalf("closed-recovery marker outlived its settled turn: %+v", key)
+		}
+	}
+	if !rt.turnRecoveryClosed("task:T", 3) || rt.turnRecoveryClosed(roomScope, 2) {
+		t.Fatalf("marker set does not match the genuinely parked turn: %+v", parkedMarkers)
+	}
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent-3", ParticipantHandle: "secret-3", Cursor: 11})
+	if status := rt.Status(); status.State != StateReconnecting || status.LastError == "" {
+		t.Fatalf("a still-parked turn lost its truthful reconnect state: %+v", status)
+	}
+}
+
+// closedTurnRecoverySnapshot returns the canonical turns whose autonomous
+// recovery is still closed. It reports the marker set itself (not the map's
+// non-nilness), so an empty-but-non-nil map is observed as empty.
+func closedTurnRecoverySnapshot(rt *ResidentRuntime) []canonicalTurnKey {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	markers := make([]canonicalTurnKey, 0, len(rt.closedTurnRecovery))
+	for key := range rt.closedTurnRecovery {
+		markers = append(markers, key)
+	}
+	return markers
+}
+
 // TestRetryAfterHarnessSessionReplacementRebootstrapsThePinnedDelta proves the
 // bounded retry keeps ACP generation semantics safe: when the failed turn's
 // recovery replaced the Harness session, the retry is a real session/new that
