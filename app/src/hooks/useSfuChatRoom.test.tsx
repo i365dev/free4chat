@@ -270,7 +270,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 
   it("dispatches reliable and realtime Room App messages on the shared transport", async () => {
-    const appInstanceId = roomAppInstanceId("room-app", "shared-canvas")
+    const appInstanceId = roomAppInstanceId("room-app", "whiteboard")
     fetchMock.mockImplementation(
       (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input.toString()
@@ -407,7 +407,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 
   it("subscribes to remote Room App lanes, tags the bound sender, retries, and cleans up", async () => {
-    const appInstanceId = roomAppInstanceId("remote-app-room", "shared-canvas")
+    const appInstanceId = roomAppInstanceId("remote-app-room", "whiteboard")
     let dataChannelNewCalls = 0
     let remoteFailureCount = 0
     fetchMock.mockImplementation(
@@ -545,7 +545,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       realtime.emit("message", {
         data: JSON.stringify({
           protocolVersion: 1,
-          appInstanceId: "shared-canvas:deadbeef",
+          appInstanceId: "whiteboard:deadbeef",
           lane: "realtime",
           payload: { type: "cursor" },
         }),

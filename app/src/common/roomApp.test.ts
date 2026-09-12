@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   ROOM_APP_CATALOG,
+  ROOM_APP_LOCAL_CATALOG,
   ROOM_APP_MAX_PAYLOAD_BYTES,
   decodeRoomAppClientMessage,
   decodeRoomAppEnvelope,
@@ -11,10 +12,34 @@ import {
   projectRoomAppParticipants,
   roomAppRateGuard,
   roomAppInstanceId,
+  resolveProductionRoomAppId,
   validateRoomAppDefinition,
 } from "./roomApp"
 
 describe("Room App Phase 0 bridge contract", () => {
+  it("exposes only Whiteboard in production and keeps Phase-0 apps local", () => {
+    expect(ROOM_APP_CATALOG).toEqual([
+      {
+        id: "whiteboard",
+        label: "Whiteboard",
+        url: "https://room-apps.free4.chat/whiteboard",
+        origin: "https://room-apps.free4.chat",
+      },
+    ])
+    expect(ROOM_APP_LOCAL_CATALOG.map((app) => app.id)).toEqual([
+      "shared-canvas",
+      "tiny-arena",
+    ])
+  })
+
+  it("resolves direct launch by exact curated production id only", () => {
+    expect(resolveProductionRoomAppId("whiteboard")).toBe("whiteboard")
+    expect(resolveProductionRoomAppId("shared-canvas")).toBeNull()
+    expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
+    expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
+    expect(resolveProductionRoomAppId("unknown")).toBeNull()
+  })
+
   it("accepts only curated app definitions and rejects arbitrary origins", () => {
     expect(
       validateRoomAppDefinition({
@@ -87,13 +112,13 @@ describe("Room App Phase 0 bridge contract", () => {
   })
 
   it("accepts only curated instances for the current Room", () => {
-    expect(isRoomAppInstanceForRoom("room-a", "shared-canvas:00000000")).toBe(
+    expect(isRoomAppInstanceForRoom("room-a", "whiteboard:00000000")).toBe(
       false
     )
     expect(
       isRoomAppInstanceForRoom(
         "room-a",
-        roomAppInstanceId("room-a", "shared-canvas")
+        roomAppInstanceId("room-a", "whiteboard")
       )
     ).toBe(true)
   })

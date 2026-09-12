@@ -25,8 +25,12 @@ vi.mock("../../components/DiscoveryPageLayout", () => ({
     />
   ),
 }))
+vi.mock("next/router", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}))
 
 import AiAgentRoomPage from "../../pages/ai-agent-room"
+import WhiteboardPage from "../../pages/apps/whiteboard"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
@@ -48,6 +52,11 @@ const PAGES: Array<{
     path: "/multi-agent-collaboration",
   },
   { name: "privacy", Component: PrivacyPage, path: "/privacy" },
+  {
+    name: "apps/whiteboard",
+    Component: WhiteboardPage,
+    path: "/apps/whiteboard",
+  },
 ]
 
 function renderStub(Component: () => ReactElement) {

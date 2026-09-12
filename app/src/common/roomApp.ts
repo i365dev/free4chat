@@ -16,22 +16,14 @@ export interface RoomAppDefinition {
   origin: string
 }
 
-// These are build-time curated fixture identities, not a user-controlled URL
-// loader. The Worker-side flag keeps the catalog hidden until the experiment is
-// deliberately enabled in an environment. Both fixtures share this origin
-// contract and may later be deployed under these paths without changing the
-// host/bridge protocol.
+// This is the user-visible production catalog, not a user-controlled URL
+// loader. The Worker-side flag keeps the catalog hidden until Room Apps are
+// deliberately enabled in an environment.
 export const ROOM_APP_CATALOG: readonly RoomAppDefinition[] = [
   {
-    id: "shared-canvas",
-    label: "Shared Canvas",
-    url: "https://room-apps.free4.chat/shared-canvas",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "tiny-arena",
-    label: "Tiny Arena",
-    url: "https://room-apps.free4.chat/tiny-arena",
+    id: "whiteboard",
+    label: "Whiteboard",
+    url: "https://room-apps.free4.chat/whiteboard",
     origin: "https://room-apps.free4.chat",
   },
 ]
@@ -254,6 +246,15 @@ export function isRoomAppAllowlisted(app: RoomAppDefinition): boolean {
         validateRoomAppDefinition(candidate)
     )
   )
+}
+
+/** Resolve a URL query value only to an exact, validated production App id. */
+export function resolveProductionRoomAppId(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const app = ROOM_APP_CATALOG.find((candidate) => candidate.id === value)
+  return app && validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+    ? app.id
+    : null
 }
 
 export function projectRoomAppParticipants(
