@@ -37,16 +37,22 @@ describe("Home page", () => {
       screen.getByText("$ free4chat-agent room create --agent pi --name Pi")
     ).toBeInTheDocument()
 
-    // The entry-level discovery links keep the homepage 80% product, 20% docs.
+    // The homepage explore slots answer "what can I do with Free4Chat?" and
+    // route to the product pages; docs and API entry points stay in the
+    // footer, and the Agent quick start owns the developer card above.
     expect(
-      screen.getByRole("link", { name: "Documentation →" })
-    ).toHaveAttribute("href", "/docs")
+      screen.getByRole("link", { name: "Temporary Rooms →" })
+    ).toHaveAttribute("href", "/temporary-chat-room")
     expect(
-      screen.getByRole("link", { name: "Agent collaboration →" })
-    ).toHaveAttribute("href", "/docs/getting-started/agent-room")
+      screen.getByRole("link", { name: "AI Agent Rooms →" })
+    ).toHaveAttribute("href", "/ai-agent-room")
     expect(
-      screen.getByRole("link", { name: "How Rooms work →" })
-    ).toHaveAttribute("href", "/docs/concepts/room")
+      screen.getByRole("link", { name: "Multi-Agent Collaboration →" })
+    ).toHaveAttribute("href", "/multi-agent-collaboration")
+    expect(screen.getByRole("link", { name: "Documentation" })).toHaveAttribute(
+      "href",
+      "/docs"
+    )
 
     // The stale immediate-expiry wording must not come back.
     expect(
