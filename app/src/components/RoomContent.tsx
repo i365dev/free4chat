@@ -209,6 +209,9 @@ export default function RoomContent({
     roomAppsEnabled,
     sendRoomAppMessage,
     subscribeRoomAppMessages,
+    sendRoomAppUnicast,
+    subscribeRoomAppUnicast,
+    subscribeRoomAppUnicastResults,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
@@ -1122,6 +1125,9 @@ export default function RoomContent({
                       subscribe={subscribeRoomAppMessages}
                       send={sendRoomAppMessage}
                       onReady={handleRoomAppReady}
+                      subscribeUnicast={subscribeRoomAppUnicast}
+                      subscribeUnicastResults={subscribeRoomAppUnicastResults}
+                      sendUnicast={sendRoomAppUnicast}
                       onClose={() => setActiveRoomAppId(null)}
                     />
                   </div>

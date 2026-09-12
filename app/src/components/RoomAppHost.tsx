@@ -9,6 +9,8 @@ import {
   type RoomAppDefinition,
   type RoomAppHostMessage,
   type RoomAppParticipantProjection,
+  type RoomAppUnicastEnvelope,
+  type RoomAppUnicastResult,
   type RoomAppTransportEnvelope,
 } from "../common/roomApp"
 
@@ -25,6 +27,18 @@ interface RoomAppHostProps {
     appInstanceId: string,
     payload: Record<string, unknown>
   ) => boolean
+  subscribeUnicast: (
+    listener: (message: RoomAppUnicastEnvelope) => void
+  ) => () => void
+  subscribeUnicastResults: (
+    listener: (result: RoomAppUnicastResult) => void
+  ) => () => void
+  sendUnicast: (
+    requestId: string,
+    targetParticipantId: string,
+    appInstanceId: string,
+    payload: Record<string, unknown>
+  ) => "sent" | "rate_limited" | "payload_too_large" | "delivery_unavailable"
   onClose: () => void
   onReady?: (appId: string) => void
 }
@@ -44,6 +58,9 @@ export default function RoomAppHost({
   participants,
   subscribe,
   send,
+  subscribeUnicast,
+  subscribeUnicastResults,
+  sendUnicast,
   onClose,
   onReady,
 }: RoomAppHostProps) {
@@ -55,6 +72,9 @@ export default function RoomAppHost({
   const previousParticipantsRef = useRef<RoomAppParticipantProjection[]>([])
   const sendRef = useRef(send)
   sendRef.current = send
+  const sendUnicastRef = useRef(sendUnicast)
+  sendUnicastRef.current = sendUnicast
+  const pendingUnicastRequestsRef = useRef(new Map<string, number>())
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
 
@@ -109,6 +129,42 @@ export default function RoomAppHost({
         })
         return
       }
+      if (message.type === "sendReliableTo") {
+        const now = Date.now()
+        for (const [requestId, createdAt] of pendingUnicastRequestsRef.current)
+          if (now - createdAt > 60_000)
+            pendingUnicastRequestsRef.current.delete(requestId)
+        if (pendingUnicastRequestsRef.current.size >= 32) {
+          post({
+            type: "error",
+            appInstanceId,
+            error: "too_many_pending",
+          })
+          return
+        }
+        const requestId = handshakeToken()
+        pendingUnicastRequestsRef.current.set(requestId, now)
+        const result = sendUnicastRef.current(
+          requestId,
+          message.targetParticipantId,
+          appInstanceId,
+          message.payload
+        )
+        if (result !== "sent") {
+          pendingUnicastRequestsRef.current.delete(requestId)
+          post({
+            type: "error",
+            appInstanceId,
+            error:
+              result === "rate_limited"
+                ? "rate_limited"
+                : result === "payload_too_large"
+                ? "payload_too_large"
+                : "delivery_unavailable",
+          })
+        }
+        return
+      }
       const serializedBytes = serializedRoomAppBytes(message.payload)
       if (serializedBytes === null) return
       const lane = message.type === "sendReliable" ? "reliable" : "realtime"
@@ -128,6 +184,7 @@ export default function RoomAppHost({
   }, [app.id, app.origin, appInstanceId, onReady, participants, post, self])
 
   useEffect(() => {
+    const pendingUnicastRequests = pendingUnicastRequestsRef.current
     if (!validateRoomAppDefinition(app) || !isRoomAppAllowlisted(app)) {
       setFailed(true)
       return
@@ -136,6 +193,7 @@ export default function RoomAppHost({
       readyRef.current = false
       portRef.current?.close()
       portRef.current = null
+      pendingUnicastRequests.clear()
     }
   }, [app])
 
@@ -150,6 +208,31 @@ export default function RoomAppHost({
       })
     })
   }, [appInstanceId, post, subscribe])
+
+  useEffect(() => {
+    return subscribeUnicast((message) => {
+      if (!readyRef.current || message.appInstanceId !== appInstanceId) return
+      post({
+        type: "unicast",
+        appInstanceId,
+        sourceParticipantId: message.sourceParticipantId,
+        payload: message.payload,
+      })
+    })
+  }, [appInstanceId, post, subscribeUnicast])
+
+  useEffect(() => {
+    return subscribeUnicastResults((result) => {
+      if (
+        !readyRef.current ||
+        result.appInstanceId !== appInstanceId ||
+        !pendingUnicastRequestsRef.current.has(result.requestId)
+      )
+        return
+      pendingUnicastRequestsRef.current.delete(result.requestId)
+      post({ type: "unicast_result", ...result })
+    })
+  }, [appInstanceId, post, subscribeUnicastResults])
 
   useEffect(() => {
     const next = projectRoomAppParticipants(participants)

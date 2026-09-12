@@ -42,6 +42,7 @@ The iframe may request:
 ```text
 sendReliable(payload)
 sendRealtime(payload)
+sendReliableTo(targetParticipantId, payload)
 ```
 
 The host validates the current curated Room instance, payload shape, serialized
@@ -59,38 +60,66 @@ Free4Chat reliable or realtime lane
 other participant's instance of the same App
 ```
 
+`sendReliableTo` is an additive, low-frequency control-plane path for
+participant-specific messages. It crosses the existing authenticated Room
+WebSocket and RoomSession, where the sender is derived from that socket's
+attachment, the App instance is checked against the current Room's curated
+catalog, and the target must be a current connected Human. The RoomSession
+sends the bounded payload only to that Human's current authenticated browser
+socket. The target host receives `unicast` with a server-derived
+`sourceParticipantId`; the sender receives a bounded `unicast_result`.
+
+This is private from other Room participants, not end-to-end encrypted: the
+Free4Chat server handles the payload while relaying it. Unicast payloads are
+ephemeral and are not written to Room state, message history, Agent event
+streams, analytics, or logs. There is no broadcast fallback or offline queue;
+an unavailable target returns an explicit result, and a later reconnect gets
+only newly sent messages. Reliable/realtime DataChannels remain the transport
+for broadcasts such as strokes, transforms, pointers, CRDT updates, and other
+frequent App traffic.
+
 Free4Chat does not know whether a payload is a stroke, CRDT update, transform,
 card move, chess action, document edit, game command, or something else.
 
 Join/leave notifications are generated from the current Room participant
-projection. The App cannot choose arbitrary relay destinations and receives no
-Room message history or private participant context.
+projection. Participant addressing is limited to the one-recipient unicast
+operation above; the App receives no Room message history or private
+participant context.
 
 ## Transport
 
-Free4Chat reuses the existing Human PeerConnection and Cloudflare Realtime SFU
-DataChannel substrate. Each Human publishes one named channel per lane; the
-`appInstanceId` multiplexes bounded App messages over those channels.
+Broadcast Room App traffic reuses the existing Human PeerConnection and
+Cloudflare Realtime SFU DataChannel substrate. Each Human publishes one named
+channel per lane; the `appInstanceId` multiplexes bounded App messages over
+those channels. Participant-private unicast uses the existing authenticated
+Room WebSocket as a separate, low-frequency path and does not change the
+DataChannel topology.
 
 - `reliable`: ordered, fully reliable DataChannel;
 - `realtime`: unordered, `maxRetransmits: 0`, deliberately stale-droppable;
-- no Durable Object message/history/storage write is created for normal App
-  traffic;
+- no Durable Object Room state, message, history, or payload storage write is
+  created for broadcast App traffic or private unicast; the sender socket
+  attachment retains at most 10 recent unicast timestamp/byte-count samples
+  for rate limiting across socket hibernation;
 - no PeerConnection is created per App;
 - the host keeps coarse in-memory counters for messages, bytes, and drops only.
+- reliable unicast is bounded to 10 messages/sec and 64 KiB/sec per sender;
+  each request, like the existing lanes, is at most 16 KiB serialized UTF-8.
 
-The choice of DataChannel is an implementation/economic fit, not a requirement
-that App state be WebRTC-specific. An equivalent App could use its own WebSocket
-or other backend. The value of the Free4Chat seam is that a Room already has a
-participant-aware realtime substrate, so a simple App does not need a second
-realtime service merely to exchange bounded messages.
+The choice of DataChannel is an implementation/economic fit for broadcast
+traffic, not a requirement that App state be WebRTC-specific. An equivalent
+App could use its own WebSocket or other backend. The Room's authenticated
+participant WebSocket also supports bounded private control messages, so a
+simple App can address one current Human without adding a second identity and
+relay service.
 
 Transport delivery and state convergence are different responsibilities.
-`reliable` means the underlying established DataChannel is reliable; it does
-not turn Free4Chat into an App operation log, replay system, CRDT provider, or
-persistent state service. App code must still handle its own bootstrap,
-reconnect/convergence, duplicate/stale operations, and any recovery semantics it
-requires.
+DataChannel `reliable` means the underlying established DataChannel is reliable;
+it does not turn Free4Chat into an App operation log, replay system, CRDT
+provider, or persistent state service. Unicast is a one-shot send to a current
+socket, not a replay or acknowledgement of application processing. App code
+must still handle its own bootstrap, reconnect/convergence, duplicate/stale
+operations, and any recovery semantics it requires.
 
 ## Stage and browser-session lifecycle
 
@@ -138,6 +167,7 @@ Current bounds remain:
 - reliable: at most 20 messages/sec;
 - realtime: at most 60 messages/sec;
 - combined transport budget: at most 256 KiB/sec;
+- reliable unicast: at most 10 messages/sec and 64 KiB/sec per sender;
 - Phase 0 curated catalog: at most two resident Apps per browser Room session.
 
 ## State ownership and persistence

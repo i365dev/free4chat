@@ -109,6 +109,7 @@ function localTrackResponse(init?: RequestInit) {
 let lastFakeWebSocket: {
   onopen: (() => void) | null
   onmessage: ((event: { data: string }) => void) | null
+  send: ReturnType<typeof vi.fn>
 } | null = null
 
 describe("useSfuChatRoom — Turnstile boundary", () => {
@@ -141,10 +142,10 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       onmessage: ((event: { data: string }) => void) | null = null
       onerror: (() => void) | null = null
       onclose: (() => void) | null = null
+      send = vi.fn()
       constructor(public url: string) {
         lastFakeWebSocket = this
       }
-      send() {}
       close() {}
     }
     ;(global as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket
@@ -307,7 +308,20 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       useSfuChatRoom("room-app", "alice", "audio", {})
     )
 
+    const privateMessages: unknown[] = []
+    const privateResults: unknown[] = []
+
     await waitFor(() => expect(result.current.roomAppsEnabled).toBe(true))
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+    act(() => {
+      lastFakeWebSocket?.onopen?.()
+      result.current.subscribeRoomAppUnicast((message) =>
+        privateMessages.push(message)
+      )
+      result.current.subscribeRoomAppUnicastResults((response) =>
+        privateResults.push(response)
+      )
+    })
     await waitFor(() =>
       expect(
         FakePeerConnection.dataChannels.filter((channel) =>
@@ -327,7 +341,53 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
           type: "cursor",
         })
       ).toBe(true)
+      expect(
+        result.current.sendRoomAppUnicast(
+          "request_1",
+          "participant-2",
+          appInstanceId,
+          { type: "secret_word", word: "otter" }
+        )
+      ).toBe("sent")
     })
+
+    expect(JSON.parse(lastFakeWebSocket!.send.mock.calls.at(-1)![0])).toEqual({
+      type: "room-app-unicast",
+      requestId: "request_1",
+      targetParticipantId: "participant-2",
+      appInstanceId,
+      payload: { type: "secret_word", word: "otter" },
+    })
+    act(() => {
+      lastFakeWebSocket?.onmessage?.({
+        data: JSON.stringify({
+          type: "room-app-unicast",
+          protocolVersion: 1,
+          appInstanceId,
+          sourceParticipantId: "participant-2",
+          payload: { type: "secret_word", word: "otter" },
+        }),
+      })
+      lastFakeWebSocket?.onmessage?.({
+        data: JSON.stringify({
+          type: "room-app-unicast-result",
+          requestId: "request_1",
+          appInstanceId,
+          ok: true,
+        }),
+      })
+    })
+    expect(privateMessages).toEqual([
+      {
+        protocolVersion: 1,
+        appInstanceId,
+        sourceParticipantId: "participant-2",
+        payload: { type: "secret_word", word: "otter" },
+      },
+    ])
+    expect(privateResults).toEqual([
+      { requestId: "request_1", appInstanceId, ok: true },
+    ])
 
     const channels = FakePeerConnection.dataChannels.filter((channel) =>
       channel.label.startsWith("room-app-")
