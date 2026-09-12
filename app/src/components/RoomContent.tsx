@@ -277,6 +277,16 @@ export default function RoomContent({
   const whiteboardReady = readyRoomAppIds.includes("whiteboard")
   const visibleRoomApp =
     activeRoomApp && roomAppSelf ? activeRoomApp : undefined
+  // Focus mode is a Room layout state, not just a larger host. The resident
+  // host remains in its Stage subtree; all surrounding Room UI is made inert
+  // and removed from layout so nested stacking contexts cannot paint over or
+  // intercept input from the fixed host.
+  const isRoomAppFullscreen = Boolean(
+    roomAppSelf &&
+      expandedRoomAppId &&
+      expandedRoomAppId === activeRoomAppId &&
+      residentRoomApps.some((app) => app.id === expandedRoomAppId)
+  )
   const activeTask = taskProjections.find(
     (task) => task.requestId === activeInteraction
   )
@@ -905,15 +915,32 @@ export default function RoomContent({
   }
 
   return (
-    <main className="room-shell flex h-screen flex-col overflow-hidden bg-gray-900 text-white">
+    <main
+      className="room-shell flex h-screen flex-col overflow-hidden bg-gray-900 text-white"
+      data-room-app-focus={isRoomAppFullscreen ? "true" : undefined}
+    >
       {connectionStatus === "reconnecting" && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60">
+        <div
+          data-testid="room-reconnect-guard"
+          role="alert"
+          aria-live="assertive"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60"
+        >
           <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
           <p className="text-sm text-gray-400">Reconnecting...</p>
         </div>
       )}
 
-      <header className="room-header flex flex-none flex-col gap-2 border-b border-gray-800 px-4 py-3 lg:flex-row lg:items-center">
+      <header
+        className={`room-header ${
+          isRoomAppFullscreen
+            ? "hidden"
+            : "flex flex-none flex-col gap-2 border-b border-gray-800 px-4 py-3 lg:flex-row lg:items-center"
+        }`}
+        hidden={isRoomAppFullscreen}
+        aria-hidden={isRoomAppFullscreen}
+        inert={isRoomAppFullscreen}
+      >
         <div
           data-testid="room-header-identity"
           className="flex min-w-0 items-center gap-2"
@@ -997,8 +1024,15 @@ export default function RoomContent({
 
       {error !== "" && (
         <div
-          className="flex flex-none items-center gap-4 bg-gray-900 px-4 py-2 text-white"
+          className={`${
+            isRoomAppFullscreen
+              ? "hidden"
+              : "flex flex-none items-center gap-4 bg-gray-900 px-4 py-2 text-white"
+          }`}
+          hidden={isRoomAppFullscreen}
           role="alert"
+          aria-hidden={isRoomAppFullscreen}
+          inert={isRoomAppFullscreen}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -1017,11 +1051,23 @@ export default function RoomContent({
           <strong className="text-sm font-normal"> {error} </strong>
         </div>
       )}
-      <LiveTranscriptSegments segments={liveTranscriptSegments} />
+      <div
+        className={isRoomAppFullscreen ? "hidden" : undefined}
+        hidden={isRoomAppFullscreen}
+        aria-hidden={isRoomAppFullscreen}
+        inert={isRoomAppFullscreen}
+      >
+        <LiveTranscriptSegments segments={liveTranscriptSegments} />
+      </div>
       {screenShareWarning !== "" && (
         <div
-          className="mx-4 mt-1 flex flex-none items-center gap-4 rounded border border-amber-700/50 bg-amber-900/40 px-4 py-2 text-amber-200"
+          className={`mx-4 mt-1 flex-none items-center gap-4 rounded border border-amber-700/50 bg-amber-900/40 px-4 py-2 text-amber-200 ${
+            isRoomAppFullscreen ? "hidden" : "flex"
+          }`}
+          hidden={isRoomAppFullscreen}
           role="alert"
+          aria-hidden={isRoomAppFullscreen}
+          inert={isRoomAppFullscreen}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -1052,10 +1098,17 @@ export default function RoomContent({
         >
           {/* #111: Agent workspace snapshots — observation only, available in
               every room type; Human screen share is untouched below. */}
-          <WorkspaceSnapshots
-            participants={participants}
-            getLocalRoomAuth={getLocalRoomAuth}
-          />
+          <div
+            className={isRoomAppFullscreen ? "hidden" : undefined}
+            hidden={isRoomAppFullscreen}
+            aria-hidden={isRoomAppFullscreen}
+            inert={isRoomAppFullscreen}
+          >
+            <WorkspaceSnapshots
+              participants={participants}
+              getLocalRoomAuth={getLocalRoomAuth}
+            />
+          </div>
           <div className="relative flex flex-1 flex-col overflow-hidden">
             {/* The Stage entry: curated Room Apps plus the existing Screen /
                 Live View preference. Stage selection is independent from the
@@ -1070,7 +1123,12 @@ export default function RoomContent({
                 role="tablist"
                 aria-label="Stage"
                 data-testid="stage-switcher"
-                className="scrollbar-thin z-10 flex flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/80 p-2"
+                className={`scrollbar-thin z-10 flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/80 p-2 ${
+                  isRoomAppFullscreen ? "hidden" : "flex"
+                }`}
+                hidden={isRoomAppFullscreen}
+                aria-hidden={isRoomAppFullscreen}
+                inert={isRoomAppFullscreen}
               >
                 {roomApps.map((app) => {
                   const selected = activeRoomAppId === app.id
@@ -1153,12 +1211,14 @@ export default function RoomContent({
                 const isFullscreen =
                   expandedRoomAppId === app.id && activeRoomAppId === app.id
                 const visible = visibleRoomApp?.id === app.id || isFullscreen
+                const reconnectBlocked =
+                  isFullscreen && connectionStatus === "reconnecting"
                 return (
                   <div
                     key={app.id}
                     data-testid={`room-app-slot-${app.id}`}
-                    aria-hidden={!visible}
-                    inert={!visible}
+                    aria-hidden={!visible || reconnectBlocked}
+                    inert={!visible || reconnectBlocked}
                     className={
                       visible ? "flex min-h-0 flex-1 flex-col" : "hidden"
                     }
@@ -1183,6 +1243,7 @@ export default function RoomContent({
                 )
               })}
             {!visibleRoomApp &&
+              !isRoomAppFullscreen &&
               (activeScreenShares.length > 0 ? (
                 <>
                   <div
@@ -1299,27 +1360,42 @@ export default function RoomContent({
                 </div>
               ))}
 
-            {floatingReactions.map((r) => (
-              <div
-                key={r.id}
-                className="pointer-events-none absolute bottom-4 animate-float-up text-2xl"
-                style={{ left: `${r.x}%` }}
-              >
-                {r.emoji}
-              </div>
-            ))}
+            {!isRoomAppFullscreen &&
+              floatingReactions.map((r) => (
+                <div
+                  key={r.id}
+                  className="pointer-events-none absolute bottom-4 animate-float-up text-2xl"
+                  style={{ left: `${r.x}%` }}
+                >
+                  {r.emoji}
+                </div>
+              ))}
           </div>
         </div>
 
         <div
-          className="hidden w-1 cursor-col-resize bg-gray-800 transition-colors hover:bg-blue-500/50 active:bg-blue-500 md:block"
+          className={`w-1 cursor-col-resize bg-gray-800 transition-colors hover:bg-blue-500/50 active:bg-blue-500 ${
+            isRoomAppFullscreen ? "hidden" : "hidden md:block"
+          }`}
+          hidden={isRoomAppFullscreen}
+          aria-hidden={isRoomAppFullscreen}
+          inert={isRoomAppFullscreen}
           onMouseDown={(e) => {
             isDragging.current = true
             e.preventDefault()
           }}
         />
 
-        <div className="room-panel room-chat-panel flex flex-1 flex-col overflow-hidden">
+        <div
+          className={`room-panel room-chat-panel ${
+            isRoomAppFullscreen
+              ? "hidden"
+              : "flex flex-1 flex-col overflow-hidden"
+          }`}
+          hidden={isRoomAppFullscreen}
+          aria-hidden={isRoomAppFullscreen}
+          inert={isRoomAppFullscreen}
+        >
           <div
             role="tablist"
             aria-label="Room interactions"
@@ -1433,10 +1509,15 @@ export default function RoomContent({
       </div>
       {taskAgent && (
         <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 px-4"
+          className={`fixed inset-0 z-40 bg-black/60 px-4 ${
+            isRoomAppFullscreen ? "hidden" : "flex items-center justify-center"
+          }`}
+          hidden={isRoomAppFullscreen}
           role="dialog"
           aria-modal="true"
           aria-labelledby="start-task-title"
+          aria-hidden={isRoomAppFullscreen}
+          inert={isRoomAppFullscreen}
         >
           <form
             onSubmit={submitTask}

@@ -6,9 +6,9 @@ html {
   @apply antialiased;
 }
 
-/* Room App focus mode changes only the host layout. The resident host and its
-   iframe remain in place, while safe-area padding keeps its controls reachable
-   on phones using edge-to-edge viewports. */
+/* Room App focus positioning stays on the resident host node. RoomContent
+   removes its sibling Room UI from layout while focused; safe-area padding
+   keeps the host controls reachable in edge-to-edge phone viewports. */
 .room-app-host--fullscreen {
   position: fixed;
   inset: 0;
