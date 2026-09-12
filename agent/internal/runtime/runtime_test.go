@@ -1387,17 +1387,33 @@ func TestTimedOutTurnDoesNotReplyNorReplay(t *testing.T) {
 		InstanceID: "inst-timeout", RoomID: "test", Name: "Hermes",
 		Client: client, Adapter: adapter, WaitSeconds: 1,
 	})
+	// #364 B: the Runtime now retries a failed Harness turn by itself, so the
+	// bounded budget is consumed without wall-clock waits.
+	rt.turnRetryDelay = func(int) time.Duration { return time.Millisecond }
 	if err := rt.Start(); err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
-	waitFor(t, 2*time.Second, func() bool {
-		return rt.Status().State == StateWaiting && len(client.snapshotSent()) == 0 &&
-			adapter.sessionsInt() >= 1
-	}, "turn release")
+	// The budget is consumed only after the last failed attempt has unwound
+	// (a mid-turn StateTurn snapshot is not the settled truth).
+	waitFor(t, 3*time.Second, func() bool {
+		state := rt.Status().State
+		return adapter.sessionsInt() == 1+maxTurnRetryAttempts && state != StateTurn
+	}, "bounded retry budget consumed")
+	// Stop clears runtime-local pending state, so snapshot the boundaries first.
+	pending := rt.pendingAddressedSnapshot()
+	delivered := rt.deliveredSeq()
+	status := rt.Status()
 	rt.Stop()
+	time.Sleep(20 * time.Millisecond)
 
 	if len(client.snapshotSent()) != 0 {
 		t.Fatalf("timed-out turn must not send: %v", client.snapshotSent())
+	}
+	if len(pending) != 1 || delivered != 0 {
+		t.Fatalf("failed turn must stay unacknowledged: pending=%v delivered=%d", pending, delivered)
+	}
+	if status.LastError == "" || status.State != StateReconnecting {
+		t.Fatalf("exhausted timeout retry must report a truthful local state: %+v", status)
 	}
 }
 
@@ -2280,14 +2296,15 @@ func TestHarnessFailureClearsAfterSuccessfulTurn(t *testing.T) {
 		Adapter:     adapter,
 		WaitSeconds: 1,
 	})
-	if err := rt.Start(); err != nil {
-		t.Fatalf("start failed: %v", err)
-	}
 	// Sequencing via the adapter hook: turn 1 runs with turnErr set and
 	// FAILS; the hook clears turnErr inside RunTurn so turn 2 (same drain)
 	// SUCCEEDS — deterministic fail->success without wall-clock polling.
 	// A bare LastError=="exploded" poll can miss the transient window
 	// because both events arrive in one poll step.
+	//
+	// The hook is installed BEFORE Start: the wait-loop goroutine reads it
+	// inside RunTurn, so assigning it after Start would race (pre-existing
+	// data race found while validating #364; behavior is unchanged).
 	var sawFailure atomic.Bool
 	originalHook := adapterRunTurnHook
 	adapterRunTurnHook = func(a *fakeAdapter, input types.HarnessTurnInput) {
@@ -2300,6 +2317,9 @@ func TestHarnessFailureClearsAfterSuccessfulTurn(t *testing.T) {
 		}
 	}
 	defer func() { adapterRunTurnHook = originalHook }()
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
 
 	waitFor(t, 5*time.Second, func() bool {
 		return sawFailure.Load() && adapter.sessionsInt() >= 2

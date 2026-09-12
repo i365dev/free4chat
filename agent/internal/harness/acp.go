@@ -43,6 +43,16 @@ func (e *TurnTimeoutError) Error() string {
 	return fmt.Sprintf("ACP turn timed out after %dms", e.TimeoutMs)
 }
 
+// ProcessError marks an ACP child-process transport failure: the child exited
+// while a prompt was pending, or the prompt frame could not be written. It
+// carries no Harness payload, so the resident Runtime can classify a failed
+// turn (for bounded, secret-free diagnostics) without importing Harness
+// internals or inspecting message text.
+type ProcessError struct{ Err error }
+
+func (e *ProcessError) Error() string { return e.Err.Error() }
+func (e *ProcessError) Unwrap() error { return e.Err }
+
 // AdapterOptions tunes turn timeout / cancel grace (tests).
 type AdapterOptions struct {
 	TurnTimeoutMs int64
@@ -1549,7 +1559,7 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 
 	if err := a.writeFrame(envelope); err != nil {
 		a.resetPrompt(key)
-		return types.HarnessTurnResult{}, fmt.Errorf("ACP write failed: %w", err)
+		return types.HarnessTurnResult{}, &ProcessError{Err: fmt.Errorf("ACP write failed: %w", err)}
 	}
 
 	timeout := time.After(time.Duration(timeoutMs) * time.Millisecond)
@@ -1561,7 +1571,7 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 		case response = <-call.result:
 			if response == nil {
 				a.resetPrompt(key)
-				return types.HarnessTurnResult{}, errors.New("ACP process exited")
+				return types.HarnessTurnResult{}, &ProcessError{Err: errors.New("ACP process exited")}
 			}
 			settled = true
 		case <-timeout:

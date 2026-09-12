@@ -161,6 +161,30 @@ type ResidentRuntime struct {
 	// turn; observing a session is never an acknowledgement.
 	observedHarnessGeneration     int64
 	bootstrappedHarnessGeneration int64
+	// turnRetry is the bounded autonomous retry clock for the canonical
+	// pending turn whose Harness turn failed (#364 B). It is keyed by
+	// (scope, target) so a later Room event can never reset the retry budget
+	// of the same still-pending turn; only a different canonical turn or a
+	// successful delivery starts a new budget.
+	turnRetryScope   string
+	turnRetryTarget  int64
+	turnRetryAttempt int
+	turnRetryPlan    *turnRetryPlan
+	// closedTurnRecovery records the canonical turns whose autonomous
+	// recovery is over: the bounded retry budget is spent, or the Harness
+	// failure is permanent and no retry can resolve it. Such a turn stays
+	// pending and unacknowledged, but the serial drain never re-executes it
+	// for unrelated later Room traffic. Only an explicit recovery boundary —
+	// a new addressed trigger for the same scope — reopens it.
+	//
+	// Markers are deleted without resetting the map to nil, so an empty map
+	// may still be non-nil. Non-nilness is therefore NEVER a truthful-state
+	// condition: use len(...) or unresolvedTurnFailureLocked() instead.
+	closedTurnRecovery map[canonicalTurnKey]struct{}
+	// turnRetryDelay overrides the delay before retry attempt N (0-based).
+	// Nil uses the shared reconnect back-off; tests override it to drive the
+	// policy deterministically without wall-clock waits.
+	turnRetryDelay func(attempt int) time.Duration
 	// Transcript delivery keeps a per-ACP-session success marker plus a
 	// baseline captured at session/new. The baseline deliberately leaves old
 	// shared context pullable instead of dumping it into a new conversation.
@@ -634,12 +658,25 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.eventBuffer.Clear()
 		r.pendingAddressed = nil
 		r.pendingContexts = nil
+		r.closedTurnRecovery = nil
 		r.scopedSessions = nil
 		r.scopeOrder = nil
 	}
-	r.state = StateWaiting
-	r.lastError = ""
-	r.lastErrorSource = ""
+	if r.unresolvedTurnFailureLocked() {
+		// A transport join/rejoin is not an explicit recovery boundary: a
+		// canonical turn whose autonomous recovery is closed stays pinned and
+		// keeps reporting the truthful reconnect state until a new addressed
+		// trigger re-arms it. The shared unresolved-work predicate is used
+		// instead of testing closedTurnRecovery for non-nilness: drained
+		// markers are deleted without resetting the map, so an empty-but-non-nil
+		// map would otherwise look like a parked turn (and an armed retry or an
+		// unresolved Harness/send failure must keep the state truthful too).
+		r.state = StateReconnecting
+	} else {
+		r.state = StateWaiting
+		r.lastError = ""
+		r.lastErrorSource = ""
+	}
 	// #228: participation age starts at the lifecycle's first successful
 	// create/join and survives transient retries and lease recovery.
 	if initialJoin {
@@ -715,8 +752,12 @@ func (r *ResidentRuntime) waitLoop() {
 
 		retryAttempt = 0
 		r.advanceFromWait(result)
-		if len(r.pendingScopes()) > 0 && !r.isStopped() {
-			r.drainTurns()
+		// A wait that returned no Room event is observation, not an activation
+		// boundary: like the resident event stream, it must not re-run
+		// pre-existing work. A failed Harness turn is retried by the bounded
+		// autonomous clock instead of by every poll.
+		if len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
+			r.drainTurnsWithRetryClock()
 		}
 	}
 }
@@ -878,7 +919,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			return heartbeatErr
 		case <-retrySignals:
 			if r.shouldRetryHumanTaskAcceptance() && !r.isStopped() {
-				r.drainTurns()
+				r.drainTurnsWithRetryClock()
 			}
 		case received := <-receiveResults:
 			if received.err != nil {
@@ -902,7 +943,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			// A media-only envelope is observation, not an activation event. Do
 			// not use it as a Harness wakeup/retry boundary for pre-existing work.
 			if len(received.result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
-				r.drainTurns()
+				r.drainTurnsWithRetryClock()
 			}
 			receiveNext()
 		}
@@ -1061,6 +1102,11 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 				target: event.Sequence,
 				events: r.eventsForScopeLocked(scope, after, event.Sequence),
 			}
+			// An accepted addressed trigger for this scope is the explicit
+			// recovery boundary: it re-arms a canonical turn of the same scope
+			// whose autonomous recovery was closed. Unaddressed Room traffic
+			// never reaches this point and can never re-arm anything.
+			r.reopenTurnRecoveryLocked(scope)
 		}
 	}
 	r.mu.Unlock()
@@ -1087,7 +1133,7 @@ func (r *ResidentRuntime) restoreStateAfterRetry() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch {
-	case r.harnessFailed:
+	case r.unresolvedTurnFailureLocked():
 		r.state = StateReconnecting
 	case r.turnRunning:
 		r.state = StateTurn
@@ -1101,10 +1147,18 @@ func (r *ResidentRuntime) restoreStateAfterRetry() {
 // distinct boundaries: only RunTurn success acknowledges an addressed target
 // and advances deliveredThrough. A failed/ambiguous Harness turn is therefore
 // intentionally eligible for at-least-once retry; a later SendText failure is
-// not.
+// not. A turn whose bounded autonomous recovery is closed is deliberately
+// skipped without being re-executed or acknowledged.
 func (r *ResidentRuntime) drainTurns() {
 	r.mu.Lock()
 	if r.turnRunning || r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	if _, _, runnable := r.nextRunnableTurnLocked(); !runnable {
+		// Every remaining unacknowledged turn has closed autonomous recovery.
+		// Nothing may run until an explicit recovery boundary re-arms it, so
+		// do not claim a turn state for work that will not run.
 		r.mu.Unlock()
 		return
 	}
@@ -1116,7 +1170,13 @@ func (r *ResidentRuntime) drainTurns() {
 		r.mu.Lock()
 		r.turnRunning = false
 		if !r.stopped {
-			if r.harnessFailed || r.lastErrorSource == "send" {
+			// A pending bounded retry, an exhausted budget, a parked canonical
+			// turn, or any unresolved Harness/send failure is a truthful
+			// reconnect state: the resident still holds unacknowledged work it
+			// could not hand to the Harness. A permanent non-retryable Harness
+			// failure must keep reporting that state instead of being
+			// overwritten to waiting.
+			if r.unresolvedTurnFailureLocked() {
 				r.state = StateReconnecting
 			} else {
 				r.state = StateWaiting
@@ -1126,34 +1186,24 @@ func (r *ResidentRuntime) drainTurns() {
 	}()
 
 	for !r.isStopped() {
-		scopes := r.pendingScopes()
-		if len(scopes) == 0 {
+		scope, target, ok := r.nextRunnableTurn()
+		if !ok {
 			return
 		}
-		scope := scopes[0]
-		target, ok := r.peekPendingFor(scope)
-		if !ok {
-			continue
-		}
+		started := time.Now()
+		r.log("turn_started", map[string]string{
+			"scopeKind":    scopeKindOf(scope),
+			"retryAttempt": strconv.Itoa(r.turnRetryIndexFor(scope, target)),
+		})
 		// Ensure before rendering so the prompt accurately knows whether this
 		// is the same retained ACP conversation or a real session/new.
 		if err := r.ensureHarnessSession(scope); err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}
 		generation, err := r.harnessSessionGeneration(scope)
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}
 		newSession := r.observeHarnessSessionFor(scope, generation, target)
@@ -1164,7 +1214,14 @@ func (r *ResidentRuntime) drainTurns() {
 			r.lastErrorSource = "harness"
 			r.state = StateReconnecting
 			r.mu.Unlock()
-			r.log("turn_context_unavailable", nil)
+			r.log("turn_context_unavailable", map[string]string{
+				"scopeKind":    scopeKindOf(scope),
+				"failureClass": turnFailureOther,
+				"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+			})
+			// The frozen delta may have failed on a transient Room read, so
+			// the bounded retry clock still applies to this canonical turn.
+			r.scheduleTurnRetry(scope, target, turnFailureOther, time.Since(started).Milliseconds())
 			return
 		}
 		if len(events) == 0 {
@@ -1176,7 +1233,11 @@ func (r *ResidentRuntime) drainTurns() {
 				r.ackPendingFor(scope, target)
 				continue
 			}
-			r.log("turn_context_unavailable", nil)
+			r.log("turn_context_unavailable", map[string]string{
+				"scopeKind":    scopeKindOf(scope),
+				"failureClass": turnFailureOther,
+				"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+			})
 			return
 		}
 		maxSeq := events[0].Sequence
@@ -1215,7 +1276,10 @@ func (r *ResidentRuntime) drainTurns() {
 				r.lastErrorSource = "send"
 				r.state = StateReconnecting
 				r.mu.Unlock()
-				r.log("collab_accept_failed", nil)
+				r.log("collab_accept_failed", map[string]string{
+					"scopeKind":    scopeKindOf(scope),
+					"failureClass": turnFailureSend,
+				})
 				return
 			}
 			r.mu.Lock()
@@ -1239,14 +1303,13 @@ func (r *ResidentRuntime) drainTurns() {
 		result, err := r.runHarnessTurn(scope, *input, generation)
 		r.finishActivity(scope)
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}
+		r.log("turn_succeeded", map[string]string{
+			"scopeKind": scopeKindOf(scope),
+			"elapsedMs": strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+		})
 		if r.isStopped() {
 			return
 		}
@@ -1256,11 +1319,17 @@ func (r *ResidentRuntime) drainTurns() {
 		// fails, replaying this already-consumed Harness prompt would be wrong.
 		r.acknowledgeHarnessDeliveryFor(scope, target, maxSeq, generation)
 		r.acknowledgeTranscriptDeliveryFor(scope, meetingThrough, liveThrough)
+		// The canonical turn is delivered: its bounded autonomous retry budget
+		// is spent and a later send failure must never replay cognition.
+		r.clearTurnRetry(scope, target)
 		r.mu.Lock()
 		r.harnessFailed = false
 		// #228: a successful turn proves the Harness recovered — clear ONLY
-		// the harness-origin error (a concurrent wait/send failure stays).
-		if r.lastErrorSource == "harness" {
+		// the harness-origin error (a concurrent wait/send failure stays). A
+		// canonical turn parked with closed autonomous recovery is still
+		// unacknowledged, so its failure must stay visible until an explicit
+		// recovery boundary resolves it.
+		if r.lastErrorSource == "harness" && len(r.closedTurnRecovery) == 0 {
 			r.lastError = ""
 			r.lastErrorSource = ""
 		}
@@ -1279,22 +1348,12 @@ func (r *ResidentRuntime) drainTurns() {
 		}
 		handle, err := r.requireHandle()
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "harness"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "harness", turnFailureSend, started, err, false)
 			return
 		}
 		sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
 		if err != nil {
-			r.mu.Lock()
-			r.lastError = err.Error()
-			r.lastErrorSource = "send"
-			r.state = StateReconnecting
-			r.mu.Unlock()
-			r.log("turn_failed", nil)
+			r.failTurn(scope, target, "send", turnFailureSend, started, err, false)
 			return
 		}
 		r.mu.Lock()
@@ -1614,6 +1673,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 		}
 		r.pendingAddressed = nil
 		r.pendingContexts = nil
+		r.closedTurnRecovery = nil
 		r.eventBuffer.Clear()
 		r.mu.Unlock()
 		r.cancelPendingPermissions(errors.New("runtime stopped"))

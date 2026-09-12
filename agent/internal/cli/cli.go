@@ -56,6 +56,7 @@ func usageText() string {
   free4chat-agent surface publish --file <snapshot.jpeg|png|webp> [--instance <id>]
   free4chat-agent surface clear [--instance <id>]
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
+  free4chat-agent live-view describe [--json]
   free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [--instance <id>]
   free4chat-agent context read [--before-sequence <n>] [--after-sequence <n>] [--limit <1-50>] [--before-transcript-sequence <n>] [--after-transcript-sequence <n>] [--transcript-limit <1-50>] [--instance <id>]
   free4chat-agent version [--json]
@@ -473,31 +474,40 @@ func run(args []string) error {
 		}
 
 	case "live-view":
-		if len(rest) == 0 || rest[0] != "publish" {
+		if len(rest) == 0 {
 			return errUsage()
 		}
-		filePath := option(rest[1:], "--file")
-		taskRequestID := option(rest[1:], "--task-request-id")
-		if filePath == "" || taskRequestID == "" {
+		switch rest[0] {
+		case "describe":
+			return runLiveViewDescribe(rest[1:])
+		case "publish":
+			// Behaviour is unchanged: describe only adds a pure local,
+			// machine-readable authoring contract (issue #364 A).
+			filePath := option(rest[1:], "--file")
+			taskRequestID := option(rest[1:], "--task-request-id")
+			if filePath == "" || taskRequestID == "" {
+				return errUsage()
+			}
+			data, err := attachments.ReadBounded(filePath, maxTaskLiveViewBytes)
+			if err != nil {
+				return fmt.Errorf("Live View JSON must be a non-empty file up to %d bytes", maxTaskLiveViewBytes)
+			}
+			var surface map[string]any
+			if err := json.Unmarshal(data, &surface); err != nil || len(surface) == 0 {
+				return errors.New("Live View JSON must be an object")
+			}
+			if err := validateTaskLiveViewJSON(data); err != nil {
+				return err
+			}
+			return runViaDaemon(&daemon.IpcRequest{
+				Op:            "live-view-publish",
+				InstanceID:    option(rest[1:], "--instance"),
+				TaskRequestID: taskRequestID,
+				Surface:       surface,
+			})
+		default:
 			return errUsage()
 		}
-		data, err := attachments.ReadBounded(filePath, maxTaskLiveViewBytes)
-		if err != nil {
-			return fmt.Errorf("Live View JSON must be a non-empty file up to %d bytes", maxTaskLiveViewBytes)
-		}
-		var surface map[string]any
-		if err := json.Unmarshal(data, &surface); err != nil || len(surface) == 0 {
-			return errors.New("Live View JSON must be an object")
-		}
-		if err := validateTaskLiveViewJSON(data); err != nil {
-			return err
-		}
-		return runViaDaemon(&daemon.IpcRequest{
-			Op:            "live-view-publish",
-			InstanceID:    option(rest[1:], "--instance"),
-			TaskRequestID: taskRequestID,
-			Surface:       surface,
-		})
 
 	case "readiness":
 		return runReadiness(rest)
@@ -772,6 +782,31 @@ func runVersion(args []string) error {
 	}
 	fmt.Println(doctor.Version)
 	return nil
+}
+
+// runLiveViewDescribe prints the machine-readable Live View authoring
+// contract (#364 A). It is a pure local command: a freshly installed binary
+// answers it without a source checkout, repository docs, binary strings,
+// network access, or Room credentials. --json is the documented machine
+// shape and the default output; any other flag is a usage error.
+func runLiveViewDescribe(args []string) error {
+	for _, arg := range args {
+		if arg != "--json" {
+			return errUsage()
+		}
+	}
+	return printJSONVerbatim(describeTaskLiveView())
+}
+
+// printJSONVerbatim matches printJSON but keeps placeholder brackets and rule
+// text readable: the describe output is a contract a Harness reads as text,
+// and Go's default HTML escaping would render "<surface.json>" as
+// "\u003csurface.json\u003e".
+func printJSONVerbatim(value any) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
 }
 
 // runViaDaemon preserves the stable low-level CLI contract: it performs the

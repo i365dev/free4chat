@@ -328,12 +328,18 @@ func (r *ResidentRuntime) logVoiceBridgeStats(event string) {
 }
 
 // voiceOutput returns the current speakable output (nil when no live
-// Agent Voice grant); callers stay text-only on nil.
+// Agent Voice grant); callers stay text-only on nil. The reference is read
+// under mediaMu because a media rebuild or teardown replaces/clears it on
+// another goroutine while a turn is finishing (a pre-existing race found
+// while validating #364; the turn path calls this with no lock held).
 func (r *ResidentRuntime) voiceOutput() *voice.Speaker {
-	if r.voiceSrc == nil {
+	r.mediaMu.Lock()
+	output := r.voiceSrc
+	r.mediaMu.Unlock()
+	if output == nil {
 		return nil
 	}
-	return r.voiceSrc.CurrentVoiceOutput()
+	return output.CurrentVoiceOutput()
 }
 
 // attachTranscript adds only newly committed runtime-local Meeting Notes
