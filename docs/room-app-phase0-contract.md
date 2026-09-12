@@ -42,7 +42,7 @@ The iframe may request:
 ```text
 sendReliable(payload)
 sendRealtime(payload)
-sendReliableTo(targetParticipantId, payload)
+sendReliableTo({ requestId, targetParticipantId, payload })
 ```
 
 The host validates the current curated Room instance, payload shape, serialized
@@ -67,7 +67,10 @@ attachment, the App instance is checked against the current Room's curated
 catalog, and the target must be a current connected Human. The RoomSession
 sends the bounded payload only to that Human's current authenticated browser
 socket. The target host receives `unicast` with a server-derived
-`sourceParticipantId`; the sender receives a bounded `unicast_result`.
+`sourceParticipantId`; the sender receives a bounded `unicast_result` with the
+same App-provided `requestId`. The request ID is only a correlation key: it
+does not affect identity, authorization, or routing. The host rejects an ID
+that is already pending, and self-targeted sends return `invalid_target`.
 
 This is private from other Room participants, not end-to-end encrypted: the
 Free4Chat server handles the payload while relaying it. Unicast payloads are

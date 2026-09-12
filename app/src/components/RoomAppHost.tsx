@@ -134,6 +134,14 @@ export default function RoomAppHost({
         for (const [requestId, createdAt] of pendingUnicastRequestsRef.current)
           if (now - createdAt > 60_000)
             pendingUnicastRequestsRef.current.delete(requestId)
+        if (pendingUnicastRequestsRef.current.has(message.requestId)) {
+          post({
+            type: "error",
+            appInstanceId,
+            error: "duplicate_request_id",
+          })
+          return
+        }
         if (pendingUnicastRequestsRef.current.size >= 32) {
           post({
             type: "error",
@@ -142,7 +150,7 @@ export default function RoomAppHost({
           })
           return
         }
-        const requestId = handshakeToken()
+        const requestId = message.requestId
         pendingUnicastRequestsRef.current.set(requestId, now)
         const result = sendUnicastRef.current(
           requestId,

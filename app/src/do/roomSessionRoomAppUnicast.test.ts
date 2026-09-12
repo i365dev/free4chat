@@ -254,6 +254,15 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     })
 
     const validSender = addHumanSocket("human-a")
+    await sendFrom(validSender, "human-a", "request_self", "human-a", {
+      type: "private",
+    })
+    expect(validSender.messages().at(-1)).toMatchObject({
+      type: "room-app-unicast-result",
+      requestId: "request_self",
+      ok: false,
+      error: "invalid_target",
+    })
     await sendFrom(validSender, "human-a", "request_agent", "agent-c", {
       type: "private",
     })

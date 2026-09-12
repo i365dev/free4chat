@@ -78,6 +78,7 @@ export type RoomAppUnicastError =
   | "invalid_target"
   | "target_unavailable"
   | "rate_limited"
+  | "duplicate_request_id"
   | "delivery_failed"
 
 export interface RoomAppUnicastResult {
@@ -124,6 +125,7 @@ export type RoomAppHostMessage =
         | "payload_too_large"
         | "delivery_unavailable"
         | "too_many_pending"
+        | "duplicate_request_id"
     }
 
 export type RoomAppClientMessage =
@@ -140,6 +142,7 @@ export type RoomAppClientMessage =
   | {
       type: "sendReliableTo"
       appInstanceId: string
+      requestId: string
       targetParticipantId: string
       payload: Record<string, unknown>
     }
@@ -245,12 +248,14 @@ export function decodeRoomAppClientMessage(
       handshakeToken: value.handshakeToken,
     }
   if (value.type === "sendReliableTo") {
+    if (!isValidRoomAppRequestId(value.requestId)) return null
     if (!isValidRoomAppParticipantId(value.targetParticipantId)) return null
     const payload = validateRoomAppPayload(value.payload)
     if (!payload.ok) return null
     return {
       type: "sendReliableTo",
       appInstanceId,
+      requestId: value.requestId,
       targetParticipantId: value.targetParticipantId,
       payload: payload.payload,
     }

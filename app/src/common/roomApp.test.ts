@@ -118,6 +118,7 @@ describe("Room App Phase 0 bridge contract", () => {
         {
           type: "sendReliableTo",
           appInstanceId: "shared-canvas:abc123",
+          requestId: "guess-1",
           targetParticipantId: "human-b",
           payload: { type: "private" },
         },
@@ -126,6 +127,7 @@ describe("Room App Phase 0 bridge contract", () => {
     ).toEqual({
       type: "sendReliableTo",
       appInstanceId: "shared-canvas:abc123",
+      requestId: "guess-1",
       targetParticipantId: "human-b",
       payload: { type: "private" },
     })
@@ -134,7 +136,20 @@ describe("Room App Phase 0 bridge contract", () => {
         {
           type: "sendReliableTo",
           appInstanceId: "shared-canvas:abc123",
+          requestId: "guess-1",
           targetParticipantId: "bad target",
+          payload: { type: "private" },
+        },
+        "shared-canvas:abc123"
+      )
+    ).toBeNull()
+    expect(
+      decodeRoomAppClientMessage(
+        {
+          type: "sendReliableTo",
+          appInstanceId: "shared-canvas:abc123",
+          requestId: "contains spaces",
+          targetParticipantId: "human-b",
           payload: { type: "private" },
         },
         "shared-canvas:abc123"

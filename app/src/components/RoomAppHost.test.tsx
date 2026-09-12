@@ -198,16 +198,30 @@ describe("RoomAppHost", () => {
       port.emit({
         type: "sendReliableTo",
         appInstanceId: "whiteboard:room",
+        requestId: "private_request_1",
         targetParticipantId: "human-b",
         payload: { type: "private", word: "otter" },
       })
+      port.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "private_request_1",
+        targetParticipantId: "human-b",
+        payload: { type: "private", word: "duplicate" },
+      })
     })
     expect(sendUnicast).toHaveBeenCalledWith(
-      expect.any(String),
+      "private_request_1",
       "human-b",
       "whiteboard:room",
       { type: "private", word: "otter" }
     )
+    expect(sendUnicast).toHaveBeenCalledTimes(1)
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "error",
+      appInstanceId: "whiteboard:room",
+      error: "duplicate_request_id",
+    })
   })
 
   it("forwards remote lanes and emits participant lifecycle changes", () => {
@@ -263,8 +277,16 @@ describe("RoomAppHost", () => {
       lastChannel!.port1.emit({
         type: "sendReliableTo",
         appInstanceId: "whiteboard:room",
+        requestId: "secret_for_bob",
         targetParticipantId: "human-b",
         payload: { type: "secret", word: "otter" },
+      })
+      lastChannel!.port1.emit({
+        type: "sendReliableTo",
+        appInstanceId: "whiteboard:room",
+        requestId: "secret_for_carol",
+        targetParticipantId: "human-c",
+        payload: { type: "secret", word: "fox" },
       })
       listener?.({
         protocolVersion: 1,
@@ -280,7 +302,20 @@ describe("RoomAppHost", () => {
         payload: { type: "secret", word: "otter" },
       })
     })
-    const requestId = sendUnicast.mock.calls[0][0]
+    expect(sendUnicast).toHaveBeenNthCalledWith(
+      1,
+      "secret_for_bob",
+      "human-b",
+      "whiteboard:room",
+      { type: "secret", word: "otter" }
+    )
+    expect(sendUnicast).toHaveBeenNthCalledWith(
+      2,
+      "secret_for_carol",
+      "human-c",
+      "whiteboard:room",
+      { type: "secret", word: "fox" }
+    )
     act(() => {
       resultListener?.({
         requestId: "another-request",
@@ -293,7 +328,13 @@ describe("RoomAppHost", () => {
     )
     act(() => {
       resultListener?.({
-        requestId,
+        requestId: "secret_for_carol",
+        appInstanceId: "whiteboard:room",
+        ok: false,
+        error: "target_unavailable",
+      })
+      resultListener?.({
+        requestId: "secret_for_bob",
         appInstanceId: "whiteboard:room",
         ok: true,
       })
@@ -312,7 +353,14 @@ describe("RoomAppHost", () => {
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
       type: "unicast_result",
-      requestId,
+      requestId: "secret_for_carol",
+      appInstanceId: "whiteboard:room",
+      ok: false,
+      error: "target_unavailable",
+    })
+    expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
+      type: "unicast_result",
+      requestId: "secret_for_bob",
       appInstanceId: "whiteboard:room",
       ok: true,
     })

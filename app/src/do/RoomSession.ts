@@ -5292,6 +5292,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.sendRoomAppUnicastResult(socket, message, false, "invalid_target")
       return
     }
+    if (message.targetParticipantId === sender.id) {
+      this.sendRoomAppUnicastResult(socket, message, false, "invalid_target")
+      return
+    }
     const payload = validateRoomAppPayload(message.payload)
     const requestBytes = serializedRoomAppBytes(message)
     if (
