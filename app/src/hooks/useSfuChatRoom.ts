@@ -445,6 +445,20 @@ async function createAgentVisionCopy(file: File): Promise<Blob> {
   }
 }
 
+/**
+ * #363 review (point 1): the composer's release edge for one Room file
+ * submission. `onReadiness` fires exactly once — after the Human DataChannel
+ * transfer has genuinely begun and, when a bounded Agent-readable copy applies
+ * to this file, after that bounded copy has been published. It receives an
+ * error instead when an applicable bounded copy could not be published, so the
+ * composer keeps its draft truthful rather than releasing text into an Agent
+ * context that is missing the attachment. The full 20 MB transfer is
+ * deliberately never awaited here.
+ */
+interface RoomFileSendHooks {
+  onReadiness?: (error?: unknown) => void
+}
+
 interface SfuSession extends SfuSessionResponse {
   room: string
 }
@@ -3771,8 +3785,50 @@ export function useSfuChatRoom(
     }
   }, [createRuntimeProviderClaim, roomName])
 
+  /** #363 review (point 1): a bounded Agent-readable copy applies to a
+   * supported image/text-like file while at least one Agent is connected. */
+  const agentReadableCopyApplies = useCallback((file: File): boolean => {
+    if (!sessionRef.current) return false
+    const hasConnectedAgent = [...participantMapRef.current.values()].some(
+      (participant) => participant.kind === "agent" && participant.connected
+    )
+    return hasConnectedAgent && (isAgentImage(file) || isAgentTextFile(file))
+  }, [])
+
+  /** #363 review (point 1): publish the bounded Agent-readable copy of one
+   * Human Room file. This resolves only once the Room has accepted it, which
+   * is what the composer's release edge waits for — never the whole 20 MB
+   * DataChannel transfer. */
+  const publishAgentReadableCopy = useCallback(
+    async (session: SfuSession, file: File): Promise<void> => {
+      let uploadType = file.type
+      let uploadBody: ArrayBuffer | Blob = file
+      if (isAgentImage(file)) {
+        const visionCopy = await createAgentVisionCopy(file)
+        uploadType = visionCopy.type || file.type
+        uploadBody = await visionCopy.arrayBuffer()
+      } else {
+        uploadType = agentTextMime(file) ?? file.type
+      }
+      const response = await fetch("/api/room/attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": uploadType,
+          "X-Room-Id": roomName,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+          "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
+        },
+        body: uploadBody,
+      })
+      if (!response.ok)
+        throw new Error("Couldn't publish the Agent-readable copy of this file")
+    },
+    [roomName]
+  )
+
   const sendFileMessage = useCallback(
-    async (file: File, onInitiated?: () => void) => {
+    async (file: File, hooks?: RoomFileSendHooks) => {
       // Allocate the transfer id before queueing so the queued wire messages
       // and the eventual local bubble share one stable identity.
       const id = crypto.randomUUID()
@@ -3797,11 +3853,22 @@ export function useSfuChatRoom(
             afterSequence,
           })
         )
-        // #363 A1: file-start is on the wire, so the local transfer has
-        // genuinely begun. A compose-first caller uses this edge to release
-        // the rest of one submission without inventing any transactional
-        // guarantee for remote peers.
-        onInitiated?.()
+        // #363 review (point 1): decide the bounded Agent-readable copy up
+        // front and publish it concurrently with the Human transfer, so the
+        // composer's release edge never waits for the whole 20 MB transfer. A
+        // file with no applicable bounded copy keeps today's plain initiation
+        // edge, and a failed applicable copy is reported truthfully instead of
+        // silently releasing the text.
+        const copyApplies = agentReadableCopyApplies(file)
+        const copySession = sessionRef.current
+        if (copyApplies && copySession) {
+          void publishAgentReadableCopy(copySession, file).then(
+            () => hooks?.onReadiness?.(),
+            (error: unknown) => hooks?.onReadiness?.(error)
+          )
+        } else {
+          hooks?.onReadiness?.()
+        }
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
           await waitForSendCapacity(channel)
           const chunk = await file
@@ -3823,42 +3890,14 @@ export function useSfuChatRoom(
           fileName: file.name,
           fileSize: file.size,
         })
-        const session = sessionRef.current
-        const hasConnectedAgent = [...participantMapRef.current.values()].some(
-          (participant) => participant.kind === "agent" && participant.connected
-        )
-        if (
-          session &&
-          hasConnectedAgent &&
-          (isAgentImage(file) || isAgentTextFile(file))
-        ) {
-          void (async () => {
-            try {
-              let uploadType = file.type
-              let uploadBody: ArrayBuffer | Blob = file
-              if (isAgentImage(file)) {
-                const visionCopy = await createAgentVisionCopy(file)
-                uploadType = visionCopy.type || file.type
-                uploadBody = await visionCopy.arrayBuffer()
-              } else {
-                uploadType = agentTextMime(file) ?? file.type
-              }
-              await fetch("/api/room/attachments", {
-                method: "POST",
-                headers: {
-                  "Content-Type": uploadType,
-                  "X-Room-Id": roomName,
-                  "X-Room-Participant-Id": session.participantId,
-                  "X-Room-Participant-Token": session.participantToken,
-                  "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
-                },
-                body: uploadBody,
-              })
-            } catch {
-              // Agent vision is secondary; human DataChannel delivery already succeeded.
-            }
-          })()
-        }
+        // Existing best-effort behaviour is preserved for the one case the
+        // release edge cannot cover: an Agent that only becomes connected while
+        // this transfer is already in flight still gets its bounded copy.
+        const lateSession = sessionRef.current
+        if (!copyApplies && lateSession && agentReadableCopyApplies(file))
+          void publishAgentReadableCopy(lateSession, file).catch(
+            () => undefined
+          )
       }
       const next = fileSendQueueRef.current.then(send, send)
       fileSendQueueRef.current = next.then(
@@ -3868,10 +3907,11 @@ export function useSfuChatRoom(
       return next
     },
     [
+      agentReadableCopyApplies,
       appendEphemeralMessage,
       latestObservedRoomSequence,
       nickName,
-      roomName,
+      publishAgentReadableCopy,
       waitForDataChannelOpen,
       waitForSendCapacity,
     ]
@@ -3889,15 +3929,22 @@ export function useSfuChatRoom(
       const session = sessionRef.current
       if (!session) throw new Error("Not connected to the room")
       if (file.size === 0) throw new Error("Empty files can't be attached")
-      if (file.size > MAX_AGENT_ATTACHMENT_BYTES)
-        throw new Error("Task attachments are limited to 768 KB")
       let uploadType = agentTextMime(file)
       let uploadBody: ArrayBuffer | Blob = file
       if (isAgentImage(file)) {
-        // Same bounded, Agent-readable image copy the ordinary Room path uses.
+        // #363 review (point 2): the Agent-readable 768 KB bound applies to the
+        // DERIVED uploaded copy, not to the source screenshot — the same
+        // resize/re-encode the ordinary Room path uses. A normal multi-MB
+        // screenshot therefore works here too.
         const visionCopy = await createAgentVisionCopy(file)
+        if (visionCopy.size > MAX_AGENT_ATTACHMENT_BYTES)
+          throw new Error("Task attachments are limited to 768 KB")
         uploadType = visionCopy.type || file.type
         uploadBody = await visionCopy.arrayBuffer()
+      } else if (file.size > MAX_AGENT_ATTACHMENT_BYTES) {
+        // A text-like source has no derived copy, so the raw Agent-readable
+        // bound still applies to it.
+        throw new Error("Task attachments are limited to 768 KB")
       }
       if (!uploadType)
         throw new Error("Only images and text files can be attached to a task")

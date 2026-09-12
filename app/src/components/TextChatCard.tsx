@@ -1605,11 +1605,12 @@ const TextChatCard = memo(function TextChatCard({
         : resolveAgentTargetIds(text, connectedAgents, selectedAgents)
 
     if (attachment) {
-      // The local file initiation is attempted first and awaited: a Human
-      // submission whose attachment could not even begin must never be
-      // completed as an obviously partial text-only send. Once the transfer
-      // has genuinely begun there is no transactional guarantee claimed for
-      // its remote peers.
+      // #363 review (point 1): the awaited promise is the submission
+      // readiness edge, not the whole file transfer — for a Room file it
+      // means the local transfer has begun and, when a bounded
+      // Agent-readable copy applies, that copy has been published. A
+      // submission whose attachment context never reached that edge must
+      // never be completed as an obviously partial text-only send.
       sendingRef.current = true
       setSendingDraft(true)
       setDraftAttachmentError("")

@@ -161,9 +161,11 @@ describe("Room composer attachment transfer (#363 A1)", () => {
   it("sends a Room file only on Send, through the existing DataChannel path", async () => {
     let release: (() => void) | undefined
     const sendFileMessage = vi.fn(
-      (_file: File, onInitiated?: () => void) =>
+      (_file: File, hooks?: { onReadiness?: (error?: unknown) => void }) =>
         new Promise<void>((resolve) => {
-          onInitiated?.()
+          // #363 review (point 1): a file with no applicable bounded
+          // Agent-readable copy keeps today's initiation release edge.
+          hooks?.onReadiness?.()
           release = resolve
         })
     )
@@ -180,14 +182,93 @@ describe("Room composer attachment transfer (#363 A1)", () => {
 
     await waitFor(() => expect(sendFileMessage).toHaveBeenCalledTimes(1))
     expect(sendFileMessage.mock.calls[0][0]).toBe(file)
-    expect(typeof sendFileMessage.mock.calls[0][1]).toBe("function")
-    // The composer releases the draft as soon as the local transfer begins.
+    expect(
+      typeof (sendFileMessage.mock.calls[0][1] as { onReadiness?: unknown })
+        ?.onReadiness
+    ).toBe("function")
+    // The composer releases the draft as soon as the readiness edge fires —
+    // the whole DataChannel transfer is still pending here.
     await waitFor(() =>
       expect(screen.queryByTestId("composer-attachment")).toBeNull()
     )
     await act(async () => {
       release?.()
     })
+  })
+
+  it("withholds the text half until the readiness edge fires", async () => {
+    let releaseReadiness: (() => void) | undefined
+    const sendFileMessage = vi.fn(
+      (_file: File, hooks?: { onReadiness?: (error?: unknown) => void }) =>
+        new Promise<void>(() => {
+          // The Human transfer never settles in this test; only the bounded
+          // Agent-readable copy readiness edge releases the text.
+          releaseReadiness = () => hooks?.onReadiness?.()
+        })
+    )
+    const sendTextMessage = vi.fn()
+    const { container } = renderRoom({ sendFileMessage, sendTextMessage })
+    const composer = screen.getByLabelText(
+      "Message the room or @ an Agent"
+    ) as HTMLTextAreaElement
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set
+    setter!.call(composer, "@Agent B please inspect this screenshot")
+    composer.dispatchEvent(new Event("input", { bubbles: true }))
+
+    pickFile(container, fileFixture("screenshot.png", "image/png"))
+    fireEvent.click(screen.getByLabelText("Send message"))
+
+    await waitFor(() => expect(sendFileMessage).toHaveBeenCalledTimes(1))
+    // The file transfer has begun but the bounded copy is not published yet,
+    // so the @Agent instruction is deliberately not released.
+    expect(sendTextMessage).not.toHaveBeenCalled()
+    expect(composer.value).toBe("@Agent B please inspect this screenshot")
+
+    await act(async () => {
+      releaseReadiness?.()
+    })
+    await waitFor(() => expect(sendTextMessage).toHaveBeenCalledTimes(1))
+    expect(sendTextMessage.mock.calls[0][0]).toContain(
+      "inspect this screenshot"
+    )
+    expect(composer.value).toBe("")
+  })
+
+  it("keeps a truthful draft when the bounded Agent-readable copy fails", async () => {
+    const sendFileMessage = vi.fn(
+      (_file: File, hooks?: { onReadiness?: (error?: unknown) => void }) => {
+        hooks?.onReadiness?.(
+          new Error("Couldn't publish the Agent-readable copy of this file")
+        )
+        return Promise.resolve()
+      }
+    )
+    const sendTextMessage = vi.fn()
+    const { container } = renderRoom({ sendFileMessage, sendTextMessage })
+    const composer = screen.getByLabelText(
+      "Message the room or @ an Agent"
+    ) as HTMLTextAreaElement
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set
+    setter!.call(composer, "@Agent B please inspect this screenshot")
+    composer.dispatchEvent(new Event("input", { bubbles: true }))
+
+    pickFile(container, fileFixture("screenshot.png", "image/png"))
+    fireEvent.click(screen.getByLabelText("Send message"))
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("Agent-readable copy")
+    )
+    // The draft and its error stay visible, and no partial text-only
+    // submission is released as if the Agent context were complete.
+    expect(screen.getByTestId("composer-attachment")).toBeInTheDocument()
+    expect(composer.value).toBe("@Agent B please inspect this screenshot")
+    expect(sendTextMessage).not.toHaveBeenCalled()
   })
 
   it("keeps the draft and reports the 20 MB bound without starting a transfer", async () => {

@@ -146,8 +146,47 @@ function makeRoom() {
     )
     return { status: response.status, json: await response.json() }
   }
+  const agentWait = async (
+    participantId: string,
+    cursor = 0,
+    timeoutSeconds = 0
+  ) =>
+    (
+      await control({
+        action: "agent-wait",
+        participantId,
+        token: `tok-${participantId}`,
+        cursor,
+        timeoutSeconds,
+      })
+    ).json as { events: AgentEventProjection[] }
+  const readContext = async (participantId: string) =>
+    (
+      await control({
+        action: "agent-read-context",
+        participantId,
+        token: `tok-${participantId}`,
+        afterSequence: 0,
+      })
+    ).json as { events: AgentEventProjection[] }
   const room = () => store.get("room") as RoomRecord
-  return { session, upload, control, room, broadcasts, store }
+  return {
+    session,
+    upload,
+    control,
+    agentWait,
+    readContext,
+    room,
+    broadcasts,
+    store,
+  }
+}
+
+type AgentEventProjection = {
+  type?: string
+  addressed?: boolean
+  scopeId?: string
+  attachment?: { id: string; taskRequestId?: string }
 }
 
 async function readAttachment(
@@ -329,5 +368,114 @@ describe("Human Task attachments (#363 A2)", () => {
     expect(await response.json()).toMatchObject({
       error: "unsupported_attachment_type",
     })
+  })
+})
+
+/**
+ * #363 review (point 3): a Human attachment correlated with an ACTIVE Task is
+ * new Task input. It must address the canonical participating Task Agent(s)
+ * so an idle Harness actually runs, stay inside its own Task scope, never
+ * leak to Room scope, and fail closed for an unknown/expired Task.
+ */
+describe("Human Task attachment Agent addressing (#363 review point 3)", () => {
+  async function uploadTaskAttachment(test: ReturnType<typeof makeRoom>) {
+    const response = await test.upload(
+      { id: "human-1", token: "tok-human" },
+      "task context",
+      { taskRequestId: "task-1" }
+    )
+    const payload = (await response.json()) as { attachment: { id: string } }
+    return { response, attachmentId: payload.attachment.id }
+  }
+
+  function attachmentEvent(
+    events: AgentEventProjection[],
+    attachmentId: string
+  ) {
+    return events.find((event) => event.attachment?.id === attachmentId)
+  }
+
+  it("addresses the canonical participating Task Agent", async () => {
+    const test = makeRoom()
+    const { response, attachmentId } = await uploadTaskAttachment(test)
+    expect(response.status).toBe(200)
+
+    const { events } = await test.agentWait("agent-a", 0)
+    expect(attachmentEvent(events, attachmentId)).toMatchObject({
+      type: "image",
+      addressed: true,
+      scopeId: "task:task-1",
+      attachment: { id: attachmentId, taskRequestId: "task-1" },
+    })
+  })
+
+  it("wakes a parked Harness long poll with the addressed Task attachment", async () => {
+    const test = makeRoom()
+    // Park the long poll beyond the current canonical sequence so it really
+    // waits, exactly like an idle resident Harness.
+    const parked = test.agentWait(
+      "agent-a",
+      test.room().nextMessageSequence,
+      25
+    )
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const { attachmentId } = await uploadTaskAttachment(test)
+
+    const { events } = await parked
+    expect(attachmentEvent(events, attachmentId)).toMatchObject({
+      addressed: true,
+      scopeId: "task:task-1",
+    })
+  })
+
+  it("never exposes or addresses the Task attachment to a non-participating Agent", async () => {
+    const test = makeRoom()
+    const { attachmentId } = await uploadTaskAttachment(test)
+
+    const { events } = await test.agentWait("agent-b", 0)
+    expect(attachmentEvent(events, attachmentId)).toBeUndefined()
+  })
+
+  it("keeps an ordinary Room-scope Human attachment unaddressed", async () => {
+    const test = makeRoom()
+    const response = await test.upload(
+      { id: "human-1", token: "tok-human" },
+      "room copy"
+    )
+    const payload = (await response.json()) as { attachment: { id: string } }
+
+    const { events } = await test.agentWait("agent-a", 0)
+    const event = attachmentEvent(events, payload.attachment.id)
+    expect(event).toMatchObject({ addressed: false })
+    expect(event?.scopeId).toBeUndefined()
+  })
+
+  it("keeps an Agent-authored Task attachment unaddressed", async () => {
+    const test = makeRoom()
+    const response = await test.upload(
+      { id: "agent-a", token: "tok-agent-a" },
+      "agent artifact",
+      { taskRequestId: "task-1" }
+    )
+    const payload = (await response.json()) as { attachment: { id: string } }
+
+    const { events } = await test.readContext("agent-a")
+    expect(attachmentEvent(events, payload.attachment.id)).toMatchObject({
+      addressed: false,
+      scopeId: "task:task-1",
+    })
+  })
+
+  it("produces no addressed event for a rejected Task correlation", async () => {
+    const test = makeRoom()
+    const response = await test.upload(
+      { id: "human-1", token: "tok-human" },
+      "task context",
+      { taskRequestId: "task-missing" }
+    )
+    expect(response.status).toBe(409)
+
+    const { events } = await test.agentWait("agent-a", 0)
+    expect(events.some((event) => event.attachment !== undefined)).toBe(false)
   })
 })

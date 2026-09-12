@@ -2027,7 +2027,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private toAttachmentEvent(
     attachment: RoomAttachment,
     participantId: string,
-    taskProjection: TaskProjectionIndex
+    taskProjection: TaskProjectionIndex,
+    participants: Record<string, RoomParticipant>
   ): AgentEvent | undefined {
     if (
       attachment.taskRequestId !== undefined &&
@@ -2038,6 +2039,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
     )
       return undefined
+    // #363 review (point 3): a Human attachment correlated with an ACTIVE
+    // Task is new Task input, so it addresses the canonical participating
+    // Task Agent(s) and wakes an idle Harness exactly like Task text does.
+    // The correlation is resolved from the retained canonical Task log and
+    // fails closed; an Agent-authored Task artifact and every ordinary
+    // Room-scope attachment stay unaddressed.
+    const taskResolution =
+      attachment.taskRequestId !== undefined &&
+      attachment.senderKind === "human"
+        ? resolveTaskRequest(
+            taskProjection,
+            attachment.taskRequestId,
+            participants
+          )
+        : undefined
+    const addressed =
+      taskResolution?.ok === true &&
+      taskResolution.agentParticipantIds.includes(participantId)
     return {
       sequence: attachment.sequence,
       type: "image",
@@ -2058,7 +2077,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           ? { taskRequestId: attachment.taskRequestId }
           : {}),
       },
-      addressed: false,
+      addressed,
       createdAt: attachment.createdAt,
     }
   }
@@ -2098,7 +2117,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         const event = this.toAttachmentEvent(
           attachment,
           participantId,
-          taskProjection
+          taskProjection,
+          room.participants
         )
         // Keep an invisible attachment as a sequence placeholder. The
         // cursor coverage calculation runs over the shared Room sequence
@@ -2158,7 +2178,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         .filter((event): event is AgentEvent => event !== undefined),
       ...room.attachments
         .map((attachment) =>
-          this.toAttachmentEvent(attachment, participantId, taskProjection)
+          this.toAttachmentEvent(
+            attachment,
+            participantId,
+            taskProjection,
+            room.participants
+          )
         )
         .filter((event): event is AgentEvent => event !== undefined),
     ].sort((left, right) => left.sequence - right.sequence)

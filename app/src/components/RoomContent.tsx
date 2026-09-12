@@ -557,10 +557,13 @@ export default function RoomContent({
     [roomName, sendTextMessage]
   )
 
-  // #363 A1: compose-first Room attachment. The composer awaits this promise
-  // only until the local DataChannel transfer has genuinely begun (or failed
-  // before it could begin); the existing ephemeral "Sending…" timeline bubble
-  // keeps tracking the rest of the transfer exactly as before.
+  // #363 review (point 1): the composer awaits this promise only until the
+  // submission is ready to be released — the local DataChannel transfer has
+  // genuinely begun and, when a bounded Agent-readable copy applies, that
+  // bounded copy has been published. The full 20 MB transfer is never awaited;
+  // the existing ephemeral "Sending…" timeline bubble keeps tracking it
+  // exactly as before. A failed applicable copy rejects this promise so the
+  // composer keeps a truthful draft instead of releasing the text.
   const wrappedSendFile = useCallback(
     async (file: File): Promise<void> => {
       const id = `${Date.now()}-${file.name}`
@@ -570,20 +573,25 @@ export default function RoomContent({
         type: file.type.startsWith("image/") ? "image" : "file",
         roomHash: hashRoom(roomName),
       })
-      let markInitiated: (() => void) | undefined
+      let markReady: (() => void) | undefined
       let markFailed: ((error: unknown) => void) | undefined
-      const initiated = new Promise<void>((resolve, reject) => {
-        markInitiated = resolve
+      const readiness = new Promise<void>((resolve, reject) => {
+        markReady = resolve
         markFailed = reject
       })
       // The composer owns the pre-Send draft; this derived promise is not
       // always awaited by its caller, so keep the rejection handled.
-      void initiated.catch(() => undefined)
+      void readiness.catch(() => undefined)
       setPendingFiles((prev) => [
         ...prev,
         { id, fileName: file.name, isImage: file.type.startsWith("image/") },
       ])
-      void sendFileMessage(file, () => markInitiated?.())
+      void sendFileMessage(file, {
+        onReadiness: (error) => {
+          if (error === undefined) markReady?.()
+          else markFailed?.(error)
+        },
+      })
         .then(() => {
           setPendingFiles((prev) => prev.filter((f) => f.id !== id))
         })
@@ -601,7 +609,7 @@ export default function RoomContent({
             3000
           )
         })
-      return initiated
+      return readiness
     },
     [roomName, sendFileMessage]
   )
