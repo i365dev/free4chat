@@ -378,7 +378,19 @@ export default function Home() {
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
                 {"// explore_free4chat"}
               </p>
-              <div className="mt-4 grid gap-6 font-mono sm:grid-cols-3">
+              <div className="mt-4 grid gap-6 font-mono sm:grid-cols-2">
+                <div>
+                  <Link
+                    href="/apps"
+                    className="text-sm text-emerald-300 transition hover:text-white"
+                  >
+                    Room Apps →
+                  </Link>
+                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
+                    Open shared tools and lightweight activities inside a
+                    temporary Room.
+                  </p>
+                </div>
                 <div>
                   <Link
                     href="/temporary-chat-room"

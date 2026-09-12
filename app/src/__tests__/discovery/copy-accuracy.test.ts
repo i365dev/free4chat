@@ -75,13 +75,17 @@ describe("/apps/whiteboard copy accuracy", () => {
   const source = read("src/pages/apps/whiteboard.tsx")
 
   it("states the V1 collaboration, mobile, and temporary-state boundaries", () => {
-    expect(source).toMatch(/Excalidraw-powered drawing and editing/)
-    expect(source).toMatch(/without an account or sign-up/)
-    expect(source).toMatch(/voice, text, and file sharing/)
+    expect(source).toMatch(/free online whiteboard powered by Excalidraw/)
+    expect(source).toMatch(/No account or login is required/)
+    expect(source).toMatch(/voice, text, and\s+file sharing/)
     expect(source).toMatch(/touch input/)
-    expect(source).toMatch(/does not\s+save a permanent board/)
-    expect(source).toMatch(/replica disappears or reloads/)
-    expect(source).toMatch(/Image and file import is not supported/)
+    expect(source).toMatch(/does not save a permanent board/)
+    expect(source).toMatch(/every replica disappears\s+or reloads/)
+    expect(source).toMatch(
+      /Image and file import into the board is\s+not supported/
+    )
+    expect(source).toMatch(/New board/)
+    expect(source).toMatch(/Whiteboard FAQ/)
     expect(source).not.toMatch(/Agent/)
   })
 })

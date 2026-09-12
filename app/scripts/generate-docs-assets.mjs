@@ -28,6 +28,7 @@ const PUBLIC_DIR = join(appRoot, "public")
 /** Sitemap URLs that exist independently of the docs library, in order. */
 const BASE_SITEMAP_PATHS = [
   "/",
+  "/apps",
   "/apps/whiteboard",
   "/temporary-chat-room",
   "/ai-agent-room",
