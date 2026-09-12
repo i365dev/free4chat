@@ -1379,7 +1379,22 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       const iframe = slotIframe("shared-canvas")
       loadAppIframe(iframe)
       const host = slotHost("shared-canvas")
+      const port = channels[0].port1
+      const chatPanel = screen
+        .getByTestId("interaction-chat")
+        .closest(".room-chat-panel")
+      const composer = screen.getByPlaceholderText(
+        "Message the room or @ an Agent…"
+      )
+      const stage = screen.getByTestId("room-stage")
+      const roomShell = screen.getByRole("main")
+      const roomHeader = screen
+        .getByTestId("room-header-identity")
+        .closest("header")
       expect(host).toHaveAttribute("data-layout", "stage")
+      expect(chatPanel).toBeVisible()
+      expect(composer).toBeVisible()
+      expect(stage).toHaveStyle({ width: "75%" })
       expect(
         within(host).getByRole("button", { name: "Fullscreen" })
       ).toHaveAttribute("aria-pressed", "false")
@@ -1387,22 +1402,44 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
 
       expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+      expect(roomShell).toHaveAttribute("data-room-app-focus", "true")
       expect(host).toHaveClass("room-app-host--fullscreen")
       expect(
         within(host).getByRole("button", { name: "Exit fullscreen" })
       ).toHaveAttribute("aria-pressed", "true")
+      expect(roomHeader).not.toBeVisible()
+      expect(roomHeader).toHaveAttribute("aria-hidden", "true")
+      expect(roomHeader).toHaveAttribute("inert")
+      expect(screen.getByTestId("stage-switcher")).not.toBeVisible()
+      expect(screen.getByTestId("stage-switcher")).toHaveAttribute("inert")
+      expect(chatPanel).not.toBeVisible()
+      expect(chatPanel).toHaveAttribute("aria-hidden", "true")
+      expect(chatPanel).toHaveAttribute("inert")
+      expect(composer).not.toBeVisible()
+      expect(composer.closest("[inert]")).toBe(chatPanel)
       expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels[0].port1).toBe(port)
       expect(channels).toHaveLength(1)
-      expect(channels[0].port1.close).not.toHaveBeenCalled()
+      expect(port.close).not.toHaveBeenCalled()
 
       fireEvent.click(
         within(host).getByRole("button", { name: "Exit fullscreen" })
       )
 
       expect(host).toHaveAttribute("data-layout", "stage")
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+      expect(roomShell).not.toHaveAttribute("data-room-app-focus")
+      expect(roomHeader).toBeVisible()
+      expect(roomHeader).not.toHaveAttribute("inert")
+      expect(chatPanel).toBeVisible()
+      expect(chatPanel).not.toHaveAttribute("inert")
+      expect(composer).toBeVisible()
+      expect(stage).toHaveStyle({ width: "75%" })
       expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels[0].port1).toBe(port)
       expect(channels).toHaveLength(1)
-      expect(channels[0].port1.close).not.toHaveBeenCalled()
+      expect(port.close).not.toHaveBeenCalled()
     })
 
     it("exits focus mode with Escape or Close while keeping the App resident", async () => {
@@ -1420,6 +1457,12 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       fireEvent.click(within(host).getByRole("button", { name: "Close" }))
       expect(host).toHaveAttribute("data-layout", "stage")
       expect(slotHidden("shared-canvas")).toBe(true)
+      expect(
+        screen.getByTestId("interaction-chat").closest(".room-chat-panel")
+      ).toBeVisible()
+      expect(
+        screen.getByPlaceholderText("Message the room or @ an Agent…")
+      ).toBeVisible()
       expect(slotIframe("shared-canvas")).toBe(iframe)
       expect(channels).toHaveLength(1)
       expect(channels[0].port1.close).not.toHaveBeenCalled()
@@ -1461,6 +1504,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       loadAppIframe(iframe)
       const host = slotHost("shared-canvas")
       fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+      const port = channels[0].port1
 
       mockUseSfuChatRoom.mockReturnValue({
         ...baseHookReturn,
@@ -1472,8 +1516,17 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
       )
       expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+      expect(screen.getByRole("main")).toHaveAttribute(
+        "data-room-app-focus",
+        "true"
+      )
       expect(slotHidden("shared-canvas")).toBe(false)
+      expect(
+        screen.getByTestId("interaction-chat").closest(".room-chat-panel")
+      ).not.toBeVisible()
       expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels[0].port1).toBe(port)
 
       mockUseSfuChatRoom.mockReturnValue({
         ...baseHookReturn,
@@ -1485,7 +1538,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
       )
       expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+      expect(screen.getByRole("main")).toHaveAttribute(
+        "data-room-app-focus",
+        "true"
+      )
+      expect(
+        screen.getByTestId("interaction-chat").closest(".room-chat-panel")
+      ).not.toBeVisible()
       expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels[0].port1).toBe(port)
       expect(channels).toHaveLength(1)
       expect(channels[0].port1.close).not.toHaveBeenCalled()
     })
