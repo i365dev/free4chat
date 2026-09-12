@@ -1549,7 +1549,51 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(visible).not.toHaveAttribute("inert")
     })
 
-    it("tears resident hosts down when the catalog removes them", async () => {
+    it("keeps resident hosts across an ordinary transport reconnect", async () => {
+      const view = renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+      expect(channels).toHaveLength(1)
+
+      // Ordinary SFU/media reconnect: useSfuChatRoom drops the exposed flag
+      // while it rebuilds the App DataChannels. That is not a catalog removal.
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "reconnecting",
+        roomAppsEnabled: false,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+
+      // The App is hidden while the transport is unavailable, but its host and
+      // MessagePort stay resident.
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+
+      // Reconnect succeeds: same host, same Stage selection.
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+
+      expect(slotHidden("shared-canvas")).toBe(false)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+    })
+
+    it("tears resident hosts down on a stable disable, closing each port once", async () => {
       const view = renderAppRoom()
 
       fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
@@ -1558,7 +1602,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       loadAppIframe(slotIframe("tiny-arena"))
       expect(channels).toHaveLength(2)
 
-      // ROOM_APPS_ENABLED off / catalog entry gone.
+      // ROOM_APPS_ENABLED off while the Room stays connected: a real disable,
+      // not a reconnect.
       mockUseSfuChatRoom.mockReturnValue({
         ...baseHookReturn,
         connectionStatus: "connected",

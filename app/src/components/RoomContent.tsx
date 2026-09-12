@@ -213,18 +213,20 @@ export default function RoomContent({
   )
   const effectiveLocalParticipantId =
     localParticipantId ?? getLocalRoomAuth()?.participantId
-  const roomApps = useMemo(
+  // The validated curated catalog is stable while the Room content is mounted.
+  // `roomAppsEnabled` is not a pure catalog/kill-switch signal: it also drops
+  // while an ordinary SFU/media reconnect rebuilds the App DataChannels, and
+  // that transient false must never be mistaken for a catalog removal.
+  const curatedRoomApps = useMemo(
     () =>
-      roomAppsEnabled
-        ? experimentalRoomAppCatalog()
-            .filter(
-              (app) =>
-                validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
-            )
-            .slice(0, ROOM_APP_MAX_INSTANCES)
-        : [],
-    [roomAppsEnabled]
+      experimentalRoomAppCatalog()
+        .filter(
+          (app) => validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+        )
+        .slice(0, ROOM_APP_MAX_INSTANCES),
+    []
   )
+  const roomApps = roomAppsEnabled ? curatedRoomApps : []
   // Conversation scope and visual Stage are independent selections: an active
   // Room App lives on the Stage and never replaces the Room/Task conversation.
   const activeRoomApp = roomApps.find((app) => activeRoomAppId === app.id)
@@ -244,13 +246,15 @@ export default function RoomContent({
   // Hosts are mounted on first launch and then stay resident for this browser's
   // Room session: Stage navigation only changes which one is visible, so an App
   // never loses its iframe/MessagePort/App-local state to visual navigation.
+  // Resident resolution uses the stable curated catalog, not the transient
+  // transport-readiness flag.
   const residentRoomApps = useMemo(
     () =>
       launchedRoomAppIds.flatMap((id) => {
-        const app = roomApps.find((candidate) => candidate.id === id)
+        const app = curatedRoomApps.find((candidate) => candidate.id === id)
         return app ? [app] : []
       }),
-    [launchedRoomAppIds, roomApps]
+    [curatedRoomApps, launchedRoomAppIds]
   )
   const visibleRoomApp =
     activeRoomApp && roomAppSelf ? activeRoomApp : undefined
@@ -356,20 +360,22 @@ export default function RoomContent({
   }, [activeInteraction, taskProjections])
 
   useEffect(() => {
-    // Only catalog availability controls a resident App host; changing the
-    // conversation scope, the Stage view, or hiding an App must not tear down
-    // its iframe/MessagePort. Losing the catalog entry (including
-    // ROOM_APPS_ENABLED turning off) does, and is the one host teardown path
-    // besides unmounting the Room itself.
-    if (activeRoomAppId && !roomApps.some((app) => app.id === activeRoomAppId))
-      setActiveRoomAppId(null)
+    // Resident hosts survive presentation changes and ordinary transport
+    // reconnects; they are torn down only when Room Apps are stably unavailable
+    // (the Room is connected/failed and the flag is still off, which covers
+    // ROOM_APPS_ENABLED being turned off) or when the curated catalog truly no
+    // longer offers the entry. Unmounting the Room closes them as well.
+    const stablyUnavailable =
+      !roomAppsEnabled &&
+      (connectionStatus === "connected" || connectionStatus === "failed")
+    const hostIsGone = (id: string) =>
+      stablyUnavailable || !curatedRoomApps.some((app) => app.id === id)
+    if (activeRoomAppId && hostIsGone(activeRoomAppId)) setActiveRoomAppId(null)
     setLaunchedRoomAppIds((previous) => {
-      const next = previous.filter((id) =>
-        roomApps.some((app) => app.id === id)
-      )
+      const next = previous.filter((id) => !hostIsGone(id))
       return next.length === previous.length ? previous : next
     })
-  }, [activeRoomAppId, roomApps])
+  }, [activeRoomAppId, connectionStatus, curatedRoomApps, roomAppsEnabled])
 
   const launchRoomApp = useCallback((appId: string) => {
     setLaunchedRoomAppIds((previous) =>
