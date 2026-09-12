@@ -27,4 +27,13 @@ describe("Room page", () => {
     expect(source).toMatch(/setNickName\(generateParticipantName\(\)\)/)
     expect(source).toMatch(/setNickName\(room\.nickName\)/)
   })
+
+  it("passes only a curated production App id from the app query to RoomContent", () => {
+    const source = readFileSync(
+      join(process.cwd(), "src/pages/room.tsx"),
+      "utf-8"
+    )
+    expect(source).toContain("resolveProductionRoomAppId(router.query.app)")
+    expect(source).toContain("initialRoomAppId={initialRoomAppId ?? undefined}")
+  })
 })

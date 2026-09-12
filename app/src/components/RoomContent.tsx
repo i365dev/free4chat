@@ -17,6 +17,7 @@ import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   experimentalRoomAppCatalog,
   isRoomAppAllowlisted,
+  resolveProductionRoomAppId,
   ROOM_APP_MAX_INSTANCES,
   projectRoomAppParticipants,
   roomAppInstanceId,
@@ -114,10 +115,12 @@ export default function RoomContent({
   roomName,
   nickName,
   roomType,
+  initialRoomAppId,
 }: {
   roomName: string
   nickName: string
   roomType: "audio" | "screenshare"
+  initialRoomAppId?: string
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
@@ -129,6 +132,9 @@ export default function RoomContent({
   const [activeRoomAppId, setActiveRoomAppId] = useState<string | null>(null)
   // Browser-local resident App sessions, bounded by the curated catalog size.
   const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
+  const [readyRoomAppIds, setReadyRoomAppIds] = useState<string[]>([])
+  const initialRoomAppLaunchAttemptedRef = useRef(false)
+  const whiteboardSharedSessionTrackedRef = useRef(false)
   const [stageView, setStageView] = useState<"screen" | "live-view">("screen")
   const taskLiveViewState = useRef(new Map())
   const observedLiveViewKeys = useRef(new Set<string>())
@@ -256,6 +262,13 @@ export default function RoomContent({
       }),
     [curatedRoomApps, launchedRoomAppIds]
   )
+  const humanParticipantCount = roomAppParticipants.filter(
+    (participant) => participant.kind === "human"
+  ).length
+  const whiteboardResident = residentRoomApps.some(
+    (app) => app.id === "whiteboard"
+  )
+  const whiteboardReady = readyRoomAppIds.includes("whiteboard")
   const visibleRoomApp =
     activeRoomApp && roomAppSelf ? activeRoomApp : undefined
   const activeTask = taskProjections.find(
@@ -384,6 +397,49 @@ export default function RoomContent({
         : [...previous, appId].slice(-ROOM_APP_MAX_INSTANCES)
     )
   }, [])
+
+  useEffect(() => {
+    setReadyRoomAppIds((previous) => {
+      const next = previous.filter((id) => launchedRoomAppIds.includes(id))
+      return next.length === previous.length ? previous : next
+    })
+  }, [launchedRoomAppIds])
+
+  useEffect(() => {
+    if (
+      initialRoomAppLaunchAttemptedRef.current ||
+      !initialRoomAppId ||
+      !roomAppsEnabled
+    )
+      return
+    initialRoomAppLaunchAttemptedRef.current = true
+    if (!curatedRoomApps.some((app) => app.id === initialRoomAppId)) return
+    launchRoomApp(initialRoomAppId)
+    setActiveRoomAppId(initialRoomAppId)
+  }, [curatedRoomApps, initialRoomAppId, launchRoomApp, roomAppsEnabled])
+
+  const handleRoomAppReady = useCallback((appId: string) => {
+    setReadyRoomAppIds((previous) =>
+      previous.includes(appId) ? previous : [...previous, appId]
+    )
+    if (appId === "whiteboard")
+      trackAnalyticsEvent("RoomAppMounted", { app: "whiteboard" })
+  }, [])
+
+  useEffect(() => {
+    if (
+      whiteboardSharedSessionTrackedRef.current ||
+      !whiteboardResident ||
+      !whiteboardReady ||
+      humanParticipantCount < 2
+    )
+      return
+    whiteboardSharedSessionTrackedRef.current = true
+    trackAnalyticsEvent("RoomAppSharedSession", {
+      app: "whiteboard",
+      participantsBucket: participantsBucket(humanParticipantCount),
+    })
+  }, [humanParticipantCount, whiteboardReady, whiteboardResident])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -717,11 +773,13 @@ export default function RoomContent({
 
   const copyRoomLink = () => {
     if (typeof window !== "undefined") {
+      const productionAppId = resolveProductionRoomAppId(activeRoomAppId)
       const url =
         window.location.origin +
         "/room?id=" +
         encodeURIComponent(roomName) +
-        (resolvedRoomType === "screenshare" ? "&type=screenshare" : "")
+        (resolvedRoomType === "screenshare" ? "&type=screenshare" : "") +
+        (productionAppId ? `&app=${encodeURIComponent(productionAppId)}` : "")
       navigator.clipboard.writeText(url)
       trackAnalyticsEvent("InviteLinkCopied", {
         surface: "room",
@@ -1063,6 +1121,7 @@ export default function RoomContent({
                       participants={roomAppParticipants}
                       subscribe={subscribeRoomAppMessages}
                       send={sendRoomAppMessage}
+                      onReady={handleRoomAppReady}
                       onClose={() => setActiveRoomAppId(null)}
                     />
                   </div>

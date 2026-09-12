@@ -5,6 +5,7 @@ import Head from "next/head"
 import { useRouter } from "next/router"
 
 import { generateParticipantName } from "../common/cosmicNames"
+import { resolveProductionRoomAppId } from "../common/roomApp"
 import {
   saveRoomToLocalStorage,
   gtagEvent,
@@ -20,6 +21,7 @@ export default function Room() {
   const router = useRouter()
   const roomId = router.query.id as string
   const roomTypeParam = router.query.type as string | undefined
+  const initialRoomAppId = resolveProductionRoomAppId(router.query.app)
   const [roomName, setRoomName] = useState<string>("")
   const [nickName, setNickName] = useState<string>("")
   const [roomType, setRoomType] = useState<"audio" | "screenshare">("audio")
@@ -150,6 +152,7 @@ export default function Room() {
           roomName={roomName}
           nickName={nickName}
           roomType={roomType}
+          initialRoomAppId={initialRoomAppId ?? undefined}
         />
       )}
     </div>

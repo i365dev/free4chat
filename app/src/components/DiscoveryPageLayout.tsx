@@ -24,6 +24,11 @@ export interface DiscoveryPageLayoutProps {
     /** Small, static destination bucket — never a URL or user-provided value. */
     analyticsTarget: "mcp-docs" | "bring-agent" | "github"
   }
+  /** Optional action CTA for a page that creates a Room before navigation. */
+  primaryCta?: {
+    label: string
+    onClick: () => void
+  }
 }
 
 export default function DiscoveryPageLayout({
@@ -34,7 +39,10 @@ export default function DiscoveryPageLayout({
   h1,
   children,
   secondaryCta,
+  primaryCta,
 }: DiscoveryPageLayoutProps) {
+  const primaryCtaClassName =
+    "group flex items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300"
   return (
     <div className="flex min-h-screen flex-col font-mono text-emerald-100">
       <SeoHead title={title} description={description} path={path} />
@@ -53,15 +61,28 @@ export default function DiscoveryPageLayout({
             {children}
           </div>
           <div className="mt-10 flex flex-wrap items-center gap-4">
-            <Link
-              href="/"
-              onClick={() =>
-                trackAnalyticsEvent("DiscoveryCtaClicked", { page: ctaId })
-              }
-              className="group flex items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300"
-            >
-              Open a room
-            </Link>
+            {primaryCta ? (
+              <button
+                type="button"
+                onClick={() => {
+                  trackAnalyticsEvent("DiscoveryCtaClicked", { page: ctaId })
+                  primaryCta.onClick()
+                }}
+                className={primaryCtaClassName}
+              >
+                {primaryCta.label}
+              </button>
+            ) : (
+              <Link
+                href="/"
+                onClick={() =>
+                  trackAnalyticsEvent("DiscoveryCtaClicked", { page: ctaId })
+                }
+                className={primaryCtaClassName}
+              >
+                Open a room
+              </Link>
+            )}
             {secondaryCta && (
               <Link
                 href={secondaryCta.href}

@@ -1212,9 +1212,66 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     const slotHost = (appId: string) =>
       within(slot(appId)).getByTestId("room-app-host")
 
+    it("includes the curated production App id in copied Whiteboard Room links", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="whiteboard"
+        />
+      )
+
+      await waitFor(() =>
+        expect(screen.getByTestId("stage-app-whiteboard")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+
+      expect(writeText).toHaveBeenCalledWith(
+        `${window.location.origin}/room?id=test-room&app=whiteboard`
+      )
+    })
+
+    it("keeps copied ordinary Room links unchanged", () => {
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+
+      expect(writeText).toHaveBeenCalledWith(
+        `${window.location.origin}/room?id=test-room`
+      )
+    })
+
     beforeEach(() => {
       channels = []
       vi.stubGlobal("MessageChannel", TestMessageChannel)
+      vi.stubEnv("NODE_ENV", "development")
+    })
+
+    afterEach(() => {
+      vi.unstubAllEnvs()
     })
 
     it("mounts a first launch on the visual Stage while the Room conversation stays", async () => {
@@ -1636,6 +1693,128 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
       expect(channels[0].port1.close).toHaveBeenCalledTimes(1)
       expect(channels[1].port1.close).toHaveBeenCalledTimes(1)
+    })
+
+    it("direct-launches Whiteboard once and measures only ready Human sharing", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+      analyticsSpy.mockClear()
+      const remoteAgent = {
+        peerId: "agent-peer",
+        name: "Pi",
+        kind: "agent",
+        room: "test-room",
+      }
+      const remoteHuman = {
+        peerId: "human-b",
+        name: "Bob",
+        kind: "human",
+        room: "test-room",
+        muteState: false,
+      }
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant, remoteAgent],
+      })
+      const view = render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="whiteboard"
+        />
+      )
+
+      const whiteboardButton = await screen.findByTestId("stage-app-whiteboard")
+      expect(whiteboardButton).toHaveAttribute("aria-pressed", "true")
+      const iframe = within(
+        screen.getByTestId("room-app-slot-whiteboard")
+      ).getByTestId("room-app-iframe") as HTMLIFrameElement
+      const frameWindow = loadAppIframe(iframe)
+      expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+        "RoomAppMounted",
+        expect.anything()
+      )
+
+      completeHandshake(frameWindow, "whiteboard", channels[0].port1)
+      expect(trackAnalyticsEvent).toHaveBeenCalledWith("RoomAppMounted", {
+        app: "whiteboard",
+      })
+      expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+        "RoomAppSharedSession",
+        expect.anything()
+      )
+
+      // The Agent does not satisfy the Human shared-use milestone. A late
+      // second Human does, after Whiteboard is already ready.
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant, remoteAgent, remoteHuman],
+      })
+      view.rerender(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="whiteboard"
+        />
+      )
+      expect(trackAnalyticsEvent).toHaveBeenCalledWith("RoomAppSharedSession", {
+        app: "whiteboard",
+        participantsBucket: "2-3",
+      })
+
+      // Manual Stage hide/show and an ordinary transport reconnect keep the
+      // same resident iframe/MessagePort; initial launch is not repeated.
+      fireEvent.click(whiteboardButton)
+      expect(
+        screen.getByTestId("room-app-slot-whiteboard").className
+      ).toContain("hidden")
+      fireEvent.click(whiteboardButton)
+      expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "reconnecting",
+        roomAppsEnabled: false,
+        participants: [localParticipant, remoteAgent, remoteHuman],
+      })
+      view.rerender(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="whiteboard"
+        />
+      )
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant, remoteAgent, remoteHuman],
+      })
+      view.rerender(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="whiteboard"
+        />
+      )
+      expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(
+        analyticsSpy.mock.calls.filter(([event]) => event === "RoomAppMounted")
+      ).toHaveLength(1)
+      expect(
+        analyticsSpy.mock.calls.filter(
+          ([event]) => event === "RoomAppSharedSession"
+        )
+      ).toHaveLength(1)
     })
   })
 

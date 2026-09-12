@@ -26,6 +26,7 @@ interface RoomAppHostProps {
     payload: Record<string, unknown>
   ) => boolean
   onClose: () => void
+  onReady?: (appId: string) => void
 }
 
 function handshakeToken(): string {
@@ -44,11 +45,13 @@ export default function RoomAppHost({
   subscribe,
   send,
   onClose,
+  onReady,
 }: RoomAppHostProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const portRef = useRef<MessagePort | null>(null)
   const tokenRef = useRef(handshakeToken())
   const readyRef = useRef(false)
+  const readyNotifiedRef = useRef(false)
   const previousParticipantsRef = useRef<RoomAppParticipantProjection[]>([])
   const sendRef = useRef(send)
   sendRef.current = send
@@ -91,6 +94,10 @@ export default function RoomAppHost({
         }
         readyRef.current = true
         setReady(true)
+        if (!readyNotifiedRef.current) {
+          readyNotifiedRef.current = true
+          onReady?.(app.id)
+        }
         const projected = projectRoomAppParticipants(participants)
         previousParticipantsRef.current = projected
         post({
@@ -118,7 +125,7 @@ export default function RoomAppHost({
       app.origin === window.location.origin ? app.origin : "*",
       [channel.port2]
     )
-  }, [app.origin, appInstanceId, participants, post, self])
+  }, [app.id, app.origin, appInstanceId, onReady, participants, post, self])
 
   useEffect(() => {
     if (!validateRoomAppDefinition(app) || !isRoomAppAllowlisted(app)) {
