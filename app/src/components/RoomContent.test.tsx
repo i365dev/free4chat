@@ -96,6 +96,43 @@ const baseHookReturn = {
 
 const LATE_JOIN_EXPIRY = Date.now() + 365 * 24 * 60 * 60 * 1000
 
+// Shared fixtures for the Room App Stage tests: one Task conversation and its
+// bounded Live View surface.
+const taskRequestMessage: Message = {
+  peerId: "local-peer",
+  name: "Alice",
+  kind: "human",
+  type: "action",
+  actionType: "collab",
+  sequence: 1,
+  collab: {
+    requestId: "task-live",
+    kind: "request",
+    fromParticipantId: "local-peer",
+    targetParticipantId: "agent-a",
+    summary: "Counter",
+  },
+}
+
+const taskLiveViewSnapshot = {
+  taskRequestId: "task-live",
+  surfaceId: "counter",
+  authorityAgentId: "agent-a",
+  revision: 1,
+  root: {
+    type: "Column",
+    children: [
+      { type: "Text", text: "Count" },
+      {
+        type: "Button",
+        label: "+1",
+        action: { type: "increment", path: "count", amount: 1 },
+      },
+    ],
+  },
+  data: { count: 0 },
+}
+
 function lateJoinRoom(): RoomRecord {
   return {
     createdAt: 1,
@@ -228,6 +265,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
   afterEach(() => {
     delete (window as { turnstile?: unknown }).turnstile
+    vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
 
@@ -1088,32 +1126,268 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
   })
 
-  it("keeps a selected Room App tab mounted instead of treating it as a stale Task", async () => {
-    mockUseSfuChatRoom.mockReturnValue({
-      ...baseHookReturn,
-      connectionStatus: "connected",
-      roomAppsEnabled: true,
-      participants: [
-        {
-          peerId: "local-peer",
-          name: "Alice",
-          kind: "human",
-          room: "test-room",
-          muteState: false,
-        },
-      ],
+  describe("Room App Stage placement", () => {
+    class TestPort {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      postMessage = vi.fn()
+      start = vi.fn()
+      close = vi.fn()
+    }
+
+    let channels: { port1: TestPort; port2: TestPort }[] = []
+
+    class TestMessageChannel {
+      port1 = new TestPort()
+      port2 = new TestPort()
+
+      constructor() {
+        channels.push(this)
+      }
+    }
+
+    function renderAppRoom(overrides: Record<string, unknown> = {}) {
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [
+          {
+            peerId: "local-peer",
+            name: "Alice",
+            kind: "human",
+            room: "test-room",
+            muteState: false,
+          },
+        ],
+        ...overrides,
+      })
+      return render(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+    }
+
+    /** Loads an App iframe so the host really opens its MessagePort. */
+    function loadAppIframe(iframe: HTMLIFrameElement) {
+      const frameWindow = { postMessage: vi.fn() }
+      Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+      fireEvent.load(iframe)
+      return frameWindow
+    }
+
+    beforeEach(() => {
+      channels = []
+      vi.stubGlobal("MessageChannel", TestMessageChannel)
     })
 
-    render(
-      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
-    )
+    it("mounts the active Room App on the visual Stage while the Room conversation stays", async () => {
+      renderAppRoom()
 
-    const appTab = screen.getByTestId("interaction-tab-app-shared-canvas")
-    fireEvent.click(appTab)
-    expect(appTab).toHaveAttribute("aria-selected", "true")
-    await waitFor(() =>
+      // Conversation scope starts on Room; the Stage starts on participants.
+      expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+
+      const host = await screen.findByTestId("room-app-host")
+      const stage = screen.getByTestId("room-stage")
+      expect(stage.contains(host)).toBe(true)
+      // The App is Stage content, never conversation content: the same
+      // structure keeps it out of the stacked mobile conversation pane.
+      expect(host.closest(".room-participants-panel")).not.toBeNull()
+      expect(host.closest(".room-chat-panel")).toBeNull()
+      expect(screen.getByTestId("interaction-chat").contains(host)).toBe(false)
+      // A Room App is a large visual surface, like screen share.
+      expect(stage).toHaveStyle({ width: "75%" })
+
+      // Room conversation remains selected and rendered beside the App.
+      expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
+      expect(
+        screen.getByPlaceholderText("Message the room or @ an Agent…")
+      ).toBeInTheDocument()
+
+      const iframe = screen.getByTestId("room-app-iframe")
+      expect(iframe).toHaveAttribute(
+        "src",
+        expect.stringContaining("/shared-canvas")
+      )
+      expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+    })
+
+    it("closes the Room App back to the participant Stage", async () => {
+      renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+      const host = await screen.findByTestId("room-app-host")
+      expect(screen.getByTestId("room-app-iframe")).toHaveAttribute(
+        "src",
+        expect.stringContaining("/tiny-arena")
+      )
+
+      fireEvent.click(within(host).getByRole("button", { name: "Close" }))
+
+      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+      expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
+    })
+
+    it("keeps the App open while the conversation switches between Room and Task", async () => {
+      renderAppRoom({ messages: [taskRequestMessage] })
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const host = await screen.findByTestId("room-app-host")
+
+      fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+      expect(
+        screen.getByTestId("interaction-tab-task-task-live")
+      ).toHaveAttribute("aria-selected", "true")
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+
+      fireEvent.click(screen.getByTestId("interaction-tab-room"))
+      expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+      expect(
+        screen.getByPlaceholderText("Message the room or @ an Agent…")
+      ).toBeInTheDocument()
+    })
+
+    it("switches Canvas to Arena without a duplicate iframe or MessagePort", async () => {
+      renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const canvasIframe = screen.getByTestId(
+        "room-app-iframe"
+      ) as HTMLIFrameElement
+      loadAppIframe(canvasIframe)
+      expect(channels).toHaveLength(1)
+      const canvasPort = channels[0].port1
+
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+
+      const iframes = screen.getAllByTestId("room-app-iframe")
+      expect(iframes).toHaveLength(1)
+      // A clean unmount/remount, not one iframe re-pointed at a second App.
+      expect(iframes[0]).not.toBe(canvasIframe)
+      expect(iframes[0]).toHaveAttribute(
+        "src",
+        expect.stringContaining("/tiny-arena")
+      )
+      expect(canvasPort.close).toHaveBeenCalled()
+
+      loadAppIframe(iframes[0] as HTMLIFrameElement)
+      expect(channels).toHaveLength(2)
+      expect(screen.getAllByTestId("room-app-iframe")).toHaveLength(1)
+    })
+
+    it("offers Screen while an App is open even without a Task Live View", async () => {
+      renderAppRoom({
+        resolvedRoomType: "screenshare",
+        participants: [
+          {
+            peerId: "local-peer",
+            name: "Alice",
+            kind: "human",
+            room: "test-room",
+            muteState: false,
+            screenShareEnabled: false,
+            screenShareStream: null,
+          },
+          {
+            peerId: "publisher-a",
+            name: "Bob",
+            kind: "human",
+            room: "test-room",
+            screenShareEnabled: true,
+            screenShareStream: {} as MediaStream,
+          },
+        ],
+      })
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
+      expect(screen.queryByTestId("stage-view-live-view")).toBeNull()
+
+      // Screen is a Stage surface in its own right: it must stay reachable
+      // while an App is open, with no Live View sharing the switcher.
+      fireEvent.click(screen.getByTestId("stage-view-screen"))
+      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(document.querySelector("video")).toBeInTheDocument()
+    })
+
+    it("offers Live View while an App is open even without a screen share", async () => {
+      renderAppRoom({
+        messages: [taskRequestMessage],
+        taskLiveViews: { "task-live": taskLiveViewSnapshot },
+      })
+
+      fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+      expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
+      expect(screen.queryByTestId("stage-view-screen")).toBeNull()
+
+      // Live View is likewise reachable on its own availability.
+      fireEvent.click(screen.getByTestId("stage-view-live-view"))
+      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+    })
+
+    it("leaves the App when the Stage switches back to Screen or Live View", async () => {
+      renderAppRoom({
+        resolvedRoomType: "screenshare",
+        messages: [taskRequestMessage],
+        participants: [
+          {
+            peerId: "local-peer",
+            name: "Alice",
+            kind: "human",
+            room: "test-room",
+            muteState: false,
+            screenShareEnabled: false,
+            screenShareStream: null,
+          },
+          {
+            peerId: "publisher-a",
+            name: "Bob",
+            kind: "human",
+            room: "test-room",
+            screenShareEnabled: true,
+            screenShareStream: {} as MediaStream,
+          },
+        ],
+        taskLiveViews: { "task-live": taskLiveViewSnapshot },
+      })
+
+      // The Task Live View is the selected Task's surface, as before.
+      fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByTestId("stage-view-live-view"))
+      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
       expect(screen.getByTestId("room-app-host")).toBeInTheDocument()
-    )
+
+      fireEvent.click(screen.getByTestId("stage-view-screen"))
+      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(document.querySelector("video")).toBeInTheDocument()
+      // The Task conversation scope is untouched by Stage switching.
+      expect(
+        screen.getByTestId("interaction-tab-task-task-live")
+      ).toHaveAttribute("aria-selected", "true")
+    })
   })
 
   it("uses the intentional two-row mobile header layout with a truncating Room id", () => {
@@ -1402,7 +1676,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
     vi.mocked(trackAnalyticsEvent).mockClear()
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
-    expect(screen.getByTestId("task-live-view-switcher")).toBeInTheDocument()
+    expect(screen.getByTestId("stage-switcher")).toBeInTheDocument()
     expect(screen.queryByTestId("task-live-view")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Live View" }))
     expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
