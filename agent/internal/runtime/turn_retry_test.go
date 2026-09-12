@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -211,9 +212,11 @@ func TestRepeatedHarnessFailureExhaustsBoundedRetryAndStops(t *testing.T) {
 }
 
 // TestLaterRoomEventCannotResetTheRetryBudgetForTheSameTurn proves the budget
-// belongs to the canonical (scope, sequence) turn: later Room events may try
-// the pending turn again, but they can never grant a fresh autonomous retry
-// budget to the same still-pending turn.
+// belongs to the canonical (scope, sequence) turn: once that turn's bounded
+// autonomous recovery is exhausted, later unrelated Room traffic can neither
+// re-execute it nor grant it a fresh budget. The canonical turn stays pending
+// and unacknowledged in a truthful reconnect state until an explicit recovery
+// boundary — a new addressed trigger for the same scope — re-arms it.
 func TestLaterRoomEventCannotResetTheRetryBudgetForTheSameTurn(t *testing.T) {
 	client, stream := newResidentTurnRetryClient(t)
 	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("persistent ACP failure")}
@@ -226,35 +229,239 @@ func TestLaterRoomEventCannotResetTheRetryBudgetForTheSameTurn(t *testing.T) {
 
 	stream.results <- addressedEnvelope(roomEvent(1, true))
 	waitFor(t, 5*time.Second, func() bool {
-		return adapter.sessionsInt() == 1+maxTurnRetryAttempts
+		return adapter.sessionsInt() == 1+maxTurnRetryAttempts &&
+			log.count("turn_retry_exhausted") == 1
 	}, "bounded retry budget consumed")
+	exhaustedRuns := adapter.sessionsInt()
+	if !rt.turnRecoveryClosed(roomScope, 1) {
+		t.Fatal("exhausted canonical turn did not close its autonomous recovery")
+	}
 
-	// Two later Room envelopes carry only unaddressed events. Each one may
-	// re-enter the drain, but the same still-pending canonical turn gets no
-	// further autonomous retry clock.
+	// Two later Room envelopes carry only unaddressed events. They may
+	// re-enter the drain, but the exhausted canonical turn must not run again:
+	// no extra Harness execution, no extra retry budget, no extra diagnostic.
 	stream.results <- addressedEnvelope(roomEvent(2, false))
 	stream.results <- addressedEnvelope(roomEvent(3, false))
 	waitFor(t, 3*time.Second, func() bool {
-		return adapter.sessionsInt() == 3+maxTurnRetryAttempts
-	}, "each later Room event attempts the pending turn at most once")
-	time.Sleep(150 * time.Millisecond)
-	if got := adapter.sessionsInt(); got != 3+maxTurnRetryAttempts {
-		t.Fatalf("a later Room event reset the retry budget: %d Harness turns", got)
+		return rt.currentCursor() >= 3
+	}, "later unaddressed Room envelopes ingested")
+	time.Sleep(200 * time.Millisecond)
+	if got := adapter.sessionsInt(); got != exhaustedRuns {
+		t.Fatalf("unrelated later Room traffic re-executed the exhausted turn: %d Harness turns", got)
+	}
+	if got := log.count("turn_started"); got != exhaustedRuns {
+		t.Fatalf("unrelated later Room traffic started another turn: %d turn_started", got)
 	}
 	if got := log.count("retry_scheduled"); got != maxTurnRetryAttempts {
-		t.Fatalf("later Room events re-armed the retry clock: %d retry_scheduled", got)
+		t.Fatalf("unrelated later Room traffic re-armed the retry clock: %d retry_scheduled", got)
+	}
+	if got := log.count("turn_failed"); got != exhaustedRuns {
+		t.Fatalf("unrelated later Room traffic recorded another failure: %d turn_failed", got)
+	}
+	// The bounded diagnostic contract holds for every attempt so far.
+	for _, event := range []string{"turn_started", "turn_failed"} {
+		for _, fields := range log.fieldsFor(event) {
+			attempt, err := strconv.Atoi(fields["retryAttempt"])
+			if err != nil || attempt < 0 || attempt > maxTurnRetryAttempts {
+				t.Fatalf("%s reported an out-of-bound retryAttempt: %+v", event, fields)
+			}
+		}
 	}
 
-	// The pinned canonical turn is still deliverable through its normal
-	// trigger path once the Harness recovers.
+	// The exhausted turn is never silently acknowledged: it stays pinned with
+	// a truthful error/reconnecting state until an explicit recovery boundary.
+	if got := rt.pendingAddressedSnapshot(); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("exhausted turn must stay pending and unacknowledged: %v", got)
+	}
+	if got := rt.deliveredSeq(); got != 0 {
+		t.Fatalf("exhausted turn advanced deliveredThrough to %d", got)
+	}
+	if sent := client.snapshotSent(); len(sent) != 0 {
+		t.Fatalf("exhausted turn published a reply: %v", sent)
+	}
+	if status := rt.Status(); status.LastError == "" || status.State != StateReconnecting {
+		t.Fatalf("exhausted turn lost its truthful reconnect state: %+v", status)
+	}
+
+	// An explicit recovery boundary — a new addressed trigger for the same
+	// scope — re-arms the pinned canonical turn, which is then delivered in
+	// FIFO order once the Harness recovers.
 	adapter.mu.Lock()
 	adapter.turnErr = nil
 	adapter.mu.Unlock()
-	stream.results <- addressedEnvelope(roomEvent(4, false))
+	stream.results <- addressedEnvelope(roomEvent(4, true))
 	waitFor(t, 3*time.Second, func() bool {
-		return len(rt.pendingAddressedSnapshot()) == 0 && rt.deliveredSeq() == 1 &&
-			len(client.snapshotSent()) == 1
-	}, "recovered Harness delivered the pinned canonical turn once")
+		return len(rt.pendingAddressedSnapshot()) == 0 && rt.deliveredSeq() == 4 &&
+			len(client.snapshotSent()) == 2
+	}, "explicit re-address delivered the pinned canonical turn")
+	if got := log.count("turn_retry_exhausted"); got != 1 {
+		t.Fatalf("re-armed turn reported an extra exhausted budget: %d", got)
+	}
+	if got := rt.turnRecoveryClosed(roomScope, 1); got {
+		t.Fatal("re-armed canonical turn stayed closed after its explicit recovery boundary")
+	}
+}
+
+// TestPermanentHarnessFailureKeepsTruthfulReconnectingState is the #364 B
+// status regression: a permanent, non-retryable Harness failure leaves its
+// canonical turn pinned, so the drain's deferred state restoration must not
+// overwrite the reported reconnect state with a healthy "waiting".
+func TestPermanentHarnessFailureKeepsTruthfulReconnectingState(t *testing.T) {
+	adapter := &legacyOnlyAdapter{}
+	rt := newTurnRetryRuntime(t, adapter, &fakeClient{}, silentLog)
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	rt.acceptEvent(scopedEvent(1, "task:T", "T1"))
+	rt.drainTurns()
+
+	status := rt.Status()
+	if status.State != StateReconnecting || status.LastError == "" {
+		t.Fatalf("permanent Harness failure did not report a truthful reconnect state: %+v", status)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("permanent Harness failure acknowledged its canonical turn: %v", got)
+	}
+	if adapter.ensureCalls != 0 || adapter.runCalls != 0 {
+		t.Fatalf("legacy adapter reached a task-scope turn: ensure=%d run=%d", adapter.ensureCalls, adapter.runCalls)
+	}
+	if !rt.turnRecoveryClosed("task:T", 1) {
+		t.Fatal("permanent Harness failure left its autonomous recovery open")
+	}
+
+	// Unrelated later Room traffic must neither re-execute the permanently
+	// failed canonical turn nor downgrade the truthful state to waiting.
+	rt.acceptEvent(roomEvent(2, false))
+	rt.drainTurns()
+	status = rt.Status()
+	if status.State != StateReconnecting || status.LastError == "" {
+		t.Fatalf("unrelated Room traffic downgraded the permanent failure state: %+v", status)
+	}
+	if adapter.ensureCalls != 0 || adapter.runCalls != 0 {
+		t.Fatalf("unrelated Room traffic re-executed the permanently failed turn: ensure=%d run=%d", adapter.ensureCalls, adapter.runCalls)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("permanently failed turn was silently acknowledged: %v", got)
+	}
+	if !rt.turnRecoveryClosed("task:T", 1) {
+		t.Fatal("unrelated Room traffic reopened a permanently closed recovery")
+	}
+
+	// A transport rejoin is not an explicit recovery boundary either: it must
+	// not downgrade the parked turn's truthful state.
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent-2", ParticipantHandle: "secret-2", Cursor: 10})
+	status = rt.Status()
+	if status.State != StateReconnecting || status.LastError == "" {
+		t.Fatalf("transport rejoin downgraded the permanent failure state: %+v", status)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("transport rejoin acknowledged the parked turn: %v", got)
+	}
+}
+
+// TestTransportRetryKeepsPermanentHarnessFailureReconnecting covers the other
+// state restoration point: the resident transport reconnect/back-off must not
+// downgrade a permanent Harness failure back to a healthy waiting state.
+func TestTransportRetryKeepsPermanentHarnessFailureReconnecting(t *testing.T) {
+	first := newResidentTestStream()
+	second := newResidentTestStream()
+	client := &residentTestClient{
+		fakeClient: &fakeClient{},
+		streams:    make(chan *residentTestStream, 2),
+	}
+	client.streams <- first
+	client.streams <- second
+	adapter := &legacyOnlyAdapter{}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "resident-permanent-failure",
+		RoomID:     "room-permanent-failure",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer rt.Stop()
+	waitFor(t, 3*time.Second, func() bool {
+		open, _, _ := client.residentOpenSnapshot()
+		return open == 1
+	}, "resident event stream open")
+
+	// A task-scope addressed trigger fails permanently and parks its turn.
+	first.results <- addressedEnvelope(scopedEvent(1, "task:T", "T1"))
+	waitFor(t, 3*time.Second, func() bool {
+		return rt.turnRecoveryClosed("task:T", 1)
+	}, "permanent Harness failure parked its canonical turn")
+
+	// The transport then drops; the reconnect back-off restores local state.
+	if err := first.Close(); err != nil {
+		t.Fatalf("close resident stream: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		open, _, _ := client.residentOpenSnapshot()
+		return open >= 2
+	}, "resident reconnect after transport loss")
+	if status := rt.Status(); status.State != StateReconnecting || status.LastError == "" {
+		t.Fatalf("transport recovery downgraded a permanent Harness failure: %+v", status)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("transport recovery acknowledged the parked turn: %v", got)
+	}
+	if adapter.runCalls != 0 {
+		t.Fatalf("transport recovery ran the unsupported task turn: %d", adapter.runCalls)
+	}
+}
+
+// TestClosedTurnRecoveryDoesNotBlockAnotherScope proves a canonical turn whose
+// autonomous recovery is closed parks only its own scope: it is never
+// re-executed, but a different scope's fresh addressed work still runs.
+func TestClosedTurnRecoveryDoesNotBlockAnotherScope(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi", turnErr: &harness.TurnTimeoutError{TimeoutMs: 120_000}}
+	rt := newTurnRetryRuntime(t, adapter, &fakeClient{}, silentLog)
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	rt.acceptEvent(scopedEvent(1, "task:T", "T1"))
+
+	// Each direct drain entry is one attempt; the third spends the budget.
+	for attempt := 0; attempt < 1+maxTurnRetryAttempts; attempt++ {
+		rt.drainTurns()
+	}
+	if !rt.turnRecoveryClosed("task:T", 1) {
+		t.Fatal("exhausted task turn did not close its autonomous recovery")
+	}
+	runs, _ := adapter.scopedRunSnapshot()
+	if len(runs) != 1+maxTurnRetryAttempts {
+		t.Fatalf("unexpected bounded attempt count: %v", runs)
+	}
+
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	rt.acceptEvent(scopedEvent(2, "task:U", "U1"))
+	rt.drainTurns()
+
+	runs, details := adapter.scopedRunSnapshot()
+	if len(runs) != 1+maxTurnRetryAttempts+1 || runs[len(runs)-1] != "task:U" {
+		t.Fatalf("closed task scope blocked or re-ran another scope: %v", runs)
+	}
+	if !reflect.DeepEqual(details["task:U"], []string{"U1"}) {
+		t.Fatalf("other scope received the wrong delta: %#v", details["task:U"])
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("closed task turn was silently acknowledged: %v", got)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:U"); len(got) != 0 {
+		t.Fatalf("fresh task work was not delivered: %v", got)
+	}
+	if got := rt.deliveredSeqFor("task:U"); got != 2 {
+		t.Fatalf("fresh task scope did not advance its own delivery: %d", got)
+	}
+	if got := rt.deliveredSeqFor("task:T"); got != 0 {
+		t.Fatalf("closed task scope advanced delivery: %d", got)
+	}
+	// The parked turn keeps the resident truthful while the other scope
+	// made progress.
+	if status := rt.Status(); status.State != StateReconnecting || status.LastError == "" {
+		t.Fatalf("closed recovery lost its truthful reconnect state: %+v", status)
+	}
 }
 
 // TestRetryAfterHarnessSessionReplacementRebootstrapsThePinnedDelta proves the

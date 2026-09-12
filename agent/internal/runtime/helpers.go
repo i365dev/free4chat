@@ -290,6 +290,13 @@ func (r *ResidentRuntime) pendingAddressedSnapshotFor(scope string) []int64 {
 func (r *ResidentRuntime) pendingScopes() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.pendingScopesLocked()
+}
+
+// pendingScopesLocked lists the logical scopes holding unacknowledged
+// addressed work: the default Room scope first, then scope admission order.
+// Callers must hold r.mu.
+func (r *ResidentRuntime) pendingScopesLocked() []string {
 	if len(r.pendingAddressed) > 0 {
 		out := []string{roomScope}
 		for _, scope := range r.scopeOrder {
@@ -306,6 +313,35 @@ func (r *ResidentRuntime) pendingScopes() []string {
 		}
 	}
 	return out
+}
+
+// nextRunnableTurn returns the canonical turn the serial drain may execute
+// next: the head of the oldest scope holding unacknowledged work whose
+// autonomous recovery is still open. A canonical turn whose recovery is
+// closed stays pending and unacknowledged, so it is skipped rather than
+// re-executed or acknowledged; skipping also keeps it from blocking another
+// scope's fresh work. Only an explicit recovery boundary — a new addressed
+// trigger for that same scope — reopens it (see reopenTurnRecoveryLocked).
+func (r *ResidentRuntime) nextRunnableTurn() (string, int64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nextRunnableTurnLocked()
+}
+
+// nextRunnableTurnLocked is nextRunnableTurn for callers already holding r.mu.
+func (r *ResidentRuntime) nextRunnableTurnLocked() (string, int64, bool) {
+	for _, scope := range r.pendingScopesLocked() {
+		ref := r.sessionRefLocked(scope)
+		if ref == nil || len(*ref.pendingAddressed) == 0 {
+			continue
+		}
+		target := (*ref.pendingAddressed)[0]
+		if r.turnRecoveryClosedLocked(scope, target) {
+			continue
+		}
+		return scope, target, true
+	}
+	return "", 0, false
 }
 
 // peekPending returns the next addressed target without acknowledging it.
@@ -348,6 +384,7 @@ func (r *ResidentRuntime) ackPendingFor(scope string, sequence int64) {
 		}
 		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
 		delete(*ref.pendingContexts, sequence)
+		r.forgetTurnRecoveryLocked(scope, sequence)
 		return
 	}
 }
@@ -409,6 +446,7 @@ func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, th
 		}
 		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
 		delete(*ref.pendingContexts, target)
+		r.forgetTurnRecoveryLocked(scope, target)
 		break
 	}
 	r.mu.Unlock()

@@ -170,6 +170,13 @@ type ResidentRuntime struct {
 	turnRetryTarget  int64
 	turnRetryAttempt int
 	turnRetryPlan    *turnRetryPlan
+	// closedTurnRecovery records the canonical turns whose autonomous
+	// recovery is over: the bounded retry budget is spent, or the Harness
+	// failure is permanent and no retry can resolve it. Such a turn stays
+	// pending and unacknowledged, but the serial drain never re-executes it
+	// for unrelated later Room traffic. Only an explicit recovery boundary —
+	// a new addressed trigger for the same scope — reopens it.
+	closedTurnRecovery map[canonicalTurnKey]struct{}
 	// turnRetryDelay overrides the delay before retry attempt N (0-based).
 	// Nil uses the shared reconnect back-off; tests override it to drive the
 	// policy deterministically without wall-clock waits.
@@ -647,12 +654,21 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.eventBuffer.Clear()
 		r.pendingAddressed = nil
 		r.pendingContexts = nil
+		r.closedTurnRecovery = nil
 		r.scopedSessions = nil
 		r.scopeOrder = nil
 	}
-	r.state = StateWaiting
-	r.lastError = ""
-	r.lastErrorSource = ""
+	if r.closedTurnRecovery != nil {
+		// A transport join/rejoin is not an explicit recovery boundary: a
+		// canonical turn whose autonomous recovery is closed stays pinned and
+		// keeps reporting the truthful reconnect state until a new addressed
+		// trigger re-arms it.
+		r.state = StateReconnecting
+	} else {
+		r.state = StateWaiting
+		r.lastError = ""
+		r.lastErrorSource = ""
+	}
 	// #228: participation age starts at the lifecycle's first successful
 	// create/join and survives transient retries and lease recovery.
 	if initialJoin {
@@ -1078,6 +1094,11 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 				target: event.Sequence,
 				events: r.eventsForScopeLocked(scope, after, event.Sequence),
 			}
+			// An accepted addressed trigger for this scope is the explicit
+			// recovery boundary: it re-arms a canonical turn of the same scope
+			// whose autonomous recovery was closed. Unaddressed Room traffic
+			// never reaches this point and can never re-arm anything.
+			r.reopenTurnRecoveryLocked(scope)
 		}
 	}
 	r.mu.Unlock()
@@ -1104,7 +1125,7 @@ func (r *ResidentRuntime) restoreStateAfterRetry() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch {
-	case r.harnessFailed:
+	case r.unresolvedTurnFailureLocked():
 		r.state = StateReconnecting
 	case r.turnRunning:
 		r.state = StateTurn
@@ -1118,10 +1139,18 @@ func (r *ResidentRuntime) restoreStateAfterRetry() {
 // distinct boundaries: only RunTurn success acknowledges an addressed target
 // and advances deliveredThrough. A failed/ambiguous Harness turn is therefore
 // intentionally eligible for at-least-once retry; a later SendText failure is
-// not.
+// not. A turn whose bounded autonomous recovery is closed is deliberately
+// skipped without being re-executed or acknowledged.
 func (r *ResidentRuntime) drainTurns() {
 	r.mu.Lock()
 	if r.turnRunning || r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	if _, _, runnable := r.nextRunnableTurnLocked(); !runnable {
+		// Every remaining unacknowledged turn has closed autonomous recovery.
+		// Nothing may run until an explicit recovery boundary re-arms it, so
+		// do not claim a turn state for work that will not run.
 		r.mu.Unlock()
 		return
 	}
@@ -1133,11 +1162,13 @@ func (r *ResidentRuntime) drainTurns() {
 		r.mu.Lock()
 		r.turnRunning = false
 		if !r.stopped {
-			// A pending bounded retry and an exhausted retry budget are both
-			// truthful reconnect states: the resident still holds
-			// unacknowledged work it could not hand to the Harness.
-			if r.harnessFailed || r.lastErrorSource == "send" ||
-				r.turnRetryPlan != nil || r.turnRetryAttempt > maxTurnRetryAttempts {
+			// A pending bounded retry, an exhausted budget, a parked canonical
+			// turn, or any unresolved Harness/send failure is a truthful
+			// reconnect state: the resident still holds unacknowledged work it
+			// could not hand to the Harness. A permanent non-retryable Harness
+			// failure must keep reporting that state instead of being
+			// overwritten to waiting.
+			if r.unresolvedTurnFailureLocked() {
 				r.state = StateReconnecting
 			} else {
 				r.state = StateWaiting
@@ -1147,14 +1178,9 @@ func (r *ResidentRuntime) drainTurns() {
 	}()
 
 	for !r.isStopped() {
-		scopes := r.pendingScopes()
-		if len(scopes) == 0 {
-			return
-		}
-		scope := scopes[0]
-		target, ok := r.peekPendingFor(scope)
+		scope, target, ok := r.nextRunnableTurn()
 		if !ok {
-			continue
+			return
 		}
 		started := time.Now()
 		r.log("turn_started", map[string]string{
@@ -1291,8 +1317,11 @@ func (r *ResidentRuntime) drainTurns() {
 		r.mu.Lock()
 		r.harnessFailed = false
 		// #228: a successful turn proves the Harness recovered — clear ONLY
-		// the harness-origin error (a concurrent wait/send failure stays).
-		if r.lastErrorSource == "harness" {
+		// the harness-origin error (a concurrent wait/send failure stays). A
+		// canonical turn parked with closed autonomous recovery is still
+		// unacknowledged, so its failure must stay visible until an explicit
+		// recovery boundary resolves it.
+		if r.lastErrorSource == "harness" && len(r.closedTurnRecovery) == 0 {
 			r.lastError = ""
 			r.lastErrorSource = ""
 		}
@@ -1636,6 +1665,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 		}
 		r.pendingAddressed = nil
 		r.pendingContexts = nil
+		r.closedTurnRecovery = nil
 		r.eventBuffer.Clear()
 		r.mu.Unlock()
 		r.cancelPendingPermissions(errors.New("runtime stopped"))
