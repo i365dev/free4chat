@@ -920,10 +920,13 @@ export default function RoomContent({
           <div className="relative flex flex-1 flex-col overflow-hidden">
             {/* The Stage entry: curated Room Apps plus the existing Screen /
                 Live View preference. Stage selection is independent from the
-                conversation scope selected in the right pane. */}
+                conversation scope selected in the right pane, and each Stage
+                choice appears on its own availability — a Room App is a third
+                Stage surface, so Screen no longer requires a Live View (and
+                the reverse) to be offered. */}
             {(roomApps.length > 0 ||
-              (activeScreenShares.length > 0 &&
-                Boolean(activeTaskLiveView))) && (
+              activeScreenShares.length > 0 ||
+              Boolean(activeTaskLiveView)) && (
               <div
                 role="tablist"
                 aria-label="Stage"
@@ -951,41 +954,41 @@ export default function RoomContent({
                     </button>
                   )
                 })}
-                {activeScreenShares.length > 0 && activeTaskLiveView && (
-                  <>
-                    <button
-                      type="button"
-                      data-testid="stage-view-screen"
-                      onClick={() => {
-                        setStageView("screen")
-                        setActiveRoomAppId(null)
-                      }}
-                      aria-pressed={stageView === "screen" && !activeRoomApp}
-                      className={`shrink-0 rounded px-2 py-1 text-xs ${
-                        stageView === "screen" && !activeRoomApp
-                          ? "bg-blue-600 text-white"
-                          : "text-gray-400 hover:bg-gray-800"
-                      }`}
-                    >
-                      Screen
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="stage-view-live-view"
-                      onClick={() => {
-                        setStageView("live-view")
-                        setActiveRoomAppId(null)
-                      }}
-                      aria-pressed={stageView === "live-view" && !activeRoomApp}
-                      className={`shrink-0 rounded px-2 py-1 text-xs ${
-                        stageView === "live-view" && !activeRoomApp
-                          ? "bg-blue-600 text-white"
-                          : "text-gray-400 hover:bg-gray-800"
-                      }`}
-                    >
-                      Live View
-                    </button>
-                  </>
+                {activeScreenShares.length > 0 && (
+                  <button
+                    type="button"
+                    data-testid="stage-view-screen"
+                    onClick={() => {
+                      setStageView("screen")
+                      setActiveRoomAppId(null)
+                    }}
+                    aria-pressed={stageView === "screen" && !activeRoomApp}
+                    className={`shrink-0 rounded px-2 py-1 text-xs ${
+                      stageView === "screen" && !activeRoomApp
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-400 hover:bg-gray-800"
+                    }`}
+                  >
+                    Screen
+                  </button>
+                )}
+                {activeTaskLiveView && (
+                  <button
+                    type="button"
+                    data-testid="stage-view-live-view"
+                    onClick={() => {
+                      setStageView("live-view")
+                      setActiveRoomAppId(null)
+                    }}
+                    aria-pressed={stageView === "live-view" && !activeRoomApp}
+                    className={`shrink-0 rounded px-2 py-1 text-xs ${
+                      stageView === "live-view" && !activeRoomApp
+                        ? "bg-blue-600 text-white"
+                        : "text-gray-400 hover:bg-gray-800"
+                    }`}
+                  >
+                    Live View
+                  </button>
                 )}
               </div>
             )}

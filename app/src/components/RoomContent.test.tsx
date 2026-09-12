@@ -1290,6 +1290,58 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(screen.getAllByTestId("room-app-iframe")).toHaveLength(1)
     })
 
+    it("offers Screen while an App is open even without a Task Live View", async () => {
+      renderAppRoom({
+        resolvedRoomType: "screenshare",
+        participants: [
+          {
+            peerId: "local-peer",
+            name: "Alice",
+            kind: "human",
+            room: "test-room",
+            muteState: false,
+            screenShareEnabled: false,
+            screenShareStream: null,
+          },
+          {
+            peerId: "publisher-a",
+            name: "Bob",
+            kind: "human",
+            room: "test-room",
+            screenShareEnabled: true,
+            screenShareStream: {} as MediaStream,
+          },
+        ],
+      })
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
+      expect(screen.queryByTestId("stage-view-live-view")).toBeNull()
+
+      // Screen is a Stage surface in its own right: it must stay reachable
+      // while an App is open, with no Live View sharing the switcher.
+      fireEvent.click(screen.getByTestId("stage-view-screen"))
+      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(document.querySelector("video")).toBeInTheDocument()
+    })
+
+    it("offers Live View while an App is open even without a screen share", async () => {
+      renderAppRoom({
+        messages: [taskRequestMessage],
+        taskLiveViews: { "task-live": taskLiveViewSnapshot },
+      })
+
+      fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+      expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
+      expect(screen.queryByTestId("stage-view-screen")).toBeNull()
+
+      // Live View is likewise reachable on its own availability.
+      fireEvent.click(screen.getByTestId("stage-view-live-view"))
+      expect(screen.queryByTestId("room-app-host")).toBeNull()
+      expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+    })
+
     it("leaves the App when the Stage switches back to Screen or Live View", async () => {
       renderAppRoom({
         resolvedRoomType: "screenshare",
