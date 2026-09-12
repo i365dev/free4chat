@@ -223,9 +223,9 @@ export default function RoomContent({
         : [],
     [roomAppsEnabled]
   )
-  const activeRoomApp = roomApps.find(
-    (app) => activeRoomAppId === app.id && activeInteraction === `app:${app.id}`
-  )
+  // Conversation scope and visual Stage are independent selections: an active
+  // Room App lives on the Stage and never replaces the Room/Task conversation.
+  const activeRoomApp = roomApps.find((app) => activeRoomAppId === app.id)
   const roomAppParticipants = projectRoomAppParticipants(
     participants.map((participant) => ({
       participantId:
@@ -331,27 +331,21 @@ export default function RoomContent({
   }, [activeInteraction, effectiveLocalParticipantId, taskProjections])
 
   useEffect(() => {
-    const isRoomAppInteraction =
-      activeInteraction.startsWith("app:") &&
-      roomApps.some((app) => activeInteraction === `app:${app.id}`)
+    // A conversation scope is only ever "room" or a known Task. The Stage
+    // selection (screen share, Live View, Room App) is stored separately.
     if (
       activeInteraction !== "room" &&
-      !taskProjections.some((task) => task.requestId === activeInteraction) &&
-      !isRoomAppInteraction
+      !taskProjections.some((task) => task.requestId === activeInteraction)
     )
       setActiveInteraction("room")
-  }, [activeInteraction, roomApps, taskProjections])
+  }, [activeInteraction, taskProjections])
 
   useEffect(() => {
-    if (
-      activeRoomAppId &&
-      (!roomApps.some((app) => app.id === activeRoomAppId) ||
-        activeInteraction !== `app:${activeRoomAppId}`)
-    ) {
+    // Only catalog availability controls an open App; changing the conversation
+    // scope or the Stage view must not tear down its iframe/MessagePort.
+    if (activeRoomAppId && !roomApps.some((app) => app.id === activeRoomAppId))
       setActiveRoomAppId(null)
-      if (activeInteraction.startsWith("app:")) setActiveInteraction("room")
-    }
-  }, [activeInteraction, activeRoomAppId, roomApps])
+  }, [activeRoomAppId, roomApps])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -458,9 +452,11 @@ export default function RoomContent({
   }, [])
 
   useEffect(() => {
-    setSplitRatio(activeScreenShares.length > 0 ? 75 : 50)
+    // A Room App is a large visual surface like screen share, so it gets the
+    // wide Stage rather than a conversation-sized pane.
+    setSplitRatio(activeScreenShares.length > 0 || activeRoomApp ? 75 : 50)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScreenShares.length > 0])
+  }, [activeScreenShares.length > 0, Boolean(activeRoomApp)])
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
@@ -911,6 +907,7 @@ export default function RoomContent({
         className="room-content flex flex-1 flex-col overflow-hidden md:flex-row"
       >
         <div
+          data-testid="room-stage"
           className="room-panel room-participants-panel flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
           style={isMd ? { width: `${splitRatio}%` } : undefined}
         >
@@ -921,38 +918,91 @@ export default function RoomContent({
             getLocalRoomAuth={getLocalRoomAuth}
           />
           <div className="relative flex flex-1 flex-col overflow-hidden">
-            {activeScreenShares.length > 0 && activeTaskLiveView && (
+            {/* The Stage entry: curated Room Apps plus the existing Screen /
+                Live View preference. Stage selection is independent from the
+                conversation scope selected in the right pane. */}
+            {(roomApps.length > 0 ||
+              (activeScreenShares.length > 0 &&
+                Boolean(activeTaskLiveView))) && (
               <div
-                data-testid="task-live-view-switcher"
-                className="z-10 flex flex-none gap-1 border-b border-gray-800 bg-gray-950/80 p-2"
+                role="tablist"
+                aria-label="Stage"
+                data-testid="stage-switcher"
+                className="scrollbar-thin z-10 flex flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/80 p-2"
               >
-                <button
-                  type="button"
-                  onClick={() => setStageView("screen")}
-                  aria-pressed={stageView === "screen"}
-                  className={`rounded px-2 py-1 text-xs ${
-                    stageView === "screen"
-                      ? "bg-blue-600 text-white"
-                      : "text-gray-400 hover:bg-gray-800"
-                  }`}
-                >
-                  Screen
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setStageView("live-view")}
-                  aria-pressed={stageView === "live-view"}
-                  className={`rounded px-2 py-1 text-xs ${
-                    stageView === "live-view"
-                      ? "bg-blue-600 text-white"
-                      : "text-gray-400 hover:bg-gray-800"
-                  }`}
-                >
-                  Live View
-                </button>
+                {roomApps.map((app) => {
+                  const selected = activeRoomAppId === app.id
+                  return (
+                    <button
+                      key={app.id}
+                      type="button"
+                      aria-pressed={selected}
+                      data-testid={`stage-app-${app.id}`}
+                      onClick={() =>
+                        setActiveRoomAppId(selected ? null : app.id)
+                      }
+                      className={`shrink-0 rounded px-2 py-1 text-xs ${
+                        selected
+                          ? "bg-blue-600 text-white"
+                          : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                      }`}
+                    >
+                      {app.label}
+                    </button>
+                  )
+                })}
+                {activeScreenShares.length > 0 && activeTaskLiveView && (
+                  <>
+                    <button
+                      type="button"
+                      data-testid="stage-view-screen"
+                      onClick={() => {
+                        setStageView("screen")
+                        setActiveRoomAppId(null)
+                      }}
+                      aria-pressed={stageView === "screen" && !activeRoomApp}
+                      className={`shrink-0 rounded px-2 py-1 text-xs ${
+                        stageView === "screen" && !activeRoomApp
+                          ? "bg-blue-600 text-white"
+                          : "text-gray-400 hover:bg-gray-800"
+                      }`}
+                    >
+                      Screen
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="stage-view-live-view"
+                      onClick={() => {
+                        setStageView("live-view")
+                        setActiveRoomAppId(null)
+                      }}
+                      aria-pressed={stageView === "live-view" && !activeRoomApp}
+                      className={`shrink-0 rounded px-2 py-1 text-xs ${
+                        stageView === "live-view" && !activeRoomApp
+                          ? "bg-blue-600 text-white"
+                          : "text-gray-400 hover:bg-gray-800"
+                      }`}
+                    >
+                      Live View
+                    </button>
+                  </>
+                )}
               </div>
             )}
-            {activeScreenShares.length > 0 ? (
+            {activeRoomApp && roomAppSelf ? (
+              // Keyed per App: switching Apps unmounts the previous host, which
+              // closes its MessagePort, instead of reusing one iframe/instance.
+              <RoomAppHost
+                key={activeRoomApp.id}
+                app={activeRoomApp}
+                appInstanceId={roomAppInstanceId(roomName, activeRoomApp.id)}
+                self={roomAppSelf}
+                participants={roomAppParticipants}
+                subscribe={subscribeRoomAppMessages}
+                send={sendRoomAppMessage}
+                onClose={() => setActiveRoomAppId(null)}
+              />
+            ) : activeScreenShares.length > 0 ? (
               <>
                 <div
                   className={
@@ -1034,7 +1084,10 @@ export default function RoomContent({
                 onInteract={handleLiveViewInteracted}
               />
             ) : (
-              <div className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3">
+              <div
+                data-testid="room-stage-participants"
+                className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3"
+              >
                 {participants.map((p) => (
                   <div
                     key={p.peerId}
@@ -1146,26 +1199,6 @@ export default function RoomContent({
                 )}
               </button>
             ))}
-            {roomApps.map((app) => (
-              <button
-                key={app.id}
-                type="button"
-                role="tab"
-                aria-selected={activeInteraction === `app:${app.id}`}
-                data-testid={`interaction-tab-app-${app.id}`}
-                onClick={() => {
-                  setActiveRoomAppId(app.id)
-                  setActiveInteraction(`app:${app.id}`)
-                }}
-                className={`flex max-w-52 shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition ${
-                  activeInteraction === `app:${app.id}`
-                    ? "bg-blue-600 text-white"
-                    : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
-                }`}
-              >
-                <span className="truncate">{app.label}</span>
-              </button>
-            ))}
           </div>
           <div
             data-testid="interaction-content"
@@ -1190,42 +1223,29 @@ export default function RoomContent({
                 })}
               </div>
             )}
+            {/* The conversation pane always renders the selected Room/Task
+                conversation; an active Room App lives on the Stage instead. */}
             <div data-testid="interaction-chat" className="min-h-0 flex-1">
-              {activeRoomApp && roomAppSelf ? (
-                <RoomAppHost
-                  app={activeRoomApp}
-                  appInstanceId={roomAppInstanceId(roomName, activeRoomApp.id)}
-                  self={roomAppSelf}
-                  participants={roomAppParticipants}
-                  subscribe={subscribeRoomAppMessages}
-                  send={sendRoomAppMessage}
-                  onClose={() => {
-                    setActiveRoomAppId(null)
-                    setActiveInteraction("room")
-                  }}
-                />
-              ) : (
-                <TextChatCard
-                  key={activeInteraction}
-                  room={roomName}
-                  nickName={nickName}
-                  messages={interactionMessages}
-                  attachments={interactionAttachments}
-                  participants={participants}
-                  pendingFiles={activeTask ? [] : pendingFiles}
-                  onSendText={wrappedSendText}
-                  onSendFile={wrappedSendFile}
-                  onSendTaskFile={wrappedSendTaskFile}
-                  onSendAction={sendActionMessage}
-                  localParticipantId={effectiveLocalParticipantId}
-                  onCollabRespond={handleCollabRespond}
-                  onReadArtifact={handleReadArtifact}
-                  onCollabResult={handleCollabResult}
-                  onPermissionRespond={handlePermissionResponse}
-                  taskAvailable={!activeTaskUnavailable}
-                  taskRequestId={activeTask?.requestId}
-                />
-              )}
+              <TextChatCard
+                key={activeInteraction}
+                room={roomName}
+                nickName={nickName}
+                messages={interactionMessages}
+                attachments={interactionAttachments}
+                participants={participants}
+                pendingFiles={activeTask ? [] : pendingFiles}
+                onSendText={wrappedSendText}
+                onSendFile={wrappedSendFile}
+                onSendTaskFile={wrappedSendTaskFile}
+                onSendAction={sendActionMessage}
+                localParticipantId={effectiveLocalParticipantId}
+                onCollabRespond={handleCollabRespond}
+                onReadArtifact={handleReadArtifact}
+                onCollabResult={handleCollabResult}
+                onPermissionRespond={handlePermissionResponse}
+                taskAvailable={!activeTaskUnavailable}
+                taskRequestId={activeTask?.requestId}
+              />
             </div>
           </div>
         </div>
