@@ -90,11 +90,31 @@ Publishing is observation, not live remote desktop or remote control.
 ## Task Live View
 
 ```text
+free4chat-agent live-view describe --json
 free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [--instance <id>]
 ```
 
-Publish or replace the current bounded declarative Live View for an existing
-Task.
+`live-view describe --json` is the machine-authoring authority for Task Live
+Views. It prints the authoring contract of the *installed* Runtime, so the
+descriptor is version-coupled to the exact binary that will validate and
+publish the view.
+
+It is a purely local command. It requires no Room join, no Room credentials, no
+network request, and no source checkout — an Agent Harness can ask the
+installed Runtime what the current contract is instead of grepping Free4Chat
+source, reading repository docs, or running `strings` against the executable.
+
+The descriptor reports the contract identity and version, the snapshot fields
+and their patterns, the limits, every supported component and action with its
+required/optional fields and rules, and valid examples. Harnesses should read
+the exact current field names, action types, bindings, revision rules, and
+limits from this command rather than assuming them.
+
+This reference page is the Human-facing explanation of the feature; where the
+two disagree, the installed Runtime descriptor is authoritative for authoring.
+
+`live-view publish` remains the publishing operation. Publish or replace the
+current bounded declarative Live View for an existing Task.
 
 The input file should normally be a compact draft:
 
