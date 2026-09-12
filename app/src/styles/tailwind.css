@@ -6,6 +6,21 @@ html {
   @apply antialiased;
 }
 
+/* Room App focus mode changes only the host layout. The resident host and its
+   iframe remain in place, while safe-area padding keeps its controls reachable
+   on phones using edge-to-edge viewports. */
+.room-app-host--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  box-sizing: border-box;
+  height: 100vh;
+  height: 100dvh;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overscroll-behavior: contain;
+}
+
 /* --- Retro terminal scope (homepage only) --- */
 
 .retro-scope {

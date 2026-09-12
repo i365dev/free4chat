@@ -38,6 +38,13 @@ const app = {
   origin: "https://room-apps.free4.chat",
 } as const
 
+const sharedCanvasApp = {
+  id: "shared-canvas",
+  label: "Shared Canvas",
+  url: "http://localhost:8787/shared-canvas",
+  origin: "http://localhost:8787",
+} as const
+
 const self: RoomAppParticipantProjection = {
   participantId: "human-a",
   name: "Alice",
@@ -55,6 +62,55 @@ afterEach(() => {
 })
 
 describe("RoomAppHost", () => {
+  it("toggles generic host layout without replacing the iframe or MessagePort", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const onToggleFullscreen = vi.fn()
+    const props = {
+      app: sharedCanvasApp,
+      appInstanceId: "shared-canvas:room",
+      self,
+      participants,
+      subscribe: () => () => undefined,
+      send: () => true,
+      subscribeUnicast: () => () => undefined,
+      subscribeUnicastResults: () => () => undefined,
+      sendUnicast: () => "sent" as const,
+      onClose: () => undefined,
+      onToggleFullscreen,
+    }
+    const rendered = render(<RoomAppHost {...props} isFullscreen={false} />)
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const port = lastChannel!.port1
+
+    fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }))
+    expect(onToggleFullscreen).toHaveBeenCalledTimes(1)
+    rendered.rerender(<RoomAppHost {...props} isFullscreen />)
+
+    expect(screen.getByTestId("room-app-host")).toHaveAttribute(
+      "data-layout",
+      "fullscreen"
+    )
+    expect(
+      screen.getByRole("button", { name: "Exit fullscreen" })
+    ).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(lastChannel!.port1).toBe(port)
+    expect(port.close).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Exit fullscreen" }))
+    rendered.rerender(<RoomAppHost {...props} isFullscreen={false} />)
+    expect(screen.getByTestId("room-app-host")).toHaveAttribute(
+      "data-layout",
+      "stage"
+    )
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(lastChannel!.port1).toBe(port)
+    expect(port.close).not.toHaveBeenCalled()
+  })
+
   it("sandboxes an allowlisted App and establishes an owned MessagePort", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const onReady = vi.fn()
