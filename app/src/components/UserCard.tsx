@@ -19,6 +19,57 @@ interface UserCardProps extends UserInfo {
   onStartTask?: (peerId: string, name: string) => void
 }
 
+/**
+ * #348 compact Agent cards are presence cards, not capability dashboards.
+ * The Voice/Task controls are icon-sized so the single bounded action row
+ * always fits the shared compact footprint; the accessible VOICE/TASK labels
+ * live on the buttons themselves.
+ */
+function CompactMicIcon({ off = false }: { off?: boolean }) {
+  return (
+    <svg
+      className="h-3.5 w-3.5"
+      fill="currentColor"
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {off ? (
+        <>
+          <path d="M13 8c0 .564-.094 1.107-.266 1.613l-.814-.814A4.02 4.02 0 0 0 12 8V7a.5.5 0 0 1 1 0v1zm-5 4c.818 0 1.578-.245 2.212-.667l.718.719a4.973 4.973 0 0 1-2.43.923V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 1 0v1a4 4 0 0 0 4 4zm3-9v4.879l-1-1V3a2 2 0 0 0-3.997-.118l-.845-.845A3.001 3.001 0 0 1 11 3z" />
+          <path d="m9.486 10.607-.748-.748A2 2 0 0 1 6 8v-.878l-1-1V8a3 3 0 0 0 4.486 2.607zm-7.84-9.253 12 12 .708-.708-12-12-.708.708z" />
+        </>
+      ) : (
+        <>
+          <path d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5z" />
+          <path d="M10 8a2 2 0 1 1-4 0V3a2 2 0 1 1 4 0v5zM8 0a3 3 0 0 0-3 3v5a3 3 0 0 0 6 0V3a3 3 0 0 0-3-3z" />
+        </>
+      )}
+    </svg>
+  )
+}
+
+function CompactTaskIcon() {
+  return (
+    <svg
+      className="h-3.5 w-3.5"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="2.75" y="2.75" width="10.5" height="10.5" rx="2.5" />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="m5.9 8.2 1.5 1.5 3-3.3"
+      />
+    </svg>
+  )
+}
+
 function UserCard(user: UserCardProps) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -89,61 +140,74 @@ function UserCard(user: UserCardProps) {
                 </svg>
               </span>
             )}
+            {/* #348: agent activity is a restrained avatar indicator, never a
+                stacked text row. The label stays available as a tooltip. */}
+            {user.kind === "agent" && user.activity && (
+              <span
+                data-testid="agent-activity"
+                role="img"
+                aria-label={agentActivityLabel(user.activity)}
+                title={agentActivityLabel(user.activity)}
+                className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-gray-900/90"
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-300" />
+              </span>
+            )}
           </div>
           <p className="mt-1.5 min-w-0 max-w-full truncate text-center text-xs text-white">
+            {user.kind === "agent" && (
+              <span
+                data-testid="compact-agent-kind"
+                role="img"
+                aria-label="Agent"
+                title="Agent"
+                className="mr-0.5"
+              >
+                🤖
+              </span>
+            )}
             {displayName}
           </p>
-          {user.kind === "agent" && (
-            <span className="participant-card__kind mt-1 rounded-full bg-black/20 px-1.5 py-0.5 text-[9px] text-white/50">
-              🤖 Agent
-            </span>
-          )}
-          {user.kind === "agent" && (
-            <div
-              data-testid="compact-agent-controls"
-              className="mt-1 flex max-w-full flex-wrap items-center justify-center gap-1"
-            >
-              {user.activity && (
-                <span
-                  data-testid="agent-activity"
-                  className="max-w-full truncate text-[9px] text-blue-200/80"
-                >
-                  {agentActivityLabel(user.activity)}…
-                </span>
-              )}
-              {user.voiceAvailable && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    user.onToggleAgentVoice?.(user.peerId, !user.voiceEnabled)
-                  }
-                  title={
-                    user.voiceEnabled
-                      ? `Mute ${user.name}`
-                      : `Enable voice for ${user.name}`
-                  }
-                  aria-label={
-                    user.voiceEnabled
-                      ? `Mute ${user.name}`
-                      : `Enable voice for ${user.name}`
-                  }
-                  className="participant-card__voice-button participant-card__voice-button--compact min-h-6 rounded-full border border-gray-500 px-2 text-[9px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {user.voiceEnabled ? "VOICE ●" : "VOICE"}
-                </button>
-              )}
-              {!isSelf && user.onStartTask && (
-                <button
-                  type="button"
-                  onClick={() => user.onStartTask?.(user.peerId, user.name)}
-                  aria-label={`Start task with ${user.name}`}
-                  className="min-h-6 rounded-full border border-blue-400/60 px-2 text-[9px] text-blue-200 hover:bg-blue-500/20"
-                >
-                  TASK
-                </button>
-              )}
-            </div>
-          )}
+          {user.kind === "agent" &&
+            (user.voiceAvailable || (!isSelf && user.onStartTask)) && (
+              <div
+                data-testid="compact-agent-controls"
+                className="mt-1 flex h-6 flex-nowrap items-center justify-center gap-1"
+              >
+                {user.voiceAvailable && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      user.onToggleAgentVoice?.(user.peerId, !user.voiceEnabled)
+                    }
+                    title={
+                      user.voiceEnabled
+                        ? `Mute ${user.name}`
+                        : `Enable voice for ${user.name}`
+                    }
+                    aria-label={
+                      user.voiceEnabled
+                        ? `Mute ${user.name}`
+                        : `Enable voice for ${user.name}`
+                    }
+                    className="participant-card__voice-button participant-card__voice-button--compact disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <CompactMicIcon off={!user.voiceEnabled} />
+                  </button>
+                )}
+                {!isSelf && user.onStartTask && (
+                  <button
+                    type="button"
+                    onClick={() => user.onStartTask?.(user.peerId, user.name)}
+                    title={`Start task with ${user.name}`}
+                    aria-label={`Start task with ${user.name}`}
+                    className="participant-card__task-button participant-card__task-button--compact"
+                  >
+                    <CompactTaskIcon />
+                  </button>
+                )}
+              </div>
+            )}
           {isSelf && (
             <div className="mt-1 flex gap-1">
               <button
