@@ -29,9 +29,11 @@
   "vars": {
     // The production App ID is injected by GitHub Actions at deploy time.
     "SFU_APP_ID": "set-during-deployment",
-    // Phase 0 Room Apps stay disabled until the curated Lab fixtures are
-    // deliberately deployed and enabled.
-    "ROOM_APPS_ENABLED": "false"
+    // Phase 0 Room Apps are enabled for the production dogfood window
+    // (free4chat#361): the curated Lab fixtures are deployed at
+    // https://room-apps.free4.chat/{shared-canvas,tiny-arena}. Set back to
+    // "false" and redeploy to hide the curated catalog again.
+    "ROOM_APPS_ENABLED": "true"
   },
   "kv_namespaces": [
     {
