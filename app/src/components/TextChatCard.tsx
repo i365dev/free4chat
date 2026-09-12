@@ -58,7 +58,15 @@ interface TextChatCardProps {
   participants: UserInfo[]
   pendingFiles?: PendingFile[]
   onSendText: (text: string, targets?: string[], taskRequestId?: string) => void
-  onSendFile: (file: File) => void
+  /** #363 A1: ordinary Human Room file send (DataChannel, 20 MB). Called only
+   * when the Human presses Send for a pending composer attachment, never on
+   * pick. The returned promise settles once the local transfer has been
+   * initiated, or rejects when it could not even begin. */
+  onSendFile: (file: File) => Promise<void> | void
+  /** #363 A2: Human attachment inside the ACTIVE Task. Travels the existing
+   * bounded, task-correlated Room attachment path — never the Room
+   * DataChannel transfer. */
+  onSendTaskFile?: (file: File, taskRequestId: string) => Promise<void> | void
   onSendAction: (
     actionType: ActionType,
     actionPayload: Record<string, string>
@@ -335,8 +343,12 @@ export function buildRoomTimeline(
   // stay out: Human browser files already render through the DataChannel
   // file bubble (their Agent-consumption Room copies must not appear twice),
   // and an unknown sender (departed participant) is never mislabeled.
+  // #363 A2: the one exception is a Task-correlated attachment, because a
+  // Human Task attachment travels the bounded Room attachment path and has no
+  // DataChannel bubble at all. RoomContent already scopes the list to one
+  // Task, so this can never leak into ordinary Room presentation.
   for (const attachment of attachments) {
-    if (attachment.senderKind !== "agent") continue
+    if (attachment.senderKind !== "agent" && !attachment.taskRequestId) continue
     items.push({ type: "attachment", seq: attachment.sequence, attachment })
   }
   // Stable sort: canonical sequence order; sequence-less ephemeral messages
@@ -348,6 +360,13 @@ export function buildRoomTimeline(
 export function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   return `${(bytes / 1024).toFixed(1)} KB`
+}
+
+/** #363: keep the composer's pending attachment visible with the real reason
+ * the local send could not even begin. */
+function attachmentErrorMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message.trim() : ""
+  return detail || "Couldn't send this attachment. Try again or remove it."
 }
 
 function getOrCreateWhiteboardUrl(room: string): string {
@@ -1121,7 +1140,9 @@ const TimelineAttachmentRow = memo(function TimelineAttachmentRow({
       <div className="min-w-0 flex-1">
         <p className="mb-1 ml-1 text-xs text-gray-400">
           {attachment.senderName}
-          <span className="ml-1 text-[10px] text-blue-300">🤖 Agent</span>
+          {attachment.senderKind === "agent" && (
+            <span className="ml-1 text-[10px] text-blue-300">🤖 Agent</span>
+          )}
         </p>
         <AgentAttachmentCard attachment={attachment} onPreview={onPreview} />
       </div>
@@ -1496,10 +1517,18 @@ const TextChatCard = memo(function TextChatCard({
   onPermissionRespond,
   taskRequestId,
   taskAvailable = true,
+  onSendTaskFile,
 }: TextChatCardProps) {
   const taskScoped = Boolean(taskRequestId)
   const taskUnavailable = taskScoped && !taskAvailable
   const [message, setMessage] = useState<string>("")
+  // #363 A1: compose-first attachment. The picked file is a composer draft —
+  // picking never sends — and only Send initiates the existing file and text
+  // operations as one user action.
+  const [draftAttachment, setDraftAttachment] = useState<File | null>(null)
+  const [draftAttachmentError, setDraftAttachmentError] = useState<string>("")
+  const [sendingDraft, setSendingDraft] = useState(false)
+  const sendingRef = useRef(false)
   const [submenu, setSubmenu] = useState<"more" | "games" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const [pickerIndex, setPickerIndex] = useState(0)
@@ -1563,18 +1592,59 @@ const TextChatCard = memo(function TextChatCard({
     setSubmenu(null)
   }
 
-  const sendCurrentMessage = () => {
-    if (message.trim() === "" || taskUnavailable) return
-    const targets = taskScoped
-      ? resolveSelectedAgentTargetIds(message.trim(), selectedAgents)
-      : resolveAgentTargetIds(message.trim(), connectedAgents, selectedAgents)
-    if (taskRequestId) onSendText(message.trim(), targets, taskRequestId)
-    else onSendText(message.trim(), targets)
+  const sendCurrentMessage = async () => {
+    if (taskUnavailable || sendingRef.current) return
+    const text = message.trim()
+    const attachment = draftAttachment
+    if (text === "" && !attachment) return
+    const targets =
+      text === ""
+        ? []
+        : taskScoped
+        ? resolveSelectedAgentTargetIds(text, selectedAgents)
+        : resolveAgentTargetIds(text, connectedAgents, selectedAgents)
+
+    if (attachment) {
+      // The local file initiation is attempted first and awaited: a Human
+      // submission whose attachment could not even begin must never be
+      // completed as an obviously partial text-only send. Once the transfer
+      // has genuinely begun there is no transactional guarantee claimed for
+      // its remote peers.
+      sendingRef.current = true
+      setSendingDraft(true)
+      setDraftAttachmentError("")
+      try {
+        if (taskScoped) {
+          // A Task-scoped composer must never fall back to the ordinary Room
+          // transfer: without the task-correlated path the submission fails
+          // closed instead.
+          if (!onSendTaskFile || !taskRequestId)
+            throw new Error("Attachments aren't available in this task")
+          await onSendTaskFile(attachment, taskRequestId)
+        } else {
+          await onSendFile(attachment)
+        }
+      } catch (error) {
+        setDraftAttachmentError(attachmentErrorMessage(error))
+        return
+      } finally {
+        sendingRef.current = false
+        setSendingDraft(false)
+      }
+      setDraftAttachment(null)
+      setDraftAttachmentError("")
+    }
+
+    if (text === "") return
+    if (taskRequestId) onSendText(text, targets, taskRequestId)
+    else onSendText(text, targets)
     setMessage("")
     setSelectedAgents([])
   }
 
-  const handleSend = sendCurrentMessage
+  const handleSend = () => {
+    void sendCurrentMessage()
+  }
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (pickerVisible) {
@@ -1608,16 +1678,24 @@ const TextChatCard = memo(function TextChatCard({
       // stays a newline and sending happens through the send button.
       if (event.shiftKey || isCoarsePointer) return
       event.preventDefault()
-      sendCurrentMessage()
+      void sendCurrentMessage()
     }
   }
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (file) {
-      onSendFile(file)
+      // #363 A1: picking a file only stages it in the composer. Nothing is
+      // sent until the Human presses Send.
+      setDraftAttachment(file)
+      setDraftAttachmentError("")
       event.target.value = ""
     }
+  }
+
+  const handleRemoveDraftAttachment = () => {
+    setDraftAttachment(null)
+    setDraftAttachmentError("")
   }
 
   const handleWhiteboard = () => {
@@ -1808,193 +1886,256 @@ const TextChatCard = memo(function TextChatCard({
             No participating Agent is currently available.
           </p>
         )}
-        <div className="relative flex flex-none items-end gap-2 border-t border-gray-700 p-3">
-          {pickerVisible && (
-            <div className="absolute bottom-full left-3 right-3 mb-1 overflow-hidden rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
-              {(showAgentPicker ? mentionAgents : pickerItems).map(
-                (item, i) => (
-                  <button
-                    key={showAgentPicker ? item.peerId : item.label}
-                    type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault()
-                      if (showAgentPicker) selectAgent(item as UserInfo)
-                      else commitPicker(i)
-                    }}
-                    onTouchEnd={(e) => {
-                      e.preventDefault()
-                      if (showAgentPicker) selectAgent(item as UserInfo)
-                      else commitPicker(i)
-                    }}
-                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
-                      i === pickerIndex
-                        ? "bg-gray-700 text-white"
-                        : "text-gray-300 hover:bg-gray-700"
-                    }`}
-                  >
-                    {showAgentPicker ? (
-                      <>
-                        <span className="text-base">🤖</span>
-                        <span className="font-medium">{item.name}</span>
-                        <span className="text-xs text-gray-500">Agent</span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-base">{item.icon}</span>
-                        <span className="font-medium">{item.label}</span>
-                        <span className="text-xs text-gray-500">
-                          {item.desc}
-                        </span>
-                      </>
-                    )}
-                  </button>
-                )
+        <div className="relative flex flex-none flex-col border-t border-gray-700 p-3">
+          {draftAttachment && (
+            <div
+              data-testid="composer-attachment"
+              className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-gray-600 bg-gray-800 px-2.5 py-1.5 text-xs text-gray-200"
+            >
+              <span aria-hidden="true">📎</span>
+              <span
+                className="min-w-0 flex-1 truncate"
+                title={draftAttachment.name}
+              >
+                {draftAttachment.name}
+              </span>
+              <span className="flex-none text-gray-500">
+                {formatAttachmentSize(draftAttachment.size)}
+              </span>
+              <button
+                type="button"
+                onClick={handleRemoveDraftAttachment}
+                disabled={sendingDraft}
+                className="flex-none rounded px-1 text-gray-400 hover:text-white disabled:opacity-30"
+                title="Remove attachment"
+                aria-label="Remove attachment"
+              >
+                ×
+              </button>
+              {draftAttachmentError && (
+                <span role="alert" className="w-full text-rose-300">
+                  {draftAttachmentError}
+                </span>
               )}
             </div>
           )}
-          {!taskScoped && (
-            <div ref={moreBtnRef} className="relative">
+          <div className="flex items-end gap-2">
+            {pickerVisible && (
+              <div className="absolute bottom-full left-3 right-3 mb-1 overflow-hidden rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
+                {(showAgentPicker ? mentionAgents : pickerItems).map(
+                  (item, i) => (
+                    <button
+                      key={showAgentPicker ? item.peerId : item.label}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault()
+                        if (showAgentPicker) selectAgent(item as UserInfo)
+                        else commitPicker(i)
+                      }}
+                      onTouchEnd={(e) => {
+                        e.preventDefault()
+                        if (showAgentPicker) selectAgent(item as UserInfo)
+                        else commitPicker(i)
+                      }}
+                      className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
+                        i === pickerIndex
+                          ? "bg-gray-700 text-white"
+                          : "text-gray-300 hover:bg-gray-700"
+                      }`}
+                    >
+                      {showAgentPicker ? (
+                        <>
+                          <span className="text-base">🤖</span>
+                          <span className="font-medium">{item.name}</span>
+                          <span className="text-xs text-gray-500">Agent</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-base">{item.icon}</span>
+                          <span className="font-medium">{item.label}</span>
+                          <span className="text-xs text-gray-500">
+                            {item.desc}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  )
+                )}
+              </div>
+            )}
+            {!taskScoped && (
+              <div ref={moreBtnRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSubmenu((v) => (v === "more" ? null : "more"))
+                  }
+                  className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white"
+                  title="More actions"
+                  aria-label="More actions"
+                  aria-expanded={submenu === "more" || submenu === "games"}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth={2}
+                    stroke="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 4.5v15m7.5-7.5h-15"
+                    />
+                  </svg>
+                </button>
+                {submenu === "more" && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-20 md:hidden"
+                      onClick={closeMenu}
+                    />
+                    <div
+                      ref={moreMenuRef}
+                      className="fixed bottom-0 left-0 right-0 z-30 rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:w-48 md:rounded-lg md:border md:border-gray-600"
+                    >
+                      <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
+                        Room actions
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Close before opening the native picker so the menu
+                          // (mobile bottom sheet) is gone when the picker returns.
+                          closeMenu()
+                          fileInputRef.current?.click()
+                        }}
+                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                      >
+                        <span>📎</span> Attach file
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleWhiteboard}
+                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                      >
+                        <span>🎨</span> Whiteboard
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handlePoll}
+                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                      >
+                        <span>📊</span> Poll
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSubmenu("games")}
+                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
+                      >
+                        <span>🎮</span> Games
+                      </button>
+                    </div>
+                  </>
+                )}
+                {submenu === "games" && (
+                  <GamesMenu
+                    onSelect={handleGameSelect}
+                    onBack={() => setSubmenu(null)}
+                    menuRef={gamesMenuRef}
+                  />
+                )}
+              </div>
+            )}
+            {taskScoped && onSendTaskFile && (
               <button
                 type="button"
-                onClick={() =>
-                  setSubmenu((v) => (v === "more" ? null : "more"))
-                }
-                className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white"
-                title="More actions"
-                aria-label="More actions"
-                aria-expanded={submenu === "more" || submenu === "games"}
+                onClick={() => fileInputRef.current?.click()}
+                disabled={taskUnavailable || sendingDraft}
+                className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white disabled:opacity-30"
+                title="Attach a file to this task"
+                aria-label="Attach a file to this task"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   fill="none"
                   viewBox="0 0 24 24"
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   stroke="currentColor"
                   className="h-4 w-4"
                 >
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    d="M12 4.5v15m7.5-7.5h-15"
+                    d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13"
                   />
                 </svg>
               </button>
-              {submenu === "more" && (
-                <>
-                  <div
-                    className="fixed inset-0 z-20 md:hidden"
-                    onClick={closeMenu}
-                  />
-                  <div
-                    ref={moreMenuRef}
-                    className="fixed bottom-0 left-0 right-0 z-30 rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:w-48 md:rounded-lg md:border md:border-gray-600"
-                  >
-                    <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
-                      Room actions
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // Close before opening the native picker so the menu
-                        // (mobile bottom sheet) is gone when the picker returns.
-                        closeMenu()
-                        fileInputRef.current?.click()
-                      }}
-                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                    >
-                      <span>📎</span> Attach file
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleWhiteboard}
-                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                    >
-                      <span>🎨</span> Whiteboard
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handlePoll}
-                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                    >
-                      <span>📊</span> Poll
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSubmenu("games")}
-                      className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                    >
-                      <span>🎮</span> Games
-                    </button>
-                  </div>
-                </>
-              )}
-              {submenu === "games" && (
-                <GamesMenu
-                  onSelect={handleGameSelect}
-                  onBack={() => setSubmenu(null)}
-                  menuRef={gamesMenuRef}
-                />
-              )}
-            </div>
-          )}
-          <textarea
-            ref={textRef}
-            rows={1}
-            className="scrollbar-thin max-h-40 flex-1 resize-none overflow-y-auto rounded-xl bg-gray-900 px-3 py-2 text-sm leading-relaxed text-white placeholder-gray-500 focus:outline-none"
-            value={message}
-            disabled={taskUnavailable}
-            onKeyDown={handleKeyDown}
-            onChange={(e) => {
-              const nextMessage = e.target.value
-              setMessage(nextMessage)
-              setSelectedAgents((current) =>
-                current.filter((agent) =>
-                  resolveAgentTargetIds(nextMessage, connectedAgents, [
-                    agent,
-                  ]).includes(agent.id)
+            )}
+            <textarea
+              ref={textRef}
+              rows={1}
+              className="scrollbar-thin max-h-40 flex-1 resize-none overflow-y-auto rounded-xl bg-gray-900 px-3 py-2 text-sm leading-relaxed text-white placeholder-gray-500 focus:outline-none"
+              value={message}
+              disabled={taskUnavailable}
+              onKeyDown={handleKeyDown}
+              onChange={(e) => {
+                const nextMessage = e.target.value
+                setMessage(nextMessage)
+                setSelectedAgents((current) =>
+                  current.filter((agent) =>
+                    resolveAgentTargetIds(nextMessage, connectedAgents, [
+                      agent,
+                    ]).includes(agent.id)
+                  )
                 )
-              )
-              setPickerDismissed(false)
-              setPickerIndex(0)
-            }}
-            onCompositionStart={() => {
-              isComposingRef.current = true
-            }}
-            onCompositionEnd={() => {
-              isComposingRef.current = false
-            }}
-            placeholder="Message the room or @ an Agent…"
-            aria-label="Message the room or @ an Agent"
-          />
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={message.trim() === "" || taskUnavailable}
-            className="rounded-lg bg-blue-600 p-2 transition hover:bg-blue-500 disabled:opacity-30"
-            title="Send"
-            aria-label="Send message"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              strokeWidth={1.5}
-              stroke="currentColor"
-              className="h-5 w-5 text-white"
+                setPickerDismissed(false)
+                setPickerIndex(0)
+              }}
+              onCompositionStart={() => {
+                isComposingRef.current = true
+              }}
+              onCompositionEnd={() => {
+                isComposingRef.current = false
+              }}
+              placeholder="Message the room or @ an Agent…"
+              aria-label="Message the room or @ an Agent"
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={
+                (message.trim() === "" && !draftAttachment) ||
+                taskUnavailable ||
+                sendingDraft
+              }
+              className="rounded-lg bg-blue-600 p-2 transition hover:bg-blue-500 disabled:opacity-30"
+              title="Send"
+              aria-label="Send message"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"
-              />
-            </svg>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={handleFileChange}
-          />
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                strokeWidth={1.5}
+                stroke="currentColor"
+                className="h-5 w-5 text-white"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5"
+                />
+              </svg>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+          </div>
         </div>
       </div>
 

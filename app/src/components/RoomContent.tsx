@@ -171,6 +171,7 @@ export default function RoomContent({
     taskLiveViews,
     sendTextMessage,
     sendFileMessage,
+    sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
@@ -556,53 +557,66 @@ export default function RoomContent({
     [roomName, sendTextMessage]
   )
 
+  // #363 A1: compose-first Room attachment. The composer awaits this promise
+  // only until the local DataChannel transfer has genuinely begun (or failed
+  // before it could begin); the existing ephemeral "Sending…" timeline bubble
+  // keeps tracking the rest of the transfer exactly as before.
   const wrappedSendFile = useCallback(
-    async (file: File) => {
+    async (file: File): Promise<void> => {
       const id = `${Date.now()}-${file.name}`
-      if (file.size > MAX_FILE_SIZE) {
-        setPendingFiles((prev) => [
-          ...prev,
-          {
-            id,
-            fileName: file.name,
-            isImage: file.type.startsWith("image/"),
-            error: true,
-            errorMessage: `File too large (max 20 MB)`,
-          },
-        ])
-        setTimeout(
-          () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
-          3000
-        )
-        return
-      }
+      if (file.size > MAX_FILE_SIZE)
+        throw new Error("File exceeds the 20 MB limit")
       umamiEvent("ChatActivity", {
         type: file.type.startsWith("image/") ? "image" : "file",
         roomHash: hashRoom(roomName),
       })
+      let markInitiated: (() => void) | undefined
+      let markFailed: ((error: unknown) => void) | undefined
+      const initiated = new Promise<void>((resolve, reject) => {
+        markInitiated = resolve
+        markFailed = reject
+      })
+      // The composer owns the pre-Send draft; this derived promise is not
+      // always awaited by its caller, so keep the rejection handled.
+      void initiated.catch(() => undefined)
       setPendingFiles((prev) => [
         ...prev,
         { id, fileName: file.name, isImage: file.type.startsWith("image/") },
       ])
-      try {
-        await sendFileMessage(file)
-      } catch {
-        setPendingFiles((prev) =>
-          prev.map((f) =>
-            f.id === id
-              ? { ...f, error: true, errorMessage: "Failed to send" }
-              : f
+      void sendFileMessage(file, () => markInitiated?.())
+        .then(() => {
+          setPendingFiles((prev) => prev.filter((f) => f.id !== id))
+        })
+        .catch((error) => {
+          markFailed?.(error)
+          setPendingFiles((prev) =>
+            prev.map((f) =>
+              f.id === id
+                ? { ...f, error: true, errorMessage: "Failed to send" }
+                : f
+            )
           )
-        )
-        setTimeout(
-          () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
-          3000
-        )
-        return
-      }
-      setPendingFiles((prev) => prev.filter((f) => f.id !== id))
+          setTimeout(
+            () => setPendingFiles((prev) => prev.filter((f) => f.id !== id)),
+            3000
+          )
+        })
+      return initiated
     },
     [roomName, sendFileMessage]
+  )
+
+  // #363 A2: a Human attachment inside the ACTIVE Task rides the existing
+  // bounded, task-correlated Room attachment API — never the 20 MB Room
+  // DataChannel transfer — and never falls back to Room scope.
+  const activeTaskRequestId = activeTask?.requestId
+  const wrappedSendTaskFile = useCallback(
+    async (file: File, taskRequestId: string): Promise<void> => {
+      if (!activeTaskRequestId || activeTaskRequestId !== taskRequestId)
+        throw new Error("This task is no longer active")
+      await sendTaskAttachment(file, taskRequestId)
+    },
+    [activeTaskRequestId, sendTaskAttachment]
   )
 
   const selfScreenShareRef = useRef(false)
@@ -1186,6 +1200,7 @@ export default function RoomContent({
                   pendingFiles={activeTask ? [] : pendingFiles}
                   onSendText={wrappedSendText}
                   onSendFile={wrappedSendFile}
+                  onSendTaskFile={wrappedSendTaskFile}
                   onSendAction={sendActionMessage}
                   localParticipantId={effectiveLocalParticipantId}
                   onCollabRespond={handleCollabRespond}

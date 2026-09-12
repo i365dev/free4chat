@@ -5796,8 +5796,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const requestedTaskRequestId =
       request.headers.get("X-Task-Request-Id")?.trim() || undefined
     if (requestedTaskRequestId !== undefined) {
-      if (participant.kind !== "agent")
-        return this.json({ error: "task_attachment_agent_only" }, 403)
+      // #363 A2: a Human may attach into an ACTIVE Task through this same
+      // bounded Room attachment store. The correlation is resolved against
+      // the retained canonical Task log and fails closed — an unknown/expired
+      // Task, or one with no participating Agent currently in the Room, is
+      // rejected before any bytes are stored and is never silently downgraded
+      // to ordinary Room scope.
       const taskResolution = resolveTaskRequest(
         buildTaskProjectionIndex(room.messages, room.participants),
         requestedTaskRequestId,
@@ -5808,8 +5812,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           { error: taskResolution.error },
           taskResolution.error === "unknown_task_request" ? 409 : 403
         )
-      if (!taskResolution.agentParticipantIds.includes(participant.id))
+      if (participant.kind === "agent") {
+        if (!taskResolution.agentParticipantIds.includes(participant.id))
+          return this.json({ error: "task_attachment_not_participant" }, 403)
+      } else if (participant.kind !== "human") {
         return this.json({ error: "task_attachment_not_participant" }, 403)
+      }
     }
     // #106: agents as well as humans may contribute to the room's bounded
     // ephemeral attachment set — a collaborating agent's screenshot/log/JSON

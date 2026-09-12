@@ -374,6 +374,27 @@ function isAgentImage(file: File): boolean {
   return AGENT_IMAGE_TYPES.has(file.type)
 }
 
+/** #363 A2: Task attachments reuse the existing bounded Room attachment API,
+ * whose bounded failure surface is mapped to Human-readable text. */
+function taskAttachmentErrorMessage(error: unknown): string {
+  switch (error) {
+    case "attachment_too_large":
+      return "Task attachments are limited to 768 KB"
+    case "unsupported_image_type":
+    case "unsupported_attachment_type":
+      return "Only images and text files can be attached to a task"
+    case "task_target_not_in_room":
+    case "unknown_task_request":
+      return "This task is no longer active"
+    case "task_attachment_not_participant":
+      return "This task is no longer available"
+    case "room_expired":
+      return "This Room has expired"
+    default:
+      return "Couldn't attach the file to this task"
+  }
+}
+
 /** Text-like files are uploaded for read_attachment too; the MCP layer
  * returns them as decoded text instead of ImageContent. */
 function isAgentTextFile(file: File): boolean {
@@ -3751,7 +3772,7 @@ export function useSfuChatRoom(
   }, [createRuntimeProviderClaim, roomName])
 
   const sendFileMessage = useCallback(
-    async (file: File) => {
+    async (file: File, onInitiated?: () => void) => {
       // Allocate the transfer id before queueing so the queued wire messages
       // and the eventual local bubble share one stable identity.
       const id = crypto.randomUUID()
@@ -3776,6 +3797,11 @@ export function useSfuChatRoom(
             afterSequence,
           })
         )
+        // #363 A1: file-start is on the wire, so the local transfer has
+        // genuinely begun. A compose-first caller uses this edge to release
+        // the rest of one submission without inventing any transactional
+        // guarantee for remote peers.
+        onInitiated?.()
         for (let offset = 0; offset < file.size; offset += FILE_CHUNK_SIZE) {
           await waitForSendCapacity(channel)
           const chunk = await file
@@ -3851,6 +3877,52 @@ export function useSfuChatRoom(
     ]
   )
 
+  // #363 A2: Human attachment inside an ACTIVE Task. This deliberately reuses
+  // the existing bounded, task-correlated Room attachment API (same 768 KB
+  // Agent-readable bound, same ephemeral Room store) instead of the 20 MB
+  // Human DataChannel transfer, and it always carries the exact active
+  // taskRequestId so the Room can fail closed on a stale or unknown Task.
+  const sendTaskAttachment = useCallback(
+    async (file: File, taskRequestId: string): Promise<void> => {
+      const requestId = taskRequestId.trim()
+      if (!requestId) throw new Error("This task is no longer active")
+      const session = sessionRef.current
+      if (!session) throw new Error("Not connected to the room")
+      if (file.size === 0) throw new Error("Empty files can't be attached")
+      if (file.size > MAX_AGENT_ATTACHMENT_BYTES)
+        throw new Error("Task attachments are limited to 768 KB")
+      let uploadType = agentTextMime(file)
+      let uploadBody: ArrayBuffer | Blob = file
+      if (isAgentImage(file)) {
+        // Same bounded, Agent-readable image copy the ordinary Room path uses.
+        const visionCopy = await createAgentVisionCopy(file)
+        uploadType = visionCopy.type || file.type
+        uploadBody = await visionCopy.arrayBuffer()
+      }
+      if (!uploadType)
+        throw new Error("Only images and text files can be attached to a task")
+      const response = await fetch("/api/room/attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": uploadType,
+          "X-Room-Id": roomName,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+          "X-File-Name": encodeURIComponent(file.name.slice(0, 256)),
+          "X-Task-Request-Id": requestId,
+        },
+        body: uploadBody,
+      })
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as {
+          error?: unknown
+        } | null
+        throw new Error(taskAttachmentErrorMessage(payload?.error))
+      }
+    },
+    [roomName]
+  )
+
   const retryVerification = useCallback(() => {
     if (closingRef.current) return
     setError("")
@@ -3882,6 +3954,7 @@ export function useSfuChatRoom(
     getRoomAppStats,
     sendTextMessage,
     sendFileMessage,
+    sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
     sendCollabResponse,
