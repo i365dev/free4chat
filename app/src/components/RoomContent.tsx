@@ -130,6 +130,9 @@ export default function RoomContent({
   const [taskError, setTaskError] = useState("")
   const [activeInteraction, setActiveInteraction] = useState("room")
   const [activeRoomAppId, setActiveRoomAppId] = useState<string | null>(null)
+  const [expandedRoomAppId, setExpandedRoomAppId] = useState<string | null>(
+    null
+  )
   // Browser-local resident App sessions, bounded by the curated catalog size.
   const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
   const [readyRoomAppIds, setReadyRoomAppIds] = useState<string[]>([])
@@ -387,11 +390,35 @@ export default function RoomContent({
     const hostIsGone = (id: string) =>
       stablyUnavailable || !curatedRoomApps.some((app) => app.id === id)
     if (activeRoomAppId && hostIsGone(activeRoomAppId)) setActiveRoomAppId(null)
+    if (expandedRoomAppId && hostIsGone(expandedRoomAppId))
+      setExpandedRoomAppId(null)
     setLaunchedRoomAppIds((previous) => {
       const next = previous.filter((id) => !hostIsGone(id))
       return next.length === previous.length ? previous : next
     })
-  }, [activeRoomAppId, connectionStatus, curatedRoomApps, roomAppsEnabled])
+  }, [
+    activeRoomAppId,
+    connectionStatus,
+    curatedRoomApps,
+    expandedRoomAppId,
+    roomAppsEnabled,
+  ])
+
+  useEffect(() => {
+    if (!expandedRoomAppId) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      setExpandedRoomAppId(null)
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => window.removeEventListener("keydown", onKeyDown, true)
+  }, [expandedRoomAppId])
+
+  useEffect(() => {
+    if (expandedRoomAppId && expandedRoomAppId !== activeRoomAppId)
+      setExpandedRoomAppId(null)
+  }, [activeRoomAppId, expandedRoomAppId])
 
   const launchRoomApp = useCallback((appId: string) => {
     setLaunchedRoomAppIds((previous) =>
@@ -399,6 +426,19 @@ export default function RoomContent({
         ? previous
         : [...previous, appId].slice(-ROOM_APP_MAX_INSTANCES)
     )
+  }, [])
+
+  const toggleRoomAppFullscreen = useCallback(
+    (appId: string) => {
+      if (activeRoomAppId !== appId) return
+      setExpandedRoomAppId((current) => (current === appId ? null : appId))
+    },
+    [activeRoomAppId]
+  )
+
+  const hideRoomApp = useCallback((appId: string) => {
+    setActiveRoomAppId((current) => (current === appId ? null : current))
+    setExpandedRoomAppId((current) => (current === appId ? null : current))
   }, [])
 
   useEffect(() => {
@@ -1044,9 +1084,11 @@ export default function RoomContent({
                         if (selected) {
                           // Hide, do not destroy: the resident host keeps its
                           // iframe, MessagePort and App-local state.
+                          setExpandedRoomAppId(null)
                           setActiveRoomAppId(null)
                           return
                         }
+                        setExpandedRoomAppId(null)
                         launchRoomApp(app.id)
                         setActiveRoomAppId(app.id)
                       }}
@@ -1065,6 +1107,7 @@ export default function RoomContent({
                     type="button"
                     data-testid="stage-view-screen"
                     onClick={() => {
+                      setExpandedRoomAppId(null)
                       setStageView("screen")
                       setActiveRoomAppId(null)
                     }}
@@ -1083,6 +1126,7 @@ export default function RoomContent({
                     type="button"
                     data-testid="stage-view-live-view"
                     onClick={() => {
+                      setExpandedRoomAppId(null)
                       setStageView("live-view")
                       setActiveRoomAppId(null)
                     }}
@@ -1106,7 +1150,9 @@ export default function RoomContent({
                 keep receiving the bounded App messages. */}
             {roomAppSelf &&
               residentRoomApps.map((app) => {
-                const visible = visibleRoomApp?.id === app.id
+                const isFullscreen =
+                  expandedRoomAppId === app.id && activeRoomAppId === app.id
+                const visible = visibleRoomApp?.id === app.id || isFullscreen
                 return (
                   <div
                     key={app.id}
@@ -1128,7 +1174,10 @@ export default function RoomContent({
                       subscribeUnicast={subscribeRoomAppUnicast}
                       subscribeUnicastResults={subscribeRoomAppUnicastResults}
                       sendUnicast={sendRoomAppUnicast}
-                      onClose={() => setActiveRoomAppId(null)}
+                      isFullscreen={isFullscreen}
+                      onToggleFullscreen={() => toggleRoomAppFullscreen(app.id)}
+                      onClose={() => hideRoomApp(app.id)}
+                      onUnavailable={hideRoomApp}
                     />
                   </div>
                 )

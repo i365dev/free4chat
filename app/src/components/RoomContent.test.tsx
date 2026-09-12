@@ -1372,6 +1372,147 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(send).not.toHaveBeenCalled()
     })
 
+    it("uses a generic fullscreen layout without replacing the resident host", async () => {
+      renderAppRoom()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+      const host = slotHost("shared-canvas")
+      expect(host).toHaveAttribute("data-layout", "stage")
+      expect(
+        within(host).getByRole("button", { name: "Fullscreen" })
+      ).toHaveAttribute("aria-pressed", "false")
+
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+
+      expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(host).toHaveClass("room-app-host--fullscreen")
+      expect(
+        within(host).getByRole("button", { name: "Exit fullscreen" })
+      ).toHaveAttribute("aria-pressed", "true")
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+
+      fireEvent.click(
+        within(host).getByRole("button", { name: "Exit fullscreen" })
+      )
+
+      expect(host).toHaveAttribute("data-layout", "stage")
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+    })
+
+    it("exits focus mode with Escape or Close while keeping the App resident", async () => {
+      renderAppRoom()
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+      const host = slotHost("shared-canvas")
+
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+      fireEvent.keyDown(window, { key: "Escape" })
+      expect(host).toHaveAttribute("data-layout", "stage")
+
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+      fireEvent.click(within(host).getByRole("button", { name: "Close" }))
+      expect(host).toHaveAttribute("data-layout", "stage")
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(slotHidden("shared-canvas")).toBe(false)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+    })
+
+    it("does not expand an inactive resident App and clears focus when Stage changes", async () => {
+      renderAppRoom()
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      fireEvent.click(screen.getByTestId("stage-app-tiny-arena"))
+
+      const hiddenCanvasHost = slotHost("shared-canvas")
+      const inactiveFullscreenButton = hiddenCanvasHost.querySelector(
+        'button[aria-label="Fullscreen"]'
+      ) as HTMLButtonElement
+      fireEvent.click(inactiveFullscreenButton)
+      expect(hiddenCanvasHost).toHaveAttribute("data-layout", "stage")
+
+      const arenaHost = slotHost("tiny-arena")
+      fireEvent.click(
+        within(arenaHost).getByRole("button", { name: "Fullscreen" })
+      )
+      expect(arenaHost).toHaveAttribute("data-layout", "fullscreen")
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      expect(arenaHost).toHaveAttribute("data-layout", "stage")
+      expect(slotHidden("tiny-arena")).toBe(true)
+      expect(slotHidden("shared-canvas")).toBe(false)
+    })
+
+    it("keeps focus mode and the same iframe through a transient transport reconnect", async () => {
+      const view = renderAppRoom()
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+      const host = slotHost("shared-canvas")
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "reconnecting",
+        roomAppsEnabled: false,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(slotHidden("shared-canvas")).toBe(false)
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(slotIframe("shared-canvas")).toBe(iframe)
+      expect(channels).toHaveLength(1)
+      expect(channels[0].port1.close).not.toHaveBeenCalled()
+    })
+
+    it("leaves focus mode if the active App becomes unavailable", async () => {
+      renderAppRoom()
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const iframe = slotIframe("shared-canvas")
+      loadAppIframe(iframe)
+      const host = slotHost("shared-canvas")
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+
+      act(() => {
+        channels[0].port1.emit({
+          type: "ready",
+          appInstanceId: roomAppInstanceId("test-room", "shared-canvas"),
+          handshakeToken: "wrong-handshake",
+        })
+      })
+
+      await waitFor(() => expect(host).toHaveAttribute("data-layout", "stage"))
+      expect(slotHidden("shared-canvas")).toBe(true)
+      expect(slotHost("shared-canvas")).toHaveTextContent(
+        "This Room App is unavailable"
+      )
+    })
+
     it("treats visual Close as Hide and restores the same session on reopen", async () => {
       renderAppRoom()
 

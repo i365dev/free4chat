@@ -107,7 +107,9 @@ interface TextChatCardProps {
   taskAvailable?: boolean
 }
 
-const GAMES = [
+// These details are retained only to render historical `game` action
+// messages. New external-game actions are no longer created from the composer.
+const LEGACY_GAME_CARDS = [
   {
     id: "skribbl",
     emoji: "✏️",
@@ -378,27 +380,6 @@ function attachmentErrorMessage(error: unknown): string {
   return detail || "Couldn't send this attachment. Try again or remove it."
 }
 
-function getOrCreateWhiteboardUrl(room: string): string {
-  const storageKey = `wb-key-${room}`
-  let key = localStorage.getItem(storageKey)
-  if (!key) {
-    const bytes = new Uint8Array(16)
-    crypto.getRandomValues(bytes)
-    key = btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=/g, "")
-      .slice(0, 22)
-    localStorage.setItem(storageKey, key)
-  }
-  const roomId = room
-    .split("")
-    .reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) & 0xffffff, 0)
-    .toString(16)
-    .padStart(6, "0")
-  return `https://excalidraw.com/#room=${roomId},${key}`
-}
-
 function PollCard({
   msg,
   isSelf,
@@ -481,7 +462,7 @@ function GameCard({ msg, isSelf }: { msg: Message; isSelf: boolean }) {
     : "ml-2 rounded-br-3xl rounded-tr-3xl rounded-tl-xl px-4 py-3"
 
   const gameId = msg.actionPayload?.gameId ?? ""
-  const game = GAMES.find((g) => g.id === gameId)
+  const game = LEGACY_GAME_CARDS.find((g) => g.id === gameId)
   if (!game) return null
 
   return (
@@ -1466,49 +1447,6 @@ function PollCreator({
   )
 }
 
-function GamesMenu({
-  onSelect,
-  onBack,
-  menuRef,
-}: {
-  onSelect: (gameId: string) => void
-  onBack: () => void
-  menuRef?: React.RefObject<HTMLDivElement>
-}) {
-  return (
-    <>
-      <div className="fixed inset-0 z-20 md:hidden" onClick={onBack} />
-      <div
-        ref={menuRef}
-        className="fixed bottom-0 left-0 right-0 z-30 max-h-[60vh] overflow-y-auto rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:max-h-72 md:w-52 md:rounded-lg md:border md:border-gray-600"
-      >
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex w-full items-center gap-1 px-3 py-1.5 text-xs text-gray-400 hover:bg-gray-700"
-        >
-          ← Back
-        </button>
-        <div className="mx-2 my-1 border-t border-gray-700" />
-        {GAMES.map((g) => (
-          <button
-            key={g.id}
-            type="button"
-            onClick={() => onSelect(g.id)}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-gray-700"
-          >
-            <span>{g.emoji}</span>
-            <div>
-              <p className="text-sm text-gray-200">{g.name}</p>
-              <p className="text-xs text-gray-500">{g.desc}</p>
-            </div>
-          </button>
-        ))}
-      </div>
-    </>
-  )
-}
-
 const TextChatCard = memo(function TextChatCard({
   room,
   nickName,
@@ -1538,7 +1476,7 @@ const TextChatCard = memo(function TextChatCard({
   const [draftAttachmentError, setDraftAttachmentError] = useState<string>("")
   const [sendingDraft, setSendingDraft] = useState(false)
   const sendingRef = useRef(false)
-  const [submenu, setSubmenu] = useState<"more" | "games" | null>(null)
+  const [submenu, setSubmenu] = useState<"more" | null>(null)
   const [showPollCreator, setShowPollCreator] = useState<boolean>(false)
   const [pickerIndex, setPickerIndex] = useState(0)
   const [artifactId, setArtifactId] = useState<string | null>(null)
@@ -1555,7 +1493,6 @@ const TextChatCard = memo(function TextChatCard({
   const textRef = useRef<HTMLTextAreaElement>(null)
   const moreBtnRef = useRef<HTMLDivElement>(null)
   const moreMenuRef = useRef<HTMLDivElement>(null)
-  const gamesMenuRef = useRef<HTMLDivElement>(null)
   const isComposingRef = useRef(false)
   const handlePreviewArtifact = useCallback((attachmentId: string) => {
     setArtifactId(attachmentId)
@@ -1588,10 +1525,7 @@ const TextChatCard = memo(function TextChatCard({
       const target = e.target as Node
       const inBtn = moreBtnRef.current?.contains(target)
       const inMoreMenu = moreMenuRef.current?.contains(target)
-      const inGamesMenu = gamesMenuRef.current?.contains(target)
-      if (!inBtn && !inMoreMenu && !inGamesMenu) {
-        setSubmenu(null)
-      }
+      if (!inBtn && !inMoreMenu) setSubmenu(null)
     }
     if (submenu) document.addEventListener("mousedown", handleClickOutside)
     return () => document.removeEventListener("mousedown", handleClickOutside)
@@ -1713,13 +1647,6 @@ const TextChatCard = memo(function TextChatCard({
     setDraftAttachmentError("")
   }
 
-  const handleWhiteboard = () => {
-    closeMenu()
-    const url = getOrCreateWhiteboardUrl(room)
-    umamiEvent("ChatAction", { type: "whiteboard", roomHash: hashRoom(room) })
-    onSendAction("whiteboard", { url })
-  }
-
   const handlePoll = () => {
     closeMenu()
     setShowPollCreator(true)
@@ -1735,12 +1662,6 @@ const TextChatCard = memo(function TextChatCard({
     })
   }
 
-  const handleGameSelect = (gameId: string) => {
-    closeMenu()
-    umamiEvent("ChatAction", { type: "game", gameId, roomHash: hashRoom(room) })
-    onSendAction("game", { gameId })
-  }
-
   const handleVote = useCallback(
     (pollId: string, option: string) => {
       umamiEvent("ChatAction", { type: "vote", roomHash: hashRoom(room) })
@@ -1751,30 +1672,12 @@ const TextChatCard = memo(function TextChatCard({
 
   const slashCommands = [
     {
-      icon: "🎨",
-      label: "/draw",
-      desc: "Open whiteboard",
-      action: () => {
-        setMessage("")
-        handleWhiteboard()
-      },
-    },
-    {
       icon: "📊",
       label: "/poll",
       desc: "Create a poll",
       action: () => {
         setMessage("")
         handlePoll()
-      },
-    },
-    {
-      icon: "🎮",
-      label: "/games",
-      desc: "Share a game link",
-      action: () => {
-        setMessage("")
-        setSubmenu("games")
       },
     },
   ]
@@ -1988,7 +1891,7 @@ const TextChatCard = memo(function TextChatCard({
                   className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white"
                   title="More actions"
                   aria-label="More actions"
-                  aria-expanded={submenu === "more" || submenu === "games"}
+                  aria-expanded={submenu === "more"}
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -2032,34 +1935,13 @@ const TextChatCard = memo(function TextChatCard({
                       </button>
                       <button
                         type="button"
-                        onClick={handleWhiteboard}
-                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                      >
-                        <span>🎨</span> Whiteboard
-                      </button>
-                      <button
-                        type="button"
                         onClick={handlePoll}
                         className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
                       >
                         <span>📊</span> Poll
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setSubmenu("games")}
-                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
-                      >
-                        <span>🎮</span> Games
-                      </button>
                     </div>
                   </>
-                )}
-                {submenu === "games" && (
-                  <GamesMenu
-                    onSelect={handleGameSelect}
-                    onBack={() => setSubmenu(null)}
-                    menuRef={gamesMenuRef}
-                  />
                 )}
               </div>
             )}

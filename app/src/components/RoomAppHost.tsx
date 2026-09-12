@@ -41,6 +41,9 @@ interface RoomAppHostProps {
   ) => "sent" | "rate_limited" | "payload_too_large" | "delivery_unavailable"
   onClose: () => void
   onReady?: (appId: string) => void
+  isFullscreen?: boolean
+  onToggleFullscreen?: () => void
+  onUnavailable?: (appId: string) => void
 }
 
 function handshakeToken(): string {
@@ -63,12 +66,16 @@ export default function RoomAppHost({
   sendUnicast,
   onClose,
   onReady,
+  isFullscreen = false,
+  onToggleFullscreen,
+  onUnavailable,
 }: RoomAppHostProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const portRef = useRef<MessagePort | null>(null)
   const tokenRef = useRef(handshakeToken())
   const readyRef = useRef(false)
   const readyNotifiedRef = useRef(false)
+  const unavailableNotifiedRef = useRef(false)
   const previousParticipantsRef = useRef<RoomAppParticipantProjection[]>([])
   const sendRef = useRef(send)
   sendRef.current = send
@@ -77,6 +84,12 @@ export default function RoomAppHost({
   const pendingUnicastRequestsRef = useRef(new Map<string, number>())
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (!failed || unavailableNotifiedRef.current) return
+    unavailableNotifiedRef.current = true
+    onUnavailable?.(app.id)
+  }, [app.id, failed, onUnavailable])
 
   const post = useCallback((message: RoomAppHostMessage) => {
     try {
@@ -283,15 +296,28 @@ export default function RoomAppHost({
   return (
     <section
       aria-label={app.label}
-      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-gray-950"
+      className={`flex min-h-0 flex-col overflow-hidden bg-gray-950 ${
+        isFullscreen ? "room-app-host--fullscreen" : "flex-1"
+      }`}
+      data-layout={isFullscreen ? "fullscreen" : "stage"}
       data-testid="room-app-host"
     >
-      <div className="flex flex-none items-center justify-between border-b border-gray-800 px-3 py-2 text-xs text-gray-300">
-        <span>{app.label}</span>
-        <div className="flex items-center gap-2">
+      <div className="flex flex-none items-center justify-between gap-2 border-b border-gray-800 px-3 py-2 text-xs text-gray-300">
+        <span className="min-w-0 truncate">{app.label}</span>
+        <div className="flex flex-none items-center gap-2">
           <span aria-live="polite">
             {failed ? "unavailable" : ready ? "ready" : "connecting…"}
           </span>
+          <button
+            type="button"
+            onClick={onToggleFullscreen}
+            aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            aria-pressed={isFullscreen}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            className="rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white"
+          >
+            {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          </button>
           <button
             type="button"
             onClick={onClose}
@@ -315,7 +341,7 @@ export default function RoomAppHost({
           allow=""
           onLoad={sendBootstrap}
           onError={() => setFailed(true)}
-          className="min-h-0 flex-1 border-0"
+          className="min-h-0 w-full min-w-0 flex-1 border-0"
           data-testid="room-app-iframe"
         />
       )}

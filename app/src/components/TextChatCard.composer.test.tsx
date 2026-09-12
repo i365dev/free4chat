@@ -1,4 +1,11 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { Message, UserInfo } from "@common/types"
@@ -234,15 +241,49 @@ describe("composer keyboard semantics", () => {
     expect(onSendText).toHaveBeenCalledWith("@Age", [])
   })
 
-  it("keeps the / command picker working from the textarea", () => {
-    const { composer, onSendAction } = renderCard()
-    typeMessage(composer, "/")
-    fireEvent.keyDown(composer, { key: "Enter" })
-    expect(onSendAction).toHaveBeenCalledWith(
-      "whiteboard",
-      expect.objectContaining({
-        url: expect.stringContaining("excalidraw.com"),
-      })
+  it("only suggests current Room action slash commands", () => {
+    const { composer } = renderCard()
+    act(() => typeMessage(composer, "/"))
+    expect(screen.getByRole("button", { name: /\/poll/ })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /\/draw/ })).toBeNull()
+    expect(screen.queryByRole("button", { name: /\/games/ })).toBeNull()
+
+    act(() => typeMessage(composer, "/draw"))
+    expect(screen.queryByRole("button", { name: /\/draw/ })).toBeNull()
+    act(() => typeMessage(composer, "/games"))
+    expect(screen.queryByRole("button", { name: /\/games/ })).toBeNull()
+  })
+
+  it("continues to render historical Whiteboard and game action messages", () => {
+    renderCard({
+      messages: [
+        {
+          peerId: "human-legacy",
+          name: "Earlier Human",
+          kind: "human",
+          type: "action",
+          actionType: "whiteboard",
+          actionPayload: { url: "https://excalidraw.com/#room=old,key" },
+          sequence: 1,
+        },
+        {
+          peerId: "human-legacy",
+          name: "Earlier Human",
+          kind: "human",
+          type: "action",
+          actionType: "game",
+          actionPayload: { gameId: "skribbl" },
+          sequence: 2,
+        },
+      ],
+    })
+
+    expect(
+      screen.getByRole("link", { name: /Open Whiteboard/ })
+    ).toHaveAttribute("href", "https://excalidraw.com/#room=old,key")
+    expect(screen.getByRole("link", { name: /skribbl\.io/ })).toHaveAttribute(
+      "href",
+      "https://skribbl.io"
     )
   })
 })
@@ -342,37 +383,21 @@ describe("markdown rendering", () => {
 })
 
 describe("secondary action menu", () => {
-  it("moves Whiteboard/Poll/Games/Attach into the + menu and keeps them wired", () => {
+  it("keeps only Attach file and Poll in the Room actions menu", () => {
     const { onSendAction } = renderCard()
 
     // The legacy first-class pills are gone from the composer.
     expect(screen.queryByText("Draw")).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByLabelText("More actions"))
-    expect(screen.getByText("Attach file")).toBeInTheDocument()
-    expect(screen.getByText("Whiteboard")).toBeInTheDocument()
-    expect(screen.getByText("Poll")).toBeInTheDocument()
-    expect(screen.getByText("Games")).toBeInTheDocument()
-
-    fireEvent.click(screen.getByText("Whiteboard"))
-    expect(onSendAction).toHaveBeenCalledWith(
-      "whiteboard",
-      expect.objectContaining({
-        url: expect.stringContaining("excalidraw.com"),
-      })
-    )
-    expect(screen.queryByText("Attach file")).not.toBeInTheDocument()
-  })
-
-  it("opens the Games list from the + menu", () => {
-    const { onSendAction } = renderCard()
-    fireEvent.click(screen.getByLabelText("More actions"))
-    fireEvent.click(screen.getByText("Games"))
-    fireEvent.click(screen.getByText("skribbl.io"))
-    expect(onSendAction).toHaveBeenCalledWith(
-      "game",
-      expect.objectContaining({ gameId: "skribbl" })
-    )
+    const menu = screen.getByText("Room actions").parentElement
+    expect(menu).not.toBeNull()
+    expect(within(menu!).getAllByRole("button")).toHaveLength(2)
+    expect(within(menu!).getByText("Attach file")).toBeInTheDocument()
+    expect(within(menu!).getByText("Poll")).toBeInTheDocument()
+    expect(screen.queryByText("Whiteboard")).not.toBeInTheDocument()
+    expect(screen.queryByText("Games")).not.toBeInTheDocument()
+    expect(onSendAction).not.toHaveBeenCalled()
   })
 
   it("opens the Poll creator from the + menu and still sends polls", () => {
