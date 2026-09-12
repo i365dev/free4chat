@@ -49,6 +49,10 @@ describe("Home page", () => {
     expect(
       screen.getByRole("link", { name: "Multi-Agent Collaboration →" })
     ).toHaveAttribute("href", "/multi-agent-collaboration")
+    expect(screen.getByRole("link", { name: "Room Apps →" })).toHaveAttribute(
+      "href",
+      "/apps"
+    )
     expect(screen.getByRole("link", { name: "Documentation" })).toHaveAttribute(
       "href",
       "/docs"

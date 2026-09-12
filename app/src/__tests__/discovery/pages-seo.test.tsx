@@ -25,11 +25,22 @@ vi.mock("../../components/DiscoveryPageLayout", () => ({
     />
   ),
 }))
+vi.mock("../../components/SeoHead", () => ({
+  default: (props: { title: string; description: string; path: string }) => (
+    <div
+      data-testid="seo-stub"
+      data-title={props.title}
+      data-description={props.description}
+      data-path={props.path}
+    />
+  ),
+}))
 vi.mock("next/router", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
 
 import AiAgentRoomPage from "../../pages/ai-agent-room"
+import AppsPage from "../../pages/apps"
 import WhiteboardPage from "../../pages/apps/whiteboard"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
@@ -62,7 +73,7 @@ const PAGES: Array<{
 function renderStub(Component: () => ReactElement) {
   const { container, unmount } = render(<Component />)
   const stub = container.querySelector<HTMLElement>(
-    '[data-testid="layout-stub"]'
+    '[data-testid="layout-stub"], [data-testid="seo-stub"]'
   )
   return { stub, unmount }
 }
@@ -112,5 +123,14 @@ describe("Discovery pages — SEO metadata authored per page", () => {
       ids.add(ctaId)
       unmount()
     }
+  })
+
+  it("/apps authors its own canonical discovery metadata", () => {
+    const { stub, unmount } = renderStub(AppsPage)
+
+    expect(stub?.dataset.title).toMatch(/Free4Chat Apps/)
+    expect(stub?.dataset.description).toMatch(/temporary Free4Chat Rooms/)
+    expect(stub?.dataset.path).toBe("/apps")
+    unmount()
   })
 })

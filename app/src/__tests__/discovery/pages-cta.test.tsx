@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const router = vi.hoisted(() => ({ push: vi.fn() }))
 vi.mock("next/router", () => ({ useRouter: () => router }))
 
+import DiscoveryFooter from "../../components/DiscoveryFooter"
 import AiAgentRoomPage from "../../pages/ai-agent-room"
+import AppsPage from "../../pages/apps"
 import WhiteboardPage from "../../pages/apps/whiteboard"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
@@ -116,6 +118,41 @@ describe("Whiteboard direct Room CTA", () => {
     expect(savedRooms[0].nickName).toBeTruthy()
     expect(router.push).toHaveBeenCalledWith(
       `/room?id=${encodeURIComponent(savedRooms[0].roomName)}&app=whiteboard`
+    )
+  })
+})
+
+describe("Room Apps discovery surface", () => {
+  it("lists only the shipped Whiteboard App with a descriptive crawlable link", () => {
+    render(<AppsPage />)
+
+    expect(
+      screen.getByRole("heading", {
+        level: 1,
+        name: "Apps for temporary Free4Chat Rooms",
+      })
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole("article")).toHaveLength(1)
+    expect(
+      screen.getByRole("heading", { level: 2, name: "Online Whiteboard" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", { name: "Explore Whiteboard →" })
+    ).toHaveAttribute("href", "/apps/whiteboard")
+    expect(
+      screen.queryByText(/Tiny Arena|Shared Canvas|Coming soon/i)
+    ).toBeNull()
+  })
+
+  it("includes Room Apps in the shared discovery footer", () => {
+    render(<DiscoveryFooter />)
+
+    expect(
+      screen.getByRole("navigation", { name: "Learn more" })
+    ).toContainElement(screen.getByRole("link", { name: "Room Apps" }))
+    expect(screen.getByRole("link", { name: "Room Apps" })).toHaveAttribute(
+      "href",
+      "/apps"
     )
   })
 })

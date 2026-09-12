@@ -5,8 +5,9 @@ const GROUPS: Array<{
   links: Array<{ href: string; label: string }>
 }> = [
   {
-    heading: "Free4Chat",
+    heading: "Explore",
     links: [
+      { href: "/apps", label: "Room Apps" },
       { href: "/temporary-chat-room", label: "Temporary rooms" },
       { href: "/ai-agent-room", label: "AI Agent rooms" },
       {
@@ -37,10 +38,10 @@ export default function DiscoveryFooter() {
   return (
     <nav
       aria-label="Learn more"
-      className="mx-auto flex w-full max-w-3xl flex-none flex-wrap justify-center gap-x-10 gap-y-4 px-4 py-6 font-mono text-xs"
+      className="mx-auto grid w-full max-w-4xl flex-none grid-cols-2 gap-x-6 gap-y-6 border-t border-emerald-900/50 px-4 py-8 font-mono text-xs sm:grid-cols-3 sm:gap-x-10"
     >
       {GROUPS.map((group) => (
-        <div key={group.heading} className="min-w-[8rem]">
+        <div key={group.heading} className="min-w-0">
           <p className="mb-2 font-semibold uppercase tracking-widest text-emerald-600">
             {group.heading}
           </p>
