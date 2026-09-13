@@ -64,6 +64,24 @@ export const ROOM_APP_CATALOG: readonly RoomAppDefinition[] = [
     url: "https://room-apps.free4.chat/random-wheel",
     origin: "https://room-apps.free4.chat",
   },
+  {
+    id: "meeting-timer",
+    label: "Meeting Timer",
+    url: "https://room-apps.free4.chat/meeting-timer",
+    origin: "https://room-apps.free4.chat",
+  },
+  {
+    id: "shared-pad",
+    label: "Shared Pad",
+    url: "https://room-apps.free4.chat/shared-pad",
+    origin: "https://room-apps.free4.chat",
+  },
+  {
+    id: "live-qa",
+    label: "Live Q&A",
+    url: "https://room-apps.free4.chat/live-qa",
+    origin: "https://room-apps.free4.chat",
+  },
 ]
 
 export const ROOM_APP_LOCAL_CATALOG: readonly RoomAppDefinition[] = [
