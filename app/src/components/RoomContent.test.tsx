@@ -29,7 +29,11 @@ import type { Message } from "@common/types"
 import { trackAnalyticsEvent } from "@common/utils"
 
 import RoomContent from "./RoomContent"
-import { roomAppInstanceId } from "../common/roomApp"
+import {
+  ROOM_APP_CATALOG,
+  ROOM_APP_MAX_INSTANCES,
+  roomAppInstanceId,
+} from "../common/roomApp"
 import { RoomSession } from "../do/RoomSession"
 import type { RoomRecord, RoomState } from "../room/types"
 
@@ -1170,6 +1174,21 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       screenShareStream: {} as MediaStream,
     }
 
+    const newlyCuratedApps = [
+      {
+        id: "pomodoro",
+        url: "https://room-apps.free4.chat/pomodoro",
+      },
+      {
+        id: "bingo",
+        url: "https://room-apps.free4.chat/bingo",
+      },
+      {
+        id: "planning-poker",
+        url: "https://room-apps.free4.chat/planning-poker",
+      },
+    ] as const
+
     function renderAppRoom(overrides: Record<string, unknown> = {}) {
       mockUseSfuChatRoom.mockReturnValue({
         ...baseHookReturn,
@@ -1395,6 +1414,104 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           appInstanceId: roomAppInstanceId("test-room", "draw-and-guess"),
         })
       )
+    })
+
+    it.each(newlyCuratedApps)(
+      "direct-launches $id with the curated sandbox, handshake and screenshare invite",
+      async ({ id, url }) => {
+        vi.stubEnv("NODE_ENV", "production")
+        const writeText = vi.fn().mockResolvedValue(undefined)
+        Object.assign(navigator, { clipboard: { writeText } })
+        mockUseSfuChatRoom.mockReturnValue({
+          ...baseHookReturn,
+          connectionStatus: "connected",
+          resolvedRoomType: "screenshare",
+          roomAppsEnabled: true,
+          participants: [localParticipant],
+        })
+
+        render(
+          <RoomContent
+            roomName="test-room"
+            nickName="Alice"
+            roomType="screenshare"
+            initialRoomAppId={id}
+          />
+        )
+
+        await waitFor(() =>
+          expect(screen.getByTestId(`stage-app-${id}`)).toHaveAttribute(
+            "aria-pressed",
+            "true"
+          )
+        )
+        const expectedStageIds = [
+          "whiteboard",
+          "typing-race",
+          "draw-and-guess",
+          "pomodoro",
+          "bingo",
+          "planning-poker",
+        ]
+        expect(ROOM_APP_CATALOG.map((app) => app.id)).toEqual(expectedStageIds)
+        for (const stageId of expectedStageIds)
+          expect(screen.getByTestId(`stage-app-${stageId}`)).toBeInTheDocument()
+
+        const host = slotHost(id)
+        const iframe = slotIframe(id)
+        expect(iframe).toHaveAttribute("src", url)
+        expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+        const frameWindow = loadAppIframe(iframe)
+        const port = channels[0].port1
+        completeHandshake(frameWindow, id, port)
+        await within(host).findByText("ready")
+        expect(port.postMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "ready",
+            appInstanceId: roomAppInstanceId("test-room", id),
+          })
+        )
+
+        fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+        await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+        expect(writeText).toHaveBeenLastCalledWith(
+          `${window.location.origin}/room?id=test-room&type=screenshare`
+        )
+
+        fireEvent.click(
+          within(host).getByRole("button", { name: "Invite to this activity" })
+        )
+        await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+        expect(writeText).toHaveBeenLastCalledWith(
+          `${window.location.origin}/room?id=test-room&type=screenshare&app=${id}`
+        )
+      }
+    )
+
+    it("shows the full production catalog while keeping only two App hosts resident", () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+
+      const stageIds = ROOM_APP_CATALOG.map((app) => app.id)
+      expect(stageIds).toHaveLength(6)
+      expect(stageIds.length).toBeGreaterThan(ROOM_APP_MAX_INSTANCES)
+      for (const id of stageIds)
+        expect(screen.getByTestId(`stage-app-${id}`)).toBeInTheDocument()
+
+      fireEvent.click(screen.getByTestId("stage-app-whiteboard"))
+      fireEvent.click(screen.getByTestId("stage-app-pomodoro"))
+      fireEvent.click(screen.getByTestId("stage-app-planning-poker"))
+
+      expect(screen.getAllByTestId("room-app-iframe")).toHaveLength(
+        ROOM_APP_MAX_INSTANCES
+      )
+      expect(screen.queryByTestId("room-app-slot-whiteboard")).toBeNull()
+      expect(screen.getByTestId("room-app-slot-pomodoro")).toBeInTheDocument()
+      expect(
+        screen.getByTestId("room-app-slot-planning-poker")
+      ).toBeInTheDocument()
+      for (const id of stageIds)
+        expect(screen.getByTestId(`stage-app-${id}`)).toBeInTheDocument()
     })
 
     it("keeps copied ordinary Room links unchanged", async () => {

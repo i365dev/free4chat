@@ -10,6 +10,10 @@ const DRAW_AND_GUESS_INSTANCE_ID = roomAppInstanceId(
   ROOM_NAME,
   "draw-and-guess"
 )
+const PLANNING_POKER_INSTANCE_ID = roomAppInstanceId(
+  ROOM_NAME,
+  "planning-poker"
+)
 
 function participant(
   id: string,
@@ -200,6 +204,65 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     expect(target.messages()).toHaveLength(1)
     expect(sender.messages().at(-1)).toMatchObject({
       requestId: "draw_guess_wrong_room",
+      ok: false,
+      error: "app_unavailable",
+    })
+  })
+
+  it("delivers Planning Poker private votes only to the targeted Human in the current Room", async () => {
+    const { store, addHumanSocket, addAgentSocket, sendFrom } =
+      makeRoomSession()
+    const sender = addHumanSocket("human-a")
+    const target = addHumanSocket("human-b")
+    const otherHuman = addHumanSocket("human-c")
+    const agent = addAgentSocket("agent-c")
+    const privateVote = { type: "vote", value: "8" }
+
+    await sendFrom(
+      sender,
+      "human-a",
+      "planning_poker_vote",
+      "human-b",
+      privateVote,
+      PLANNING_POKER_INSTANCE_ID
+    )
+
+    expect(target.messages()).toEqual([
+      {
+        type: "room-app-unicast",
+        protocolVersion: 1,
+        appInstanceId: PLANNING_POKER_INSTANCE_ID,
+        sourceParticipantId: "human-a",
+        payload: privateVote,
+      },
+    ])
+    expect(sender.messages()).toEqual([
+      {
+        type: "room-app-unicast-result",
+        requestId: "planning_poker_vote",
+        appInstanceId: PLANNING_POKER_INSTANCE_ID,
+        ok: true,
+      },
+    ])
+    expect(otherHuman.messages()).toEqual([])
+    expect(agent.messages()).toEqual([])
+    expect(
+      (store.get("room") as ReturnType<typeof buildStoredRoom>).messages
+    ).toEqual([])
+    expect(JSON.stringify(store.get("room"))).not.toContain('"value":"8"')
+
+    await sendFrom(
+      sender,
+      "human-a",
+      "planning_poker_wrong_room",
+      "human-b",
+      privateVote,
+      roomAppInstanceId("another-room", "planning-poker")
+    )
+    expect(target.messages()).toHaveLength(1)
+    expect(sender.messages().at(-1)).toMatchObject({
+      type: "room-app-unicast-result",
+      requestId: "planning_poker_wrong_room",
       ok: false,
       error: "app_unavailable",
     })
