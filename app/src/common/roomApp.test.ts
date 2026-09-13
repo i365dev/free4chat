@@ -36,6 +36,12 @@ describe("Room App Phase 0 bridge contract", () => {
         url: "https://room-apps.free4.chat/typing-race",
         origin: "https://room-apps.free4.chat",
       },
+      {
+        id: "draw-and-guess",
+        label: "Draw & Guess",
+        url: "https://room-apps.free4.chat/draw-and-guess",
+        origin: "https://room-apps.free4.chat",
+      },
     ])
     expect(ROOM_APP_LOCAL_CATALOG.map((app) => app.id)).toEqual([
       "shared-canvas",
@@ -46,10 +52,12 @@ describe("Room App Phase 0 bridge contract", () => {
   it("resolves direct launch by exact curated production id only", () => {
     expect(resolveProductionRoomAppId("whiteboard")).toBe("whiteboard")
     expect(resolveProductionRoomAppId("typing-race")).toBe("typing-race")
+    expect(resolveProductionRoomAppId("draw-and-guess")).toBe("draw-and-guess")
     expect(resolveProductionRoomAppId("typing")).toBeNull()
     expect(resolveProductionRoomAppId("typing-race ")).toBeNull()
     expect(resolveProductionRoomAppId("Typing-Race")).toBeNull()
     expect(resolveProductionRoomAppId("shared-canvas")).toBeNull()
+    expect(resolveProductionRoomAppId("draw-and-guess ")).toBeNull()
     expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
     expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
     expect(resolveProductionRoomAppId("unknown")).toBeNull()
@@ -84,6 +92,16 @@ describe("Room App Phase 0 bridge contract", () => {
       buildRoomInviteUrl({
         origin: "https://free4.chat",
         roomName: "room",
+        roomType: "screenshare",
+        appId: "draw-and-guess",
+      })
+    ).toBe(
+      "https://free4.chat/room?id=room&type=screenshare&app=draw-and-guess"
+    )
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
         roomType: "audio",
       })
     ).toBe("https://free4.chat/room?id=room")
@@ -109,6 +127,8 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[0])).toBe(true)
     expect(validateRoomAppDefinition(ROOM_APP_CATALOG[1])).toBe(true)
     expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[1])).toBe(true)
+    expect(validateRoomAppDefinition(ROOM_APP_CATALOG[2])).toBe(true)
+    expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[2])).toBe(true)
     expect(
       isRoomAppAllowlisted({
         id: "user-app",
@@ -272,6 +292,18 @@ describe("Room App Phase 0 bridge contract", () => {
         roomAppInstanceId("room-a", "whiteboard")
       )
     ).toBe(true)
+    expect(
+      isRoomAppInstanceForRoom(
+        "room-a",
+        roomAppInstanceId("room-a", "draw-and-guess")
+      )
+    ).toBe(true)
+    expect(
+      isRoomAppInstanceForRoom(
+        "room-b",
+        roomAppInstanceId("room-a", "draw-and-guess")
+      )
+    ).toBe(false)
   })
 
   it("bounds the participant projection and separates reliable/realtime rate", () => {

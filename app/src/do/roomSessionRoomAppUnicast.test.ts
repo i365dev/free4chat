@@ -6,6 +6,10 @@ import { roomAppInstanceId } from "../common/roomApp"
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 const ROOM_NAME = "room-app-unicast-test"
 const APP_INSTANCE_ID = roomAppInstanceId(ROOM_NAME, "whiteboard")
+const DRAW_AND_GUESS_INSTANCE_ID = roomAppInstanceId(
+  ROOM_NAME,
+  "draw-and-guess"
+)
 
 function participant(
   id: string,
@@ -142,13 +146,14 @@ function makeRoomSession() {
     participantId: string,
     requestId: string,
     targetParticipantId: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    appInstanceId = APP_INSTANCE_ID
   ) => {
     const message = JSON.stringify({
       type: "room-app-unicast",
       requestId,
       targetParticipantId,
-      appInstanceId: APP_INSTANCE_ID,
+      appInstanceId,
       payload,
     })
     return (
@@ -161,6 +166,45 @@ function makeRoomSession() {
 }
 
 describe("RoomSession reliable participant unicast (#377)", () => {
+  it("allowlists Draw & Guess unicast only for its current Room instance", async () => {
+    const { addHumanSocket, sendFrom } = makeRoomSession()
+    const sender = addHumanSocket("human-a")
+    const target = addHumanSocket("human-b")
+
+    await sendFrom(
+      sender,
+      "human-a",
+      "draw_guess_request",
+      "human-b",
+      { type: "private_projection" },
+      DRAW_AND_GUESS_INSTANCE_ID
+    )
+    expect(target.messages()).toEqual([
+      {
+        type: "room-app-unicast",
+        protocolVersion: 1,
+        appInstanceId: DRAW_AND_GUESS_INSTANCE_ID,
+        sourceParticipantId: "human-a",
+        payload: { type: "private_projection" },
+      },
+    ])
+
+    await sendFrom(
+      sender,
+      "human-a",
+      "draw_guess_wrong_room",
+      "human-b",
+      { type: "private_projection" },
+      roomAppInstanceId("another-room", "draw-and-guess")
+    )
+    expect(target.messages()).toHaveLength(1)
+    expect(sender.messages().at(-1)).toMatchObject({
+      requestId: "draw_guess_wrong_room",
+      ok: false,
+      error: "app_unavailable",
+    })
+  })
+
   it("delivers only to the target Human socket without storing or broadcasting the payload", async () => {
     const { store, addHumanSocket, addAgentSocket, sendFrom } =
       makeRoomSession()

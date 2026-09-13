@@ -232,11 +232,9 @@ export default function RoomContent({
   // that transient false must never be mistaken for a catalog removal.
   const curatedRoomApps = useMemo(
     () =>
-      experimentalRoomAppCatalog()
-        .filter(
-          (app) => validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
-        )
-        .slice(0, ROOM_APP_MAX_INSTANCES),
+      experimentalRoomAppCatalog().filter(
+        (app) => validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+      ),
     []
   )
   const roomApps = roomAppsEnabled ? curatedRoomApps : []

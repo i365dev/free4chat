@@ -34,6 +34,12 @@ export const ROOM_APP_CATALOG: readonly RoomAppDefinition[] = [
     url: "https://room-apps.free4.chat/typing-race",
     origin: "https://room-apps.free4.chat",
   },
+  {
+    id: "draw-and-guess",
+    label: "Draw & Guess",
+    url: "https://room-apps.free4.chat/draw-and-guess",
+    origin: "https://room-apps.free4.chat",
+  },
 ]
 
 export const ROOM_APP_LOCAL_CATALOG: readonly RoomAppDefinition[] = [
