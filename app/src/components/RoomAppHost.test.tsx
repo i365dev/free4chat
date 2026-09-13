@@ -62,6 +62,46 @@ afterEach(() => {
 })
 
 describe("RoomAppHost", () => {
+  it("copies an App invite in fullscreen without replacing its iframe or port", async () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const onInvite = vi.fn().mockResolvedValue(true)
+    const props = {
+      app,
+      appInstanceId: "whiteboard:room",
+      self,
+      participants,
+      subscribe: () => () => undefined,
+      send: () => true,
+      subscribeUnicast: () => () => undefined,
+      subscribeUnicastResults: () => () => undefined,
+      sendUnicast: () => "sent" as const,
+      onClose: () => undefined,
+      onInvite,
+    }
+    const rendered = render(<RoomAppHost {...props} isFullscreen={false} />)
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const port = lastChannel!.port1
+
+    fireEvent.click(screen.getByRole("button", { name: "Fullscreen" }))
+    rendered.rerender(<RoomAppHost {...props} isFullscreen />)
+    fireEvent.click(
+      screen.getByRole("button", { name: "Invite to this activity" })
+    )
+
+    expect(await screen.findByText("Copied!")).toBeInTheDocument()
+    expect(onInvite).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId("room-app-host")).toHaveAttribute(
+      "data-layout",
+      "fullscreen"
+    )
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(lastChannel!.port1).toBe(port)
+    expect(port.close).not.toHaveBeenCalled()
+  })
+
   it("toggles generic host layout without replacing the iframe or MessagePort", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const onToggleFullscreen = vi.fn()

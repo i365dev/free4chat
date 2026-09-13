@@ -43,6 +43,7 @@ interface RoomAppHostProps {
   onReady?: (appId: string) => void
   isFullscreen?: boolean
   onToggleFullscreen?: () => void
+  onInvite?: () => Promise<boolean>
   onUnavailable?: (appId: string) => void
 }
 
@@ -68,6 +69,7 @@ export default function RoomAppHost({
   onReady,
   isFullscreen = false,
   onToggleFullscreen,
+  onInvite,
   onUnavailable,
 }: RoomAppHostProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -84,6 +86,35 @@ export default function RoomAppHost({
   const pendingUnicastRequestsRef = useRef(new Map<string, number>())
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [inviteCopied, setInviteCopied] = useState(false)
+  const inviteCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  )
+
+  useEffect(
+    () => () => {
+      if (inviteCopiedTimerRef.current)
+        clearTimeout(inviteCopiedTimerRef.current)
+    },
+    []
+  )
+
+  const handleInvite = async () => {
+    if (!onInvite) return
+    let copied = false
+    try {
+      copied = await onInvite()
+    } catch {
+      return
+    }
+    if (!copied) return
+    setInviteCopied(true)
+    if (inviteCopiedTimerRef.current) clearTimeout(inviteCopiedTimerRef.current)
+    inviteCopiedTimerRef.current = setTimeout(() => {
+      inviteCopiedTimerRef.current = null
+      setInviteCopied(false)
+    }, 2000)
+  }
 
   useEffect(() => {
     if (!failed || unavailableNotifiedRef.current) return
@@ -308,6 +339,19 @@ export default function RoomAppHost({
           <span aria-live="polite">
             {failed ? "unavailable" : ready ? "ready" : "connecting…"}
           </span>
+          {onInvite && (
+            <button
+              type="button"
+              onClick={() => void handleInvite()}
+              aria-label="Invite to this activity"
+              title="Copy an invite link for this activity"
+              className="rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white"
+            >
+              <span aria-live="polite">
+                {inviteCopied ? "Copied!" : "Invite"}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={onToggleFullscreen}

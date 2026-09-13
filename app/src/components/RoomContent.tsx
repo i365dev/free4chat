@@ -15,6 +15,7 @@ import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
+  buildRoomInviteUrl,
   experimentalRoomAppCatalog,
   isRoomAppAllowlisted,
   resolveProductionRoomAppId,
@@ -824,23 +825,34 @@ export default function RoomContent({
     [sendPermissionResponse]
   )
 
-  const copyRoomLink = () => {
-    if (typeof window !== "undefined") {
-      const productionAppId = resolveProductionRoomAppId(activeRoomAppId)
-      const url =
-        window.location.origin +
-        "/room?id=" +
-        encodeURIComponent(roomName) +
-        (resolvedRoomType === "screenshare" ? "&type=screenshare" : "") +
-        (productionAppId ? `&app=${encodeURIComponent(productionAppId)}` : "")
-      navigator.clipboard.writeText(url)
-      trackAnalyticsEvent("InviteLinkCopied", {
-        surface: "room",
-        roomType: resolvedRoomType,
-      })
-      setRoomLinkCopied(true)
-      setTimeout(() => setRoomLinkCopied(false), 2000)
+  const copyInviteLink = async (appId?: string): Promise<boolean> => {
+    if (typeof window === "undefined") return false
+    const productionAppId =
+      appId === undefined ? null : resolveProductionRoomAppId(appId)
+    if (appId !== undefined && !productionAppId) return false
+    const url = buildRoomInviteUrl({
+      origin: window.location.origin,
+      roomName,
+      roomType: resolvedRoomType,
+      appId: productionAppId,
+    })
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      return false
     }
+    trackAnalyticsEvent("InviteLinkCopied", {
+      surface: productionAppId ? "room_app" : "room",
+      roomType: resolvedRoomType,
+      ...(productionAppId ? { app: productionAppId } : {}),
+    })
+    return true
+  }
+
+  const copyRoomLink = async () => {
+    if (!(await copyInviteLink())) return
+    setRoomLinkCopied(true)
+    setTimeout(() => setRoomLinkCopied(false), 2000)
   }
 
   const handleConnectRuntime = () => {
@@ -1208,6 +1220,7 @@ export default function RoomContent({
                 keep receiving the bounded App messages. */}
             {roomAppSelf &&
               residentRoomApps.map((app) => {
+                const productionAppId = resolveProductionRoomAppId(app.id)
                 const isFullscreen =
                   expandedRoomAppId === app.id && activeRoomAppId === app.id
                 const visible = visibleRoomApp?.id === app.id || isFullscreen
@@ -1236,6 +1249,11 @@ export default function RoomContent({
                       sendUnicast={sendRoomAppUnicast}
                       isFullscreen={isFullscreen}
                       onToggleFullscreen={() => toggleRoomAppFullscreen(app.id)}
+                      onInvite={
+                        productionAppId
+                          ? () => copyInviteLink(productionAppId)
+                          : undefined
+                      }
                       onClose={() => hideRoomApp(app.id)}
                       onUnavailable={hideRoomApp}
                     />

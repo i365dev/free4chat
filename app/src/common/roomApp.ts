@@ -423,6 +423,26 @@ export function resolveProductionRoomAppId(value: unknown): string | null {
     : null
 }
 
+/** Build a Room invite without carrying arbitrary query parameters forward. */
+export function buildRoomInviteUrl({
+  origin,
+  roomName,
+  roomType,
+  appId,
+}: {
+  origin: string
+  roomName: string
+  roomType: "audio" | "screenshare"
+  appId?: unknown
+}): string {
+  const url = new URL("/room", origin)
+  url.searchParams.set("id", roomName)
+  if (roomType === "screenshare") url.searchParams.set("type", "screenshare")
+  const productionAppId = resolveProductionRoomAppId(appId)
+  if (productionAppId) url.searchParams.set("app", productionAppId)
+  return url.toString()
+}
+
 export function projectRoomAppParticipants(
   participants: readonly RoomAppParticipantProjection[]
 ): RoomAppParticipantProjection[] {
