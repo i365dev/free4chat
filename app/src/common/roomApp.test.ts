@@ -22,12 +22,18 @@ import {
 } from "./roomApp"
 
 describe("Room App Phase 0 bridge contract", () => {
-  it("exposes only Whiteboard in production and keeps Phase-0 apps local", () => {
+  it("exposes only curated production apps and keeps Phase-0 apps local", () => {
     expect(ROOM_APP_CATALOG).toEqual([
       {
         id: "whiteboard",
         label: "Whiteboard",
         url: "https://room-apps.free4.chat/whiteboard",
+        origin: "https://room-apps.free4.chat",
+      },
+      {
+        id: "typing-race",
+        label: "Typing",
+        url: "https://room-apps.free4.chat/typing-race",
         origin: "https://room-apps.free4.chat",
       },
     ])
@@ -39,6 +45,10 @@ describe("Room App Phase 0 bridge contract", () => {
 
   it("resolves direct launch by exact curated production id only", () => {
     expect(resolveProductionRoomAppId("whiteboard")).toBe("whiteboard")
+    expect(resolveProductionRoomAppId("typing-race")).toBe("typing-race")
+    expect(resolveProductionRoomAppId("typing")).toBeNull()
+    expect(resolveProductionRoomAppId("typing-race ")).toBeNull()
+    expect(resolveProductionRoomAppId("Typing-Race")).toBeNull()
     expect(resolveProductionRoomAppId("shared-canvas")).toBeNull()
     expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
     expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
@@ -66,6 +76,21 @@ describe("Room App Phase 0 bridge contract", () => {
       buildRoomInviteUrl({
         origin: "https://free4.chat",
         roomName: "room",
+        roomType: "screenshare",
+        appId: "typing-race",
+      })
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=typing-race")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
+        roomType: "audio",
+      })
+    ).toBe("https://free4.chat/room?id=room")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
         roomType: "audio",
         appId: "shared-canvas",
       })
@@ -82,6 +107,8 @@ describe("Room App Phase 0 bridge contract", () => {
       })
     ).toBe(true)
     expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[0])).toBe(true)
+    expect(validateRoomAppDefinition(ROOM_APP_CATALOG[1])).toBe(true)
+    expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[1])).toBe(true)
     expect(
       isRoomAppAllowlisted({
         id: "user-app",

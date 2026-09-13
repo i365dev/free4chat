@@ -1279,6 +1279,68 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(port.close).not.toHaveBeenCalled()
     })
 
+    it("opens a directly addressed Typing App and preserves screenshare in its invite", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        resolvedRoomType: "screenshare",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="screenshare"
+          initialRoomAppId="typing-race"
+        />
+      )
+
+      await waitFor(() =>
+        expect(screen.getByTestId("stage-app-typing-race")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      )
+      const host = slotHost("typing-race")
+      const iframe = slotIframe("typing-race")
+      expect(iframe).toHaveAttribute(
+        "src",
+        "https://room-apps.free4.chat/typing-race"
+      )
+      expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+      const frameWindow = loadAppIframe(iframe)
+      const port = channels[0].port1
+      completeHandshake(frameWindow, "typing-race", port)
+      await within(host).findByText("ready")
+      expect(port.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "ready",
+          appInstanceId: roomAppInstanceId("test-room", "typing-race"),
+        })
+      )
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/room?id=test-room&type=screenshare`
+      )
+
+      fireEvent.click(
+        within(slotHost("typing-race")).getByRole("button", {
+          name: "Invite to this activity",
+        })
+      )
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/room?id=test-room&type=screenshare&app=typing-race`
+      )
+    })
+
     it("keeps copied ordinary Room links unchanged", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined)
       Object.assign(navigator, { clipboard: { writeText } })
