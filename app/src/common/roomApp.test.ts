@@ -60,6 +60,12 @@ describe("Room App Phase 0 bridge contract", () => {
         url: "https://room-apps.free4.chat/planning-poker",
         origin: "https://room-apps.free4.chat",
       },
+      {
+        id: "random-wheel",
+        label: "Random Wheel",
+        url: "https://room-apps.free4.chat/random-wheel",
+        origin: "https://room-apps.free4.chat",
+      },
     ])
     expect(ROOM_APP_LOCAL_CATALOG.map((app) => app.id)).toEqual([
       "shared-canvas",
@@ -74,6 +80,7 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(resolveProductionRoomAppId("pomodoro")).toBe("pomodoro")
     expect(resolveProductionRoomAppId("bingo")).toBe("bingo")
     expect(resolveProductionRoomAppId("planning-poker")).toBe("planning-poker")
+    expect(resolveProductionRoomAppId("random-wheel")).toBe("random-wheel")
     expect(resolveProductionRoomAppId("typing")).toBeNull()
     expect(resolveProductionRoomAppId("typing-race ")).toBeNull()
     expect(resolveProductionRoomAppId("Typing-Race")).toBeNull()
@@ -85,6 +92,8 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(resolveProductionRoomAppId(" bingo")).toBeNull()
     expect(resolveProductionRoomAppId("Planning-Poker")).toBeNull()
     expect(resolveProductionRoomAppId("planning-poker ")).toBeNull()
+    expect(resolveProductionRoomAppId("Random-Wheel")).toBeNull()
+    expect(resolveProductionRoomAppId("random-wheel ")).toBeNull()
     expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
     expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
     expect(resolveProductionRoomAppId("unknown")).toBeNull()

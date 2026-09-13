@@ -1187,6 +1187,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         id: "planning-poker",
         url: "https://room-apps.free4.chat/planning-poker",
       },
+      {
+        id: "random-wheel",
+        url: "https://room-apps.free4.chat/random-wheel",
+      },
     ] as const
 
     function renderAppRoom(overrides: Record<string, unknown> = {}) {
@@ -1452,6 +1456,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           "pomodoro",
           "bingo",
           "planning-poker",
+          "random-wheel",
         ]
         expect(ROOM_APP_CATALOG.map((app) => app.id)).toEqual(expectedStageIds)
         for (const stageId of expectedStageIds)
@@ -1493,7 +1498,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       renderAppRoom()
 
       const stageIds = ROOM_APP_CATALOG.map((app) => app.id)
-      expect(stageIds).toHaveLength(6)
+      expect(stageIds).toHaveLength(7)
       expect(stageIds.length).toBeGreaterThan(ROOM_APP_MAX_INSTANCES)
       for (const id of stageIds)
         expect(screen.getByTestId(`stage-app-${id}`)).toBeInTheDocument()
