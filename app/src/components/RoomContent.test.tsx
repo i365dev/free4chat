@@ -1215,7 +1215,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     const slotHost = (appId: string) =>
       within(slot(appId)).getByTestId("room-app-host")
 
-    it("includes the curated production App id in copied Whiteboard Room links", async () => {
+    it("keeps Room copy generic and copies a Whiteboard App invite from fullscreen host chrome", async () => {
       vi.stubEnv("NODE_ENV", "production")
       const writeText = vi.fn().mockResolvedValue(undefined)
       Object.assign(navigator, { clipboard: { writeText } })
@@ -1241,14 +1241,45 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           "true"
         )
       )
-      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+      const iframe = slotIframe("whiteboard")
+      const host = slotHost("whiteboard")
+      const frameWindow = loadAppIframe(iframe)
+      const port = channels[0].port1
+      completeHandshake(frameWindow, "whiteboard", port)
 
-      expect(writeText).toHaveBeenCalledWith(
+      vi.mocked(trackAnalyticsEvent).mockClear()
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/room?id=test-room`
+      )
+      expect(trackAnalyticsEvent).toHaveBeenLastCalledWith("InviteLinkCopied", {
+        surface: "room",
+        roomType: "audio",
+      })
+
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+      expect(host).toHaveAttribute("data-layout", "fullscreen")
+      fireEvent.click(
+        within(host).getByRole("button", { name: "Invite to this activity" })
+      )
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+      expect(writeText).toHaveBeenLastCalledWith(
         `${window.location.origin}/room?id=test-room&app=whiteboard`
       )
+      expect(trackAnalyticsEvent).toHaveBeenLastCalledWith("InviteLinkCopied", {
+        surface: "room_app",
+        roomType: "audio",
+        app: "whiteboard",
+      })
+      expect(await within(host).findByText("Copied!")).toBeInTheDocument()
+      expect(slotIframe("whiteboard")).toBe(iframe)
+      expect(slotHost("whiteboard")).toBe(host)
+      expect(channels[0].port1).toBe(port)
+      expect(port.close).not.toHaveBeenCalled()
     })
 
-    it("keeps copied ordinary Room links unchanged", () => {
+    it("keeps copied ordinary Room links unchanged", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined)
       Object.assign(navigator, { clipboard: { writeText } })
       mockUseSfuChatRoom.mockReturnValue({
@@ -1262,8 +1293,137 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       )
       fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
 
-      expect(writeText).toHaveBeenCalledWith(
-        `${window.location.origin}/room?id=test-room`
+      await waitFor(() =>
+        expect(writeText).toHaveBeenCalledWith(
+          `${window.location.origin}/room?id=test-room`
+        )
+      )
+    })
+
+    it("does not offer App invite controls for a local-only fixture", async () => {
+      renderAppRoom()
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+
+      const host = await screen.findByTestId("room-app-host")
+      expect(
+        within(host).queryByRole("button", { name: "Invite to this activity" })
+      ).toBeNull()
+    })
+
+    it("keeps an ordinary Room usable when the initial App id is invalid", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="unallowlisted-app"
+        />
+      )
+
+      expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      )
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+      expect(screen.getByTestId("interaction-chat")).toBeInTheDocument()
+      expect(screen.queryByTestId("room-app-iframe")).toBeNull()
+    })
+
+    it("keeps a mounted Whiteboard session intact when clipboard writing fails", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"))
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="whiteboard"
+        />
+      )
+      await waitFor(() =>
+        expect(screen.getByTestId("stage-app-whiteboard")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      )
+      const iframe = slotIframe("whiteboard")
+      loadAppIframe(iframe)
+      const port = channels[0].port1
+      vi.mocked(trackAnalyticsEvent).mockClear()
+
+      fireEvent.click(
+        within(slotHost("whiteboard")).getByRole("button", {
+          name: "Invite to this activity",
+        })
+      )
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+
+      expect(within(slotHost("whiteboard")).queryByText("Copied!")).toBeNull()
+      expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+        "InviteLinkCopied",
+        expect.anything()
+      )
+      expect(slotIframe("whiteboard")).toBe(iframe)
+      expect(channels[0].port1).toBe(port)
+      expect(port.close).not.toHaveBeenCalled()
+    })
+
+    it("preserves screenshare type in the App invite while Room copy stays generic", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        resolvedRoomType: "screenshare",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="screenshare"
+          initialRoomAppId="whiteboard"
+        />
+      )
+      await waitFor(() =>
+        expect(screen.getByTestId("stage-app-whiteboard")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      )
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy link" }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/room?id=test-room&type=screenshare`
+      )
+      fireEvent.click(
+        within(slotHost("whiteboard")).getByRole("button", {
+          name: "Invite to this activity",
+        })
+      )
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2))
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/room?id=test-room&type=screenshare&app=whiteboard`
       )
     })
 

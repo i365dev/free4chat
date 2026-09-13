@@ -4,6 +4,7 @@ import {
   ROOM_APP_CATALOG,
   ROOM_APP_LOCAL_CATALOG,
   ROOM_APP_MAX_PAYLOAD_BYTES,
+  buildRoomInviteUrl,
   decodeRoomAppClientMessage,
   decodeRoomAppEnvelope,
   decodeRoomAppUnicastEnvelope,
@@ -42,6 +43,33 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
     expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
     expect(resolveProductionRoomAppId("unknown")).toBeNull()
+  })
+
+  it("builds bounded Room and App invite URLs", () => {
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room name",
+        roomType: "audio",
+        appId: "whiteboard",
+      })
+    ).toBe("https://free4.chat/room?id=room+name&app=whiteboard")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
+        roomType: "screenshare",
+        appId: "whiteboard",
+      })
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=whiteboard")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
+        roomType: "audio",
+        appId: "shared-canvas",
+      })
+    ).toBe("https://free4.chat/room?id=room")
   })
 
   it("accepts only curated app definitions and rejects arbitrary origins", () => {
