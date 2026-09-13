@@ -58,6 +58,12 @@ export const ROOM_APP_CATALOG: readonly RoomAppDefinition[] = [
     url: "https://room-apps.free4.chat/planning-poker",
     origin: "https://room-apps.free4.chat",
   },
+  {
+    id: "random-wheel",
+    label: "Random Wheel",
+    url: "https://room-apps.free4.chat/random-wheel",
+    origin: "https://room-apps.free4.chat",
+  },
 ]
 
 export const ROOM_APP_LOCAL_CATALOG: readonly RoomAppDefinition[] = [
