@@ -1341,6 +1341,62 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       )
     })
 
+    it("opens directly addressed Draw & Guess through the curated host and invite", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        resolvedRoomType: "screenshare",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="screenshare"
+          initialRoomAppId="draw-and-guess"
+        />
+      )
+
+      await waitFor(() =>
+        expect(screen.getByTestId("stage-app-draw-and-guess")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      )
+      expect(screen.getByTestId("stage-app-whiteboard")).toBeInTheDocument()
+      expect(screen.getByTestId("stage-app-typing-race")).toBeInTheDocument()
+      const host = slotHost("draw-and-guess")
+      const iframe = slotIframe("draw-and-guess")
+      expect(iframe).toHaveAttribute(
+        "src",
+        "https://room-apps.free4.chat/draw-and-guess"
+      )
+      expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+      const frameWindow = loadAppIframe(iframe)
+      const port = channels[0].port1
+      completeHandshake(frameWindow, "draw-and-guess", port)
+      await within(host).findByText("ready")
+
+      fireEvent.click(
+        within(host).getByRole("button", { name: "Invite to this activity" })
+      )
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/room?id=test-room&type=screenshare&app=draw-and-guess`
+      )
+      expect(port.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "ready",
+          appInstanceId: roomAppInstanceId("test-room", "draw-and-guess"),
+        })
+      )
+    })
+
     it("keeps copied ordinary Room links unchanged", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined)
       Object.assign(navigator, { clipboard: { writeText } })
