@@ -40,6 +40,24 @@ export const ROOM_APP_CATALOG: readonly RoomAppDefinition[] = [
     url: "https://room-apps.free4.chat/draw-and-guess",
     origin: "https://room-apps.free4.chat",
   },
+  {
+    id: "pomodoro",
+    label: "Pomodoro",
+    url: "https://room-apps.free4.chat/pomodoro",
+    origin: "https://room-apps.free4.chat",
+  },
+  {
+    id: "bingo",
+    label: "Bingo",
+    url: "https://room-apps.free4.chat/bingo",
+    origin: "https://room-apps.free4.chat",
+  },
+  {
+    id: "planning-poker",
+    label: "Planning Poker",
+    url: "https://room-apps.free4.chat/planning-poker",
+    origin: "https://room-apps.free4.chat",
+  },
 ]
 
 export const ROOM_APP_LOCAL_CATALOG: readonly RoomAppDefinition[] = [

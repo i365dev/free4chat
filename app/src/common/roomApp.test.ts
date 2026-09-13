@@ -42,6 +42,24 @@ describe("Room App Phase 0 bridge contract", () => {
         url: "https://room-apps.free4.chat/draw-and-guess",
         origin: "https://room-apps.free4.chat",
       },
+      {
+        id: "pomodoro",
+        label: "Pomodoro",
+        url: "https://room-apps.free4.chat/pomodoro",
+        origin: "https://room-apps.free4.chat",
+      },
+      {
+        id: "bingo",
+        label: "Bingo",
+        url: "https://room-apps.free4.chat/bingo",
+        origin: "https://room-apps.free4.chat",
+      },
+      {
+        id: "planning-poker",
+        label: "Planning Poker",
+        url: "https://room-apps.free4.chat/planning-poker",
+        origin: "https://room-apps.free4.chat",
+      },
     ])
     expect(ROOM_APP_LOCAL_CATALOG.map((app) => app.id)).toEqual([
       "shared-canvas",
@@ -53,11 +71,20 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(resolveProductionRoomAppId("whiteboard")).toBe("whiteboard")
     expect(resolveProductionRoomAppId("typing-race")).toBe("typing-race")
     expect(resolveProductionRoomAppId("draw-and-guess")).toBe("draw-and-guess")
+    expect(resolveProductionRoomAppId("pomodoro")).toBe("pomodoro")
+    expect(resolveProductionRoomAppId("bingo")).toBe("bingo")
+    expect(resolveProductionRoomAppId("planning-poker")).toBe("planning-poker")
     expect(resolveProductionRoomAppId("typing")).toBeNull()
     expect(resolveProductionRoomAppId("typing-race ")).toBeNull()
     expect(resolveProductionRoomAppId("Typing-Race")).toBeNull()
     expect(resolveProductionRoomAppId("shared-canvas")).toBeNull()
     expect(resolveProductionRoomAppId("draw-and-guess ")).toBeNull()
+    expect(resolveProductionRoomAppId("Pomodoro")).toBeNull()
+    expect(resolveProductionRoomAppId("pomodoro ")).toBeNull()
+    expect(resolveProductionRoomAppId("Bingo")).toBeNull()
+    expect(resolveProductionRoomAppId(" bingo")).toBeNull()
+    expect(resolveProductionRoomAppId("Planning-Poker")).toBeNull()
+    expect(resolveProductionRoomAppId("planning-poker ")).toBeNull()
     expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
     expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
     expect(resolveProductionRoomAppId("unknown")).toBeNull()
@@ -102,6 +129,32 @@ describe("Room App Phase 0 bridge contract", () => {
       buildRoomInviteUrl({
         origin: "https://free4.chat",
         roomName: "room",
+        roomType: "screenshare",
+        appId: "pomodoro",
+      })
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=pomodoro")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
+        roomType: "screenshare",
+        appId: "bingo",
+      })
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=bingo")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
+        roomType: "screenshare",
+        appId: "planning-poker",
+      })
+    ).toBe(
+      "https://free4.chat/room?id=room&type=screenshare&app=planning-poker"
+    )
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
         roomType: "audio",
       })
     ).toBe("https://free4.chat/room?id=room")
@@ -125,10 +178,10 @@ describe("Room App Phase 0 bridge contract", () => {
       })
     ).toBe(true)
     expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[0])).toBe(true)
-    expect(validateRoomAppDefinition(ROOM_APP_CATALOG[1])).toBe(true)
-    expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[1])).toBe(true)
-    expect(validateRoomAppDefinition(ROOM_APP_CATALOG[2])).toBe(true)
-    expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[2])).toBe(true)
+    for (const app of ROOM_APP_CATALOG) {
+      expect(validateRoomAppDefinition(app)).toBe(true)
+      expect(isRoomAppAllowlisted(app)).toBe(true)
+    }
     expect(
       isRoomAppAllowlisted({
         id: "user-app",
@@ -300,8 +353,20 @@ describe("Room App Phase 0 bridge contract", () => {
     ).toBe(true)
     expect(
       isRoomAppInstanceForRoom(
+        "room-a",
+        roomAppInstanceId("room-a", "planning-poker")
+      )
+    ).toBe(true)
+    expect(
+      isRoomAppInstanceForRoom(
         "room-b",
         roomAppInstanceId("room-a", "draw-and-guess")
+      )
+    ).toBe(false)
+    expect(
+      isRoomAppInstanceForRoom(
+        "room-b",
+        roomAppInstanceId("room-a", "planning-poker")
       )
     ).toBe(false)
   })
