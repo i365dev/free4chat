@@ -28,6 +28,12 @@ export const ROOM_APP_CATALOG: readonly RoomAppDefinition[] = [
     url: "https://room-apps.free4.chat/whiteboard",
     origin: "https://room-apps.free4.chat",
   },
+  {
+    id: "typing-race",
+    label: "Typing",
+    url: "https://room-apps.free4.chat/typing-race",
+    origin: "https://room-apps.free4.chat",
+  },
 ]
 
 export const ROOM_APP_LOCAL_CATALOG: readonly RoomAppDefinition[] = [
