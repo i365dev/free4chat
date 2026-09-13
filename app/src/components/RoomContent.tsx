@@ -138,7 +138,9 @@ export default function RoomContent({
   const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
   const [readyRoomAppIds, setReadyRoomAppIds] = useState<string[]>([])
   const initialRoomAppLaunchAttemptedRef = useRef(false)
-  const whiteboardSharedSessionTrackedRef = useRef(false)
+  // Host-owned coarse telemetry stays catalog-derived: any curated production
+  // App reports at most one shared-session milestone per browser Room session.
+  const sharedSessionTrackedAppIdsRef = useRef<Set<string>>(new Set())
   const [stageView, setStageView] = useState<"screen" | "live-view">("screen")
   const taskLiveViewState = useRef(new Map())
   const observedLiveViewKeys = useRef(new Set<string>())
@@ -270,10 +272,12 @@ export default function RoomContent({
   const humanParticipantCount = roomAppParticipants.filter(
     (participant) => participant.kind === "human"
   ).length
-  const whiteboardResident = residentRoomApps.some(
-    (app) => app.id === "whiteboard"
-  )
-  const whiteboardReady = readyRoomAppIds.includes("whiteboard")
+  // The shared-use milestone belongs to the catalog, not to one App: the first
+  // resident production App that finished its handshake is the milestone App.
+  const sharedSessionRoomAppId = residentRoomApps
+    .filter((app) => readyRoomAppIds.includes(app.id))
+    .map((app) => resolveProductionRoomAppId(app.id))
+    .find((appId): appId is string => appId !== null)
   const visibleRoomApp =
     activeRoomApp && roomAppSelf ? activeRoomApp : undefined
   // Focus mode is a Room layout state, not just a larger host. The resident
@@ -474,24 +478,23 @@ export default function RoomContent({
     setReadyRoomAppIds((previous) =>
       previous.includes(appId) ? previous : [...previous, appId]
     )
-    if (appId === "whiteboard")
-      trackAnalyticsEvent("RoomAppMounted", { app: "whiteboard" })
+    // Only curated production Apps are reported; local dev fixtures and any
+    // unallowlisted id stay out of analytics without a second allowlist.
+    const productionAppId = resolveProductionRoomAppId(appId)
+    if (productionAppId)
+      trackAnalyticsEvent("RoomAppMounted", { app: productionAppId })
   }, [])
 
   useEffect(() => {
-    if (
-      whiteboardSharedSessionTrackedRef.current ||
-      !whiteboardResident ||
-      !whiteboardReady ||
-      humanParticipantCount < 2
-    )
+    if (!sharedSessionRoomAppId || humanParticipantCount < 2) return
+    if (sharedSessionTrackedAppIdsRef.current.has(sharedSessionRoomAppId))
       return
-    whiteboardSharedSessionTrackedRef.current = true
+    sharedSessionTrackedAppIdsRef.current.add(sharedSessionRoomAppId)
     trackAnalyticsEvent("RoomAppSharedSession", {
-      app: "whiteboard",
+      app: sharedSessionRoomAppId,
       participantsBucket: participantsBucket(humanParticipantCount),
     })
-  }, [humanParticipantCount, whiteboardReady, whiteboardResident])
+  }, [humanParticipantCount, sharedSessionRoomAppId])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 

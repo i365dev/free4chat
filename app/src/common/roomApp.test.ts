@@ -66,6 +66,24 @@ describe("Room App Phase 0 bridge contract", () => {
         url: "https://room-apps.free4.chat/random-wheel",
         origin: "https://room-apps.free4.chat",
       },
+      {
+        id: "meeting-timer",
+        label: "Meeting Timer",
+        url: "https://room-apps.free4.chat/meeting-timer",
+        origin: "https://room-apps.free4.chat",
+      },
+      {
+        id: "shared-pad",
+        label: "Shared Pad",
+        url: "https://room-apps.free4.chat/shared-pad",
+        origin: "https://room-apps.free4.chat",
+      },
+      {
+        id: "live-qa",
+        label: "Live Q&A",
+        url: "https://room-apps.free4.chat/live-qa",
+        origin: "https://room-apps.free4.chat",
+      },
     ])
     expect(ROOM_APP_LOCAL_CATALOG.map((app) => app.id)).toEqual([
       "shared-canvas",
@@ -81,6 +99,9 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(resolveProductionRoomAppId("bingo")).toBe("bingo")
     expect(resolveProductionRoomAppId("planning-poker")).toBe("planning-poker")
     expect(resolveProductionRoomAppId("random-wheel")).toBe("random-wheel")
+    expect(resolveProductionRoomAppId("meeting-timer")).toBe("meeting-timer")
+    expect(resolveProductionRoomAppId("shared-pad")).toBe("shared-pad")
+    expect(resolveProductionRoomAppId("live-qa")).toBe("live-qa")
     expect(resolveProductionRoomAppId("typing")).toBeNull()
     expect(resolveProductionRoomAppId("typing-race ")).toBeNull()
     expect(resolveProductionRoomAppId("Typing-Race")).toBeNull()
@@ -94,6 +115,18 @@ describe("Room App Phase 0 bridge contract", () => {
     expect(resolveProductionRoomAppId("planning-poker ")).toBeNull()
     expect(resolveProductionRoomAppId("Random-Wheel")).toBeNull()
     expect(resolveProductionRoomAppId("random-wheel ")).toBeNull()
+    expect(resolveProductionRoomAppId("meetingtimer")).toBeNull()
+    expect(resolveProductionRoomAppId("Meeting-Timer")).toBeNull()
+    expect(resolveProductionRoomAppId("meeting-timer ")).toBeNull()
+    expect(resolveProductionRoomAppId(" shared-pad")).toBeNull()
+    expect(resolveProductionRoomAppId("Shared-Pad")).toBeNull()
+    expect(resolveProductionRoomAppId("shared_pad")).toBeNull()
+    expect(resolveProductionRoomAppId("live-qa ")).toBeNull()
+    expect(resolveProductionRoomAppId("Live-QA")).toBeNull()
+    expect(resolveProductionRoomAppId("liveqa")).toBeNull()
+    expect(
+      resolveProductionRoomAppId("https://room-apps.free4.chat/live-qa")
+    ).toBeNull()
     expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
     expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
     expect(resolveProductionRoomAppId("unknown")).toBeNull()
@@ -164,6 +197,30 @@ describe("Room App Phase 0 bridge contract", () => {
       buildRoomInviteUrl({
         origin: "https://free4.chat",
         roomName: "room",
+        roomType: "screenshare",
+        appId: "meeting-timer",
+      })
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=meeting-timer")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
+        roomType: "screenshare",
+        appId: "shared-pad",
+      })
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=shared-pad")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
+        roomType: "screenshare",
+        appId: "live-qa",
+      })
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=live-qa")
+    expect(
+      buildRoomInviteUrl({
+        origin: "https://free4.chat",
+        roomName: "room",
         roomType: "audio",
       })
     ).toBe("https://free4.chat/room?id=room")
@@ -199,6 +256,64 @@ describe("Room App Phase 0 bridge contract", () => {
         origin: "https://room-apps.free4.chat",
       })
     ).toBe(false)
+  })
+
+  it("pins the Batch A production Apps as first-class curated entries", () => {
+    const batchA = [
+      {
+        id: "meeting-timer",
+        label: "Meeting Timer",
+        url: "https://room-apps.free4.chat/meeting-timer",
+        origin: "https://room-apps.free4.chat",
+      },
+      {
+        id: "shared-pad",
+        label: "Shared Pad",
+        url: "https://room-apps.free4.chat/shared-pad",
+        origin: "https://room-apps.free4.chat",
+      },
+      {
+        id: "live-qa",
+        label: "Live Q&A",
+        url: "https://room-apps.free4.chat/live-qa",
+        origin: "https://room-apps.free4.chat",
+      },
+    ]
+    for (const app of batchA) {
+      expect(ROOM_APP_CATALOG).toContainEqual(app)
+      expect(validateRoomAppDefinition(app)).toBe(true)
+      expect(isRoomAppAllowlisted(app)).toBe(true)
+      expect(resolveProductionRoomAppId(app.id)).toBe(app.id)
+      const instanceId = roomAppInstanceId("room-a", app.id)
+      expect(instanceId.startsWith(`${app.id}:`)).toBe(true)
+      expect(isRoomAppInstanceForRoom("room-a", instanceId)).toBe(true)
+      expect(isRoomAppInstanceForRoom("room-b", instanceId)).toBe(false)
+    }
+  })
+
+  it("keeps every curated production App launchable and invite-preserving", () => {
+    const ids = ROOM_APP_CATALOG.map((app) => app.id)
+    const urls = ROOM_APP_CATALOG.map((app) => app.url)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(new Set(urls).size).toBe(urls.length)
+    for (const app of ROOM_APP_CATALOG) {
+      expect(validateRoomAppDefinition(app)).toBe(true)
+      expect(isRoomAppAllowlisted(app)).toBe(true)
+      expect(resolveProductionRoomAppId(app.id)).toBe(app.id)
+      expect(
+        isRoomAppInstanceForRoom("room-a", roomAppInstanceId("room-a", app.id))
+      ).toBe(true)
+      expect(
+        new URL(
+          buildRoomInviteUrl({
+            origin: "https://free4.chat",
+            roomName: "room-a",
+            roomType: "audio",
+            appId: app.id,
+          })
+        ).searchParams.get("app")
+      ).toBe(app.id)
+    }
   })
 
   it("keeps transport envelopes bounded and UTF-8 sized", () => {
@@ -366,6 +481,10 @@ describe("Room App Phase 0 bridge contract", () => {
         roomAppInstanceId("room-a", "planning-poker")
       )
     ).toBe(true)
+    for (const appId of ["meeting-timer", "shared-pad", "live-qa"])
+      expect(
+        isRoomAppInstanceForRoom("room-a", roomAppInstanceId("room-a", appId))
+      ).toBe(true)
     expect(
       isRoomAppInstanceForRoom(
         "room-b",

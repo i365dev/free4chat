@@ -1191,6 +1191,18 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         id: "random-wheel",
         url: "https://room-apps.free4.chat/random-wheel",
       },
+      {
+        id: "meeting-timer",
+        url: "https://room-apps.free4.chat/meeting-timer",
+      },
+      {
+        id: "shared-pad",
+        url: "https://room-apps.free4.chat/shared-pad",
+      },
+      {
+        id: "live-qa",
+        url: "https://room-apps.free4.chat/live-qa",
+      },
     ] as const
 
     function renderAppRoom(overrides: Record<string, unknown> = {}) {
@@ -1457,6 +1469,9 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           "bingo",
           "planning-poker",
           "random-wheel",
+          "meeting-timer",
+          "shared-pad",
+          "live-qa",
         ]
         expect(ROOM_APP_CATALOG.map((app) => app.id)).toEqual(expectedStageIds)
         for (const stageId of expectedStageIds)
@@ -1498,10 +1513,15 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       renderAppRoom()
 
       const stageIds = ROOM_APP_CATALOG.map((app) => app.id)
-      expect(stageIds).toHaveLength(7)
+      // The picker must expose the whole curated catalog, and that catalog must
+      // stay larger than the residency bound for the bound to mean anything.
       expect(stageIds.length).toBeGreaterThan(ROOM_APP_MAX_INSTANCES)
-      for (const id of stageIds)
-        expect(screen.getByTestId(`stage-app-${id}`)).toBeInTheDocument()
+      for (const app of ROOM_APP_CATALOG) {
+        const button = screen.getByTestId(`stage-app-${app.id}`)
+        expect(button).toBeInTheDocument()
+        // The user-visible label is the curated label, with no added badge.
+        expect(button.textContent).toBe(app.label)
+      }
 
       fireEvent.click(screen.getByTestId("stage-app-whiteboard"))
       fireEvent.click(screen.getByTestId("stage-app-pomodoro"))
@@ -1517,6 +1537,20 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       ).toBeInTheDocument()
       for (const id of stageIds)
         expect(screen.getByTestId(`stage-app-${id}`)).toBeInTheDocument()
+    })
+
+    it("exposes the Batch A Apps in the picker with their curated labels", () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+
+      for (const [id, label] of [
+        ["meeting-timer", "Meeting Timer"],
+        ["shared-pad", "Shared Pad"],
+        ["live-qa", "Live Q&A"],
+      ] as const) {
+        const button = screen.getByTestId(`stage-app-${id}`)
+        expect(button.textContent).toBe(label)
+      }
     })
 
     it("keeps copied ordinary Room links unchanged", async () => {
@@ -2438,6 +2472,82 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           ([event]) => event === "RoomAppSharedSession"
         )
       ).toHaveLength(1)
+    })
+
+    it("reports the same coarse telemetry for a Batch A production App", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+      analyticsSpy.mockClear()
+      const remoteHuman = {
+        peerId: "human-b",
+        name: "Bob",
+        kind: "human",
+        room: "test-room",
+        muteState: false,
+      }
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant, remoteHuman],
+      })
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="live-qa"
+        />
+      )
+
+      const iframe = (await screen.findByTestId(
+        "room-app-iframe"
+      )) as HTMLIFrameElement
+      expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+        "RoomAppMounted",
+        expect.anything()
+      )
+
+      completeHandshake(loadAppIframe(iframe), "live-qa", channels[0].port1)
+
+      expect(trackAnalyticsEvent).toHaveBeenCalledWith("RoomAppMounted", {
+        app: "live-qa",
+      })
+      await waitFor(() =>
+        expect(trackAnalyticsEvent).toHaveBeenCalledWith(
+          "RoomAppSharedSession",
+          { app: "live-qa", participantsBucket: "2-3" }
+        )
+      )
+    })
+
+    it("keeps uncurated development fixtures out of Room App telemetry", async () => {
+      const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+      analyticsSpy.mockClear()
+      const remoteHuman = {
+        peerId: "human-b",
+        name: "Bob",
+        kind: "human",
+        room: "test-room",
+        muteState: false,
+      }
+      renderAppRoom({ participants: [localParticipant, remoteHuman] })
+
+      fireEvent.click(screen.getByTestId("stage-app-shared-canvas"))
+      const host = slotHost("shared-canvas")
+      completeHandshake(
+        loadAppIframe(slotIframe("shared-canvas")),
+        "shared-canvas",
+        channels[0].port1
+      )
+      await within(host).findByText("ready")
+
+      expect(
+        analyticsSpy.mock.calls.filter(
+          ([event]) =>
+            event === "RoomAppMounted" || event === "RoomAppSharedSession"
+        )
+      ).toEqual([])
     })
   })
 
