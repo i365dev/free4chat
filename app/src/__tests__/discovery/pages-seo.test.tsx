@@ -15,6 +15,7 @@ vi.mock("../../components/DiscoveryPageLayout", () => ({
     description: string
     path: string
     ctaId: string
+    indexable?: boolean
   }) => (
     <div
       data-testid="layout-stub"
@@ -22,16 +23,23 @@ vi.mock("../../components/DiscoveryPageLayout", () => ({
       data-description={props.description}
       data-path={props.path}
       data-cta-id={props.ctaId}
+      data-indexable={props.indexable ?? true}
     />
   ),
 }))
 vi.mock("../../components/SeoHead", () => ({
-  default: (props: { title: string; description: string; path: string }) => (
+  default: (props: {
+    title: string
+    description: string
+    path: string
+    indexable?: boolean
+  }) => (
     <div
       data-testid="seo-stub"
       data-title={props.title}
       data-description={props.description}
       data-path={props.path}
+      data-indexable={props.indexable ?? true}
     />
   ),
 }))
@@ -40,8 +48,6 @@ vi.mock("next/router", () => ({
 }))
 
 import AiAgentRoomPage from "../../pages/ai-agent-room"
-import AppsPage from "../../pages/apps"
-import WhiteboardPage from "../../pages/apps/whiteboard"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
@@ -63,11 +69,6 @@ const PAGES: Array<{
     path: "/multi-agent-collaboration",
   },
   { name: "privacy", Component: PrivacyPage, path: "/privacy" },
-  {
-    name: "apps/whiteboard",
-    Component: WhiteboardPage,
-    path: "/apps/whiteboard",
-  },
 ]
 
 function renderStub(Component: () => ReactElement) {
@@ -123,14 +124,5 @@ describe("Discovery pages — SEO metadata authored per page", () => {
       ids.add(ctaId)
       unmount()
     }
-  })
-
-  it("/apps authors its own canonical discovery metadata", () => {
-    const { stub, unmount } = renderStub(AppsPage)
-
-    expect(stub?.dataset.title).toMatch(/Free4Chat Apps/)
-    expect(stub?.dataset.description).toMatch(/temporary Free4Chat Rooms/)
-    expect(stub?.dataset.path).toBe("/apps")
-    unmount()
   })
 })

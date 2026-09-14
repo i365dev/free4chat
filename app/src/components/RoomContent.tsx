@@ -16,12 +16,14 @@ import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   buildRoomInviteUrl,
-  experimentalRoomAppCatalog,
+  currentRoomAppCatalog,
   isRoomAppAllowlisted,
+  loadProductionRoomAppCatalog,
   resolveProductionRoomAppId,
   ROOM_APP_MAX_INSTANCES,
   projectRoomAppParticipants,
   roomAppInstanceId,
+  setProductionRoomAppCatalog,
   validateRoomAppDefinition,
 } from "../common/roomApp"
 import {
@@ -137,6 +139,9 @@ export default function RoomContent({
   // Browser-local resident App sessions, bounded by the curated catalog size.
   const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
   const [readyRoomAppIds, setReadyRoomAppIds] = useState<string[]>([])
+  const [loadedRoomAppCatalog, setLoadedRoomAppCatalog] = useState(() =>
+    process.env.NODE_ENV !== "production" ? currentRoomAppCatalog() : null
+  )
   const initialRoomAppLaunchAttemptedRef = useRef(false)
   // Host-owned coarse telemetry stays catalog-derived: any curated production
   // App reports at most one shared-session milestone per browser Room session.
@@ -228,18 +233,31 @@ export default function RoomContent({
   )
   const effectiveLocalParticipantId =
     localParticipantId ?? getLocalRoomAuth()?.participantId
-  // The validated curated catalog is stable while the Room content is mounted.
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") return
+    let mounted = true
+    void loadProductionRoomAppCatalog().then((catalog) => {
+      setProductionRoomAppCatalog(catalog)
+      if (mounted) setLoadedRoomAppCatalog(catalog)
+    })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  // The validated Lab catalog is stable while this Room is mounted.
   // `roomAppsEnabled` is not a pure catalog/kill-switch signal: it also drops
   // while an ordinary SFU/media reconnect rebuilds the App DataChannels, and
   // that transient false must never be mistaken for a catalog removal.
   const curatedRoomApps = useMemo(
     () =>
-      experimentalRoomAppCatalog().filter(
+      (loadedRoomAppCatalog ?? []).filter(
         (app) => validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
       ),
-    []
+    [loadedRoomAppCatalog]
   )
-  const roomApps = roomAppsEnabled ? curatedRoomApps : []
+  const roomApps =
+    roomAppsEnabled && loadedRoomAppCatalog !== null ? curatedRoomApps : []
   // Conversation scope and visual Stage are independent selections: an active
   // Room App lives on the Stage and never replaces the Room/Task conversation.
   const activeRoomApp = roomApps.find((app) => activeRoomAppId === app.id)
@@ -467,14 +485,21 @@ export default function RoomContent({
     if (
       initialRoomAppLaunchAttemptedRef.current ||
       !initialRoomAppId ||
-      !roomAppsEnabled
+      !roomAppsEnabled ||
+      loadedRoomAppCatalog === null
     )
       return
     initialRoomAppLaunchAttemptedRef.current = true
     if (!curatedRoomApps.some((app) => app.id === initialRoomAppId)) return
     launchRoomApp(initialRoomAppId)
     setActiveRoomAppId(initialRoomAppId)
-  }, [curatedRoomApps, initialRoomAppId, launchRoomApp, roomAppsEnabled])
+  }, [
+    curatedRoomApps,
+    initialRoomAppId,
+    launchRoomApp,
+    loadedRoomAppCatalog,
+    roomAppsEnabled,
+  ])
 
   const handleRoomAppReady = useCallback((appId: string) => {
     setReadyRoomAppIds((previous) =>

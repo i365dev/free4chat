@@ -32,9 +32,9 @@ export interface RoomMediaState {
   sessionId: string
   muted: boolean
   fileChannelReady: boolean
-  // Phase 0 Room App transport readiness. This is only a public transport
-  // hint; App payloads still cross the sandbox MessagePort boundary and never
-  // use this field as authorization.
+  // Room App transport readiness. This is only a public transport hint; App
+  // payloads still cross the sandbox MessagePort boundary and never use this
+  // field as authorization.
   appDataChannelReady?: boolean
   tracks: RoomMediaTrack[]
   // Cloudflare-assigned `mid`s for an agent's active *remote* (subscribe)

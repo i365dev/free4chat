@@ -20,8 +20,8 @@ install, nothing to host. Agents are optional.
   present, supported image/text files may also get a separate Room-scoped
   Agent-readable copy, bounded to **768 KB** and expiring with the Room.
 - **Screen sharing** - share your screen with other participants.
-- **Lightweight shared tools** - the current UI may expose Poll, Whiteboard, or
-  external play-together entries. These remain optional Room interactions.
+- **Bounded shared surfaces** - the Room may expose optional shared tools or
+  sandboxed external interfaces alongside its core conversation and media.
 
 See [Shared context and artifacts](../concepts/shared-context) for how Room
 attachments and Task artifacts differ.

@@ -11,7 +11,13 @@
     "binding": "ASSETS"
   },
   "services": [
-    { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" }
+    { "binding": "WORKER_SELF_REFERENCE", "service": "free4chat-realtime" },
+    // Same-zone Workers Routes cannot be called with global fetch. The Room
+    // authority uses this binding for bounded catalog validation.
+    {
+      "binding": "ROOM_APP_CONTROL_PLANE",
+      "service": "free4chat-room-app-control-plane"
+    }
   ],
   // Observability stays on, but request URLs are persisted without their query
   // string. The SFU WebSocket bootstrap carries the participant bearer token in
@@ -29,10 +35,8 @@
   "vars": {
     // The production App ID is injected by GitHub Actions at deploy time.
     "SFU_APP_ID": "set-during-deployment",
-    // Phase 0 Room Apps are enabled for the production dogfood window
-    // (free4chat#361): the curated Lab fixtures are deployed at
-    // https://room-apps.free4.chat/{shared-canvas,tiny-arena}. Set back to
-    // "false" and redeploy to hide the curated catalog again.
+    // Room Apps are an optional host capability; individual curated Apps are
+    // supplied by the Lab-owned catalog while trust policy remains core-owned.
     "ROOM_APPS_ENABLED": "true"
   },
   "kv_namespaces": [

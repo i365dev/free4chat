@@ -2,7 +2,18 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSfuChatRoom } from "./useSfuChatRoom"
-import { roomAppInstanceId } from "../common/roomApp"
+import {
+  EMPTY_ROOM_APP_CATALOG,
+  roomAppInstanceId,
+  setProductionRoomAppCatalog,
+} from "../common/roomApp"
+
+const TEST_ROOM_APP = {
+  id: "test-app",
+  label: "Test App",
+  url: "https://room-apps.free4.chat/test-app",
+  origin: "https://room-apps.free4.chat",
+}
 
 class FakeTrack {
   kind: "audio" | "video" = "audio"
@@ -117,6 +128,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   let getUserMedia: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    setProductionRoomAppCatalog([TEST_ROOM_APP])
     FakePeerConnection.instances.length = 0
     FakePeerConnection.dataChannels.length = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
@@ -184,6 +196,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
 
   afterEach(() => {
     lastFakeWebSocket = null
+    setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
     vi.restoreAllMocks()
   })
 
@@ -271,7 +284,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 
   it("dispatches reliable and realtime Room App messages on the shared transport", async () => {
-    const appInstanceId = roomAppInstanceId("room-app", "whiteboard")
+    const appInstanceId = roomAppInstanceId("room-app", "test-app")
     fetchMock.mockImplementation(
       (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input.toString()
@@ -333,7 +346,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     act(() => {
       expect(
         result.current.sendRoomAppMessage("reliable", appInstanceId, {
-          type: "stroke",
+          type: "update",
         })
       ).toBe(true)
       expect(
@@ -467,7 +480,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 
   it("subscribes to remote Room App lanes, tags the bound sender, retries, and cleans up", async () => {
-    const appInstanceId = roomAppInstanceId("remote-app-room", "whiteboard")
+    const appInstanceId = roomAppInstanceId("remote-app-room", "test-app")
     let dataChannelNewCalls = 0
     let remoteFailureCount = 0
     fetchMock.mockImplementation(
@@ -605,7 +618,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       realtime.emit("message", {
         data: JSON.stringify({
           protocolVersion: 1,
-          appInstanceId: "whiteboard:deadbeef",
+          appInstanceId: "test-app:deadbeef",
           lane: "realtime",
           payload: { type: "cursor" },
         }),

@@ -128,11 +128,14 @@ import {
   ROOM_APP_PROTOCOL_VERSION,
   ROOM_APP_UNICAST_BYTES_PER_SECOND,
   ROOM_APP_UNICAST_MESSAGES_PER_SECOND,
+  type RoomAppCatalogService,
   isRoomAppInstanceForRoom,
   isValidRoomAppInstanceId,
   isValidRoomAppParticipantId,
   isValidRoomAppRequestId,
+  loadProductionRoomAppCatalog,
   serializedRoomAppBytes,
+  setProductionRoomAppCatalog,
   validateRoomAppPayload,
 } from "../common/roomApp"
 import {
@@ -273,6 +276,7 @@ export interface RoomSessionEnv {
   SFU_APP_SECRET?: string
   AGENT_MEDIA_ENABLED?: string
   ROOM_APPS_ENABLED?: string
+  ROOM_APP_CONTROL_PLANE: RoomAppCatalogService
   // #228: preconfigured production Worker secret for Room-authoritative
   // collaboration analytics (direct Mixpanel /import). Absent in
   // local/test environments: analytics safely no-ops.
@@ -5271,10 +5275,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       !isValidRoomAppInstanceId(message.appInstanceId)
     )
       return
-    if (
-      this.env.ROOM_APPS_ENABLED !== "true" ||
-      !isRoomAppInstanceForRoom(this.roomAnalyticsName(), message.appInstanceId)
-    ) {
+    if (this.env.ROOM_APPS_ENABLED !== "true") {
       this.sendRoomAppUnicastResult(socket, message, false, "app_unavailable")
       return
     }
@@ -5286,6 +5287,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       sender.connectionNonce !== attachment.connectionNonce
     ) {
       this.sendRoomAppUnicastResult(socket, message, false, "invalid_request")
+      return
+    }
+    // Unicast must follow the same Lab-owned runtime lifecycle as the browser
+    // catalog. The common loader coalesces requests and caches the bounded
+    // validated result briefly, retaining last-known good metadata after an
+    // outage and failing closed before the first valid response.
+    setProductionRoomAppCatalog(
+      await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
+    )
+    if (
+      !isRoomAppInstanceForRoom(this.roomAnalyticsName(), message.appInstanceId)
+    ) {
+      this.sendRoomAppUnicastResult(socket, message, false, "app_unavailable")
       return
     }
     if (!isValidRoomAppParticipantId(message.targetParticipantId)) {

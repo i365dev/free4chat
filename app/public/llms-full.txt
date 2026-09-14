@@ -127,8 +127,8 @@ install, nothing to host. Agents are optional.
   present, supported image/text files may also get a separate Room-scoped
   Agent-readable copy, bounded to **768 KB** and expiring with the Room.
 - **Screen sharing** - share your screen with other participants.
-- **Lightweight shared tools** - the current UI may expose Poll, Whiteboard, or
-  external play-together entries. These remain optional Room interactions.
+- **Bounded shared surfaces** - the Room may expose optional shared tools or
+  sandboxed external interfaces alongside its core conversation and media.
 
 See [Shared context and artifacts](../concepts/shared-context) for how Room
 attachments and Task artifacts differ.
@@ -1178,11 +1178,12 @@ small declarative presentation/control
 arbitrary executable JS / Canvas / WebGL / CRDT /
 complex realtime application state
 → not Task Live View
-→ separate sandboxed Room App experiment
+→ bounded external shared-surface host
 ```
 
-Free4Chat is currently exploring the second boundary under its Room App
-experiment, but that is not yet a stable public SDK or integration contract.
+Free4Chat provides only the sandbox, trusted-origin, and transport boundary for
+such surfaces. The separate Extension Lab owns the curated App portfolio and
+its runtime/discovery lifecycle; this is not a general-purpose plugin SDK.
 
 ## What disappears when the Room expires?
 
