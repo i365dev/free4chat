@@ -1213,6 +1213,26 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       screenShareStream: {} as MediaStream,
     }
 
+    /** jsdom has no WebRTC stack; a stream-shaped stub is enough for binding. */
+    const remoteAudioStream = {
+      id: "bob-room-audio",
+      getAudioTracks: () => [],
+    } as unknown as MediaStream
+    const remoteSpeaker = {
+      peerId: "peer-bob",
+      name: "Bob",
+      kind: "human",
+      room: "test-room",
+      muteState: false,
+      audioStream: remoteAudioStream,
+    }
+
+    /** The Room-level playback element for a remote participant. */
+    const audioSink = (peerId: string) =>
+      document.querySelector<HTMLAudioElement>(
+        `[data-testid="room-audio-sink"][data-peer-id="${peerId}"]`
+      )
+
     const newlyCuratedApps = TEST_ROOM_APP_CATALOG.slice(3)
 
     function renderAppRoom(overrides: Record<string, unknown> = {}) {
@@ -2111,6 +2131,105 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(channels[0].port1.close).not.toHaveBeenCalled()
       // Visibility is presentation only: it never becomes host traffic.
       expect(send).not.toHaveBeenCalled()
+    })
+
+    it("keeps remote Room voice playing while a Room App is visible", () => {
+      renderAppRoom({ participants: [localParticipant, remoteSpeaker] })
+
+      const sink = audioSink("peer-bob")
+      expect(sink).not.toBeNull()
+      expect(sink!.srcObject).toBe(remoteAudioStream)
+      expect(sink!.muted).toBe(false)
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+
+      // The Room App takes the Stage; the visual participant surface goes away.
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      expect(screen.getByTestId("room-app-iframe")).toBeInTheDocument()
+      expect(screen.queryByTestId("room-stage-participants")).toBeNull()
+
+      // Remote voice is ambient Room state, not a Stage surface: the very same
+      // playback element keeps playing the same remote stream.
+      expect(audioSink("peer-bob")).toBe(sink)
+      expect(sink!.srcObject).toBe(remoteAudioStream)
+      expect(sink!.muted).toBe(false)
+    })
+
+    it("does not recreate remote Room voice across App hide and reopen", () => {
+      renderAppRoom({ participants: [localParticipant, remoteSpeaker] })
+      const sink = audioSink("peer-bob")!
+
+      // A Room App replaces the visible participant surface...
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      expect(audioSink("peer-bob")).toBe(sink)
+
+      // ...is hidden again...
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+      expect(audioSink("peer-bob")).toBe(sink)
+
+      // ...and reopened.
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      expect(audioSink("peer-bob")).toBe(sink)
+      expect(audioSink("peer-bob")!.srcObject).toBe(remoteAudioStream)
+      // One playback element per remote participant, never one per surface.
+      expect(document.querySelectorAll("audio")).toHaveLength(1)
+    })
+
+    it("keeps remote Room voice when a screen share owns the Stage", () => {
+      renderAppRoom({
+        participants: [localParticipant, remoteSpeaker, remoteScreenShare],
+      })
+      const sink = audioSink("peer-bob")!
+
+      // The screen-share branch renders the compact participant strip instead
+      // of the presence grid; playback ownership must not follow that layout.
+      fireEvent.click(screen.getByTestId("stage-view-screen"))
+      expect(audioSink("peer-bob")).toBe(sink)
+      expect(sink.srcObject).toBe(remoteAudioStream)
+
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      expect(audioSink("peer-bob")).toBe(sink)
+      expect(
+        document.querySelectorAll(
+          '[data-testid="room-audio-sink"][data-peer-id="peer-bob"]'
+        )
+      ).toHaveLength(1)
+    })
+
+    it("keeps remote Room voice through Room App fullscreen", () => {
+      renderAppRoom({ participants: [localParticipant, remoteSpeaker] })
+      const sink = audioSink("peer-bob")!
+
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      const host = slotHost("test-app-1")
+
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+      expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(audioSink("peer-bob")).toBe(sink)
+      expect(sink.srcObject).toBe(remoteAudioStream)
+
+      fireEvent.click(
+        within(host).getByRole("button", { name: "Exit fullscreen" })
+      )
+      expect(host).toHaveAttribute("data-layout", "stage")
+      expect(audioSink("peer-bob")).toBe(sink)
+      expect(sink.muted).toBe(false)
+    })
+
+    it("has exactly one audible playback owner per remote participant", () => {
+      renderAppRoom({ participants: [localParticipant, remoteSpeaker] })
+
+      // The visible participant cards own no audible element at all, so the
+      // Room-level sink can never double-play a remote participant.
+      const grid = screen.getByTestId("room-stage-participants")
+      expect(grid.querySelectorAll("audio")).toHaveLength(0)
+      expect(within(grid).getByText(/Bob/)).toBeInTheDocument()
+      expect(document.querySelectorAll("audio")).toHaveLength(1)
+      expect(
+        document.querySelectorAll('[data-testid="room-audio-sink"]')
+      ).toHaveLength(1)
+      // The local microphone is never played back into the Room.
+      expect(audioSink("local-peer")).toBeNull()
     })
 
     it("uses a generic fullscreen layout without replacing the resident host", async () => {

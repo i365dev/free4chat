@@ -8,6 +8,7 @@ import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 import AgentInviteControl from "./AgentInviteControl"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import RoomAppHost from "./RoomAppHost"
+import RoomAudioSinks from "./RoomAudioSinks"
 import TaskLiveView from "./TaskLiveView"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
@@ -1155,6 +1156,12 @@ export default function RoomContent({
           <span className="text-sm">{screenShareWarning}</span>
         </div>
       )}
+
+      {/* Room voice is ambient Room state: the remote playback sinks live for
+          this whole Room session, outside every Stage/visibility conditional
+          below, so opening, hiding or fullscreening a Room App (or switching
+          to a screen share / Live View) can never stop remote audio. */}
+      <RoomAudioSinks participants={participants} />
 
       <div
         ref={containerRef}

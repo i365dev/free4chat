@@ -71,7 +71,6 @@ function CompactTaskIcon() {
 }
 
 function UserCard(user: UserCardProps) {
-  const audioRef = useRef<HTMLAudioElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const [canScreenShare] = useState(() => {
     if (typeof navigator === "undefined") return false
@@ -92,12 +91,12 @@ function UserCard(user: UserCardProps) {
     }
   }
 
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.srcObject = user.audioStream ?? null
-    }
-  }, [user.audioStream])
-
+  /**
+   * Remote voice is played by the Room-level `RoomAudioSinks`, which outlives
+   * this visual card. `user.audioStream` stays a prop here only for the
+   * presentation-only audio visualizer and the mute indicator; this card must
+   * never own a second audible sink.
+   */
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.srcObject = user.screenShareStream ?? null
@@ -255,7 +254,6 @@ function UserCard(user: UserCardProps) {
               )}
             </div>
           )}
-          <audio ref={audioRef} autoPlay={!isSelf} muted={isSelf} />
         </div>
       </div>
     )
@@ -393,8 +391,6 @@ function UserCard(user: UserCardProps) {
             </button>
           )}
         </div>
-
-        <audio ref={audioRef} autoPlay={!isSelf} muted={isSelf} />
       </div>
     </div>
   )
