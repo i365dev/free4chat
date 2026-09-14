@@ -1565,6 +1565,57 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       }
     })
 
+    it("retries a direct App launch after the first catalog response is empty", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      vi.useFakeTimers()
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValueOnce([])
+        .mockResolvedValue(TEST_ROOM_APP_CATALOG)
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+      let view: ReturnType<typeof render> | undefined
+      try {
+        view = render(
+          <RoomContent
+            roomName="test-room"
+            nickName="Alice"
+            roomType="audio"
+            initialRoomAppId="test-app-1"
+          />
+        )
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        expect(catalogLoader).toHaveBeenCalledTimes(1)
+        expect(screen.queryByTestId("room-app-iframe")).toBeNull()
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+
+        expect(catalogLoader).toHaveBeenCalledTimes(2)
+        expect(screen.getByTestId("stage-app-test-app-1")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+        expect(screen.getByTestId("room-app-iframe")).toHaveAttribute(
+          "src",
+          "https://room-apps.free4.chat/test-app-1"
+        )
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+      }
+    })
+
     it("loads and direct-launches the Lab catalog in development after an empty start", async () => {
       vi.stubEnv("NODE_ENV", "development")
       setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)

@@ -48,6 +48,8 @@ vi.mock("next/router", () => ({
 }))
 
 import AiAgentRoomPage from "../../pages/ai-agent-room"
+import AppsPage from "../../pages/apps"
+import WhiteboardPage from "../../pages/apps/whiteboard"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
@@ -80,6 +82,24 @@ function renderStub(Component: () => ReactElement) {
 }
 
 describe("Discovery pages — SEO metadata authored per page", () => {
+  it.each([
+    { name: "apps fallback", Component: AppsPage, path: "/apps" },
+    {
+      name: "whiteboard fallback",
+      Component: WhiteboardPage,
+      path: "/apps/whiteboard",
+    },
+  ])(
+    "keeps $name metadata during the Lab route cutover",
+    ({ Component, path }) => {
+      const { stub, unmount } = renderStub(Component)
+      expect(stub?.dataset.title).not.toBe("")
+      expect(stub?.dataset.description).not.toBe("")
+      expect(stub?.dataset.path).toBe(path)
+      unmount()
+    }
+  )
+
   it("each page has a unique, non-empty title and description", () => {
     const titles = new Set<string>()
     const descriptions = new Set<string>()

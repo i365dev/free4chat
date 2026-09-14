@@ -4,4 +4,3 @@ Disallow: /mcp
 Disallow: /api/
 
 Sitemap: https://www.free4.chat/sitemap.xml
-Sitemap: https://www.free4.chat/apps-sitemap.xml

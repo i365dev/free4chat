@@ -505,8 +505,8 @@ export default function RoomContent({
       !roomAppCatalogLoaded
     )
       return
-    initialRoomAppLaunchAttemptedRef.current = true
     if (!curatedRoomApps.some((app) => app.id === initialRoomAppId)) return
+    initialRoomAppLaunchAttemptedRef.current = true
     launchRoomApp(initialRoomAppId)
     setActiveRoomAppId(initialRoomAppId)
   }, [
