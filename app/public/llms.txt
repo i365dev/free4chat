@@ -23,6 +23,14 @@ Free4Chat provides the temporary collaboration space. Participants bring the cap
 - [MCP Room API](https://www.free4.chat/docs/reference/mcp): Connect any MCP client to a live Free4Chat Room: eighteen stateless tools, Task correlation, structured collaboration, bounded artifacts, and Live View.
 - [Troubleshooting](https://www.free4.chat/docs/reference/troubleshooting): Evidence-based fixes for missing or stale Runtimes, stale daemons, Harness launch failures, speech configuration, and media connectivity.
 
+## Shared Room Apps
+
+Room Apps are lightweight shared activities that run inside temporary Free4Chat Rooms. Participants use one Room link; no permanent workspace or App account is required.
+
+- [Browse Shared Room Apps](https://www.free4.chat/apps): the current human-readable index of shared activities.
+- [Apps sitemap](https://www.free4.chat/apps-sitemap.xml): current public App discovery pages.
+- [Room App catalog](https://room-apps.free4.chat/_catalog.json): machine-readable active App IDs, labels, and runtime paths.
+
 ## Full corpus
 
 - [llms-full.txt](https://www.free4.chat/llms-full.txt): the complete English documentation plus the canonical machine contracts in one deterministic file.

@@ -164,6 +164,25 @@ describe("llms.txt", () => {
     }
   })
 
+  it("points Agents to the Lab-owned Room App discovery and live catalog without duplicating App metadata", () => {
+    expect(llms).toContain("## Shared Room Apps")
+    expect(llms).toContain(
+      "lightweight shared activities that run inside temporary Free4Chat Rooms"
+    )
+    const section =
+      llms.split("## Shared Room Apps\n")[1]?.split("\n## ")[0] ?? ""
+    for (const link of [
+      `${SITE_ORIGIN}/apps`,
+      `${SITE_ORIGIN}/apps-sitemap.xml`,
+      "https://room-apps.free4.chat/_catalog.json",
+    ]) {
+      expect(section).toContain(`(${link})`)
+    }
+    expect(section).not.toMatch(
+      /whiteboard|typing-race|draw-and-guess|pomodoro|bingo|planning-poker|random-wheel|meeting-timer|shared-pad|live-qa/i
+    )
+  })
+
   it("links every docs navigation page", () => {
     for (const page of pages) {
       expect(llms).toContain(`(${SITE_ORIGIN}${docsPathFromSlug(page.slug)})`)
