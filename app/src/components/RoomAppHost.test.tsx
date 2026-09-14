@@ -1,12 +1,16 @@
+import type { ComponentProps } from "react"
+
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import RoomAppHost from "./RoomAppHost"
 import {
   EMPTY_ROOM_APP_CATALOG,
+  parseRoomAppCatalog,
   setProductionRoomAppCatalog,
 } from "../common/roomApp"
 import type {
+  RoomAppDefinition,
   RoomAppParticipantProjection,
   RoomAppUnicastEnvelope,
   RoomAppUnicastResult,
@@ -625,5 +629,243 @@ describe("RoomAppHost", () => {
         participant: participants[1],
       })
     )
+  })
+})
+
+/**
+ * #393 taught the browser Room to re-read the Lab catalog every
+ * ROOM_APP_CATALOG_REFRESH_INTERVAL_MS. The browser loader parses that JSON
+ * again on every refresh, so even a catalog that did not change hands every
+ * mounted host brand-new `RoomAppDefinition` objects. The host bridge must
+ * follow the mounted App instance, not the metadata object that describes it.
+ */
+describe("RoomAppHost App-instance transport lifetime", () => {
+  const appInstanceId = "test-app:room"
+  let deliverRemote: ((message: RoomAppTransportEnvelope) => void) | undefined
+
+  beforeEach(() => {
+    deliverRemote = undefined
+  })
+
+  /**
+   * Parse one Lab catalog revision exactly like the browser loader does, and
+   * install it like the refresh path does before React sees the new objects.
+   */
+  function catalogRevision(label: string = app.label): RoomAppDefinition {
+    const catalog = parseRoomAppCatalog({
+      version: 1,
+      apps: [{ id: app.id, label, path: `/${app.id}`, status: "active" }],
+    })
+    if (!catalog) throw new Error("the fixture catalog must parse")
+    setProductionRoomAppCatalog(catalog)
+    return catalog[0]
+  }
+
+  const baseProps = {
+    appInstanceId,
+    self,
+    participants,
+    subscribe: (listener: (message: RoomAppTransportEnvelope) => void) => {
+      deliverRemote = listener
+      return () => undefined
+    },
+    send: () => true,
+    subscribeUnicast: () => () => undefined,
+    subscribeUnicastResults: () => () => undefined,
+    sendUnicast: () => "sent" as const,
+    onClose: () => undefined,
+  }
+
+  /** Completes the iframe handshake and returns the live host-owned port. */
+  function handshake(
+    iframe: HTMLIFrameElement,
+    frameWindow: { postMessage: ReturnType<typeof vi.fn> }
+  ) {
+    fireEvent.load(iframe)
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    act(() => {
+      lastChannel!.port1.emit({
+        type: "ready",
+        appInstanceId,
+        handshakeToken: bootstrap.handshakeToken,
+      })
+    })
+    return { port: lastChannel!.port1, bootstrap }
+  }
+
+  function mountApp(
+    definition: RoomAppDefinition,
+    overrides: Partial<ComponentProps<typeof RoomAppHost>> = {}
+  ) {
+    const rendered = render(
+      <RoomAppHost {...baseProps} app={definition} {...overrides} />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    return { rendered, iframe, frameWindow }
+  }
+
+  it("keeps the handshaken bridge when a catalog refresh returns an equal new definition", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const send = vi.fn(() => true)
+    const first = catalogRevision()
+    const { rendered, iframe, frameWindow } = mountApp(first, { send })
+    const { port } = handshake(iframe, frameWindow)
+    expect(screen.getByText("ready")).toBeInTheDocument()
+
+    // The refresh: same logical catalog, brand-new object identity.
+    const refreshed = catalogRevision()
+    expect(refreshed).not.toBe(first)
+    expect(refreshed).toEqual(first)
+    rendered.rerender(
+      <RoomAppHost {...baseProps} app={refreshed} send={send} />
+    )
+
+    // The resident iframe and its port survive the refresh, and the host did
+    // not secretly bootstrap a replacement bridge.
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(frameWindow.postMessage).toHaveBeenCalledTimes(1)
+    expect(lastChannel!.port1).toBe(port)
+    expect(port.close).not.toHaveBeenCalled()
+    expect(screen.getByText("ready")).toBeInTheDocument()
+
+    // App → host still reaches the Room transport.
+    act(() => {
+      port.emit({
+        type: "sendReliable",
+        appInstanceId,
+        payload: { type: "tick", at: 1 },
+      })
+    })
+    expect(send).toHaveBeenCalledWith("reliable", appInstanceId, {
+      type: "tick",
+      at: 1,
+    })
+
+    // host → App still delivers a remote reliable message into the iframe.
+    act(() => {
+      deliverRemote?.({
+        protocolVersion: 1,
+        appInstanceId,
+        lane: "reliable",
+        sourceParticipantId: "human-b",
+        payload: { type: "tick", at: 2 },
+      })
+    })
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: "reliable",
+      appInstanceId,
+      sourceParticipantId: "human-b",
+      payload: { type: "tick", at: 2 },
+    })
+    rendered.unmount()
+  })
+
+  it("keeps the handshaken bridge when only App metadata changes", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const send = vi.fn(() => true)
+    const first = catalogRevision()
+    const { rendered, iframe, frameWindow } = mountApp(first, { send })
+    const { port } = handshake(iframe, frameWindow)
+
+    const renamed = catalogRevision("Test App (renamed)")
+    expect(renamed.label).toBe("Test App (renamed)")
+    rendered.rerender(<RoomAppHost {...baseProps} app={renamed} send={send} />)
+
+    // Metadata is allowed to reach the UI...
+    expect(screen.getByText("Test App (renamed)")).toBeInTheDocument()
+    expect(screen.getByTestId("room-app-host")).toHaveAttribute(
+      "aria-label",
+      "Test App (renamed)"
+    )
+    // ...but it never resets the resident transport.
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(lastChannel!.port1).toBe(port)
+    expect(port.close).not.toHaveBeenCalled()
+
+    act(() => {
+      port.emit({
+        type: "sendReliable",
+        appInstanceId,
+        payload: { type: "renamed", at: 3 },
+      })
+    })
+    expect(send).toHaveBeenCalledWith("reliable", appInstanceId, {
+      type: "renamed",
+      at: 3,
+    })
+    rendered.unmount()
+  })
+
+  it("re-bootstraps the resident iframe after a real navigation", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const send = vi.fn(() => true)
+    const { rendered, iframe, frameWindow } = mountApp(catalogRevision(), {
+      send,
+    })
+    const { port, bootstrap } = handshake(iframe, frameWindow)
+
+    // A real iframe navigation fires onLoad again without remounting the host.
+    fireEvent.load(iframe)
+
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(port.close).toHaveBeenCalledTimes(1)
+    expect(lastChannel!.port1).not.toBe(port)
+    const nextBootstrap = frameWindow.postMessage.mock.calls[1][0]
+    expect(nextBootstrap.type).toBe("room-app-bootstrap")
+    expect(nextBootstrap.handshakeToken).not.toBe(bootstrap.handshakeToken)
+    // Truthful status: the old bridge is gone until the new one handshakes.
+    expect(screen.getByText("connecting…")).toBeInTheDocument()
+
+    act(() => {
+      lastChannel!.port1.emit({
+        type: "ready",
+        appInstanceId,
+        handshakeToken: nextBootstrap.handshakeToken,
+      })
+    })
+    expect(screen.getByText("ready")).toBeInTheDocument()
+    act(() => {
+      lastChannel!.port1.emit({
+        type: "sendRealtime",
+        appInstanceId,
+        payload: { type: "cursor", x: 1 },
+      })
+    })
+    expect(send).toHaveBeenCalledWith("realtime", appInstanceId, {
+      type: "cursor",
+      x: 1,
+    })
+    rendered.unmount()
+  })
+
+  it("retires the bridge exactly once when the resident App is removed", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const { rendered, iframe, frameWindow } = mountApp(catalogRevision())
+    const { port } = handshake(iframe, frameWindow)
+
+    rendered.unmount()
+
+    expect(screen.queryByTestId("room-app-iframe")).toBeNull()
+    expect(port.close).toHaveBeenCalledTimes(1)
+  })
+
+  it("never leaves a ready UI on a retired bridge when a definition becomes unusable", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const definition = catalogRevision()
+    const { rendered, iframe, frameWindow } = mountApp(definition)
+    const { port } = handshake(iframe, frameWindow)
+    expect(screen.getByText("ready")).toBeInTheDocument()
+
+    // A hostile or stale definition can no longer be allowlisted; the iframe
+    // is replaced by the unavailable state and its bridge must retire with it.
+    setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
+    rendered.rerender(<RoomAppHost {...baseProps} app={definition} />)
+
+    expect(screen.queryByTestId("room-app-iframe")).toBeNull()
+    expect(screen.getByRole("alert")).toBeInTheDocument()
+    expect(screen.queryByText("ready")).toBeNull()
+    expect(port.close).toHaveBeenCalledTimes(1)
   })
 })

@@ -256,19 +256,36 @@ export default function RoomAppHost({
     self,
   ])
 
+  // The bridge belongs to the mounted App instance, never to the catalog
+  // metadata that happens to describe it. A catalog refresh re-parses the Lab
+  // catalog and hands this host a brand-new `RoomAppDefinition` object for the
+  // same resident iframe (and even a real metadata edit must not reset a live
+  // transport), so `app` object identity is not a teardown trigger. The only
+  // real triggers are this instance going away and the browser genuinely
+  // navigating the iframe — the latter re-runs `sendBootstrap` from `onLoad`,
+  // which is already what replaces an obsolete port.
+  const retireTransport = useCallback(() => {
+    readyRef.current = false
+    setReady(false)
+    portRef.current?.close()
+    portRef.current = null
+    pendingUnicastRequestsRef.current.clear()
+  }, [])
+
+  useEffect(() => retireTransport, [appInstanceId, retireTransport])
+
+  // Validation stays a metadata-only reaction. A definition that stops being
+  // valid or allowlisted replaces the iframe with the unavailable state, so
+  // that transition must retire the bridge the iframe owned.
+  const appUsable = validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+
   useEffect(() => {
-    const pendingUnicastRequests = pendingUnicastRequestsRef.current
-    if (!validateRoomAppDefinition(app) || !isRoomAppAllowlisted(app)) {
-      setFailed(true)
-      return
-    }
-    return () => {
-      readyRef.current = false
-      portRef.current?.close()
-      portRef.current = null
-      pendingUnicastRequests.clear()
-    }
-  }, [app])
+    if (!appUsable) setFailed(true)
+  }, [appUsable])
+
+  useEffect(() => {
+    if (failed) retireTransport()
+  }, [failed, retireTransport])
 
   useEffect(() => {
     return subscribe((message) => {
@@ -339,7 +356,7 @@ export default function RoomAppHost({
     previousParticipantsRef.current = next
   }, [appInstanceId, participants, post])
 
-  if (!validateRoomAppDefinition(app) || !isRoomAppAllowlisted(app))
+  if (!appUsable)
     return <div role="alert">This Room App is not allowlisted.</div>
 
   return (
