@@ -37,6 +37,8 @@ function createFakeRealtime() {
   /** @type {Array<{method: string, path: string}>} unexpected requests that
    * were NOT explicitly handled — the E2E spec hard-asserts this is empty. */
   const unexpected = []
+  /** Monotonic per-session data channel ids, like the real Realtime API. */
+  let nextDataChannelId = 0
   const server = http.createServer((req, res) => {
     const path = req.url ?? ""
     if (req.method === "GET" && path === "/__fake/requests") {
@@ -75,7 +77,24 @@ function createFakeRealtime() {
       }
       const channelsNew = path.match(/\/sessions\/[^/]+\/datachannels\/new$/)
       if (req.method === "POST" && channelsNew) {
-        send(200, { dataChannels: [{ id: 1 }] })
+        // Cloudflare Realtime returns one created channel per REQUESTED entry,
+        // with unique ids on the session. Modeling that matters: the Room App
+        // host lane requests two negotiated channels (reliable + realtime) and
+        // Core fails closed when the returned ids do not line up, which would
+        // silently disable the whole Room App surface in this harness.
+        let requested = 0
+        try {
+          const parsed = JSON.parse(body)
+          if (Array.isArray(parsed?.dataChannels))
+            requested = parsed.dataChannels.length
+        } catch {
+          requested = 0
+        }
+        const count = requested > 0 ? requested : 1
+        const dataChannels = Array.from({ length: count }, () => ({
+          id: (nextDataChannelId += 1),
+        }))
+        send(200, { dataChannels })
         return
       }
       const channelsClose = path.match(
@@ -184,6 +203,12 @@ async function main() {
     workers: [
       {
         configPath: "./wrangler.jsonc",
+        // Test-only seam (documented createTestHarness API): resolve the
+        // production binding name inside this harness instead of reaching an
+        // undeployed remote service.
+        bindingOverrides: {
+          ROOM_APP_CONTROL_PLANE: "free4chat-room-app-control-plane",
+        },
         vars: {
           SFU_APP_ID: DUMMY_APP_ID,
           // #275: intercept every Cloudflare Realtime call at the loopback
@@ -192,10 +217,23 @@ async function main() {
           TURNSTILE_SECRET_KEY: "",
           TURNSTILE_DISABLED: "true",
           AGENT_MEDIA_ENABLED: "false",
+          // #398: the Room App host surface must be reachable in the local
+          // harness exactly as it is in production (wrangler.jsonc already
+          // sets this var; the harness vars are explicit so the boundary is
+          // visible at the call site).
+          ROOM_APPS_ENABLED: "true",
         },
         secrets: {
           SFU_APP_SECRET: DUMMY_APP_SECRET,
         },
+      },
+      {
+        // #398: wrangler.jsonc declares the Lab-owned control-plane service
+        // binding, and workerd refuses to start when a bound service does not
+        // exist in the harness. This local stub keeps the production worker
+        // name, catalog URL and bounded v1 schema while serving only the
+        // Core-owned fixture App. Production configuration is untouched.
+        configPath: "./e2e/room/control-plane-stub.wrangler.jsonc",
       },
     ],
   })

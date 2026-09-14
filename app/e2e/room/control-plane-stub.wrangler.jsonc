@@ -1,0 +1,6 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "free4chat-room-app-control-plane",
+  "main": "control-plane-stub.ts",
+  "compatibility_date": "2025-11-01"
+}
