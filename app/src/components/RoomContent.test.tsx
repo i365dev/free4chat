@@ -31,10 +31,12 @@ import { trackAnalyticsEvent } from "@common/utils"
 import RoomContent from "./RoomContent"
 import {
   EMPTY_ROOM_APP_CATALOG,
+  ROOM_APP_CATALOG_REFRESH_INTERVAL_MS,
   ROOM_APP_MAX_INSTANCES,
   roomAppInstanceId,
   setProductionRoomAppCatalog,
 } from "../common/roomApp"
+import * as roomAppModule from "../common/roomApp"
 import { RoomSession } from "../do/RoomSession"
 import type { RoomRecord, RoomState } from "../room/types"
 
@@ -284,8 +286,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
   let mock: ReturnType<typeof installMockTurnstile>
 
   beforeEach(() => {
+    vi.stubEnv("NODE_ENV", "test")
     mock = installMockTurnstile()
     mockUseSfuChatRoom.mockReset()
+    mockUseSfuChatRoom.mockReturnValue(baseHookReturn)
     setProductionRoomAppCatalog(TEST_ROOM_APP_CATALOG)
     vi.stubGlobal(
       "fetch",
@@ -305,6 +309,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
   afterEach(() => {
     delete (window as { turnstile?: unknown }).turnstile
     setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
+    vi.unstubAllEnvs()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
@@ -1528,6 +1533,67 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         expect(screen.getByTestId(`stage-app-${id}`)).toBeInTheDocument()
     })
 
+    it("refreshes the Lab catalog during a long-lived Room and retires removed Apps", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      vi.useFakeTimers()
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValueOnce(TEST_ROOM_APP_CATALOG)
+        .mockResolvedValue([])
+      let view: ReturnType<typeof render> | undefined
+      try {
+        view = renderAppRoom()
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        expect(screen.getByTestId("stage-app-test-app-1")).toBeInTheDocument()
+        expect(catalogLoader).toHaveBeenCalledTimes(1)
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+
+        expect(catalogLoader).toHaveBeenCalledTimes(2)
+        expect(screen.queryByTestId("stage-app-test-app-1")).toBeNull()
+        expect(screen.queryByTestId("room-app-slot-test-app-1")).toBeNull()
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+      }
+    })
+
+    it("loads and direct-launches the Lab catalog in development after an empty start", async () => {
+      vi.stubEnv("NODE_ENV", "development")
+      setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+
+      render(
+        <RoomContent
+          roomName="test-room"
+          nickName="Alice"
+          roomType="audio"
+          initialRoomAppId="test-app-1"
+        />
+      )
+
+      const appButton = await screen.findByTestId("stage-app-test-app-1")
+      await waitFor(() =>
+        expect(appButton).toHaveAttribute("aria-pressed", "true")
+      )
+      expect(slotIframe("test-app-1")).toHaveAttribute(
+        "src",
+        "https://room-apps.free4.chat/test-app-1"
+      )
+    })
+
     it("exposes dynamically supplied Apps with their Lab-provided labels", async () => {
       vi.stubEnv("NODE_ENV", "production")
       renderAppRoom()
@@ -1679,11 +1745,6 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     beforeEach(() => {
       channels = []
       vi.stubGlobal("MessageChannel", TestMessageChannel)
-      vi.stubEnv("NODE_ENV", "development")
-    })
-
-    afterEach(() => {
-      vi.unstubAllEnvs()
     })
 
     it("mounts a first launch on the visual Stage while the Room conversation stays", async () => {

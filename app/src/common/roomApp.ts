@@ -12,6 +12,9 @@ export const ROOM_APP_TRUSTED_ORIGIN = "https://room-apps.free4.chat"
 export const ROOM_APP_CATALOG_ENDPOINT = `${ROOM_APP_TRUSTED_ORIGIN}/_catalog.json`
 export const ROOM_APP_CATALOG_MAX_ENTRIES = 32
 export const ROOM_APP_CATALOG_MAX_BYTES = 16 * 1024
+export const ROOM_APP_CATALOG_REFRESH_INTERVAL_MS = 60_000
+const BROWSER_ROOM_APP_CATALOG_CACHE_TTL_MS =
+  ROOM_APP_CATALOG_REFRESH_INTERVAL_MS - 1_000
 
 export type RoomAppLane = "reliable" | "realtime"
 
@@ -131,11 +134,42 @@ export function parseRoomAppCatalog(
   return active
 }
 
+async function readBoundedCatalogBody(
+  response: Response,
+  maxBytes: number
+): Promise<string | null> {
+  if (!response.body) return null
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      totalBytes += value.byteLength
+      if (totalBytes > maxBytes) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+    const bytes = new Uint8Array(totalBytes)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 /** Create a coalescing loader for the fixed, trusted Lab endpoint. */
 export function createRoomAppCatalogLoader(
   fetchCatalog: typeof fetch,
   cacheTtlMs = 60_000,
-  now: () => number = Date.now
+  now: () => number = () => Date.now()
 ): () => Promise<readonly RoomAppDefinition[]> {
   let result: readonly RoomAppDefinition[] | null = null
   let hasAcceptedRemoteCatalog = false
@@ -160,13 +194,15 @@ export function createRoomAppCatalogLoader(
         if (
           Number.isFinite(contentLength) &&
           contentLength > ROOM_APP_CATALOG_MAX_BYTES
-        )
+        ) {
+          await response.body?.cancel()
           return fallback()
-        const body = await response.text()
-        if (
-          new TextEncoder().encode(body).byteLength > ROOM_APP_CATALOG_MAX_BYTES
+        }
+        const body = await readBoundedCatalogBody(
+          response,
+          ROOM_APP_CATALOG_MAX_BYTES
         )
-          return fallback()
+        if (body === null) return fallback()
         const parsed = parseRoomAppCatalog(JSON.parse(body))
         if (!parsed) return fallback()
         hasAcceptedRemoteCatalog = true
@@ -184,8 +220,9 @@ export function createRoomAppCatalogLoader(
   }
 }
 
-const loadBrowserRoomAppCatalog = createRoomAppCatalogLoader((input, init) =>
-  fetch(input, init)
+const loadBrowserRoomAppCatalog = createRoomAppCatalogLoader(
+  (input, init) => fetch(input, init),
+  BROWSER_ROOM_APP_CATALOG_CACHE_TTL_MS
 )
 const serviceCatalogLoaders = new WeakMap<
   RoomAppCatalogService,

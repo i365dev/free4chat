@@ -162,6 +162,22 @@ describe("Room App host contract", () => {
     await expect(malformedLoader()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
   })
 
+  it("cancels catalog streams that exceed the byte limit before buffering them", async () => {
+    const canceled = vi.fn()
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(ROOM_APP_CATALOG_MAX_BYTES + 1))
+      },
+      cancel: canceled,
+    })
+    const loader = createRoomAppCatalogLoader(
+      vi.fn(async () => new Response(oversizedBody))
+    )
+
+    await expect(loader()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+    expect(canceled).toHaveBeenCalledTimes(1)
+  })
+
   it("keeps the last accepted Lab catalog after later fetch failures", async () => {
     let now = 0
     let callCount = 0
