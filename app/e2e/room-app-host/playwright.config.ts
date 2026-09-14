@@ -29,9 +29,10 @@ export default defineConfig({
   expect: { timeout: 30_000 },
   fullyParallel: true,
   // Five projects share ONE local Worker + Durable Object and one loopback
-  // Realtime fake. Two workers keeps total runtime bounded without piling five
-  // engines onto a single shared harness.
-  workers: 2,
+  // Realtime fake. CI runners are small: a single worker keeps the shared
+  // harness (and the media/AudioContext seams) deterministic, at the cost of
+  // running the five short projects sequentially.
+  workers: process.env.CI ? 1 : 2,
   reporter: process.env.CI
     ? [["list"], ["html", { open: "never" }]]
     : [["list"]],

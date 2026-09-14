@@ -126,12 +126,17 @@ export async function joinLocalRoom(
  * `MediaStream` with a live audio track synthesised from an AudioContext, so
  * the Room reaches its normal joined state on every engine without a prompt.
  *
- * The patch must not assume when the engine exposes `navigator.mediaDevices`:
- * WebKit on Linux only creates it once the secure-context origin is
- * established, which is not guaranteed at document-start. Patching just the
- * instance therefore raced, letting a native `getUserMedia` fail the join with
- * "Invalid constraint". Cover the instance, the prototype, and finally the
- * navigator accessor itself.
+ * Nothing may be captured at document-start: on Linux WebKit both
+ * `navigator.mediaDevices` and `AudioContext` are exposed only once the
+ * secure-context origin is fully established, and the first browser of a cold
+ * CI run is the slowest. Capturing either one there silently skipped the
+ * patch, after which a native `getUserMedia` failed the join with
+ * "Invalid constraint" — intermittently, and only in CI.
+ *
+ * So: resolve AudioContext lazily inside the call, patch whatever exists now
+ * (instance, then prototype, then the navigator accessor itself), and re-apply
+ * once the document exists. The app only ever calls `getUserMedia`, so owning
+ * the accessor outright is safe.
  *
  * Only used by the Room App host compatibility suite; it is not a production
  * seam and it deliberately does not touch the media transport itself.
@@ -144,9 +149,6 @@ export async function installSyntheticMicrophone(page: Page) {
       MediaDevices?: { prototype: MediaDevices }
       __roomAppHostCompatMic?: string
     }
-    const AudioContextConstructor =
-      globalWindow.AudioContext ?? globalWindow.webkitAudioContext
-    if (!AudioContextConstructor) return
 
     const syntheticGetUserMedia = async (
       constraints?: MediaStreamConstraints
@@ -156,6 +158,13 @@ export async function installSyntheticMicrophone(page: Page) {
           "the local fixture has no camera",
           "NotFoundError"
         )
+      const AudioContextConstructor =
+        globalWindow.AudioContext ?? globalWindow.webkitAudioContext
+      if (!AudioContextConstructor)
+        throw new DOMException(
+          "the local fixture has no AudioContext",
+          "NotSupportedError"
+        )
       const context = new AudioContextConstructor()
       const destination = context.createMediaStreamDestination()
       const oscillator = context.createOscillator()
@@ -163,6 +172,11 @@ export async function installSyntheticMicrophone(page: Page) {
       oscillator.connect(destination)
       oscillator.start()
       return destination.stream
+    }
+
+    const syntheticMediaDevices = {
+      getUserMedia: syntheticGetUserMedia,
+      enumerateDevices: async () => [],
     }
 
     const ownGetUserMedia = (target: object | undefined): boolean => {
@@ -179,20 +193,28 @@ export async function installSyntheticMicrophone(page: Page) {
       }
     }
 
-    if (
-      !ownGetUserMedia(navigator.mediaDevices) &&
-      !ownGetUserMedia(globalWindow.MediaDevices?.prototype)
-    ) {
-      // The app only ever calls getUserMedia (no enumerateDevices), so owning
-      // the accessor outright is safe and removes the timing dependency.
-      Object.defineProperty(navigator, "mediaDevices", {
-        configurable: true,
-        get: () => ({
-          getUserMedia: syntheticGetUserMedia,
-          enumerateDevices: async () => [],
-        }),
-      })
+    const applyPatch = () => {
+      if (
+        ownGetUserMedia(navigator.mediaDevices) ||
+        ownGetUserMedia(globalWindow.MediaDevices?.prototype)
+      ) {
+        globalWindow.__roomAppHostCompatMic = "synthetic"
+        return
+      }
+      try {
+        Object.defineProperty(navigator, "mediaDevices", {
+          configurable: true,
+          get: () => syntheticMediaDevices,
+        })
+        globalWindow.__roomAppHostCompatMic = "synthetic"
+      } catch {
+        // Leave the seam marker unset so the spec fails loudly instead of
+        // silently joining with a real device.
+      }
     }
-    globalWindow.__roomAppHostCompatMic = "synthetic"
+
+    applyPatch()
+    if (document.readyState === "loading")
+      document.addEventListener("DOMContentLoaded", applyPatch, { once: true })
   })
 }
