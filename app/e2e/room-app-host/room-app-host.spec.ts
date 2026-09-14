@@ -190,6 +190,15 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     // No OS microphone, no permission prompt, identical on every engine.
     await installSyntheticMicrophone(page)
     await joinLocalRoom(page, roomSlug, "Alice")
+    // Locks the media seam: the join must have used the synthetic microphone,
+    // never a real device or a permission prompt.
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { __roomAppHostCompatMic?: string })
+            .__roomAppHostCompatMic
+      )
+    ).toBe("synthetic")
     await expect(page.getByTestId("room-stage")).toBeVisible()
     await expect(page.getByTestId("room-timeline")).toBeVisible()
     await expectNoPageOverflow(page, "joined Room")

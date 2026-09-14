@@ -93,9 +93,27 @@ export async function joinLocalRoom(
   await page.getByLabel("Nickname").fill(nickname)
   await page.getByRole("button", { name: /Go/i }).click()
   // The room UI is connected once the self participant card renders.
-  await expect(page.getByText(new RegExp(nickname)).first()).toBeVisible({
-    timeout: 15_000,
-  })
+  try {
+    await expect(page.getByText(new RegExp(nickname)).first()).toBeVisible({
+      // A shared local Worker + Durable Object on a loaded CI runner is slower
+      // than the geometry assertions this suite is about.
+      timeout: 30_000,
+    })
+  } catch (error) {
+    // Surface the room's own failure text (e.g. an SFU or media error) instead
+    // of only a locator timeout: this is what made the first CI failure hard to
+    // read from the logs alone.
+    const visible = await page
+      .evaluate(() =>
+        document.body.innerText.replace(/\s+/g, " ").slice(0, 300)
+      )
+      .catch(() => "")
+    throw new Error(
+      `Room never reached the joined state for ${nickname}: ${
+        visible || String(error)
+      }`
+    )
+  }
   return page
 }
 
@@ -108,6 +126,13 @@ export async function joinLocalRoom(
  * `MediaStream` with a live audio track synthesised from an AudioContext, so
  * the Room reaches its normal joined state on every engine without a prompt.
  *
+ * The patch must not assume when the engine exposes `navigator.mediaDevices`:
+ * WebKit on Linux only creates it once the secure-context origin is
+ * established, which is not guaranteed at document-start. Patching just the
+ * instance therefore raced, letting a native `getUserMedia` fail the join with
+ * "Invalid constraint". Cover the instance, the prototype, and finally the
+ * navigator accessor itself.
+ *
  * Only used by the Room App host compatibility suite; it is not a production
  * seam and it deliberately does not touch the media transport itself.
  */
@@ -116,12 +141,14 @@ export async function installSyntheticMicrophone(page: Page) {
     const globalWindow = window as unknown as {
       AudioContext?: typeof AudioContext
       webkitAudioContext?: typeof AudioContext
+      MediaDevices?: { prototype: MediaDevices }
+      __roomAppHostCompatMic?: string
     }
     const AudioContextConstructor =
       globalWindow.AudioContext ?? globalWindow.webkitAudioContext
-    const mediaDevices = navigator.mediaDevices
-    if (!mediaDevices || !AudioContextConstructor) return
-    mediaDevices.getUserMedia = async (
+    if (!AudioContextConstructor) return
+
+    const syntheticGetUserMedia = async (
       constraints?: MediaStreamConstraints
     ): Promise<MediaStream> => {
       if (constraints?.video)
@@ -137,5 +164,35 @@ export async function installSyntheticMicrophone(page: Page) {
       oscillator.start()
       return destination.stream
     }
+
+    const ownGetUserMedia = (target: object | undefined): boolean => {
+      if (!target) return false
+      try {
+        Object.defineProperty(target, "getUserMedia", {
+          configurable: true,
+          writable: true,
+          value: syntheticGetUserMedia,
+        })
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    if (
+      !ownGetUserMedia(navigator.mediaDevices) &&
+      !ownGetUserMedia(globalWindow.MediaDevices?.prototype)
+    ) {
+      // The app only ever calls getUserMedia (no enumerateDevices), so owning
+      // the accessor outright is safe and removes the timing dependency.
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        get: () => ({
+          getUserMedia: syntheticGetUserMedia,
+          enumerateDevices: async () => [],
+        }),
+      })
+    }
+    globalWindow.__roomAppHostCompatMic = "synthetic"
   })
 }
