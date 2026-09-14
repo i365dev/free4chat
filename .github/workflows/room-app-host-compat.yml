@@ -1,0 +1,71 @@
+name: Room App Host Compatibility
+
+# Cross-viewport gate for the generic Room App HOST contract (#398):
+# join Room -> open App -> fullscreen -> exit control reachable -> exit ->
+# hide -> reopen, on Chromium desktop + WebKit desktop / phone / tablet.
+#
+# Deterministic by design: local Worker + Durable Object harness, loopback fake
+# Cloudflare Realtime, fake/synthetic microphone, Turnstile disabled through the
+# existing test seam. No production URL, no real media device, no Lab runtime.
+#
+# Runs for app/** changes (and this workflow file) on PRs, and after pushes to
+# cf-sfu. It is deliberately separate from the deploy workflow so a layout
+# regression blocks merge instead of being discovered after production deploy.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cf-sfu
+    paths:
+      - "app/**"
+      - ".github/workflows/room-app-host-compat.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/room-app-host-compat.yml"
+
+concurrency:
+  group: room-app-host-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  room-app-host-compat:
+    name: Room App host matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.nvmrc
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: app
+
+      # One browser install for the whole matrix (Chromium + WebKit).
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+        working-directory: app
+
+      # One run, one OpenNext Worker build (the Playwright webServer builds and
+      # starts the local harness once and all five projects share it).
+      - name: Room App host compatibility matrix
+        run: yarn e2e:room-app-host
+        working-directory: app
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: room-app-host-compat-artifacts
+          path: |
+            app/test-results
+            app/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore
