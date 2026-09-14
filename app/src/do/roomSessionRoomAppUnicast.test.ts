@@ -1,19 +1,41 @@
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { RoomSession } from "./RoomSession"
-import { roomAppInstanceId } from "../common/roomApp"
+import {
+  EMPTY_ROOM_APP_CATALOG,
+  ROOM_APP_CATALOG_ENDPOINT,
+  roomAppInstanceId,
+  setProductionRoomAppCatalog,
+} from "../common/roomApp"
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 const ROOM_NAME = "room-app-unicast-test"
-const APP_INSTANCE_ID = roomAppInstanceId(ROOM_NAME, "whiteboard")
-const DRAW_AND_GUESS_INSTANCE_ID = roomAppInstanceId(
-  ROOM_NAME,
-  "draw-and-guess"
-)
-const PLANNING_POKER_INSTANCE_ID = roomAppInstanceId(
-  ROOM_NAME,
-  "planning-poker"
-)
+const APP_INSTANCE_ID = roomAppInstanceId(ROOM_NAME, "test-app-1")
+const SECOND_TEST_APP_INSTANCE_ID = roomAppInstanceId(ROOM_NAME, "test-app-2")
+const THIRD_TEST_APP_INSTANCE_ID = roomAppInstanceId(ROOM_NAME, "test-app-3")
+const TEST_CATALOG_RESPONSE = {
+  version: 1,
+  apps: [
+    {
+      id: "test-app-1",
+      label: "Test App 1",
+      path: "/test-app-1",
+      status: "active",
+    },
+    {
+      id: "test-app-2",
+      label: "Test App 2",
+      path: "/test-app-2",
+      status: "active",
+    },
+    {
+      id: "test-app-3",
+      label: "Test App 3",
+      path: "/test-app-3",
+      status: "active",
+    },
+  ],
+}
 
 function participant(
   id: string,
@@ -101,6 +123,15 @@ function makeRoomSession() {
     ],
   ])
   const sockets: FakeSocket[] = []
+  const catalogService = {
+    fetch: vi.fn(
+      async () =>
+        new Response(JSON.stringify(TEST_CATALOG_RESPONSE), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+    ),
+  }
   const ctx = {
     storage: {
       get: async (key: string) => {
@@ -121,7 +152,11 @@ function makeRoomSession() {
   }
   const session = new RoomSession(
     ctx as never,
-    { SFU_ROOM: {}, ROOM_APPS_ENABLED: "true" } as never
+    {
+      SFU_ROOM: {},
+      ROOM_APPS_ENABLED: "true",
+      ROOM_APP_CONTROL_PLANE: catalogService,
+    } as never
   )
   const addHumanSocket = (
     participantId: string,
@@ -166,11 +201,31 @@ function makeRoomSession() {
       }
     ).webSocketMessage(socket as unknown as WebSocket, message)
   }
-  return { session, store, sockets, addHumanSocket, addAgentSocket, sendFrom }
+  return {
+    session,
+    store,
+    sockets,
+    catalogService,
+    addHumanSocket,
+    addAgentSocket,
+    sendFrom,
+  }
 }
 
 describe("RoomSession reliable participant unicast (#377)", () => {
-  it("allowlists Draw & Guess unicast only for its current Room instance", async () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("offline", { status: 503 }))
+    )
+  })
+
+  afterEach(() => {
+    setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
+    vi.unstubAllGlobals()
+  })
+
+  it("allowlists App unicast only for its current Room instance", async () => {
     const { addHumanSocket, sendFrom } = makeRoomSession()
     const sender = addHumanSocket("human-a")
     const target = addHumanSocket("human-b")
@@ -181,13 +236,13 @@ describe("RoomSession reliable participant unicast (#377)", () => {
       "draw_guess_request",
       "human-b",
       { type: "private_projection" },
-      DRAW_AND_GUESS_INSTANCE_ID
+      SECOND_TEST_APP_INSTANCE_ID
     )
     expect(target.messages()).toEqual([
       {
         type: "room-app-unicast",
         protocolVersion: 1,
-        appInstanceId: DRAW_AND_GUESS_INSTANCE_ID,
+        appInstanceId: SECOND_TEST_APP_INSTANCE_ID,
         sourceParticipantId: "human-a",
         payload: { type: "private_projection" },
       },
@@ -199,7 +254,7 @@ describe("RoomSession reliable participant unicast (#377)", () => {
       "draw_guess_wrong_room",
       "human-b",
       { type: "private_projection" },
-      roomAppInstanceId("another-room", "draw-and-guess")
+      roomAppInstanceId("another-room", "test-app-2")
     )
     expect(target.messages()).toHaveLength(1)
     expect(sender.messages().at(-1)).toMatchObject({
@@ -209,7 +264,7 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     })
   })
 
-  it("delivers Planning Poker private votes only to the targeted Human in the current Room", async () => {
+  it("delivers private App payloads only to the targeted Human in the current Room", async () => {
     const { store, addHumanSocket, addAgentSocket, sendFrom } =
       makeRoomSession()
     const sender = addHumanSocket("human-a")
@@ -221,17 +276,17 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     await sendFrom(
       sender,
       "human-a",
-      "planning_poker_vote",
+      "private_payload_request",
       "human-b",
       privateVote,
-      PLANNING_POKER_INSTANCE_ID
+      THIRD_TEST_APP_INSTANCE_ID
     )
 
     expect(target.messages()).toEqual([
       {
         type: "room-app-unicast",
         protocolVersion: 1,
-        appInstanceId: PLANNING_POKER_INSTANCE_ID,
+        appInstanceId: THIRD_TEST_APP_INSTANCE_ID,
         sourceParticipantId: "human-a",
         payload: privateVote,
       },
@@ -239,8 +294,8 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     expect(sender.messages()).toEqual([
       {
         type: "room-app-unicast-result",
-        requestId: "planning_poker_vote",
-        appInstanceId: PLANNING_POKER_INSTANCE_ID,
+        requestId: "private_payload_request",
+        appInstanceId: THIRD_TEST_APP_INSTANCE_ID,
         ok: true,
       },
     ])
@@ -254,15 +309,15 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     await sendFrom(
       sender,
       "human-a",
-      "planning_poker_wrong_room",
+      "wrong_room_payload_request",
       "human-b",
       privateVote,
-      roomAppInstanceId("another-room", "planning-poker")
+      roomAppInstanceId("another-room", "test-app-3")
     )
     expect(target.messages()).toHaveLength(1)
     expect(sender.messages().at(-1)).toMatchObject({
       type: "room-app-unicast-result",
-      requestId: "planning_poker_wrong_room",
+      requestId: "wrong_room_payload_request",
       ok: false,
       error: "app_unavailable",
     })
@@ -443,5 +498,52 @@ describe("RoomSession reliable participant unicast (#377)", () => {
       ok: false,
       error: "rate_limited",
     })
+  })
+
+  it("loads the Lab catalog through its bound service for server-side instance validation", async () => {
+    const { addHumanSocket, catalogService, sendFrom } = makeRoomSession()
+    const sender = addHumanSocket("human-a")
+    const target = addHumanSocket("human-b")
+    catalogService.fetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          version: 1,
+          apps: [
+            {
+              id: "lab-only",
+              label: "Lab Only",
+              path: "/lab-only",
+              status: "active",
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    )
+    const labOnlyInstanceId = roomAppInstanceId(ROOM_NAME, "lab-only")
+
+    await sendFrom(
+      sender,
+      "human-a",
+      "lab_only_request",
+      "human-b",
+      { type: "private_projection" },
+      labOnlyInstanceId
+    )
+
+    expect(catalogService.fetch).toHaveBeenCalledTimes(1)
+    expect(catalogService.fetch).toHaveBeenCalledWith(
+      ROOM_APP_CATALOG_ENDPOINT,
+      expect.objectContaining({ credentials: "omit", mode: "cors" })
+    )
+    expect(target.messages()).toEqual([
+      {
+        type: "room-app-unicast",
+        protocolVersion: 1,
+        appInstanceId: labOnlyInstanceId,
+        sourceParticipantId: "human-a",
+        payload: { type: "private_projection" },
+      },
+    ])
   })
 })

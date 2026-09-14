@@ -16,12 +16,15 @@ import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   buildRoomInviteUrl,
-  experimentalRoomAppCatalog,
+  currentRoomAppCatalog,
   isRoomAppAllowlisted,
+  loadProductionRoomAppCatalog,
   resolveProductionRoomAppId,
   ROOM_APP_MAX_INSTANCES,
   projectRoomAppParticipants,
+  ROOM_APP_CATALOG_REFRESH_INTERVAL_MS,
   roomAppInstanceId,
+  setProductionRoomAppCatalog,
   validateRoomAppDefinition,
 } from "../common/roomApp"
 import {
@@ -137,6 +140,12 @@ export default function RoomContent({
   // Browser-local resident App sessions, bounded by the curated catalog size.
   const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
   const [readyRoomAppIds, setReadyRoomAppIds] = useState<string[]>([])
+  const [loadedRoomAppCatalog, setLoadedRoomAppCatalog] = useState(() =>
+    process.env.NODE_ENV !== "production" ? currentRoomAppCatalog() : null
+  )
+  const [roomAppCatalogLoaded, setRoomAppCatalogLoaded] = useState(
+    () => process.env.NODE_ENV === "test"
+  )
   const initialRoomAppLaunchAttemptedRef = useRef(false)
   // Host-owned coarse telemetry stays catalog-derived: any curated production
   // App reports at most one shared-session milestone per browser Room session.
@@ -228,18 +237,43 @@ export default function RoomContent({
   )
   const effectiveLocalParticipantId =
     localParticipantId ?? getLocalRoomAuth()?.participantId
-  // The validated curated catalog is stable while the Room content is mounted.
+  useEffect(() => {
+    if (process.env.NODE_ENV === "test") return
+    let mounted = true
+    const refreshCatalog = () => {
+      void loadProductionRoomAppCatalog().then((catalog) => {
+        if (!mounted) return
+        setProductionRoomAppCatalog(catalog)
+        setLoadedRoomAppCatalog(catalog)
+        setRoomAppCatalogLoaded(true)
+      })
+    }
+    refreshCatalog()
+    const refreshTimer = window.setInterval(
+      refreshCatalog,
+      ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+    )
+    return () => {
+      mounted = false
+      window.clearInterval(refreshTimer)
+    }
+  }, [])
+
+  // Refreshing the same bounded Lab catalog keeps long-lived browser Rooms
+  // aligned with the Room authority's catalog TTL. Local `yarn dev` uses the
+  // same fixed-origin catalog; the Lab permits only exact localhost origins.
   // `roomAppsEnabled` is not a pure catalog/kill-switch signal: it also drops
   // while an ordinary SFU/media reconnect rebuilds the App DataChannels, and
   // that transient false must never be mistaken for a catalog removal.
   const curatedRoomApps = useMemo(
     () =>
-      experimentalRoomAppCatalog().filter(
+      (loadedRoomAppCatalog ?? []).filter(
         (app) => validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
       ),
-    []
+    [loadedRoomAppCatalog]
   )
-  const roomApps = roomAppsEnabled ? curatedRoomApps : []
+  const roomApps =
+    roomAppsEnabled && loadedRoomAppCatalog !== null ? curatedRoomApps : []
   // Conversation scope and visual Stage are independent selections: an active
   // Room App lives on the Stage and never replaces the Room/Task conversation.
   const activeRoomApp = roomApps.find((app) => activeRoomAppId === app.id)
@@ -467,19 +501,28 @@ export default function RoomContent({
     if (
       initialRoomAppLaunchAttemptedRef.current ||
       !initialRoomAppId ||
-      !roomAppsEnabled
+      !roomAppsEnabled ||
+      !roomAppCatalogLoaded
     )
       return
-    initialRoomAppLaunchAttemptedRef.current = true
     if (!curatedRoomApps.some((app) => app.id === initialRoomAppId)) return
+    initialRoomAppLaunchAttemptedRef.current = true
     launchRoomApp(initialRoomAppId)
     setActiveRoomAppId(initialRoomAppId)
-  }, [curatedRoomApps, initialRoomAppId, launchRoomApp, roomAppsEnabled])
+  }, [
+    curatedRoomApps,
+    initialRoomAppId,
+    launchRoomApp,
+    loadedRoomAppCatalog,
+    roomAppCatalogLoaded,
+    roomAppsEnabled,
+  ])
 
   const handleRoomAppReady = useCallback((appId: string) => {
     setReadyRoomAppIds((previous) =>
       previous.includes(appId) ? previous : [...previous, appId]
     )
+    if (process.env.NODE_ENV !== "production") return
     // Only curated production Apps are reported; local dev fixtures and any
     // unallowlisted id stay out of analytics without a second allowlist.
     const productionAppId = resolveProductionRoomAppId(appId)
@@ -488,6 +531,7 @@ export default function RoomContent({
   }, [])
 
   const handleRoomAppEngaged = useCallback((appId: string) => {
+    if (process.env.NODE_ENV !== "production") return
     const productionAppId = resolveProductionRoomAppId(appId)
     if (!productionAppId) return
     trackAnalyticsEvent("RoomAppEngaged", {
@@ -497,6 +541,7 @@ export default function RoomContent({
   }, [])
 
   useEffect(() => {
+    if (process.env.NODE_ENV !== "production") return
     if (!sharedSessionRoomAppId || humanParticipantCount < 2) return
     if (sharedSessionTrackedAppIdsRef.current.has(sharedSessionRoomAppId))
       return

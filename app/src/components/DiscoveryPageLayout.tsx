@@ -13,6 +13,8 @@ export interface DiscoveryPageLayoutProps {
   description: string
   /** Site-relative path, e.g. "/temporary-chat-room". */
   path: string
+  /** Transitional route retained for compatibility but owned elsewhere. */
+  indexable?: boolean
   /** Bounded page identifier sent with the CTA click event — never room/user data. */
   ctaId: string
   h1: string
@@ -35,6 +37,7 @@ export default function DiscoveryPageLayout({
   title,
   description,
   path,
+  indexable,
   ctaId,
   h1,
   children,
@@ -45,7 +48,12 @@ export default function DiscoveryPageLayout({
     "group flex items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300"
   return (
     <div className="flex min-h-screen flex-col font-mono text-emerald-100">
-      <SeoHead title={title} description={description} path={path} />
+      <SeoHead
+        title={title}
+        description={description}
+        path={path}
+        indexable={indexable}
+      />
       <main className="flex-1 px-4 py-16">
         <div className="mx-auto max-w-3xl">
           <Link

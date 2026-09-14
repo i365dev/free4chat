@@ -7,6 +7,7 @@ import {
 import { saveRoomToLocalStorage } from "../../common/utils"
 import DiscoveryPageLayout from "../../components/DiscoveryPageLayout"
 
+/** Temporary compatibility fallback until the Lab takes over /apps*. */
 export default function WhiteboardPage() {
   const router = useRouter()
 

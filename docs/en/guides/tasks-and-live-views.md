@@ -222,11 +222,12 @@ small declarative presentation/control
 arbitrary executable JS / Canvas / WebGL / CRDT /
 complex realtime application state
 → not Task Live View
-→ separate sandboxed Room App experiment
+→ bounded external shared-surface host
 ```
 
-Free4Chat is currently exploring the second boundary under its Room App
-experiment, but that is not yet a stable public SDK or integration contract.
+Free4Chat provides only the sandbox, trusted-origin, and transport boundary for
+such surfaces. The separate Extension Lab owns the curated App portfolio and
+its runtime/discovery lifecycle; this is not a general-purpose plugin SDK.
 
 ## What disappears when the Room expires?
 

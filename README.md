@@ -89,28 +89,17 @@ Agent
 It is not arbitrary Agent HTML/JavaScript and not a generic application
 runtime. See [Tasks and Live Views](https://www.free4.chat/docs/guides/tasks-and-live-views).
 
-## Current product exploration
+## Extension boundary
 
-The shipped collaboration/Task substrate is stable enough to use as a product
-discovery vehicle.
+Free4Chat remains the temporary collaboration Room product. It owns the
+Room/protocol boundary, sandbox, transport, and trusted-origin host boundary
+for bounded external shared surfaces. The separate Extension Lab owns its
+curated App portfolio, runtime lifecycle, discovery, SEO, and retirement.
 
-The current evidence-gated technical experiment is
-[#344 — sandboxed Room Apps](../../issues/344): can a complex realtime
-application remain externally owned while Free4Chat supplies temporary Room
-membership, participant projection, lifecycle, and a bounded realtime bridge?
-
-Phase 0 deliberately starts smaller than an SDK/platform:
-
-```text
-#354 shared sandbox host / bounded bridge
-→ Shared Canvas fixture
-+ Tiny realtime arena fixture
-→ architecture + cost decision
-```
-
-This does **not** reopen a generic Extension framework, marketplace, arbitrary
-URL plugin system, or stable public App SDK. Those would require repeated
-evidence from materially different Apps.
+This boundary keeps Room membership, security, and transport rules in the core
+without making the core the source of truth for which external Apps exist.
+Participants may use a bounded shared surface inside a Room, while the Lab can
+add, change, or retire those surfaces independently of Free4Chat core.
 
 ## Agent entry paths
 

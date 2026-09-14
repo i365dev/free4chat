@@ -1,7 +1,11 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import RoomAppHost from "./RoomAppHost"
+import {
+  EMPTY_ROOM_APP_CATALOG,
+  setProductionRoomAppCatalog,
+} from "../common/roomApp"
 import type {
   RoomAppParticipantProjection,
   RoomAppUnicastEnvelope,
@@ -32,17 +36,10 @@ class TestMessageChannel {
 }
 
 const app = {
-  id: "whiteboard",
-  label: "Whiteboard",
-  url: "https://room-apps.free4.chat/whiteboard",
+  id: "test-app",
+  label: "Test App",
+  url: "https://room-apps.free4.chat/test-app",
   origin: "https://room-apps.free4.chat",
-} as const
-
-const sharedCanvasApp = {
-  id: "shared-canvas",
-  label: "Shared Canvas",
-  url: "http://localhost:8787/shared-canvas",
-  origin: "http://localhost:8787",
 } as const
 
 const self: RoomAppParticipantProjection = {
@@ -58,10 +55,13 @@ const participants = [
 
 afterEach(() => {
   lastChannel = null
+  setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
   vi.unstubAllGlobals()
 })
 
 describe("RoomAppHost", () => {
+  beforeEach(() => setProductionRoomAppCatalog([app]))
+
   it("reports the first ready App engagement once without sending into the Room", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const onEngaged = vi.fn()
@@ -70,7 +70,7 @@ describe("RoomAppHost", () => {
     const rendered = render(
       <RoomAppHost
         app={app}
-        appInstanceId="whiteboard:room"
+        appInstanceId="test-app:room"
         self={self}
         participants={participants}
         subscribe={() => () => undefined}
@@ -92,28 +92,28 @@ describe("RoomAppHost", () => {
     act(() => {
       port.emit({
         type: "milestone",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         milestone: "engaged",
       })
       port.emit({
         type: "ready",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         handshakeToken: bootstrap.handshakeToken,
       })
       port.emit({
         type: "milestone",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         milestone: "engaged",
       })
       port.emit({
         type: "milestone",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         milestone: "engaged",
       })
     })
 
     expect(onEngaged).toHaveBeenCalledTimes(1)
-    expect(onEngaged).toHaveBeenCalledWith("whiteboard")
+    expect(onEngaged).toHaveBeenCalledWith("test-app")
     expect(send).not.toHaveBeenCalled()
     expect(sendUnicast).not.toHaveBeenCalled()
     rendered.unmount()
@@ -124,7 +124,7 @@ describe("RoomAppHost", () => {
     const onInvite = vi.fn().mockResolvedValue(true)
     const props = {
       app,
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       self,
       participants,
       subscribe: () => () => undefined,
@@ -163,8 +163,8 @@ describe("RoomAppHost", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const onToggleFullscreen = vi.fn()
     const props = {
-      app: sharedCanvasApp,
-      appInstanceId: "shared-canvas:room",
+      app,
+      appInstanceId: "test-app:room",
       self,
       participants,
       subscribe: () => () => undefined,
@@ -225,7 +225,7 @@ describe("RoomAppHost", () => {
     const rendered = render(
       <RoomAppHost
         app={app}
-        appInstanceId="whiteboard:room"
+        appInstanceId="test-app:room"
         self={self}
         participants={participants}
         subscribe={subscribe}
@@ -252,7 +252,7 @@ describe("RoomAppHost", () => {
     expect(targetOrigin).toBe("*")
     expect(bootstrap).toMatchObject({
       type: "room-app-bootstrap",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
     })
     expect(bootstrap).not.toHaveProperty("token")
     expect(bootstrap).not.toHaveProperty("participantToken")
@@ -262,24 +262,24 @@ describe("RoomAppHost", () => {
     act(() => {
       lastChannel!.port1.emit({
         type: "ready",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         handshakeToken: bootstrap.handshakeToken,
       })
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "ready",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         self,
         participants,
       })
     )
     expect(onReady).toHaveBeenCalledTimes(1)
-    expect(onReady).toHaveBeenCalledWith("whiteboard")
+    expect(onReady).toHaveBeenCalledWith("test-app")
     act(() => {
       lastChannel!.port1.emit({
         type: "ready",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         handshakeToken: bootstrap.handshakeToken,
       })
     })
@@ -300,7 +300,7 @@ describe("RoomAppHost", () => {
     render(
       <RoomAppHost
         app={app}
-        appInstanceId="whiteboard:room"
+        appInstanceId="test-app:room"
         self={self}
         participants={participants}
         subscribe={() => () => undefined}
@@ -318,7 +318,7 @@ describe("RoomAppHost", () => {
     const bootstrap = frameWindow.postMessage.mock.calls[0][0]
     const port = lastChannel!.port1
     act(() => {
-      port.emit({ type: "bogus", appInstanceId: "whiteboard:room" })
+      port.emit({ type: "bogus", appInstanceId: "test-app:room" })
     })
     expect(port.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: "error", error: "unsupported_message" })
@@ -334,30 +334,30 @@ describe("RoomAppHost", () => {
     act(() => {
       port.emit({
         type: "ready",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         handshakeToken: bootstrap.handshakeToken,
       })
       port.emit({
         type: "sendReliable",
-        appInstanceId: "whiteboard:room",
-        payload: { type: "stroke", points: [[1, 2]] },
+        appInstanceId: "test-app:room",
+        payload: { type: "update", points: [[1, 2]] },
       })
     })
-    expect(send).toHaveBeenCalledWith("reliable", "whiteboard:room", {
-      type: "stroke",
+    expect(send).toHaveBeenCalledWith("reliable", "test-app:room", {
+      type: "update",
       points: [[1, 2]],
     })
     act(() => {
       port.emit({
         type: "sendReliableTo",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         requestId: "private_request_1",
         targetParticipantId: "human-b",
         payload: { type: "private", word: "otter" },
       })
       port.emit({
         type: "sendReliableTo",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         requestId: "private_request_1",
         targetParticipantId: "human-b",
         payload: { type: "private", word: "duplicate" },
@@ -366,13 +366,13 @@ describe("RoomAppHost", () => {
     expect(sendUnicast).toHaveBeenCalledWith(
       "private_request_1",
       "human-b",
-      "whiteboard:room",
+      "test-app:room",
       { type: "private", word: "otter" }
     )
     expect(sendUnicast).toHaveBeenCalledTimes(1)
     expect(port.postMessage).toHaveBeenCalledWith({
       type: "error",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       requestId: "private_request_1",
       error: "duplicate_request_id",
     })
@@ -393,7 +393,7 @@ describe("RoomAppHost", () => {
     render(
       <RoomAppHost
         app={app}
-        appInstanceId="whiteboard:room"
+        appInstanceId="test-app:room"
         self={self}
         participants={participants}
         subscribe={() => () => undefined}
@@ -413,39 +413,39 @@ describe("RoomAppHost", () => {
     act(() => {
       port.emit({
         type: "ready",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         handshakeToken: bootstrap.handshakeToken,
       })
       port.emit({
         type: "sendReliableTo",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         requestId: "req-A",
         targetParticipantId: "human-b",
         payload: { type: "secret", word: "otter" },
       })
       port.emit({
         type: "sendReliableTo",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         requestId: "req-B",
         targetParticipantId: "human-c",
         payload: { type: "secret", word: "fox" },
       })
       port.emit({
         type: "sendReliable",
-        appInstanceId: "whiteboard:room",
-        payload: { type: "stroke" },
+        appInstanceId: "test-app:room",
+        payload: { type: "update" },
       })
     })
 
     expect(port.postMessage).toHaveBeenCalledWith({
       type: "error",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       requestId: "req-B",
       error: "rate_limited",
     })
     expect(port.postMessage).toHaveBeenCalledWith({
       type: "error",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       error: "rate_limited",
     })
     expect(sendUnicast).toHaveBeenCalledTimes(2)
@@ -453,14 +453,14 @@ describe("RoomAppHost", () => {
     act(() => {
       resultListener?.({
         requestId: "req-A",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         ok: true,
       })
     })
     expect(port.postMessage).toHaveBeenCalledWith({
       type: "unicast_result",
       requestId: "req-A",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       ok: true,
     })
   })
@@ -493,7 +493,7 @@ describe("RoomAppHost", () => {
     const { rerender } = render(
       <RoomAppHost
         app={app}
-        appInstanceId="whiteboard:room"
+        appInstanceId="test-app:room"
         self={self}
         participants={participants}
         subscribe={subscribe}
@@ -512,33 +512,33 @@ describe("RoomAppHost", () => {
     act(() => {
       lastChannel!.port1.emit({
         type: "ready",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         handshakeToken: bootstrap.handshakeToken,
       })
       lastChannel!.port1.emit({
         type: "sendReliableTo",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         requestId: "secret_for_bob",
         targetParticipantId: "human-b",
         payload: { type: "secret", word: "otter" },
       })
       lastChannel!.port1.emit({
         type: "sendReliableTo",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         requestId: "secret_for_carol",
         targetParticipantId: "human-c",
         payload: { type: "secret", word: "fox" },
       })
       listener?.({
         protocolVersion: 1,
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         lane: "realtime",
         sourceParticipantId: "human-b",
         payload: { type: "cursor", x: 2 },
       })
       unicastListener?.({
         protocolVersion: 1,
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         sourceParticipantId: "human-b",
         payload: { type: "secret", word: "otter" },
       })
@@ -547,20 +547,20 @@ describe("RoomAppHost", () => {
       1,
       "secret_for_bob",
       "human-b",
-      "whiteboard:room",
+      "test-app:room",
       { type: "secret", word: "otter" }
     )
     expect(sendUnicast).toHaveBeenNthCalledWith(
       2,
       "secret_for_carol",
       "human-c",
-      "whiteboard:room",
+      "test-app:room",
       { type: "secret", word: "fox" }
     )
     act(() => {
       resultListener?.({
         requestId: "another-request",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         ok: true,
       })
     })
@@ -570,45 +570,45 @@ describe("RoomAppHost", () => {
     act(() => {
       resultListener?.({
         requestId: "secret_for_carol",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         ok: false,
         error: "target_unavailable",
       })
       resultListener?.({
         requestId: "secret_for_bob",
-        appInstanceId: "whiteboard:room",
+        appInstanceId: "test-app:room",
         ok: true,
       })
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
       type: "realtime",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       sourceParticipantId: "human-b",
       payload: { type: "cursor", x: 2 },
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
       type: "unicast",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       sourceParticipantId: "human-b",
       payload: { type: "secret", word: "otter" },
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
       type: "unicast_result",
       requestId: "secret_for_carol",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       ok: false,
       error: "target_unavailable",
     })
     expect(lastChannel!.port1.postMessage).toHaveBeenCalledWith({
       type: "unicast_result",
       requestId: "secret_for_bob",
-      appInstanceId: "whiteboard:room",
+      appInstanceId: "test-app:room",
       ok: true,
     })
     rerender(
       <RoomAppHost
         app={app}
-        appInstanceId="whiteboard:room"
+        appInstanceId="test-app:room"
         self={self}
         participants={[self]}
         subscribe={subscribe}

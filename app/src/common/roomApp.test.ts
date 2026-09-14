@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
-  ROOM_APP_CATALOG,
-  ROOM_APP_LOCAL_CATALOG,
+  EMPTY_ROOM_APP_CATALOG,
+  ROOM_APP_CATALOG_MAX_ENTRIES,
+  ROOM_APP_CATALOG_MAX_BYTES,
+  ROOM_APP_TRUSTED_ORIGIN,
   ROOM_APP_MAX_PAYLOAD_BYTES,
   buildRoomInviteUrl,
+  createRoomAppCatalogLoader,
   decodeRoomAppClientMessage,
   decodeRoomAppEnvelope,
   decodeRoomAppUnicastEnvelope,
@@ -17,206 +20,266 @@ import {
   roomAppRateGuard,
   roomAppUnicastRateGuard,
   roomAppInstanceId,
+  parseRoomAppCatalog,
   resolveProductionRoomAppId,
+  setProductionRoomAppCatalog,
   validateRoomAppDefinition,
 } from "./roomApp"
 
-describe("Room App Phase 0 bridge contract", () => {
-  it("exposes only curated production apps and keeps Phase-0 apps local", () => {
-    expect(ROOM_APP_CATALOG).toEqual([
-      {
-        id: "whiteboard",
-        label: "Whiteboard",
-        url: "https://room-apps.free4.chat/whiteboard",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "typing-race",
-        label: "Typing",
-        url: "https://room-apps.free4.chat/typing-race",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "draw-and-guess",
-        label: "Draw & Guess",
-        url: "https://room-apps.free4.chat/draw-and-guess",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "pomodoro",
-        label: "Pomodoro",
-        url: "https://room-apps.free4.chat/pomodoro",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "bingo",
-        label: "Bingo",
-        url: "https://room-apps.free4.chat/bingo",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "planning-poker",
-        label: "Planning Poker",
-        url: "https://room-apps.free4.chat/planning-poker",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "random-wheel",
-        label: "Random Wheel",
-        url: "https://room-apps.free4.chat/random-wheel",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "meeting-timer",
-        label: "Meeting Timer",
-        url: "https://room-apps.free4.chat/meeting-timer",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "shared-pad",
-        label: "Shared Pad",
-        url: "https://room-apps.free4.chat/shared-pad",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "live-qa",
-        label: "Live Q&A",
-        url: "https://room-apps.free4.chat/live-qa",
-        origin: "https://room-apps.free4.chat",
-      },
-    ])
-    expect(ROOM_APP_LOCAL_CATALOG.map((app) => app.id)).toEqual([
-      "shared-canvas",
-      "tiny-arena",
-    ])
+const TEST_ROOM_APP_CATALOG = [
+  {
+    id: "test-app",
+    label: "Test App",
+    url: `${ROOM_APP_TRUSTED_ORIGIN}/test-app`,
+    origin: ROOM_APP_TRUSTED_ORIGIN,
+  },
+  {
+    id: "second-app",
+    label: "Second App",
+    url: `${ROOM_APP_TRUSTED_ORIGIN}/second-app`,
+    origin: ROOM_APP_TRUSTED_ORIGIN,
+  },
+]
+
+describe("Room App host contract", () => {
+  beforeEach(() => setProductionRoomAppCatalog(TEST_ROOM_APP_CATALOG))
+  afterEach(() => setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG))
+
+  it("starts with no baked-in production catalog", () => {
+    expect(EMPTY_ROOM_APP_CATALOG).toEqual([])
+    setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
+    expect(resolveProductionRoomAppId("test-app")).toBeNull()
   })
 
-  it("resolves direct launch by exact curated production id only", () => {
-    expect(resolveProductionRoomAppId("whiteboard")).toBe("whiteboard")
-    expect(resolveProductionRoomAppId("typing-race")).toBe("typing-race")
-    expect(resolveProductionRoomAppId("draw-and-guess")).toBe("draw-and-guess")
-    expect(resolveProductionRoomAppId("pomodoro")).toBe("pomodoro")
-    expect(resolveProductionRoomAppId("bingo")).toBe("bingo")
-    expect(resolveProductionRoomAppId("planning-poker")).toBe("planning-poker")
-    expect(resolveProductionRoomAppId("random-wheel")).toBe("random-wheel")
-    expect(resolveProductionRoomAppId("meeting-timer")).toBe("meeting-timer")
-    expect(resolveProductionRoomAppId("shared-pad")).toBe("shared-pad")
-    expect(resolveProductionRoomAppId("live-qa")).toBe("live-qa")
-    expect(resolveProductionRoomAppId("typing")).toBeNull()
-    expect(resolveProductionRoomAppId("typing-race ")).toBeNull()
-    expect(resolveProductionRoomAppId("Typing-Race")).toBeNull()
-    expect(resolveProductionRoomAppId("shared-canvas")).toBeNull()
-    expect(resolveProductionRoomAppId("draw-and-guess ")).toBeNull()
-    expect(resolveProductionRoomAppId("Pomodoro")).toBeNull()
-    expect(resolveProductionRoomAppId("pomodoro ")).toBeNull()
-    expect(resolveProductionRoomAppId("Bingo")).toBeNull()
-    expect(resolveProductionRoomAppId(" bingo")).toBeNull()
-    expect(resolveProductionRoomAppId("Planning-Poker")).toBeNull()
-    expect(resolveProductionRoomAppId("planning-poker ")).toBeNull()
-    expect(resolveProductionRoomAppId("Random-Wheel")).toBeNull()
-    expect(resolveProductionRoomAppId("random-wheel ")).toBeNull()
-    expect(resolveProductionRoomAppId("meetingtimer")).toBeNull()
-    expect(resolveProductionRoomAppId("Meeting-Timer")).toBeNull()
-    expect(resolveProductionRoomAppId("meeting-timer ")).toBeNull()
-    expect(resolveProductionRoomAppId(" shared-pad")).toBeNull()
-    expect(resolveProductionRoomAppId("Shared-Pad")).toBeNull()
-    expect(resolveProductionRoomAppId("shared_pad")).toBeNull()
-    expect(resolveProductionRoomAppId("live-qa ")).toBeNull()
-    expect(resolveProductionRoomAppId("Live-QA")).toBeNull()
-    expect(resolveProductionRoomAppId("liveqa")).toBeNull()
+  it("accepts only a strict, bounded Lab runtime catalog", () => {
+    const valid = {
+      version: 1,
+      apps: [
+        { id: "my-app", label: "My App", path: "/my-app", status: "active" },
+        {
+          id: "paused-app",
+          label: "Paused",
+          path: "/paused-app",
+          status: "disabled",
+        },
+      ],
+    }
+    expect(parseRoomAppCatalog(valid)).toEqual([
+      {
+        id: "my-app",
+        label: "My App",
+        url: `${ROOM_APP_TRUSTED_ORIGIN}/my-app`,
+        origin: ROOM_APP_TRUSTED_ORIGIN,
+      },
+    ])
+    expect(parseRoomAppCatalog({ ...valid, version: 2 })).toBeNull()
     expect(
-      resolveProductionRoomAppId("https://room-apps.free4.chat/live-qa")
+      parseRoomAppCatalog({
+        version: 1,
+        apps: [valid.apps[0], valid.apps[0]],
+      })
+    ).toBeNull()
+    expect(
+      parseRoomAppCatalog({
+        version: 1,
+        apps: [{ ...valid.apps[0], id: "Bad Id" }],
+      })
+    ).toBeNull()
+    for (const path of [
+      "https://evil.example/app",
+      "//evil.example/app",
+      "/../other",
+      "/my-app/../other",
+    ]) {
+      expect(
+        parseRoomAppCatalog({
+          version: 1,
+          apps: [{ ...valid.apps[0], path }],
+        })
+      ).toBeNull()
+    }
+    expect(
+      parseRoomAppCatalog({
+        version: 1,
+        apps: [{ ...valid.apps[0], properties: { arbitrary: "data" } }],
+      })
+    ).toBeNull()
+    expect(
+      parseRoomAppCatalog({
+        version: 1,
+        apps: Array.from(
+          { length: ROOM_APP_CATALOG_MAX_ENTRIES + 1 },
+          (_, index) => ({
+            id: `app-${index}`,
+            label: `App ${index}`,
+            path: `/app-${index}`,
+            status: "active",
+          })
+        ),
+      })
+    ).toBeNull()
+    expect(ROOM_APP_CATALOG_MAX_BYTES).toBe(16 * 1024)
+  })
+
+  it("treats valid remote catalogs as authoritative and never revives removed Apps", () => {
+    const previous = [...TEST_ROOM_APP_CATALOG]
+    try {
+      const remote = parseRoomAppCatalog({
+        version: 1,
+        apps: [
+          {
+            id: "current-app",
+            label: "Current",
+            path: "/current-app",
+            status: "active",
+          },
+        ],
+      })
+      expect(remote).not.toBeNull()
+      setProductionRoomAppCatalog(remote!)
+      expect(resolveProductionRoomAppId("current-app")).toBe("current-app")
+      expect(resolveProductionRoomAppId("test-app")).toBeNull()
+      expect(
+        isRoomAppInstanceForRoom("r", roomAppInstanceId("r", "test-app"))
+      ).toBe(false)
+      expect(
+        isRoomAppInstanceForRoom("r", roomAppInstanceId("r", "current-app"))
+      ).toBe(true)
+    } finally {
+      setProductionRoomAppCatalog(previous)
+    }
+  })
+
+  it("fails closed when the Lab endpoint is unavailable or malformed before any valid catalog", async () => {
+    const failingLoader = createRoomAppCatalogLoader(
+      vi.fn(async () => new Response("offline", { status: 503 }))
+    )
+    await expect(failingLoader()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+
+    const malformedLoader = createRoomAppCatalogLoader(
+      vi.fn(async () => new Response("{not-json", { status: 200 }))
+    )
+    await expect(malformedLoader()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+  })
+
+  it("cancels catalog streams that exceed the byte limit before buffering them", async () => {
+    const canceled = vi.fn()
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(ROOM_APP_CATALOG_MAX_BYTES + 1))
+      },
+      cancel: canceled,
+    })
+    const loader = createRoomAppCatalogLoader(
+      vi.fn(async () => new Response(oversizedBody))
+    )
+
+    await expect(loader()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+    expect(canceled).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the last accepted Lab catalog after later fetch failures", async () => {
+    let now = 0
+    let callCount = 0
+    const fetchCatalog = vi.fn(async () => {
+      callCount += 1
+      if (callCount === 1) {
+        return new Response(
+          JSON.stringify({
+            version: 1,
+            apps: [
+              {
+                id: "current-app",
+                label: "Current",
+                path: "/current-app",
+                status: "active",
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      return new Response("offline", { status: 503 })
+    })
+    const loader = createRoomAppCatalogLoader(fetchCatalog, 10, () => now)
+
+    await expect(loader()).resolves.toEqual([
+      {
+        id: "current-app",
+        label: "Current",
+        url: `${ROOM_APP_TRUSTED_ORIGIN}/current-app`,
+        origin: ROOM_APP_TRUSTED_ORIGIN,
+      },
+    ])
+    now = 11
+    await expect(loader()).resolves.toEqual([
+      {
+        id: "current-app",
+        label: "Current",
+        url: `${ROOM_APP_TRUSTED_ORIGIN}/current-app`,
+        origin: ROOM_APP_TRUSTED_ORIGIN,
+      },
+    ])
+    expect(fetchCatalog).toHaveBeenCalledTimes(2)
+  })
+
+  it("uses one bounded fetch for concurrent catalog consumers", async () => {
+    let now = 100
+    const fetchCatalog = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ version: 1, apps: [] }), { status: 200 })
+    )
+    const loader = createRoomAppCatalogLoader(fetchCatalog, 10, () => now)
+    const [first, second] = await Promise.all([loader(), loader()])
+    expect(first).toEqual([])
+    expect(second).toEqual([])
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    await loader()
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    now += 11
+    await loader()
+    expect(fetchCatalog).toHaveBeenCalledTimes(2)
+  })
+
+  it("resolves only exact IDs present in the current Lab catalog", () => {
+    expect(resolveProductionRoomAppId("test-app")).toBe("test-app")
+    expect(resolveProductionRoomAppId("second-app")).toBe("second-app")
+    expect(resolveProductionRoomAppId("test-app ")).toBeNull()
+    expect(resolveProductionRoomAppId("Test-App")).toBeNull()
+    expect(resolveProductionRoomAppId("removed-app")).toBeNull()
+    expect(
+      resolveProductionRoomAppId("https://room-apps.free4.chat/test-app")
     ).toBeNull()
     expect(resolveProductionRoomAppId("https://example.com/app")).toBeNull()
-    expect(resolveProductionRoomAppId(["whiteboard"])).toBeNull()
+    expect(resolveProductionRoomAppId(["test-app"])).toBeNull()
     expect(resolveProductionRoomAppId("unknown")).toBeNull()
   })
 
-  it("builds bounded Room and App invite URLs", () => {
+  it("builds bounded Room and Lab-App invite URLs", () => {
     expect(
       buildRoomInviteUrl({
         origin: "https://free4.chat",
         roomName: "room name",
         roomType: "audio",
-        appId: "whiteboard",
+        appId: "test-app",
       })
-    ).toBe("https://free4.chat/room?id=room+name&app=whiteboard")
+    ).toBe("https://free4.chat/room?id=room+name&app=test-app")
     expect(
       buildRoomInviteUrl({
         origin: "https://free4.chat",
         roomName: "room",
         roomType: "screenshare",
-        appId: "whiteboard",
+        appId: "test-app",
       })
-    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=whiteboard")
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=test-app")
     expect(
       buildRoomInviteUrl({
         origin: "https://free4.chat",
         roomName: "room",
         roomType: "screenshare",
-        appId: "typing-race",
+        appId: "second-app",
       })
-    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=typing-race")
-    expect(
-      buildRoomInviteUrl({
-        origin: "https://free4.chat",
-        roomName: "room",
-        roomType: "screenshare",
-        appId: "draw-and-guess",
-      })
-    ).toBe(
-      "https://free4.chat/room?id=room&type=screenshare&app=draw-and-guess"
-    )
-    expect(
-      buildRoomInviteUrl({
-        origin: "https://free4.chat",
-        roomName: "room",
-        roomType: "screenshare",
-        appId: "pomodoro",
-      })
-    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=pomodoro")
-    expect(
-      buildRoomInviteUrl({
-        origin: "https://free4.chat",
-        roomName: "room",
-        roomType: "screenshare",
-        appId: "bingo",
-      })
-    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=bingo")
-    expect(
-      buildRoomInviteUrl({
-        origin: "https://free4.chat",
-        roomName: "room",
-        roomType: "screenshare",
-        appId: "planning-poker",
-      })
-    ).toBe(
-      "https://free4.chat/room?id=room&type=screenshare&app=planning-poker"
-    )
-    expect(
-      buildRoomInviteUrl({
-        origin: "https://free4.chat",
-        roomName: "room",
-        roomType: "screenshare",
-        appId: "meeting-timer",
-      })
-    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=meeting-timer")
-    expect(
-      buildRoomInviteUrl({
-        origin: "https://free4.chat",
-        roomName: "room",
-        roomType: "screenshare",
-        appId: "shared-pad",
-      })
-    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=shared-pad")
-    expect(
-      buildRoomInviteUrl({
-        origin: "https://free4.chat",
-        roomName: "room",
-        roomType: "screenshare",
-        appId: "live-qa",
-      })
-    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=live-qa")
+    ).toBe("https://free4.chat/room?id=room&type=screenshare&app=second-app")
     expect(
       buildRoomInviteUrl({
         origin: "https://free4.chat",
@@ -229,22 +292,13 @@ describe("Room App Phase 0 bridge contract", () => {
         origin: "https://free4.chat",
         roomName: "room",
         roomType: "audio",
-        appId: "shared-canvas",
+        appId: "unlisted-app",
       })
     ).toBe("https://free4.chat/room?id=room")
   })
 
-  it("accepts only curated app definitions and rejects arbitrary origins", () => {
-    expect(
-      validateRoomAppDefinition({
-        id: "shared-canvas",
-        label: "Shared Canvas",
-        url: "https://room-apps.free4.chat/shared-canvas",
-        origin: "https://room-apps.free4.chat",
-      })
-    ).toBe(true)
-    expect(isRoomAppAllowlisted(ROOM_APP_CATALOG[0])).toBe(true)
-    for (const app of ROOM_APP_CATALOG) {
+  it("accepts current Lab definitions and rejects arbitrary origins", () => {
+    for (const app of TEST_ROOM_APP_CATALOG) {
       expect(validateRoomAppDefinition(app)).toBe(true)
       expect(isRoomAppAllowlisted(app)).toBe(true)
     }
@@ -258,29 +312,8 @@ describe("Room App Phase 0 bridge contract", () => {
     ).toBe(false)
   })
 
-  it("pins the Batch A production Apps as first-class curated entries", () => {
-    const batchA = [
-      {
-        id: "meeting-timer",
-        label: "Meeting Timer",
-        url: "https://room-apps.free4.chat/meeting-timer",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "shared-pad",
-        label: "Shared Pad",
-        url: "https://room-apps.free4.chat/shared-pad",
-        origin: "https://room-apps.free4.chat",
-      },
-      {
-        id: "live-qa",
-        label: "Live Q&A",
-        url: "https://room-apps.free4.chat/live-qa",
-        origin: "https://room-apps.free4.chat",
-      },
-    ]
-    for (const app of batchA) {
-      expect(ROOM_APP_CATALOG).toContainEqual(app)
+  it("treats any currently catalogued Lab App as a first-class entry", () => {
+    for (const app of TEST_ROOM_APP_CATALOG) {
       expect(validateRoomAppDefinition(app)).toBe(true)
       expect(isRoomAppAllowlisted(app)).toBe(true)
       expect(resolveProductionRoomAppId(app.id)).toBe(app.id)
@@ -291,12 +324,12 @@ describe("Room App Phase 0 bridge contract", () => {
     }
   })
 
-  it("keeps every curated production App launchable and invite-preserving", () => {
-    const ids = ROOM_APP_CATALOG.map((app) => app.id)
-    const urls = ROOM_APP_CATALOG.map((app) => app.url)
+  it("keeps catalogued Apps launchable and invite-preserving", () => {
+    const ids = TEST_ROOM_APP_CATALOG.map((app) => app.id)
+    const urls = TEST_ROOM_APP_CATALOG.map((app) => app.url)
     expect(new Set(ids).size).toBe(ids.length)
     expect(new Set(urls).size).toBe(urls.length)
-    for (const app of ROOM_APP_CATALOG) {
+    for (const app of TEST_ROOM_APP_CATALOG) {
       expect(validateRoomAppDefinition(app)).toBe(true)
       expect(isRoomAppAllowlisted(app)).toBe(true)
       expect(resolveProductionRoomAppId(app.id)).toBe(app.id)
@@ -318,25 +351,25 @@ describe("Room App Phase 0 bridge contract", () => {
 
   it("keeps transport envelopes bounded and UTF-8 sized", () => {
     const encoded = encodeRoomAppEnvelope({
-      appInstanceId: "shared-canvas:abc123",
+      appInstanceId: "test-app:abc123",
       lane: "reliable",
-      payload: { type: "stroke", points: [[1, 2]] },
+      payload: { type: "update", points: [[1, 2]] },
     })
     expect(encoded).toBeTruthy()
     expect(decodeRoomAppEnvelope(encoded)).toMatchObject({
       lane: "reliable",
-      appInstanceId: "shared-canvas:abc123",
+      appInstanceId: "test-app:abc123",
     })
     expect(
       encodeRoomAppEnvelope({
-        appInstanceId: "shared-canvas:abc123",
+        appInstanceId: "test-app:abc123",
         lane: "reliable",
         payload: { text: "界".repeat(ROOM_APP_MAX_PAYLOAD_BYTES) },
       })
     ).toBeNull()
     expect(
       encodeRoomAppEnvelope({
-        appInstanceId: "shared-canvas:abc123",
+        appInstanceId: "test-app:abc123",
         lane: "reliable",
         payload: { sourceParticipantId: "spoofed" },
       })
@@ -349,10 +382,10 @@ describe("Room App Phase 0 bridge contract", () => {
       decodeRoomAppClientMessage(
         {
           type: "ready",
-          appInstanceId: "shared-canvas:abc123",
+          appInstanceId: "test-app:abc123",
           handshakeToken: "nonce",
         },
-        "shared-canvas:abc123"
+        "test-app:abc123"
       )
     ).toMatchObject({ type: "ready", handshakeToken: "nonce" })
     expect(
@@ -360,25 +393,25 @@ describe("Room App Phase 0 bridge contract", () => {
         {
           type: "sendReliable",
           appInstanceId: "other:abc123",
-          payload: { type: "stroke" },
+          payload: { type: "update" },
         },
-        "shared-canvas:abc123"
+        "test-app:abc123"
       )
     ).toBeNull()
     expect(
       decodeRoomAppClientMessage(
         {
           type: "sendReliableTo",
-          appInstanceId: "shared-canvas:abc123",
+          appInstanceId: "test-app:abc123",
           requestId: "guess-1",
           targetParticipantId: "human-b",
           payload: { type: "private" },
         },
-        "shared-canvas:abc123"
+        "test-app:abc123"
       )
     ).toEqual({
       type: "sendReliableTo",
-      appInstanceId: "shared-canvas:abc123",
+      appInstanceId: "test-app:abc123",
       requestId: "guess-1",
       targetParticipantId: "human-b",
       payload: { type: "private" },
@@ -387,30 +420,30 @@ describe("Room App Phase 0 bridge contract", () => {
       decodeRoomAppClientMessage(
         {
           type: "sendReliableTo",
-          appInstanceId: "shared-canvas:abc123",
+          appInstanceId: "test-app:abc123",
           requestId: "guess-1",
           targetParticipantId: "bad target",
           payload: { type: "private" },
         },
-        "shared-canvas:abc123"
+        "test-app:abc123"
       )
     ).toBeNull()
     expect(
       decodeRoomAppClientMessage(
         {
           type: "sendReliableTo",
-          appInstanceId: "shared-canvas:abc123",
+          appInstanceId: "test-app:abc123",
           requestId: "contains spaces",
           targetParticipantId: "human-b",
           payload: { type: "private" },
         },
-        "shared-canvas:abc123"
+        "test-app:abc123"
       )
     ).toBeNull()
   })
 
   it("decodes only the bounded engaged milestone without App properties", () => {
-    const appInstanceId = "whiteboard:abc123"
+    const appInstanceId = "test-app:abc123"
     expect(
       decodeRoomAppClientMessage(
         { type: "milestone", appInstanceId, milestone: "engaged" },
@@ -425,7 +458,12 @@ describe("Room App Phase 0 bridge contract", () => {
         milestone: "engaged",
         payload: { text: "private" },
       },
-      { type: "milestone", appInstanceId, milestone: "engaged", app: "bingo" },
+      {
+        type: "milestone",
+        appInstanceId,
+        milestone: "engaged",
+        app: "untrusted-app",
+      },
       {
         type: "milestone",
         appInstanceId: "other:abc123",
@@ -436,7 +474,7 @@ describe("Room App Phase 0 bridge contract", () => {
   })
 
   it("bounds reliable unicast requests and accepts only current-room deliveries/results", () => {
-    const appInstanceId = roomAppInstanceId("room-a", "whiteboard")
+    const appInstanceId = roomAppInstanceId("room-a", "test-app")
     const encoded = encodeRoomAppUnicastRequest({
       requestId: "request_1",
       targetParticipantId: "human-b",
@@ -486,41 +524,39 @@ describe("Room App Phase 0 bridge contract", () => {
   })
 
   it("accepts only curated instances for the current Room", () => {
-    expect(isRoomAppInstanceForRoom("room-a", "whiteboard:00000000")).toBe(
-      false
-    )
+    expect(isRoomAppInstanceForRoom("room-a", "test-app:00000000")).toBe(false)
     expect(
       isRoomAppInstanceForRoom(
         "room-a",
-        roomAppInstanceId("room-a", "whiteboard")
+        roomAppInstanceId("room-a", "test-app")
       )
     ).toBe(true)
     expect(
       isRoomAppInstanceForRoom(
         "room-a",
-        roomAppInstanceId("room-a", "draw-and-guess")
+        roomAppInstanceId("room-a", "second-app")
       )
     ).toBe(true)
     expect(
       isRoomAppInstanceForRoom(
         "room-a",
-        roomAppInstanceId("room-a", "planning-poker")
+        roomAppInstanceId("room-a", "second-app")
       )
     ).toBe(true)
-    for (const appId of ["meeting-timer", "shared-pad", "live-qa"])
+    for (const appId of ["second-app", "second-app", "second-app"])
       expect(
         isRoomAppInstanceForRoom("room-a", roomAppInstanceId("room-a", appId))
       ).toBe(true)
     expect(
       isRoomAppInstanceForRoom(
         "room-b",
-        roomAppInstanceId("room-a", "draw-and-guess")
+        roomAppInstanceId("room-a", "second-app")
       )
     ).toBe(false)
     expect(
       isRoomAppInstanceForRoom(
         "room-b",
-        roomAppInstanceId("room-a", "planning-poker")
+        roomAppInstanceId("room-a", "second-app")
       )
     ).toBe(false)
   })

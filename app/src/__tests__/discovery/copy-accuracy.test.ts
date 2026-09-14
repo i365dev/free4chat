@@ -70,22 +70,3 @@ describe("/ai-agent-room copy accuracy", () => {
     expect(source).toMatch(/resident/i)
   })
 })
-
-describe("/apps/whiteboard copy accuracy", () => {
-  const source = read("src/pages/apps/whiteboard.tsx")
-
-  it("states the V1 collaboration, mobile, and temporary-state boundaries", () => {
-    expect(source).toMatch(/free online whiteboard powered by Excalidraw/)
-    expect(source).toMatch(/No account or login is required/)
-    expect(source).toMatch(/voice, text, and\s+file sharing/)
-    expect(source).toMatch(/touch input/)
-    expect(source).toMatch(/does not save a permanent board/)
-    expect(source).toMatch(/every replica disappears\s+or reloads/)
-    expect(source).toMatch(
-      /Image and file import into the board is\s+not supported/
-    )
-    expect(source).toMatch(/New board/)
-    expect(source).toMatch(/Whiteboard FAQ/)
-    expect(source).not.toMatch(/Agent/)
-  })
-})

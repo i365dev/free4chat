@@ -8,6 +8,13 @@ export const ROOM_APP_REALTIME_MESSAGES_PER_SECOND = 60
 export const ROOM_APP_BYTES_PER_SECOND = 256 * 1024
 export const ROOM_APP_UNICAST_MESSAGES_PER_SECOND = 10
 export const ROOM_APP_UNICAST_BYTES_PER_SECOND = 64 * 1024
+export const ROOM_APP_TRUSTED_ORIGIN = "https://room-apps.free4.chat"
+export const ROOM_APP_CATALOG_ENDPOINT = `${ROOM_APP_TRUSTED_ORIGIN}/_catalog.json`
+export const ROOM_APP_CATALOG_MAX_ENTRIES = 32
+export const ROOM_APP_CATALOG_MAX_BYTES = 16 * 1024
+export const ROOM_APP_CATALOG_REFRESH_INTERVAL_MS = 60_000
+const BROWSER_ROOM_APP_CATALOG_CACHE_TTL_MS =
+  ROOM_APP_CATALOG_REFRESH_INTERVAL_MS - 1_000
 
 export type RoomAppLane = "reliable" | "realtime"
 
@@ -18,91 +25,223 @@ export interface RoomAppDefinition {
   origin: string
 }
 
-// This is the user-visible production catalog, not a user-controlled URL
-// loader. The Worker-side flag keeps the catalog hidden until Room Apps are
-// deliberately enabled in an environment.
-export const ROOM_APP_CATALOG: readonly RoomAppDefinition[] = [
-  {
-    id: "whiteboard",
-    label: "Whiteboard",
-    url: "https://room-apps.free4.chat/whiteboard",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "typing-race",
-    label: "Typing",
-    url: "https://room-apps.free4.chat/typing-race",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "draw-and-guess",
-    label: "Draw & Guess",
-    url: "https://room-apps.free4.chat/draw-and-guess",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "pomodoro",
-    label: "Pomodoro",
-    url: "https://room-apps.free4.chat/pomodoro",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "bingo",
-    label: "Bingo",
-    url: "https://room-apps.free4.chat/bingo",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "planning-poker",
-    label: "Planning Poker",
-    url: "https://room-apps.free4.chat/planning-poker",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "random-wheel",
-    label: "Random Wheel",
-    url: "https://room-apps.free4.chat/random-wheel",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "meeting-timer",
-    label: "Meeting Timer",
-    url: "https://room-apps.free4.chat/meeting-timer",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "shared-pad",
-    label: "Shared Pad",
-    url: "https://room-apps.free4.chat/shared-pad",
-    origin: "https://room-apps.free4.chat",
-  },
-  {
-    id: "live-qa",
-    label: "Live Q&A",
-    url: "https://room-apps.free4.chat/live-qa",
-    origin: "https://room-apps.free4.chat",
-  },
-]
+/** Public, read-only Worker Service Binding used by the Room authority. */
+export interface RoomAppCatalogService {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
+}
 
-export const ROOM_APP_LOCAL_CATALOG: readonly RoomAppDefinition[] = [
-  {
-    id: "shared-canvas",
-    label: "Shared Canvas",
-    url: "http://localhost:8787/shared-canvas",
-    origin: "http://localhost:8787",
-  },
-  {
-    id: "tiny-arena",
-    label: "Tiny Arena",
-    url: "http://localhost:8787/tiny-arena",
-    origin: "http://localhost:8787",
-  },
-]
+// Core has no App portfolio fallback. The Lab-owned catalog is authoritative;
+// an unavailable or invalid first response therefore fails closed.
+export const EMPTY_ROOM_APP_CATALOG: readonly RoomAppDefinition[] = []
 
-export function experimentalRoomAppCatalog(): readonly RoomAppDefinition[] {
-  return process.env.NODE_ENV === "development"
-    ? ROOM_APP_LOCAL_CATALOG
-    : ROOM_APP_CATALOG
+let currentProductionRoomAppCatalog: readonly RoomAppDefinition[] =
+  EMPTY_ROOM_APP_CATALOG
+
+export function currentRoomAppCatalog(): readonly RoomAppDefinition[] {
+  return currentProductionRoomAppCatalog
+}
+
+/** Install a catalog already returned by the bounded remote-catalog loader. */
+export function setProductionRoomAppCatalog(
+  catalog: readonly RoomAppDefinition[]
+): void {
+  if (catalog.length > ROOM_APP_CATALOG_MAX_ENTRIES) return
+  const safeCatalog = parseRoomAppCatalog({
+    version: 1,
+    apps: catalog.map((app) => {
+      let path = ""
+      try {
+        const url = new URL(app.url)
+        if (
+          app.origin === ROOM_APP_TRUSTED_ORIGIN &&
+          url.origin === ROOM_APP_TRUSTED_ORIGIN &&
+          !url.search &&
+          !url.hash &&
+          !url.username &&
+          !url.password
+        )
+          path = url.pathname
+      } catch {
+        // An invalid URL becomes an invalid path and fails catalog parsing.
+      }
+      return { id: app.id, label: app.label, path, status: "active" }
+    }),
+  })
+  if (safeCatalog) currentProductionRoomAppCatalog = safeCatalog
+}
+
+export function isValidRoomAppId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(value)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  const actual = Object.keys(value).sort()
+  const expected = [...keys].sort()
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  )
+}
+
+/**
+ * Parse Lab's public runtime catalog. The catalog can select paths only below
+ * the fixed trusted origin; disabled entries are valid metadata but never
+ * returned as launchable definitions.
+ */
+export function parseRoomAppCatalog(
+  value: unknown
+): RoomAppDefinition[] | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["version", "apps"]) ||
+    value.version !== 1 ||
+    !Array.isArray(value.apps) ||
+    value.apps.length > ROOM_APP_CATALOG_MAX_ENTRIES
+  )
+    return null
+
+  const seen = new Set<string>()
+  const active: RoomAppDefinition[] = []
+  for (const rawApp of value.apps) {
+    if (
+      !isRecord(rawApp) ||
+      !hasExactKeys(rawApp, ["id", "label", "path", "status"]) ||
+      !isValidRoomAppId(rawApp.id) ||
+      seen.has(rawApp.id) ||
+      typeof rawApp.label !== "string" ||
+      rawApp.label.trim().length === 0 ||
+      rawApp.label.length > 64 ||
+      /[\u0000-\u001f\u007f]/.test(rawApp.label) ||
+      rawApp.path !== `/${rawApp.id}` ||
+      (rawApp.status !== "active" && rawApp.status !== "disabled")
+    )
+      return null
+
+    seen.add(rawApp.id)
+    if (rawApp.status === "active") {
+      active.push({
+        id: rawApp.id,
+        label: rawApp.label,
+        url: `${ROOM_APP_TRUSTED_ORIGIN}${rawApp.path}`,
+        origin: ROOM_APP_TRUSTED_ORIGIN,
+      })
+    }
+  }
+  return active
+}
+
+async function readBoundedCatalogBody(
+  response: Response,
+  maxBytes: number
+): Promise<string | null> {
+  if (!response.body) return null
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      totalBytes += value.byteLength
+      if (totalBytes > maxBytes) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+    const bytes = new Uint8Array(totalBytes)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+/** Create a coalescing loader for the fixed, trusted Lab endpoint. */
+export function createRoomAppCatalogLoader(
+  fetchCatalog: typeof fetch,
+  cacheTtlMs = 60_000,
+  now: () => number = () => Date.now()
+): () => Promise<readonly RoomAppDefinition[]> {
+  let result: readonly RoomAppDefinition[] | null = null
+  let hasAcceptedRemoteCatalog = false
+  let expiresAt = 0
+  let pending: Promise<readonly RoomAppDefinition[]> | null = null
+  return () => {
+    if (result && now() < expiresAt) return Promise.resolve(result)
+    if (pending) return pending
+    pending = (async () => {
+      const fallback = () =>
+        hasAcceptedRemoteCatalog && result ? result : EMPTY_ROOM_APP_CATALOG
+      try {
+        const response = await fetchCatalog(ROOM_APP_CATALOG_ENDPOINT, {
+          cache: "no-cache",
+          credentials: "omit",
+          headers: { Accept: "application/json" },
+          mode: "cors",
+          signal: AbortSignal.timeout(5_000),
+        })
+        if (!response.ok) return fallback()
+        const contentLength = Number(response.headers.get("content-length"))
+        if (
+          Number.isFinite(contentLength) &&
+          contentLength > ROOM_APP_CATALOG_MAX_BYTES
+        ) {
+          await response.body?.cancel()
+          return fallback()
+        }
+        const body = await readBoundedCatalogBody(
+          response,
+          ROOM_APP_CATALOG_MAX_BYTES
+        )
+        if (body === null) return fallback()
+        const parsed = parseRoomAppCatalog(JSON.parse(body))
+        if (!parsed) return fallback()
+        hasAcceptedRemoteCatalog = true
+        return parsed
+      } catch {
+        return fallback()
+      }
+    })().then((catalog) => {
+      result = catalog
+      expiresAt = now() + cacheTtlMs
+      pending = null
+      return catalog
+    })
+    return pending
+  }
+}
+
+const loadBrowserRoomAppCatalog = createRoomAppCatalogLoader(
+  (input, init) => fetch(input, init),
+  BROWSER_ROOM_APP_CATALOG_CACHE_TTL_MS
+)
+const serviceCatalogLoaders = new WeakMap<
+  RoomAppCatalogService,
+  () => Promise<readonly RoomAppDefinition[]>
+>()
+
+/** Valid remote data is authoritative; before that, failures fail closed. */
+export function loadProductionRoomAppCatalog(
+  service?: RoomAppCatalogService
+): Promise<readonly RoomAppDefinition[]> {
+  if (!service) return loadBrowserRoomAppCatalog()
+  let loader = serviceCatalogLoaders.get(service)
+  if (!loader) {
+    loader = createRoomAppCatalogLoader((input, init) =>
+      service.fetch(input, init)
+    )
+    serviceCatalogLoaders.set(service, loader)
+  }
+  return loader()
 }
 
 export interface RoomAppParticipantProjection {
@@ -210,10 +349,6 @@ export type RoomAppClientMessage =
       appInstanceId: string
       milestone: "engaged"
     }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
-}
 
 export function isValidRoomAppParticipantId(value: unknown): value is string {
   return (
@@ -443,7 +578,7 @@ export function isRoomAppInstanceForRoom(
   roomName: string,
   appInstanceId: string
 ): boolean {
-  return experimentalRoomAppCatalog().some(
+  return currentRoomAppCatalog().some(
     (app) =>
       validateRoomAppDefinition(app) &&
       isRoomAppAllowlisted(app) &&
@@ -468,21 +603,22 @@ export function validateRoomAppDefinition(app: RoomAppDefinition): boolean {
 }
 
 export function isRoomAppAllowlisted(app: RoomAppDefinition): boolean {
-  return [ROOM_APP_CATALOG, ROOM_APP_LOCAL_CATALOG].some((catalog) =>
-    catalog.some(
-      (candidate) =>
-        candidate.id === app.id &&
-        candidate.url === app.url &&
-        candidate.origin === app.origin &&
-        validateRoomAppDefinition(candidate)
-    )
+  return currentRoomAppCatalog().some(
+    (candidate) =>
+      candidate.id === app.id &&
+      candidate.url === app.url &&
+      candidate.origin === app.origin &&
+      candidate.origin === ROOM_APP_TRUSTED_ORIGIN &&
+      validateRoomAppDefinition(candidate)
   )
 }
 
 /** Resolve a URL query value only to an exact, validated production App id. */
 export function resolveProductionRoomAppId(value: unknown): string | null {
   if (typeof value !== "string") return null
-  const app = ROOM_APP_CATALOG.find((candidate) => candidate.id === value)
+  const app = currentRoomAppCatalog().find(
+    (candidate) => candidate.id === value
+  )
   return app && validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
     ? app.id
     : null

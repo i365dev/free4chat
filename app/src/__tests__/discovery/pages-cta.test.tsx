@@ -1,15 +1,10 @@
 import type { ReactElement } from "react"
 
-import { fireEvent, render, screen } from "@testing-library/react"
+import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-
-const router = vi.hoisted(() => ({ push: vi.fn() }))
-vi.mock("next/router", () => ({ useRouter: () => router }))
 
 import DiscoveryFooter from "../../components/DiscoveryFooter"
 import AiAgentRoomPage from "../../pages/ai-agent-room"
-import AppsPage from "../../pages/apps"
-import WhiteboardPage from "../../pages/apps/whiteboard"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
@@ -89,61 +84,7 @@ describe("Discovery pages — CTA analytics", () => {
   )
 })
 
-describe("Whiteboard direct Room CTA", () => {
-  it("saves a generated nickname and opens a generated Room with Whiteboard selected", () => {
-    const track = vi.fn()
-    const zarazTrack = vi.fn()
-    ;(window as unknown as { umami: { track: typeof track } }).umami = {
-      track,
-    }
-    ;(window as unknown as { zaraz: { track: typeof zarazTrack } }).zaraz = {
-      track: zarazTrack,
-    }
-    window.localStorage.removeItem("rooms")
-    router.push.mockClear()
-
-    render(<WhiteboardPage />)
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open Whiteboard Room" })
-    )
-
-    expect(track).toHaveBeenCalledWith("DiscoveryCtaClicked", {
-      page: "whiteboard",
-    })
-    const savedRooms = JSON.parse(
-      window.localStorage.getItem("rooms") ?? "[]"
-    ) as Array<{ roomName: string; nickName: string }>
-    expect(savedRooms).toHaveLength(1)
-    expect(savedRooms[0].roomName).toBeTruthy()
-    expect(savedRooms[0].nickName).toBeTruthy()
-    expect(router.push).toHaveBeenCalledWith(
-      `/room?id=${encodeURIComponent(savedRooms[0].roomName)}&app=whiteboard`
-    )
-  })
-})
-
-describe("Room Apps discovery surface", () => {
-  it("lists only the shipped Whiteboard App with a descriptive crawlable link", () => {
-    render(<AppsPage />)
-
-    expect(
-      screen.getByRole("heading", {
-        level: 1,
-        name: "Apps for temporary Free4Chat Rooms",
-      })
-    ).toBeInTheDocument()
-    expect(screen.getAllByRole("article")).toHaveLength(1)
-    expect(
-      screen.getByRole("heading", { level: 2, name: "Online Whiteboard" })
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole("link", { name: "Explore Whiteboard →" })
-    ).toHaveAttribute("href", "/apps/whiteboard")
-    expect(
-      screen.queryByText(/Tiny Arena|Shared Canvas|Coming soon/i)
-    ).toBeNull()
-  })
-
+describe("Room Apps discovery link", () => {
   it("includes Room Apps in the shared discovery footer", () => {
     render(<DiscoveryFooter />)
 

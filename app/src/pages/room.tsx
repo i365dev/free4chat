@@ -5,7 +5,7 @@ import Head from "next/head"
 import { useRouter } from "next/router"
 
 import { generateParticipantName } from "../common/cosmicNames"
-import { resolveProductionRoomAppId } from "../common/roomApp"
+import { isValidRoomAppId } from "../common/roomApp"
 import {
   saveRoomToLocalStorage,
   gtagEvent,
@@ -21,7 +21,11 @@ export default function Room() {
   const router = useRouter()
   const roomId = router.query.id as string
   const roomTypeParam = router.query.type as string | undefined
-  const initialRoomAppId = resolveProductionRoomAppId(router.query.app)
+  // Catalog membership is resolved after RoomContent loads the current Lab
+  // catalog; this syntax-only gate preserves deep links during hydration.
+  const initialRoomAppId = isValidRoomAppId(router.query.app)
+    ? router.query.app
+    : null
   const [roomName, setRoomName] = useState<string>("")
   const [nickName, setNickName] = useState<string>("")
   const [roomType, setRoomType] = useState<"audio" | "screenshare">("audio")

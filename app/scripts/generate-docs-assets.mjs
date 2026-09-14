@@ -6,8 +6,9 @@
  *   - app/public/llms-full.txt   full Agent-readable corpus (docs + contracts)
  *   - app/public/sitemap.xml     all public URLs, including every docs route
  *
- * The only inputs are docs/en/navigation.json, the docs/en Markdown tree,
- * and the canonical machine contracts app/public/agent.md / speech.md.
+ * Inputs are docs/en/navigation.json, the docs/en Markdown tree, the temporary
+ * discovery compatibility paths below, and the canonical machine contracts
+ * app/public/agent.md / speech.md.
  * Run `yarn docs:generate` after content changes; `yarn docs:check` (CI)
  * fails when the committed assets have drifted from those inputs.
  */
@@ -28,6 +29,7 @@ const PUBLIC_DIR = join(appRoot, "public")
 /** Sitemap URLs that exist independently of the docs library, in order. */
 const BASE_SITEMAP_PATHS = [
   "/",
+  // Keep these legacy URLs indexed until the Lab /apps* route cutover is live.
   "/apps",
   "/apps/whiteboard",
   "/temporary-chat-room",

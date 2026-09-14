@@ -39,6 +39,8 @@ describe("robots.txt", () => {
     expect(robots).toMatch(
       /Sitemap:\s*https:\/\/www\.free4\.chat\/sitemap\.xml/
     )
+    // The Lab owns this sitemap only after its www /apps* route cutover.
+    expect(robots).not.toMatch(/apps-sitemap\.xml/)
   })
 })
 
@@ -65,6 +67,13 @@ describe("sitemap.xml", () => {
         ...docsUrls,
       ])
     )
+  })
+
+  it("keeps the Core discovery compatibility routes while the Lab cutover is pending", () => {
+    expect(existsSync(join(ROOT, "src/pages/apps/index.tsx"))).toBe(true)
+    expect(existsSync(join(ROOT, "src/pages/apps/whiteboard.tsx"))).toBe(true)
+    expect(locs).toContain("https://www.free4.chat/apps")
+    expect(locs).toContain("https://www.free4.chat/apps/whiteboard")
   })
 
   it("treats /docs/reference/mcp as the canonical MCP URL, never the legacy /developers/mcp", () => {
