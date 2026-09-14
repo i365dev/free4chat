@@ -5,6 +5,8 @@ import { defineConfig, devices } from "@playwright/test"
  *
  * One Playwright invocation, one local Worker harness (`webServer` starts the
  * harness ONCE and every project shares it), five representative viewports.
+ * Media is faked at the page level rather than through browser launch flags so
+ * the same configuration is valid for Chromium and WebKit on macOS and Linux.
  * The harness proxies the canonical allowed origin http://localhost:3000, so
  * production origin validation is never weakened.
  *
@@ -14,15 +16,6 @@ import { defineConfig, devices } from "@playwright/test"
  */
 
 const DESKTOP_VIEWPORT = { width: 1440, height: 900 }
-
-/** Chromium/WebKit fake-device flags keep getUserMedia prompt-free; the WebKit
- * projects additionally rely on the suite's synthetic microphone, because
- * Playwright's WebKit exposes no audio device and no grantable microphone
- * permission. */
-const FAKE_MEDIA_ARGS = [
-  "--use-fake-device-for-media-stream",
-  "--use-fake-ui-for-media-stream",
-]
 
 export default defineConfig({
   // App-root testDir so CLI spec paths resolve like the existing Room suite;
@@ -47,7 +40,10 @@ export default defineConfig({
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
     video: "off",
-    launchOptions: { args: FAKE_MEDIA_ARGS },
+    // No engine-specific launch flags: the suite installs one synthetic
+    // microphone for every project (see e2e/fixtures/local-room.ts), so no
+    // profile needs a real device, a permission prompt, or a Chromium-only
+    // fake-device flag that Playwright's WebKit rejects on Linux.
   },
   webServer: {
     // config lives in e2e/room-app-host; run from the app root so
