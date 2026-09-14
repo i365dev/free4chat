@@ -8,8 +8,10 @@ import {
 } from "../fixtures/room-app-fixture"
 import { FIXTURE_ROOM_APP_DOCUMENT } from "../fixtures/fixture-room-app-document"
 import {
+  enterLocalRoom,
+  installMediaShim,
   installSyntheticMicrophone,
-  joinLocalRoom,
+  openLocalRoom,
 } from "../fixtures/local-room"
 
 /**
@@ -189,16 +191,32 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await installExternalRuntimeStubs(page)
     // No OS microphone, no permission prompt, identical on every engine.
     await installSyntheticMicrophone(page)
-    await joinLocalRoom(page, roomSlug, "Alice")
-    // Locks the media seam: the join must have used the synthetic microphone,
-    // never a real device or a permission prompt.
+    await installMediaShim(page)
+    await openLocalRoom(page, roomSlug)
+    // Assert the media seam BEFORE the microphone is requested: joining must
+    // never touch a real device or a permission prompt, and a seam that failed
+    // to install has to fail here with the applied strategy instead of later as
+    // an opaque "Connection lost".
+    const micSeam = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __roomAppHostCompatMic?: {
+              strategy: string
+              patched: boolean
+              hasMediaDevices: boolean
+              hasAudioContext: boolean
+            }
+          }
+        ).__roomAppHostCompatMic ?? null
+    )
     expect(
-      await page.evaluate(
-        () =>
-          (window as unknown as { __roomAppHostCompatMic?: string })
-            .__roomAppHostCompatMic
-      )
-    ).toBe("synthetic")
+      micSeam?.patched,
+      `the synthetic microphone seam must be installed: ${JSON.stringify(
+        micSeam
+      )}`
+    ).toBe(true)
+    await enterLocalRoom(page, "Alice")
     await expect(page.getByTestId("room-stage")).toBeVisible()
     await expect(page.getByTestId("room-timeline")).toBeVisible()
     await expectNoPageOverflow(page, "joined Room")

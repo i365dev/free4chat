@@ -89,7 +89,25 @@ export async function joinLocalRoom(
   nickname: string
 ): Promise<Page> {
   await installMediaShim(page)
+  await openLocalRoom(page, roomSlug)
+  await enterLocalRoom(page, nickname)
+  return page
+}
+
+/** Navigate to the local Room without joining it yet. */
+export async function openLocalRoom(
+  page: Page,
+  roomSlug: string
+): Promise<Page> {
   await page.goto(`/room?id=${roomSlug}`)
+  return page
+}
+
+/** Pass the nickname gate and wait for the joined Room UI. */
+export async function enterLocalRoom(
+  page: Page,
+  nickname: string
+): Promise<Page> {
   await page.getByLabel("Nickname").fill(nickname)
   await page.getByRole("button", { name: /Go/i }).click()
   // The room UI is connected once the self participant card renders.
@@ -126,17 +144,18 @@ export async function joinLocalRoom(
  * `MediaStream` with a live audio track synthesised from an AudioContext, so
  * the Room reaches its normal joined state on every engine without a prompt.
  *
- * Nothing may be captured at document-start: on Linux WebKit both
- * `navigator.mediaDevices` and `AudioContext` are exposed only once the
- * secure-context origin is fully established, and the first browser of a cold
- * CI run is the slowest. Capturing either one there silently skipped the
- * patch, after which a native `getUserMedia` failed the join with
- * "Invalid constraint" — intermittently, and only in CI.
+ * Neither `navigator.mediaDevices` nor `AudioContext` may be touched at
+ * document-start: WebKit creates them only once the secure-context origin is
+ * fully established, and it can replace the MediaDevices instance afterwards.
+ * Patching whatever object happened to exist raced, and the join then failed
+ * through a native `getUserMedia` with "Invalid constraint" — reproducibly on
+ * the desktop WebKit project in CI, while the slower mobile projects passed.
  *
- * So: resolve AudioContext lazily inside the call, patch whatever exists now
- * (instance, then prototype, then the navigator accessor itself), and re-apply
- * once the document exists. The app only ever calls `getUserMedia`, so owning
- * the accessor outright is safe.
+ * So the seam owns `navigator.mediaDevices` outright (the app only ever calls
+ * `getUserMedia`), resolves AudioContext inside the call, and falls back to
+ * prototype/instance patching if the accessor cannot be redefined. The applied
+ * strategy is published on `window.__roomAppHostCompatMic` so the suite can
+ * assert the seam before any microphone is requested.
  *
  * Only used by the Room App host compatibility suite; it is not a production
  * seam and it deliberately does not touch the media transport itself.
@@ -147,8 +166,23 @@ export async function installSyntheticMicrophone(page: Page) {
       AudioContext?: typeof AudioContext
       webkitAudioContext?: typeof AudioContext
       MediaDevices?: { prototype: MediaDevices }
-      __roomAppHostCompatMic?: string
+      __roomAppHostCompatMic?: {
+        strategy: string
+        hasMediaDevices: boolean
+        hasAudioContext: boolean
+        patched: boolean
+      }
     }
+
+    const report = {
+      strategy: "none",
+      hasMediaDevices: Boolean(navigator.mediaDevices),
+      hasAudioContext: Boolean(
+        globalWindow.AudioContext ?? globalWindow.webkitAudioContext
+      ),
+      patched: false,
+    }
+    globalWindow.__roomAppHostCompatMic = report
 
     const syntheticGetUserMedia = async (
       constraints?: MediaStreamConstraints
@@ -174,11 +208,6 @@ export async function installSyntheticMicrophone(page: Page) {
       return destination.stream
     }
 
-    const syntheticMediaDevices = {
-      getUserMedia: syntheticGetUserMedia,
-      enumerateDevices: async () => [],
-    }
-
     const ownGetUserMedia = (target: object | undefined): boolean => {
       if (!target) return false
       try {
@@ -193,28 +222,26 @@ export async function installSyntheticMicrophone(page: Page) {
       }
     }
 
-    const applyPatch = () => {
-      if (
-        ownGetUserMedia(navigator.mediaDevices) ||
-        ownGetUserMedia(globalWindow.MediaDevices?.prototype)
-      ) {
-        globalWindow.__roomAppHostCompatMic = "synthetic"
-        return
-      }
-      try {
-        Object.defineProperty(navigator, "mediaDevices", {
-          configurable: true,
-          get: () => syntheticMediaDevices,
-        })
-        globalWindow.__roomAppHostCompatMic = "synthetic"
-      } catch {
-        // Leave the seam marker unset so the spec fails loudly instead of
-        // silently joining with a real device.
+    // Preferred: own the accessor, so a MediaDevices instance created later
+    // (or replaced) can never bypass the seam.
+    try {
+      Object.defineProperty(navigator, "mediaDevices", {
+        configurable: true,
+        get: () => ({
+          getUserMedia: syntheticGetUserMedia,
+          enumerateDevices: async () => [],
+        }),
+      })
+      report.strategy = "navigator-accessor"
+      report.patched = true
+    } catch {
+      if (ownGetUserMedia(navigator.mediaDevices)) {
+        report.strategy = "instance"
+        report.patched = true
+      } else if (ownGetUserMedia(globalWindow.MediaDevices?.prototype)) {
+        report.strategy = "prototype"
+        report.patched = true
       }
     }
-
-    applyPatch()
-    if (document.readyState === "loading")
-      document.addEventListener("DOMContentLoaded", applyPatch, { once: true })
   })
 }
