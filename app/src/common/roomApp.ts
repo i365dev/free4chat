@@ -205,6 +205,11 @@ export type RoomAppClientMessage =
       targetParticipantId: string
       payload: Record<string, unknown>
     }
+  | {
+      type: "milestone"
+      appInstanceId: string
+      milestone: "engaged"
+    }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -295,6 +300,12 @@ export function decodeRoomAppClientMessage(
   appInstanceId: string
 ): RoomAppClientMessage | null {
   if (!isRecord(value) || value.appInstanceId !== appInstanceId) return null
+  if (
+    value.type === "milestone" &&
+    value.milestone === "engaged" &&
+    Object.keys(value).length === 3
+  )
+    return { type: "milestone", appInstanceId, milestone: "engaged" }
   if (
     value.type === "ready" &&
     typeof value.handshakeToken === "string" &&

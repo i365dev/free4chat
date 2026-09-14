@@ -409,6 +409,32 @@ describe("Room App Phase 0 bridge contract", () => {
     ).toBeNull()
   })
 
+  it("decodes only the bounded engaged milestone without App properties", () => {
+    const appInstanceId = "whiteboard:abc123"
+    expect(
+      decodeRoomAppClientMessage(
+        { type: "milestone", appInstanceId, milestone: "engaged" },
+        appInstanceId
+      )
+    ).toEqual({ type: "milestone", appInstanceId, milestone: "engaged" })
+    for (const message of [
+      { type: "milestone", appInstanceId, milestone: "mounted" },
+      {
+        type: "milestone",
+        appInstanceId,
+        milestone: "engaged",
+        payload: { text: "private" },
+      },
+      { type: "milestone", appInstanceId, milestone: "engaged", app: "bingo" },
+      {
+        type: "milestone",
+        appInstanceId: "other:abc123",
+        milestone: "engaged",
+      },
+    ])
+      expect(decodeRoomAppClientMessage(message, appInstanceId)).toBeNull()
+  })
+
   it("bounds reliable unicast requests and accepts only current-room deliveries/results", () => {
     const appInstanceId = roomAppInstanceId("room-a", "whiteboard")
     const encoded = encodeRoomAppUnicastRequest({

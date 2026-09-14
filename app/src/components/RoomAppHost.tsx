@@ -41,6 +41,7 @@ interface RoomAppHostProps {
   ) => "sent" | "rate_limited" | "payload_too_large" | "delivery_unavailable"
   onClose: () => void
   onReady?: (appId: string) => void
+  onEngaged?: (appId: string) => void
   isFullscreen?: boolean
   onToggleFullscreen?: () => void
   onInvite?: () => Promise<boolean>
@@ -67,6 +68,7 @@ export default function RoomAppHost({
   sendUnicast,
   onClose,
   onReady,
+  onEngaged,
   isFullscreen = false,
   onToggleFullscreen,
   onInvite,
@@ -77,6 +79,7 @@ export default function RoomAppHost({
   const tokenRef = useRef(handshakeToken())
   const readyRef = useRef(false)
   const readyNotifiedRef = useRef(false)
+  const engagedNotifiedRef = useRef(false)
   const unavailableNotifiedRef = useRef(false)
   const previousParticipantsRef = useRef<RoomAppParticipantProjection[]>([])
   const sendRef = useRef(send)
@@ -173,6 +176,12 @@ export default function RoomAppHost({
         })
         return
       }
+      if (message.type === "milestone") {
+        if (!readyRef.current || engagedNotifiedRef.current) return
+        engagedNotifiedRef.current = true
+        onEngaged?.(app.id)
+        return
+      }
       if (message.type === "sendReliableTo") {
         const now = Date.now()
         for (const [requestId, createdAt] of pendingUnicastRequestsRef.current)
@@ -236,7 +245,16 @@ export default function RoomAppHost({
       app.origin === window.location.origin ? app.origin : "*",
       [channel.port2]
     )
-  }, [app.id, app.origin, appInstanceId, onReady, participants, post, self])
+  }, [
+    app.id,
+    app.origin,
+    appInstanceId,
+    onEngaged,
+    onReady,
+    participants,
+    post,
+    self,
+  ])
 
   useEffect(() => {
     const pendingUnicastRequests = pendingUnicastRequestsRef.current
