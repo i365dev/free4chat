@@ -33,10 +33,12 @@ import {
   EMPTY_ROOM_APP_CATALOG,
   ROOM_APP_CATALOG_REFRESH_INTERVAL_MS,
   ROOM_APP_MAX_INSTANCES,
+  parseRoomAppCatalog,
   roomAppInstanceId,
   setProductionRoomAppCatalog,
 } from "../common/roomApp"
 import * as roomAppModule from "../common/roomApp"
+import type { RoomAppTransportEnvelope } from "../common/roomApp"
 import { RoomSession } from "../do/RoomSession"
 import type { RoomRecord, RoomState } from "../room/types"
 
@@ -1258,6 +1260,38 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     const slotHost = (appId: string) =>
       within(slot(appId)).getByTestId("room-app-host")
 
+    /** Launches a curated App and completes its iframe handshake. */
+    function launchAndHandshake(appId: string) {
+      fireEvent.click(screen.getByTestId(`stage-app-${appId}`))
+      const iframe = slotIframe(appId)
+      const frameWindow = loadAppIframe(iframe)
+      const port = channels[channels.length - 1].port1
+      completeHandshake(frameWindow, appId, port)
+      return { iframe, frameWindow, port }
+    }
+
+    /**
+     * One Lab catalog revision, optionally with Apps relabeled or removed.
+     * `parseRoomAppCatalog` is the same parser the browser loader runs on every
+     * refresh, so mocked revisions reach RoomContent as brand-new objects.
+     */
+    function catalogRevision({
+      relabel,
+      remove,
+    }: { relabel?: Record<string, string>; remove?: string[] } = {}) {
+      const revision = parseRoomAppCatalog({
+        version: 1,
+        apps: TEST_ROOM_APP_CATALOG_RESPONSE.apps
+          .filter((entry) => !remove?.includes(entry.id))
+          .map((entry) => ({
+            ...entry,
+            label: relabel?.[entry.id] ?? entry.label,
+          })),
+      })
+      if (!revision) throw new Error("the fixture catalog must parse")
+      return revision
+    }
+
     it("keeps Room copy generic and copies an App invite from fullscreen host chrome", async () => {
       vi.stubEnv("NODE_ENV", "production")
       const writeText = vi.fn().mockResolvedValue(undefined)
@@ -1559,6 +1593,192 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         expect(catalogLoader).toHaveBeenCalledTimes(2)
         expect(screen.queryByTestId("stage-app-test-app-1")).toBeNull()
         expect(screen.queryByTestId("room-app-slot-test-app-1")).toBeNull()
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+      }
+    })
+
+    it("keeps a resident App's host transport across an identical catalog refresh", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      vi.useFakeTimers()
+      const appInstanceId = roomAppInstanceId("test-room", "test-app-1")
+      const sendRoomAppMessage = vi.fn(() => true)
+      let incoming: ((message: RoomAppTransportEnvelope) => void) | undefined
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValueOnce(TEST_ROOM_APP_CATALOG)
+        .mockImplementation(async () => catalogRevision())
+      let view: ReturnType<typeof render> | undefined
+      try {
+        view = renderAppRoom({
+          sendRoomAppMessage,
+          subscribeRoomAppMessages: (
+            listener: (message: RoomAppTransportEnvelope) => void
+          ) => {
+            incoming = listener
+            return () => undefined
+          },
+        })
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        const { iframe, frameWindow, port } = launchAndHandshake("test-app-1")
+        expect(
+          within(slotHost("test-app-1")).getByText("ready")
+        ).toBeInTheDocument()
+
+        // The 60s refresh returns the same logical Lab catalog.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+
+        expect(catalogLoader).toHaveBeenCalledTimes(2)
+        // The resident iframe and its MessagePort are the same objects: the
+        // catalog refresh is metadata, not a transport reset.
+        expect(slotIframe("test-app-1")).toBe(iframe)
+        expect(channels).toHaveLength(1)
+        expect(channels[0].port1).toBe(port)
+        expect(port.close).not.toHaveBeenCalled()
+        expect(frameWindow.postMessage).toHaveBeenCalledTimes(1)
+        expect(
+          within(slotHost("test-app-1")).getByText("ready")
+        ).toBeInTheDocument()
+
+        // App → host still reaches the Room transport.
+        act(() => {
+          port.emit({
+            type: "sendReliable",
+            appInstanceId,
+            payload: { type: "tick", at: 1 },
+          })
+        })
+        expect(sendRoomAppMessage).toHaveBeenCalledWith(
+          "reliable",
+          appInstanceId,
+          { type: "tick", at: 1 }
+        )
+
+        // host → App still delivers a remote reliable message into the iframe.
+        act(() => {
+          incoming?.({
+            protocolVersion: 1,
+            appInstanceId,
+            lane: "reliable",
+            sourceParticipantId: "human-b",
+            payload: { type: "tick", at: 2 },
+          })
+        })
+        expect(port.postMessage).toHaveBeenCalledWith({
+          type: "reliable",
+          appInstanceId,
+          sourceParticipantId: "human-b",
+          payload: { type: "tick", at: 2 },
+        })
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+      }
+    })
+
+    it("applies a metadata-only catalog refresh without resetting a resident App", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      vi.useFakeTimers()
+      const sendRoomAppMessage = vi.fn(() => true)
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValueOnce(TEST_ROOM_APP_CATALOG)
+        .mockImplementation(async () =>
+          catalogRevision({ relabel: { "test-app-1": "Test App 1 renamed" } })
+        )
+      let view: ReturnType<typeof render> | undefined
+      try {
+        view = renderAppRoom({ sendRoomAppMessage })
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        const { iframe, port } = launchAndHandshake("test-app-1")
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+
+        expect(catalogLoader).toHaveBeenCalledTimes(2)
+        // The new metadata reaches the UI...
+        expect(screen.getByTestId("stage-app-test-app-1").textContent).toBe(
+          "Test App 1 renamed"
+        )
+        expect(
+          within(slotHost("test-app-1")).getByText("Test App 1 renamed")
+        ).toBeInTheDocument()
+        // ...without touching the resident transport.
+        expect(slotIframe("test-app-1")).toBe(iframe)
+        expect(channels).toHaveLength(1)
+        expect(channels[0].port1).toBe(port)
+        expect(port.close).not.toHaveBeenCalled()
+
+        act(() => {
+          port.emit({
+            type: "sendReliable",
+            appInstanceId: roomAppInstanceId("test-room", "test-app-1"),
+            payload: { type: "tick", at: 3 },
+          })
+        })
+        expect(sendRoomAppMessage).toHaveBeenCalledWith(
+          "reliable",
+          roomAppInstanceId("test-room", "test-app-1"),
+          { type: "tick", at: 3 }
+        )
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+      }
+    })
+
+    it("retires a catalog-removed resident App exactly once", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      vi.useFakeTimers()
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValueOnce(TEST_ROOM_APP_CATALOG)
+        .mockImplementation(async () =>
+          catalogRevision({ remove: ["test-app-1"] })
+        )
+      let view: ReturnType<typeof render> | undefined
+      try {
+        view = renderAppRoom()
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        const { port } = launchAndHandshake("test-app-1")
+        expect(port.close).not.toHaveBeenCalled()
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+
+        expect(catalogLoader).toHaveBeenCalledTimes(2)
+        expect(screen.queryByTestId("room-app-slot-test-app-1")).toBeNull()
+        expect(screen.queryByTestId("room-app-iframe")).toBeNull()
+        expect(port.close).toHaveBeenCalledTimes(1)
+
+        // A later refresh must not close the retired port a second time.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+        expect(catalogLoader).toHaveBeenCalledTimes(3)
+        expect(port.close).toHaveBeenCalledTimes(1)
       } finally {
         view?.unmount()
         vi.useRealTimers()
