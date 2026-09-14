@@ -62,6 +62,63 @@ afterEach(() => {
 })
 
 describe("RoomAppHost", () => {
+  it("reports the first ready App engagement once without sending into the Room", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const onEngaged = vi.fn()
+    const send = vi.fn(() => true)
+    const sendUnicast = vi.fn(() => "sent" as const)
+    const rendered = render(
+      <RoomAppHost
+        app={app}
+        appInstanceId="whiteboard:room"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={send}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={sendUnicast}
+        onClose={() => undefined}
+        onEngaged={onEngaged}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    const port = lastChannel!.port1
+
+    act(() => {
+      port.emit({
+        type: "milestone",
+        appInstanceId: "whiteboard:room",
+        milestone: "engaged",
+      })
+      port.emit({
+        type: "ready",
+        appInstanceId: "whiteboard:room",
+        handshakeToken: bootstrap.handshakeToken,
+      })
+      port.emit({
+        type: "milestone",
+        appInstanceId: "whiteboard:room",
+        milestone: "engaged",
+      })
+      port.emit({
+        type: "milestone",
+        appInstanceId: "whiteboard:room",
+        milestone: "engaged",
+      })
+    })
+
+    expect(onEngaged).toHaveBeenCalledTimes(1)
+    expect(onEngaged).toHaveBeenCalledWith("whiteboard")
+    expect(send).not.toHaveBeenCalled()
+    expect(sendUnicast).not.toHaveBeenCalled()
+    rendered.unmount()
+  })
+
   it("copies an App invite in fullscreen without replacing its iframe or port", async () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const onInvite = vi.fn().mockResolvedValue(true)

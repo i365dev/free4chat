@@ -272,6 +272,8 @@ export default function RoomContent({
   const humanParticipantCount = roomAppParticipants.filter(
     (participant) => participant.kind === "human"
   ).length
+  const humanParticipantCountRef = useRef(humanParticipantCount)
+  humanParticipantCountRef.current = humanParticipantCount
   // The shared-use milestone belongs to the catalog, not to one App: the first
   // resident production App that finished its handshake is the milestone App.
   const sharedSessionRoomAppId = residentRoomApps
@@ -483,6 +485,15 @@ export default function RoomContent({
     const productionAppId = resolveProductionRoomAppId(appId)
     if (productionAppId)
       trackAnalyticsEvent("RoomAppMounted", { app: productionAppId })
+  }, [])
+
+  const handleRoomAppEngaged = useCallback((appId: string) => {
+    const productionAppId = resolveProductionRoomAppId(appId)
+    if (!productionAppId) return
+    trackAnalyticsEvent("RoomAppEngaged", {
+      app: productionAppId,
+      participantsBucket: participantsBucket(humanParticipantCountRef.current),
+    })
   }, [])
 
   useEffect(() => {
@@ -1245,6 +1256,7 @@ export default function RoomContent({
                       subscribe={subscribeRoomAppMessages}
                       send={sendRoomAppMessage}
                       onReady={handleRoomAppReady}
+                      onEngaged={handleRoomAppEngaged}
                       subscribeUnicast={subscribeRoomAppUnicast}
                       subscribeUnicastResults={subscribeRoomAppUnicastResults}
                       sendUnicast={sendRoomAppUnicast}

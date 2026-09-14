@@ -2399,6 +2399,25 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(trackAnalyticsEvent).toHaveBeenCalledWith("RoomAppMounted", {
         app: "whiteboard",
       })
+      act(() => {
+        channels[0].port1.emit({
+          type: "milestone",
+          appInstanceId: roomAppInstanceId("test-room", "whiteboard"),
+          milestone: "engaged",
+        })
+        channels[0].port1.emit({
+          type: "milestone",
+          appInstanceId: roomAppInstanceId("test-room", "whiteboard"),
+          milestone: "engaged",
+        })
+      })
+      expect(trackAnalyticsEvent).toHaveBeenCalledTimes(2)
+      expect(trackAnalyticsEvent).toHaveBeenLastCalledWith("RoomAppEngaged", {
+        app: "whiteboard",
+        participantsBucket: "1",
+      })
+      expect(baseHookReturn.sendRoomAppMessage).not.toHaveBeenCalled()
+      expect(baseHookReturn.sendRoomAppUnicast).not.toHaveBeenCalled()
       expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
         "RoomAppSharedSession",
         expect.anything()
