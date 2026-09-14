@@ -110,6 +110,14 @@ function generateLlmsTxt(nav) {
   }
   lines.push(
     "",
+    "## Shared Room Apps",
+    "",
+    "Room Apps are lightweight shared activities that run inside temporary Free4Chat Rooms. Participants use one Room link; no permanent workspace or App account is required.",
+    "",
+    `- [Browse Shared Room Apps](${SITE_ORIGIN}/apps): the current human-readable index of shared activities.`,
+    `- [Apps sitemap](${SITE_ORIGIN}/apps-sitemap.xml): current public App discovery pages.`,
+    "- [Room App catalog](https://room-apps.free4.chat/_catalog.json): machine-readable active App IDs, labels, and runtime paths.",
+    "",
     "## Full corpus",
     "",
     `- [llms-full.txt](${SITE_ORIGIN}/llms-full.txt): the complete English documentation plus the canonical machine contracts in one deterministic file.`,
