@@ -6,16 +6,17 @@ html {
   @apply antialiased;
 }
 
-/* Room App focus positioning stays on the resident host node. RoomContent
-   removes its sibling Room UI from layout while focused; safe-area padding
-   keeps the host controls reachable in edge-to-edge phone viewports. */
+/* Room App focus mode is a Room LAYOUT state, never a viewport-fixed overlay.
+   The Stage pane expands to the full Room content region, the resident host
+   fills it with ordinary flex ownership, and the surrounding Room surfaces are
+   already hidden/inert — so nothing has to escape an ancestor to fill the
+   screen. A `position: fixed` descendant of the split, overflow-hidden Stage
+   is clipped against that split by iPad Safari, which cut off the host's
+   right-side chrome (including "Exit fullscreen") while desktop browsers and
+   emulated WebKit painted it correctly. Safe-area padding still keeps the host
+   controls reachable in edge-to-edge phone viewports. */
 .room-app-host--fullscreen {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
   box-sizing: border-box;
-  height: 100vh;
-  height: 100dvh;
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
     env(safe-area-inset-bottom) env(safe-area-inset-left);
   overscroll-behavior: contain;

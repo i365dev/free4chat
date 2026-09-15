@@ -159,6 +159,118 @@ async function expectReceivesPointer(
   ).toBe("Exit fullscreen")
 }
 
+const roomStage = (page: Page) => page.getByTestId("room-stage")
+const roomContent = (page: Page) => page.locator(".room-content")
+
+/**
+ * The real-iPad regression was structural, not geometric: fullscreen kept the
+ * Stage at its normal split width and relied on a `position: fixed` descendant
+ * escaping that clipped, overflow-hidden ancestor. iPad Safari clips that
+ * escape, which cut off the host's right-side chrome. Emulated WebKit paints it
+ * correctly, so assert the LAYOUT OWNERSHIP instead of the painted result:
+ * while focus mode is active the Stage itself must own the whole Room content
+ * region, and the resident host must fill that Stage.
+ */
+async function expectFullscreenStageOwnsRoomContent(page: Page) {
+  const stage = await roomStage(page).boundingBox()
+  const content = await roomContent(page).boundingBox()
+  const hostBox = await host(page).boundingBox()
+  expect(stage, "room-stage must have a bounding box").not.toBeNull()
+  expect(content, ".room-content must have a bounding box").not.toBeNull()
+  expect(hostBox, "room-app-host must have a bounding box").not.toBeNull()
+  expect(
+    Math.abs(stage!.x - content!.x),
+    `fullscreen room-stage must start at the Room content left edge (stage ${
+      stage!.x
+    }, content ${content!.x})`
+  ).toBeLessThanOrEqual(TOLERANCE)
+  expect(
+    Math.abs(stage!.width - content!.width),
+    `fullscreen room-stage must own the full Room content width (stage ${
+      stage!.width
+    }, content ${content!.width})`
+  ).toBeLessThanOrEqual(TOLERANCE)
+  expect(
+    Math.abs(stage!.x + stage!.width - (content!.x + content!.width)),
+    "fullscreen room-stage must reach the Room content right edge"
+  ).toBeLessThanOrEqual(TOLERANCE)
+  expect(
+    Math.abs(hostBox!.x - stage!.x),
+    "the resident host must fill the fullscreen Stage horizontally"
+  ).toBeLessThanOrEqual(TOLERANCE)
+  expect(
+    Math.abs(hostBox!.width - stage!.width),
+    `the resident host must fill the fullscreen Stage width (host ${
+      hostBox!.width
+    }, stage ${stage!.width})`
+  ).toBeLessThanOrEqual(TOLERANCE)
+  // Vertical ownership too; the Stage carries a 1px border at the sub-md
+  // breakpoint, hence the slightly looser bound.
+  expect(
+    Math.abs(hostBox!.y - stage!.y),
+    "the resident host must start at the fullscreen Stage top"
+  ).toBeLessThanOrEqual(2)
+  expect(
+    stage!.height - hostBox!.height,
+    "the resident host must fill the fullscreen Stage height"
+  ).toBeLessThanOrEqual(2)
+  // A focus-mode Stage must never keep the normal split width while the right
+  // pane is hidden.
+  expect(stage!.width).toBeGreaterThan(content!.width * 0.9)
+}
+
+/**
+ * The two-pane Stage/Chat split only exists at or above Core's `md` breakpoint.
+ * Below it the Room is a single column and the Stage already owns the whole
+ * content region, so the normal-layout assertion must follow that contract
+ * instead of assuming a split everywhere.
+ */
+function isTwoPaneRoom(page: Page): boolean {
+  return (page.viewportSize()?.width ?? 0) >= 768
+}
+
+async function expectNormalStageLayout(page: Page) {
+  const stage = await roomStage(page).boundingBox()
+  const content = await roomContent(page).boundingBox()
+  expect(stage, "room-stage must have a bounding box").not.toBeNull()
+  expect(content, ".room-content must have a bounding box").not.toBeNull()
+  if (isTwoPaneRoom(page)) {
+    expect(
+      stage!.width,
+      "normal Room layout must keep the Stage at its split width"
+    ).toBeLessThan(content!.width)
+    return
+  }
+  expect(
+    Math.abs(stage!.width - content!.width),
+    "single-column Room layout has no Stage/Chat split"
+  ).toBeLessThanOrEqual(TOLERANCE)
+}
+
+/**
+ * Pins the iframe DOM node and reports whether it is still the same element.
+ * A fullscreen toggle must be visual ownership only: no reload, no remount.
+ */
+async function pinIframeIdentity(page: Page, marker: string) {
+  await page.evaluate((value) => {
+    const frame = document.querySelector('[data-testid="room-app-iframe"]')
+    if (!frame) throw new Error("room-app-iframe missing")
+    ;(window as unknown as Record<string, unknown>).__hostCompatIframe = frame
+    frame.setAttribute("data-host-compat-identity", value)
+  }, marker)
+}
+
+async function iframeIdentityStatus(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const frame = document.querySelector('[data-testid="room-app-iframe"]')
+    const pinned = (window as unknown as Record<string, unknown>)
+      .__hostCompatIframe
+    if (!frame || !pinned) return "missing"
+    if (frame !== pinned) return "replaced"
+    return frame.getAttribute("data-host-compat-identity") ?? "unmarked"
+  })
+}
+
 /** Room-level horizontal overflow is a layout failure; local scrollers are not. */
 async function expectNoPageOverflow(page: Page, what: string) {
   const metrics = await page.evaluate(() => ({
@@ -185,6 +297,7 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
 
   const fixtureFrame = () =>
     page.frameLocator('[data-testid="room-app-iframe"]')
+  let fixtureSession: string | null = null
 
   await test.step("join the local Room", async () => {
     await installFixtureRoomApp(page)
@@ -249,11 +362,34 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     // Opening the App must not destroy the Room conversation.
     await expect(page.getByTestId("interaction-tablist")).toBeVisible()
     await expectNoPageOverflow(page, "App visible")
+
+    // Normal Room layout: at md+ the Stage owns only its share of the content.
+    await expectNormalStageLayout(page)
+
+    // Pin everything a fullscreen toggle must NOT recreate: the iframe DOM
+    // node, the App's bootstrap session token, and some App-local state.
+    await pinIframeIdentity(page, "before-fullscreen")
+    await fixtureFrame().getByTestId("fixture-tick").click()
+    await expect(fixtureFrame().getByTestId("fixture-ticks")).toHaveText("1")
+    fixtureSession = await fixtureFrame()
+      .getByTestId("fixture-session")
+      .textContent()
+    expect(fixtureSession).toMatch(/^[a-z0-9]{6,}$/)
   })
 
   await test.step("enter App fullscreen and keep the exit control reachable", async () => {
     await enterControl(page).click()
     await expect(host(page)).toHaveAttribute("data-layout", "fullscreen")
+    // Structural ownership: the Stage itself, not a fixed descendant, fills
+    // the Room content region while the right pane is hidden.
+    await expectFullscreenStageOwnsRoomContent(page)
+    // Focus mode is visual ownership only: same iframe node, same bootstrap
+    // session, same App-local state.
+    expect(await iframeIdentityStatus(page)).toBe("before-fullscreen")
+    await expect(fixtureFrame().getByTestId("fixture-session")).toHaveText(
+      fixtureSession!
+    )
+    await expect(fixtureFrame().getByTestId("fixture-ticks")).toHaveText("1")
     const exit = exitControl(page)
     await expect(exit).toBeVisible()
     await expect(exit).toBeEnabled()
@@ -300,6 +436,13 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await expect(page.getByTestId("room-stage")).toBeVisible()
     await expect(page.getByTestId("room-timeline")).toBeVisible()
     await expect(appIframe(page)).toBeVisible()
+    // The exact normal Room layout returns, and the App was never reloaded.
+    await expectNormalStageLayout(page)
+    expect(await iframeIdentityStatus(page)).toBe("before-fullscreen")
+    await expect(fixtureFrame().getByTestId("fixture-session")).toHaveText(
+      fixtureSession!
+    )
+    await expect(fixtureFrame().getByTestId("fixture-ticks")).toHaveText("1")
     await expectNoPageOverflow(page, "after exit fullscreen")
   })
 
@@ -331,11 +474,17 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
   await test.step("the fixture App stays interactive inside the sandbox", async () => {
     const fixture = fixtureFrame()
     await expect(fixture.getByTestId("fixture-participants")).toHaveText("1")
+    // "fixture-ticks" was already incremented to 1 before fullscreen, and every
+    // click/outbound message adds one: the App-local state carried through the
+    // whole focus-mode round trip.
     await fixture.getByTestId("fixture-tick").click()
-    await expect(fixture.getByTestId("fixture-ticks")).toHaveText("1")
+    await expect(fixture.getByTestId("fixture-ticks")).toHaveText("2")
     // One deterministic outbound host message through the real MessagePort.
     await fixture.getByTestId("fixture-ping").click()
-    await expect(fixture.getByTestId("fixture-ticks")).toHaveText("2")
+    await expect(fixture.getByTestId("fixture-ticks")).toHaveText("3")
+    await expect(fixture.getByTestId("fixture-session")).toHaveText(
+      fixtureSession!
+    )
     await expect(appIframe(page)).toBeVisible()
   })
 
