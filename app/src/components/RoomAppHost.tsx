@@ -362,8 +362,8 @@ export default function RoomAppHost({
   return (
     <section
       aria-label={app.label}
-      className={`flex min-h-0 flex-col overflow-hidden bg-gray-950 ${
-        isFullscreen ? "room-app-host--fullscreen" : "flex-1"
+      className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-gray-950 ${
+        isFullscreen ? "room-app-host--fullscreen" : ""
       }`}
       data-layout={isFullscreen ? "fullscreen" : "stage"}
       data-testid="room-app-host"

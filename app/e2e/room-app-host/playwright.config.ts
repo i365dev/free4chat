@@ -88,5 +88,14 @@ export default defineConfig({
         viewport: { width: 1180, height: 820 },
       },
     },
+    {
+      // iPad Pro 12.9" portrait sits exactly on Core's `lg` (1024px)
+      // breakpoint, where the Room header and several panels change layout.
+      name: "webkit-tablet-1024",
+      use: {
+        ...devices["iPad (gen 7)"],
+        viewport: { width: 1024, height: 1366 },
+      },
+    },
   ],
 })

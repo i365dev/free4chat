@@ -2302,6 +2302,38 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(port.close).not.toHaveBeenCalled()
     })
 
+    it("makes the fullscreen Stage own the whole Room content region", async () => {
+      renderAppRoom()
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      const host = slotHost("test-app-1")
+
+      // Normal split layout: the Stage owns its share of the Room content row.
+      const stage = screen.getByTestId("room-stage")
+      expect(stage).toHaveStyle({ width: "75%" })
+
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+
+      // Focus mode must be a Room layout state: the Stage drops the split width
+      // and owns the full content region instead of a fixed descendant trying
+      // to escape a clipped split pane (the iPad Safari clipping bug).
+      expect(host).toHaveAttribute("data-layout", "fullscreen")
+      expect(stage).toHaveStyle({ width: "100%" })
+      expect(stage).not.toHaveStyle({ width: "75%" })
+      // The resident host stays inside that Stage subtree — no portal, no
+      // remount, no separate fullscreen copy of the App.
+      expect(stage.contains(host)).toBe(true)
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+
+      fireEvent.click(
+        within(host).getByRole("button", { name: "Exit fullscreen" })
+      )
+
+      // The exact normal split is restored, not a recomputed default.
+      expect(stage).toHaveStyle({ width: "75%" })
+      expect(host).toHaveAttribute("data-layout", "stage")
+      expect(screen.getByTestId("room-app-host")).toBe(host)
+    })
+
     it("exits focus mode with Escape or Close while keeping the App resident", async () => {
       renderAppRoom()
       fireEvent.click(screen.getByTestId("stage-app-test-app-1"))

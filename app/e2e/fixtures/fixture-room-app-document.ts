@@ -63,6 +63,7 @@ export const FIXTURE_ROOM_APP_DOCUMENT = `<!doctype html>
         <span id="fixture-status" data-testid="fixture-status" data-state="waiting">waiting for host</span>
         · participants: <span id="fixture-participants" data-testid="fixture-participants">0</span>
         · self: <span id="fixture-self" data-testid="fixture-self">-</span>
+        · session: <span id="fixture-session" data-testid="fixture-session">none</span>
       </p>
       <div class="row">
         <button id="fixture-ping" data-testid="fixture-ping" type="button">Send host message</button>
@@ -86,6 +87,9 @@ export const FIXTURE_ROOM_APP_DOCUMENT = `<!doctype html>
         var port = null
         var appInstanceId = null
         var ticks = 0
+        // A new value for every bootstrap: it proves the host re-used the same
+        // iframe/MessagePort session instead of reloading the App document.
+        var session = null
 
         function text(id, value) {
           var element = document.getElementById(id)
@@ -128,6 +132,8 @@ export const FIXTURE_ROOM_APP_DOCUMENT = `<!doctype html>
           if (!nextPort) return
           port = nextPort
           appInstanceId = data.appInstanceId
+          session = Math.random().toString(36).slice(2, 10)
+          text("fixture-session", session)
           port.onmessage = function (messageEvent) {
             var message = messageEvent.data
             if (!message || message.appInstanceId !== appInstanceId) return

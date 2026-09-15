@@ -1167,10 +1167,23 @@ export default function RoomContent({
         ref={containerRef}
         className="room-content flex flex-1 flex-col overflow-hidden md:flex-row"
       >
+        {/* Room App focus mode is an ordinary Room layout state, not a
+            viewport-fixed overlay: every surrounding surface below is already
+            hidden and inert, so the Stage simply takes the whole Room content
+            region and the resident host fills it. A `position: fixed`
+            descendant could not escape this split, `overflow-hidden` Stage on
+            iPad Safari — it was clipped at the old Stage/chat boundary, taking
+            the host's right-side chrome ("Exit fullscreen") with it. */}
         <div
           data-testid="room-stage"
           className="room-panel room-participants-panel flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
-          style={isMd ? { width: `${splitRatio}%` } : undefined}
+          style={
+            isRoomAppFullscreen
+              ? { width: "100%" }
+              : isMd
+              ? { width: `${splitRatio}%` }
+              : undefined
+          }
         >
           {/* #111: Agent workspace snapshots — observation only, available in
               every room type; Human screen share is untouched below. */}
