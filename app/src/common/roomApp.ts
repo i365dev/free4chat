@@ -12,6 +12,7 @@ export const ROOM_APP_TRUSTED_ORIGIN = "https://room-apps.free4.chat"
 export const ROOM_APP_CATALOG_ENDPOINT = `${ROOM_APP_TRUSTED_ORIGIN}/_catalog.json`
 export const ROOM_APP_CATALOG_MAX_ENTRIES = 32
 export const ROOM_APP_CATALOG_MAX_BYTES = 16 * 1024
+export const ROOM_APP_CATALOG_TIMEOUT_MS = 5_000
 export const ROOM_APP_CATALOG_REFRESH_INTERVAL_MS = 60_000
 const BROWSER_ROOM_APP_CATALOG_CACHE_TTL_MS =
   ROOM_APP_CATALOG_REFRESH_INTERVAL_MS - 1_000
@@ -181,13 +182,18 @@ export function createRoomAppCatalogLoader(
     pending = (async () => {
       const fallback = () =>
         hasAcceptedRemoteCatalog && result ? result : EMPTY_ROOM_APP_CATALOG
+      const controller = new AbortController()
+      const timer = setTimeout(
+        () => controller.abort(),
+        ROOM_APP_CATALOG_TIMEOUT_MS
+      )
       try {
         const response = await fetchCatalog(ROOM_APP_CATALOG_ENDPOINT, {
           cache: "no-cache",
           credentials: "omit",
           headers: { Accept: "application/json" },
           mode: "cors",
-          signal: AbortSignal.timeout(5_000),
+          signal: controller.signal,
         })
         if (!response.ok) return fallback()
         const contentLength = Number(response.headers.get("content-length"))
@@ -209,6 +215,8 @@ export function createRoomAppCatalogLoader(
         return parsed
       } catch {
         return fallback()
+      } finally {
+        clearTimeout(timer)
       }
     })().then((catalog) => {
       result = catalog
