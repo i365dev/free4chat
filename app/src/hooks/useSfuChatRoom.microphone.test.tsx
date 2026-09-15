@@ -214,12 +214,14 @@ describe("useSfuChatRoom microphone lifecycle (#402)", () => {
   let getDisplayMedia: ReturnType<typeof vi.fn>
   let sessionNumber: number
   let localAudioTrack: TestTrack | null
+  let failLocalAudioPublish: boolean
 
   beforeEach(() => {
     TestPeerConnection.instances.length = 0
     TestWebSocket.instances.length = 0
     sessionNumber = 0
     localAudioTrack = null
+    failLocalAudioPublish = false
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       TestPeerConnection
     ;(global as unknown as { MediaStream: unknown }).MediaStream =
@@ -264,7 +266,15 @@ describe("useSfuChatRoom microphone lifecycle (#402)", () => {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
           tracks: Array<{ location?: string; trackName: string; mid?: string }>
         }
-        if (body.tracks[0].location !== "remote")
+        if (body.tracks[0].location !== "remote") {
+          // A publication answer that is missing its session description is a
+          // failed publication (SFU publication answer unavailable) after the
+          // transceiver/offer path already ran.
+          if (
+            failLocalAudioPublish &&
+            body.tracks[0].trackName.startsWith("audio-")
+          )
+            return jsonResponse({})
           return jsonResponse({
             sessionDescription: { type: "answer", sdp: "local-answer" },
             tracks: [
@@ -274,6 +284,7 @@ describe("useSfuChatRoom microphone lifecycle (#402)", () => {
               },
             ],
           })
+        }
         return jsonResponse({})
       }
       return jsonResponse({})
@@ -463,7 +474,10 @@ describe("useSfuChatRoom microphone lifecycle (#402)", () => {
     expect(result.current.connectionStatus).toBe("connected")
     expect(result.current.error).toBe("")
     expect(localPublishRequests()).toHaveLength(0)
+    // Permission denial never touched the media session, so it must NOT trigger
+    // the publication-failure recovery: the same PeerConnection stays in use.
     expect(TestPeerConnection.instances).toHaveLength(1)
+    expect(TestWebSocket.instances).toHaveLength(1)
     act(() => {
       result.current.sendTextMessage("still here")
     })
@@ -548,6 +562,69 @@ describe("useSfuChatRoom microphone lifecycle (#402)", () => {
         ).length
       ).toBeGreaterThanOrEqual(2)
     )
+    unmount()
+  })
+
+  it("recovers a failed audio publication on a fresh media session without reacquiring the microphone", async () => {
+    const { result, unmount } = await connect()
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+    const firstPc = TestPeerConnection.instances[0]
+    failLocalAudioPublish = true
+
+    await act(async () => {
+      result.current.toggleMicrophone()
+    })
+
+    // Truthful failure state, and the failed capture is released rather than
+    // left running behind an unusable publication.
+    await waitFor(() =>
+      expect(result.current.localMicState).toBe("unavailable")
+    )
+    const failedTrack = localAudioTrack!
+    expect(failedTrack.readyState).toBe("ended")
+
+    // The potentially poisoned PeerConnection is discarded through the existing
+    // media-reconnect path, not renegotiated.
+    await waitFor(() =>
+      expect(TestPeerConnection.instances.length).toBeGreaterThan(1)
+    )
+    expect(firstPc.connectionState).toBe("closed")
+    const reconnectedPc = TestPeerConnection.instances[1]
+    expect(
+      reconnectedPc
+        .getTransceivers()
+        .some((transceiver) => transceiver.sender.track?.kind === "audio")
+    ).toBe(false)
+    const reconnectedSocket =
+      TestWebSocket.instances[TestWebSocket.instances.length - 1]
+    act(() => reconnectedSocket.onopen?.())
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+
+    // Recovery performed zero microphone requests and published no Human audio.
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(
+      localPublishRequests().filter(
+        (request) => request.tracks[0].kind === "audio"
+      )
+    ).toHaveLength(1)
+    expect(sentMessages(reconnectedSocket)).toContainEqual({
+      type: "mute",
+      muted: true,
+    })
+    const local = result.current.participants.find(
+      (participant) => participant.peerId === "local-peer"
+    )
+    expect(local?.audioStream ?? null).toBeNull()
+
+    // Recovery is explicit: the next click is the only thing that reacquires.
+    failLocalAudioPublish = false
+    await enableMic(result)
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(result.current.localMicState).toBe("live")
     unmount()
   })
 

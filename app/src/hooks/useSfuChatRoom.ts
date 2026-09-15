@@ -3535,6 +3535,9 @@ export function useSfuChatRoom(
     if (!pc || !session) return
     micRequestRef.current = true
     setLocalMicState("requesting")
+    // Capture failure and publication failure need different recovery: only the
+    // latter can have left this PeerConnection unusable.
+    let publicationStarted = false
     try {
       const media = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -3543,6 +3546,7 @@ export function useSfuChatRoom(
       const track = media.getAudioTracks()[0] ?? null
       if (!track) throw new Error("No microphone track available")
       attachLocalMicrophoneTrack(track)
+      publicationStarted = true
       addLocalMediaTrack(pc, track, new MediaStream([track]))
       await publishTrack(track, "audio", `audio-${session.participantId}`)
       if (!track.enabled) track.enabled = true
@@ -3550,11 +3554,19 @@ export function useSfuChatRoom(
       sendSocketMessage({ type: "mute", muted: false })
       rebuildParticipants()
     } catch (err) {
-      // Permission denied, no device, or a failed publication. The Room stays
-      // connected and usable; the Human keeps an explicit retry.
-      sfuClientDiagnostic("local_microphone_unavailable", {
-        error_type: diagnosticErrorType(err),
-      })
+      // Permission denied, no device, or a failed publication. Either way the
+      // Room stays connected and usable and the Human keeps an explicit retry.
+      const errorType = diagnosticErrorType(err)
+      if (publicationStarted) {
+        sfuClientDiagnostic("local_track_publish_failed", {
+          track_kind: "audio",
+          error_type: errorType,
+        })
+      } else {
+        sfuClientDiagnostic("local_microphone_unavailable", {
+          error_type: errorType,
+        })
+      }
       const track = localAudioTrackRef.current
       if (track) {
         track.onended = null
@@ -3564,6 +3576,15 @@ export function useSfuChatRoom(
       setLocalMicState("unavailable")
       sendSocketMessage({ type: "mute", muted: true })
       rebuildParticipants()
+      if (publicationStarted) {
+        // The transceiver/offer/answer path already ran on this PeerConnection,
+        // so a failed publication answer can leave its SDP state unusable.
+        // Rebuild the media session through the existing recovery path instead
+        // of asking the poisoned connection to negotiate again. The failed
+        // track is released above, so that rebuild owns no local audio: it
+        // calls getUserMedia zero times and publishes no Human audio.
+        void mediaReconnectRef.current?.()
+      }
     } finally {
       micRequestRef.current = false
     }
