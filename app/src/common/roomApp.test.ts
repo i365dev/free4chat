@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   EMPTY_ROOM_APP_CATALOG,
+  ROOM_APP_CATALOG_ENDPOINT,
   ROOM_APP_CATALOG_MAX_ENTRIES,
   ROOM_APP_CATALOG_MAX_BYTES,
+  ROOM_APP_CATALOG_TIMEOUT_MS,
   ROOM_APP_TRUSTED_ORIGIN,
   ROOM_APP_MAX_PAYLOAD_BYTES,
   buildRoomInviteUrl,
@@ -160,6 +162,133 @@ describe("Room App host contract", () => {
       vi.fn(async () => new Response("{not-json", { status: 200 }))
     )
     await expect(malformedLoader()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+  })
+
+  it("loads and accepts a valid catalog when AbortSignal.timeout is unavailable", async () => {
+    const originalTimeout = Object.getOwnPropertyDescriptor(
+      AbortSignal,
+      "timeout"
+    )
+    Object.defineProperty(AbortSignal, "timeout", {
+      configurable: true,
+      value: undefined,
+    })
+    try {
+      const fetchCatalog = vi.fn(
+        async (
+          _input: RequestInfo | URL,
+          _init?: RequestInit
+        ): Promise<Response> =>
+          new Response(
+            JSON.stringify({
+              version: 1,
+              apps: [
+                {
+                  id: "current-app",
+                  label: "Current",
+                  path: "/current-app",
+                  status: "active",
+                },
+              ],
+            }),
+            { status: 200 }
+          )
+      )
+      const loader = createRoomAppCatalogLoader(fetchCatalog as typeof fetch)
+
+      await expect(loader()).resolves.toEqual([
+        {
+          id: "current-app",
+          label: "Current",
+          url: `${ROOM_APP_TRUSTED_ORIGIN}/current-app`,
+          origin: ROOM_APP_TRUSTED_ORIGIN,
+        },
+      ])
+      expect(fetchCatalog).toHaveBeenCalledTimes(1)
+      expect(fetchCatalog.mock.calls[0][0]).toBe(ROOM_APP_CATALOG_ENDPOINT)
+    } finally {
+      if (originalTimeout) {
+        Object.defineProperty(AbortSignal, "timeout", originalTimeout)
+      }
+    }
+  })
+
+  it("aborts a hung catalog request after the bounded local timeout", async () => {
+    vi.useFakeTimers()
+    try {
+      const captured: { signal?: AbortSignal } = {}
+      const fetchCatalog = vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            captured.signal = init?.signal ?? undefined
+            init?.signal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"))
+            })
+          })
+      )
+      const loader = createRoomAppCatalogLoader(fetchCatalog as typeof fetch)
+      const pending = loader()
+
+      await vi.advanceTimersByTimeAsync(ROOM_APP_CATALOG_TIMEOUT_MS - 1)
+      expect(captured.signal?.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(captured.signal?.aborted).toBe(true)
+      await expect(pending).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("clears the bounded timeout once a catalog request settles", async () => {
+    vi.useFakeTimers()
+    try {
+      const captured: { signal?: AbortSignal } = {}
+      const fetchCatalog = vi.fn(
+        async (_input: RequestInfo | URL, init?: RequestInit) => {
+          captured.signal = init?.signal ?? undefined
+          return new Response(JSON.stringify({ version: 1, apps: [] }), {
+            status: 200,
+          })
+        }
+      )
+      const loader = createRoomAppCatalogLoader(fetchCatalog as typeof fetch)
+
+      await expect(loader()).resolves.toEqual([])
+      expect(captured.signal?.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(ROOM_APP_CATALOG_TIMEOUT_MS * 2)
+      expect(captured.signal?.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("clears the bounded timeout on failure paths as well", async () => {
+    vi.useFakeTimers()
+    try {
+      const signals: AbortSignal[] = []
+      const thrown = createRoomAppCatalogLoader(
+        vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+          if (init?.signal) signals.push(init.signal)
+          throw new TypeError("Failed to fetch")
+        }) as typeof fetch
+      )
+      await expect(thrown()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+
+      const invalid = createRoomAppCatalogLoader(
+        vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+          if (init?.signal) signals.push(init.signal)
+          return new Response("{not-json", { status: 200 })
+        }) as typeof fetch
+      )
+      await expect(invalid()).resolves.toEqual(EMPTY_ROOM_APP_CATALOG)
+
+      await vi.advanceTimersByTimeAsync(ROOM_APP_CATALOG_TIMEOUT_MS * 2)
+      for (const signal of signals) {
+        expect(signal.aborted).toBe(false)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("cancels catalog streams that exceed the byte limit before buffering them", async () => {
