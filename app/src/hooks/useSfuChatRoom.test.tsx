@@ -209,8 +209,14 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
 
     await waitFor(() => expect(getTurnstileToken).toHaveBeenCalledTimes(1))
 
-    // Verification must happen before the microphone is ever requested.
+    // #402: joining never captures audio; verification therefore precedes any
+    // microphone request, and the first request only happens on explicit
+    // Human action.
+    expect(getUserMedia).not.toHaveBeenCalled()
     const tokenCallOrder = getTurnstileToken.mock.invocationCallOrder[0]
+    act(() => {
+      result.current.toggleMicrophone()
+    })
     await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
     const mediaCallOrder = getUserMedia.mock.invocationCallOrder[0]
     expect(tokenCallOrder).toBeLessThan(mediaCallOrder)

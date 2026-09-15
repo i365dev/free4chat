@@ -42,12 +42,115 @@ import {
   hashRoom,
   participantsBucket,
 } from "../common/utils"
-import { useSfuChatRoom } from "../hooks/useSfuChatRoom"
+import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
 type TaskAgent = { peerId: string; name: string }
+
+/**
+ * #402 canonical Human microphone control.
+ *
+ * Room-owned chrome, never a Stage surface: the same control and the same hook
+ * state drive the header button and the minimal fullscreen safety affordance,
+ * so voice stays reachable while a Room App, screen share or Live View owns the
+ * Stage — and while Room App fullscreen hides the ordinary header.
+ */
+function RoomMicControl({
+  micState,
+  enabled,
+  onToggle,
+  testId,
+  fullscreen = false,
+}: {
+  micState: RoomMicState
+  enabled: boolean
+  onToggle: () => void
+  testId: string
+  fullscreen?: boolean
+}) {
+  const label =
+    micState === "requesting"
+      ? fullscreen
+        ? "…"
+        : "Enabling…"
+      : micState === "live"
+      ? fullscreen
+        ? "Mic"
+        : "Mic on"
+      : micState === "muted"
+      ? "Muted"
+      : micState === "unavailable"
+      ? "Retry mic"
+      : "Enable mic"
+  const action =
+    micState === "live"
+      ? "Mute microphone"
+      : micState === "muted"
+      ? "Unmute microphone"
+      : micState === "requesting"
+      ? "Requesting microphone access"
+      : micState === "unavailable"
+      ? "Retry microphone access"
+      : "Enable microphone"
+  const tone =
+    micState === "live"
+      ? "border-emerald-600/60 text-emerald-200"
+      : micState === "muted"
+      ? "border-amber-600/50 text-amber-200"
+      : micState === "unavailable"
+      ? "border-amber-600/50 text-amber-200"
+      : "border-gray-700 text-gray-300"
+
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      data-mic-state={micState}
+      onClick={onToggle}
+      disabled={!enabled || micState === "requesting"}
+      aria-pressed={micState === "live"}
+      aria-label={action}
+      title={action}
+      className={
+        fullscreen
+          ? `pointer-events-auto flex items-center gap-1.5 rounded-full border bg-gray-900/90 px-3 py-1.5 text-xs backdrop-blur ${tone}`
+          : `flex min-w-0 items-center justify-center gap-1 rounded-md border bg-gray-800 px-2 py-1 text-xs hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50 ${tone}`
+      }
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        className="h-3.5 w-3.5 shrink-0"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth="2"
+        aria-hidden="true"
+      >
+        {micState === "live" ? (
+          <>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
+            />
+          </>
+        ) : (
+          <>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
+            />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18" />
+          </>
+        )}
+      </svg>
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
 
 function taskIsUnavailable(
   task: Pick<TaskProjection, "participatingAgentIds" | "status">,
@@ -202,7 +305,8 @@ export default function RoomContent({
     readRoomAttachment,
     sendCollabResult,
     sendPermissionResponse,
-    muteSelf,
+    localMicState,
+    toggleMicrophone,
     toggleScreenShare,
     retryVerification,
     error,
@@ -1078,6 +1182,15 @@ export default function RoomContent({
               runtimeConnectError={runtimeConnectError}
               onSuggestInvite={() => setAgentInviteOpen(true)}
             />
+            {/* #402: voice is opt-in and Room-owned — the canonical mic
+                control lives in persistent Room chrome, never on a Stage
+                surface, so it survives Room Apps / screen share / Live View. */}
+            <RoomMicControl
+              micState={localMicState}
+              enabled={connectionStatus === "connected"}
+              onToggle={toggleMicrophone}
+              testId="room-mic-control"
+            />
           </div>
           <button
             type="button"
@@ -1338,6 +1451,27 @@ export default function RoomContent({
                   </div>
                 )
               })}
+            {/* #402 fullscreen safety surface: focus mode intentionally hides
+                the ordinary Room header, so a minimal Room-owned mic control
+                stays reachable without closing the App or reloading. It is
+                chrome outside the iframe, owned by RoomContent, and reuses the
+                same state as the header control. */}
+            {isRoomAppFullscreen && roomAppSelf && (
+              <div
+                className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-start p-2"
+                style={{
+                  paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom))",
+                }}
+              >
+                <RoomMicControl
+                  micState={localMicState}
+                  enabled={connectionStatus === "connected"}
+                  onToggle={toggleMicrophone}
+                  testId="room-mic-control-fullscreen"
+                  fullscreen
+                />
+              </div>
+            )}
             {!visibleRoomApp &&
               !isRoomAppFullscreen &&
               (activeScreenShares.length > 0 ? (
@@ -1397,7 +1531,8 @@ export default function RoomContent({
                           audioStream={p.audioStream}
                           screenShareStream={p.screenShareStream}
                           screenShareEnabled={p.screenShareEnabled}
-                          onMuteSelf={muteSelf}
+                          onMuteSelf={toggleMicrophone}
+                          micState={localMicState}
                           onToggleScreenShare={wrappedToggleScreenShare}
                           screenshareAllowed={screenshareAllowed}
                           voiceAvailable={
@@ -1440,7 +1575,8 @@ export default function RoomContent({
                         audioStream={p.audioStream}
                         screenShareStream={p.screenShareStream}
                         screenShareEnabled={p.screenShareEnabled}
-                        onMuteSelf={muteSelf}
+                        onMuteSelf={toggleMicrophone}
+                        micState={localMicState}
                         onToggleScreenShare={wrappedToggleScreenShare}
                         voiceAvailable={
                           p.voiceAvailable && agentVoiceMediaAvailable

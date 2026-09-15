@@ -6,9 +6,15 @@ import { agentActivityLabel } from "../common/agentActivity"
 import { UserInfo } from "../common/types"
 import AudioVisualizer from "../components/AudioVisualizer"
 import ParticipantAvatar from "../components/ParticipantAvatar"
+import type { RoomMicState } from "../hooks/useSfuChatRoom"
 
 interface UserCardProps extends UserInfo {
   onMuteSelf?: () => void
+  /**
+   * #402: Room-owned local microphone state. The card only projects it (label
+   * and a convenience toggle); RoomContent owns the capability lifecycle.
+   */
+  micState?: RoomMicState
   onToggleScreenShare?: () => void
   screenshareAllowed?: boolean
   compact?: boolean
@@ -68,6 +74,27 @@ function CompactTaskIcon() {
       />
     </svg>
   )
+}
+
+/**
+ * #402: the local card's mic control is a projection of the Room-owned state,
+ * so its label must stay truthful when voice was never enabled or is
+ * unavailable instead of always claiming the device is simply muted.
+ */
+function localMicActionLabel(user: UserCardProps): string {
+  switch (user.micState) {
+    case "live":
+      return "Mute"
+    case "muted":
+      return "Unmute"
+    case "requesting":
+      return "Requesting microphone access"
+    case "unavailable":
+      return "Retry microphone access"
+    case "not_enabled":
+    case undefined:
+      return "Enable mic"
+  }
 }
 
 function UserCard(user: UserCardProps) {
@@ -213,6 +240,8 @@ function UserCard(user: UserCardProps) {
                 type="button"
                 className="participant-card__self-action opacity-50 transition-opacity hover:opacity-80"
                 onClick={user.onMuteSelf}
+                title={localMicActionLabel(user)}
+                aria-label={localMicActionLabel(user)}
               >
                 {!user.muteState ? (
                   <svg
@@ -287,7 +316,8 @@ function UserCard(user: UserCardProps) {
                 type="button"
                 className="participant-card__self-action absolute -bottom-1 -left-1 rounded-full bg-gray-900 p-0.5 opacity-70 transition-opacity hover:opacity-100"
                 onClick={user.onMuteSelf}
-                title={user.muteState ? "Unmute" : "Mute"}
+                title={localMicActionLabel(user)}
+                aria-label={localMicActionLabel(user)}
               >
                 {!user.muteState ? (
                   <svg

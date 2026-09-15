@@ -4,7 +4,11 @@ import path from "node:path"
 
 import { expect, test, type Page } from "@playwright/test"
 
-import { joinLocalRoom } from "../fixtures/local-room"
+import {
+  installMicrophoneCallCounter,
+  joinLocalRoom,
+  microphoneRequestCount,
+} from "../fixtures/local-room"
 
 /**
  * Room control-plane E2E (#275) — two REAL browser pages, one REAL local
@@ -40,8 +44,13 @@ test("two browsers exchange a text message through the real local DO", async ({
     })
   }
 
+  // #402: this is a non-voice Room flow; joining must never request a
+  // microphone, so no synthetic device is installed and the counter must stay 0.
+  for (const page of [pageA, pageB]) await installMicrophoneCallCounter(page)
   await joinLocalRoom(pageA, ROOM_SLUG, "Alice")
   await joinLocalRoom(pageB, ROOM_SLUG, "Bob")
+  expect(await microphoneRequestCount(pageA)).toBe(0)
+  expect(await microphoneRequestCount(pageB)).toBe(0)
 
   // Roster: both pages see both participants.
   await expect(pageA.getByText(/Bob/).first()).toBeVisible({
@@ -67,6 +76,9 @@ test("two browsers exchange a text message through the real local DO", async ({
   })
 
   expect(errors).toEqual([])
+  // Neither page ever asked for microphone permission during the whole session.
+  expect(await microphoneRequestCount(pageA)).toBe(0)
+  expect(await microphoneRequestCount(pageB)).toBe(0)
 
   // Hard invariant (#275 review): every Cloudflare Realtime request made
   // during the test must have been explicitly handled by the loopback fake.
