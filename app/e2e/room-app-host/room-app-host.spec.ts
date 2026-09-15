@@ -10,7 +10,8 @@ import { FIXTURE_ROOM_APP_DOCUMENT } from "../fixtures/fixture-room-app-document
 import {
   enterLocalRoom,
   installMediaShim,
-  installSyntheticMicrophone,
+  installMicrophoneCallCounter,
+  microphoneRequestCount,
   openLocalRoom,
 } from "../fixtures/local-room"
 
@@ -303,32 +304,16 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await installFixtureRoomApp(page)
     await installExternalRuntimeStubs(page)
     // No OS microphone, no permission prompt, identical on every engine.
-    await installSyntheticMicrophone(page)
     await installMediaShim(page)
+    // #402: this whole suite is a non-voice Room App flow. Joining must never
+    // ask for microphone permission, so no synthetic device is installed at
+    // all — only a counter that proves no request happened.
+    await installMicrophoneCallCounter(page)
     await openLocalRoom(page, roomSlug)
-    // Assert the media seam BEFORE the microphone is requested: joining must
-    // never touch a real device or a permission prompt, and a seam that failed
-    // to install has to fail here with the applied strategy instead of later as
-    // an opaque "Connection lost".
-    const micSeam = await page.evaluate(
-      () =>
-        (
-          window as unknown as {
-            __roomAppHostCompatMic?: {
-              strategy: string
-              patched: boolean
-              hasMediaDevices: boolean
-              hasAudioContext: boolean
-            }
-          }
-        ).__roomAppHostCompatMic ?? null
-    )
     expect(
-      micSeam?.patched,
-      `the synthetic microphone seam must be installed: ${JSON.stringify(
-        micSeam
-      )}`
-    ).toBe(true)
+      await microphoneRequestCount(page),
+      "opening a Room must not request microphone access"
+    ).toBe(0)
     await enterLocalRoom(page, "Alice")
     await expect(page.getByTestId("room-stage")).toBeVisible()
     await expect(page.getByTestId("room-timeline")).toBeVisible()
@@ -488,7 +473,13 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await expect(appIframe(page)).toBeVisible()
   })
 
-  await test.step("no unexpected page or console errors", async () => {
+  await test.step("the whole non-voice session never requested a microphone", async () => {
+    // join -> open App -> fullscreen -> exit -> hide -> reopen -> interact,
+    // all without a single microphone request or permission prompt.
+    expect(
+      await microphoneRequestCount(page),
+      "the non-voice Room App session must not request microphone access"
+    ).toBe(0)
     expect(pageErrors, "unexpected page errors").toEqual([])
     expect(consoleErrors, "unexpected console errors").toEqual([])
   })

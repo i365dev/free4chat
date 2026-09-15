@@ -532,7 +532,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     unmount()
   })
 
-  it("publishes the microphone through a dedicated sendonly transceiver", async () => {
+  it("publishes an explicitly enabled microphone through a dedicated sendonly transceiver", async () => {
     // The microphone is the other dynamic Human publication, and it must use
     // the same dedicated-transceiver path as screen share: addTrack() may
     // reuse an eligible remote recvonly m-line, which can make the next
@@ -543,7 +543,22 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     )
     const addTrack = vi.spyOn(TestPeerConnection.prototype, "addTrack")
 
-    const { pc, unmount } = await connect()
+    const { result, pc, unmount } = await connect()
+
+    // #402: joining a Room publishes no Human audio at all.
+    const getUserMedia = navigator.mediaDevices
+      .getUserMedia as unknown as ReturnType<typeof vi.fn>
+    expect(getUserMedia).not.toHaveBeenCalled()
+    expect(
+      addTransceiver.mock.calls.some(
+        ([track]) => (track as TestTrack | null)?.kind === "audio"
+      )
+    ).toBe(false)
+
+    await act(async () => {
+      result.current.toggleMicrophone()
+    })
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
 
     const micTrack = addTransceiver.mock.calls
       .map(([track]) => track)
@@ -560,6 +575,7 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
         .getTransceivers()
         .find((transceiver) => transceiver.sender.track === micTrack)?.direction
     ).toBe("sendonly")
+    expect(result.current.localMicState).toBe("live")
     unmount()
   })
 

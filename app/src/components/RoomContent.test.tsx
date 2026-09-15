@@ -100,7 +100,8 @@ const baseHookReturn = {
   getLocalRoomAuth: vi.fn(() => null),
   sendCollabResponse: vi.fn(() => true),
   localParticipantId: "human-local",
-  muteSelf: vi.fn(),
+  localMicState: "not_enabled" as const,
+  toggleMicrophone: vi.fn(),
   toggleScreenShare: vi.fn(),
   retryVerification: vi.fn(),
   error: "",
@@ -2332,6 +2333,117 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(stage).toHaveStyle({ width: "75%" })
       expect(host).toHaveAttribute("data-layout", "stage")
       expect(screen.getByTestId("room-app-host")).toBe(host)
+    })
+
+    it("owns the microphone control in Room chrome instead of a Stage card", () => {
+      const toggleMicrophone = vi.fn()
+      const { rerender } = renderAppRoom({
+        participants: [localParticipant],
+        localMicState: "not_enabled" as const,
+        toggleMicrophone,
+      })
+
+      // The canonical control is Room chrome: reachable with the ordinary
+      // participant Stage, and truthful before voice is ever enabled.
+      const control = screen.getByTestId("room-mic-control")
+      expect(control).toBeVisible()
+      expect(control).toHaveTextContent("Enable mic")
+      expect(control).toHaveAttribute("aria-label", "Enable microphone")
+      fireEvent.click(control)
+      expect(toggleMicrophone).toHaveBeenCalledTimes(1)
+      // The Stage card is only a projection/convenience surface.
+      expect(
+        screen.queryByTestId("room-mic-control-fullscreen")
+      ).not.toBeInTheDocument()
+
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+        localMicState: "live",
+        toggleMicrophone,
+      })
+      rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      expect(screen.getByTestId("room-mic-control")).toHaveTextContent("Mic on")
+      expect(screen.getByTestId("room-mic-control")).toHaveAttribute(
+        "aria-label",
+        "Mute microphone"
+      )
+    })
+
+    it("keeps the Room mic control reachable while a Room App owns the Stage", () => {
+      const toggleMicrophone = vi.fn()
+      renderAppRoom({
+        participants: [localParticipant],
+        localMicState: "live" as const,
+        toggleMicrophone,
+      })
+
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      expect(screen.getByTestId("room-app-iframe")).toBeInTheDocument()
+      // The participant grid is gone, but Room voice and its control are not.
+      expect(screen.queryByTestId("room-stage-participants")).toBeNull()
+      const control = screen.getByTestId("room-mic-control")
+      expect(control).toBeVisible()
+      expect(control).toBeEnabled()
+      fireEvent.click(control)
+      expect(toggleMicrophone).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps the Room mic control reachable while a screen share owns the Stage", () => {
+      const toggleMicrophone = vi.fn()
+      renderAppRoom({
+        participants: [localParticipant, remoteScreenShare],
+        localMicState: "muted" as const,
+        toggleMicrophone,
+      })
+
+      expect(screen.queryByTestId("room-stage-participants")).toBeNull()
+      const control = screen.getByTestId("room-mic-control")
+      expect(control).toBeVisible()
+      expect(control).toHaveTextContent("Muted")
+      fireEvent.click(control)
+      expect(toggleMicrophone).toHaveBeenCalledTimes(1)
+    })
+
+    it("keeps a minimal Room mic control reachable in App fullscreen", () => {
+      const toggleMicrophone = vi.fn()
+      renderAppRoom({
+        participants: [localParticipant],
+        localMicState: "live" as const,
+        toggleMicrophone,
+      })
+
+      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      const host = slotHost("test-app-1")
+      expect(
+        screen.queryByTestId("room-mic-control-fullscreen")
+      ).not.toBeInTheDocument()
+
+      fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
+
+      // Focus mode hides the ordinary header on purpose, so the Room-owned
+      // safety control must still be reachable without closing the App.
+      expect(screen.getByTestId("room-mic-control")).not.toBeVisible()
+      const fullscreenControl = screen.getByTestId(
+        "room-mic-control-fullscreen"
+      )
+      expect(fullscreenControl).toBeVisible()
+      expect(fullscreenControl).toBeEnabled()
+      expect(fullscreenControl).toHaveTextContent("Mic")
+      fireEvent.click(fullscreenControl)
+      expect(toggleMicrophone).toHaveBeenCalledTimes(1)
+
+      fireEvent.click(
+        within(host).getByRole("button", { name: "Exit fullscreen" })
+      )
+      expect(
+        screen.queryByTestId("room-mic-control-fullscreen")
+      ).not.toBeInTheDocument()
+      expect(screen.getByTestId("room-mic-control")).toBeVisible()
     })
 
     it("exits focus mode with Escape or Close while keeping the App resident", async () => {

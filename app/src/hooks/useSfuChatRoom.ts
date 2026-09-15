@@ -68,6 +68,21 @@ type ConnectionStatus =
   | "verification_failed"
   | "failed"
 
+/**
+ * Local Human microphone capability (#402).
+ *
+ * Entering a Room never captures audio: voice starts only when the Human
+ * explicitly enables it from persistent Room chrome. This state is the single
+ * source of truth for that control, so a missing track can never be reported as
+ * "live" and a failed capture is distinguishable from "never enabled".
+ */
+export type RoomMicState =
+  | "not_enabled"
+  | "requesting"
+  | "live"
+  | "muted"
+  | "unavailable"
+
 class TurnstileVerificationError extends Error {
   constructor(message = "Verification failed") {
     super(message)
@@ -594,6 +609,12 @@ export function useSfuChatRoom(
   const localAudioTrackRef = useRef<MediaStreamTrack | null>(null)
   const localScreenTrackRef = useRef<MediaStreamTrack | null>(null)
   const localScreenTrackNameRef = useRef("")
+  // #402: voice is opt-in. One in-flight explicit microphone request at a time,
+  // plus an explicit local capability state so "never enabled" is never inferred
+  // from a null track ref, which cannot distinguish it from "capture failed".
+  const micRequestRef = useRef(false)
+  const [localMicState, setLocalMicState] =
+    useState<RoomMicState>("not_enabled")
   const remoteAudioStreamsRef = useRef(new Map<string, MediaStream>())
   const remoteScreenStreamsRef = useRef(new Map<string, MediaStream>())
   const participantMapRef = useRef(new Map<string, SfuParticipant>())
@@ -761,15 +782,24 @@ export function useSfuChatRoom(
     const list: UserInfo[] = []
     if (localId && session) {
       const local = participantMapRef.current.get(localId)
+      // #402: the local voice projection is only audible/active when a live
+      // local track exists. With no track there is no local voice capability at
+      // all, and the bounded public projection can only say "muted" — never
+      // "live and unmuted".
+      const localAudioTrack = localAudioTrackRef.current
+      const localVoiceLive = Boolean(
+        localAudioTrack && localAudioTrack.readyState === "live"
+      )
       list.push({
         name: local?.name ?? nickName,
         kind: local?.kind ?? "human",
         room: roomName,
         peerId: LOCAL_PEER_ID,
-        muteState:
-          local?.media?.muted ?? !(localAudioTrackRef.current?.enabled ?? true),
-        audioStream: localAudioTrackRef.current
-          ? new MediaStream([localAudioTrackRef.current])
+        muteState: localVoiceLive
+          ? local?.media?.muted ?? !localAudioTrack!.enabled
+          : true,
+        audioStream: localVoiceLive
+          ? new MediaStream([localAudioTrack!])
           : null,
         screenShareEnabled: Boolean(localScreenTrackRef.current),
         screenShareStream: localScreenTrackRef.current
@@ -2884,6 +2914,18 @@ export function useSfuChatRoom(
       setConnectionStatus("connected")
       setError("")
       sendSocketMessage({ type: "resync" })
+      // #402: keep the Room-visible voice projection truthful across a
+      // reconnect. No live local track (never enabled, or the device went away)
+      // means "muted"; a soft-muted live track stays muted.
+      const micTrack = localAudioTrackRef.current
+      sendSocketMessage({
+        type: "mute",
+        muted: !(
+          micTrack &&
+          micTrack.readyState === "live" &&
+          micTrack.enabled
+        ),
+      })
       if (dataChannelReadyRef.current)
         sendSocketMessage({
           type: "datachannel-ready",
@@ -3214,19 +3256,23 @@ export function useSfuChatRoom(
       }
       setConnectionStatus(reconnecting ? "reconnecting" : "connecting")
 
+      // #402: joining a Room never captures audio. A Human who never enabled
+      // voice connects with zero local audio tracks; an explicitly enabled live
+      // track is reused across a media reconnect without another prompt.
       let audioTrack = localAudioTrackRef.current
-      if (!audioTrack) {
-        const media = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: false,
-        })
-        audioTrack = media.getAudioTracks()[0] ?? null
-        if (!audioTrack) throw new Error("No microphone track available")
-        localAudioTrackRef.current = audioTrack
+      if (audioTrack && audioTrack.readyState !== "live") {
+        // The granted device went away while the Room was disconnected. Never
+        // silently reacquire: drop ownership and require another explicit
+        // Human action.
+        audioTrack.onended = null
+        localAudioTrackRef.current = null
+        setLocalMicState("not_enabled")
+        audioTrack = null
       }
 
       const pc = createPeerConnection()
-      addLocalMediaTrack(pc, audioTrack, new MediaStream([audioTrack]))
+      if (audioTrack)
+        addLocalMediaTrack(pc, audioTrack, new MediaStream([audioTrack]))
       const screenTrack = localScreenTrackRef.current
       if (screenTrack && screenTrack.readyState === "live")
         addLocalMediaTrack(pc, screenTrack, new MediaStream([screenTrack]))
@@ -3272,7 +3318,12 @@ export function useSfuChatRoom(
       roomAppsEnabledRef.current = false
       setRoomAppsEnabled(false)
       await establishDataChannelTransport()
-      await publishTrack(audioTrack, "audio", `audio-${session.participantId}`)
+      if (audioTrack)
+        await publishTrack(
+          audioTrack,
+          "audio",
+          `audio-${session.participantId}`
+        )
       if (screenTrack && screenTrack.readyState === "live") {
         await publishTrack(
           screenTrack,
@@ -3395,6 +3446,7 @@ export function useSfuChatRoom(
       clearAllRemoteRoomAppChannels("unmount")
       clearRemoteTrackBindings()
       websocketRef.current?.close()
+      if (localAudioTrackRef.current) localAudioTrackRef.current.onended = null
       localAudioTrackRef.current?.stop()
       localScreenTrackRef.current?.stop()
       localFileChannelRef.current?.close()
@@ -3439,13 +3491,104 @@ export function useSfuChatRoom(
     sendSocketMessage,
   ])
 
-  const muteSelf = useCallback(() => {
+  /**
+   * Install a freshly granted local microphone track as the Room's audio
+   * capture, and retire it truthfully when the device goes away.
+   */
+  const attachLocalMicrophoneTrack = useCallback(
+    (track: MediaStreamTrack) => {
+      localAudioTrackRef.current = track
+      setLocalMicState(track.enabled ? "live" : "muted")
+      track.onended = () => {
+        if (localAudioTrackRef.current !== track) return
+        // Device removal / revoked permission / browser media lifecycle. Never
+        // silently reacquire: drop ownership, tell the Room, keep it usable.
+        localAudioTrackRef.current = null
+        setLocalMicState("not_enabled")
+        const session = sessionRef.current
+        if (session)
+          void closePublishedTrack(`audio-${session.participantId}`).catch(
+            () => {
+              sendSocketMessage({
+                type: "unpublish",
+                trackName: `audio-${session.participantId}`,
+              })
+            }
+          )
+        sendSocketMessage({ type: "mute", muted: true })
+        rebuildParticipants()
+      }
+      rebuildParticipants()
+    },
+    [closePublishedTrack, rebuildParticipants, sendSocketMessage]
+  )
+
+  /**
+   * Explicit microphone enable — the ONLY place that may request capture.
+   * Runs against the existing SFU session: the track is acquired, attached to
+   * the live PeerConnection and published, exactly like screen sharing.
+   */
+  const enableMicrophone = useCallback(async () => {
+    if (micRequestRef.current) return
+    const pc = peerConnectionRef.current
+    const session = sessionRef.current
+    if (!pc || !session) return
+    micRequestRef.current = true
+    setLocalMicState("requesting")
+    try {
+      const media = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      })
+      const track = media.getAudioTracks()[0] ?? null
+      if (!track) throw new Error("No microphone track available")
+      attachLocalMicrophoneTrack(track)
+      addLocalMediaTrack(pc, track, new MediaStream([track]))
+      await publishTrack(track, "audio", `audio-${session.participantId}`)
+      if (!track.enabled) track.enabled = true
+      setLocalMicState("live")
+      sendSocketMessage({ type: "mute", muted: false })
+      rebuildParticipants()
+    } catch (err) {
+      // Permission denied, no device, or a failed publication. The Room stays
+      // connected and usable; the Human keeps an explicit retry.
+      sfuClientDiagnostic("local_microphone_unavailable", {
+        error_type: diagnosticErrorType(err),
+      })
+      const track = localAudioTrackRef.current
+      if (track) {
+        track.onended = null
+        if (track.readyState === "live") track.stop()
+      }
+      localAudioTrackRef.current = null
+      setLocalMicState("unavailable")
+      sendSocketMessage({ type: "mute", muted: true })
+      rebuildParticipants()
+    } finally {
+      micRequestRef.current = false
+    }
+  }, [
+    attachLocalMicrophoneTrack,
+    publishTrack,
+    rebuildParticipants,
+    sendSocketMessage,
+  ])
+
+  /**
+   * Canonical Room-level microphone action: enable voice on first use, then
+   * soft mute/unmute the SAME live track. Mute never reacquires the device.
+   */
+  const toggleMicrophone = useCallback(() => {
     const track = localAudioTrackRef.current
-    if (!track) return
+    if (!track || track.readyState !== "live") {
+      void enableMicrophone()
+      return
+    }
     track.enabled = !track.enabled
+    setLocalMicState(track.enabled ? "live" : "muted")
     sendSocketMessage({ type: "mute", muted: !track.enabled })
     rebuildParticipants()
-  }, [rebuildParticipants, sendSocketMessage])
+  }, [enableMicrophone, rebuildParticipants, sendSocketMessage])
 
   const toggleScreenShare = useCallback(async () => {
     const pc = peerConnectionRef.current
@@ -4112,7 +4255,8 @@ export function useSfuChatRoom(
     sendPermissionResponse,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
-    muteSelf,
+    localMicState,
+    toggleMicrophone,
     toggleScreenShare,
     retryVerification,
     error,

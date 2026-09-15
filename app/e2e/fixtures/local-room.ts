@@ -136,112 +136,38 @@ export async function enterLocalRoom(
 }
 
 /**
- * Device-free microphone (#398).
+ * Microphone-request counter for the #402 automation invariant.
  *
- * Playwright's WebKit has no OS audio device and no grantable microphone
- * permission, so `getUserMedia` never settles there, and requiring a real
- * microphone would make the layout gate engine-dependent. This returns a REAL
- * `MediaStream` with a live audio track synthesised from an AudioContext, so
- * the Room reaches its normal joined state on every engine without a prompt.
- *
- * Neither `navigator.mediaDevices` nor `AudioContext` may be touched at
- * document-start: WebKit creates them only once the secure-context origin is
- * fully established, and it can replace the MediaDevices instance afterwards.
- * Patching whatever object happened to exist raced, and the join then failed
- * through a native `getUserMedia` with "Invalid constraint" — reproducibly on
- * the desktop WebKit project in CI, while the slower mobile projects passed.
- *
- * So the seam owns `navigator.mediaDevices` outright (the app only ever calls
- * `getUserMedia`), resolves AudioContext inside the call, and falls back to
- * prototype/instance patching if the accessor cannot be redefined. The applied
- * strategy is published on `window.__roomAppHostCompatMic` so the suite can
- * assert the seam before any microphone is requested.
- *
- * Only used by the Room App host compatibility suite; it is not a production
- * seam and it deliberately does not touch the media transport itself.
+ * Entering a Room must never ask for microphone permission, so the generic
+ * Room / Room App E2E suites install this counter and assert it stays at zero.
+ * A real request would otherwise only surface as a browser permission prompt,
+ * which headless automation silently tolerates.
  */
-export async function installSyntheticMicrophone(page: Page) {
+export async function installMicrophoneCallCounter(page: Page) {
   await page.addInitScript(() => {
-    const globalWindow = window as unknown as {
-      AudioContext?: typeof AudioContext
-      webkitAudioContext?: typeof AudioContext
-      MediaDevices?: { prototype: MediaDevices }
-      __roomAppHostCompatMic?: {
-        strategy: string
-        hasMediaDevices: boolean
-        hasAudioContext: boolean
-        patched: boolean
-      }
-    }
-
-    const report = {
-      strategy: "none",
-      hasMediaDevices: Boolean(navigator.mediaDevices),
-      hasAudioContext: Boolean(
-        globalWindow.AudioContext ?? globalWindow.webkitAudioContext
-      ),
-      patched: false,
-    }
-    globalWindow.__roomAppHostCompatMic = report
-
-    const syntheticGetUserMedia = async (
-      constraints?: MediaStreamConstraints
+    const requests: unknown[] = []
+    ;(window as unknown as { __micRequests?: unknown[] }).__micRequests =
+      requests
+    const mediaDevices = navigator.mediaDevices
+    if (!mediaDevices) return
+    const original = mediaDevices.getUserMedia?.bind(mediaDevices)
+    mediaDevices.getUserMedia = (
+      ...args: Parameters<MediaDevices["getUserMedia"]>
     ): Promise<MediaStream> => {
-      if (constraints?.video)
-        throw new DOMException(
-          "the local fixture has no camera",
-          "NotFoundError"
-        )
-      const AudioContextConstructor =
-        globalWindow.AudioContext ?? globalWindow.webkitAudioContext
-      if (!AudioContextConstructor)
-        throw new DOMException(
-          "the local fixture has no AudioContext",
-          "NotSupportedError"
-        )
-      const context = new AudioContextConstructor()
-      const destination = context.createMediaStreamDestination()
-      const oscillator = context.createOscillator()
-      oscillator.frequency.value = 220
-      oscillator.connect(destination)
-      oscillator.start()
-      return destination.stream
-    }
-
-    const ownGetUserMedia = (target: object | undefined): boolean => {
-      if (!target) return false
-      try {
-        Object.defineProperty(target, "getUserMedia", {
-          configurable: true,
-          writable: true,
-          value: syntheticGetUserMedia,
-        })
-        return true
-      } catch {
-        return false
-      }
-    }
-
-    // Preferred: own the accessor, so a MediaDevices instance created later
-    // (or replaced) can never bypass the seam.
-    try {
-      Object.defineProperty(navigator, "mediaDevices", {
-        configurable: true,
-        get: () => ({
-          getUserMedia: syntheticGetUserMedia,
-          enumerateDevices: async () => [],
-        }),
-      })
-      report.strategy = "navigator-accessor"
-      report.patched = true
-    } catch {
-      if (ownGetUserMedia(navigator.mediaDevices)) {
-        report.strategy = "instance"
-        report.patched = true
-      } else if (ownGetUserMedia(globalWindow.MediaDevices?.prototype)) {
-        report.strategy = "prototype"
-        report.patched = true
-      }
+      requests.push(args[0] ?? null)
+      return original
+        ? original(...args)
+        : Promise.reject(
+            new DOMException("no microphone device", "NotFoundError")
+          )
     }
   })
+}
+
+export async function microphoneRequestCount(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      (window as unknown as { __micRequests?: unknown[] }).__micRequests
+        ?.length ?? 0
+  )
 }
