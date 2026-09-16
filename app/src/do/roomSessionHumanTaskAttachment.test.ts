@@ -125,7 +125,13 @@ function makeRoom() {
   }
   const session = new RoomSession(
     ctx as never,
-    { SFU_ROOM: {}, AGENT_MEDIA_ENABLED: "true" } as never
+    {
+      SFU_ROOM: {},
+      AGENT_MEDIA_ENABLED: "true",
+      // #406: parked-waiter wake behavior is only observable through the
+      // explicit legacy long-poll opt-in; the default returns immediately.
+      MCP_LONGPOLL_ENABLED: "true",
+    } as never
   )
   const upload = (
     sender: { id: string; token: string },

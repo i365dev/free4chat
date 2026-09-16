@@ -178,6 +178,42 @@ import type {
 const RECONNECT_GRACE_MS = 30 * 1000
 const AGENT_LEASE_MS = 90 * 1000
 const MAX_MESSAGES = 100
+// #406: hard product bound on Room membership. Bounds both the Room value's
+// size and per-request storage cost, and keeps a single anonymous caller from
+// inflating one Room's participant map without limit.
+const MAX_ROOM_PARTICIPANTS = 32
+// #406: the primary Room record is a single KV-backed Durable Object value
+// with a 128 KiB backend limit, and Durable Object storage bills per 4 KiB
+// unit read/written — so an unbounded Room value is both a correctness and a
+// cost problem. 80 KiB keeps a wide margin below the backend limit while
+// leaving normal bounded histories (100 short messages + 32 participants +
+// 8 attachments) far below the cap.
+const MAX_PRIMARY_ROOM_BYTES = 80 * 1024
+// #406: legacy HTTP wait_for_events long-poll. Normal resident event delivery
+// is the hibernatable /api/room/agent-events WebSocket; holding an HTTP
+// response with setTimeout is non-hibernatable and therefore billable, so the
+// legacy hold is opt-in (MCP_LONGPOLL_ENABLED === "true"), clamped, and
+// separated by an idle gap long enough for the runtime to hibernate (it
+// hibernates after ~10s of inactivity).
+const MCP_LEGACY_LONGPOLL_MAX_MS = 5 * 1000
+const MCP_LEGACY_LONGPOLL_MIN_INTERVAL_MS = 15 * 1000
+// Advertised to a client whose wait returned without holding, so a simple MCP
+// poller backs off instead of tight-looping against the Room.
+const MCP_LONGPOLL_RETRY_HINT_MS = 15 * 1000
+// #406: connection amplification bounds. A participant capability can
+// legitimately be used by more than one tab/reload at once, but not without
+// limit; the room-wide bound keeps one Room's socket set (and the broadcast
+// fan-out per mutation) bounded.
+const MAX_SOCKETS_PER_PARTICIPANT = 4
+const MAX_ROOM_SOCKETS = 64
+// #406: per-participant client message budget. WebSocket messages bill as
+// Durable Object requests (20:1) and each accepted mutation re-serializes the
+// Room value, so one capability must not be able to send without limit. The
+// bound is deliberately far above legitimate use (the Room App unicast
+// transport already has its own tighter 10 msg/s per-socket budget).
+const MAX_CLIENT_MESSAGES_PER_WINDOW = 300
+const CLIENT_MESSAGE_WINDOW_MS = 10 * 1000
+const MAX_CLIENT_MESSAGE_WINDOWS = 256
 const MAX_AGENT_ATTACHMENTS = 8
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
@@ -276,6 +312,11 @@ export interface RoomSessionEnv {
   SFU_APP_SECRET?: string
   AGENT_MEDIA_ENABLED?: string
   ROOM_APPS_ENABLED?: string
+  // #406: opt-in for the legacy HTTP wait_for_events long-poll. Absent/false
+  // (the production default) makes wait_for_events return the current event
+  // snapshot immediately, so an idle RoomSession stays hibernatable; see
+  // legacyLongPollDecision.
+  MCP_LONGPOLL_ENABLED?: string
   ROOM_APP_CONTROL_PLANE: RoomAppCatalogService
   // #228: preconfigured production Worker secret for Room-authoritative
   // collaboration analytics (direct Mixpanel /import). Absent in
@@ -355,6 +396,28 @@ interface AgentWaiter {
   cursor: number
   resolve: (response: Response) => void
   timer: ReturnType<typeof setTimeout>
+}
+
+// #406: how one wait_for_events call was served.
+//   "held"         — the legacy opt-in long-poll actually blocked the request
+//   "immediate"    — returned without holding (the safe default)
+//   "cooling_down" — a legacy hold was requested inside the per-Room gap
+interface LegacyLongPollDecision {
+  mode: "held" | "immediate" | "cooling_down"
+  waitMs: number
+  retryAfterMs?: number
+}
+
+// #406: thrown by saveRoom() when a mutation would push the primary Room
+// record past MAX_PRIMARY_ROOM_BYTES. The previous persisted Room state is
+// untouched; callers translate this into a shaped protocol error
+// ("room_state_budget_exceeded") instead of letting an oversized value reach
+// Durable Object storage.
+export class RoomStateBudgetExceededError extends Error {
+  constructor(readonly bytes: number) {
+    super(`room_state_budget_exceeded:${bytes}`)
+    this.name = "RoomStateBudgetExceededError"
+  }
 }
 
 type ControlRequest =
@@ -753,6 +816,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
   // short-lived reservation while the request refreshes its lease.
   private readonly agentWaiters = new Map<string, AgentWaiter | null>()
+  // #406: per-participant client message budget windows. In-memory by
+  // design — see clientMessageBudgetExceeded.
+  private readonly clientMessageWindows = new Map<
+    string,
+    { windowStartedAt: number; count: number }
+  >()
   // #106 Phase B: room-lifetime collaboration bookkeeping (request
   // correlation + retried-send dedup). In-memory by design — see CollabRegistry.
   // Recoverable: rebuilt from the durable room.messages log on first use
@@ -816,7 +885,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // Persist and arm the short cleanup retry before this normalized Room
       // state is ever returned to a caller; do not fetch here, because that
       // would leave the caller holding a stale RoomRecord across I/O.
-      await this.saveRoom(normalized.room)
+      //
+      // #406: this save is a migration, not a caller mutation. A legacy
+      // record that predates the primary-record byte budget must stay
+      // readable — read paths (including the resident event stream's own
+      // over-cap envelope rejection) rely on loading it — so keep the
+      // normalized in-memory Room and let the next real mutation heal the
+      // stored value (appendMessage evicts by budget). Throwing here would
+      // wedge the Room on every load.
+      try {
+        await this.saveRoom(normalized.room)
+      } catch (error) {
+        if (!(error instanceof RoomStateBudgetExceededError)) throw error
+      }
       await this.scheduleNextAlarm(normalized.room)
     }
     normalized.room.taskLiveViews = await this.loadTaskLiveViews(
@@ -1278,6 +1359,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         runtimeHostProviders: normalizedRuntimeHostProviders.providers,
         runtimeHostProviderClaims: normalizedRuntimeHostProviders.pendingClaims,
         messages,
+        // #406: a malformed persisted value is dropped rather than rejected;
+        // the field only gates the opt-in legacy long-poll.
+        ...(typeof stored.lastHeldWaitEndedAt === "number" &&
+        Number.isFinite(stored.lastHeldWaitEndedAt)
+          ? { lastHeldWaitEndedAt: stored.lastHeldWaitEndedAt }
+          : {}),
         taskLiveViews: {},
         permissionRequests,
         liveTranscript: normalizedLiveProducer.liveTranscript,
@@ -1322,7 +1409,27 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     })
   }
 
-  private async saveRoom(room: RoomRecord): Promise<void> {
+  // #406: the primary Room value is persisted as one KV-backed Durable Object
+  // record with a 128 KiB backend value limit, and Durable Object storage
+  // bills per 4 KiB unit read/written. Measure the exact UTF-8 serialized
+  // bytes *before* the put so an oversized mutation is rejected as a shaped
+  // protocol error instead of failing inside storage after a large valid Room
+  // state has already been constructed.
+  private primaryRoomBytes(storedRoom: object): number {
+    return new TextEncoder().encode(JSON.stringify(storedRoom)).byteLength
+  }
+
+  private splitPrimaryRoom(room: RoomRecord): {
+    storedRoom: Omit<
+      RoomRecord,
+      | "liveTranscript"
+      | "liveTranscriptSegments"
+      | "nextLiveTranscriptEpoch"
+      | "nextTranscriptSequence"
+      | "taskLiveViews"
+    >
+    transcript: StoredLiveTranscript
+  } {
     const {
       liveTranscript,
       liveTranscriptSegments,
@@ -1331,17 +1438,61 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       taskLiveViews: _taskLiveViews,
       ...storedRoom
     } = room
+    return {
+      storedRoom,
+      transcript: {
+        liveTranscript,
+        liveTranscriptSegments,
+        nextLiveTranscriptEpoch,
+        nextTranscriptSequence,
+      },
+    }
+  }
+
+  // #406: bounded Room context is bounded by bytes as well as by count. Drop
+  // the oldest messages until the primary record fits its budget, always
+  // keeping the newest one: chat keeps working and the Room can never be
+  // pushed into an unwritable state by legitimate long messages. This is the
+  // same product decision as MAX_MESSAGES, applied to the dimension that
+  // actually bounds the stored value.
+  private trimRoomMessagesToBudget(room: RoomRecord): void {
+    if (
+      this.primaryRoomBytes(this.splitPrimaryRoom(room).storedRoom) <=
+      MAX_PRIMARY_ROOM_BYTES
+    )
+      return
+    while (room.messages.length > 1) {
+      room.messages.shift()
+      if (
+        this.primaryRoomBytes(this.splitPrimaryRoom(room).storedRoom) <=
+        MAX_PRIMARY_ROOM_BYTES
+      )
+        return
+    }
+  }
+
+  private async saveRoom(room: RoomRecord): Promise<void> {
+    // #406: the budget is a property of the stored record, so every save
+    // enforces it — not only the message path. Bounded history is evicted
+    // first, which keeps a Room writable (including a legacy record that
+    // predates the budget) instead of failing every mutation forever.
+    this.trimRoomMessagesToBudget(room)
+    const { storedRoom, transcript } = this.splitPrimaryRoom(room)
+    const primaryBytes = this.primaryRoomBytes(storedRoom)
+    // Anything the eviction order cannot free — a single oversized payload,
+    // or non-evictable state such as participants, attachments, and pending
+    // permission requests — fails closed with a deterministic, shaped error
+    // and leaves the previously persisted Room state untouched. It is a
+    // protocol-level rejection, never a corrupted Room and never an uncaught
+    // storage failure.
+    if (primaryBytes > MAX_PRIMARY_ROOM_BYTES)
+      throw new RoomStateBudgetExceededError(primaryBytes)
     // Start both storage writes before awaiting. Durable Object storage input
     // gates keep this mutation isolated, and the output gate withholds a
     // success response until both bounded values are durable.
     await Promise.all([
       this.ctx.storage.put("room", storedRoom),
-      this.ctx.storage.put(LIVE_TRANSCRIPT_STORAGE_KEY, {
-        liveTranscript,
-        liveTranscriptSegments,
-        nextLiveTranscriptEpoch,
-        nextTranscriptSequence,
-      }),
+      this.ctx.storage.put(LIVE_TRANSCRIPT_STORAGE_KEY, transcript),
     ])
   }
 
@@ -1904,6 +2055,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     room.nextMessageSequence = roomMessage.sequence
     room.messages = [...room.messages, roomMessage].slice(-MAX_MESSAGES)
+    // #406: the count bound alone cannot bound the stored value — 100
+    // maximum-length messages already exceed the primary record budget — so
+    // evict from the oldest end until the serialized record fits.
+    this.trimRoomMessagesToBudget(room)
     return roomMessage
   }
 
@@ -2606,19 +2761,31 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.agentWaiters.set(participant.id, null)
 
     try {
-      participant.lastSeenAt = Date.now()
-      await this.saveRoom(room)
-      await this.scheduleNextAlarm(room)
+      const now = Date.now()
+      participant.lastSeenAt = now
 
       const result = this.agentEvents(room, participant.id, request.cursor)
       const cursorWasAhead = request.cursor > room.nextMessageSequence
-      if (
+      const hasEvents =
         cursorWasAhead ||
         result.events.length > 0 ||
         result.cursor > request.cursor ||
-        result.truncated ||
-        request.timeoutSeconds === 0
-      ) {
+        result.truncated
+      // #406: holding this HTTP response is what keeps the Durable Object in
+      // memory (setTimeout + in-flight request are both non-hibernatable), so
+      // a chained 25-second long-poll can pin one Room's billable duration
+      // indefinitely at ~1 request/25s. The legacy hold is therefore opt-in
+      // and bounded; the default path returns the current snapshot
+      // immediately and remains a lease heartbeat.
+      const hold: LegacyLongPollDecision = hasEvents
+        ? { mode: "immediate", waitMs: 0 }
+        : this.legacyLongPollDecision(room, request.timeoutSeconds, now)
+      if (hold.mode === "held") room.lastHeldWaitEndedAt = now + hold.waitMs
+
+      await this.saveRoom(room)
+      await this.scheduleNextAlarm(room)
+
+      if (hold.mode !== "held") {
         this.agentWaiters.delete(participant.id)
         return this.json({
           ...result,
@@ -2628,6 +2795,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           participants: rosterProjection(room.participants),
           // #176 Phase A: one readiness projection per Runtime Host id.
           runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
+          longPoll: hold.mode,
+          ...(hold.retryAfterMs === undefined
+            ? {}
+            : { retryAfterMs: hold.retryAfterMs }),
         })
       }
 
@@ -2647,6 +2818,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                     cursor: room.nextMessageSequence,
                     expiresAt: room.expiresAt,
                     expired: true,
+                    longPoll: "held",
                   })
                 )
                 return
@@ -2656,10 +2828,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                   ...this.agentEvents(current, participant.id, request.cursor),
                   participants: rosterProjection(current.participants),
                   runtimeHosts: projectRuntimeHosts(current.runtimeHosts),
+                  longPoll: "held",
                 })
               )
             })
-          }, request.timeoutSeconds * 1000),
+          }, hold.waitMs),
         }
         this.agentWaiters.set(participant.id, waiter)
       })
@@ -2667,6 +2840,67 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.agentWaiters.delete(participant.id)
       throw error
     }
+  }
+
+  // #406: legacy HTTP long-poll admission for wait_for_events. The safe
+  // default is "immediate": no request is ever held, so an idle RoomSession
+  // hibernates even while an MCP client polls. The explicit opt-in
+  // (MCP_LONGPOLL_ENABLED) keeps a compatibility hold available but clamps it
+  // to MCP_LEGACY_LONGPOLL_MAX_MS and requires an idle gap of
+  // MCP_LEGACY_LONGPOLL_MIN_INTERVAL_MS after each reserved window, so
+  // consecutive holds can never keep the object awake continuously.
+  // Every non-held outcome advertises retryAfterMs so a simple MCP client
+  // backs off instead of tight-looping.
+  private legacyLongPollDecision(
+    room: RoomRecord,
+    timeoutSeconds: number,
+    now: number
+  ): LegacyLongPollDecision {
+    if (this.env.MCP_LONGPOLL_ENABLED !== "true")
+      return {
+        mode: "immediate",
+        waitMs: 0,
+        retryAfterMs: MCP_LONGPOLL_RETRY_HINT_MS,
+      }
+    const cooldownUntil =
+      (room.lastHeldWaitEndedAt ?? 0) + MCP_LEGACY_LONGPOLL_MIN_INTERVAL_MS
+    if (now < cooldownUntil)
+      return {
+        mode: "cooling_down",
+        waitMs: 0,
+        retryAfterMs: cooldownUntil - now,
+      }
+    const waitMs = Math.min(
+      Math.max(0, timeoutSeconds) * 1000,
+      MCP_LEGACY_LONGPOLL_MAX_MS
+    )
+    if (waitMs <= 0)
+      return {
+        mode: "immediate",
+        waitMs: 0,
+        retryAfterMs: MCP_LONGPOLL_RETRY_HINT_MS,
+      }
+    return { mode: "held", waitMs }
+  }
+
+  // #406: per-participant client message budget (see the constants above).
+  // In-memory is sufficient and cheap: a flood is exactly when the instance is
+  // awake, and a hibernated instance has no in-flight messages to count. The
+  // map is swept rather than grown when it exceeds its bound.
+  private clientMessageBudgetExceeded(participantId: string, now: number) {
+    if (this.clientMessageWindows.size > MAX_CLIENT_MESSAGE_WINDOWS) {
+      for (const [id, entry] of this.clientMessageWindows)
+        if (now - entry.windowStartedAt >= CLIENT_MESSAGE_WINDOW_MS)
+          this.clientMessageWindows.delete(id)
+    }
+    const current = this.clientMessageWindows.get(participantId)
+    const window =
+      !current || now - current.windowStartedAt >= CLIENT_MESSAGE_WINDOW_MS
+        ? { windowStartedAt: now, count: 0 }
+        : current
+    window.count += 1
+    this.clientMessageWindows.set(participantId, window)
+    return window.count > MAX_CLIENT_MESSAGES_PER_WINDOW
   }
 
   // #228: Room-authoritative collaboration analytics are best-effort:
@@ -3004,6 +3238,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       if (room.participants[request.participant.id])
         return this.json({ error: "participant_exists" }, 409)
+      // #406: hard Room membership bound, shared by the Human and Agent
+      // admission paths. A duplicate/reconnect never reaches this check (it
+      // is rejected as participant_exists above, and the "reconnect" action
+      // does not add participants), so reconnecting at capacity still works.
+      if (Object.keys(room.participants).length >= MAX_ROOM_PARTICIPANTS)
+        return this.json({ error: "room_full" }, 409)
       if (
         (isAgent && request.participant.kind !== "agent") ||
         (!isAgent &&
@@ -5937,6 +6177,37 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
         return this.json({ error: "unauthorized" }, 401)
 
+      // #406: bound connection amplification. A Human legitimately has a few
+      // concurrent connections (tab reload, media reconnect), but one
+      // capability must not be able to hold an unbounded number of them, and
+      // the room-wide bound keeps broadcast fan-out (and billable storage
+      // fan-in) bounded. The Agent event stream self-replaces by tag; this is
+      // the equivalent bound for untagged Human sockets, which deliberately
+      // does NOT close older sockets while under the cap so the normal
+      // reconnect/reload path keeps working.
+      const sockets = this.ctx.getWebSockets()
+      if (sockets.length >= MAX_ROOM_SOCKETS)
+        return this.json({ error: "room_connection_limit" }, 429)
+      const participantSockets = sockets.filter((socket) => {
+        const attachment = socket.deserializeAttachment() as {
+          kind?: unknown
+          participantId?: unknown
+        } | null
+        return (
+          attachment?.kind !== "agent-event" &&
+          attachment?.participantId === participant.id
+        )
+      })
+      if (participantSockets.length >= MAX_SOCKETS_PER_PARTICIPANT) {
+        for (const previous of participantSockets) {
+          try {
+            previous.close(4000, "Replaced")
+          } catch {
+            // A replacement can race an in-flight close handshake.
+          }
+        }
+      }
+
       const pair = new WebSocketPair()
       const [client, server] = Object.values(pair) as [WebSocket, WebSocket]
       const connectionNonce = crypto.randomUUID()
@@ -5960,7 +6231,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     try {
       return await this.handleControl((await request.json()) as ControlRequest)
-    } catch {
+    } catch (error) {
+      // #406: an over-budget primary Room record is a controlled rejection
+      // (previous state preserved), never an opaque invalid_request.
+      if (error instanceof RoomStateBudgetExceededError)
+        return this.json({ error: "room_state_budget_exceeded" }, 507)
       return this.json({ error: "invalid_request" }, 400)
     }
   }
@@ -6212,13 +6487,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const attachment =
       socket.deserializeAttachment() as ConnectionAttachment | null
     if (!attachment) return socket.close(4003, "Missing connection state")
+    // #406: per-participant message budget (see the constants above). A
+    // dropped message never reaches Room state; the sender is told why
+    // instead of being silently ignored.
+    if (
+      this.clientMessageBudgetExceeded(attachment.participantId, Date.now())
+    ) {
+      socket.send(
+        JSON.stringify({ type: "error", error: "message_rate_limited" })
+      )
+      return
+    }
     try {
       await this.handleClientMessage(
         socket,
         attachment,
         JSON.parse(raw) as ClientMessage
       )
-    } catch {
+    } catch (error) {
+      // #406: an oversized primary Room record is a controlled protocol
+      // rejection, not an "invalid_message".
+      if (error instanceof RoomStateBudgetExceededError) {
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: "room_state_budget_exceeded",
+          })
+        )
+        return
+      }
       socket.send(JSON.stringify({ type: "error", error: "invalid_message" }))
     }
   }

@@ -136,6 +136,10 @@ function harness() {
     {
       SFU_ROOM: {},
       AGENT_MEDIA_ENABLED: "true",
+      // #406: the wake boundary is only observable while a waiter is parked,
+      // and holding a waiter is now the explicit legacy opt-in
+      // (MCP_LONGPOLL_ENABLED); the default returns immediately.
+      MCP_LONGPOLL_ENABLED: "true",
     } as never
   )
   // The real Worker route forwards to this Room through the DO namespace

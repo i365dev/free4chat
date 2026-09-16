@@ -133,6 +133,9 @@ async function harness(options?: {
     ctx as never,
     {
       SFU_ROOM: {},
+      // #406: parking a waiter for a live-transcript neighbor check requires
+      // the explicit legacy long-poll opt-in; the default returns immediately.
+      MCP_LONGPOLL_ENABLED: "true",
       ...(fixture.mediaEnabled ? { AGENT_MEDIA_ENABLED: "true" } : {}),
     } as never
   )
