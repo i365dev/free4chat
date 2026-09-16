@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
+import { TURNSTILE_ACTION } from "../common/turnstile"
+
 declare global {
   interface Window {
     turnstile?: {
@@ -146,6 +148,10 @@ export function useTurnstile() {
     if (!ts || !container) throw new Error("turnstile_unavailable")
     const widgetId = ts.render(container, {
       sitekey: TURNSTILE_SITEKEY,
+      // #406: the Worker requires Siteverify to echo this action back, so a
+      // token minted by any other widget on this sitekey is not accepted for
+      // a fresh Human session.
+      action: TURNSTILE_ACTION,
       appearance: "interaction-only",
       execution: "execute",
       retry: "never",

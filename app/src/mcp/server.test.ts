@@ -255,3 +255,146 @@ describe("public MCP tool surface", () => {
     }
   })
 })
+
+// #406: MCP admission uses the Cloudflare Workers Rate Limiting binding
+// (never the KV get/put counter), and the one unauthenticated Room-probing
+// tool is rejected before any Durable Object is contacted.
+describe("MCP admission throttle and pre-DO Room probe guard", () => {
+  function fakeLimiter(success: boolean) {
+    const keys: string[] = []
+    const limiter = {
+      limit: async ({ key }: { key: string }) => {
+        keys.push(key)
+        return { success }
+      },
+    }
+    return { keys, limiter }
+  }
+
+  function harness(env: Record<string, unknown>) {
+    const roomCalls: Array<{ room: string; action: unknown }> = []
+    const kvGet = vi.fn(async () => null)
+    const kvPut = vi.fn(async () => undefined)
+    const fullEnv = {
+      ROOMS_KV: { get: kvGet, put: kvPut },
+      SFU_ROOM: {
+        idFromName: (name: string) => name,
+        get: (id: string) => ({
+          fetch: async (input: string | Request, init?: RequestInit) => {
+            const url = typeof input === "string" ? input : input.url
+            const body = init?.body
+              ? (JSON.parse(String(init.body)) as { action?: unknown })
+              : {}
+            roomCalls.push({ room: id, action: body.action })
+            if (body.action === "room-info")
+              return Response.json({ exists: true, participants: [] })
+            return Response.json({
+              participant: { id: "participant-1", name: "Agent" },
+              cursor: 0,
+              expiresAt: Date.now() + 60_000,
+              agentLeaseMs: 90_000,
+            })
+          },
+        }),
+      },
+      ...env,
+    } as unknown as McpEnv
+    const callTool = async (name: string, args: Record<string, unknown>) => {
+      const response = await handleMcpRequest(
+        new Request("https://www.free4.chat/mcp", {
+          method: "POST",
+          headers: {
+            Origin: "https://www.free4.chat",
+            Host: "www.free4.chat",
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": name,
+            "MCP-Protocol-Version": "2026-07-28",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: {
+              name,
+              arguments: args,
+              _meta: {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+              },
+            },
+          }),
+        }),
+        fullEnv,
+        {} as ExecutionContext
+      )
+      expect(response.status).toBe(200)
+      const payload = (await response.json()) as {
+        result?: { content?: Array<{ type?: string; text?: string }> }
+      }
+      const text = payload.result?.content?.find(
+        (block) => block.type === "text"
+      )?.text
+      return JSON.parse(text ?? "{}") as Record<string, unknown>
+    }
+    return { callTool, roomCalls, kvGet, kvPut }
+  }
+
+  it("rejects an abusive room_info probe before the Durable Object is contacted", async () => {
+    const { keys, limiter } = fakeLimiter(false)
+    const { callTool, roomCalls } = harness({
+      ROOM_PROBE_RATE_LIMITER: limiter,
+    })
+
+    const result = await callTool("room_info", { roomId: "room-1" })
+
+    expect(result).toEqual({ error: "rate_limited" })
+    expect(roomCalls).toEqual([])
+    expect(keys).toEqual(["mcp:room_info:rl:unknown"])
+  })
+
+  it("still serves a legitimate room_info observation", async () => {
+    const { limiter } = fakeLimiter(true)
+    const { callTool, roomCalls } = harness({
+      ROOM_PROBE_RATE_LIMITER: limiter,
+    })
+
+    const result = await callTool("room_info", { roomId: "room-1" })
+
+    expect(result.exists).toBe(true)
+    expect(roomCalls).toEqual([{ room: "room-1", action: "room-info" }])
+  })
+
+  it("throttles join_room and create_room with the binding, never with KV", async () => {
+    const { keys, limiter } = fakeLimiter(true)
+    const { callTool, kvGet, kvPut } = harness({
+      MCP_JOIN_RATE_LIMITER: limiter,
+    })
+
+    const joined = await callTool("join_room", {
+      roomId: "room-1",
+      name: "Join Agent",
+    })
+    const created = await callTool("create_room", { name: "Create Agent" })
+
+    expect(joined.agentLeaseMs).toBe(90_000)
+    expect(created.agentLeaseMs).toBe(90_000)
+    expect(keys).toEqual(["mcp:join:rl:unknown", "mcp:join:rl:unknown"])
+    expect(kvGet).not.toHaveBeenCalled()
+    expect(kvPut).not.toHaveBeenCalled()
+  })
+
+  it("rejects an over-budget join before the Durable Object is contacted", async () => {
+    const { limiter } = fakeLimiter(false)
+    const { callTool, roomCalls } = harness({ MCP_JOIN_RATE_LIMITER: limiter })
+
+    const result = await callTool("join_room", {
+      roomId: "room-1",
+      name: "Join Agent",
+    })
+
+    expect(result).toEqual({ error: "rate_limited" })
+    expect(roomCalls).toEqual([])
+  })
+})

@@ -45,6 +45,34 @@
       "id": "10ee56aaa9dd45eda179dfe709e1014a"
     }
   ],
+  // #406: coarse pre-admission throttling for expensive/anonymous entry
+  // points. Cloudflare Workers Rate Limiting is deliberately coarse and
+  // per-location — it is a flood damper in front of Durable Object and
+  // Cloudflare Realtime creation, never an exact global quota or an identity
+  // system. It replaces the KV get/put counter on these paths, which was
+  // itself a per-attempt cost amplifier. Limits here are the binding's
+  // authoritative budget; the code-side KV fallback only applies when a
+  // binding is absent (local unit tests).
+  "ratelimits": [
+    {
+      // /api/sfu/session and /api/sfu/agent-session, keyed by IP + operation.
+      "name": "SFU_ADMISSION_RATE_LIMITER",
+      "namespace_id": "4601",
+      "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      // /mcp create_room and join_room admission.
+      "name": "MCP_JOIN_RATE_LIMITER",
+      "namespace_id": "4602",
+      "simple": { "limit": 10, "period": 60 }
+    },
+    {
+      // Unauthenticated pre-DO probes: MCP room_info and /api/sfu/ws.
+      "name": "ROOM_PROBE_RATE_LIMITER",
+      "namespace_id": "4603",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {

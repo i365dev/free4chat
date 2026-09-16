@@ -4,6 +4,10 @@ import { z } from "zod"
 
 import { buildRoomInvite } from "./invite"
 import { imageToolResult } from "./toolResults"
+import {
+  allowAdmission,
+  type AdmissionRateLimiter,
+} from "../common/admissionLimit"
 import { generateRoomName } from "../common/cosmicNames"
 import { classifyRoomCreationSource } from "../do/roomAnalytics"
 import type { RoomSession } from "../do/RoomSession"
@@ -24,6 +28,8 @@ const MAX_TARGETS = 8
 const MAX_TARGET_ID_LENGTH = 64
 const JOIN_RATE_LIMIT = 10
 const JOIN_RATE_WINDOW_S = 60
+// #406: unauthenticated room_info probe budget (see allowRoomInfoProbe).
+const ROOM_INFO_RATE_LIMIT = 60
 // #176 Phase A: mirrored from do/collab.ts — the Runtime Host projection is
 // an opaque bounded id plus coarse speech booleans, nothing else.
 const runtimeHostSchema = z.object({
@@ -48,6 +54,10 @@ const MCP_HOSTNAMES = [
 export interface McpEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
   ROOMS_KV: KVNamespace
+  /** #406: coarse Workers Rate Limiting bindings (declared in wrangler.jsonc).
+   * `allowAdmission` falls back to the KV counter when a binding is absent. */
+  MCP_JOIN_RATE_LIMITER?: AdmissionRateLimiter
+  ROOM_PROBE_RATE_LIMITER?: AdmissionRateLimiter
 }
 
 interface AgentHandle {
@@ -165,15 +175,32 @@ async function allowJoin(
   env: McpEnv,
   request: Request | undefined
 ): Promise<boolean> {
-  const ip = request?.headers.get("CF-Connecting-IP") || "unknown"
-  const key = `mcp:join:rl:${ip}`
-  const raw = await env.ROOMS_KV.get(key)
-  const count = raw ? Number.parseInt(raw, 10) : 0
-  if (count >= JOIN_RATE_LIMIT) return false
-  await env.ROOMS_KV.put(key, String(count + 1), {
-    expirationTtl: JOIN_RATE_WINDOW_S,
+  return allowAdmission({
+    limiter: env.MCP_JOIN_RATE_LIMITER,
+    kv: env.ROOMS_KV,
+    key: `mcp:join:rl:${request?.headers.get("CF-Connecting-IP") || "unknown"}`,
+    max: JOIN_RATE_LIMIT,
+    windowSeconds: JOIN_RATE_WINDOW_S,
   })
-  return true
+}
+
+// #406: room_info is the one MCP tool that needs no participant capability,
+// so it is the cheapest way to make a Worker request resolve an
+// attacker-chosen roomId into a RoomSession invocation. Bound the probe
+// before the DO call; an ordinary Agent inspecting a Room stays far below it.
+async function allowRoomInfoProbe(
+  env: McpEnv,
+  request: Request | undefined
+): Promise<boolean> {
+  return allowAdmission({
+    limiter: env.ROOM_PROBE_RATE_LIMITER,
+    kv: env.ROOMS_KV,
+    key: `mcp:room_info:rl:${
+      request?.headers.get("CF-Connecting-IP") || "unknown"
+    }`,
+    max: ROOM_INFO_RATE_LIMIT,
+    windowSeconds: JOIN_RATE_WINDOW_S,
+  })
 }
 
 function createMcpServer(context: McpRequestContext) {
@@ -193,6 +220,9 @@ function createMcpServer(context: McpRequestContext) {
       },
     },
     async ({ roomId }) => {
+      // #406: reject abusive probe volume before waking any RoomSession.
+      if (!(await allowRoomInfoProbe(env, context.requestInfo)))
+        return toolError("rate_limited")
       const result = await roomControl(env, roomId, { action: "room-info" })
       return result.ok ? toolResult(result.data) : toolError("room_unavailable")
     }

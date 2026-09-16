@@ -11,6 +11,7 @@ interface RenderOptions {
   appearance: string
   execution: string
   sitekey: string
+  action: string
 }
 
 function installMockTurnstile() {
@@ -75,6 +76,8 @@ describe("useTurnstile", () => {
     expect(mock.render).toHaveBeenCalledTimes(1)
     expect(mock.getLastOptions()?.appearance).toBe("interaction-only")
     expect(mock.getLastOptions()?.execution).toBe("execute")
+    // #406: the Worker requires Siteverify to echo this action back.
+    expect(mock.getLastOptions()?.action).toBe("sfu-session")
     expect(mock.reset).toHaveBeenCalledTimes(1)
 
     act(() => {
