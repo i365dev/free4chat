@@ -84,47 +84,189 @@ const agentBody = {
   token: "tok-1",
 }
 
-describe("TURNSTILE_DISABLED", () => {
+// Fresh-Human admission (#75, #406). The exact boundary under test:
+//
+//   TURNSTILE_DISABLED === "true"    -> explicit local/test bypass
+//   otherwise missing secret         -> 503 configuration failure (fail closed)
+//   otherwise missing/invalid token  -> 403 verification_failed
+//   otherwise valid Siteverify       -> continue to Realtime + Room register
+//
+// A reconnect stays capability-authenticated: it never runs Turnstile and is
+// therefore independent of Turnstile configuration.
+describe("fresh Human Turnstile admission", () => {
+  const SITEVERIFY_URL =
+    "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+  const REALTIME_SESSION_URL =
+    "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/new"
+
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  it("bypasses Turnstile when explicitly enabled, even with a secret", async () => {
-    const requestedUrls: string[] = []
+  // Records every outbound call so a test can prove what did and did not
+  // happen: a Siteverify attempt, and/or a real Cloudflare Realtime session
+  // creation, never happen by accident.
+  function stubUpstream(siteverify: { status?: number; body?: unknown } = {}) {
+    const urls: string[] = []
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
-      requestedUrls.push(String(input))
+      const url = String(input)
+      urls.push(url)
+      if (url === SITEVERIFY_URL)
+        return Response.json(siteverify.body ?? { success: true }, {
+          status: siteverify.status ?? 200,
+        })
       return Response.json({ sessionId: "cf-session-1" })
     })
     vi.stubGlobal("fetch", fetchMock)
+    return urls
+  }
+
+  // Same recording idea for the Durable Object control surface.
+  function recordingRoom(calls: Array<Record<string, unknown>>) {
+    return fakeSfuRoom((body) => {
+      calls.push(body)
+      return okDoResponder(body)
+    })
+  }
+
+  const freshHumanBody = (turnstileToken?: unknown) =>
+    JSON.stringify({ room: "room-1", name: "Human", turnstileToken })
+
+  const freshHumanRequest = (turnstileToken?: unknown, headers?: HeadersInit) =>
+    req("session", {
+      origin: "https://www.free4.chat",
+      headers,
+      body: freshHumanBody(turnstileToken),
+    })
+
+  it("admits a fresh Human session after a valid Siteverify result", async () => {
+    const urls = stubUpstream({ body: { success: true } })
+    const calls: Array<Record<string, unknown>> = []
 
     const res = await handleSfuRequest(
-      req("session", {
-        origin: "https://www.free4.chat",
-        body: JSON.stringify({
-          room: "room-1",
-          name: "Human",
-          turnstileToken: "invalid",
-        }),
-      }),
+      freshHumanRequest("valid-token"),
       makeEnv({
+        SFU_ROOM: recordingRoom(calls),
+        TURNSTILE_SECRET_KEY: "configured-secret",
+      })
+    )
+
+    expect(res.status).toBe(200)
+    expect(urls).toEqual([SITEVERIFY_URL, REALTIME_SESSION_URL])
+    expect(calls.some((call) => call.action === "register")).toBe(true)
+  })
+
+  it("rejects a fresh Human session with no token before any upstream spend", async () => {
+    const urls = stubUpstream({ body: { success: true } })
+    const calls: Array<Record<string, unknown>> = []
+
+    const res = await handleSfuRequest(
+      freshHumanRequest(undefined),
+      makeEnv({
+        SFU_ROOM: recordingRoom(calls),
+        TURNSTILE_SECRET_KEY: "configured-secret",
+      })
+    )
+
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("verification_failed")
+    expect(urls).toEqual([])
+    expect(calls).toEqual([])
+  })
+
+  it("rejects a fresh Human session when Siteverify does not confirm the token", async () => {
+    const urls = stubUpstream({ body: { success: false } })
+    const calls: Array<Record<string, unknown>> = []
+
+    const res = await handleSfuRequest(
+      freshHumanRequest("rejected-token"),
+      makeEnv({
+        SFU_ROOM: recordingRoom(calls),
+        TURNSTILE_SECRET_KEY: "configured-secret",
+      })
+    )
+
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("verification_failed")
+    expect(urls).toEqual([SITEVERIFY_URL])
+    expect(calls).toEqual([])
+  })
+
+  it("fails closed when Siteverify itself errors", async () => {
+    const urls = stubUpstream({ status: 502, body: {} })
+    const calls: Array<Record<string, unknown>> = []
+
+    const res = await handleSfuRequest(
+      freshHumanRequest("valid-token"),
+      makeEnv({
+        SFU_ROOM: recordingRoom(calls),
+        TURNSTILE_SECRET_KEY: "configured-secret",
+      })
+    )
+
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("verification_failed")
+    expect(urls).toEqual([SITEVERIFY_URL])
+    expect(calls).toEqual([])
+  })
+
+  it("fails closed with a shaped configuration error when the secret is missing and the bypass is off", async () => {
+    const urls = stubUpstream({ body: { success: true } })
+    const calls: Array<Record<string, unknown>> = []
+
+    const res = await handleSfuRequest(
+      freshHumanRequest("valid-token"),
+      // Turnstile is enabled (no bypass) but unconfigured: this is a server
+      // misconfiguration, never a Human challenge failure.
+      makeEnv({ SFU_ROOM: recordingRoom(calls) })
+    )
+
+    expect(res.status).toBe(503)
+    expect((await json(res)).error).toBe("turnstile_not_configured")
+    expect(urls).toEqual([])
+    expect(calls).toEqual([])
+  })
+
+  it("admits through the explicit local/test bypass without consulting Siteverify", async () => {
+    // A Siteverify mock that would REJECT the token proves the bypass really
+    // skips verification instead of the token accidentally passing.
+    const urls = stubUpstream({ body: { success: false } })
+    const calls: Array<Record<string, unknown>> = []
+
+    const res = await handleSfuRequest(
+      freshHumanRequest("invalid"),
+      makeEnv({
+        SFU_ROOM: recordingRoom(calls),
         TURNSTILE_SECRET_KEY: "configured-secret",
         TURNSTILE_DISABLED: "true",
       })
     )
 
     expect(res.status).toBe(200)
-    expect(requestedUrls).toEqual([
-      "https://rtc.live.cloudflare.com/v1/apps/app-id/sessions/new",
-    ])
+    expect(urls).toEqual([REALTIME_SESSION_URL])
+    expect(calls.some((call) => call.action === "register")).toBe(true)
   })
 
-  it("preserves verification when the explicit bypass is absent", async () => {
-    const requestedUrls: string[] = []
-    const fetchMock = vi.fn(async (input: string | URL | Request) => {
-      requestedUrls.push(String(input))
-      return Response.json({ success: false })
-    })
-    vi.stubGlobal("fetch", fetchMock)
+  it("admits through the explicit bypass even when no secret is configured at all", async () => {
+    const urls = stubUpstream({ body: { success: false } })
+    const calls: Array<Record<string, unknown>> = []
+
+    const res = await handleSfuRequest(
+      freshHumanRequest("invalid"),
+      makeEnv({
+        SFU_ROOM: recordingRoom(calls),
+        TURNSTILE_DISABLED: "true",
+      })
+    )
+
+    expect(res.status).toBe(200)
+    expect(urls).toEqual([REALTIME_SESSION_URL])
+    expect(calls.some((call) => call.action === "register")).toBe(true)
+  })
+
+  it("keeps a valid reconnect capability-authenticated: no Siteverify, no token, no secret needed", async () => {
+    const urls = stubUpstream({ body: { success: false } })
+    const calls: Array<Record<string, unknown>> = []
 
     const res = await handleSfuRequest(
       req("session", {
@@ -132,18 +274,75 @@ describe("TURNSTILE_DISABLED", () => {
         body: JSON.stringify({
           room: "room-1",
           name: "Human",
-          turnstileToken: "invalid",
+          // No turnstileToken at all, exactly like the client's reconnect.
+          reconnect: {
+            participantId: "participant-1",
+            participantToken: "participant-token-1",
+            sessionId: "cf-session-0",
+          },
         }),
       }),
-      makeEnv({ TURNSTILE_SECRET_KEY: "configured-secret" })
+      // Deliberately enabled-but-unconfigured Turnstile: a reconnect must not
+      // depend on Turnstile configuration.
+      makeEnv({ SFU_ROOM: recordingRoom(calls) })
+    )
+
+    expect(res.status).toBe(200)
+    expect((await json(res)).participantId).toBe("participant-1")
+    expect(urls).toEqual([REALTIME_SESSION_URL])
+    expect(calls.map((call) => call.action)).toEqual(["authorize", "reconnect"])
+    expect(calls[0]).toMatchObject({
+      participantId: "participant-1",
+      token: "participant-token-1",
+      sessionId: "cf-session-0",
+    })
+  })
+
+  it("rejects an invalid reconnect through authorize before any Realtime spend", async () => {
+    const urls = stubUpstream({ body: { success: true } })
+
+    const res = await handleSfuRequest(
+      req("session", {
+        origin: "https://www.free4.chat",
+        body: JSON.stringify({
+          room: "room-1",
+          name: "Human",
+          reconnect: {
+            participantId: "participant-1",
+            participantToken: "stale-token",
+            sessionId: "cf-session-0",
+          },
+        }),
+      }),
+      makeEnv({}, (body) =>
+        body.action === "authorize"
+          ? { status: 403, body: { error: "unauthorized" } }
+          : { status: 200, body: { ok: true } }
+      )
     )
 
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("verification_failed")
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(requestedUrls).toEqual([
-      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    ])
+    expect(urls).toEqual([])
+  })
+
+  it("keeps the existing per-IP session rate limit unchanged", async () => {
+    stubUpstream({ body: { success: true } })
+    // One env => one shared KV counter, exactly like production.
+    const env = makeEnv({ TURNSTILE_SECRET_KEY: "configured-secret" })
+    const statuses: number[] = []
+
+    for (let attempt = 0; attempt < 21; attempt += 1) {
+      const res = await handleSfuRequest(
+        freshHumanRequest("valid-token", {
+          "CF-Connecting-IP": "203.0.113.7",
+        }),
+        env
+      )
+      statuses.push(res.status)
+    }
+
+    expect(statuses.slice(0, 20).every((status) => status === 200)).toBe(true)
+    expect(statuses[20]).toBe(429)
   })
 
   it("does not bypass origin or Agent media authorization", async () => {

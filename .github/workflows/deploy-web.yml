@@ -107,15 +107,18 @@ jobs:
         run: yarn install --frozen-lockfile
         working-directory: app
 
+      # Turnstile protects every fresh Human realtime session (#75, #406), so
+      # the production build intentionally does NOT set the client-side
+      # NEXT_PUBLIC_TURNSTILE_DISABLED kill switch: the browser runs the
+      # action-scoped challenge on join. The build-time switch remains
+      # available for deliberately offline/local stacks (see
+      # app/src/hooks/useTurnstile.ts); re-enabling it here must be an
+      # explicit, visible change, never a checked-in production default.
       - name: Build
         run: yarn cf-build
         working-directory: app
         env:
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ secrets.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
-          # Keep browser dogfood unblocked while Agent Voice is stabilised.
-          # Re-enable this together with TURNSTILE_DISABLED below once the
-          # production test window is explicitly closed.
-          NEXT_PUBLIC_TURNSTILE_DISABLED: "1"
 
       # Copy prerendered pages (the /docs routes) into the Workers static
       # assets bundle. The deploy job bypasses `opennextjs-cloudflare deploy`
@@ -159,13 +162,21 @@ jobs:
             echo "::notice::Skipping deploy — cf-sfu has a newer commit ($latest_sha) that touches app/ or this workflow file. That commit's own run will (or already did) cover this push."
           fi
 
+      # The Worker's server-side bypass var (TURNSTILE_DISABLED) is
+      # deliberately NOT passed here: production verifies fresh Human
+      # sessions against Siteverify using the TURNSTILE_SECRET_KEY Worker
+      # secret. That secret lives in Cloudflare, not git, and must exist
+      # before this deploy (see DEVELOPMENT.md); without it
+      # /api/sfu/session fails closed with a 503 turnstile_not_configured
+      # instead of admitting unverified sessions. Re-adding the bypass var
+      # here must be an explicit, visible change for a deliberate emergency
+      # or dogfood window — never the default deploy.
       - name: Deploy
         if: steps.freshness.outputs.stale != 'true'
         run: |
           npx wrangler deploy \
             --var "SFU_APP_ID:${SFU_APP_ID}" \
-            --var "AGENT_MEDIA_ENABLED:true" \
-            --var "TURNSTILE_DISABLED:true"
+            --var "AGENT_MEDIA_ENABLED:true"
         working-directory: app
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

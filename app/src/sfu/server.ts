@@ -23,9 +23,15 @@ export interface SfuEnv {
    * the real Human join path can run without ever contacting Cloudflare
    * Realtime. Analytics/authorization semantics are untouched. */
   SFU_RTC_BASE_URL?: string
+  /** Server-side Turnstile secret (Cloudflare Worker secret in production).
+   * Required for every fresh Human session whenever TURNSTILE_DISABLED is not
+   * "true"; a missing value fails the request closed — see verifyTurnstile. */
   TURNSTILE_SECRET_KEY?: string
-  // Explicit, reversible development/E2E bypass. Any value other than the
-  // literal string "true" preserves the normal Turnstile behavior below.
+  // Explicit, reversible local/test/E2E bypass for the fresh-Human Turnstile
+  // admission. Any value other than the literal string "true" preserves the
+  // normal verification. It is deliberately NOT set by the production deploy
+  // workflow (deploy-web.yml): re-enabling it must be a visible, intentional
+  // change, never a checked-in production default.
   TURNSTILE_DISABLED?: string
   // Coarse, environment-wide master switch for Agent SFU media (#82).
   // Absent/anything other than "true" => agent-session/agent-room-media
@@ -131,10 +137,25 @@ async function checkRateLimit(
   return true
 }
 
-async function verifyTurnstile(token: unknown, env: SfuEnv): Promise<boolean> {
-  if (env.TURNSTILE_DISABLED === "true") return true
-  if (!env.TURNSTILE_SECRET_KEY) return true
-  if (typeof token !== "string" || !token) return false
+// Fresh-Human Turnstile admission (#75, #406). Returns the exact rejection
+// Response when the caller must not proceed, or null when admission passes.
+//
+// TURNSTILE_DISABLED is the explicit local/test/E2E bypass and the ONLY way
+// to admit an unverified fresh Human session; production must never set it.
+// Without that bypass, a missing TURNSTILE_SECRET_KEY is a server
+// misconfiguration rather than a Human challenge failure, so it fails closed
+// (503) before any Cloudflare Realtime session or Room registration happens:
+// an environment with Turnstile enabled but unconfigured can never silently
+// admit unverified sessions.
+async function verifyTurnstile(
+  token: unknown,
+  env: SfuEnv
+): Promise<Response | null> {
+  if (env.TURNSTILE_DISABLED === "true") return null
+  if (!env.TURNSTILE_SECRET_KEY)
+    return json({ error: "turnstile_not_configured" }, 503)
+  if (typeof token !== "string" || !token)
+    return json({ error: "verification_failed" }, 403)
   const form = new URLSearchParams({
     secret: env.TURNSTILE_SECRET_KEY,
     response: token,
@@ -143,9 +164,10 @@ async function verifyTurnstile(token: unknown, env: SfuEnv): Promise<boolean> {
     "https://challenges.cloudflare.com/turnstile/v0/siteverify",
     { method: "POST", body: form }
   )
-  if (!response.ok) return false
+  if (!response.ok) return json({ error: "verification_failed" }, 403)
   const result = (await response.json()) as { success?: boolean }
-  return result.success === true
+  if (result.success === true) return null
+  return json({ error: "verification_failed" }, 403)
 }
 
 async function roomControl(
@@ -496,6 +518,9 @@ export async function handleSfuRequest(
       reconnectParticipantId && reconnectToken && reconnectSessionId
     )
     if (isReconnect) {
+      // A valid reconnect proves the previous participant/session capability
+      // instead: it never runs Turnstile, never needs a fresh token, and is
+      // therefore unaffected by Turnstile configuration.
       const auth = await authorize(
         env,
         room,
@@ -504,8 +529,9 @@ export async function handleSfuRequest(
         reconnectSessionId
       )
       if (!auth.ok) return auth
-    } else if (!(await verifyTurnstile(body.turnstileToken, env))) {
-      return json({ error: "verification_failed" }, 403)
+    } else {
+      const turnstile = await verifyTurnstile(body.turnstileToken, env)
+      if (turnstile) return turnstile
     }
 
     const sessionResponse = await realtimeRequest(env, "/sessions/new", {

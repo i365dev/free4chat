@@ -23,7 +23,12 @@ Required local values are documented in `app/.dev.vars.example`:
 | `SFU_APP_ID`     | Cloudflare Realtime SFU App ID     |
 | `SFU_APP_SECRET` | Cloudflare Realtime SFU App Secret |
 
-Turnstile is optional locally. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey, so the just-in-time challenge (triggered when joining a room, not on page load) resolves instantly. Set both `NEXT_PUBLIC_TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` when testing the production verification flow end-to-end.
+Turnstile is optional locally, but the server no longer fails open. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey, so the just-in-time challenge (triggered when joining a room, not on page load) resolves instantly — the server still requires a matching `TURNSTILE_SECRET_KEY` for every fresh Human session. Pick one:
+
+- set `TURNSTILE_SECRET_KEY` to Cloudflare's "always passes" test secret (`1x0000000000000000000000000000000AA`) to exercise the real Siteverify path;
+- set `TURNSTILE_DISABLED=true` (and build with `NEXT_PUBLIC_TURNSTILE_DISABLED=1`) for a fully offline stack.
+
+Without either, `/api/sfu/session` fails closed with `503 turnstile_not_configured` for fresh Human sessions — a server misconfiguration is never reported as a Human verification failure. Reconnects use the existing participant/session capability and never require Turnstile.
 
 The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
 
@@ -122,6 +127,15 @@ cd app
 npx wrangler secret put SFU_APP_SECRET
 npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
+
+`TURNSTILE_SECRET_KEY` is required in production: fresh Human sessions fail closed with `503 turnstile_not_configured` while it is missing, and the deploy workflow deliberately sets neither the client-side (`NEXT_PUBLIC_TURNSTILE_DISABLED`) nor the Worker-side (`TURNSTILE_DISABLED`) disable switch. Confirm the secret exists before deploying:
+
+```bash
+cd app
+npx wrangler secret list
+```
+
+A deliberate temporary bypass is an explicit, visible workflow change — never a checked-in production default.
 
 Manual deployment (recovery only — see note below):
 

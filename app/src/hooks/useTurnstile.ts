@@ -27,9 +27,10 @@ const TURNSTILE_SITEKEY =
 
 // Build-time kill switch for fully offline/local stacks: bake
 // NEXT_PUBLIC_TURNSTILE_DISABLED=1 and the widget never loads while
-// requestToken() resolves immediately with a placeholder (the server skips
-// verification too when its secret is empty). Production builds leave it
-// unset, so real verification is untouched.
+// requestToken() resolves immediately with a placeholder. The placeholder
+// itself proves nothing: the server skips Siteverify only through its own
+// explicit TURNSTILE_DISABLED bypass. Production builds set neither, so real
+// verification is untouched.
 
 let scriptPromise: Promise<void> | null = null
 
