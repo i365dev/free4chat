@@ -15,7 +15,7 @@ cd app
 cp ../app/.dev.vars .dev.vars   # needed for real SFU credentials; optional for pure room logic
 NEXT_PUBLIC_TURNSTILE_DISABLED=1 npm run cf-build   # client-side Turnstile off (see below)
 npx wrangler dev --local --port 3000 \
-  --var TURNSTILE_SECRET_KEY: \
+  --var TURNSTILE_DISABLED:true \
   --var AGENT_MEDIA_ENABLED:true
 ```
 
@@ -38,11 +38,11 @@ Three hard rules (each one cost a debugging cycle):
 
 | Layer               | Mechanism                                                                                                                         |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Server              | `--var TURNSTILE_SECRET_KEY:` (empty ⇒ `verify()` returns true immediately, see sfu/server.ts)                                    |
+| Server              | `--var TURNSTILE_DISABLED:true` — the explicit local/test bypass in sfu/server.ts; an empty/missing secret alone fails closed (503 `turnstile_not_configured`) |
 | Client              | build-time `NEXT_PUBLIC_TURNSTILE_DISABLED=1` ⇒ useTurnstile loads no widget, requestToken resolves instantly                     |
 | Browser widget kept | sitekey must be `1x00000000000000000000` (20 chars); variants with an `AA` suffix are invalid keys and fail with Turnstile 400020 |
 
-Production builds set none of these ⇒ behavior identical to production.
+Production builds set neither switch, and the production Worker must carry a real `TURNSTILE_SECRET_KEY` Worker secret.
 
 ## Browser-free validation sequence (agent routes need no Origin/Turnstile)
 
@@ -70,14 +70,16 @@ curl -s -X POST http://localhost:3000/api/sfu/session \
 
 # 3. Read events (addressed is computed per requesting participant: a message
 #    targeted at someone else reads as false here)
-wait_for_events {participantHandle, cursor, timeoutSeconds}
+wait_for_events {participantHandle, cursor, timeoutSeconds}   # returns immediately unless MCP_LONGPOLL_ENABLED=true
 ```
 
 ## Lifecycle traps
 
 - Human participants are reaped within seconds-to-minutes without a live
   WebSocket (401 unauthorized) — create-and-act must happen in one short window.
-- Agent lease is 90 s, renewed by wait_for_events; killing a process without
+- Agent lease is 90 s, renewed by wait_for_events (immediate by default —
+  pass `--var MCP_LONGPOLL_ENABLED:true` to exercise the legacy held long-poll);
+  killing a process without
   leave leaves a ghost card until lease expiry.
 - Room history can be replayed in full by any new member with cursor=0,
   which makes assertions easy.

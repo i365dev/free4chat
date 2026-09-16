@@ -214,6 +214,10 @@ async function main() {
           // #275: intercept every Cloudflare Realtime call at the loopback
           // fake; nothing ever reaches rtc.live.cloudflare.com.
           SFU_RTC_BASE_URL: fakeRealtimeBase,
+          // #406: the fresh-Human Turnstile admission is bypassed EXPLICITLY
+          // here — never by production fail-open. The empty secret only
+          // neutralizes whatever a local .dev.vars might otherwise contribute
+          // to this harness.
           TURNSTILE_SECRET_KEY: "",
           TURNSTILE_DISABLED: "true",
           AGENT_MEDIA_ENABLED: "false",

@@ -5,6 +5,12 @@ SFU_APP_SECRET=your_realtime_sfu_app_secret
 NEXT_PUBLIC_TURNSTILE_SITE_KEY=your_turnstile_site_key (build-time env for turnstile)
 TURNSTILE_SECRET_KEY=your_turnstile_secret_key
 
+# Explicit local/offline bypass for fresh-Human Turnstile admission. Pair it
+# with a build-time NEXT_PUBLIC_TURNSTILE_DISABLED=1 on the client. Without
+# either this or a real TURNSTILE_SECRET_KEY above, /api/sfu/session fails
+# closed with 503 turnstile_not_configured — the server never fails open.
+# TURNSTILE_DISABLED=true
+
 # Phase-0 (#82) MediaBridge dev/test switch — NOT the production
 # authorization model. Production CI explicitly enables the coarse switch;
 # the per-room Human Meeting Notes grant remains required. Uncomment locally

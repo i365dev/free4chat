@@ -704,26 +704,16 @@ describe("RoomSession expiry cleanup", () => {
     expect(current.participants.agent.connected).toBe(false)
   })
 
-  it("rejects an over-cap resident event envelope deterministically", async () => {
-    const NativeResponse = Response
-    class UpgradeResponse extends NativeResponse {
-      constructor(
-        body?: BodyInit | null,
-        init?: ResponseInit & { webSocket?: unknown }
-      ) {
-        if (init?.status === 101) {
-          super(null, { status: 200 })
-          Object.defineProperty(this, "status", { value: 101 })
-          ;(this as unknown as { webSocket?: unknown }).webSocket =
-            init.webSocket
-          return
-        }
-        super(body, init)
-      }
-    }
-    vi.stubGlobal("Response", UpgradeResponse)
-
+  // #406: the primary Room record now has its own serialized-byte budget, so a
+  // multi-megabyte resident envelope can no longer be produced by any stored
+  // state (the platform's own 128 KiB value limit made the old fixture
+  // unreachable in production anyway). The envelope cap remains the
+  // fail-closed backstop for an anomalous/directly supplied record, so it is
+  // still asserted here — through the delivery path itself, on an in-memory
+  // record, instead of a persisted one.
+  it("rejects an over-cap resident event envelope deterministically", () => {
     const room = agentEventRoom()
+    room.participants.agent.connectionNonce = "nonce-1"
     room.messages = Array.from({ length: 100 }, (_, index) => ({
       id: `message-${index}`,
       peerId: "human",
@@ -736,52 +726,24 @@ describe("RoomSession expiry cleanup", () => {
       sequence: index + 1,
     }))
     room.nextMessageSequence = room.messages.length
-    const store = new Map<string, unknown>([["room", room]])
+    const session = new RoomSession({} as never, { SFU_ROOM: {} } as never)
     const socket = new TestAgentEventSocket()
-    const tags: string[] = []
-    const ctx = {
-      storage: {
-        get: async (key: string) => store.get(key),
-        put: async (key: string, value: unknown) => void store.set(key, value),
-        delete: async (keys: string | string[]) => {
-          for (const key of Array.isArray(keys) ? keys : [keys])
-            store.delete(key)
-        },
-        list: async () => new Map(),
-        setAlarm: async () => undefined,
-        deleteAlarm: async () => undefined,
-        getAlarm: async () => undefined,
-        deleteAll: async () => store.clear(),
-      },
-      getWebSockets: () => [],
-      acceptWebSocket: vi.fn(
-        (_server: TestAgentEventSocket, socketTags: string[]) => {
-          tags.push(...socketTags)
-        }
-      ),
-    }
-    const session = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
-    const pair = { 0: new TestAgentEventSocket(), 1: socket }
-    stubWebSocketPairs(pair)
-
-    const response = await (
+    socket.serializeAttachment({
+      kind: "agent-event",
+      participantId: "agent",
+      connectionNonce: "nonce-1",
+      cursor: 0,
+    })
+    ;(
       session as unknown as {
-        handleAgentEventConnection: (request: Request) => Promise<Response>
+        pushAgentEventSocket: (
+          room: RoomRecord,
+          socket: unknown,
+          force: boolean
+        ) => void
       }
-    ).handleAgentEventConnection(
-      new Request("https://room/agent-events", {
-        method: "GET",
-        headers: {
-          Upgrade: "websocket",
-          "X-Room-Participant-Id": "agent",
-          Authorization: "Bearer agent-token",
-          "X-Room-Cursor": "0",
-        },
-      })
-    )
+    ).pushAgentEventSocket(room, socket as never, true)
 
-    expect(response.status).toBe(101)
-    expect(tags).toEqual(["agent-event:agent"])
     expect(JSON.parse(socket.sent[0] ?? "{}")).toEqual({
       type: "error",
       error: "event_envelope_too_large",

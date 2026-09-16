@@ -515,6 +515,11 @@ export interface RoomRecord {
   runtimeHostProviders?: Record<string, RuntimeHostProviderAssociation>
   runtimeHostProviderClaims?: Record<string, PendingRuntimeHostProviderClaim>
   messages: RoomMessage[]
+  // #406: end timestamp of the most recently reserved legacy HTTP
+  // wait_for_events window (see RoomSession.legacyLongPollDecision). Only
+  // written when MCP_LONGPOLL_ENABLED explicitly re-enables the legacy hold;
+  // it keeps consecutive holds from pinning a Room's billable awake time.
+  lastHeldWaitEndedAt?: number
   // #316: ephemeral current Task Live View snapshots; no history.
   taskLiveViews?: Record<string, TaskLiveViewSnapshot>
   // #286: bounded pending permission requests. Resolved/expired requests are

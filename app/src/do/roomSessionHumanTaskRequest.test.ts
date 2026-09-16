@@ -4,6 +4,13 @@ import { RoomSession } from "./RoomSession"
 import { buildTaskProjectionIndex } from "./taskScope"
 import type { RoomRecord } from "../room/types"
 
+// #406: wait_for_events has a server-enforced per-participant cadence. Tests
+// that assert two sequential waits advance the (mocked) clock instead of
+// hammering the same participant, so they keep testing their own invariant.
+function elapseWaitCadence() {
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6_000)
+}
+
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 
 function human(): RoomRecord["participants"][string] {
@@ -376,6 +383,7 @@ describe("RoomSession Human task entry (#305)", () => {
         (event: { scopeId?: string }) => event.scopeId
       )
     ).toEqual([`task:${requestId}`, `task:${requestId}`])
+    elapseWaitCadence()
     expect((await wait("agent-c", 1)).json.events).toEqual([])
     expect((await read("agent-c")).json.events).toEqual([])
   })

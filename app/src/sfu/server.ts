@@ -1,7 +1,12 @@
 import type { SfuSessionResponse } from "./types"
+import {
+  allowAdmission,
+  type AdmissionRateLimiter,
+} from "../common/admissionLimit"
 import { isAllowedOrigin } from "../common/origin"
 import { realtimeBaseUrl } from "../common/realtimeUrl"
 import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
+import { TURNSTILE_ACTION } from "../common/turnstile"
 import { compensateUnacceptedAgentMedia } from "../do/mediaEffects"
 import { resolveAgentPurposePermission } from "../do/meetingNotesAuth"
 import type { RoomSession } from "../do/RoomSession"
@@ -10,10 +15,20 @@ const MAX_ROOM_LENGTH = 64
 const MAX_NAME_LENGTH = 32
 const RATE_LIMIT_MAX = 20
 const RATE_LIMIT_WINDOW_S = 60
+// #406: pre-auth Room probe budget (see checkRoomProbeRateLimit).
+const ROOM_PROBE_RATE_LIMIT_MAX = 60
 
 export interface SfuEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
   ROOMS_KV: KVNamespace
+  /** #406: coarse Workers Rate Limiting binding for expensive admission
+   * (/api/sfu/session, /api/sfu/agent-session). Declared in wrangler.jsonc;
+   * when absent (unit tests, older harnesses) `allowAdmission` falls back to
+   * the KV counter. */
+  SFU_ADMISSION_RATE_LIMITER?: AdmissionRateLimiter
+  /** #406: pre-auth guard for Room-probing routes that would otherwise wake a
+   * Durable Object before credentials can be checked (/api/sfu/ws). */
+  ROOM_PROBE_RATE_LIMITER?: AdmissionRateLimiter
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
   /** #275: test-only override of the Cloudflare Realtime base URL. Absent
@@ -23,9 +38,15 @@ export interface SfuEnv {
    * the real Human join path can run without ever contacting Cloudflare
    * Realtime. Analytics/authorization semantics are untouched. */
   SFU_RTC_BASE_URL?: string
+  /** Server-side Turnstile secret (Cloudflare Worker secret in production).
+   * Required for every fresh Human session whenever TURNSTILE_DISABLED is not
+   * "true"; a missing value fails the request closed — see verifyTurnstile. */
   TURNSTILE_SECRET_KEY?: string
-  // Explicit, reversible development/E2E bypass. Any value other than the
-  // literal string "true" preserves the normal Turnstile behavior below.
+  // Explicit, reversible local/test/E2E bypass for the fresh-Human Turnstile
+  // admission. Any value other than the literal string "true" preserves the
+  // normal verification. It is deliberately NOT set by the production deploy
+  // workflow (deploy-web.yml): re-enabling it must be a visible, intentional
+  // change, never a checked-in production default.
   TURNSTILE_DISABLED?: string
   // Coarse, environment-wide master switch for Agent SFU media (#82).
   // Absent/anything other than "true" => agent-session/agent-room-media
@@ -120,21 +141,52 @@ async function checkRateLimit(
   env: SfuEnv,
   keyPrefix = "sfu:rl"
 ): Promise<boolean> {
-  const ip = request.headers.get("CF-Connecting-IP") || "unknown"
-  const key = `${keyPrefix}:${ip}`
-  const raw = await env.ROOMS_KV.get(key)
-  const count = raw ? Number.parseInt(raw, 10) : 0
-  if (count >= RATE_LIMIT_MAX) return false
-  await env.ROOMS_KV.put(key, String(count + 1), {
-    expirationTtl: RATE_LIMIT_WINDOW_S,
+  return allowAdmission({
+    limiter: env.SFU_ADMISSION_RATE_LIMITER,
+    kv: env.ROOMS_KV,
+    key: `${keyPrefix}:${request.headers.get("CF-Connecting-IP") || "unknown"}`,
+    max: RATE_LIMIT_MAX,
+    windowSeconds: RATE_LIMIT_WINDOW_S,
   })
-  return true
 }
 
-async function verifyTurnstile(token: unknown, env: SfuEnv): Promise<boolean> {
-  if (env.TURNSTILE_DISABLED === "true") return true
-  if (!env.TURNSTILE_SECRET_KEY) return true
-  if (typeof token !== "string" || !token) return false
+// #406: pre-auth guard for routes that resolve a caller-supplied Room into a
+// RoomSession invocation *before* any credential can be checked (a bad token
+// still wakes the Durable Object). Rejecting here keeps an invalid/random
+// probe from reaching the DO at all, without touching legitimate callers: a
+// browser opens one socket per join/reconnect, so the budget is generous.
+async function checkRoomProbeRateLimit(
+  request: Request,
+  env: SfuEnv
+): Promise<boolean> {
+  return allowAdmission({
+    limiter: env.ROOM_PROBE_RATE_LIMITER,
+    kv: env.ROOMS_KV,
+    key: `sfu:ws:${request.headers.get("CF-Connecting-IP") || "unknown"}`,
+    max: ROOM_PROBE_RATE_LIMIT_MAX,
+    windowSeconds: RATE_LIMIT_WINDOW_S,
+  })
+}
+
+// Fresh-Human Turnstile admission (#75, #406). Returns the exact rejection
+// Response when the caller must not proceed, or null when admission passes.
+//
+// TURNSTILE_DISABLED is the explicit local/test/E2E bypass and the ONLY way
+// to admit an unverified fresh Human session; production must never set it.
+// Without that bypass, a missing TURNSTILE_SECRET_KEY is a server
+// misconfiguration rather than a Human challenge failure, so it fails closed
+// (503) before any Cloudflare Realtime session or Room registration happens:
+// an environment with Turnstile enabled but unconfigured can never silently
+// admit unverified sessions.
+async function verifyTurnstile(
+  token: unknown,
+  env: SfuEnv
+): Promise<Response | null> {
+  if (env.TURNSTILE_DISABLED === "true") return null
+  if (!env.TURNSTILE_SECRET_KEY)
+    return json({ error: "turnstile_not_configured" }, 503)
+  if (typeof token !== "string" || !token)
+    return json({ error: "verification_failed" }, 403)
   const form = new URLSearchParams({
     secret: env.TURNSTILE_SECRET_KEY,
     response: token,
@@ -143,9 +195,21 @@ async function verifyTurnstile(token: unknown, env: SfuEnv): Promise<boolean> {
     "https://challenges.cloudflare.com/turnstile/v0/siteverify",
     { method: "POST", body: form }
   )
-  if (!response.ok) return false
-  const result = (await response.json()) as { success?: boolean }
-  return result.success === true
+  if (!response.ok) return json({ error: "verification_failed" }, 403)
+  const result = (await response.json()) as {
+    success?: boolean
+    action?: unknown
+  }
+  if (result.success !== true)
+    return json({ error: "verification_failed" }, 403)
+  // A token minted by a different widget on the same domain-locked sitekey
+  // must not be replayable here. An absent action is tolerated: Turnstile only
+  // returns the field when the widget set one, so pre-#406 client builds still
+  // admit while every current build sends (and therefore must match) the
+  // action.
+  if (result.action !== undefined && result.action !== TURNSTILE_ACTION)
+    return json({ error: "verification_failed" }, 403)
+  return null
 }
 
 async function roomControl(
@@ -445,6 +509,12 @@ export async function handleSfuRequest(
     const token = url.searchParams.get("token")
     if (!room || !participantId || !token)
       return json({ error: "bad_request" }, 400)
+    // #406: the credentials above are unverified at this point — the DO only
+    // rejects them after being woken. Bound that wake-up path so random
+    // room/participant/token probes cannot amplify Durable Object
+    // invocations (cheap Worker-side rejection, before any DO call).
+    if (!(await checkRoomProbeRateLimit(request, env)))
+      return json({ error: "rate_limited" }, 429)
     const auth = await authorize(env, room, participantId, token)
     if (!auth.ok) return auth
     const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
@@ -496,6 +566,9 @@ export async function handleSfuRequest(
       reconnectParticipantId && reconnectToken && reconnectSessionId
     )
     if (isReconnect) {
+      // A valid reconnect proves the previous participant/session capability
+      // instead: it never runs Turnstile, never needs a fresh token, and is
+      // therefore unaffected by Turnstile configuration.
       const auth = await authorize(
         env,
         room,
@@ -504,8 +577,9 @@ export async function handleSfuRequest(
         reconnectSessionId
       )
       if (!auth.ok) return auth
-    } else if (!(await verifyTurnstile(body.turnstileToken, env))) {
-      return json({ error: "verification_failed" }, 403)
+    } else {
+      const turnstile = await verifyTurnstile(body.turnstileToken, env)
+      if (turnstile) return turnstile
     }
 
     const sessionResponse = await realtimeRequest(env, "/sessions/new", {

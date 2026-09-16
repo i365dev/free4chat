@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { RoomSession } from "./RoomSession"
 import { buildTaskProjectionIndex } from "./taskScope"
+
+// #406: wait_for_events has a server-enforced per-participant cadence. Tests
+// that assert two sequential waits advance the (mocked) clock instead of
+// hammering the same participant, so they keep testing their own invariant.
+function elapseWaitCadence() {
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6_000)
+}
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 
@@ -340,6 +347,7 @@ describe("RoomSession agent-send-text structured addressing (#165)", () => {
     await room.sendText("agent-a", "once", ["agent-b"])
 
     const first = await room.agentWait("agent-b", 0)
+    elapseWaitCadence()
     const second = await room.agentWait("agent-b", 0)
     expect(first.json.events).toEqual(second.json.events)
     expect((first.json.events as unknown[]).length).toBe(1)

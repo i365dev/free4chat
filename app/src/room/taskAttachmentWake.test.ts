@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
+
+// #406: wait_for_events has a server-enforced per-participant cadence. Tests
+// that assert two sequential waits advance the (mocked) clock instead of
+// hammering the same participant, so they keep testing their own invariant.
+function elapseWaitCadence() {
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6_000)
+}
 
 import { handleRoomRequest, type RoomProtocolEnv } from "./server"
 import type { RoomRecord } from "./types"
@@ -136,6 +143,10 @@ function harness() {
     {
       SFU_ROOM: {},
       AGENT_MEDIA_ENABLED: "true",
+      // #406: the wake boundary is only observable while a waiter is parked,
+      // and holding a waiter is now the explicit legacy opt-in
+      // (MCP_LONGPOLL_ENABLED); the default returns immediately.
+      MCP_LONGPOLL_ENABLED: "true",
     } as never
   )
   // The real Worker route forwards to this Room through the DO namespace
@@ -324,6 +335,7 @@ describe("Task composer submission wake boundary (#363 second review)", () => {
 
     // The Task text is the single addressed boundary, and the attachment is
     // already persisted inside its context window.
+    elapseWaitCadence()
     const { events } = await test.agentWait("agent-a", first.cursor)
     expect(test.addressedEvents(events)).toHaveLength(1)
     const retained = (await test.readContext("agent-a")).events

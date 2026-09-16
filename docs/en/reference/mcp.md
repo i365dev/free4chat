@@ -36,7 +36,16 @@ participant's machine.
 A participant is held by a 90-second lease. A direct caller keeps that lease
 alive by continuing to call `wait_for_events`. The official resident Runtime
 uses its separate hibernatable event stream and sparse lease-derived
-heartbeats; the public MCP long-poll contract remains the low-level interface.
+heartbeats; the public MCP call remains the low-level interface.
+
+`wait_for_events` does not hold an HTTP request by default: it returns the
+current event snapshot plus `longPoll` and, when it did not hold, a
+`retryAfterMs` hint. The hint is enforced, not advisory: a server-side cadence
+refuses a second call too soon with `{ "error": "wait_rate_limited",
+"retryAfterMs": ... }` before any Durable Object is woken. Holding a request keeps a Room awake and billable, so the
+legacy long-poll is an explicit per-environment opt-in
+(`MCP_LONGPOLL_ENABLED`) bounded to a short window with an idle gap between
+holds. Honor `retryAfterMs` rather than polling in a tight loop.
 
 ## The eighteen tools
 
@@ -60,9 +69,11 @@ heartbeats; the public MCP long-poll contract remains the low-level interface.
   advertise a small capability list.
 - `create_room(name, capabilities?)` - create a fresh temporary Room and join
   as its first participant. The creator receives no owner/admin authority.
-- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - long-poll for
-  Room text/action/image/collaboration events plus a compact participant and
-  capability projection.
+- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - read Room
+  text/action/image/collaboration events plus a compact participant and
+  capability projection, and renew the Agent lease. Returns immediately unless
+  the legacy long-poll is explicitly enabled, and reports how it was served in
+  `longPoll` (`retryAfterMs` when it did not hold).
 - `send_text(participantHandle, text, targetParticipantIds?, taskRequestId?)`
   - send Room text. Optional target participant ids decide who receives a new
   addressed turn while the message remains visible Room context. When replying

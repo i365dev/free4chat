@@ -23,7 +23,12 @@ Required local values are documented in `app/.dev.vars.example`:
 | `SFU_APP_ID`     | Cloudflare Realtime SFU App ID     |
 | `SFU_APP_SECRET` | Cloudflare Realtime SFU App Secret |
 
-Turnstile is optional locally. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey, so the just-in-time challenge (triggered when joining a room, not on page load) resolves instantly. Set both `NEXT_PUBLIC_TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` when testing the production verification flow end-to-end.
+Turnstile is optional locally, but the server no longer fails open. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey, so the just-in-time challenge (triggered when joining a room, not on page load) resolves instantly — the server still requires a matching `TURNSTILE_SECRET_KEY` for every fresh Human session. Pick one:
+
+- set `TURNSTILE_SECRET_KEY` to Cloudflare's "always passes" test secret (`1x0000000000000000000000000000000AA`) to exercise the real Siteverify path;
+- set `TURNSTILE_DISABLED=true` (and build with `NEXT_PUBLIC_TURNSTILE_DISABLED=1`) for a fully offline stack.
+
+Without either, `/api/sfu/session` fails closed with `503 turnstile_not_configured` for fresh Human sessions — a server misconfiguration is never reported as a Human verification failure. Reconnects use the existing participant/session capability and never require Turnstile.
 
 The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
 
@@ -81,8 +86,9 @@ not open a public inbound port. It keeps the participant handle, token,
 cursor, and lease in memory; none are passed to the Harness prompt or written
 to user-visible output. The official resident path uses one narrow,
 hibernatable Agent event WebSocket with sparse heartbeats derived from the
-server-provided lease; the public MCP `wait_for_events` long-poll remains the
-unchanged low-level integration path. The same generic ACP v1 adapter launches
+server-provided lease; the public MCP `wait_for_events` lease heartbeat remains
+the low-level integration path and does not hold an HTTP request by default
+(see [Deployment](#deployment)'s cost bounds and the MCP reference). The same generic ACP v1 adapter launches
 the configured local Harness, negotiates its capabilities, creates one retained
 ACP session, and wakes it for each addressed room turn. The runtime itself
 owns the room control calls, reconnect, bounded room context,
@@ -123,6 +129,20 @@ npx wrangler secret put SFU_APP_SECRET
 npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
+Every MCP tool call now passes a Workers Rate Limiting guard before the
+Worker resolves a Room, so a forged or random `participantHandle` cannot wake
+arbitrary `RoomSession` instances beyond that budget. `room_info` stays
+unauthenticated by design and is guarded separately.
+
+`TURNSTILE_SECRET_KEY` is required in production: fresh Human sessions fail closed with `503 turnstile_not_configured` while it is missing, and the deploy workflow deliberately sets neither the client-side (`NEXT_PUBLIC_TURNSTILE_DISABLED`) nor the Worker-side (`TURNSTILE_DISABLED`) disable switch. Confirm the secret exists before deploying:
+
+```bash
+cd app
+npx wrangler secret list
+```
+
+A deliberate temporary bypass is an explicit, visible workflow change — never a checked-in production default.
+
 Manual deployment (recovery only — see note below):
 
 ```bash
@@ -145,13 +165,38 @@ configuration.
 
 The browser connects directly to Cloudflare Realtime SFU for audio and screen sharing. `RoomSession` is a hibernating Durable Object for presence, mute state, text, reactions, resync, Room-wide Live Transcript, bounded artifacts, and room expiry. A room has no fixed total lifetime while it holds at least one participant (human or agent); it's cleaned up automatically once it has held zero participants for `EMPTY_ROOM_TIMEOUT_MS` (30 minutes). Expiry explicitly cancels the alarm and clears all Durable Object storage after taking the exact media-close snapshot, so a recycled Room name starts with no prior-generation keys. Human browser-to-browser files and images use chunked, reliable DataChannels and are not persisted by the application. This is distinct from a bounded temporary Agent-readable copy of a Human-shared image and explicit bounded Room attachments (jpeg/png/webp or plain/markdown/csv/json/yaml, ≤768KB), which live in Room state/chunks only until eviction or room expiry.
 
-The `/mcp` route uses `createMcpHandler` with a fresh MCP v2 server per request. The MCP layer is stateless: it encodes `{ room, participantId, participantToken }` in an opaque URL-safe participant handle, while the Durable Object owns the room participant lease, message cursor, long-poll waiters, ephemeral attachment chunks, and expiry alarm. Agents are first-class text-only participants (`kind: "agent"`); the sanitized MCP surface (`room_info`, room-state events) never exposes media/session/track identifiers to a generic MCP client. `room_info` can expose bounded committed Live Transcript context, but never arbitrary ordinary chat history or private participant context. A resident Runtime's MediaBridge (subscribe-only SFU audio ingress for the current Room authorization) is a separate REST surface (`/api/sfu/agent-session`, `/api/sfu/agent-room-media`) not exposed through the MCP tool surface. A valid Agent token alone is never enough to receive Human audio: a legacy Meeting Notes compatibility grant or an active Room-wide Live Transcript producer tied to a verified Runtime Host provider is also required. Per-Agent `voiceReply` is separate and authorizes only the Agent's local audio publication. `AGENT_MEDIA_ENABLED` is an environment-wide admission switch ANDed on top of those grants — an operations kill switch, not a substitute for them. See `agent/internal/media/` and `app/src/sfu/server.ts`'s `AGENT_MEDIA_ENABLED` comment. `room_info` is read-only; `join_room` may create a new ephemeral room (no fixed lifetime while occupied — see the SFU architecture section below); public `wait_for_events` remains the direct caller's lease heartbeat and is capped at 25 seconds. The official resident Runtime uses its separate hibernatable Agent event stream and derives sparse heartbeats from the server-provided lease. A bounded temporary vision copy of an eligible Human-shared image and explicit supported text-like/image artifacts are available to current Agents through `read_attachment`.
+The `/mcp` route uses `createMcpHandler` with a fresh MCP v2 server per request. The MCP layer is stateless: it encodes `{ room, participantId, participantToken }` in an opaque URL-safe participant handle, while the Durable Object owns the room participant lease, message cursor, long-poll waiters, ephemeral attachment chunks, and expiry alarm. Agents are first-class text-only participants (`kind: "agent"`); the sanitized MCP surface (`room_info`, room-state events) never exposes media/session/track identifiers to a generic MCP client. `room_info` can expose bounded committed Live Transcript context, but never arbitrary ordinary chat history or private participant context. A resident Runtime's MediaBridge (subscribe-only SFU audio ingress for the current Room authorization) is a separate REST surface (`/api/sfu/agent-session`, `/api/sfu/agent-room-media`) not exposed through the MCP tool surface. A valid Agent token alone is never enough to receive Human audio: a legacy Meeting Notes compatibility grant or an active Room-wide Live Transcript producer tied to a verified Runtime Host provider is also required. Per-Agent `voiceReply` is separate and authorizes only the Agent's local audio publication. `AGENT_MEDIA_ENABLED` is an environment-wide admission switch ANDed on top of those grants — an operations kill switch, not a substitute for them. See `agent/internal/media/` and `app/src/sfu/server.ts`'s `AGENT_MEDIA_ENABLED` comment. `room_info` is read-only; `join_room` may create a new ephemeral room (no fixed lifetime while occupied — see the SFU architecture section below); public `wait_for_events` remains the direct caller's lease heartbeat and returns the current event snapshot immediately unless the legacy long-poll is explicitly enabled (`MCP_LONGPOLL_ENABLED`, bounded hold with a per-Room idle gap) — holding an HTTP response keeps a Room awake and billable. The official resident Runtime uses its separate hibernatable Agent event stream and derives sparse heartbeats from the server-provided lease. A bounded temporary vision copy of an eligible Human-shared image and explicit supported text-like/image artifacts are available to current Agents through `read_attachment`.
 
 The public room URL is:
 
 ```text
 https://www.free4.chat/room?id=<room-name>
 ```
+
+### Cost and abuse bounds (#406)
+
+Anonymous admission must not be able to create unbounded realtime cost, and an
+idle `RoomSession` must stay hibernatable. The enforced bounds are:
+
+| Bound | Value | Where |
+| --- | --- | --- |
+| Room membership | 32 participants (Human and Agent share the cap; `409 room_full`) | `MAX_ROOM_PARTICIPANTS` in `RoomSession.ts`; reconnect and duplicate ids are unaffected |
+| Primary Room record | 80 KiB UTF-8 serialized, safely below the KV-backed 128 KiB value limit | `MAX_PRIMARY_ROOM_BYTES`; bounded history is evicted oldest-first, anything unfittable is rejected with `507 room_state_budget_exceeded` and the stored state is left intact |
+| Browser sockets | 4 per participant (older ones replaced), 64 per Room (`429 room_connection_limit`) | `MAX_SOCKETS_PER_PARTICIPANT` / `MAX_ROOM_SOCKETS` |
+| Client messages | 300 per participant per 10 s (`message_rate_limited`) | `MAX_CLIENT_MESSAGES_PER_WINDOW` |
+| Expensive admission | Workers Rate Limiting bindings in `wrangler.jsonc` (per-IP + operation class, per Cloudflare location) | `SFU_ADMISSION_RATE_LIMITER`, `MCP_JOIN_RATE_LIMITER` |
+| Pre-DO ingress | Every request that would resolve a caller-supplied `roomId` into a `RoomSession` invocation is throttled at the Worker first: unauthenticated probes (`room_info`, `/api/sfu/ws`) via `ROOM_PROBE_RATE_LIMITER`, and **every** `participantHandle`-bearing MCP tool via `MCP_HANDLE_RATE_LIMITER` | the handle is base64url JSON, not a signature, so its token is only checked inside the DO — one shared guard covers all handle tools instead of one limiter per tool |
+| Agent event wait | Returns immediately by default; the held HTTP long-poll is an explicit per-environment opt-in (`MCP_LONGPOLL_ENABLED`), clamped to 5 s with a 15 s per-Room idle gap. A server-enforced per-participant cadence (5 s in `RoomSession`, 10 s pre-DO via `MCP_WAIT_RATE_LIMITER`) makes ignoring `retryAfterMs` pointless | `RoomSession.legacyLongPollDecision`, `RoomSession.agentWaitCadence` |
+
+The Workers Rate Limiting bindings are coarse and per-location by design — a
+flood damper, never an exact global quota or an identity system. When a binding
+is absent (local unit tests, older harnesses) the code falls back to the legacy
+KV counter; production declares every binding, so the KV `get → put` cost
+amplifier is gone from those paths.
+
+The resident Agent event path is the hibernatable `/api/room/agent-events`
+WebSocket, which does not hold a request and therefore lets the Room sleep
+between events.
 
 Turnstile is just-in-time, not a page-wide gate: `/` and `/room?id=...` render immediately. `useTurnstile` (`app/src/hooks/useTurnstile.ts`) renders a bounded, `interaction-only` widget and only executes a challenge — via `useSfuChatRoom`'s `getTurnstileToken` — right before the browser creates a brand-new Human SFU session. The fresh, single-use token is sent to `/api/sfu/session`, and the Worker verifies it with Siteverify before creating the session. Reconnects prove authorization with the previous participant/session id instead and never trigger a new challenge. Room pages are `noindex, nofollow`.
 

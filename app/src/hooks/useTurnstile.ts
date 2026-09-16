@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
+import { TURNSTILE_ACTION } from "../common/turnstile"
+
 declare global {
   interface Window {
     turnstile?: {
@@ -27,9 +29,10 @@ const TURNSTILE_SITEKEY =
 
 // Build-time kill switch for fully offline/local stacks: bake
 // NEXT_PUBLIC_TURNSTILE_DISABLED=1 and the widget never loads while
-// requestToken() resolves immediately with a placeholder (the server skips
-// verification too when its secret is empty). Production builds leave it
-// unset, so real verification is untouched.
+// requestToken() resolves immediately with a placeholder. The placeholder
+// itself proves nothing: the server skips Siteverify only through its own
+// explicit TURNSTILE_DISABLED bypass. Production builds set neither, so real
+// verification is untouched.
 
 let scriptPromise: Promise<void> | null = null
 
@@ -145,6 +148,10 @@ export function useTurnstile() {
     if (!ts || !container) throw new Error("turnstile_unavailable")
     const widgetId = ts.render(container, {
       sitekey: TURNSTILE_SITEKEY,
+      // #406: the Worker requires Siteverify to echo this action back, so a
+      // token minted by any other widget on this sitekey is not accepted for
+      // a fresh Human session.
+      action: TURNSTILE_ACTION,
       appearance: "interaction-only",
       execution: "execute",
       retry: "never",
