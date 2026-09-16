@@ -200,6 +200,13 @@ const MCP_LEGACY_LONGPOLL_MIN_INTERVAL_MS = 15 * 1000
 // Advertised to a client whose wait returned without holding, so a simple MCP
 // poller backs off instead of tight-looping against the Room.
 const MCP_LONGPOLL_RETRY_HINT_MS = 15 * 1000
+// #406: server-enforced floor between two accepted wait_for_events calls for
+// the same participant. `retryAfterMs` is only advisory — a client that
+// ignores it must not be able to keep the Room busy (every accepted wait also
+// persists a lease refresh, so an unthrottled poll loop is both an awake-time
+// and a storage-write amplifier). Kept below the legacy hold gap so a
+// compatibility caller still observes `cooling_down` rather than this bound.
+const MCP_WAIT_MIN_INTERVAL_MS = 5 * 1000
 // #406: connection amplification bounds. A participant capability can
 // legitimately be used by more than one tab/reload at once, but not without
 // limit; the room-wide bound keeps one Room's socket set (and the broadcast
@@ -822,6 +829,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     string,
     { windowStartedAt: number; count: number }
   >()
+  // #406: last accepted wait_for_events time per participant (see
+  // MCP_WAIT_MIN_INTERVAL_MS). In-memory is sufficient: a tight poll loop is
+  // exactly what keeps the instance awake, so the bound is authoritative while
+  // it matters, and an evicted (idle) instance has nothing to protect.
+  private readonly agentWaitCadence = new Map<string, number>()
   // #106 Phase B: room-lifetime collaboration bookkeeping (request
   // correlation + retried-send dedup). In-memory by design — see CollabRegistry.
   // Recoverable: rebuilt from the durable room.messages log on first use
@@ -2757,6 +2769,30 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ error: "agent_only" }, 403)
     if (this.agentWaiters.has(participant.id))
       return this.json({ error: "wait_already_pending" }, 409)
+
+    // #406: authoritative server-side cadence for this tool. Checked before
+    // any lease refresh or save, so an ignored `retryAfterMs` cannot keep the
+    // Room awake or amplify Room-value writes. The shared pre-DO ingress guard
+    // already bounds the per-IP wake rate; this bounds the per-participant one
+    // regardless of Cloudflare location.
+    const cadenceNow = Date.now()
+    const lastWaitAt = this.agentWaitCadence.get(participant.id) ?? 0
+    if (cadenceNow - lastWaitAt < MCP_WAIT_MIN_INTERVAL_MS) {
+      this.agentWaiters.delete(participant.id)
+      return this.json(
+        {
+          error: "wait_rate_limited",
+          retryAfterMs: MCP_WAIT_MIN_INTERVAL_MS - (cadenceNow - lastWaitAt),
+        },
+        429
+      )
+    }
+    this.agentWaitCadence.set(participant.id, cadenceNow)
+    if (this.agentWaitCadence.size > MAX_CLIENT_MESSAGE_WINDOWS) {
+      for (const [id, at] of this.agentWaitCadence)
+        if (cadenceNow - at >= MCP_WAIT_MIN_INTERVAL_MS)
+          this.agentWaitCadence.delete(id)
+    }
 
     this.agentWaiters.set(participant.id, null)
 

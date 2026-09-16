@@ -1,4 +1,11 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
+
+// #406: wait_for_events has a server-enforced per-participant cadence. Tests
+// that assert two sequential waits advance the (mocked) clock instead of
+// hammering the same participant, so they keep testing their own invariant.
+function elapseWaitCadence() {
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6_000)
+}
 
 import { RoomSession } from "./RoomSession"
 import { encodeTaskAttachmentWake } from "../common/taskAttachmentWake"
@@ -654,6 +661,7 @@ describe("Single Task wake boundary per composer submission (#363 second review)
     // ...so the following Task text is the single wake boundary, and the
     // attachment is already persisted inside its context window.
     await test.sendHumanTaskText("please inspect this")
+    elapseWaitCadence()
     const { events } = await test.agentWait("agent-a", first.cursor)
     const addressed = addressedEvents(events)
     expect(addressed).toHaveLength(1)

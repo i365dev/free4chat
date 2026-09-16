@@ -71,6 +71,22 @@
       "name": "ROOM_PROBE_RATE_LIMITER",
       "namespace_id": "4603",
       "simple": { "limit": 60, "period": 60 }
+    },
+    {
+      // Shared pre-DO guard for every participantHandle-bearing MCP tool: the
+      // handle is an opaque bearer capability, so its token is only checked
+      // inside the Durable Object, after the Room has already been resolved.
+      "name": "MCP_HANDLE_RATE_LIMITER",
+      "namespace_id": "4604",
+      "simple": { "limit": 240, "period": 60 }
+    },
+    {
+      // Server-enforced wait_for_events cadence: one accepted call per caller +
+      // participant per 10s, so ignoring retryAfterMs cannot tight-loop a
+      // Room. RoomSession enforces the same floor authoritatively.
+      "name": "MCP_WAIT_RATE_LIMITER",
+      "namespace_id": "4605",
+      "simple": { "limit": 1, "period": 10 }
     }
   ],
   "durable_objects": {

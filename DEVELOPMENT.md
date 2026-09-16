@@ -129,6 +129,11 @@ npx wrangler secret put SFU_APP_SECRET
 npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
+Every MCP tool call now passes a Workers Rate Limiting guard before the
+Worker resolves a Room, so a forged or random `participantHandle` cannot wake
+arbitrary `RoomSession` instances beyond that budget. `room_info` stays
+unauthenticated by design and is guarded separately.
+
 `TURNSTILE_SECRET_KEY` is required in production: fresh Human sessions fail closed with `503 turnstile_not_configured` while it is missing, and the deploy workflow deliberately sets neither the client-side (`NEXT_PUBLIC_TURNSTILE_DISABLED`) nor the Worker-side (`TURNSTILE_DISABLED`) disable switch. Confirm the secret exists before deploying:
 
 ```bash
@@ -179,8 +184,9 @@ idle `RoomSession` must stay hibernatable. The enforced bounds are:
 | Primary Room record | 80 KiB UTF-8 serialized, safely below the KV-backed 128 KiB value limit | `MAX_PRIMARY_ROOM_BYTES`; bounded history is evicted oldest-first, anything unfittable is rejected with `507 room_state_budget_exceeded` and the stored state is left intact |
 | Browser sockets | 4 per participant (older ones replaced), 64 per Room (`429 room_connection_limit`) | `MAX_SOCKETS_PER_PARTICIPANT` / `MAX_ROOM_SOCKETS` |
 | Client messages | 300 per participant per 10 s (`message_rate_limited`) | `MAX_CLIENT_MESSAGES_PER_WINDOW` |
-| Expensive admission | Workers Rate Limiting bindings in `wrangler.jsonc` (per-IP + operation class, per Cloudflare location) | `SFU_ADMISSION_RATE_LIMITER`, `MCP_JOIN_RATE_LIMITER`; pre-auth Room probes use `ROOM_PROBE_RATE_LIMITER` before any Durable Object call |
-| Agent event wait | Returns immediately by default; the held HTTP long-poll is an explicit per-environment opt-in (`MCP_LONGPOLL_ENABLED`), clamped to 5 s with a 15 s per-Room idle gap | `RoomSession.legacyLongPollDecision` |
+| Expensive admission | Workers Rate Limiting bindings in `wrangler.jsonc` (per-IP + operation class, per Cloudflare location) | `SFU_ADMISSION_RATE_LIMITER`, `MCP_JOIN_RATE_LIMITER` |
+| Pre-DO ingress | Every request that would resolve a caller-supplied `roomId` into a `RoomSession` invocation is throttled at the Worker first: unauthenticated probes (`room_info`, `/api/sfu/ws`) via `ROOM_PROBE_RATE_LIMITER`, and **every** `participantHandle`-bearing MCP tool via `MCP_HANDLE_RATE_LIMITER` | the handle is base64url JSON, not a signature, so its token is only checked inside the DO — one shared guard covers all handle tools instead of one limiter per tool |
+| Agent event wait | Returns immediately by default; the held HTTP long-poll is an explicit per-environment opt-in (`MCP_LONGPOLL_ENABLED`), clamped to 5 s with a 15 s per-Room idle gap. A server-enforced per-participant cadence (5 s in `RoomSession`, 10 s pre-DO via `MCP_WAIT_RATE_LIMITER`) makes ignoring `retryAfterMs` pointless | `RoomSession.legacyLongPollDecision`, `RoomSession.agentWaitCadence` |
 
 The Workers Rate Limiting bindings are coarse and per-location by design — a
 flood damper, never an exact global quota or an identity system. When a binding

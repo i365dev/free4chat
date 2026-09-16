@@ -271,7 +271,27 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
     return { keys, limiter }
   }
 
-  function harness(env: Record<string, unknown>) {
+  // A handle is only base64url JSON — it proves nothing, which is exactly why
+  // the guard has to run before any Room is resolved.
+  function encodeForgedHandle(room: string) {
+    return btoa(
+      JSON.stringify({
+        room,
+        participantId: "forged-participant",
+        participantToken: "garbage",
+      })
+    )
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/, "")
+  }
+
+  function harness(
+    env: Record<string, unknown>,
+    options: {
+      controlResponse?: (action: unknown) => Response | null
+    } = {}
+  ) {
     const roomCalls: Array<{ room: string; action: unknown }> = []
     const kvGet = vi.fn(async () => null)
     const kvPut = vi.fn(async () => undefined)
@@ -288,6 +308,8 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
             roomCalls.push({ room: id, action: body.action })
             if (body.action === "room-info")
               return Response.json({ exists: true, participants: [] })
+            const override = options.controlResponse?.(body.action)
+            if (override) return override
             return Response.json({
               participant: { id: "participant-1", name: "Agent" },
               cursor: 0,
@@ -383,6 +405,93 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
     expect(keys).toEqual(["mcp:join:rl:unknown", "mcp:join:rl:unknown"])
     expect(kvGet).not.toHaveBeenCalled()
     expect(kvPut).not.toHaveBeenCalled()
+  })
+
+  // #406: decodeHandle proves nothing, so EVERY handle-bearing tool resolves
+  // its Room before the token can be checked. One shared guard must cover them
+  // all, otherwise a forged handle just switches tool name or roomId.
+  it("rejects a forged handle on any handle-bearing tool before the DO is contacted", async () => {
+    const { limiter } = fakeLimiter(false)
+    const { callTool, roomCalls } = harness({
+      MCP_HANDLE_RATE_LIMITER: limiter,
+    })
+    const forged = encodeForgedHandle("random-room-000001")
+
+    const waited = await callTool("wait_for_events", {
+      participantHandle: forged,
+      cursor: 0,
+      timeoutSeconds: 0,
+    })
+    const sent = await callTool("send_text", {
+      participantHandle: forged,
+      text: "hello",
+    })
+    const surface = await callTool("read_surface", {
+      participantHandle: forged,
+      sourceParticipantId: "someone",
+      snapshotId: "snapshot-1",
+    })
+
+    expect(waited).toEqual({ error: "rate_limited" })
+    expect(sent).toEqual({ error: "rate_limited" })
+    expect(surface).toEqual({ error: "rate_limited" })
+    // Nothing reached any RoomSession: no DO invocation for any roomId.
+    expect(roomCalls).toEqual([])
+  })
+
+  it("still serves a legitimate handle when the guard allows it", async () => {
+    const { limiter } = fakeLimiter(true)
+    const { callTool, roomCalls } = harness({
+      MCP_HANDLE_RATE_LIMITER: limiter,
+    })
+
+    const result = await callTool("wait_for_events", {
+      participantHandle: encodeForgedHandle("room-1"),
+      cursor: 0,
+      timeoutSeconds: 0,
+    })
+
+    expect(result.cursor).toBe(0)
+    expect(roomCalls).toEqual([{ room: "room-1", action: "agent-wait" }])
+  })
+
+  it("enforces a wait cadence before the DO and reports retryAfterMs", async () => {
+    const { limiter } = fakeLimiter(false)
+    const { callTool, roomCalls } = harness({ MCP_WAIT_RATE_LIMITER: limiter })
+
+    const result = await callTool("wait_for_events", {
+      participantHandle: encodeForgedHandle("room-1"),
+      cursor: 0,
+      timeoutSeconds: 25,
+    })
+
+    expect(result).toEqual({ error: "wait_rate_limited", retryAfterMs: 10_000 })
+    expect(roomCalls).toEqual([])
+  })
+
+  it("surfaces the DO-side wait cadence backstop with its own retryAfterMs", async () => {
+    const { limiter } = fakeLimiter(true)
+    const { callTool, roomCalls } = harness(
+      { MCP_WAIT_RATE_LIMITER: limiter, MCP_HANDLE_RATE_LIMITER: limiter },
+      {
+        controlResponse: (action) =>
+          action === "agent-wait"
+            ? Response.json(
+                { error: "wait_rate_limited", retryAfterMs: 4_200 },
+                { status: 429 }
+              )
+            : null,
+      }
+    )
+
+    const result = await callTool("wait_for_events", {
+      participantHandle: encodeForgedHandle("room-1"),
+      cursor: 0,
+      timeoutSeconds: 25,
+    })
+
+    expect(result).toEqual({ error: "wait_rate_limited", retryAfterMs: 4_200 })
+    expect(roomCalls).toHaveLength(1)
   })
 
   it("rejects an over-budget join before the Durable Object is contacted", async () => {

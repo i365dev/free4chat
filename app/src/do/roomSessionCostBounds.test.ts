@@ -229,6 +229,36 @@ describe("#406 wait_for_events does not pin RoomSession duration", () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it("refuses a second wait inside the server-enforced cadence, without touching the lease", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"))
+    const { control, storedRoom } = harness()
+    const agentLastSeenAt = () =>
+      (
+        (storedRoom().participants as Record<string, { lastSeenAt: number }>)
+          .agent ?? { lastSeenAt: 0 }
+      ).lastSeenAt
+
+    const first = await control(agentWait())
+    expect(first.status).toBe(200)
+    const afterFirst = agentLastSeenAt()
+
+    // 1s later: refused, and the refusal must not have refreshed the lease or
+    // written Room state — the cadence check runs before any save.
+    vi.setSystemTime(new Date("2026-01-01T00:00:01Z"))
+    const refused = await control(agentWait())
+    expect(refused.status).toBe(429)
+    expect(refused.json.error).toBe("wait_rate_limited")
+    expect(refused.json.retryAfterMs).toBeGreaterThan(0)
+    expect(agentLastSeenAt()).toBe(afterFirst)
+
+    // Past the floor: accepted again.
+    vi.setSystemTime(new Date("2026-01-01T00:00:06Z"))
+    const accepted = await control(agentWait())
+    expect(accepted.status).toBe(200)
+    expect(agentLastSeenAt()).toBeGreaterThan(afterFirst)
+  })
+
   it("still refreshes the Agent lease without holding the request", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"))

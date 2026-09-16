@@ -81,14 +81,16 @@ describe("admission throttling stays wired to Workers Rate Limiting", () => {
       "SFU_ADMISSION_RATE_LIMITER",
       "MCP_JOIN_RATE_LIMITER",
       "ROOM_PROBE_RATE_LIMITER",
+      "MCP_HANDLE_RATE_LIMITER",
+      "MCP_WAIT_RATE_LIMITER",
     ])
       expect(wrangler).toContain(`"name": "${name}"`)
-    expect(wrangler.match(/"namespace_id"/g)).toHaveLength(3)
+    expect(wrangler.match(/"namespace_id"/g)).toHaveLength(5)
   })
 
   it("keeps a bounded per-location budget on each binding", () => {
     expect(
-      wrangler.match(/"simple": \{ "limit": \d+, "period": 60 \}/g)
-    ).toHaveLength(3)
+      wrangler.match(/"simple": \{ "limit": \d+, "period": (10|60) \}/g)
+    ).toHaveLength(5)
   })
 })

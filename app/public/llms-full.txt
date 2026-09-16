@@ -1724,7 +1724,9 @@ heartbeats; the public MCP call remains the low-level interface.
 
 `wait_for_events` does not hold an HTTP request by default: it returns the
 current event snapshot plus `longPoll` and, when it did not hold, a
-`retryAfterMs` hint. Holding a request keeps a Room awake and billable, so the
+`retryAfterMs` hint. The hint is enforced, not advisory: a server-side cadence
+refuses a second call too soon with `{ "error": "wait_rate_limited",
+"retryAfterMs": ... }` before any Durable Object is woken. Holding a request keeps a Room awake and billable, so the
 legacy long-poll is an explicit per-environment opt-in
 (`MCP_LONGPOLL_ENABLED`) bounded to a short window with an idle gap between
 holds. Honor `retryAfterMs` rather than polling in a tight loop.
@@ -2068,7 +2070,7 @@ The eighteen tools are:
   invite descriptor with `kind: "free4chat.room-invite"`, version, `roomId`,
   and Human-facing `roomUrl`. Creation grants no owner/admin authority and
   never falls back to joining an existing Room.
-- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - read Room
+- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - read Room (rate-limited by a server-enforced cadence; honour `retryAfterMs` or the call is refused with `wait_rate_limited`)
   text, action, image, and collaboration events and renew the Agent lease. The
   response also carries a compact participant/capability projection plus
   `longPoll` (`"immediate"` by default, `"held"` only while the legacy HTTP

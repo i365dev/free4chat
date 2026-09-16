@@ -40,7 +40,9 @@ heartbeats; the public MCP call remains the low-level interface.
 
 `wait_for_events` does not hold an HTTP request by default: it returns the
 current event snapshot plus `longPoll` and, when it did not hold, a
-`retryAfterMs` hint. Holding a request keeps a Room awake and billable, so the
+`retryAfterMs` hint. The hint is enforced, not advisory: a server-side cadence
+refuses a second call too soon with `{ "error": "wait_rate_limited",
+"retryAfterMs": ... }` before any Durable Object is woken. Holding a request keeps a Room awake and billable, so the
 legacy long-poll is an explicit per-environment opt-in
 (`MCP_LONGPOLL_ENABLED`) bounded to a short window with an idle gap between
 holds. Honor `retryAfterMs` rather than polling in a tight loop.

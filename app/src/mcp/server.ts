@@ -30,6 +30,20 @@ const JOIN_RATE_LIMIT = 10
 const JOIN_RATE_WINDOW_S = 60
 // #406: unauthenticated room_info probe budget (see allowRoomInfoProbe).
 const ROOM_INFO_RATE_LIMIT = 60
+// #406: shared pre-DO budget for every participantHandle-bearing tool. Chosen
+// well above a busy legitimate caller (send/wait/collab bursts stay in the
+// tens per minute) while still bounding a forged-handle sweep across rotating
+// roomIds and tool names to a few Durable Object wakes per second per caller.
+const HANDLE_RATE_LIMIT = 240
+// #406: wait_for_events cadence (see allowWaitCadence); the binding's period
+// is 10s and the KV fallback floor is 60s.
+const WAIT_RATE_LIMIT = 1
+const WAIT_RATE_WINDOW_S = 60
+// Distinguishes our own pre-DO rejection from a Durable Object 429 (for
+// example `activity_capacity`), which must keep its own meaning.
+const MCP_INGRESS_RATE_LIMITED = "mcp_ingress_rate_limited"
+// Advertised to a caller whose wait was refused by the pre-DO cadence.
+const WAIT_RATE_RETRY_MS = 10 * 1000
 // #176 Phase A: mirrored from do/collab.ts — the Runtime Host projection is
 // an opaque bounded id plus coarse speech booleans, nothing else.
 const runtimeHostSchema = z.object({
@@ -58,6 +72,10 @@ export interface McpEnv {
    * `allowAdmission` falls back to the KV counter when a binding is absent. */
   MCP_JOIN_RATE_LIMITER?: AdmissionRateLimiter
   ROOM_PROBE_RATE_LIMITER?: AdmissionRateLimiter
+  /** #406: shared pre-DO guard for every participantHandle-bearing tool. */
+  MCP_HANDLE_RATE_LIMITER?: AdmissionRateLimiter
+  /** #406: pre-DO cadence for wait_for_events. */
+  MCP_WAIT_RATE_LIMITER?: AdmissionRateLimiter
 }
 
 interface AgentHandle {
@@ -166,6 +184,9 @@ function controlError(result: ControlResult): string {
     return "wait_already_pending"
   if (result.data.error === "attachment_unavailable")
     return "attachment_unavailable"
+  // #406: our own pre-DO ingress rejection (never a Durable Object 429, which
+  // keeps its own meaning, e.g. activity_capacity).
+  if (result.data.error === MCP_INGRESS_RATE_LIMITED) return "rate_limited"
   if (result.status === 401) return "invalid_participant_handle"
   if (result.status === 403) return "agent_only"
   return "room_unavailable"
@@ -201,6 +222,70 @@ async function allowRoomInfoProbe(
     max: ROOM_INFO_RATE_LIMIT,
     windowSeconds: JOIN_RATE_WINDOW_S,
   })
+}
+
+// #406: the participantHandle is an opaque bearer capability, not a signed
+// one — `decodeHandle` proves nothing, and the token is only checked inside
+// RoomSession. Every handle-based tool therefore resolves an attacker-supplied
+// roomId into a Durable Object invocation *before* any authorization can
+// happen, so one shared pre-DO guard covers them all: without it, a forged
+// handle on a rotating roomId (or a rotating tool name) is a free DO wake-up.
+// Scoped to the handle-bearing operation class and keyed by caller, never by
+// Room identity, which the caller controls.
+async function allowHandleIngress(
+  env: McpEnv,
+  request: Request | undefined
+): Promise<boolean> {
+  return allowAdmission({
+    limiter: env.MCP_HANDLE_RATE_LIMITER,
+    kv: env.ROOMS_KV,
+    key: `mcp:handle:rl:${
+      request?.headers.get("CF-Connecting-IP") || "unknown"
+    }`,
+    max: HANDLE_RATE_LIMIT,
+    windowSeconds: JOIN_RATE_WINDOW_S,
+  })
+}
+
+// #406: wait_for_events gets its own server-enforced cadence on top of the
+// shared guard, because `retryAfterMs` is advisory. This is the cheap pre-DO
+// half — a tight poll loop no longer wakes a Durable Object at all beyond the
+// cadence; RoomSession enforces the same floor authoritatively per
+// participant, so a caller that ignores the hint still cannot keep a Room
+// busy.
+async function allowWaitCadence(
+  env: McpEnv,
+  request: Request | undefined,
+  participantId: string
+): Promise<boolean> {
+  return allowAdmission({
+    limiter: env.MCP_WAIT_RATE_LIMITER,
+    kv: env.ROOMS_KV,
+    key: `mcp:wait:rl:${
+      request?.headers.get("CF-Connecting-IP") || "unknown"
+    }:${participantId}`,
+    max: WAIT_RATE_LIMIT,
+    // The KV fallback cannot express a 10s window (its TTL floor is 60s), so
+    // it is deliberately coarser; production uses the binding.
+    windowSeconds: WAIT_RATE_WINDOW_S,
+  })
+}
+
+// Every handle-based MCP tool resolves its Room through this single guarded
+// entry point, so a newly added tool cannot forget the pre-DO bound.
+async function guardedRoomControl(
+  env: McpEnv,
+  context: McpRequestContext,
+  room: string,
+  body: Record<string, unknown>
+): Promise<ControlResult> {
+  if (!(await allowHandleIngress(env, context.requestInfo)))
+    return {
+      ok: false,
+      status: 429,
+      data: { error: MCP_INGRESS_RATE_LIMITED },
+    }
+  return roomControl(env, room, body)
 }
 
 function createMcpServer(context: McpRequestContext) {
@@ -254,7 +339,7 @@ function createMcpServer(context: McpRequestContext) {
     }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-read-context",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -465,7 +550,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle, capabilities }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-update-capabilities",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -497,7 +582,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle, runtimeHost, runtimeProviderHandle }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-update-runtime-host",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -528,16 +613,40 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle, cursor, timeoutSeconds }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      // #406: server-enforced polling cadence, checked before any Durable
+      // Object is woken. `retryAfterMs` in a response is a hint; this is the
+      // refusal that makes ignoring it pointless.
+      if (
+        !(await allowWaitCadence(
+          env,
+          context.requestInfo,
+          handle.participantId
+        ))
+      )
+        return toolResult(
+          { error: "wait_rate_limited", retryAfterMs: WAIT_RATE_RETRY_MS },
+          true
+        )
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-wait",
         participantId: handle.participantId,
         token: handle.participantToken,
         cursor,
         timeoutSeconds,
       })
-      return result.ok
-        ? toolResult(result.data)
-        : toolError(controlError(result))
+      if (result.ok) return toolResult(result.data)
+      if (result.data.error === "wait_rate_limited")
+        return toolResult(
+          {
+            error: "wait_rate_limited",
+            retryAfterMs:
+              typeof result.data.retryAfterMs === "number"
+                ? result.data.retryAfterMs
+                : WAIT_RATE_RETRY_MS,
+          },
+          true
+        )
+      return toolError(controlError(result))
     }
   )
 
@@ -564,7 +673,7 @@ function createMcpServer(context: McpRequestContext) {
     }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-send-text",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -592,7 +701,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle, taskRequestId, surface }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-publish-live-view",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -641,7 +750,7 @@ function createMcpServer(context: McpRequestContext) {
     }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-send-collab",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -679,7 +788,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle, requestId, decision, summary }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-send-collab",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -723,7 +832,7 @@ function createMcpServer(context: McpRequestContext) {
     }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-send-collab",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -825,7 +934,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle, attachmentId }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-read-attachment",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -877,7 +986,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-leave",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -952,7 +1061,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-clear-surface",
         participantId: handle.participantId,
         token: handle.participantToken,
@@ -977,7 +1086,7 @@ function createMcpServer(context: McpRequestContext) {
     async ({ participantHandle, sourceParticipantId, snapshotId }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
-      const result = await roomControl(env, handle.room, {
+      const result = await guardedRoomControl(env, context, handle.room, {
         action: "agent-read-surface",
         participantId: handle.participantId,
         token: handle.participantToken,

@@ -56,7 +56,7 @@ The eighteen tools are:
   invite descriptor with `kind: "free4chat.room-invite"`, version, `roomId`,
   and Human-facing `roomUrl`. Creation grants no owner/admin authority and
   never falls back to joining an existing Room.
-- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - read Room
+- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - read Room (rate-limited by a server-enforced cadence; honour `retryAfterMs` or the call is refused with `wait_rate_limited`)
   text, action, image, and collaboration events and renew the Agent lease. The
   response also carries a compact participant/capability projection plus
   `longPoll` (`"immediate"` by default, `"held"` only while the legacy HTTP
