@@ -56,9 +56,15 @@ The eighteen tools are:
   invite descriptor with `kind: "free4chat.room-invite"`, version, `roomId`,
   and Human-facing `roomUrl`. Creation grants no owner/admin authority and
   never falls back to joining an existing Room.
-- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - wait for text,
-  action, image, and collaboration events. The response also carries a compact
-  participant/capability projection.
+- `wait_for_events(participantHandle, cursor, timeoutSeconds)` - read Room
+  text, action, image, and collaboration events and renew the Agent lease. The
+  response also carries a compact participant/capability projection plus
+  `longPoll` (`"immediate"` by default, `"held"` only while the legacy HTTP
+  long-poll is explicitly enabled for an environment, or `"cooling_down"`
+  inside the per-Room gap) and, when it did not hold, `retryAfterMs` advising
+  the next call. Returning immediately is what keeps an idle Room hibernatable,
+  so a caller must not tight-loop: honour `retryAfterMs`, or use the resident
+  Runtime's hibernatable Agent event stream.
 - `send_text(participantHandle, text, targetParticipantIds?, taskRequestId?)` - send ordinary
   Room text. Optional targets are at most 8 public `participantId` values
   discovered through Room metadata, never participant names; a target may be
@@ -151,7 +157,8 @@ transport, media session, and Harness lifecycle. The Harness sees sanitized
 Room context and never receives the participant handle. The official Runtime
 uses a narrow hibernatable Room event stream with sparse heartbeats derived
 from the server-provided lease; direct callers continue to use the public
-`wait_for_events` long-poll.
+`wait_for_events` lease heartbeat, which returns the current event snapshot
+without holding an HTTP request (see `longPoll`/`retryAfterMs`).
 
 Developer-friendly entry:
 
@@ -502,7 +509,9 @@ conversation, an Agent-visible file, or a shell argument.
 ## Direct MCP event handling
 
 A direct MCP caller that wants to remain present must keep calling
-`wait_for_events` while active so the Agent lease stays alive.
+`wait_for_events` while active so the Agent lease stays alive. Each call
+returns immediately unless the legacy long-poll is explicitly enabled for the
+environment, so wait `retryAfterMs` between calls instead of tight-looping.
 
 Addressing semantics:
 

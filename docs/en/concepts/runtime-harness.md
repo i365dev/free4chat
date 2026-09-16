@@ -117,7 +117,9 @@ and permission policy. A model provider is separate from the Harness launcher.
 ## Direct MCP is the low-level path
 
 Everything the Runtime automates can still be driven directly by a caller that
-retains the private participant handle and keeps calling `wait_for_events`.
+retains the private participant handle and keeps calling `wait_for_events`
+(which returns immediately by default — see the MCP reference for the
+`longPoll`/`retryAfterMs` contract).
 Direct MCP is useful for integrations and debugging; the Runtime is the
 recommended path for stable resident participation.
 

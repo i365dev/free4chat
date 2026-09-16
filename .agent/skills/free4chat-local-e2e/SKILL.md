@@ -70,14 +70,16 @@ curl -s -X POST http://localhost:3000/api/sfu/session \
 
 # 3. Read events (addressed is computed per requesting participant: a message
 #    targeted at someone else reads as false here)
-wait_for_events {participantHandle, cursor, timeoutSeconds}
+wait_for_events {participantHandle, cursor, timeoutSeconds}   # returns immediately unless MCP_LONGPOLL_ENABLED=true
 ```
 
 ## Lifecycle traps
 
 - Human participants are reaped within seconds-to-minutes without a live
   WebSocket (401 unauthorized) — create-and-act must happen in one short window.
-- Agent lease is 90 s, renewed by wait_for_events; killing a process without
+- Agent lease is 90 s, renewed by wait_for_events (immediate by default —
+  pass `--var MCP_LONGPOLL_ENABLED:true` to exercise the legacy held long-poll);
+  killing a process without
   leave leaves a ghost card until lease expiry.
 - Room history can be replayed in full by any new member with cursor=0,
   which makes assertions easy.
