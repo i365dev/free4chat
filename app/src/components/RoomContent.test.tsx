@@ -3111,6 +3111,276 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         )
       )
     })
+
+    describe("#134 acquisitionPage on Host-owned events", () => {
+      /** Render the same Room with the acquisition context the Room page resolved. */
+      function renderAcquiredRoom(
+        acquisitionPage?: string,
+        overrides: Record<string, unknown> = {}
+      ) {
+        mockUseSfuChatRoom.mockReturnValue({
+          ...baseHookReturn,
+          connectionStatus: "connected",
+          roomAppsEnabled: true,
+          participants: [localParticipant],
+          ...overrides,
+        })
+        return render(
+          <RoomContent
+            roomName="test-room"
+            nickName="Alice"
+            roomType="audio"
+            initialRoomAppId="test-app-1"
+            acquisitionPage={acquisitionPage}
+          />
+        )
+      }
+
+      /** The recorded payload of one analytics event, key-for-key exact. */
+      function trackedEvent(eventName: string) {
+        const call = vi
+          .mocked(trackAnalyticsEvent)
+          .mock.calls.filter(([name]) => name === eventName)
+          .at(-1)
+        expect(call, `${eventName} must be tracked`).toBeDefined()
+        return call?.[1] as Record<string, unknown>
+      }
+
+      it("carries the acquired slug on Mounted, Engaged and SharedSession while the App id stays current", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        const remoteHuman = {
+          peerId: "human-b",
+          name: "Bob",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        }
+        const view = renderAcquiredRoom("typing-race")
+
+        const iframe = (await screen.findByTestId(
+          "room-app-iframe"
+        )) as HTMLIFrameElement
+        completeHandshake(
+          loadAppIframe(iframe),
+          "test-app-1",
+          channels[0].port1
+        )
+
+        expect(trackedEvent("RoomAppMounted")).toEqual({
+          app: "test-app-1",
+          acquisitionPage: "typing-race",
+        })
+
+        act(() => {
+          channels[0].port1.emit({
+            type: "milestone",
+            appInstanceId: roomAppInstanceId("test-room", "test-app-1"),
+            milestone: "engaged",
+          })
+        })
+        expect(trackedEvent("RoomAppEngaged")).toEqual({
+          app: "test-app-1",
+          participantsBucket: "1",
+          acquisitionPage: "typing-race",
+        })
+
+        // A second Human satisfies the shared-use milestone for the acquired
+        // Room; the App id and bucket stay the current ones.
+        view.rerender(
+          <RoomContent
+            roomName="test-room"
+            nickName="Alice"
+            roomType="audio"
+            initialRoomAppId="test-app-1"
+            acquisitionPage="typing-race"
+          />
+        )
+        mockUseSfuChatRoom.mockReturnValue({
+          ...baseHookReturn,
+          connectionStatus: "connected",
+          roomAppsEnabled: true,
+          participants: [localParticipant, remoteHuman],
+        })
+        view.rerender(
+          <RoomContent
+            roomName="test-room"
+            nickName="Alice"
+            roomType="audio"
+            initialRoomAppId="test-app-1"
+            acquisitionPage="typing-race"
+          />
+        )
+        await waitFor(() =>
+          expect(trackedEvent("RoomAppSharedSession")).toEqual({
+            app: "test-app-1",
+            participantsBucket: "2-3",
+            acquisitionPage: "typing-race",
+          })
+        )
+        // No participant identity or Room content is added to the event.
+        expect(
+          Object.keys(trackedEvent("RoomAppSharedSession")).sort()
+        ).toEqual(["acquisitionPage", "app", "participantsBucket"])
+      })
+
+      it("keeps the original acquisitionPage when the Room switches to another App", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        vi.mocked(trackAnalyticsEvent).mockClear()
+        renderAcquiredRoom("random-teams")
+        await screen.findByTestId("stage-app-test-app-1")
+
+        // The Room had already switched: RoomContent now mounts test-app-2 while
+        // the acquisition intent remains the landing that acquired the Room.
+        fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+        const iframe = slotIframe("test-app-2") as HTMLIFrameElement
+        completeHandshake(
+          loadAppIframe(iframe),
+          "test-app-2",
+          channels[channels.length - 1].port1
+        )
+
+        expect(trackedEvent("RoomAppMounted")).toEqual({
+          app: "test-app-2",
+          acquisitionPage: "random-teams",
+        })
+      })
+
+      it("preserves the exact existing event shape when no acquisition context exists", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        vi.mocked(trackAnalyticsEvent).mockClear()
+        renderAcquiredRoom(undefined)
+
+        const iframe = (await screen.findByTestId(
+          "room-app-iframe"
+        )) as HTMLIFrameElement
+        completeHandshake(
+          loadAppIframe(iframe),
+          "test-app-1",
+          channels[0].port1
+        )
+
+        act(() => {
+          channels[0].port1.emit({
+            type: "milestone",
+            appInstanceId: roomAppInstanceId("test-room", "test-app-1"),
+            milestone: "engaged",
+          })
+        })
+
+        expect(trackedEvent("RoomAppMounted")).toEqual({ app: "test-app-1" })
+        expect(Object.keys(trackedEvent("RoomAppMounted"))).toEqual(["app"])
+        expect(trackedEvent("RoomAppEngaged")).toEqual({
+          app: "test-app-1",
+          participantsBucket: "1",
+        })
+        // A direct launch invents no category rather than sending undefined.
+        expect(Object.keys(trackedEvent("RoomAppEngaged")).sort()).toEqual([
+          "app",
+          "participantsBucket",
+        ])
+      })
+
+      it("carries the acquired slug on RoomActivated", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        const catalogLoader = vi
+          .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+          .mockResolvedValue(TEST_ROOM_APP_CATALOG)
+        vi.useFakeTimers()
+        const remoteHuman = {
+          peerId: "human-b",
+          name: "Bob",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        }
+        let view: ReturnType<typeof render> | undefined
+        try {
+          view = renderAcquiredRoom("typing-race", {
+            participants: [localParticipant, remoteHuman],
+          })
+          await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+          })
+          expect(trackAnalyticsEvent).not.toHaveBeenCalledWith(
+            "RoomActivated",
+            expect.anything()
+          )
+
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000)
+          })
+        } finally {
+          view?.unmount()
+          vi.useRealTimers()
+          catalogLoader.mockRestore()
+        }
+
+        expect(trackedEvent("RoomActivated")).toEqual({
+          roomType: "audio",
+          participantBucket: "2-3",
+          activationDelaySeconds: 30,
+          acquisitionPage: "typing-race",
+        })
+        // Existing RoomActivated properties are untouched; only the bounded
+        // acquisition intent is added.
+        expect(Object.keys(trackedEvent("RoomActivated")).sort()).toEqual([
+          "acquisitionPage",
+          "activationDelaySeconds",
+          "participantBucket",
+          "roomType",
+        ])
+      })
+
+      it("omits acquisitionPage from RoomActivated for a direct Room entry", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        const catalogLoader = vi
+          .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+          .mockResolvedValue(TEST_ROOM_APP_CATALOG)
+        vi.useFakeTimers()
+        const remoteHuman = {
+          peerId: "human-b",
+          name: "Bob",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        }
+        let view: ReturnType<typeof render> | undefined
+        try {
+          view = renderAcquiredRoom(undefined, {
+            participants: [localParticipant, remoteHuman],
+          })
+          await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+          })
+          await act(async () => {
+            await vi.advanceTimersByTimeAsync(30_000)
+          })
+        } finally {
+          view?.unmount()
+          vi.useRealTimers()
+          catalogLoader.mockRestore()
+        }
+
+        expect(trackedEvent("RoomActivated")).toEqual({
+          roomType: "audio",
+          participantBucket: "2-3",
+          activationDelaySeconds: 30,
+        })
+        expect(Object.keys(trackedEvent("RoomActivated")).sort()).toEqual([
+          "activationDelaySeconds",
+          "participantBucket",
+          "roomType",
+        ])
+      })
+    })
   })
 
   it("uses the intentional two-row mobile header layout with a truncating Room id", () => {

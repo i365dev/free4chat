@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import Head from "next/head"
 import Link from "next/link"
@@ -15,13 +15,20 @@ import {
   setProductionRoomAppCatalog,
   validateRoomAppDefinition,
 } from "../common/roomApp"
-import { saveRoomToLocalStorage } from "../common/utils"
+import {
+  isValidAcquisitionPage,
+  saveRoomAppAcquisition,
+} from "../common/roomAppAcquisition"
+import { saveRoomToLocalStorage, trackAnalyticsEvent } from "../common/utils"
 
 type LaunchState = "loading" | "opening" | "unavailable"
 
 export default function OpenApp() {
   const router = useRouter()
   const [state, setState] = useState<LaunchState>("loading")
+  // The canonical discovery launch signal belongs to the launch, not to a
+  // render or an effect re-run; a StrictMode remount must not double-count it.
+  const discoveryCtaTrackedRef = useRef(false)
 
   useEffect(() => {
     if (!router.isReady) return
@@ -31,6 +38,11 @@ export default function OpenApp() {
       setState("unavailable")
       return
     }
+    // Acquisition context is analytics-only and independently bounded. An
+    // invalid or absent value is ignored: it can never fail a valid launch.
+    const acquisitionPage = isValidAcquisitionPage(router.query.acquisitionPage)
+      ? router.query.acquisitionPage
+      : null
 
     void loadProductionRoomAppCatalog()
       .then((catalog) => {
@@ -49,6 +61,26 @@ export default function OpenApp() {
         const roomName = generateRoomName()
         const nickName = generateParticipantName()
         saveRoomToLocalStorage(roomName, nickName)
+        // Bind the acquisition context to this exact launch before navigating.
+        // It intentionally does NOT ride along in the Room URL: an invite link
+        // is Room identity, not another browser's acquisition intent.
+        if (acquisitionPage) {
+          saveRoomAppAcquisition({
+            roomName,
+            appId: app.id,
+            acquisitionPage,
+          })
+        }
+        // The Lab renders plain /open-app links, so this is the one observable
+        // completion of a discovery CTA. Direct launches without valid
+        // acquisition context stay silent.
+        if (acquisitionPage && !discoveryCtaTrackedRef.current) {
+          discoveryCtaTrackedRef.current = true
+          trackAnalyticsEvent("DiscoveryCtaClicked", {
+            page: acquisitionPage,
+            acquisitionPage,
+          })
+        }
         setState("opening")
         void router.replace(
           `/room?id=${encodeURIComponent(roomName)}&app=${encodeURIComponent(
@@ -63,7 +95,7 @@ export default function OpenApp() {
     return () => {
       active = false
     }
-  }, [router, router.isReady, router.query.app])
+  }, [router, router.isReady, router.query.app, router.query.acquisitionPage])
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-gray-950 p-6 text-emerald-100">

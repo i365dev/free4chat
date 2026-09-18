@@ -6,6 +6,7 @@ import { useRouter } from "next/router"
 
 import { generateParticipantName } from "../common/cosmicNames"
 import { isValidRoomAppId } from "../common/roomApp"
+import { readRoomAppAcquisition } from "../common/roomAppAcquisition"
 import {
   saveRoomToLocalStorage,
   gtagEvent,
@@ -17,20 +18,27 @@ const RoomContent = dynamic(() => import("../components/RoomContent"), {
   ssr: false,
 })
 
+/** The query value that opened this Room, resolved only to a validated App id. */
+export function launchedRoomAppId(value: unknown): string | undefined {
+  return isValidRoomAppId(value) ? value : undefined
+}
+
 export default function Room() {
   const router = useRouter()
   const roomId = router.query.id as string
   const roomTypeParam = router.query.type as string | undefined
   // Catalog membership is resolved after RoomContent loads the current Lab
   // catalog; this syntax-only gate preserves deep links during hydration.
-  const initialRoomAppId = isValidRoomAppId(router.query.app)
-    ? router.query.app
-    : null
+  const initialRoomAppId = launchedRoomAppId(router.query.app)
   const [roomName, setRoomName] = useState<string>("")
   const [nickName, setNickName] = useState<string>("")
   const [roomType, setRoomType] = useState<"audio" | "screenshare">("audio")
   const [showNickNamePop, setShowNickNamePop] = useState<boolean>(false)
   const [ready, setReady] = useState<boolean>(false)
+  // Resolved once, when this Room page binds to its Room id, and then held in
+  // page memory: later App switches in the same acquired Room keep reporting
+  // the original acquisition intent alongside the current App id.
+  const [acquisitionPage, setAcquisitionPage] = useState<string | undefined>()
 
   const dismissNickNamePop = () => {
     if (!nickName.trim()) return
@@ -47,6 +55,12 @@ export default function Room() {
     }
     setRoomName(roomId)
     setRoomType(roomTypeParam === "screenshare" ? "screenshare" : "audio")
+    // #134: only the handoff bound to this exact Room name is used. A direct
+    // /room entry, an invite link opened in another browser, or a later
+    // unrelated launch reads nothing here and invents no acquisition context.
+    setAcquisitionPage(
+      readRoomAppAcquisition(roomId)?.acquisitionPage ?? undefined
+    )
     if (typeof window !== "undefined") {
       try {
         const rooms: { roomName: string; nickName: string }[] = JSON.parse(
@@ -156,7 +170,8 @@ export default function Room() {
           roomName={roomName}
           nickName={nickName}
           roomType={roomType}
-          initialRoomAppId={initialRoomAppId ?? undefined}
+          initialRoomAppId={initialRoomAppId}
+          acquisitionPage={acquisitionPage}
         />
       )}
     </div>
