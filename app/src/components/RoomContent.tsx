@@ -28,6 +28,7 @@ import {
   setProductionRoomAppCatalog,
   validateRoomAppDefinition,
 } from "../common/roomApp"
+import { withAcquisitionPage } from "../common/roomAppAcquisition"
 import {
   buildTaskProjections,
   isTaskTerminal,
@@ -224,11 +225,18 @@ export default function RoomContent({
   nickName,
   roomType,
   initialRoomAppId,
+  acquisitionPage,
 }: {
   roomName: string
   nickName: string
   roomType: "audio" | "screenshare"
   initialRoomAppId?: string
+  /**
+   * #134: the bounded discovery slug that acquired this browser Room session,
+   * or undefined for a direct launch. It is an acquisition intent, not the
+   * current App: it stays fixed while `app` changes across App switches.
+   */
+  acquisitionPage?: string
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
@@ -254,6 +262,10 @@ export default function RoomContent({
   // Host-owned coarse telemetry stays catalog-derived: any curated production
   // App reports at most one shared-session milestone per browser Room session.
   const sharedSessionTrackedAppIdsRef = useRef<Set<string>>(new Set())
+  // The acquisition intent is stable for this Room page, so the App-milestone
+  // callbacks can read it without depending on the prop and being re-created.
+  const acquisitionPageRef = useRef<string | undefined>(acquisitionPage)
+  acquisitionPageRef.current = acquisitionPage
   const [stageView, setStageView] = useState<"screen" | "live-view">("screen")
   const taskLiveViewState = useRef(new Map())
   const observedLiveViewKeys = useRef(new Set<string>())
@@ -632,17 +644,31 @@ export default function RoomContent({
     // unallowlisted id stay out of analytics without a second allowlist.
     const productionAppId = resolveProductionRoomAppId(appId)
     if (productionAppId)
-      trackAnalyticsEvent("RoomAppMounted", { app: productionAppId })
+      trackAnalyticsEvent(
+        "RoomAppMounted",
+        withAcquisitionPage(
+          { app: productionAppId },
+          acquisitionPageRef.current
+        )
+      )
   }, [])
 
   const handleRoomAppEngaged = useCallback((appId: string) => {
     if (process.env.NODE_ENV !== "production") return
     const productionAppId = resolveProductionRoomAppId(appId)
     if (!productionAppId) return
-    trackAnalyticsEvent("RoomAppEngaged", {
-      app: productionAppId,
-      participantsBucket: participantsBucket(humanParticipantCountRef.current),
-    })
+    trackAnalyticsEvent(
+      "RoomAppEngaged",
+      withAcquisitionPage(
+        {
+          app: productionAppId,
+          participantsBucket: participantsBucket(
+            humanParticipantCountRef.current
+          ),
+        },
+        acquisitionPageRef.current
+      )
+    )
   }, [])
 
   useEffect(() => {
@@ -651,11 +677,17 @@ export default function RoomContent({
     if (sharedSessionTrackedAppIdsRef.current.has(sharedSessionRoomAppId))
       return
     sharedSessionTrackedAppIdsRef.current.add(sharedSessionRoomAppId)
-    trackAnalyticsEvent("RoomAppSharedSession", {
-      app: sharedSessionRoomAppId,
-      participantsBucket: participantsBucket(humanParticipantCount),
-    })
-  }, [humanParticipantCount, sharedSessionRoomAppId])
+    trackAnalyticsEvent(
+      "RoomAppSharedSession",
+      withAcquisitionPage(
+        {
+          app: sharedSessionRoomAppId,
+          participantsBucket: participantsBucket(humanParticipantCount),
+        },
+        acquisitionPage
+      )
+    )
+  }, [acquisitionPage, humanParticipantCount, sharedSessionRoomAppId])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -811,15 +843,21 @@ export default function RoomContent({
 
     const timeout = window.setTimeout(() => {
       activatedRoomRef.current = true
-      trackAnalyticsEvent("RoomActivated", {
-        roomType: resolvedRoomType,
-        participantBucket: participantsBucket(participants.length),
-        activationDelaySeconds: 30,
-      })
+      trackAnalyticsEvent(
+        "RoomActivated",
+        withAcquisitionPage(
+          {
+            roomType: resolvedRoomType,
+            participantBucket: participantsBucket(participants.length),
+            activationDelaySeconds: 30,
+          },
+          acquisitionPage
+        )
+      )
     }, 30_000)
 
     return () => window.clearTimeout(timeout)
-  }, [connectionStatus, participants.length, resolvedRoomType])
+  }, [acquisitionPage, connectionStatus, participants.length, resolvedRoomType])
 
   // Human + Agent collaboration analytics: derived from canonical Room state
   // (the connected roster and persisted collaboration envelopes), never from

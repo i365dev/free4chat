@@ -33,7 +33,24 @@ describe("Room page", () => {
       join(process.cwd(), "src/pages/room.tsx"),
       "utf-8"
     )
-    expect(source).toContain("isValidRoomAppId(router.query.app)")
-    expect(source).toContain("initialRoomAppId={initialRoomAppId ?? undefined}")
+    // The only App id that reaches RoomContent is the syntax-checked one.
+    expect(source).toContain("export function launchedRoomAppId(")
+    expect(source).toContain("isValidRoomAppId(value)")
+    expect(source).toContain("initialRoomAppId={initialRoomAppId}")
+    expect(source).not.toContain(
+      "isValidRoomAppId(router.query.app) ? router.query.app"
+    )
+  })
+
+  it("resolves the #134 acquisition context from the Room-bound tab handoff, never from the URL", () => {
+    const source = readFileSync(
+      join(process.cwd(), "src/pages/room.tsx"),
+      "utf-8"
+    )
+    // The Room name is the binding, so an invite link to another Room and a
+    // direct /room entry both resolve to no acquisition context.
+    expect(source).toContain("readRoomAppAcquisition(roomId)")
+    expect(source).toContain("acquisitionPage={acquisitionPage}")
+    expect(source).not.toContain("router.query.acquisitionPage")
   })
 })
