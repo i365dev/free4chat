@@ -8,6 +8,7 @@ import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 import AgentInviteControl from "./AgentInviteControl"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import RoomAppHost from "./RoomAppHost"
+import RoomAppLauncher from "./RoomAppLauncher"
 import RoomAudioSinks from "./RoomAudioSinks"
 import TaskLiveView from "./TaskLiveView"
 import TextChatCard from "./TextChatCard"
@@ -32,6 +33,15 @@ import {
   validateRoomAppDefinition,
 } from "../common/roomApp"
 import { withAcquisitionPage } from "../common/roomAppAcquisition"
+import {
+  inlineRoomAppIds,
+  pruneRecentRoomAppIds,
+  pushRecentRoomAppId,
+  readRecentRoomAppIds,
+  ROOM_APP_INLINE_SHORTCUTS_DESKTOP,
+  ROOM_APP_INLINE_SHORTCUTS_MOBILE,
+  writeRecentRoomAppIds,
+} from "../common/roomAppRecents"
 import {
   buildTaskProjections,
   isTaskTerminal,
@@ -258,6 +268,23 @@ export default function RoomContent({
   // Browser-local resident App sessions, bounded by the curated catalog size.
   const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
   const [readyRoomAppIds, setReadyRoomAppIds] = useState<string[]>([])
+  // #98: the Apps this browser tab actually opened in THIS Room, most recent
+  // first. Room-scoped and session-scoped only: no accounts, no favorites, no
+  // cross-device preferences, and never `localStorage`.
+  const [recentRoomAppIds, setRecentRoomAppIds] = useState<string[]>([])
+  // Which Room the recency above has been READ for. Undefined until storage has
+  // been read for the current Room, and that guard is load-bearing: persisting
+  // the initial `[]` would delete the tab's remembered Apps before they were
+  // ever read back, so no recency write or prune may happen until this matches
+  // `roomName`. The read itself stays in an effect, never in render, so server
+  // rendering and the first paint never depend on browser storage.
+  const [recentsHydratedRoom, setRecentsHydratedRoom] = useState<
+    string | undefined
+  >(undefined)
+  const [roomAppsLauncherOpen, setRoomAppsLauncherOpen] = useState(false)
+  // Core's Stage/Chat split breakpoint, also used to size the inline recent set
+  // and to decide between the desktop popover and the phone-fitted launcher.
+  const [isMd, setIsMd] = useState(false)
   const [loadedRoomAppCatalog, setLoadedRoomAppCatalog] = useState(() =>
     process.env.NODE_ENV !== "production" ? currentRoomAppCatalog() : null
   )
@@ -396,8 +423,55 @@ export default function RoomContent({
       ),
     [loadedRoomAppCatalog]
   )
-  const roomApps =
-    roomAppsEnabled && loadedRoomAppCatalog !== null ? curatedRoomApps : []
+  // Stable reference: `roomAppsEnabled` also drops during an ordinary transport
+  // reconnect, and every catalog-derived memo below must stay referentially
+  // stable across a render that does not actually change the App list.
+  const roomApps = useMemo(
+    () =>
+      roomAppsEnabled && loadedRoomAppCatalog !== null ? curatedRoomApps : [],
+    [curatedRoomApps, loadedRoomAppCatalog, roomAppsEnabled]
+  )
+  // #98: the inline Stage strip is progressive disclosure, so it never renders
+  // the whole catalog. Recency is filtered against the CURRENT catalog, which
+  // is why a removed App silently leaves both the strip and the launcher.
+  const availableRoomAppIds = useMemo(
+    () => new Set(roomApps.map((app) => app.id)),
+    [roomApps]
+  )
+  // Retired Apps are forgotten only against a catalog this Room can actually
+  // offer. The browser catalog loads asynchronously AND its enablement flag
+  // drops during an ordinary media reconnect, so an empty `availableRoomAppIds`
+  // must never be read as "every remembered App was retired" — that erased
+  // recency across a reload and across reconnects. While Apps are not currently
+  // offered, the retained list is used verbatim.
+  const roomAppsAvailable = roomAppsEnabled && roomAppCatalogLoaded
+  const prunedRecentRoomAppIds = useMemo(
+    () =>
+      roomAppsAvailable
+        ? pruneRecentRoomAppIds(recentRoomAppIds, availableRoomAppIds)
+        : recentRoomAppIds,
+    [availableRoomAppIds, recentRoomAppIds, roomAppsAvailable]
+  )
+  const inlineRoomApps = useMemo(() => {
+    const ids = inlineRoomAppIds(
+      prunedRecentRoomAppIds,
+      activeRoomAppId,
+      availableRoomAppIds,
+      isMd
+        ? ROOM_APP_INLINE_SHORTCUTS_DESKTOP
+        : ROOM_APP_INLINE_SHORTCUTS_MOBILE
+    )
+    return ids.flatMap((id) => {
+      const app = roomApps.find((candidate) => candidate.id === id)
+      return app ? [app] : []
+    })
+  }, [
+    activeRoomAppId,
+    availableRoomAppIds,
+    isMd,
+    prunedRecentRoomAppIds,
+    roomApps,
+  ])
   // Conversation scope and visual Stage are independent selections: an active
   // Room App lives on the Stage and never replaces the Room/Task conversation.
   const activeRoomApp = roomApps.find((app) => activeRoomAppId === app.id)
@@ -622,6 +696,93 @@ export default function RoomContent({
     )
   }, [])
 
+  // True once THIS Room's recency has been read from browser storage. Nothing
+  // may write, prune, or reorder recency before that.
+  const recentsLoadedForRoom =
+    roomName.length > 0 && recentsHydratedRoom === roomName
+
+  /**
+   * #98: opening an App is what makes it recent — switching to it, deep-linking
+   * into it, or picking it in the launcher. Duplicates never accumulate: an App
+   * that is already recent only moves to the front of a bounded list. It also
+   * waits for this Room's recency to be read, so a deep-linked App cannot be
+   * reordered against a list that has not loaded yet.
+   */
+  useEffect(() => {
+    if (!recentsLoadedForRoom) return
+    if (!activeRoomAppId || !availableRoomAppIds.has(activeRoomAppId)) return
+    setRecentRoomAppIds((previous) =>
+      pushRecentRoomAppId(previous, activeRoomAppId)
+    )
+  }, [activeRoomAppId, availableRoomAppIds, recentsLoadedForRoom])
+
+  // Recency is hydrated BEFORE anything can persist or prune it, and the order
+  // of these three effects is the contract:
+  //
+  //   1. read this Room's remembered Apps and mark this Room hydrated;
+  //   2. prune the retained list against the CURRENT catalog;
+  //   3. persist.
+  //
+  // Two separate guards make that contract real:
+  //   - an earlier revision persisted first, so a fresh mount wrote the empty
+  //     initial state, deleted the sessionStorage entry, and then rehydrated
+  //     from the key it had just cleared — recents never survived a reload;
+  //   - the catalog loads asynchronously, so pruning/persisting before it is
+  //     authoritative would treat every remembered App as "retired" and erase
+  //     them. Until the catalog has loaded, the remembered list is kept as-is.
+  useEffect(() => {
+    if (roomName.length === 0) return
+    setRecentRoomAppIds(readRecentRoomAppIds(roomName))
+    setRecentsHydratedRoom(roomName)
+  }, [roomName])
+
+  // Prune and persist are deliberately ONE effect. Splitting them created a
+  // window where the persist effect still saw the previous render's derived
+  // list, so a reload could write "nothing is recent" for one commit and erase
+  // the tab's history. Here the value that is written is re-derived from state
+  // in the same effect that writes it, so no stale prune can ever be persisted.
+  //
+  // A catalog refresh can retire an App that is still remembered, so the
+  // retained list is re-filtered against the current catalog rather than
+  // trusted. This only keeps the retained state (and the tab's stored order)
+  // from holding onto an App the catalog no longer offers — it never touches
+  // resident host lifecycle, and writes only once this Room has been hydrated
+  // and the catalog has loaded.
+  useEffect(() => {
+    if (!recentsLoadedForRoom || !roomAppsAvailable) return
+    setRecentRoomAppIds((previous) => {
+      const next = pruneRecentRoomAppIds(previous, availableRoomAppIds)
+      return next.length === previous.length &&
+        next.every((id, index) => id === previous[index])
+        ? previous
+        : next
+    })
+    writeRecentRoomAppIds(
+      roomName,
+      pruneRecentRoomAppIds(recentRoomAppIds, availableRoomAppIds)
+    )
+  }, [
+    availableRoomAppIds,
+    recentRoomAppIds,
+    recentsLoadedForRoom,
+    roomAppsAvailable,
+    roomName,
+  ])
+
+  const selectRoomApp = useCallback((appId: string) => {
+    // Exactly the inline strip's behavior: hide fullscreen, launch (or reuse)
+    // the resident host, and make it the current Stage App. The launcher's job
+    // ends at selection — it never owns App lifecycle.
+    setExpandedRoomAppId(null)
+    setRoomAppsLauncherOpen(false)
+    setLaunchedRoomAppIds((previous) =>
+      previous.includes(appId)
+        ? previous
+        : [...previous, appId].slice(-ROOM_APP_MAX_INSTANCES)
+    )
+    setActiveRoomAppId(appId)
+  }, [])
+
   const toggleRoomAppFullscreen = useCallback(
     (appId: string) => {
       if (activeRoomAppId !== appId) return
@@ -822,7 +983,16 @@ export default function RoomContent({
   const containerRef = useRef<HTMLDivElement>(null)
   const isDragging = useRef(false)
   const [splitRatio, setSplitRatio] = useState(50)
-  const [isMd, setIsMd] = useState(false)
+  // The launcher anchors to the Stage strip's `Apps…` control, never to the
+  // strip itself: the strip is a horizontal scroller, so an in-flow popover
+  // could be clipped by it.
+  const roomAppsLauncherAnchorRef = useRef<HTMLDivElement | null>(null)
+  const attachRoomAppsLauncherAnchor = useCallback(
+    (element: HTMLDivElement | null) => {
+      roomAppsLauncherAnchorRef.current = element
+    },
+    []
+  )
 
   useEffect(() => {
     const check = () => setIsMd(window.innerWidth >= 768)
@@ -1388,12 +1558,11 @@ export default function RoomContent({
             />
           </div>
           <div className="relative flex flex-1 flex-col overflow-hidden">
-            {/* The Stage entry: curated Room Apps plus the existing Screen /
-                Live View preference. Stage selection is independent from the
-                conversation scope selected in the right pane, and each Stage
-                choice appears on its own availability — a Room App is a third
-                Stage surface, so Screen no longer requires a Live View (and
-                the reverse) to be offered. */}
+            {/* #98: the Stage entry is progressive disclosure, not the whole
+                catalog. Room stays permanently reachable, at most a few
+                recent/current Apps stay inline, and every promoted runtime
+                remains one action away in the launcher. Stage selection stays
+                independent from the conversation scope in the right pane. */}
             {(roomApps.length > 0 ||
               activeScreenShares.length > 0 ||
               Boolean(activeTaskLiveView)) && (
@@ -1408,7 +1577,7 @@ export default function RoomContent({
                 aria-hidden={isRoomAppFullscreen}
                 inert={isRoomAppFullscreen}
               >
-                {roomApps.map((app) => {
+                {inlineRoomApps.map((app) => {
                   const selected = activeRoomAppId === app.id
                   return (
                     <button
@@ -1416,6 +1585,8 @@ export default function RoomContent({
                       type="button"
                       aria-pressed={selected}
                       data-testid={`stage-app-${app.id}`}
+                      data-current-app={selected ? "true" : undefined}
+                      title={app.label}
                       onClick={() => {
                         if (selected) {
                           // Hide, do not destroy: the resident host keeps its
@@ -1424,17 +1595,32 @@ export default function RoomContent({
                           setActiveRoomAppId(null)
                           return
                         }
-                        setExpandedRoomAppId(null)
-                        launchRoomApp(app.id)
-                        setActiveRoomAppId(app.id)
+                        selectRoomApp(app.id)
                       }}
-                      className={`shrink-0 rounded px-2 py-1 text-xs ${
+                      className={`flex max-w-[9rem] shrink-0 items-center gap-1 rounded px-2 py-1 text-xs ${
                         selected
                           ? "bg-blue-600 text-white"
                           : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
                       }`}
                     >
-                      {app.label}
+                      {/* A long Lab label must never break the Room layout: the
+                          chip truncates and the full label stays in `title`. */}
+                      <span
+                        data-testid={`stage-app-label-${app.id}`}
+                        className="truncate"
+                      >
+                        {app.label}
+                      </span>
+                      {/* The current App stays explicit even when its chip is
+                          scrolled out of view or truncated. */}
+                      {selected && (
+                        <span
+                          aria-hidden="true"
+                          className="flex-none text-[10px]"
+                        >
+                          ●
+                        </span>
+                      )}
                     </button>
                   )
                 })}
@@ -1443,6 +1629,7 @@ export default function RoomContent({
                     type="button"
                     data-testid="stage-view-screen"
                     onClick={() => {
+                      setRoomAppsLauncherOpen(false)
                       setExpandedRoomAppId(null)
                       setStageView("screen")
                       setActiveRoomAppId(null)
@@ -1462,6 +1649,7 @@ export default function RoomContent({
                     type="button"
                     data-testid="stage-view-live-view"
                     onClick={() => {
+                      setRoomAppsLauncherOpen(false)
                       setExpandedRoomAppId(null)
                       setStageView("live-view")
                       setActiveRoomAppId(null)
@@ -1475,6 +1663,39 @@ export default function RoomContent({
                   >
                     Live View
                   </button>
+                )}
+                {roomApps.length > 0 && (
+                  <div
+                    ref={attachRoomAppsLauncherAnchor}
+                    className="relative flex shrink-0 items-center"
+                  >
+                    <button
+                      type="button"
+                      data-testid="stage-apps-launcher"
+                      aria-haspopup="dialog"
+                      aria-expanded={roomAppsLauncherOpen}
+                      title="Search all Room Apps"
+                      onClick={() => setRoomAppsLauncherOpen((open) => !open)}
+                      className={`rounded px-2 py-1 text-xs ${
+                        roomAppsLauncherOpen
+                          ? "bg-gray-800 text-gray-200"
+                          : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                      }`}
+                    >
+                      Apps…
+                    </button>
+                    {roomAppsLauncherOpen && (
+                      <RoomAppLauncher
+                        apps={roomApps}
+                        recentAppIds={prunedRecentRoomAppIds}
+                        activeAppId={activeRoomAppId}
+                        onSelect={selectRoomApp}
+                        onClose={() => setRoomAppsLauncherOpen(false)}
+                        isDesktop={isMd}
+                        anchorRef={roomAppsLauncherAnchorRef}
+                      />
+                    )}
+                  </div>
                 )}
               </div>
             )}
