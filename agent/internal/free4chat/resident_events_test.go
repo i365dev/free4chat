@@ -750,3 +750,53 @@ func TestResidentEventStreamSendsBoundedSessionResult(t *testing.T) {
 		t.Fatalf("a failed-closed result must carry no rows: %v", fallback)
 	}
 }
+
+// TestResidentEventStreamDecodesPrivateExecutionContextResync proves the #421
+// reconciliation trigger is decoded into its OWN private flag: it is not a Room
+// event, it carries no cursor, and it can never be confused with — or answered
+// into — the #409 session-control family.
+func TestResidentEventStreamDecodesPrivateExecutionContextResync(t *testing.T) {
+	wait, err := receiveResidentFrame(t, map[string]any{
+		"type": "task-execution-resync",
+	})
+	if err != nil {
+		t.Fatalf("decode private execution resync: %v", err)
+	}
+	if !wait.TaskExecutionResync {
+		t.Fatal("the execution reconciliation trigger was not decoded")
+	}
+	if wait.SessionControl != nil || wait.TaskControl != nil {
+		t.Fatalf("the reconciliation trigger leaked into another control family: %+v", wait)
+	}
+	if len(wait.Events) != 0 || wait.Cursor != 0 {
+		t.Fatalf("the reconciliation trigger must carry no Room event or cursor: %+v", wait)
+	}
+}
+
+// TestResidentEventStreamExecutionContextResyncCarriesNoCorrelation proves the
+// trigger is fire-and-forget: extra or hostile fields cannot turn it into a
+// session control, a Task control, or a Room event.
+func TestResidentEventStreamExecutionContextResyncCarriesNoCorrelation(t *testing.T) {
+	wait, err := receiveResidentFrame(t, map[string]any{
+		"type":               "task-execution-resync",
+		"operation":          "prepare",
+		"requestId":          "browser-1",
+		"projectToken":       "project-token",
+		"sessionToken":       "session-token",
+		"humanParticipantId": "human-1",
+		"control":            "interrupt",
+		"taskRequestId":      "req-T-0001",
+		"turnSequence":       42,
+		"events":             []any{map[string]any{"sequence": 1}},
+		"cursor":             9,
+	})
+	if err != nil {
+		t.Fatalf("decode private execution resync: %v", err)
+	}
+	if !wait.TaskExecutionResync {
+		t.Fatal("the execution reconciliation trigger was not decoded")
+	}
+	if wait.SessionControl != nil || wait.TaskControl != nil || len(wait.Events) != 0 || wait.Cursor != 0 {
+		t.Fatalf("the reconciliation trigger accepted foreign correlation: %+v", wait)
+	}
+}

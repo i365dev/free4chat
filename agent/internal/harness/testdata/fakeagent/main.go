@@ -14,6 +14,11 @@
 //	restart        die after the first prompt; fresh process answers differently
 //	timeout_stuck  ignore the first prompt forever (survives SIGTERM); next process recovers
 //	envelope       reply with the exact FAKE_REPLY_TEXT payload (#165 addressing tests)
+//	hold_all       park EVERY prompt per session and run them CONCURRENTLY: a
+//	               prompt is released by session/cancel for its own session, or
+//	               by the test creating FAKE_RELEASE_DIR/<sessionId>. This is
+//	               the model of a provider that genuinely serves independent
+//	               conversations at the same time (#421).
 //
 // Session discovery/load (#409) is scripted through initialize plus
 // session/list and session/load handlers; see FAKE_LIST_CAP, FAKE_LOAD_CAP,
@@ -39,6 +44,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -61,6 +67,13 @@ type agent struct {
 	pending          []byte // id of a held prompt waiting for cancellation
 	pendingSessionID string
 	nextSessionID    int
+	// held maps a native session id to the prompt id parked for it in
+	// hold_all mode. Unlike `pending`, it holds MANY conversations at once,
+	// which is what lets tests exercise real cross-session concurrency.
+	held map[string][]byte
+	// heldMu guards held: the stdin loop and the release pollers are
+	// different goroutines.
+	heldMu sync.Mutex
 }
 
 var tracePath string
@@ -149,7 +162,7 @@ func main() {
 			break
 		}
 	}
-	a := &agent{mode: mode}
+	a := &agent{mode: mode, held: make(map[string][]byte)}
 	// A FIRST-life stuck process must also survive stdin EOF (the adapter
 	// closes the pipe before escalating): only SIGKILL may end it, which is
 	// exactly what the adapter's bounded escalation tests verify.
@@ -402,6 +415,18 @@ func main() {
 			}
 			_ = json.Unmarshal(message.Params, &cancelParams)
 			switch a.mode {
+			case "hold_all":
+				// Cancel reaches EXACTLY the conversation it names. A cancel
+				// for a session with nothing parked is a no-op, which is how
+				// tests prove one Task's interrupt cannot stop another's.
+				a.heldMu.Lock()
+				parked := a.held[cancelParams.SessionID]
+				delete(a.held, cancelParams.SessionID)
+				a.heldMu.Unlock()
+				if parked != nil {
+					updateChunk(cancelParams.SessionID, "cancelled:"+cancelParams.SessionID)
+					reply(parked, map[string]any{"stopReason": "cancelled"})
+				}
 			case "cancel":
 				if a.pending != nil {
 					updateChunk(cancelParams.SessionID, "cancelled")
@@ -435,6 +460,44 @@ func main() {
 			promptSessionID := promptParams.SessionID
 			prompt := promptText(message.Params)
 			switch a.mode {
+			case "hold_all":
+				// Announce arrival on THIS conversation, then park. The
+				// announcement is what proves two prompts were accepted
+				// before either settled.
+				updateChunk(promptSessionID, "started:"+promptSessionID)
+				a.heldMu.Lock()
+				a.held[promptSessionID] = append([]byte(nil), message.ID...)
+				a.heldMu.Unlock()
+				if os.Getenv("FAKE_PERMISSION_ALL") == "1" && contains(prompt, "permission-test") {
+					// One approval request PER CONVERSATION, carrying its own
+					// session id. A client that cannot isolate permissions
+					// would answer the wrong conversation here.
+					send(&frame{
+						JSONRPC: "2.0",
+						ID:      mustJSON("perm:" + promptSessionID),
+						Method:  "session/request_permission",
+						Params: mustJSON(map[string]any{
+							"sessionId": promptSessionID,
+							"toolCall": map[string]any{
+								"toolCallId": "tool-" + promptSessionID,
+								"title":      "unsafe operation",
+								"kind":       "execute",
+								"status":     "pending",
+							},
+							"options": []any{
+								map[string]any{"optionId": "allow-once", "name": "Allow Once", "kind": "allow_once"},
+								map[string]any{"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+							},
+						}),
+					})
+					continue
+				}
+				go a.awaitRelease(promptSessionID)
+				if chatter := os.Getenv("FAKE_CHATTER_MS"); chatter != "" {
+					if ms, err := strconv.Atoi(chatter); err == nil && ms > 0 {
+						go a.chatter(promptSessionID, time.Duration(ms)*time.Millisecond)
+					}
+				}
 			case "env":
 				// FAKE_ENV_NAME selects which environment variable the Harness
 				// observes (defaults to the Runtime root contract). The value is
@@ -597,6 +660,31 @@ func main() {
 		case len(message.ID) > 0 && message.Result != nil:
 			// Runtime answered our outbound request (e.g. the auto-cancelled
 			// permission call). Continue the parked turn accordingly.
+			if a.mode == "hold_all" && strings.HasPrefix(string(message.ID), "\"perm:") {
+				// The approval reply is routed back to the EXACT conversation
+				// its id names, and settles only that conversation.
+				sessionID := strings.Trim(strings.TrimPrefix(string(message.ID), "\"perm:"), "\"")
+				var permissionResult struct {
+					Outcome struct {
+						Outcome  string `json:"outcome"`
+						OptionID string `json:"optionId"`
+					} `json:"outcome"`
+				}
+				_ = json.Unmarshal(message.Result, &permissionResult)
+				approved := permissionResult.Outcome.Outcome == "selected" && permissionResult.Outcome.OptionID == "allow-once"
+				a.heldMu.Lock()
+				parked := a.held[sessionID]
+				delete(a.held, sessionID)
+				a.heldMu.Unlock()
+				if parked != nil {
+					if approved {
+						updateChunk(sessionID, "approved:"+sessionID)
+					} else {
+						updateChunk(sessionID, "denied:"+sessionID)
+					}
+					reply(parked, map[string]any{"stopReason": "end_turn"})
+				}
+			}
 			if (a.mode == "permission" || a.mode == "permission_wait") && a.pending != nil {
 				var permissionResult struct {
 					Outcome struct {
@@ -681,4 +769,61 @@ func readFakeSessionStore(path string) []fakeSessionEntry {
 		out = append(out, entry)
 	}
 	return out
+}
+
+// awaitRelease replies to one parked prompt once the test releases it, either
+// by creating FAKE_RELEASE_DIR/<sessionId> or by cancelling that session. It
+// polls a file rather than reading a clock so the test stays fully
+// deterministic and never sleeps for a modeled duration.
+func (a *agent) awaitRelease(sessionID string) {
+	dir := os.Getenv("FAKE_RELEASE_DIR")
+	if dir == "" {
+		return
+	}
+	path := dir + string(os.PathSeparator) + sessionID
+	for attempt := 0; attempt < 3000; attempt++ {
+		time.Sleep(10 * time.Millisecond)
+		a.heldMu.Lock()
+		parked := a.held[sessionID]
+		a.heldMu.Unlock()
+		if parked == nil {
+			// Cancelled, or already released.
+			return
+		}
+		if !fileExists(path) {
+			continue
+		}
+		a.heldMu.Lock()
+		parked = a.held[sessionID]
+		delete(a.held, sessionID)
+		a.heldMu.Unlock()
+		if parked == nil {
+			return
+		}
+		updateChunk(sessionID, "released:"+sessionID)
+		reply(parked, map[string]any{"stopReason": "end_turn"})
+		return
+	}
+}
+
+// chatter emits periodic provider notifications for one parked conversation
+// until it settles. It is how a test proves the OPT-IN idle watchdog is
+// re-armed by real provider activity instead of expiring a live turn.
+func (a *agent) chatter(sessionID string, every time.Duration) {
+	for {
+		time.Sleep(every)
+		a.heldMu.Lock()
+		parked := a.held[sessionID]
+		a.heldMu.Unlock()
+		if parked == nil {
+			return
+		}
+		notify("session/update", map[string]any{
+			"sessionId": sessionID,
+			"update": map[string]any{
+				"sessionUpdate": "agent_thought_chunk",
+				"content":       map[string]any{"type": "text", "text": "."},
+			},
+		})
+	}
 }

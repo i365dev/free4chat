@@ -65,12 +65,18 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 	// next section so no other order is ever introduced.
 	r.turnControlMu.Lock()
 	r.activityMu.Lock()
-	active := r.activityTurnActive && r.activityScope == scope
+	active := false
 	currentTurn := int64(0)
-	if active {
-		currentTurn = r.activityTurnSequence
+	if current, ok := r.activities[scope]; ok {
+		active = true
+		currentTurn = current.sequence
 	}
-	interrupting := active && r.interruptScope == scope && r.interruptTarget == currentTurn
+	// Only THIS scope's interrupt marker is consulted, so an interrupt on
+	// Task A can never present as Task B's phase (#421).
+	interrupting := false
+	if active {
+		interrupting = r.interrupts[scope] == currentTurn
+	}
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
 
@@ -97,11 +103,19 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 		LastOutcome:         facts.lastOutcome,
 		Availability:        facts.availability,
 	}
-	if currentTurn > 0 {
+	switch {
+	case currentTurn > 0:
 		projection.Phase = types.TaskExecutionPhaseRunning
 		if interrupting {
 			projection.Phase = types.TaskExecutionPhaseInterrupting
 		}
+	case queued > 0 && projection.Availability == "":
+		// Accepted work that no execution lane is running. This is the
+		// truthful "waiting for capacity" state (#421): a Task behind the
+		// bounded lane count must be distinguishable from a hung one. A Task
+		// whose session is known lost keeps reporting that instead, because a
+		// lost session is the more actionable fact.
+		projection.Phase = types.TaskExecutionPhaseQueued
 	}
 	// A turn that is running right now is no longer "interrupted", and a lost
 	// session is superseded by the turn that just started on a fresh one.
@@ -109,6 +123,30 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 		projection.LastOutcome = ""
 	}
 	return projection, projection.Valid()
+}
+
+// republishTaskExecutions re-publishes the current execution projection of
+// every Task scope this Runtime still owns. It is the bounded reconciliation
+// boundary for a resident transport (re)connect (#421): the Room drops a
+// participant's transient projections with its replaced socket, so the
+// authoritative Runtime re-states them once instead of the browser polling.
+//
+// Bounded by construction: at most one small request per admitted Task scope,
+// and nothing at all when no Task exists.
+func (r *ResidentRuntime) republishTaskExecutions() {
+	if r.isStopped() || r.currentHandle() == "" {
+		return
+	}
+	r.mu.Lock()
+	scopes := make([]string, 0, 1+len(r.scopeOrder))
+	// The default Room scope is only a Task scope when its pending work is
+	// task-correlated, which publishTaskExecution itself decides.
+	scopes = append(scopes, roomScope)
+	scopes = append(scopes, r.scopeOrder...)
+	r.mu.Unlock()
+	for _, scope := range scopes {
+		r.publishTaskExecution(scope)
+	}
 }
 
 // publishTaskExecution enqueues the newest projection for one Task scope. It is
@@ -291,8 +329,7 @@ func (r *ResidentRuntime) clearTaskExecutionLocal() {
 // checked.
 func (r *ResidentRuntime) markTurnInterruptedLocked(scope string, turnSequence int64) {
 	r.activityMu.Lock()
-	r.interruptScope = scope
-	r.interruptTarget = turnSequence
+	r.interrupts[scope] = turnSequence
 	r.activityMu.Unlock()
 }
 
@@ -300,9 +337,8 @@ func (r *ResidentRuntime) markTurnInterruptedLocked(scope string, turnSequence i
 // Callers must hold turnControlMu AND activityMu (it is the inner variant used
 // by callers that already own both, so it never re-locks).
 func (r *ResidentRuntime) clearTurnInterruptedActivityLocked(scope string, turnSequence int64) {
-	if r.interruptScope == scope && r.interruptTarget == turnSequence {
-		r.interruptScope = ""
-		r.interruptTarget = 0
+	if r.interrupts[scope] == turnSequence {
+		delete(r.interrupts, scope)
 	}
 }
 
@@ -313,7 +349,7 @@ func (r *ResidentRuntime) consumeTurnInterrupted(scope string, turnSequence int6
 	r.turnControlMu.Lock()
 	defer r.turnControlMu.Unlock()
 	r.activityMu.Lock()
-	interrupted := r.interruptScope == scope && r.interruptTarget == turnSequence
+	interrupted := r.interrupts[scope] == turnSequence
 	if interrupted {
 		r.clearTurnInterruptedActivityLocked(scope, turnSequence)
 	}

@@ -124,6 +124,7 @@ import {
   type TaskProjectionIndex,
 } from "./taskScope"
 import {
+  agentSupportsTaskExecutionReconciliation,
   agentSupportsTaskSessionContinuation,
   hasOutstandingTaskSessionRequest,
   isTaskSessionError,
@@ -2720,6 +2721,52 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
     }
     return delivered
+  }
+
+  /**
+   * #421: the ONE bounded execution-reconciliation trigger.
+   *
+   * Room execution projections are deliberately MEMORY-ONLY, so a hibernated
+   * Durable Object loses them while the resident Agent socket survives and the
+   * local Harness keeps working. A Human returning to such a Room would
+   * otherwise see nothing at all for a Task that is still Running.
+   *
+   * This sends ONE tiny fire-and-forget frame per eligible resident. It has no
+   * payload, no request id, no tokens, and no pending-correlation state: it
+   * can never touch the #420 session-control family, and the Runtime answers
+   * nothing — it simply re-publishes the same projections a normal turn
+   * transition publishes, which the Room ingests through its existing
+   * `agent-task-execution` path.
+   *
+   * It is sent only to a resident that ADVERTISES
+   * taskExecutionReconciliation, so a legacy Runtime never receives an unknown
+   * private frame.
+   */
+  private requestTaskExecutionReconciliation(room: RoomRecord): number {
+    let sent = 0
+    for (const participant of Object.values(room.participants)) {
+      if (!agentSupportsTaskExecutionReconciliation(participant)) continue
+      for (const socket of this.ctx.getWebSockets(
+        this.agentEventSocketTag(participant.id)
+      )) {
+        const attachment = this.deserializeAgentEventAttachment(socket)
+        if (
+          !attachment ||
+          attachment.participantId !== participant.id ||
+          participant.connectionNonce !== attachment.connectionNonce
+        )
+          continue
+        try {
+          socket.send(JSON.stringify({ type: "task-execution-resync" }))
+          sent += 1
+        } catch {
+          // A socket that fails mid-send simply does not reconcile; the next
+          // connect or explicit resync tries again. Nothing is persisted and
+          // nothing is retried in a loop.
+        }
+      }
+    }
+    return sent
   }
 
   /**
@@ -6747,11 +6794,39 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #409: resolve the exact Live interrupt target of one Task interrupt: the
-   * authenticated Human must own the canonical Task, the canonical Agent
-   * endpoint must be reachable, and the Room must currently show exactly this
-   * turn's activity for that Agent. Shared by `task-interrupt` and
-   * `task-interrupt-and-send` so both authorize identically.
+   * #409/#421: resolve the exact Live interrupt target of one Task interrupt.
+   *
+   * SUPERVISION IS ROOM-SHARED ONCE A CANONICAL TASK EXISTS. Every requirement
+   * that makes the interrupt EXACT is still enforced here:
+   *
+   *   - the caller is an authenticated CURRENT Human participant (the shared
+   *     socket guard in handleClientMessage, which closes any non-Human or
+   *     unauthenticated socket before this runs);
+   *   - the canonical Human→Agent Task exists in the retained Room log;
+   *   - its canonical Agent endpoint is currently reachable;
+   *   - taskRequestId is exact, never repaired or inferred;
+   *   - requestedTurn matches the Room's CURRENT transient activity for that
+   *     Task's canonical scope, so a stale or wrong turn can never be named;
+   *   - the caller supplies no Agent, session, or native identity at all.
+   *
+   * It deliberately does NOT require caller.id == Task.fromParticipantId.
+   * Free4Chat is an anonymous temporary Room whose Human participants expire
+   * after the reconnect grace and are re-created with a NEW id on return, so
+   * "the original ephemeral Human participant still exists" is not a durable
+   * authorization credential — and requiring it made supervision internally
+   * inconsistent, because the same returning Human could already send a Task
+   * follow-up and resolve the Task's permission request.
+   *
+   * fromParticipantId therefore remains canonical PROVENANCE/history, not an
+   * access-control identity. This is the same boundary the rest of the Task
+   * surface already uses: current authenticated Room Human => may supervise an
+   * existing canonical Task. It adds no accounts, no Task owner/admin role,
+   * and no durable participant identity.
+   *
+   * PRE-TASK local session selection is untouched and stays Human-private:
+   * discovery/project/page tokens and PREPARE remain bound to the exact
+   * discovering Human (#420), because that boundary protects the Human's own
+   * private session list rather than an already-created canonical Task.
    */
   private resolveInterruptTarget(
     room: RoomRecord,
@@ -6766,6 +6841,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         turnSequence: number
       }
     | { ok: false; error: string } {
+    if (participant.kind !== "human")
+      return { ok: false, error: "task_interrupt_not_human" }
     if (
       typeof rawTaskRequestId !== "string" ||
       rawTaskRequestId.length === 0 ||
@@ -6778,9 +6855,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       room.participants
     )
     if (resolution.ok === false) return { ok: false, error: resolution.error }
-    const owner = room.participants[resolution.request.fromParticipantId]
-    if (!owner || owner.kind !== "human" || owner.id !== participant.id)
-      return { ok: false, error: "task_interrupt_not_owner" }
     const canonicalAgentId = initialTaskAgentParticipantId(
       resolution.request,
       room.participants
@@ -6847,10 +6921,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const currentTurnSequence = candidate.currentTurnSequence
     if (currentTurnSequence !== undefined) {
       if (!isAgentActivityTurnSequence(currentTurnSequence)) return null
+      // A RUNNING or INTERRUPTING phase must name the exact turn it describes,
+      // and "queued" can never accompany one: queued means no turn is
+      // executing.
       if (!isTaskExecutionPhase(candidate.phase)) return null
-    } else if (candidate.phase !== undefined) {
-      // A phase without a current turn would be a claim about nothing.
-      return null
+      if (candidate.phase === "queued") return null
+    } else {
+      // No current turn. #421 allows exactly one phase here: QUEUED, which
+      // requires real accepted work waiting, so a Runtime can never publish a
+      // "waiting" state for a Task that has nothing to run.
+      if (candidate.phase !== undefined && candidate.phase !== "queued")
+        return null
+      if (candidate.phase === "queued" && queuedCount === 0) return null
     }
     if (
       candidate.lastOutcome !== undefined &&
@@ -6868,7 +6950,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       taskRequestId: resolution.requestId,
       queuedCount,
       ...(currentTurnSequence === undefined
-        ? {}
+        ? candidate.phase === undefined
+          ? {}
+          : { phase: candidate.phase as TaskExecutionProjection["phase"] }
         : {
             currentTurnSequence: currentTurnSequence as number,
             phase: candidate.phase as TaskExecutionProjection["phase"],
@@ -6915,6 +6999,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant.lastSeenAt = Date.now()
 
     if (message.type === "resync") {
+      // #421: an explicit Human resync is an on-demand reconciliation, never a
+      // poll. The Room re-states its own snapshot AND asks the current
+      // residents to re-state their transient execution truth, because only
+      // the Runtime knows what is still executing after a hibernation.
+      this.requestTaskExecutionReconciliation(room)
       socket.send(JSON.stringify({ type: "state", state: this.stateFor(room) }))
       return
     }
@@ -7262,14 +7351,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // conversation content: it appends no Room message, increments no
     // sequence, wakes no waiter, emits no analytics, and never enters the
     // public MCP wait_for_events projection. It is delivered only to the
-    // canonical Agent endpoint's own private resident socket, and only the
-    // Human who created that Human→Agent Task may trigger it.
+    // canonical Agent endpoint's own private resident socket, and it is
+    // available to any CURRENT authenticated Human in the Room — supervision
+    // of an existing canonical Task is Room-shared, exactly like sending a
+    // follow-up or resolving the Task's permission request.
     if (message.type === "task-interrupt") {
       const reject = (error: string) =>
         socket.send(JSON.stringify({ type: "error", error }))
       // Exactly the same authorization the structured interrupt & send uses:
-      // canonical Task, owning Human, canonical Agent endpoint, and the exact
-      // turn the Room currently shows for that Agent.
+      // canonical Task, canonical Agent endpoint, and the exact currently
+      // active turn the Room shows for that Agent.
       const target = this.resolveInterruptTarget(
         room,
         participant,
@@ -7538,6 +7629,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       server.serializeAttachment({ participantId, token, connectionNonce })
       server.send(JSON.stringify({ type: "state", state: this.stateFor(room) }))
       await this.broadcastState(room, server)
+      // #421: ONE bounded reconciliation on Human return, triggered AFTER this
+      // socket is registered so the re-stated projections actually reach it.
+      // Room execution projections are memory-only, so after a hibernation a
+      // returning Human has no truthful state to render even though the
+      // resident Agents never reconnected and the local Harness kept working.
+      // This asks each eligible resident to re-state its current execution
+      // truth once: no timer, no poll, nothing persisted.
+      this.requestTaskExecutionReconciliation(room)
       return new Response(null, { status: 101, webSocket: client })
     }
 

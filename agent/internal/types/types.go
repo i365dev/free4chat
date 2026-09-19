@@ -124,6 +124,92 @@ type AgentLauncher struct {
 	// the launcher it describes, because it is a property of the pinned bridge
 	// and nothing else in Free4Chat may branch on a Harness identity.
 	SessionListGlobalCwd LauncherSessionListGlobalCwd `json:"sessionListGlobalCwd,omitempty"`
+	// TaskExecution is the ONE centralized product-level EXECUTION policy for
+	// this Harness (#421): how many of its retained conversations may make
+	// progress at the same time.
+	//
+	// It is deliberately NOT derived from ACP capability advertisement. ACP
+	// advertising multiple sessions says nothing about whether the provider
+	// safely serves concurrent prompts; the #421 probes showed every pinned
+	// bridge accepts a second concurrent `session/prompt`, but only Pi was
+	// additionally verified for conversation isolation, exact cancel
+	// isolation, per-session crash isolation, and stream routing. Support is
+	// therefore a named product decision recorded here, next to the launcher
+	// it describes, and nowhere else.
+	//
+	// The zero value is the fail-safe default: serial, one lane. Enabling a
+	// Harness later is: run its provider probe, change this value, add its
+	// provider-specific regression. It is never a Room, UI, or Runtime
+	// redesign.
+	TaskExecution TaskExecutionPolicy `json:"taskExecution,omitempty"`
+}
+
+// TaskExecutionConcurrency is the closed cross-session concurrency capability
+// of one Harness: may two DIFFERENT retained conversations of this Harness
+// execute a turn at the same time?
+//
+// It never relaxes the hard invariant that ONE retained conversation executes
+// at most one turn at a time: that is enforced independently, at the adapter,
+// by native session identity.
+type TaskExecutionConcurrency string
+
+const (
+	// TaskExecutionSerial is the fail-safe default. Independent conversations
+	// still queue behind one another.
+	TaskExecutionSerial TaskExecutionConcurrency = "serial"
+	// TaskExecutionCrossSession permits a small bounded number of independent
+	// conversations to execute concurrently. It requires a real probe.
+	TaskExecutionCrossSession TaskExecutionConcurrency = "cross-session"
+)
+
+func (c TaskExecutionConcurrency) Valid() bool {
+	return c == TaskExecutionSerial || c == TaskExecutionCrossSession
+}
+
+// TaskExecutionProbe is the EVIDENCE label behind a TaskExecutionPolicy. It is
+// documentation that travels with the decision so a later reader can tell a
+// measured capability from an assumption. It is never read by behavior.
+type TaskExecutionProbe string
+
+const (
+	// TaskExecutionProbeVerifiedCrossSession means the pinned bridge passed
+	// the full #421 probe suite: concurrent prompts on two sessions with
+	// correct stream routing, isolated conversation memory, exact cancel
+	// isolation, and per-session crash isolation.
+	TaskExecutionProbeVerifiedCrossSession TaskExecutionProbe = "verified-cross-session"
+	// TaskExecutionProbeConcurrencyObserved means concurrent cross-session
+	// prompts with correct stream routing were measured, but the rest of the
+	// isolation suite has not been run for this bridge yet. It is explicitly
+	// NOT sufficient to enable cross-session execution.
+	TaskExecutionProbeConcurrencyObserved TaskExecutionProbe = "concurrency-observed"
+	// TaskExecutionProbeUnverified means no concurrency evidence exists:
+	// either the probe could not authenticate, or the Harness was never
+	// probed.
+	TaskExecutionProbeUnverified TaskExecutionProbe = "unverified"
+)
+
+// TaskExecutionPolicy is the closed execution policy of one Harness.
+type TaskExecutionPolicy struct {
+	// Probe is the evidence label. It never changes behavior; it exists so a
+	// policy can be reviewed against the measurement that justified it.
+	Probe TaskExecutionProbe `json:"probe,omitempty"`
+	// Concurrency is serial or cross-session. Empty means serial.
+	Concurrency TaskExecutionConcurrency `json:"concurrency,omitempty"`
+	// MaxConcurrent is the product bound on simultaneously executing turns
+	// for this Harness. Zero (or any value below one) means one lane.
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+}
+
+// Lanes reports the bounded number of execution lanes this policy allows. It
+// is always at least one: every Harness can run a turn.
+func (p TaskExecutionPolicy) Lanes() int {
+	if p.Concurrency != TaskExecutionCrossSession {
+		return 1
+	}
+	if p.MaxConcurrent < 1 {
+		return 1
+	}
+	return p.MaxConcurrent
 }
 
 // LauncherSessionListGlobalCwd is the closed set of "no cwd filter" spellings.
@@ -216,12 +302,27 @@ type RuntimeFeatureProjection struct {
 	// TaskSessionContinuation means "this resident can list and load one of
 	// its Harness's existing native sessions for a Human-created Task".
 	TaskSessionContinuation bool `json:"taskSessionContinuation,omitempty"`
+	// TaskExecutionReconciliation means "this resident understands the private
+	// fire-and-forget `task-execution-resync` control and will re-state the
+	// CURRENT transient execution projection of every Task scope it owns".
+	//
+	// It exists for ONE reason (#421): Room execution projections are
+	// deliberately transient and memory-only, so a Durable Object that
+	// hibernates loses them while the resident Agent socket survives and the
+	// local Harness keeps working. A returning Human then has no truthful
+	// state to recover unless the Room can ask the Runtime to re-state it.
+	//
+	// A Room must NEVER send that control to a resident that does not
+	// advertise this, because an older Runtime would receive an unknown private
+	// frame. Support is therefore advertised, never inferred from a version
+	// string.
+	TaskExecutionReconciliation bool `json:"taskExecutionReconciliation,omitempty"`
 }
 
 // Empty reports whether this projection carries no feature at all, so a caller
 // can omit the wire field entirely instead of sending an empty object.
 func (p RuntimeFeatureProjection) Empty() bool {
-	return !p.TaskSessionContinuation
+	return !p.TaskSessionContinuation && !p.TaskExecutionReconciliation
 }
 
 // ValidRuntimeHostID is the single validation rule shared with the Room
@@ -338,11 +439,18 @@ const (
 	// TaskExecutionPhaseInterrupting means a Human interrupt for this exact
 	// turn was authorized and dispatched; the turn has not settled yet.
 	TaskExecutionPhaseInterrupting TaskExecutionPhase = "interrupting"
+	// TaskExecutionPhaseQueued means this Task has accepted work that is NOT
+	// executing yet: no execution lane is running it. It is the truthful
+	// "waiting for capacity" state, so a Task behind a bounded lane bound is
+	// distinguishable from a Task that is simply hanging (#421). It is valid
+	// only with no current turn and a positive queue depth.
+	TaskExecutionPhaseQueued TaskExecutionPhase = "queued"
 )
 
 func (phase TaskExecutionPhase) Valid() bool {
 	switch phase {
-	case TaskExecutionPhaseRunning, TaskExecutionPhaseInterrupting:
+	case TaskExecutionPhaseRunning, TaskExecutionPhaseInterrupting,
+		TaskExecutionPhaseQueued:
 		return true
 	default:
 		return false
@@ -405,8 +513,9 @@ type TaskExecutionProjection struct {
 	Availability TaskExecutionAvailability `json:"availability,omitempty"`
 }
 
-// Valid enforces the projection's closed shape fail-closed: a phase may only
-// exist with a positive current turn, and every present enum must be known.
+// Valid enforces the projection's closed shape fail-closed: a RUNNING or
+// INTERRUPTING phase may only exist with a positive current turn, and a QUEUED
+// phase may only exist with no current turn and real accepted work waiting.
 func (p TaskExecutionProjection) Valid() bool {
 	if p.TaskRequestID == "" || len(p.TaskRequestID) > MaxResidentTaskRequestID {
 		return false
@@ -418,10 +527,15 @@ func (p TaskExecutionProjection) Valid() bool {
 		return false
 	}
 	if p.CurrentTurnSequence == 0 {
-		if p.Phase != "" {
+		// No current turn: the only truthful phase is "nothing is executing",
+		// stated either as absent or as QUEUED when accepted work is waiting.
+		if p.Phase != "" && p.Phase != TaskExecutionPhaseQueued {
 			return false
 		}
-	} else if !p.Phase.Valid() {
+		if p.Phase == TaskExecutionPhaseQueued && p.QueuedCount == 0 {
+			return false
+		}
+	} else if !p.Phase.Valid() || p.Phase == TaskExecutionPhaseQueued {
 		return false
 	}
 	if p.LastOutcome != "" && !p.LastOutcome.Valid() {
@@ -771,12 +885,35 @@ type HarnessAdapter interface {
 // ScopedHarnessAdapter is the small optional seam for one resident Agent to
 // retain more than one logical Harness conversation. Scope is an opaque
 // Runtime-owned value; ACP session ids never leave the adapter.
-// Implementations may serialize turns across scopes while preserving each
-// scope's conversation and generation independently.
+// Implementations may run turns of different scopes concurrently while
+// preserving each scope's conversation, generation, and exact-turn control
+// independently (#421).
 type ScopedHarnessAdapter interface {
 	EnsureSessionFor(scope string) error
 	SessionGenerationFor(scope string) int64
 	RunTurnFor(scope string, input HarnessTurnInput, expectedSessionGeneration int64) (HarnessTurnResult, error)
+}
+
+// ScopedTurnCanceller is the small optional seam that keeps a remote interrupt
+// exact once more than one conversation may execute at a time: the Runtime
+// names the ONE scope whose turn it proved it owns, and the adapter cancels
+// that conversation only. It never carries a native session id.
+type ScopedTurnCanceller interface {
+	CancelTurnFor(scope string) error
+}
+
+// ScopedTurnOwnership is the small optional seam that lets the Runtime avoid
+// scheduling a turn the adapter would only refuse. It answers "which logical
+// scope currently holds a turn on the native conversation this scope is bound
+// to?" without ever exposing the native session id.
+//
+// It exists because two Free4Chat Task scopes may be bound to the SAME native
+// conversation. The hard invariant is that such a conversation still executes
+// one turn at a time; the Runtime serializes them by simply not scheduling the
+// second while the first is executing, instead of dispatching a turn that the
+// adapter must refuse.
+type ScopedTurnOwnership interface {
+	TurnOwnerFor(scope string) (ownerScope string, busy bool)
 }
 
 // JoinResult is what join_room returns; the participantHandle is the bearer
@@ -907,6 +1044,15 @@ type WaitResult struct {
 	// Like TaskControl it is excluded from JSON, carries no cursor, and never
 	// reaches the public wait_for_events projection.
 	SessionControl *ResidentSessionControl `json:"-"`
+	// TaskExecutionResync is populated only by the private resident event
+	// stream (#421): a FIRE-AND-FORGET request to re-state the current
+	// transient execution projection of every Task scope this Runtime owns.
+	//
+	// It has no request id and no response by design. It is not a Task Session
+	// Continuation control, shares none of its correlation state, and can
+	// never be answered into it. Like the other private frames it carries no
+	// cursor and never reaches the public wait_for_events projection.
+	TaskExecutionResync bool `json:"-"`
 }
 
 // ResidentTaskControlKind is the closed set of private resident control

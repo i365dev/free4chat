@@ -36,7 +36,12 @@ export interface AgentActivityProjection {
 // control truth only, which is why "running with 2 queued" is one projection
 // rather than an enum value. The Room stores it transiently and the browser
 // only renders it; neither derives it from Room history.
-export type TaskExecutionPhase = "running" | "interrupting"
+// #421 adds "queued": accepted work that NO execution lane is running yet,
+// because this Harness's bounded cross-session concurrency is saturated or the
+// provider is serial. It is valid ONLY with no current turn and a positive
+// queuedCount, so "waiting for capacity" can never be confused with "running"
+// and never looks like a hang.
+export type TaskExecutionPhase = "running" | "interrupting" | "queued"
 
 export type TaskExecutionOutcome = "interrupted"
 
@@ -169,6 +174,19 @@ export interface PendingRuntimeHostProviderClaim {
 export interface RoomRuntimeFeatures {
   /** This resident can list and load an existing native Harness session. */
   taskSessionContinuation?: boolean
+  /**
+   * #421: this resident understands the private, fire-and-forget
+   * `task-execution-resync` control and will re-state the CURRENT transient
+   * execution projection of every Task scope it owns.
+   *
+   * It exists because Room execution projections are memory-only: a hibernated
+   * Durable Object loses them while the resident Agent socket survives and the
+   * local Harness keeps working. The Room must never send that control to a
+   * resident that does not advertise this, because an older Runtime would
+   * receive an unknown private frame. Support is advertised, never inferred
+   * from a version string.
+   */
+  taskExecutionReconciliation?: boolean
 }
 
 export interface AgentCapabilities {

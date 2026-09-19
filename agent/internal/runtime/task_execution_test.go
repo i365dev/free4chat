@@ -37,6 +37,14 @@ func (c *executionClient) UpdateTaskExecution(_ string, projection types.TaskExe
 	return err
 }
 
+// projectionCount reports how many projections this Runtime published. It is
+// how a test observes a bounded reconciliation republication.
+func (c *executionClient) projectionCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.projections)
+}
+
 func (c *executionClient) latest(taskRequestID string) (types.TaskExecutionProjection, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -134,7 +142,7 @@ func TestTaskExecutionShowsATaskQueuedBehindAnotherTasksTurn(t *testing.T) {
 	rt, adapter, client := newExecutionRuntime(t)
 	defer rt.Stop()
 
-	// Task U owns the single global Harness turn.
+	// Task U owns the only execution lane this default (serial) policy allows.
 	startTurn(rt, scopedEvent(20, "task:req-U", "U instruction"))
 	waitForActiveScope(t, rt, "task:req-U")
 
@@ -143,8 +151,11 @@ func TestTaskExecutionShowsATaskQueuedBehindAnotherTasksTurn(t *testing.T) {
 	queued := waitForExecution(t, client, "req-T", "queued Task projection", func(p types.TaskExecutionProjection) bool {
 		return p.QueuedCount == 1
 	})
-	if queued.CurrentTurnSequence != 0 || queued.Phase != "" {
-		t.Fatalf("a Task behind another Task claimed a current turn: %+v", queued)
+	// #421: a Task behind the bounded lane count has NO current turn. It
+	// reports the explicit QUEUED phase instead, so "waiting for capacity" is
+	// distinguishable from "hanging" without pretending a turn is executing.
+	if queued.CurrentTurnSequence != 0 || queued.Phase != types.TaskExecutionPhaseQueued {
+		t.Fatalf("a Task behind another Task must report the queued phase: %+v", queued)
 	}
 	adapter.releaseTurn()
 	waitFor(t, 2*time.Second, func() bool { return activeScope(rt) == "" }, "turn to settle")
@@ -201,15 +212,16 @@ func TestIntentionalInterruptIsTerminalAndNeverRetries(t *testing.T) {
 		t.Fatalf("an intentionally interrupted turn must run exactly once, got %d", runs)
 	}
 	rt.mu.Lock()
-	retryPlan := rt.turnRetryPlan
-	retryAttempt := rt.turnRetryAttempt
+	// #421: the retry budget is keyed per canonical turn, so "no retry armed
+	// for this turn" is an absent entry rather than nil/zero globals.
+	retryState := rt.turnRetries[canonicalTurnKey{scope: "task:req-T", target: 40}]
 	pending := 0
 	if ref := rt.sessionRefLocked("task:req-T"); ref != nil && ref.pendingAddressed != nil {
 		pending = len(*ref.pendingAddressed)
 	}
 	rt.mu.Unlock()
-	if retryPlan != nil || retryAttempt != 0 {
-		t.Fatalf("an interrupted turn armed autonomous retry: plan=%v attempt=%d", retryPlan, retryAttempt)
+	if retryState != nil {
+		t.Fatalf("an interrupted turn armed autonomous retry: %+v", retryState)
 	}
 	if pending != 0 {
 		t.Fatalf("the interrupted trigger stayed pending: %d", pending)

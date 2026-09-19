@@ -33,6 +33,14 @@ var builtInLaunchers = []types.AgentLauncher{
 		// sessions in the #409 probe: a known native id loads, discovery does
 		// not. Not eligible until that is fixed and re-verified.
 		TaskSessionContinuation: false,
+		// #421 probe: two independent sessions made concurrent progress with
+		// correct stream routing. The rest of the isolation suite (conversation
+		// isolation, exact cancel isolation, per-session crash isolation) was
+		// not run for this bridge, so it stays SERIAL.
+		TaskExecution: types.TaskExecutionPolicy{
+			Probe:       types.TaskExecutionProbeConcurrencyObserved,
+			Concurrency: types.TaskExecutionSerial,
+		},
 	},
 	{
 		ID:          "opencode",
@@ -46,6 +54,12 @@ var builtInLaunchers = []types.AgentLauncher{
 		// session is discoverable/replayable, but the next ACP prompt failed
 		// with -32603. Verified partial, so NOT eligible.
 		TaskSessionContinuation: false,
+		// #421 probe: concurrent cross-session progress with correct routing
+		// observed, but no isolation suite yet. SERIAL.
+		TaskExecution: types.TaskExecutionPolicy{
+			Probe:       types.TaskExecutionProbeConcurrencyObserved,
+			Concurrency: types.TaskExecutionSerial,
+		},
 	},
 	{
 		ID:          "codex",
@@ -60,6 +74,13 @@ var builtInLaunchers = []types.AgentLauncher{
 		// `appServer` threads; load/resume call threadResume) but NOT
 		// runtime-verified for the exact native-CLI -> ACP continuation path.
 		TaskSessionContinuation: false,
+		// #421 probe: concurrent cross-session progress with correct routing
+		// observed, but no isolation suite yet, and two concurrent sessions
+		// measured ~26 processes / ~820 MB. SERIAL.
+		TaskExecution: types.TaskExecutionPolicy{
+			Probe:       types.TaskExecutionProbeConcurrencyObserved,
+			Concurrency: types.TaskExecutionSerial,
+		},
 	},
 	{
 		ID:          "claude",
@@ -72,6 +93,13 @@ var builtInLaunchers = []types.AgentLauncher{
 		// Source-supported (session/list delegates to the Claude Agent SDK
 		// session store) but NOT runtime-verified. Not eligible.
 		TaskSessionContinuation: false,
+		// #421 probe could not run: the local bridge credentials were expired,
+		// so every prompt failed to authenticate. An errored prompt is not
+		// evidence about prompt concurrency, so this stays UNVERIFIED + SERIAL.
+		TaskExecution: types.TaskExecutionPolicy{
+			Probe:       types.TaskExecutionProbeUnverified,
+			Concurrency: types.TaskExecutionSerial,
+		},
 	},
 	{
 		ID:          "pi",
@@ -93,6 +121,35 @@ var builtInLaunchers = []types.AgentLauncher{
 		// session" would have shown an empty picker for the only enabled
 		// Harness.
 		SessionListGlobalCwd: types.GlobalSessionListCwdEmpty,
+		// The ONE Harness whose cross-session execution is enabled (#421),
+		// and the only one with the full probe suite:
+		//
+		//   concurrency   3/3 trials: an independent session B settled in
+		//                 1.2-2.6s while session A ran a 45-60s tool call, and
+		//                 A emitted 1-3 of its own notifications strictly
+		//                 inside B's window (real interleaving, not queue
+		//                 jumping).
+		//   routing       B's streamed text never contained A's token or vice
+		//                 versa, across every trial.
+		//   isolation     B did not know a codeword seeded into A, while A
+		//                 still remembered it: two session/new sessions in one
+		//                 bridge process are separate conversations.
+		//   cancel        with BOTH sessions running a shell tool,
+		//                 session/cancel on A settled A in 2.2s with no
+		//                 completion token while B ran on to completion.
+		//   crash         killing ONE per-session `pi` worker left the bridge
+		//                 alive and a brand-new session C working; only the
+		//                 killed conversation was lost.
+		//   cost          ~180 MB idle, ~360-425 MB with two active sessions.
+		//
+		// Pi is also the only Harness with TaskSessionContinuation, which is
+		// exactly the workflow that makes two independent retained sessions
+		// normal for the product.
+		TaskExecution: types.TaskExecutionPolicy{
+			Probe:         types.TaskExecutionProbeVerifiedCrossSession,
+			Concurrency:   types.TaskExecutionCrossSession,
+			MaxConcurrent: 2,
+		},
 	},
 }
 

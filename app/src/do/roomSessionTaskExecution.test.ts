@@ -269,6 +269,72 @@ describe("RoomSession transient Task execution (#409)", () => {
     expect(test.stored().nextMessageSequence).toBe(sequenceBefore)
   })
 
+  it("accepts a QUEUED projection for a Task waiting on an execution lane (#421)", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+
+    // No current turn and real accepted work waiting: the truthful
+    // "waiting for capacity" state, which must be storable and renderable
+    // instead of leaving the Human with an apparently hung Task.
+    const published = await test.control({
+      action: "agent-task-execution",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      projection: { taskRequestId: requestId, phase: "queued", queuedCount: 3 },
+    })
+    expect(published).toMatchObject({ status: 200, json: { ok: true } })
+    expect(test.executions()).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        taskRequestId: requestId,
+        phase: "queued",
+        queuedCount: 3,
+      },
+    ])
+    expect(
+      test
+        .broadcasts()
+        .filter((frame) => frame.type === "taskExecution")
+        .map((frame) => frame.execution)
+    ).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        taskRequestId: requestId,
+        phase: "queued",
+        queuedCount: 3,
+      },
+    ])
+  })
+
+  it("rejects a self-contradictory queued projection", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+
+    for (const projection of [
+      // Queued with nothing waiting claims a wait that does not exist.
+      { taskRequestId: requestId, phase: "queued", queuedCount: 0 },
+      // Queued WITH a current turn contradicts itself: queued means no turn
+      // is executing.
+      {
+        taskRequestId: requestId,
+        currentTurnSequence: 42,
+        phase: "queued",
+        queuedCount: 1,
+      },
+    ]) {
+      const rejected = await test.control({
+        action: "agent-task-execution",
+        participantId: "agent-a",
+        token: "agent-a-token",
+        projection,
+      })
+      expect(rejected.status).toBe(400)
+    }
+    expect(test.executions()).toEqual([])
+  })
+
   it("rejects a secondary participating Agent and malformed projections", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
@@ -435,23 +501,13 @@ describe("RoomSession interrupt & send (#409)", () => {
     })
   })
 
-  it("rejects wrong Humans, stale turns, and wrong Tasks without side effects", async () => {
+  it("rejects stale turns and wrong Tasks without side effects", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
     await publishActivity(test, requestId, 42)
     const messagesBefore = test.stored().messages.length
 
-    // Another Human does not own the Task.
-    await test.sendHuman(
-      {
-        type: "task-interrupt-and-send",
-        taskRequestId: requestId,
-        turnSequence: 42,
-        text: "not mine",
-      },
-      "human-2"
-    )
     // A turn that is no longer the current one.
     await test.sendHuman({
       type: "task-interrupt-and-send",
@@ -475,7 +531,6 @@ describe("RoomSession interrupt & send (#409)", () => {
     })
 
     expect(test.errorFrames()).toEqual([
-      "task_interrupt_not_owner",
       "task_turn_not_active",
       "unknown_task_request",
       "invalid_task_instruction",

@@ -19,8 +19,15 @@ import (
 )
 
 const (
-	shutdownTimeoutMs      = 2_000
-	defaultTurnTimeoutMs   = 120_000
+	shutdownTimeoutMs = 2_000
+	// defaultTurnTimeoutMs is the SAFETY CEILING for one Harness turn, not a
+	// product Task duration (#421). It is deliberately far larger than any
+	// normal useful Task so that a legitimate multi-hour coding session is
+	// never cut short, while a Harness that stays alive but never answers is
+	// still bounded. It replaces the previous 2-minute default, which
+	// conflated "the Agent is still working" with "the Agent is stuck".
+	// Process death is detected immediately and independently of this.
+	defaultTurnTimeoutMs   = 6 * 60 * 60 * 1_000
 	defaultCancelGraceMs   = 2_000
 	maxPromptImagesPerTurn = 2
 
@@ -36,10 +43,18 @@ const (
 	clientVersion   = "0.1.0"
 )
 
-// TurnTimeoutError mirrors AcpTurnTimeoutError.
-type TurnTimeoutError struct{ TimeoutMs int64 }
+// TurnTimeoutError mirrors AcpTurnTimeoutError. Reason is a bounded token
+// ("ceiling" or "idle") naming WHICH recovery bound expired; it never carries
+// Harness payload, prompt content, or paths.
+type TurnTimeoutError struct {
+	TimeoutMs int64
+	Reason    string
+}
 
 func (e *TurnTimeoutError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("ACP turn exceeded its %s bound after %dms", e.Reason, e.TimeoutMs)
+	}
 	return fmt.Sprintf("ACP turn timed out after %dms", e.TimeoutMs)
 }
 
@@ -55,8 +70,20 @@ func (e *ProcessError) Unwrap() error { return e.Err }
 
 // AdapterOptions tunes turn timeout / cancel grace (tests).
 type AdapterOptions struct {
+	// TurnTimeoutMs is the SAFETY CEILING for one Harness turn, not the
+	// product Task lifetime (#421). A legitimate coding Task may run for
+	// tens of minutes or hours, so the default is deliberately conservative
+	// and exists only so a Harness that stays alive but never answers cannot
+	// run forever. Process death is detected independently and immediately.
 	TurnTimeoutMs int64
-	CancelGraceMs int64
+	// TurnIdleTimeoutMs is an OPT-IN stuck-turn watchdog: a turn that sees no
+	// provider notification at all for this long is treated as stuck. Zero
+	// disables it, which is the default, because the pinned bridges emit
+	// NOTHING while a tool call runs — a measured 60-second shell command
+	// produced zero notifications between tool_call and its completion, so a
+	// default idle bound would kill legitimate long tool work.
+	TurnIdleTimeoutMs int64
+	CancelGraceMs     int64
 	// ControlTimeoutMs bounds every non-turn ACP control request. A control
 	// request that never answers leaves the Harness's state ambiguous — it may
 	// have applied the change and lost the reply — so a timeout tears the
@@ -251,6 +278,46 @@ type pendingPermission struct {
 	request ACPPermissionRequest
 }
 
+// activeACPTurn is the prompt-local state of ONE executing turn: its logical
+// scope, its streamed reply so far, its cancellation context, and the time of
+// the most recent provider notification for it.
+//
+// Before #421 this state was five adapter-global fields (promptActive,
+// turnChunks, turnContext, turnCancel, turnSessionID), which made "one prompt
+// in flight" a property of the whole bridge process and therefore made every
+// independent conversation queue behind every other one. It is now keyed by
+// NATIVE ACP session id, which is the strongest available identity: it keeps
+// the one-conversation-one-turn invariant hard — even two logical scopes that
+// somehow named the same native session cannot overlap — while letting
+// independent conversations proceed.
+type activeACPTurn struct {
+	scope     string
+	sessionID string
+	chunks    []string
+	ctx       context.Context
+	cancel    context.CancelFunc
+	// lastSignal is the most recent provider notification observed for this
+	// turn. It is the input to the OPT-IN idle watchdog only; it is never used
+	// to bound a turn by total duration.
+	lastSignal time.Time
+	// progress wakes the turn loop whenever this conversation observes a
+	// provider notification. It is nil unless the opt-in idle watchdog is
+	// enabled, so the default path allocates nothing and wakes no one.
+	progress chan struct{}
+}
+
+// promptBusyError is returned when a turn targets a native session that is
+// already executing a turn. It is a DEFERRAL, not a failure: the caller still
+// owns the work and may retry it once the conflicting turn settles.
+type promptBusyError struct{}
+
+func (e *promptBusyError) Error() string { return "ACP prompt is already running for this session" }
+
+// ErrSessionPromptBusy reports that a turn was refused because the SAME native
+// conversation already has a turn in flight. Callers must treat it as
+// "not runnable yet" rather than as a Harness failure.
+var ErrSessionPromptBusy error = &promptBusyError{}
+
 type acpSession struct {
 	sessionID  string
 	caps       *ACPCapabilities
@@ -314,11 +381,11 @@ type ACPAdapter struct {
 	nextScopeGeneration int64
 	onFailure           types.AdapterFailureHandler
 	closing             bool
-	promptActive        bool
-	turnChunks          []string
-	turnContext         context.Context
-	turnCancel          context.CancelFunc
-	turnSessionID       string
+	// activeTurns holds at most one executing prompt per native ACP session
+	// id. It is the hard per-conversation serialization invariant (#421): a
+	// second turn for a conversation that is already running is refused with
+	// ErrSessionPromptBusy instead of being multiplexed onto the same stream.
+	activeTurns map[string]*activeACPTurn
 }
 
 // NewACPAdapter creates an adapter bound to one workspace directory. It does
@@ -341,6 +408,7 @@ func NewACPAdapter(launcher types.AgentLauncher, workingDir string, options Adap
 		pending:            make(map[string]*pendingCall),
 		pendingPermissions: make(map[string]*pendingPermission),
 		sessions:           make(map[string]*acpSession),
+		activeTurns:        make(map[string]*activeACPTurn),
 	}
 }
 
@@ -405,10 +473,27 @@ func (a *ACPAdapter) SetActivityHandler(handler ACPActivityHandler) {
 // closed before creating a request that could outlive its local responder.
 func (a *ACPAdapter) PermissionRequestLifetime() time.Duration {
 	a.mu.Lock()
-	timeoutMs := a.options.TurnTimeoutMs
+	ceilingMs := a.options.TurnTimeoutMs
+	idleMs := a.options.TurnIdleTimeoutMs
 	a.mu.Unlock()
+	// An interactive approval must not outlive the bound that will recover its
+	// turn, and must also stay a sane interactive wait.
+	//
+	// #421 made the turn's own recovery bound the multi-hour safety ceiling,
+	// which is not a usable approval deadline, so the lifetime is the MINIMUM
+	// of: the ceiling, the opt-in idle watchdog when one is configured, and a
+	// bounded interactive default. It is therefore still strictly below the
+	// turn bound for any configured ceiling, while no longer being inflated by
+	// the long-task ceiling.
+	timeoutMs := ceilingMs
 	if timeoutMs <= 0 {
 		timeoutMs = defaultTurnTimeoutMs
+	}
+	if idleMs > 0 && idleMs < timeoutMs {
+		timeoutMs = idleMs
+	}
+	if timeoutMs > defaultPermissionRequestLifetimeMs {
+		timeoutMs = defaultPermissionRequestLifetimeMs
 	}
 	lifetime := time.Duration(timeoutMs)*time.Millisecond - time.Second
 	if lifetime < time.Second {
@@ -416,6 +501,11 @@ func (a *ACPAdapter) PermissionRequestLifetime() time.Duration {
 	}
 	return lifetime
 }
+
+// defaultPermissionRequestLifetimeMs bounds how long an interactive Harness
+// approval may wait when no idle watchdog is configured. It is a presentation
+// bound for one approval card, never a Task lifetime.
+const defaultPermissionRequestLifetimeMs = 10 * 60 * 1_000
 
 // SetMode applies one Harness-native session mode that was advertised by the
 // current session. The adapter does not infer or translate policy semantics.
@@ -572,7 +662,7 @@ func (a *ACPAdapter) fail(err error) {
 // ONLY for notifications belonging to the CURRENT process generation: delayed
 // EOF from an earlier dead child must never wipe a fresh respawn.
 func (a *ACPAdapter) markProcessDead(gen int64, err error) {
-	var turnCancel context.CancelFunc
+	var turnCancels []context.CancelFunc
 	a.mu.Lock()
 	if a.closing {
 		a.mu.Unlock()
@@ -582,7 +672,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 		a.mu.Unlock()
 		return
 	}
-	live := a.proc != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.sessions) > 0 || len(a.pending) > 0 || len(a.pendingPermissions) > 0
+	live := a.proc != nil || a.stdin != nil || a.sessionID != "" || a.caps != nil || len(a.sessions) > 0 || len(a.pending) > 0 || len(a.pendingPermissions) > 0 || len(a.activeTurns) > 0
 	if !live {
 		a.mu.Unlock()
 		return
@@ -597,15 +687,16 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 	}
 	a.pending = make(map[string]*pendingCall)
 	a.pendingPermissions = make(map[string]*pendingPermission)
-	turnCancel = a.turnCancel
-	a.turnContext = nil
-	a.turnCancel = nil
-	a.turnSessionID = ""
-	a.promptActive = false
-	a.turnChunks = nil
+	turnCancels = make([]context.CancelFunc, 0, len(a.activeTurns))
+	for _, active := range a.activeTurns {
+		if active.cancel != nil {
+			turnCancels = append(turnCancels, active.cancel)
+		}
+	}
+	a.activeTurns = make(map[string]*activeACPTurn)
 	a.mu.Unlock()
-	if turnCancel != nil {
-		turnCancel()
+	for _, cancel := range turnCancels {
+		cancel()
 	}
 	a.fail(fmt.Errorf("ACP process exited (%v)", err))
 }
@@ -660,8 +751,7 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.gen++
 	a.sessionID = ""
 	a.caps = nil
-	a.turnChunks = nil
-	a.promptActive = false
+	a.activeTurns = make(map[string]*activeACPTurn)
 	a.mu.Unlock()
 
 	gen := a.gen
@@ -1063,13 +1153,29 @@ func (a *ACPAdapter) dispatch(message *acpMessage) {
 		a.applySessionUpdate(message.Params)
 		a.dispatchActivity(message.Params)
 		if chunk, ok := extractTextChunk(message.Params); ok && chunk != "" {
-			a.mu.Lock()
-			if a.promptActive {
-				a.turnChunks = append(a.turnChunks, chunk)
-			}
-			a.mu.Unlock()
+			a.appendTurnChunk(message.Params, chunk)
 		}
 	}
+}
+
+// appendTurnChunk routes one streamed text chunk to the exact turn that owns
+// the notification's session. A chunk for a session with no active turn is
+// dropped, which is the same fence the previous single-prompt adapter applied
+// globally — now applied per conversation so one turn's late tail can never
+// bleed into a different conversation's reply.
+func (a *ACPAdapter) appendTurnChunk(params json.RawMessage, chunk string) {
+	var envelope struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(params, &envelope) != nil || envelope.SessionID == "" {
+		return
+	}
+	a.mu.Lock()
+	if turn := a.activeTurns[envelope.SessionID]; turn != nil {
+		turn.chunks = append(turn.chunks, chunk)
+		turn.noteSignal()
+	}
+	a.mu.Unlock()
 }
 
 func (a *ACPAdapter) dispatchActivity(params json.RawMessage) {
@@ -1085,14 +1191,16 @@ func (a *ACPAdapter) dispatchActivity(params json.RawMessage) {
 	}
 	a.mu.Lock()
 	// ACP notifications arriving after session/prompt settles must not
-	// resurrect a cleared activity state or bleed into the next serialized
-	// turn. The current prompt/session fence is the adapter-local ordering
-	// boundary.
-	if !a.promptActive || a.turnSessionID != envelope.SessionID {
+	// resurrect a cleared activity state or bleed into another conversation.
+	// The per-session active turn is that ordering boundary; the turn's own
+	// scope is authoritative, so no separate session->scope lookup is needed.
+	turn := a.activeTurns[envelope.SessionID]
+	if turn == nil {
 		a.mu.Unlock()
 		return
 	}
-	scope := a.scopeForSessionIDLocked(envelope.SessionID)
+	turn.noteSignal()
+	scope := turn.scope
 	handler := a.options.ActivityHandler
 	a.mu.Unlock()
 	if handler != nil && scope != "" {
@@ -1127,12 +1235,18 @@ func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
 
 	key := message.idKey()
 	a.mu.Lock()
-	if a.closing || !a.promptActive || a.turnContext == nil || a.turnSessionID == "" || request.SessionID != a.turnSessionID {
+	// The permission belongs to the exact turn that owns its session. A
+	// request from a conversation with no active turn, or from a turn that is
+	// shutting down, is cancelled fail-closed — never routed to another
+	// conversation's responder.
+	turn := a.activeTurns[request.SessionID]
+	if a.closing || turn == nil || turn.ctx == nil {
 		a.mu.Unlock()
 		_ = a.writeFrame(cancelPermissionFrame(message.ID))
 		return
 	}
-	request.Scope = a.scopeForSessionIDLocked(request.SessionID)
+	turn.noteSignal()
+	request.Scope = turn.scope
 	if request.Scope == "" {
 		a.mu.Unlock()
 		_ = a.writeFrame(cancelPermissionFrame(message.ID))
@@ -1149,7 +1263,7 @@ func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
 	}
 	a.pendingPermissions[key] = pending
 	responder := a.options.PermissionResponder
-	turnContext := a.turnContext
+	turnContext := turn.ctx
 	a.mu.Unlock()
 
 	if responder == nil {
@@ -1561,6 +1675,12 @@ func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput, expectedSessionGenera
 // generation prepared by the Runtime. In particular, this method must not
 // call EnsureSessionFor: doing so could create or switch conversations after
 // the Runtime rendered a prompt for a specific generation.
+//
+// Independent conversations of the same bridge may execute concurrently when
+// the product policy allows it (#421). Concurrent turns are isolated by
+// native session id: each turn owns its own chunk accumulator, cancellation
+// context, and permission set, and a second turn for a session that is
+// already executing is refused with ErrSessionPromptBusy.
 func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expectedSessionGeneration int64) (types.HarnessTurnResult, error) {
 	a.mu.Lock()
 	var sessionID string
@@ -1579,14 +1699,25 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 		a.mu.Unlock()
 		return types.HarnessTurnResult{}, errors.New("ACP session is unavailable")
 	}
-	if a.promptActive {
+	if a.activeTurns[sessionID] != nil {
+		// The hard invariant: one retained conversation runs at most one turn.
+		// This is a deferral, not a Harness failure — the session may be owned
+		// by a different logical scope that named the same native session.
 		a.mu.Unlock()
-		return types.HarnessTurnResult{}, errors.New("ACP prompt is already running")
+		return types.HarnessTurnResult{}, ErrSessionPromptBusy
 	}
-	a.promptActive = true
-	a.turnChunks = nil
-	a.turnContext, a.turnCancel = context.WithCancel(context.Background())
-	a.turnSessionID = sessionID
+	turnCtx, turnCancel := context.WithCancel(context.Background())
+	turn := &activeACPTurn{
+		scope:      normalizeScopeName(scope),
+		sessionID:  sessionID,
+		ctx:        turnCtx,
+		cancel:     turnCancel,
+		lastSignal: time.Now(),
+	}
+	if a.options.TurnIdleTimeoutMs > 0 {
+		turn.progress = make(chan struct{}, 1)
+	}
+	a.activeTurns[sessionID] = turn
 	blocks := promptBlocks(input, caps != nil && caps.Images)
 	params, _ := json.Marshal(map[string]any{
 		"sessionId": sessionID,
@@ -1603,44 +1734,100 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 	key := compactJSON(id)
 	call := &pendingCall{result: make(chan *acpMessage, 1)}
 	a.pending[key] = call
-	timeoutMs := a.options.TurnTimeoutMs
+	ceilingMs := a.options.TurnTimeoutMs
+	idleMs := a.options.TurnIdleTimeoutMs
 	graceMs := a.options.CancelGraceMs
 	a.mu.Unlock()
 
 	if err := a.writeFrame(envelope); err != nil {
-		a.resetPrompt(key)
+		a.resetPrompt(sessionID, key)
 		return types.HarnessTurnResult{}, &ProcessError{Err: fmt.Errorf("ACP write failed: %w", err)}
 	}
 
-	timeout := time.After(time.Duration(timeoutMs) * time.Millisecond)
-	timedOut := false
+	// Turn lifetime is NOT the product Task duration (#421). Recovery has
+	// three independent, bounded inputs instead of one short wall-clock cap:
+	//
+	//   liveness  a dead child closes the call channel immediately and is
+	//             detected without waiting for any timer (reported as a
+	//             process failure, which the Runtime treats as session loss).
+	//   ceiling   one deliberately conservative safety ceiling so an
+	//             unkillable-but-alive Harness cannot run forever.
+	//   idle      an OPT-IN watchdog, disabled by default because the pinned
+	//             bridges emit NOTHING while a tool call runs (a measured
+	//             60-second shell command produced zero notifications between
+	//             tool_call and its completion). A default idle bound would
+	//             therefore kill legitimate long tool work.
+	ceiling := time.NewTimer(time.Duration(ceilingMs) * time.Millisecond)
+	defer ceiling.Stop()
+	var idleTimer *time.Timer
+	if idleMs > 0 {
+		idleTimer = time.NewTimer(time.Duration(idleMs) * time.Millisecond)
+		defer idleTimer.Stop()
+	}
+	var idleC <-chan time.Time
+	// rearmIdle recomputes the opt-in idle deadline from the most recent
+	// provider notification. It reports false when that deadline has already
+	// passed, which is the only way the idle watchdog can expire a turn.
+	rearmIdle := func() bool {
+		if idleMs <= 0 {
+			return true
+		}
+		a.mu.Lock()
+		signal := time.Now()
+		if current := a.activeTurns[sessionID]; current != nil {
+			signal = current.lastSignal
+		}
+		a.mu.Unlock()
+		remaining := time.Duration(idleMs)*time.Millisecond - time.Since(signal)
+		if remaining <= 0 {
+			return false
+		}
+		if !idleTimer.Stop() {
+			select {
+			case <-idleTimer.C:
+			default:
+			}
+		}
+		idleTimer.Reset(remaining)
+		idleC = idleTimer.C
+		return true
+	}
+	expired := ""
 	settled := false
+	if !rearmIdle() {
+		expired, settled = turnExpiryIdle, true
+	}
 	var response *acpMessage
 	for !settled {
 		select {
 		case response = <-call.result:
 			if response == nil {
-				a.resetPrompt(key)
+				a.resetPrompt(sessionID, key)
 				return types.HarnessTurnResult{}, &ProcessError{Err: errors.New("ACP process exited")}
 			}
 			settled = true
-		case <-timeout:
-			timedOut = true
-			settled = true
+		case <-ceiling.C:
+			expired, settled = turnExpiryCeiling, true
+		case <-idleC:
+			expired, settled = turnExpiryIdle, true
+		case <-turn.progress:
+			if !rearmIdle() {
+				expired, settled = turnExpiryIdle, true
+			}
 		}
 	}
 
-	if timedOut {
+	if expired != "" {
 		// The call stays registered during recovery so a late settle remains
 		// routable; a genuine termination clears it with the connection.
-		err := a.recoverTimedOutTurn(call, key, graceMs)
+		err := a.recoverExpiredTurn(sessionID, call, key, graceMs, expired)
 		return types.HarnessTurnResult{}, err
 	}
 
 	// Snapshot the streamed reply BEFORE clearing per-turn state: late
 	// chunk notifications must not be dropped by the reset.
-	text := a.drainChunks()
-	a.resetPrompt(key)
+	text := a.drainChunks(sessionID)
+	a.resetPrompt(sessionID, key)
 	if response.Error != nil {
 		return types.HarnessTurnResult{}, fmt.Errorf("ACP session/prompt failed: %s", response.Error.Message)
 	}
@@ -1656,26 +1843,61 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 	}, nil
 }
 
-// drainChunks snapshots and resets per-turn accumulation.
-func (a *ACPAdapter) drainChunks() string {
+// Turn expiry reasons. They are bounded diagnostic tokens only.
+const (
+	turnExpiryCeiling = "ceiling"
+	turnExpiryIdle    = "idle"
+)
+
+// normalizeScopeName maps the two spellings of the default scope onto the one
+// value the adapter stores, so a turn's recorded scope is always comparable.
+func normalizeScopeName(scope string) string {
+	if strings.TrimSpace(scope) == "" {
+		return "room"
+	}
+	return scope
+}
+
+// noteSignal records one provider notification for this turn and wakes the
+// opt-in idle watchdog. Callers must hold a.mu.
+func (t *activeACPTurn) noteSignal() {
+	t.lastSignal = time.Now()
+	if t.progress == nil {
+		return
+	}
+	select {
+	case t.progress <- struct{}{}:
+	default:
+	}
+}
+
+// drainChunks snapshots and resets one conversation's accumulation.
+func (a *ACPAdapter) drainChunks(sessionID string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	text := strings.TrimSpace(strings.Join(a.turnChunks, ""))
-	a.turnChunks = nil
+	turn := a.activeTurns[sessionID]
+	if turn == nil {
+		return ""
+	}
+	text := strings.TrimSpace(strings.Join(turn.chunks, ""))
+	turn.chunks = nil
 	return text
 }
 
-// resetPrompt clears per-turn bookkeeping once a prompt definitively settled.
-func (a *ACPAdapter) resetPrompt(key string) {
+// resetPrompt clears the per-turn bookkeeping of ONE conversation once its
+// prompt definitively settled. Only that conversation's slot, cancellation
+// context, and permission requests are touched, so a settle on one
+// conversation can never disturb another that is still running.
+func (a *ACPAdapter) resetPrompt(sessionID, key string) {
 	a.mu.Lock()
 	delete(a.pending, key)
-	turnCancel := a.turnCancel
-	a.turnContext = nil
-	a.turnCancel = nil
-	a.turnSessionID = ""
-	permissions := a.takePendingPermissionsLocked()
-	a.promptActive = false
-	a.turnChunks = nil
+	turn := a.activeTurns[sessionID]
+	delete(a.activeTurns, sessionID)
+	turnCancel := context.CancelFunc(nil)
+	if turn != nil {
+		turnCancel = turn.cancel
+	}
+	permissions := a.takePendingPermissionsLocked(sessionID)
 	a.mu.Unlock()
 	if turnCancel != nil {
 		turnCancel()
@@ -1685,19 +1907,30 @@ func (a *ACPAdapter) resetPrompt(key string) {
 	}
 }
 
-func (a *ACPAdapter) takePendingPermissionsLocked() []*pendingPermission {
-	permissions := make([]*pendingPermission, 0, len(a.pendingPermissions))
-	for _, permission := range a.pendingPermissions {
+// takePendingPermissionsLocked removes the pending permission requests of ONE
+// conversation. Callers must hold a.mu.
+func (a *ACPAdapter) takePendingPermissionsLocked(sessionID string) []*pendingPermission {
+	permissions := make([]*pendingPermission, 0, 1)
+	for key, permission := range a.pendingPermissions {
+		if sessionID != "" && permission.request.SessionID != sessionID {
+			continue
+		}
 		permissions = append(permissions, permission)
+		delete(a.pendingPermissions, key)
 	}
-	a.pendingPermissions = make(map[string]*pendingPermission)
 	return permissions
 }
 
-func (a *ACPAdapter) cancelPendingPermissions() {
+// cancelPendingPermissions cancels only ONE conversation's parked permission
+// requests, so interrupting one Task can never resolve or drop another Task's
+// approval card.
+func (a *ACPAdapter) cancelPendingPermissions(sessionID string) {
 	a.mu.Lock()
-	turnCancel := a.turnCancel
-	permissions := a.takePendingPermissionsLocked()
+	turnCancel := context.CancelFunc(nil)
+	if turn := a.activeTurns[sessionID]; turn != nil {
+		turnCancel = turn.cancel
+	}
+	permissions := a.takePendingPermissionsLocked(sessionID)
 	a.mu.Unlock()
 	if turnCancel != nil {
 		turnCancel()
@@ -1707,18 +1940,27 @@ func (a *ACPAdapter) cancelPendingPermissions() {
 	}
 }
 
-// recoverTimedOutTurn cancels the prompt and, if it does not settle within
-// the cancel grace, terminates the Harness process (final boundary).
-func (a *ACPAdapter) recoverTimedOutTurn(call *pendingCall, key string, graceMs int64) error {
-	timeoutErr := &TurnTimeoutError{TimeoutMs: int64(defaultTurnTimeoutMs)}
-	timeoutErr.TimeoutMs = a.options.TurnTimeoutMs
-	cancelErr := a.CancelTurn()
+// recoverExpiredTurn cancels one expired turn and, if it does not settle
+// within the cancel grace, terminates the Harness process (final boundary).
+//
+// The escalation is deliberately process-wide rather than per-session: a
+// bridge that ignores session/cancel for one conversation is not trustworthy
+// for the others either, and every affected Task must fail closed rather than
+// silently keep running on an ambiguous connection.
+func (a *ACPAdapter) recoverExpiredTurn(sessionID string, call *pendingCall, key string, graceMs int64, reason string) error {
+	ceilingMs := a.options.TurnTimeoutMs
+	if ceilingMs <= 0 {
+		ceilingMs = defaultTurnTimeoutMs
+	}
+	timeoutErr := &TurnTimeoutError{TimeoutMs: ceilingMs}
+	timeoutErr.Reason = reason
+	cancelErr := a.CancelTurnForSession(sessionID)
 
 	grace := time.After(time.Duration(graceMs) * time.Millisecond)
 	select {
 	case response := <-call.result:
 		if response != nil {
-			a.resetPrompt(key)
+			a.resetPrompt(sessionID, key)
 		}
 		return timeoutErr
 	case <-grace:
@@ -1731,14 +1973,70 @@ func (a *ACPAdapter) recoverTimedOutTurn(call *pendingCall, key string, graceMs 
 	return timeoutErr
 }
 
-// CancelTurn notifies the Harness to cancel the active prompt.
-func (a *ACPAdapter) CancelTurn() error {
+// TurnOwnerFor reports the logical scope currently executing a turn on the
+// native conversation this scope is bound to. A scope that is not retained, or
+// whose conversation is idle, reports not busy. The native session id never
+// leaves this method.
+func (a *ACPAdapter) TurnOwnerFor(scope string) (string, bool) {
 	a.mu.Lock()
-	if a.turnSessionID == "" || a.stdin == nil || !a.promptActive {
+	defer a.mu.Unlock()
+	sessionID := a.sessionIDForScopeLocked(scope)
+	if sessionID == "" {
+		return "", false
+	}
+	turn := a.activeTurns[sessionID]
+	if turn == nil {
+		return "", false
+	}
+	return turn.scope, true
+}
+
+// sessionIDForScopeLocked resolves one logical scope to the native session it
+// is bound to. Callers must hold a.mu.
+func (a *ACPAdapter) sessionIDForScopeLocked(scope string) string {
+	if normalizeScopeName(scope) == "room" {
+		return a.sessionID
+	}
+	if session := a.sessions[normalizeScopeName(scope)]; session != nil {
+		return session.sessionID
+	}
+	return ""
+}
+
+// CancelTurn notifies the Harness to cancel the default Room conversation's
+// active prompt. It is the legacy single-conversation entry point.
+func (a *ACPAdapter) CancelTurn() error {
+	return a.CancelTurnFor("room")
+}
+
+// CancelTurnFor notifies the Harness to cancel exactly the active prompt of
+// ONE logical scope. A scope with no active turn is a local no-op, so a stale
+// or duplicated interrupt can never cancel a different conversation.
+func (a *ACPAdapter) CancelTurnFor(scope string) error {
+	a.mu.Lock()
+	sessionID := ""
+	for id, turn := range a.activeTurns {
+		if turn.scope == normalizeScopeName(scope) {
+			sessionID = id
+			break
+		}
+	}
+	a.mu.Unlock()
+	if sessionID == "" {
+		return nil
+	}
+	return a.CancelTurnForSession(sessionID)
+}
+
+// CancelTurnForSession is the exact-conversation cancel dispatch shared by the
+// scoped entry point and expiry recovery.
+func (a *ACPAdapter) CancelTurnForSession(sessionID string) error {
+	a.mu.Lock()
+	if sessionID == "" || a.stdin == nil || a.activeTurns[sessionID] == nil {
 		a.mu.Unlock()
 		return nil
 	}
-	params, _ := json.Marshal(map[string]any{"sessionId": a.turnSessionID})
+	params, _ := json.Marshal(map[string]any{"sessionId": sessionID})
 	envelope, _ := json.Marshal(acpMessage{
 		JSONRPC: "2.0",
 		Method:  "session/cancel",
@@ -1746,7 +2044,7 @@ func (a *ACPAdapter) CancelTurn() error {
 	})
 	a.mu.Unlock()
 
-	a.cancelPendingPermissions()
+	a.cancelPendingPermissions(sessionID)
 	return a.writeFrame(envelope)
 }
 
@@ -1767,7 +2065,7 @@ func (a *ACPAdapter) forceClose() {
 }
 
 func (a *ACPAdapter) closeInternal(force bool) error {
-	var turnCancel context.CancelFunc
+	var turnCancels []context.CancelFunc
 	a.mu.Lock()
 	if a.closing {
 		a.mu.Unlock()
@@ -1790,20 +2088,21 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 	a.sessions = make(map[string]*acpSession)
 	a.stdin = nil
 	a.proc = nil
-	a.promptActive = false
-	a.turnChunks = nil
-	turnCancel = a.turnCancel
-	a.turnContext = nil
-	a.turnCancel = nil
-	a.turnSessionID = ""
+	turnCancels = make([]context.CancelFunc, 0, len(a.activeTurns))
+	for _, active := range a.activeTurns {
+		if active.cancel != nil {
+			turnCancels = append(turnCancels, active.cancel)
+		}
+	}
+	a.activeTurns = make(map[string]*activeACPTurn)
 	for _, call := range a.pending {
 		close(call.result)
 	}
 	a.pending = make(map[string]*pendingCall)
 	a.pendingPermissions = make(map[string]*pendingPermission)
 	a.mu.Unlock()
-	if turnCancel != nil {
-		turnCancel()
+	for _, cancel := range turnCancels {
+		cancel()
 	}
 
 	// Teardown state is cleared; allow a later EnsureSession to spawn a

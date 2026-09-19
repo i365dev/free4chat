@@ -242,10 +242,16 @@ func TestResidentActivityKeepsExactTurnSequencePerTurn(t *testing.T) {
 			return len(client.snapshot()) == count
 		}, "activity publication")
 	}
+	// #421: the active-turn identity is per scope, so "which turn is running
+	// for this scope" is a map lookup rather than three process-global fields.
 	activeTurn := func() (bool, string, int64) {
 		runtime.activityMu.Lock()
 		defer runtime.activityMu.Unlock()
-		return runtime.activityTurnActive, runtime.activityScope, runtime.activityTurnSequence
+		current, ok := runtime.activities[scope]
+		if !ok {
+			return false, "", 0
+		}
+		return true, scope, current.sequence
 	}
 
 	runtime.beginActivity(scope, 42)

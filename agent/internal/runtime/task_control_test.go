@@ -177,17 +177,32 @@ func waitForActiveScope(t *testing.T, rt *ResidentRuntime, scope string) {
 	waitFor(t, 2*time.Second, func() bool {
 		rt.activityMu.Lock()
 		defer rt.activityMu.Unlock()
-		return rt.activityTurnActive && rt.activityScope == scope
+		_, active := rt.activities[scope]
+		return active
 	}, "active Runtime turn for "+scope)
 }
 
+// activeScope returns the ONE scope with an executing turn. It is empty when
+// none or more than one exists: a multi-lane resident has no single active
+// scope, and a test that assumed otherwise would be asserting the pre-#421
+// serial model.
 func activeScope(rt *ResidentRuntime) string {
 	rt.activityMu.Lock()
 	defer rt.activityMu.Unlock()
-	if !rt.activityTurnActive {
+	if len(rt.activities) != 1 {
 		return ""
 	}
-	return rt.activityScope
+	for scope := range rt.activities {
+		return scope
+	}
+	return ""
+}
+
+// activeTurnSequence reports the canonical turn the given scope executes now.
+func activeTurnSequence(rt *ResidentRuntime, scope string) int64 {
+	rt.activityMu.Lock()
+	defer rt.activityMu.Unlock()
+	return rt.activities[scope].sequence
 }
 
 func interruptControl(taskRequestID string, turnSequence int64) *types.ResidentTaskControl {
@@ -504,9 +519,7 @@ func TestTaskInterruptForAPreviousTurnNeverCancelsTheNextTurn(t *testing.T) {
 	if got := activeScope(rt); got != "task:req-T" {
 		t.Fatalf("the current turn was disturbed: %q", got)
 	}
-	rt.activityMu.Lock()
-	sequence := rt.activityTurnSequence
-	rt.activityMu.Unlock()
+	sequence := activeTurnSequence(rt, "task:req-T")
 	if sequence != 2 {
 		t.Fatalf("active turn identity changed to %d", sequence)
 	}
@@ -565,9 +578,7 @@ func TestTaskInterruptDispatchIsAtomicWithTurnTransition(t *testing.T) {
 	if got := activeScope(rt); got != "task:req-T" {
 		t.Fatalf("turn identity was cleared inside the dispatch boundary: %q", got)
 	}
-	rt.activityMu.Lock()
-	sequence := rt.activityTurnSequence
-	rt.activityMu.Unlock()
+	sequence := activeTurnSequence(rt, "task:req-T")
 	if sequence != 1 {
 		t.Fatalf("a successor turn became active inside the dispatch boundary: %d", sequence)
 	}

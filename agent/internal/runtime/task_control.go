@@ -84,10 +84,11 @@ func taskScopeForRequestID(taskRequestID string) string {
 // control that arrives after the transition observes a different (or cleared)
 // turn identity and is a no-op.
 //
-// ACP's adapter-level CancelTurn is the correct seam here: once the Runtime has
-// proven which turn it owns, the adapter's single in-flight prompt is that
-// turn, so this never cancels another client's conversation. No CancelTurnFor
-// and no HarnessAdapter change is introduced.
+// #421 makes the dispatch scope-exact rather than implicitly single-prompt:
+// the Runtime names the logical scope whose turn it proved it owns, and the
+// adapter cancels the one conversation that scope is bound to. An adapter that
+// cannot cancel by scope keeps the legacy whole-adapter cancel, which stays
+// correct for a serial adapter because at most one turn is in flight there.
 func (r *ResidentRuntime) cancelActiveTaskTurn(scope string, turnSequence int64) bool {
 	if r.options.Adapter == nil {
 		return false
@@ -96,9 +97,8 @@ func (r *ResidentRuntime) cancelActiveTaskTurn(scope string, turnSequence int64)
 	defer r.turnControlMu.Unlock()
 
 	r.activityMu.Lock()
-	authorized := r.activityTurnActive &&
-		r.activityScope == scope &&
-		r.activityTurnSequence == turnSequence
+	current, active := r.activities[scope]
+	authorized := active && current.sequence == turnSequence
 	// activityMu is released before the adapter call: a cancellation may cause
 	// the Harness to emit a final activity update, which re-enters this Runtime
 	// through observeHarnessActivity and must not deadlock here. turnControlMu
@@ -107,7 +107,7 @@ func (r *ResidentRuntime) cancelActiveTaskTurn(scope string, turnSequence int64)
 	if !authorized {
 		return false
 	}
-	if err := r.options.Adapter.CancelTurn(); err != nil {
+	if err := r.cancelHarnessTurnFor(scope); err != nil {
 		// The dispatch did not land, so nothing was interrupted: do not claim
 		// an interrupting phase, and do not mark the turn as intentionally
 		// stopped.
@@ -119,4 +119,14 @@ func (r *ResidentRuntime) cancelActiveTaskTurn(scope string, turnSequence int64)
 	// consumed by THIS turn's settlement.
 	r.markTurnInterruptedLocked(scope, turnSequence)
 	return true
+}
+
+// cancelHarnessTurnFor dispatches the exact-conversation cancel for one scope.
+// The optional scoped seam is preferred; a serial adapter without it can only
+// ever have one in-flight turn, so its whole-adapter cancel is still exact.
+func (r *ResidentRuntime) cancelHarnessTurnFor(scope string) error {
+	if adapter, ok := r.options.Adapter.(types.ScopedTurnCanceller); ok {
+		return adapter.CancelTurnFor(scope)
+	}
+	return r.options.Adapter.CancelTurn()
 }
