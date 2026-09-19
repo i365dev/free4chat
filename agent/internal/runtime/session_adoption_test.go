@@ -141,12 +141,29 @@ func (a *adoptionAdapter) eventIndex(want string) int {
 	return -1
 }
 
-func (a *adoptionAdapter) ListSessions(cwd string, cursor string) (harness.ACPSessionPage, error) {
-	a.record("list")
+func (a *adoptionAdapter) ListSessions(options harness.ACPSessionListOptions) (harness.ACPSessionPage, error) {
+	// Record presence explicitly: a nil cwd is a GLOBAL request that must omit
+	// the field entirely, while a set one is an exact project filter (#409 §8).
+	if options.Cwd == nil {
+		a.record("list:global")
+	} else {
+		a.record("list:" + *options.Cwd)
+	}
 	if a.listErr != nil {
 		return harness.ACPSessionPage{}, a.listErr
 	}
-	return harness.ACPSessionPage{Sessions: a.sessions, NextCursor: ""}, nil
+	// Honor the filter like a real Harness does, so a caller that sends the
+	// WRONG cwd cannot accidentally look correct in a test.
+	if options.Cwd == nil {
+		return harness.ACPSessionPage{Sessions: a.sessions, NextCursor: ""}, nil
+	}
+	filtered := make([]harness.ACPSessionInfo, 0, len(a.sessions))
+	for _, info := range a.sessions {
+		if info.Cwd == *options.Cwd {
+			filtered = append(filtered, info)
+		}
+	}
+	return harness.ACPSessionPage{Sessions: filtered, NextCursor: ""}, nil
 }
 
 // LoadSession continues the selected native session in exactly this scope, and
@@ -219,18 +236,26 @@ type adoptionFixture struct {
 	logs    *logCapture
 }
 
+// newAdoptionFixture mirrors the daemon exactly: the SESSION-CONTINUATION
+// support policy comes from the launcher registry, never from the adapter's
+// own name. That is what makes "enable another Harness" a one-flag change.
 func newAdoptionFixture(t *testing.T, name string) *adoptionFixture {
 	t.Helper()
 	adapter := newAdoptionAdapter(name)
 	client := newExecutionClient()
 	logs := &logCapture{}
+	policy := false
+	if launcher, err := harness.GetLauncher(name); err == nil {
+		policy = launcher.TaskSessionContinuation
+	}
 	rt := NewResidentRuntime(Options{
-		InstanceID: "pi-handoff",
-		RoomID:     "room-pi-handoff",
-		Name:       "Pi",
-		Client:     client,
-		Adapter:    adapter,
-		Log:        logs.log,
+		InstanceID:              "pi-handoff",
+		RoomID:                  "room-pi-handoff",
+		Name:                    "Pi",
+		Client:                  client,
+		Adapter:                 adapter,
+		Log:                     logs.log,
+		TaskSessionContinuation: policy,
 	})
 	rt.adoptJoin(types.JoinResult{
 		ParticipantID:     "agent",
@@ -567,26 +592,36 @@ func TestSessionHandoffIsPiOnlyAndSinglePending(t *testing.T) {
 		}
 	}
 
-	// A non-Pi Harness is rejected by name, never by capability advertisement.
+	// A Harness whose LAUNCHER POLICY is disabled is rejected — even though
+	// this fake adapter implements every session primitive. Admission is a
+	// product decision, never a capability advertisement.
 	other := newAdoptionFixture(t, "codex")
-	if err := other.rt.ArmSessionAdoption("native-1", "", ""); !errors.Is(err, errSessionAdoptionUnsupported) {
-		t.Fatalf("non-Pi adoption must be rejected, got %v", err)
+	if other.rt.options.TaskSessionContinuation {
+		t.Fatal("the codex launcher policy must currently be disabled")
 	}
-	if _, err := other.rt.ListHarnessSessions("", ""); !errors.Is(err, errSessionAdoptionUnsupported) {
-		t.Fatalf("non-Pi listing must be rejected, got %v", err)
+	if err := other.rt.ArmSessionAdoption("native-1", "", ""); !errors.Is(err, errSessionAdoptionUnsupported) {
+		t.Fatalf("a policy-disabled Harness must be rejected, got %v", err)
+	}
+	if _, err := other.rt.ListHarnessSessions(harness.ACPSessionListOptions{}); !errors.Is(err, errSessionAdoptionUnsupported) {
+		t.Fatalf("policy-disabled listing must be rejected, got %v", err)
+	}
+	if other.rt.CurrentRuntimeFeatures() != nil {
+		t.Fatal("a policy-disabled Harness must advertise no feature")
 	}
 
-	// A Pi-named adapter without the session primitives is also rejected.
+	// An ENABLED policy with an adapter that lacks the session primitives is
+	// also rejected: the flag alone is not enough.
 	plain := NewResidentRuntime(Options{
-		InstanceID: "plain-pi",
-		RoomID:     "room-plain",
-		Name:       "Pi",
-		Client:     newExecutionClient(),
-		Adapter:    &interruptAdapter{fakeAdapter: &fakeAdapter{name: "pi"}},
+		InstanceID:              "plain-pi",
+		RoomID:                  "room-plain",
+		Name:                    "Pi",
+		Client:                  newExecutionClient(),
+		Adapter:                 &interruptAdapter{fakeAdapter: &fakeAdapter{name: "pi"}},
+		TaskSessionContinuation: true,
 	})
 	t.Cleanup(plain.Stop)
 	if err := plain.ArmSessionAdoption("native-1", "", ""); !errors.Is(err, errSessionAdoptionUnsupported) {
-		t.Fatalf("a Pi adapter without session primitives must be rejected, got %v", err)
+		t.Fatalf("an adapter without session primitives must be rejected, got %v", err)
 	}
 }
 
@@ -594,7 +629,7 @@ func TestListHarnessSessionsIsBoundedLocalOutput(t *testing.T) {
 	fixture := newAdoptionFixture(t, "pi")
 	rt, adapter := fixture.rt, fixture.adapter
 
-	page, err := rt.ListHarnessSessions("", "")
+	page, err := rt.ListHarnessSessions(harness.ACPSessionListOptions{})
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
@@ -611,7 +646,7 @@ func TestListHarnessSessionsIsBoundedLocalOutput(t *testing.T) {
 		t.Fatal("discovery must not stop the Runtime")
 	}
 	adapter.listErr = errors.New("discovery unavailable")
-	if _, err := rt.ListHarnessSessions("", ""); err == nil {
+	if _, err := rt.ListHarnessSessions(harness.ACPSessionListOptions{}); err == nil {
 		t.Fatal("a failing discovery must surface the adapter error")
 	}
 }

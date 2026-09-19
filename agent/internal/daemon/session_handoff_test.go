@@ -30,9 +30,13 @@ type handoffAdapter struct {
 	listErr error
 	loadErr error
 	loads   []string
+	// options records the exact presence-aware list options each call used, so
+	// a test can prove a global request omits cwd entirely (#409 §8).
+	options []harness.ACPSessionListOptions
 }
 
-func (a *handoffAdapter) ListSessions(cwd string, cursor string) (harness.ACPSessionPage, error) {
+func (a *handoffAdapter) ListSessions(options harness.ACPSessionListOptions) (harness.ACPSessionPage, error) {
+	a.options = append(a.options, options)
 	if a.listErr != nil {
 		return harness.ACPSessionPage{}, a.listErr
 	}
@@ -47,15 +51,23 @@ func (a *handoffAdapter) LoadSession(scope string, sessionID string, cwd string)
 	return nil
 }
 
-// registerHandoffResident injects one resident backed by the given adapter.
+// registerHandoffResident injects one resident backed by the given adapter,
+// projecting the SAME launcher-registry support policy the daemon does. A
+// resident whose launcher is not enabled never reaches the session primitives.
 func registerHandoffResident(t *testing.T, d *Daemon, instanceID, adapterName string, adapter types.HarnessAdapter) {
 	t.Helper()
+	policy := false
+	if launcher, err := harness.GetLauncher(adapterName); err == nil {
+		policy = launcher.TaskSessionContinuation
+	}
 	rt := runtime.NewResidentRuntime(runtime.Options{
-		InstanceID: instanceID,
-		RoomID:     "handoff-room",
-		Name:       "Agent " + adapterName,
-		Client:     &recordingClient{},
-		Adapter:    adapter,
+		InstanceID:              instanceID,
+		RoomID:                  "handoff-room",
+		Name:                    "Agent " + adapterName,
+		Client:                  &recordingClient{},
+		Adapter:                 adapter,
+		TaskSessionContinuation: policy,
+		DisposableWorkspaceRoot: WorkspacesRoot(),
 	})
 	t.Cleanup(rt.Stop)
 	d.register(&residentInstance{
@@ -74,7 +86,7 @@ func TestHandoffAdoptDispatchStaysLocalAndSingle(t *testing.T) {
 		Op:                 "handoff-adopt",
 		InstanceID:         "pi-handoff",
 		SessionID:          "native-pi-1",
-		SessionCwd:         "/workspace/project",
+		SessionCwd:         ptrString("/workspace/project"),
 		HumanParticipantID: "human-1",
 	})
 	if err != nil {
@@ -140,7 +152,7 @@ func TestHandoffListDispatchReturnsBoundedDescriptors(t *testing.T) {
 	}
 	registerHandoffResident(t, d, "pi-list", "pi", adapter)
 
-	result, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "pi-list", SessionCwd: "/workspace/project"})
+	result, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "pi-list", SessionCwd: ptrString("/workspace/project")})
 	if err != nil {
 		t.Fatalf("handoff-list failed: %v", err)
 	}
@@ -171,8 +183,12 @@ func TestHandoffListDispatchReturnsBoundedDescriptors(t *testing.T) {
 	}
 }
 
-func TestHandoffDispatchRejectsUnknownOrNonPiResident(t *testing.T) {
+func TestHandoffDispatchRejectsUnknownOrUnsupportedResident(t *testing.T) {
 	d, _ := startDaemon(t)
+	// #409: eligibility is the launcher's centralized product policy. Codex is
+	// source-supported but not runtime-verified, so its policy is disabled and
+	// its resident must be rejected even though this stub could be shaped like
+	// a session-capable adapter.
 	registerHandoffResident(t, d, "codex-handoff", "codex", &stubAdapter{name: "codex"})
 
 	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-adopt", InstanceID: "missing", SessionID: "native-1"}); err == nil {
@@ -180,9 +196,28 @@ func TestHandoffDispatchRejectsUnknownOrNonPiResident(t *testing.T) {
 	}
 	for _, op := range []string{"handoff-adopt", "handoff-list"} {
 		request := &IpcRequest{Op: op, InstanceID: "codex-handoff", SessionID: "native-1"}
-		if _, err := d.Dispatch(request); err == nil || !strings.Contains(err.Error(), "Pi Harness only") {
-			t.Fatalf("%s must reject a non-Pi resident by name, got %v", op, err)
+		if _, err := d.Dispatch(request); err == nil || !strings.Contains(err.Error(), "not supported for this Harness") {
+			t.Fatalf("%s must reject a resident whose launcher policy is disabled, got %v", op, err)
 		}
+	}
+}
+
+// TestHandoffListRejectsAPolicyDisabledHarness proves the launcher registry is
+// the ONLY gate: the very same adapter shape is admitted for pi (enabled) and
+// refused for codex (disabled), with no Harness-name branch anywhere.
+func TestHandoffListRejectsAPolicyDisabledHarness(t *testing.T) {
+	d, _ := startDaemon(t)
+	page := harness.ACPSessionPage{Sessions: []harness.ACPSessionInfo{{
+		SessionID: "native-pi-1", Cwd: "/workspace/project", Title: "Native Pi conversation",
+	}}}
+	registerHandoffResident(t, d, "policy-pi", "pi", &handoffAdapter{stubAdapter: &stubAdapter{name: "pi"}, page: page})
+	registerHandoffResident(t, d, "policy-codex", "codex", &handoffAdapter{stubAdapter: &stubAdapter{name: "codex"}, page: page})
+
+	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "policy-pi"}); err != nil {
+		t.Fatalf("the enabled launcher must be admitted: %v", err)
+	}
+	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "policy-codex"}); err == nil {
+		t.Fatal("the disabled launcher must be refused")
 	}
 }
 
@@ -208,4 +243,82 @@ func TestHandoffDispatchDefaultsToTheSoleResident(t *testing.T) {
 	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-state"}); err == nil {
 		t.Fatal("an ambiguous resident set must require --instance")
 	}
+}
+
+// ptrString builds a presence-aware optional cwd (#409 §8): nil means "no
+// cwd filter at all".
+func ptrString(value string) *string {
+	return &value
+}
+
+// TestHandoffListCwdIsPresenceAware is the #409 §8 fence: an omitted --cwd is
+// GLOBAL discovery (the adapter omits the filter entirely), and an explicit
+// --cwd is exactly that path. The invoking shell's directory is never
+// substituted for either.
+func TestHandoffListCwdIsPresenceAware(t *testing.T) {
+	d, _ := startDaemon(t)
+	adapter := &handoffAdapter{
+		stubAdapter: &stubAdapter{name: "pi"},
+		page: harness.ACPSessionPage{Sessions: []harness.ACPSessionInfo{{
+			SessionID: "native-pi-1",
+			Cwd:       "/workspace/project",
+			Title:     "Native Pi conversation",
+		}}},
+	}
+	registerHandoffResident(t, d, "pi-cwd", "pi", adapter)
+
+	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "pi-cwd"}); err != nil {
+		t.Fatalf("global list failed: %v", err)
+	}
+	if len(adapter.options) != 1 || adapter.options[0].Cwd != nil {
+		t.Fatalf("an omitted --cwd must send NO cwd filter: %+v", adapter.options)
+	}
+
+	if _, err := d.Dispatch(&IpcRequest{
+		Op: "handoff-list", InstanceID: "pi-cwd", SessionCwd: ptrString("/private/tmp"),
+	}); err != nil {
+		t.Fatalf("explicit list failed: %v", err)
+	}
+	if len(adapter.options) != 2 || adapter.options[1].Cwd == nil || *adapter.options[1].Cwd != "/private/tmp" {
+		t.Fatalf("an explicit --cwd must be sent byte-for-byte: %+v", adapter.options)
+	}
+}
+
+// TestDaemonProjectsTheLauncherTaskSessionPolicy proves the Runtime receives
+// the ONE product-level policy from the resolved launcher, and the daemon
+// itself never decides per-Harness behavior.
+func TestDaemonProjectsTheLauncherTaskSessionPolicy(t *testing.T) {
+	enabled := newDaemonRuntimeForPolicy(t, "pi", true)
+	if enabled.CurrentRuntimeFeatures() == nil {
+		t.Fatal("a pi resident must advertise Task Session Continuation")
+	}
+	disabled := newDaemonRuntimeForPolicy(t, "codex", false)
+	if disabled.CurrentRuntimeFeatures() != nil {
+		t.Fatal("a non-verified Harness must not advertise Task Session Continuation")
+	}
+}
+
+// newDaemonRuntimeForPolicy builds one resident through the SAME launcher
+// registry lookup the daemon uses, so the test proves the projection rather
+// than restating it.
+func newDaemonRuntimeForPolicy(t *testing.T, launcherID string, wantEnabled bool) *runtime.ResidentRuntime {
+	t.Helper()
+	launcher, err := harness.GetLauncher(launcherID)
+	if err != nil {
+		t.Fatalf("launcher %q: %v", launcherID, err)
+	}
+	if launcher.TaskSessionContinuation != wantEnabled {
+		t.Fatalf("launcher %q policy mismatch: got %v want %v", launcherID, launcher.TaskSessionContinuation, wantEnabled)
+	}
+	rt := runtime.NewResidentRuntime(runtime.Options{
+		InstanceID:              "policy-" + launcherID,
+		RoomID:                  "handoff-room",
+		Name:                    "Agent " + launcherID,
+		Client:                  &recordingClient{},
+		Adapter:                 &handoffAdapter{stubAdapter: &stubAdapter{name: launcherID}},
+		TaskSessionContinuation: launcher.TaskSessionContinuation,
+		DisposableWorkspaceRoot: WorkspacesRoot(),
+	})
+	t.Cleanup(rt.Stop)
+	return rt
 }

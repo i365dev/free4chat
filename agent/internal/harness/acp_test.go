@@ -1626,7 +1626,8 @@ func TestACPListSessionsSendsExactBoundedRequest(t *testing.T) {
 		t.Fatalf("ensure failed: %v", err)
 	}
 
-	page, err := adapter.ListSessions("/workspace/project", "cursor-1")
+	projectCwd := "/workspace/project"
+	page, err := adapter.ListSessions(ACPSessionListOptions{Cwd: &projectCwd, Cursor: "cursor-1"})
 	if err != nil {
 		t.Fatalf("list failed: %v", err)
 	}
@@ -1667,14 +1668,30 @@ func TestACPListSessionsSendsExactBoundedRequest(t *testing.T) {
 		t.Fatalf("session/list wire request mismatch: got=%v want=%v", got, wantParams)
 	}
 
-	// An empty cwd/cursor omits both optional fields; an empty cwd still
-	// means the adapter's own workspace directory.
-	page, err = adapter.ListSessions("", "")
+	// #409 §8: a NIL cwd is global discovery and omits the field from the wire
+	// entirely. The invoking shell's / adapter's own directory is never
+	// substituted for an unfiltered request.
+	page, err = adapter.ListSessions(ACPSessionListOptions{})
 	if err != nil {
-		t.Fatalf("unfiltered list failed: %v", err)
+		t.Fatalf("global list failed: %v", err)
+	}
+	if len(page.Sessions) != 2 || page.Sessions[0].Cwd != "/workspace" {
+		t.Fatalf("global discovery must not substitute a cwd: %+v", page.Sessions)
+	}
+	wantParams = append(wantParams, map[string]any{})
+	if got := acpTraceParams(t, tracePath, "session/list"); !reflect.DeepEqual(got, wantParams) {
+		t.Fatalf("session/list wire request mismatch: got=%v want=%v", got, wantParams)
+	}
+
+	// An EXPLICIT cwd is still sent byte-for-byte, so "the adapter workspace"
+	// remains expressible — it is now a caller decision instead of a silent
+	// default.
+	page, err = adapter.ListSessions(ACPSessionListOptions{Cwd: &workspace})
+	if err != nil {
+		t.Fatalf("explicit workspace list failed: %v", err)
 	}
 	if len(page.Sessions) != 2 || page.Sessions[0].Cwd != workspace {
-		t.Fatalf("empty cwd must default to the adapter workspace: %+v", page.Sessions)
+		t.Fatalf("explicit cwd was not used: %+v", page.Sessions)
 	}
 	wantParams = append(wantParams, map[string]any{"cwd": workspace})
 	if got := acpTraceParams(t, tracePath, "session/list"); !reflect.DeepEqual(got, wantParams) {
@@ -1699,7 +1716,7 @@ func TestACPSessionOpaqueValuesArePreservedExactly(t *testing.T) {
 			t.Fatalf("ensure failed: %v", err)
 		}
 
-		page, err := adapter.ListSessions(" /workspace/project ", " cursor-token ")
+		page, err := adapter.ListSessions(ACPSessionListOptions{Cwd: strPtr(" /workspace/project "), Cursor: " cursor-token "})
 		if err != nil {
 			t.Fatalf("list failed: %v", err)
 		}
@@ -1739,7 +1756,7 @@ func TestACPSessionOpaqueValuesArePreservedExactly(t *testing.T) {
 			t.Fatalf("ensure failed: %v", err)
 		}
 
-		page, err := adapter.ListSessions("", "")
+		page, err := adapter.ListSessions(ACPSessionListOptions{})
 		if err != nil {
 			t.Fatalf("list failed: %v", err)
 		}
@@ -1845,7 +1862,7 @@ func TestACPListSessionsRejectsMalformedAndOversizedResults(t *testing.T) {
 				t.Fatalf("ensure failed: %v", err)
 			}
 
-			page, err := adapter.ListSessions("", "")
+			page, err := adapter.ListSessions(ACPSessionListOptions{})
 			if testCase.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
 					t.Fatalf("want %q, got page=%+v err=%v", testCase.wantErr, page, err)
@@ -2008,7 +2025,7 @@ func TestACPSessionPrimitivesWithoutCapabilityFailLocally(t *testing.T) {
 	before := adapter.SessionDiagnostics()
 	generationBefore := adapter.SessionGeneration()
 
-	if _, err := adapter.ListSessions("", ""); err == nil ||
+	if _, err := adapter.ListSessions(ACPSessionListOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "does not advertise sessionCapabilities.list") {
 		t.Fatalf("an unadvertised session/list must fail locally: %v", err)
 	}
@@ -2054,7 +2071,7 @@ func TestACPSessionPrimitivesAreBoundedByControlTimeout(t *testing.T) {
 			started := time.Now()
 			var err error
 			if testCase.method == "session/list" {
-				_, err = adapter.ListSessions("", "")
+				_, err = adapter.ListSessions(ACPSessionListOptions{})
 			} else {
 				err = adapter.LoadSession("room", "native-session-1", "")
 			}
@@ -2662,4 +2679,11 @@ func TestControlRequestTimeoutReestablishesKnownSession(t *testing.T) {
 	if recoveredIDs <= idsAfterHandshake {
 		t.Fatalf("request ids restarted across respawn: %d -> %d", idsAfterHandshake, recoveredIDs)
 	}
+}
+
+// strPtr is a tiny helper for the presence-aware session-list options: a nil
+// Cwd means "global discovery" and a non-nil one means "exactly this path"
+// (#409 §8), so tests must be able to express both.
+func strPtr(value string) *string {
+	return &value
 }

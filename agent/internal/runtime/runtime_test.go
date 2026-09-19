@@ -366,7 +366,7 @@ func (c *fakeClient) ReadRoomContext(_ string, options types.RoomContextReadOpti
 	return c.contextResult, c.contextErr
 }
 
-func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
+func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {
 	c.mu.Lock()
 	c.hostsSeen = append(c.hostsSeen, host)
 	c.mu.Unlock()
@@ -390,7 +390,7 @@ func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *
 	return j, nil
 }
 
-func (c *fakeClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
+func (c *fakeClient) CreateRoom(string, []string, *types.RuntimeFeatureProjection) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, nil
 }
 

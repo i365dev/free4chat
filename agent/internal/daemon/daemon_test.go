@@ -273,7 +273,7 @@ func (c *recordingClient) ListTools() ([]string, error) { return nil, nil }
 func (c *recordingClient) RoomInfo(string) (types.RoomInfo, error) {
 	return types.RoomInfo{Exists: true}, nil
 }
-func (c *recordingClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
+func (c *recordingClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {
 	c.mu.Lock()
 	c.joins++
 	c.mu.Unlock()
@@ -284,7 +284,7 @@ func (c *recordingClient) JoinRoom(roomID, name string, capabilities []string, h
 		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
 	}, nil
 }
-func (*recordingClient) CreateRoom(string, []string) (types.CreateRoomResult, error) {
+func (*recordingClient) CreateRoom(string, []string, *types.RuntimeFeatureProjection) (types.CreateRoomResult, error) {
 	return types.CreateRoomResult{}, errors.New("not used")
 }
 func (*recordingClient) UpdateRuntimeHost(string, types.RuntimeHostProjection) error {

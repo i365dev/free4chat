@@ -53,6 +53,13 @@ const runtimeHostSchema = z.object({
     .regex(/^[A-Za-z0-9._:-]{8,64}$/),
   speech: z.object({ stt: z.boolean(), tts: z.boolean() }),
 })
+// #409: additive Runtime feature projection. A closed, Runtime-owned fact —
+// NOT an arbitrary capability string — so it can be strictly validated here
+// and can never be forged by naming a token. Every field is optional, so an
+// older Runtime simply omits the whole object.
+const runtimeFeaturesSchema = z.object({
+  taskSessionContinuation: z.boolean().optional(),
+})
 // 256-bit base64url opaque capability values. The MCP boundary validates the
 // shape but never logs, projects, or includes either value in room_info.
 const runtimeProviderCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
@@ -373,6 +380,7 @@ function createMcpServer(context: McpRequestContext) {
           .max(MAX_CAPABILITIES)
           .optional(),
         runtimeHost: runtimeHostSchema.optional(),
+        runtimeFeatures: runtimeFeaturesSchema.optional(),
         providerClaimHash: runtimeProviderCredentialSchema.optional(),
         runtimeProviderHandle: runtimeProviderCredentialSchema.optional(),
       },
@@ -382,6 +390,7 @@ function createMcpServer(context: McpRequestContext) {
       name,
       capabilities,
       runtimeHost,
+      runtimeFeatures,
       providerClaimHash,
       runtimeProviderHandle,
     }) => {
@@ -413,6 +422,10 @@ function createMcpServer(context: McpRequestContext) {
             ...(normalized.length > 0 ? { advertised: normalized } : {}),
           },
           ...(runtimeHost ? { runtimeHost } : {}),
+          // #409: additive discovery metadata. Omitted entirely when the
+          // caller has no feature to project, so an older Runtime sends
+          // exactly the payload it always did.
+          ...(runtimeFeatures ? { runtimeFeatures } : {}),
           ...(providerClaimHash ? { providerClaimHash } : {}),
           ...(runtimeProviderHandle ? { runtimeProviderHandle } : {}),
         },
@@ -459,9 +472,10 @@ function createMcpServer(context: McpRequestContext) {
           .array(z.string().trim().min(1).max(MAX_CAPABILITY_LENGTH))
           .max(MAX_CAPABILITIES)
           .optional(),
+        runtimeFeatures: runtimeFeaturesSchema.optional(),
       },
     },
-    async ({ name, capabilities }) => {
+    async ({ name, capabilities, runtimeFeatures }) => {
       // #178 review fix 3: create_room NEVER accepts a runtimeHost — the
       // Room-scoped id is derived from the final server-generated roomId,
       // which does not exist at call time. Obtain the roomId here, then
@@ -500,6 +514,7 @@ function createMcpServer(context: McpRequestContext) {
               text: true,
               ...(normalized.length > 0 ? { advertised: normalized } : {}),
             },
+            ...(runtimeFeatures ? { runtimeFeatures } : {}),
           },
         })
         if (result.ok) {

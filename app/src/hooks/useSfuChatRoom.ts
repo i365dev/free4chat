@@ -42,6 +42,12 @@ import {
   trackAnalyticsEvent,
 } from "@common/utils"
 import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
+import {
+  isTaskSessionError,
+  validateTaskSessionListResult,
+  MAX_TASK_SESSION_TOKEN_LENGTH,
+  type TaskSessionError,
+} from "@do/taskSession"
 
 import type {
   LiveTranscriptSegment,
@@ -379,6 +385,42 @@ function diagnosticErrorType(error: unknown): string {
   return error instanceof Error && error.name ? error.name : typeof error
 }
 
+/** #409: the bounded, presentation-only page a Human picker can render. */
+export interface TaskSessionPage {
+  sessions: TaskSessionRow[]
+  projects: TaskSessionProjectRow[]
+  nextPageToken?: string
+  hasMore: boolean
+}
+
+export interface TaskSessionRow {
+  token: string
+  title: string
+  projectToken: string
+  projectLabel: string
+  updatedAt?: string
+}
+
+export interface TaskSessionProjectRow {
+  token: string
+  label: string
+}
+
+export type TaskSessionListResult =
+  | { ok: true; page: TaskSessionPage }
+  | { ok: false; error: TaskSessionError }
+
+export type TaskSessionStartResult =
+  | { ok: true }
+  | { ok: false; error: TaskSessionError }
+
+/**
+ * #409: browser-side backstop for one private session request. The Room's own
+ * pending record expires first (TASK_SESSION_PENDING_TTL_MS), so a real answer
+ * always wins this race; this only prevents an indefinitely pending promise.
+ */
+const TASK_SESSION_CLIENT_TIMEOUT_MS = 25_000
+
 function userFacingRoomError(error: string | undefined): string {
   switch (error) {
     case "runtime_provider_claim_limit":
@@ -509,6 +551,8 @@ interface SfuServerMessage {
     | "agentActivity"
     | "room-app-unicast"
     | "room-app-unicast-result"
+    | "task-session-list-result"
+    | "task-session-start-result"
   state?: SfuRoomState
   attachment?: RoomAttachmentProjection
   participant?: Partial<SfuParticipant> & {
@@ -530,6 +574,13 @@ interface SfuServerMessage {
   sourceParticipantId?: string
   payload?: Record<string, unknown>
   ok?: boolean
+  // #409 Task Session Continuation private results. Presentation data only:
+  // there is deliberately no field for a real ACP session id, cwd, or provider
+  // cursor, because none ever leaves the Runtime.
+  sessions?: unknown
+  projects?: unknown
+  nextPageToken?: unknown
+  hasMore?: unknown
 }
 
 const roomMessageToMessage = (
@@ -651,6 +702,20 @@ export function useSfuChatRoom(
       attempt?: number
     ) => Promise<void>
   >(async () => undefined)
+  // #409: one pending private session request per browser, correlated by the
+  // requestId the Room echoes back. Bounded by construction: the picker keeps
+  // at most one request in flight and every entry expires.
+  const pendingTaskSessionRequestsRef = useRef(
+    new Map<
+      string,
+      {
+        kind: "list" | "start"
+        settle: (result: TaskSessionListResult | TaskSessionStartResult) => void
+        timeout: ReturnType<typeof setTimeout>
+      }
+    >()
+  )
+
   const pendingRuntimeProviderClaimsRef = useRef(
     new Map<
       string,
@@ -838,6 +903,12 @@ export function useSfuChatRoom(
         surface: participant.kind === "agent" ? participant.surface : undefined,
         runtimeHostId:
           participant.kind === "agent" ? participant.runtimeHostId : undefined,
+        // #409: the Agent's own additive Runtime feature projection. Purely
+        // additive — an older Runtime simply never sets it, so "Continue
+        // session" is not offered there and the modal is unchanged.
+        taskSessionContinuation:
+          participant.kind === "agent" &&
+          participant.runtimeFeatures?.taskSessionContinuation === true,
         voiceAvailable:
           participant.kind === "agent" &&
           state?.agentVoiceMediaAvailable === true &&
@@ -3156,6 +3227,61 @@ export function useSfuChatRoom(
         runtimeProviderClaimAttemptRef.current = null
         setError(userFacingRoomError(message.error))
       } else if (
+        message.type === "task-session-list-result" &&
+        typeof message.requestId === "string"
+      ) {
+        // #409: a private, CORRELATED discovery result. It deliberately does
+        // not go through setError: a failed discovery belongs to the picker,
+        // not to the Room-wide error banner.
+        const pending = pendingTaskSessionRequestsRef.current.get(
+          message.requestId
+        )
+        if (!pending || pending.kind !== "list") return
+        pendingTaskSessionRequestsRef.current.delete(message.requestId)
+        clearTimeout(pending.timeout)
+        const validated = validateTaskSessionListResult({
+          ok: message.ok === true,
+          error: message.error,
+          sessions: message.sessions,
+          projects: message.projects,
+          nextPageToken: message.nextPageToken,
+        })
+        if (validated.ok === true) {
+          pending.settle({
+            ok: true,
+            page: {
+              sessions: validated.sessions,
+              projects: validated.projects,
+              hasMore: validated.hasMore,
+              ...(validated.nextPageToken
+                ? { nextPageToken: validated.nextPageToken }
+                : {}),
+            },
+          })
+        } else {
+          pending.settle({ ok: false, error: validated.error })
+        }
+      } else if (
+        message.type === "task-session-start-result" &&
+        typeof message.requestId === "string"
+      ) {
+        const pending = pendingTaskSessionRequestsRef.current.get(
+          message.requestId
+        )
+        if (!pending || pending.kind !== "start") return
+        pendingTaskSessionRequestsRef.current.delete(message.requestId)
+        clearTimeout(pending.timeout)
+        pending.settle(
+          message.ok === true
+            ? { ok: true }
+            : {
+                ok: false,
+                error: isTaskSessionError(message.error)
+                  ? message.error
+                  : "session_continuation_unavailable",
+              }
+        )
+      } else if (
         message.type === "runtime-provider-claim-created" &&
         message.requestId
       ) {
@@ -3178,6 +3304,14 @@ export function useSfuChatRoom(
         pending.reject(new Error("Room control connection closed"))
       }
       pendingRuntimeProviderClaimsRef.current.clear()
+      for (const pending of pendingTaskSessionRequestsRef.current.values()) {
+        clearTimeout(pending.timeout)
+        pending.settle({
+          ok: false,
+          error: "session_continuation_unavailable",
+        })
+      }
+      pendingTaskSessionRequestsRef.current.clear()
       runtimeProviderClaimAttemptRef.current = null
       if (closingRef.current) return
       if (socket !== websocketRef.current) return
@@ -3885,6 +4019,117 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  /**
+   * #409: one bounded private discovery request. `Continue session` calls this
+   * LAZILY — opening the Start Task modal never exports local session metadata.
+   *
+   * The Room is the authorization boundary and the Runtime never hands the
+   * browser a real ACP session id, cwd, or provider cursor: the resolved page
+   * contains opaque selection/project/page tokens and bounded presentation
+   * text only.
+   */
+  const requestTaskSessions = useCallback(
+    (
+      targetParticipantId: string,
+      options?: { projectToken?: string; pageToken?: string }
+    ): Promise<TaskSessionListResult> => {
+      const target = targetParticipantId.trim()
+      if (!target)
+        return Promise.resolve({ ok: false, error: "invalid_session_control" })
+      if (websocketRef.current?.readyState !== WebSocket.OPEN)
+        return Promise.resolve({
+          ok: false,
+          error: "session_continuation_unavailable",
+        })
+      const projectToken = options?.projectToken
+      const pageToken = options?.pageToken
+      const requestId = crypto.randomUUID()
+      return new Promise<TaskSessionListResult>((settle) => {
+        const timeout = setTimeout(() => {
+          pendingTaskSessionRequestsRef.current.delete(requestId)
+          settle({ ok: false, error: "session_continuation_unavailable" })
+        }, TASK_SESSION_CLIENT_TIMEOUT_MS)
+        pendingTaskSessionRequestsRef.current.set(requestId, {
+          kind: "list",
+          settle: settle as (
+            result: TaskSessionListResult | TaskSessionStartResult
+          ) => void,
+          timeout,
+        })
+        const sent = sendSocketMessage({
+          type: "task-session-list",
+          requestId,
+          targetParticipantId: target,
+          ...(projectToken ? { projectToken } : {}),
+          ...(pageToken ? { pageToken } : {}),
+        })
+        if (sent) return
+        pendingTaskSessionRequestsRef.current.delete(requestId)
+        clearTimeout(timeout)
+        settle({ ok: false, error: "session_continuation_unavailable" })
+      })
+    },
+    [sendSocketMessage]
+  )
+
+  /**
+   * #409: ONE structured one-click Start with an existing local session.
+   *
+   * The browser exposes no internal phase: the Room pins the canonical Task
+   * requestId, the Runtime PREPAREs it against the selected session, and only
+   * then is the canonical Task appended. Success means the Task exists and is
+   * already bound to that exact conversation; failure means NO Task was
+   * created and the caller must keep the modal open.
+   */
+  const startTaskWithSession = useCallback(
+    (
+      targetParticipantId: string,
+      sessionToken: string,
+      summary: string
+    ): Promise<TaskSessionStartResult> => {
+      const target = targetParticipantId.trim()
+      const instruction = summary.trim()
+      if (
+        !target ||
+        !instruction ||
+        !sessionToken ||
+        sessionToken.length > MAX_TASK_SESSION_TOKEN_LENGTH
+      )
+        return Promise.resolve({ ok: false, error: "invalid_session_control" })
+      if (websocketRef.current?.readyState !== WebSocket.OPEN)
+        return Promise.resolve({
+          ok: false,
+          error: "session_continuation_unavailable",
+        })
+      const requestId = crypto.randomUUID()
+      return new Promise<TaskSessionStartResult>((settle) => {
+        const timeout = setTimeout(() => {
+          pendingTaskSessionRequestsRef.current.delete(requestId)
+          settle({ ok: false, error: "session_continuation_unavailable" })
+        }, TASK_SESSION_CLIENT_TIMEOUT_MS)
+        pendingTaskSessionRequestsRef.current.set(requestId, {
+          kind: "start",
+          settle: settle as (
+            result: TaskSessionListResult | TaskSessionStartResult
+          ) => void,
+          timeout,
+        })
+        const sent = sendSocketMessage({
+          type: "task-session-start",
+          requestId,
+          targetParticipantId: target,
+          sessionToken,
+          summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
+        })
+        if (sent) return
+        pendingTaskSessionRequestsRef.current.delete(requestId)
+        clearTimeout(timeout)
+        settle({ ok: false, error: "session_continuation_unavailable" })
+      })
+    },
+    [sendSocketMessage]
+  )
+
   const readRoomAttachment = useCallback(
     async (attachmentId: string): Promise<RoomAttachmentRead> => {
       if (!attachmentId) throw new Error("attachmentId is required")
@@ -4336,6 +4581,8 @@ export function useSfuChatRoom(
     sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
+    requestTaskSessions,
+    startTaskWithSession,
     sendCollabResponse,
     sendCollabResult,
     sendPermissionResponse,

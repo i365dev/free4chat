@@ -38,6 +38,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -221,33 +222,98 @@ func main() {
 				continue
 			}
 			var listParams struct {
-				Cwd    string `json:"cwd"`
-				Cursor string `json:"cursor"`
+				// Presence-aware on purpose: a bridge distinguishes "cwd was
+				// not sent" from "cwd was sent empty", and pi-acp@0.0.33 gives
+				// those two requests DIFFERENT answers.
+				Cwd    *string `json:"cwd"`
+				Cursor string  `json:"cursor"`
 			}
 			_ = json.Unmarshal(message.Params, &listParams)
-			cwd := listParams.Cwd
-			if cwd == "" {
-				cwd = "/workspace"
+			// FAKE_LIST_STORE models a REAL multi-project bridge store instead
+			// of the two fixed descriptors: `sessionId|cwd|title` lines, with
+			// pi-acp's exact resolution rule.
+			if storePath := os.Getenv("FAKE_LIST_STORE"); storePath != "" {
+				all := readFakeSessionStore(storePath)
+				effective := os.Getenv("FAKE_LIST_CWD_FALLBACK")
+				if effective == "" {
+					effective = "/workspace"
+				}
+				if listParams.Cwd != nil {
+					// An explicitly empty cwd is the ONLY spelling of "no
+					// filter"; `??` does not fall through for "".
+					effective = *listParams.Cwd
+				}
+				filtered := make([]any, 0, len(all))
+				for _, entry := range all {
+					if effective == "" || entry.Cwd == effective {
+						filtered = append(filtered, map[string]any{
+							"sessionId": entry.SessionID,
+							"cwd":       entry.Cwd,
+							"title":     entry.Title,
+							"updatedAt": "2026-09-18T12:00:00Z",
+						})
+					}
+				}
+				result := map[string]any{"sessions": filtered}
+				if os.Getenv("FAKE_LIST_NO_CURSOR") != "1" {
+					result["nextCursor"] = "cursor-page-2"
+				}
+				reply(message.ID, result)
+				continue
+			}
+			cwd := "/workspace"
+			if listParams.Cwd != nil {
+				cwd = *listParams.Cwd
 			}
 			// The first entry deliberately carries agent-private _meta: the
 			// adapter must never retain or project it.
-			result := map[string]any{
-				"sessions": []any{
-					map[string]any{
-						"sessionId": "native-session-1",
-						"cwd":       cwd,
-						"title":     "First native session",
-						"updatedAt": "2026-09-18T10:00:00Z",
-						"_meta":     map[string]any{"messageCount": 12, "hasErrors": false},
-					},
-					map[string]any{
-						"sessionId": "native-session-2",
-						"cwd":       cwd,
-						"title":     "Second native session",
-						"updatedAt": "2026-09-18T11:30:00Z",
-					},
+			sessions := []any{
+				map[string]any{
+					"sessionId": "native-session-1",
+					"cwd":       cwd,
+					"title":     "First native session",
+					"updatedAt": "2026-09-18T10:00:00Z",
+					"_meta":     map[string]any{"messageCount": 12, "hasErrors": false},
+				},
+				map[string]any{
+					"sessionId": "native-session-2",
+					"cwd":       cwd,
+					"title":     "Second native session",
+					"updatedAt": "2026-09-18T11:30:00Z",
 				},
 			}
+			// FAKE_LIST_EXTRA_FILE lets a test mutate the PROVIDER's session
+			// store WHILE this same process keeps running: every session/list
+			// re-reads the file, so a second discovery must observe the change.
+			// Each non-empty line is `sessionId|cwd|title`; an empty cwd uses
+			// the request's own cwd. This is how "no restart, no cache" is
+			// proven end-to-end against a live ACP child.
+			if extraPath := os.Getenv("FAKE_LIST_EXTRA_FILE"); extraPath != "" {
+				if raw, readErr := os.ReadFile(extraPath); readErr == nil {
+					for _, line := range strings.Split(string(raw), "\n") {
+						line = strings.TrimSpace(line)
+						if line == "" {
+							continue
+						}
+						parts := strings.SplitN(line, "|", 3)
+						entryCwd := cwd
+						if len(parts) > 1 && parts[1] != "" {
+							entryCwd = parts[1]
+						}
+						title := ""
+						if len(parts) > 2 {
+							title = parts[2]
+						}
+						sessions = append(sessions, map[string]any{
+							"sessionId": parts[0],
+							"cwd":       entryCwd,
+							"title":     title,
+							"updatedAt": "2026-09-18T12:00:00Z",
+						})
+					}
+				}
+			}
+			result := map[string]any{"sessions": sessions}
 			if os.Getenv("FAKE_LIST_NO_CURSOR") != "1" {
 				result["nextCursor"] = "cursor-page-2"
 			}
@@ -583,4 +649,36 @@ func indexOf(haystack, needle string) int {
 func fileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+// fakeSessionEntry is one line of a FAKE_LIST_STORE file.
+type fakeSessionEntry struct {
+	SessionID string
+	Cwd       string
+	Title     string
+}
+
+// readFakeSessionStore loads the whole modeled bridge session store.
+func readFakeSessionStore(path string) []fakeSessionEntry {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	out := make([]fakeSessionEntry, 0, 16)
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 3)
+		entry := fakeSessionEntry{SessionID: parts[0]}
+		if len(parts) > 1 {
+			entry.Cwd = parts[1]
+		}
+		if len(parts) > 2 {
+			entry.Title = parts[2]
+		}
+		out = append(out, entry)
+	}
+	return out
 }
