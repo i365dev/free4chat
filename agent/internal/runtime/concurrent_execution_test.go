@@ -206,8 +206,19 @@ func (a *laneAdapter) failScope(scope string, err error) {
 
 func newLaneRuntime(t *testing.T, adapter types.HarnessAdapter, policy types.TaskExecutionPolicy) (*ResidentRuntime, *executionClient) {
 	t.Helper()
-	client := newExecutionClient()
+	return newLaneRuntimeWithClient(t, adapter, policy, newExecutionClient(), nil)
+}
+
+func newLaneRuntimeWithClient(
+	t *testing.T,
+	adapter types.HarnessAdapter,
+	policy types.TaskExecutionPolicy,
+	client *executionClient,
+	log LogFunc,
+) (*ResidentRuntime, *executionClient) {
+	t.Helper()
 	rt := NewResidentRuntime(Options{
+		Log:           log,
 		InstanceID:    "concurrent-execution",
 		RoomID:        "room-concurrent-execution",
 		Name:          "Agent",
@@ -513,14 +524,29 @@ func startScopedTurn(rt *ResidentRuntime, sequence int64, scope, text string) {
 	rt.launchTurns()
 }
 
-// waitForScopeSettled waits until ONE scope has executed wantRuns turns and is
-// no longer executing. It deliberately does not require the whole Runtime to be
-// idle: with several lanes an independent Task is expected to still be running.
+// waitForScopeSettled waits until ONE scope has executed wantRuns turns AND the
+// Runtime has finished settling them: the Harness is no longer executing and
+// the accepted addressed triggers of that scope have been acknowledged.
+//
+// WHY BOTH CONDITIONS: a Harness turn is not the whole turn. The adapter stops
+// reporting "running" the instant RunTurn returns, while the Runtime still has
+// to consume the interrupt marker, finish the activity projection, log, and
+// only then acknowledge the canonical trigger (`acknowledgeHarnessDeliveryFor`,
+// which deliberately commits the delivery markers before the reply is sent).
+// That ordering predates the bounded-lane scheduler — the pre-#421 serial drain
+// ran finishActivity → log → acknowledge in exactly the same sequence — so a
+// helper that stops at "the Harness is idle" observes a real, if brief,
+// intermediate state and races the acknowledgement.
+//
+// Waiting for the acknowledgement instead makes the assertion about the
+// RUNTIME's settlement, which is what every caller actually depends on.
 func waitForScopeSettled(t *testing.T, rt *ResidentRuntime, adapter *laneAdapter, scope string, wantRuns int) {
 	t.Helper()
 	waitFor(t, 10*time.Second, func() bool {
-		return adapter.runCount(scope) >= wantRuns && !adapter.isRunning(scope)
-	}, "the scoped Harness turn to settle")
+		return adapter.runCount(scope) >= wantRuns &&
+			!adapter.isRunning(scope) &&
+			len(rt.pendingAddressedSnapshotFor(scope)) == 0
+	}, "the scoped Harness turn to settle and be acknowledged")
 }
 
 // TestAdoptedSessionContinuationUnderCrossSessionConcurrency re-pins the #420
@@ -874,4 +900,62 @@ func TestRuntimeAdvertisesExecutionContextReconciliation(t *testing.T) {
 // isAppliedResidentFrame reports whether one frame outcome reached the Runtime.
 func isAppliedResidentFrame(outcome residentFrameOutcome) bool {
 	return outcome == residentFrameApplied
+}
+
+// TestScopeSettlementWaitsForAcknowledgementNotJustHarnessIdle pins the exact
+// intermediate state that a Harness-only settle predicate races.
+//
+// A Harness turn is NOT the whole Runtime turn. RunTurnFor returns — and the
+// adapter therefore stops reporting "running" — while the Runtime still has to
+// consume the interrupt marker, finish the activity projection, log, and only
+// then acknowledge the canonical addressed trigger. That ordering predates the
+// bounded-lane scheduler, so a helper that treats "the Harness is idle" as
+// "the Task settled" reads a real intermediate state and can assert against a
+// queue the Runtime has not drained yet.
+//
+// The window is only a few lock acquisitions wide in production, which is why
+// it surfaced as a rare flake under CPU contention. Here it is made
+// deterministic through the Runtime's own Log seam: the test holds the
+// turn_succeeded boundary open until it has observed the intermediate state.
+func TestScopeSettlementWaitsForAcknowledgementNotJustHarnessIdle(t *testing.T) {
+	adapter := newLaneAdapter()
+	client := newExecutionClient()
+
+	harnessReturned := make(chan struct{})
+	allowSettlement := make(chan struct{})
+	var once sync.Once
+	log := func(event string, _ map[string]string) {
+		if event != "turn_succeeded" {
+			return
+		}
+		once.Do(func() { close(harnessReturned) })
+		<-allowSettlement
+	}
+	rt, _ := newLaneRuntimeWithClient(t, adapter, crossSessionPolicy(2), client, log)
+
+	startScopedTurn(rt, 90, "task:req-A", "long running")
+	waitForRunning(t, adapter, "task:req-A")
+	adapter.release("task:req-A")
+
+	// The Harness turn has returned: the adapter reports idle.
+	select {
+	case <-harnessReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Harness turn never returned")
+	}
+	if adapter.isRunning("task:req-A") {
+		t.Fatal("the Harness is still executing; the intermediate state was not reached")
+	}
+	// ...and the canonical trigger is STILL unacknowledged. This is precisely
+	// the state the old predicate mistook for settlement, so the helper must
+	// not return here.
+	if got := rt.pendingAddressedSnapshotFor("task:req-A"); len(got) == 0 {
+		t.Fatal("the trigger was already acknowledged; the intermediate window was not observed")
+	}
+
+	close(allowSettlement)
+	waitForScopeSettled(t, rt, adapter, "task:req-A", 1)
+	if got := rt.pendingAddressedSnapshotFor("task:req-A"); len(got) != 0 {
+		t.Fatalf("the settled scope still held unacknowledged triggers: %v", got)
+	}
 }
