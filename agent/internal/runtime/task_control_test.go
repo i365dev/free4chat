@@ -32,6 +32,12 @@ type interruptAdapter struct {
 	cancels  int
 	gateMu   sync.Mutex
 	gate     chan struct{}
+	// Optional barriers for the deterministic TOCTOU test: CancelTurn reports
+	// entry and then blocks until released.
+	cancelEntered chan struct{}
+	cancelRelease chan struct{}
+	// turnFinished signals that a parked Harness turn body returned.
+	turnFinished chan struct{}
 }
 
 func newInterruptAdapter() *interruptAdapter {
@@ -45,6 +51,12 @@ func (a *interruptAdapter) CancelTurn() error {
 	a.cancelMu.Lock()
 	a.cancels++
 	a.cancelMu.Unlock()
+	if a.cancelEntered != nil {
+		a.cancelEntered <- struct{}{}
+	}
+	if a.cancelRelease != nil {
+		<-a.cancelRelease
+	}
 	a.releaseTurn()
 	return nil
 }
@@ -70,6 +82,12 @@ func (a *interruptAdapter) waitTurn() {
 	a.gateMu.Unlock()
 	if gate != nil {
 		<-gate
+	}
+	if a.turnFinished != nil {
+		select {
+		case a.turnFinished <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -151,10 +169,11 @@ func activeScope(rt *ResidentRuntime) string {
 	return rt.activityScope
 }
 
-func interruptControl(taskRequestID string) *types.ResidentTaskControl {
+func interruptControl(taskRequestID string, turnSequence int64) *types.ResidentTaskControl {
 	return &types.ResidentTaskControl{
 		Kind:          types.ResidentTaskControlInterrupt,
 		TaskRequestID: taskRequestID,
+		TurnSequence:  turnSequence,
 	}
 }
 
@@ -166,7 +185,7 @@ func TestTaskInterruptCancelsTheOwnedTaskTurnAndKeepsTheTaskUsable(t *testing.T)
 	waitForActiveScope(t, rt, "task:req-T")
 	generation := adapter.scopedGenerationSnapshot("task:req-T")
 
-	rt.applyResidentTaskControl(interruptControl("req-T"))
+	rt.applyResidentTaskControl(interruptControl("req-T", 1))
 
 	if got := adapter.cancelCount(); got != 1 {
 		t.Fatalf("matching interrupt must cancel exactly once, got %d", got)
@@ -197,7 +216,7 @@ func TestTaskInterruptIgnoresANonMatchingTask(t *testing.T) {
 	drained := startTurn(rt, scopedEvent(1, "task:req-U", "working on U"))
 	waitForActiveScope(t, rt, "task:req-U")
 
-	rt.applyResidentTaskControl(interruptControl("req-T"))
+	rt.applyResidentTaskControl(interruptControl("req-T", 1))
 
 	if got := adapter.cancelCount(); got != 0 {
 		t.Fatalf("an interrupt for another Task must not cancel: %d", got)
@@ -213,7 +232,7 @@ func TestTaskInterruptWithoutAnActiveTurnIsANoOp(t *testing.T) {
 	rt, adapter := newTaskInterruptRuntime()
 	defer rt.Stop()
 
-	rt.applyResidentTaskControl(interruptControl("req-T"))
+	rt.applyResidentTaskControl(interruptControl("req-T", 1))
 
 	if got := adapter.cancelCount(); got != 0 {
 		t.Fatalf("an interrupt without an active turn must be a no-op: %d", got)
@@ -232,7 +251,7 @@ func TestTaskInterruptIsEdgeTriggeredNotAPendingIntent(t *testing.T) {
 
 	first := startTurn(rt, scopedEvent(1, "task:req-T", "first turn"))
 	waitForActiveScope(t, rt, "task:req-T")
-	rt.applyResidentTaskControl(interruptControl("req-T"))
+	rt.applyResidentTaskControl(interruptControl("req-T", 1))
 	if got := adapter.cancelCount(); got != 1 {
 		t.Fatalf("first interrupt must cancel once, got %d", got)
 	}
@@ -240,8 +259,8 @@ func TestTaskInterruptIsEdgeTriggeredNotAPendingIntent(t *testing.T) {
 
 	// Duplicate/late: the same Task still exists, but it owns no turn right
 	// now, so these controls are local no-ops and are never retained.
-	rt.applyResidentTaskControl(interruptControl("req-T"))
-	rt.applyResidentTaskControl(interruptControl("req-T"))
+	rt.applyResidentTaskControl(interruptControl("req-T", 1))
+	rt.applyResidentTaskControl(interruptControl("req-T", 1))
 	if got := adapter.cancelCount(); got != 1 {
 		t.Fatalf("duplicate interrupts must not cancel again, got %d", got)
 	}
@@ -271,9 +290,14 @@ func TestTaskInterruptRejectsUnusableCorrelationIDs(t *testing.T) {
 	for _, control := range []*types.ResidentTaskControl{
 		nil,
 		{Kind: types.ResidentTaskControlInterrupt},
-		{Kind: types.ResidentTaskControlInterrupt, TaskRequestID: " req-T "},
-		{Kind: types.ResidentTaskControlInterrupt, TaskRequestID: "req-T\u0000"},
-		{Kind: types.ResidentTaskControlKind("steer"), TaskRequestID: "req-T"},
+		{Kind: types.ResidentTaskControlInterrupt, TaskRequestID: " req-T ", TurnSequence: 1},
+		{Kind: types.ResidentTaskControlInterrupt, TaskRequestID: "req-T\u0000", TurnSequence: 1},
+		{Kind: types.ResidentTaskControlKind("steer"), TaskRequestID: "req-T", TurnSequence: 1},
+		// #409 exact-turn identity: a control without a positive, safe turn
+		// sequence may not widen into "any turn of this Task".
+		{Kind: types.ResidentTaskControlInterrupt, TaskRequestID: "req-T"},
+		{Kind: types.ResidentTaskControlInterrupt, TaskRequestID: "req-T", TurnSequence: -1},
+		{Kind: types.ResidentTaskControlInterrupt, TaskRequestID: "req-T", TurnSequence: types.MaxResidentTurnSequence + 1},
 	} {
 		rt.applyResidentTaskControl(control)
 	}
@@ -353,7 +377,7 @@ func TestTaskInterruptCancelsARealACPTurn(t *testing.T) {
 
 	// The Human clicks Interrupt: the Room's private control frame arrives
 	// while the real ACP turn is still parked on its prompt.
-	stream.results <- types.WaitResult{TaskControl: interruptControl(taskID)}
+	stream.results <- types.WaitResult{TaskControl: interruptControl(taskID, 1)}
 	select {
 	case text := <-settled:
 		if text != "cancelled" {
@@ -410,7 +434,7 @@ func TestResidentTaskControlInterruptsThroughThePrivateStream(t *testing.T) {
 	waitForActiveScope(t, rt, "task:req-T")
 	cursorBefore := rt.currentCursor()
 
-	stream.results <- types.WaitResult{TaskControl: interruptControl("req-T")}
+	stream.results <- types.WaitResult{TaskControl: interruptControl("req-T", 1)}
 	waitFor(t, 2*time.Second, func() bool { return adapter.cancelCount() == 1 }, "interrupt delivered through the resident stream")
 
 	if got := rt.currentCursor(); got != cursorBefore {
@@ -419,4 +443,126 @@ func TestResidentTaskControlInterruptsThroughThePrivateStream(t *testing.T) {
 	if got := adapter.runCount("task:req-T"); got != 1 {
 		t.Fatalf("a task control must not create a turn: %d", got)
 	}
+}
+
+// TestTaskInterruptForAPreviousTurnNeverCancelsTheNextTurn is the decisive
+// exact-turn test: a control that names the PREVIOUS turn of the same Task
+// must not cancel the turn that is running now, even though the Task scope
+// matches exactly.
+func TestTaskInterruptForAPreviousTurnNeverCancelsTheNextTurn(t *testing.T) {
+	rt, adapter := newTaskInterruptRuntime()
+	defer rt.Stop()
+
+	// Turn seq=1 runs and finishes normally, with no interrupt at all.
+	first := startTurn(rt, scopedEvent(1, "task:req-T", "first turn"))
+	waitForActiveScope(t, rt, "task:req-T")
+	adapter.releaseTurn()
+	waitForDone(t, first, "first turn to finish")
+
+	// Turn seq=2 for the SAME Task starts and is still running.
+	adapter.blockNextTurn()
+	second := startTurn(rt, scopedEvent(2, "task:req-T", "second turn"))
+	waitForActiveScope(t, rt, "task:req-T")
+
+	// The Room/network delays the old control until now.
+	rt.applyResidentTaskControl(interruptControl("req-T", 1))
+
+	if got := adapter.cancelCount(); got != 0 {
+		t.Fatalf("a control naming the previous turn must never cancel the current one, got %d", got)
+	}
+	if got := activeScope(rt); got != "task:req-T" {
+		t.Fatalf("the current turn was disturbed: %q", got)
+	}
+	rt.activityMu.Lock()
+	sequence := rt.activityTurnSequence
+	rt.activityMu.Unlock()
+	if sequence != 2 {
+		t.Fatalf("active turn identity changed to %d", sequence)
+	}
+
+	// The current turn is still legitimately interruptible by its own control.
+	rt.applyResidentTaskControl(interruptControl("req-T", 2))
+	if got := adapter.cancelCount(); got != 1 {
+		t.Fatalf("the exact current turn must still be cancelable, got %d", got)
+	}
+	waitForDone(t, second, "second turn to unwind")
+}
+
+// TestTaskInterruptDispatchIsAtomicWithTurnTransition pins the local TOCTOU
+// boundary deterministically: once an interrupt has matched the exact turn,
+// that turn cannot complete its active->idle transition (and no successor turn
+// can become active) until the CancelTurn() dispatch has returned.
+func TestTaskInterruptDispatchIsAtomicWithTurnTransition(t *testing.T) {
+	rt, adapter := newTaskInterruptRuntime()
+	defer rt.Stop()
+	adapter.cancelEntered = make(chan struct{}, 1)
+	adapter.cancelRelease = make(chan struct{})
+	adapter.turnFinished = make(chan struct{}, 1)
+	// Always release the blocked dispatch, even when an assertion fails: a
+	// broken invariant must fail this test, not deadlock it.
+	var releaseOnce sync.Once
+	releaseDispatch := func() {
+		releaseOnce.Do(func() { close(adapter.cancelRelease) })
+	}
+	// Registered after `defer rt.Stop()`, so it runs FIRST: a broken invariant
+	// must fail this test instead of blocking shutdown on the parked dispatch.
+	defer releaseDispatch()
+
+	first := startTurn(rt, scopedEvent(1, "task:req-T", "turn to interrupt"))
+	waitForActiveScope(t, rt, "task:req-T")
+
+	dispatched := make(chan struct{})
+	go func() {
+		// Blocks inside CancelTurn until cancelRelease is closed.
+		rt.applyResidentTaskControl(interruptControl("req-T", 1))
+		close(dispatched)
+	}()
+	select {
+	case <-adapter.cancelEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("interrupt never entered CancelTurn")
+	}
+
+	// The owned Harness turn now returns on its own while the dispatch is
+	// still in flight. Its active->idle transition must not complete yet.
+	adapter.releaseTurn()
+	select {
+	case <-adapter.turnFinished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the owned Harness turn never returned")
+	}
+	if got := activeScope(rt); got != "task:req-T" {
+		t.Fatalf("turn identity was cleared inside the dispatch boundary: %q", got)
+	}
+	rt.activityMu.Lock()
+	sequence := rt.activityTurnSequence
+	rt.activityMu.Unlock()
+	if sequence != 1 {
+		t.Fatalf("a successor turn became active inside the dispatch boundary: %d", sequence)
+	}
+
+	releaseDispatch()
+	select {
+	case <-dispatched:
+	case <-time.After(2 * time.Second):
+		t.Fatal("interrupt dispatch never returned")
+	}
+	waitForDone(t, first, "interrupted turn to unwind")
+	if got := activeScope(rt); got != "" {
+		t.Fatalf("turn identity outlived its turn: %q", got)
+	}
+	if got := adapter.cancelCount(); got != 1 {
+		t.Fatalf("exactly one cancel must be dispatched, got %d", got)
+	}
+
+	// A successor turn for the same Task now runs and is never cancelled by
+	// the already-completed dispatch.
+	adapter.blockNextTurn()
+	second := startTurn(rt, scopedEvent(2, "task:req-T", "successor turn"))
+	waitForActiveScope(t, rt, "task:req-T")
+	if got := adapter.cancelCount(); got != 1 {
+		t.Fatalf("the completed dispatch leaked into the successor turn: %d", got)
+	}
+	adapter.releaseTurn()
+	waitForDone(t, second, "successor turn to finish")
 }

@@ -4,6 +4,7 @@ import {
   agentActivityKey,
   isAgentActivityScope,
   isAgentActivityState,
+  isAgentActivityTurnSequence,
 } from "./agentActivity"
 import {
   agentCapabilitiesFrom,
@@ -691,6 +692,9 @@ type ControlRequest =
       token: string
       scopeId: unknown
       activity: unknown
+      // #409: the exact canonical Room turn this activity belongs to. It is
+      // transient control correlation only.
+      turnSequence: unknown
     }
   | {
       action: "agent-media-attach"
@@ -788,6 +792,10 @@ type ClientMessage =
       // finds no matching live turn is a no-op in the Runtime.
       type: "task-interrupt"
       taskRequestId: string
+      // #409: the exact turn the Human saw running. The Room refuses a
+      // control that does not match the current transient activity, so a
+      // request delayed in transport cannot hit the Task's next turn.
+      turnSequence: number
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
@@ -2525,7 +2533,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private sendAgentTaskControl(
     room: RoomRecord,
     participantId: string,
-    control: { control: string; taskRequestId: string }
+    control: { control: string; taskRequestId: string; turnSequence: number }
   ): boolean {
     const participant = room.participants[participantId]
     if (!participant || participant.kind !== "agent" || !participant.connected)
@@ -2547,6 +2555,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             type: "task-control",
             control: control.control,
             taskRequestId: control.taskRequestId,
+            turnSequence: control.turnSequence,
           })
         )
         delivered = true
@@ -3154,6 +3163,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return this.json({ error: "invalid_activity_scope" }, 403)
       }
 
+      // #409: an activity that gates a remote interrupt must name the exact
+      // turn it belongs to. A clear carries no turn.
+      if (normalizedActivity === null) {
+        if (request.turnSequence !== 0 && request.turnSequence !== undefined)
+          return this.json({ error: "invalid_activity_turn" }, 400)
+      } else if (!isAgentActivityTurnSequence(request.turnSequence)) {
+        return this.json({ error: "invalid_activity_turn" }, 400)
+      }
+      const activityTurnSequence =
+        normalizedActivity === null ? 0 : (request.turnSequence as number)
+
       const key = agentActivityKey(participant.id, request.scopeId)
       const previous = this.transientAgentActivities.get(key)
       if (normalizedActivity === null) {
@@ -3167,7 +3187,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         })
         return this.json({ ok: true, changed: true })
       }
-      if (previous?.state === normalizedActivity)
+      // The same state on a DIFFERENT turn is a real change: the projection
+      // must carry the new exact turn so interrupts bind to it.
+      if (
+        previous?.state === normalizedActivity &&
+        previous.turnSequence === activityTurnSequence
+      )
         return this.json({ ok: true, changed: false })
       if (
         !previous &&
@@ -3178,6 +3203,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         agentParticipantId: participant.id,
         scopeId: request.scopeId,
         state: normalizedActivity,
+        turnSequence: activityTurnSequence,
       }
       this.transientAgentActivities.set(key, activity)
       await this.broadcast({ type: "agentActivity", activity })
@@ -6107,10 +6133,30 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         reject("task_target_not_in_room")
         return
       }
+      // #409 exact turn: the request must name the turn the Room currently
+      // shows as running for THIS Task and THIS Agent. A request that was
+      // delayed in transport, or that names a turn of another Agent's
+      // activity, is refused here — before any private frame is written.
+      if (!isAgentActivityTurnSequence(message.turnSequence)) {
+        reject("invalid_task_turn")
+        return
+      }
+      const activeTurn = this.transientAgentActivities.get(
+        agentActivityKey(canonicalAgentId, `task:${resolution.requestId}`)
+      )
+      if (
+        !activeTurn ||
+        activeTurn.turnSequence !== message.turnSequence ||
+        activeTurn.state === undefined
+      ) {
+        reject("task_turn_not_active")
+        return
+      }
       if (
         !this.sendAgentTaskControl(room, canonicalAgentId, {
           control: "interrupt",
           taskRequestId: resolution.requestId,
+          turnSequence: message.turnSequence,
         })
       ) {
         reject("task_agent_not_reachable")

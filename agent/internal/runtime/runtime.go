@@ -234,9 +234,16 @@ type ResidentRuntime struct {
 	residentMediaState      types.ResidentMediaState
 	residentMediaStateValid bool
 	activityMu              sync.Mutex
-	activities              map[string]types.AgentActivityState
+	// turnControlMu serializes the active-turn transitions (begin/finish/
+	// clear) with the exact-turn interrupt check AND its CancelTurn()
+	// dispatch, so a control that matched a turn can never be applied to that
+	// turn's successor. Lock order: turnControlMu -> activityMu; CancelTurn()
+	// runs while turnControlMu is held, never while activityMu is.
+	turnControlMu           sync.Mutex
+	activities              map[string]activityTurnState
 	activityTurnActive      bool
 	activityScope           string
+	activityTurnSequence    int64
 	activityPublishMu       sync.Mutex
 	activityPublishQueue    map[string]activityPublication
 	activityPublisherActive bool
@@ -373,7 +380,7 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		providerClaim:      providerClaim,
 		providerHandles:    providerHandles,
 		pendingPermissions: make(map[string]*pendingRoomPermission),
-		activities:         make(map[string]types.AgentActivityState),
+		activities:         make(map[string]activityTurnState),
 	}
 	configurePermissionResponder(runtime)
 	configureActivityHandler(runtime)
@@ -1330,9 +1337,9 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Cancel()
 		}
 
-		r.beginActivity(scope)
+		r.beginActivity(scope, target)
 		result, err := r.runHarnessTurn(scope, *input, generation)
-		r.finishActivity(scope)
+		r.finishActivity(scope, target)
 		if err != nil {
 			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return

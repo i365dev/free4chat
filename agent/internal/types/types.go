@@ -707,17 +707,27 @@ const (
 	ResidentTaskControlInterrupt ResidentTaskControlKind = "interrupt"
 )
 
+// MaxResidentTurnSequence bounds the canonical Room sequence used as transient
+// turn identity: it is the JavaScript safe-integer limit, so the browser, the
+// Room, and the Runtime all compare the exact same value.
+const MaxResidentTurnSequence = int64(1)<<53 - 1
+
 // ResidentTaskControl is a PRIVATE RESIDENT TRANSPORT ONLY control frame
 // (#409). It travels on the Agent's own resident event socket, is never
 // persisted in Room state, never increments a Room sequence, and is never
 // returned by the public wait_for_events contract.
 //
 // It carries no authority by itself: the Runtime authorizes it against the
-// Harness turn it currently owns. TaskRequestID stays a Room-visible
-// correlation id — never an ACP session id, participant handle, or token.
+// exact Harness turn it currently owns. TaskRequestID stays a Room-visible
+// correlation id, and TurnSequence is the canonical addressed Room sequence of
+// the trigger — never an ACP session id, participant handle, or token.
 type ResidentTaskControl struct {
 	Kind          ResidentTaskControlKind `json:"kind"`
 	TaskRequestID string                  `json:"taskRequestId"`
+	// TurnSequence is the canonical Room sequence of the EXACT turn the Human
+	// saw running. A Task scope alone is not turn identity: the same Task can
+	// run many turns, and a stale control must never cancel a later one.
+	TurnSequence int64 `json:"turnSequence"`
 }
 
 // CollabRequestArgs are the arguments for send_collab_request.
@@ -898,8 +908,13 @@ type PermissionRequestClient interface {
 // outside Free4ChatClient preserves existing test doubles and compatibility
 // clients while allowing the production client to expose only this bounded
 // mutation.
+//
+// turnSequence is the exact canonical Room turn the activity belongs to (>0
+// while an activity is published, 0 when clearing). It is transient control
+// correlation only: it is never persisted, never enters a Harness prompt, and
+// never leaves Room activity state.
 type ResidentActivityClient interface {
-	UpdateAgentActivity(participantHandle, scope string, activity AgentActivityState) error
+	UpdateAgentActivity(participantHandle, scope string, activity AgentActivityState, turnSequence int64) error
 }
 
 // AttachmentRead is read_attachment's normalized result: either an image

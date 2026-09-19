@@ -1,4 +1,4 @@
-import type { AgentActivityState } from "../room/types"
+import type { AgentActivityProjection, AgentActivityState } from "../room/types"
 
 export const AGENT_ACTIVITY_STATES = [
   "working",
@@ -28,6 +28,37 @@ export function isAgentActivityScope(value: unknown): value is string {
   )
 }
 
+// #409: the exact canonical Room turn an activity belongs to. It must be a
+// positive JavaScript-safe integer so the browser, the Room, and the Runtime
+// compare the identical value; anything else cannot identify one turn.
+export const MAX_AGENT_ACTIVITY_TURN_SEQUENCE = Number.MAX_SAFE_INTEGER
+
+export function isAgentActivityTurnSequence(
+  value: unknown
+): value is AgentActivityProjection["turnSequence"] {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value > 0 &&
+    value <= MAX_AGENT_ACTIVITY_TURN_SEQUENCE
+  )
+}
+
 export function agentActivityKey(agentParticipantId: string, scopeId: string) {
   return `${agentParticipantId}\u0000${scopeId}`
+}
+
+export function findAgentTurnActivity(
+  activities: readonly AgentActivityProjection[] | undefined,
+  agentParticipantId: string,
+  scopeId: string,
+  turnSequence: unknown
+): AgentActivityProjection | undefined {
+  if (!isAgentActivityTurnSequence(turnSequence)) return undefined
+  return (activities ?? []).find(
+    (activity) =>
+      activity.agentParticipantId === agentParticipantId &&
+      activity.scopeId === scopeId &&
+      activity.turnSequence === turnSequence
+  )
 }

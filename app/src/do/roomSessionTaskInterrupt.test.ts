@@ -97,7 +97,7 @@ function harness() {
     },
     getWebSockets: (tag?: string) =>
       (tag === undefined
-        ? [...agentSockets.values()]
+        ? [...agentSockets.values(), humanSocket]
         : [...agentSockets.values()].filter(
             (socket) => socket.tag === tag
           )) as unknown as WebSocket[],
@@ -155,6 +155,19 @@ function harness() {
     sendHuman: (message: unknown, participantId = "human-1") =>
       deliverHuman(participantId, `${participantId}-token`, message),
     stored: () => store.get("room") as RoomRecord,
+    transientActivities: () =>
+      [
+        ...(
+          session as unknown as {
+            transientAgentActivities: Map<string, unknown>
+          }
+        ).transientAgentActivities.values(),
+      ] as {
+        agentParticipantId: string
+        scopeId: string
+        state: string
+        turnSequence: number
+      }[],
     putCount: () => puts,
     errorFrames: () =>
       (humanSocket.send as ReturnType<typeof vi.fn>).mock.calls
@@ -169,6 +182,31 @@ function harness() {
     clearAgentFrames: (participantId: string) => {
       const socket = agentSockets.get(participantId)
       if (socket) socket.sent.length = 0
+    },
+    /** Publish transient Agent activity through the real control action. */
+    publishActivity: async (
+      participantId: string,
+      scopeId: string,
+      state: string,
+      turnSequence: number
+    ) => {
+      const response = await session.fetch(
+        new Request("https://room/control", {
+          method: "POST",
+          body: JSON.stringify({
+            action: "agent-activity",
+            participantId,
+            token: `${participantId}-token`,
+            scopeId,
+            activity: state,
+            turnSequence,
+          }),
+        })
+      )
+      return {
+        status: response.status,
+        json: (await response.json()) as Record<string, unknown>,
+      }
     },
     control: async (body: Record<string, unknown>) => {
       const response = await session.fetch(
@@ -206,17 +244,29 @@ describe("RoomSession Task interrupt (#409)", () => {
     const agentSocket = test.connectAgentSocket("agent-a")
     test.connectAgentSocket("agent-b")
     const requestId = await createTask(test)
+    const running = await test.publishActivity(
+      "agent-a",
+      `task:${requestId}`,
+      "working",
+      42
+    )
+    expect(running.status).toBe(200)
     test.clearAgentFrames("agent-a")
     test.clearAgentFrames("agent-b")
     const putsBefore = test.putCount()
 
-    await test.sendHuman({ type: "task-interrupt", taskRequestId: requestId })
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
 
     expect(test.agentControls("agent-a")).toEqual([
       {
         type: "task-control",
         control: "interrupt",
         taskRequestId: requestId,
+        turnSequence: 42,
       },
     ])
     // The other participating Agent never receives another Task's control.
@@ -236,10 +286,15 @@ describe("RoomSession Task interrupt (#409)", () => {
       JSON.stringify(test.stored().messages)
     ) as RoomMessage[]
     const sequenceBefore = test.stored().nextMessageSequence
+    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
     const sentBefore = (test.humanSocket.send as ReturnType<typeof vi.fn>).mock
       .calls.length
 
-    await test.sendHuman({ type: "task-interrupt", taskRequestId: requestId })
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
 
     expect(test.stored().messages).toEqual(messagesBefore)
     expect(test.stored().nextMessageSequence).toBe(sequenceBefore)
@@ -252,10 +307,11 @@ describe("RoomSession Task interrupt (#409)", () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
+    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
     test.clearAgentFrames("agent-a")
 
     await test.sendHuman(
-      { type: "task-interrupt", taskRequestId: requestId },
+      { type: "task-interrupt", taskRequestId: requestId, turnSequence: 42 },
       "human-2"
     )
 
@@ -272,6 +328,7 @@ describe("RoomSession Task interrupt (#409)", () => {
     await test.sendHuman({
       type: "task-interrupt",
       taskRequestId: "task-that-does-not-exist",
+      turnSequence: 42,
     })
 
     expect(test.errorFrames()).toEqual(["unknown_task_request"])
@@ -284,11 +341,20 @@ describe("RoomSession Task interrupt (#409)", () => {
     await createTask(test)
     test.clearAgentFrames("agent-a")
 
-    await test.sendHuman({ type: "task-interrupt", taskRequestId: 7 })
-    await test.sendHuman({ type: "task-interrupt", taskRequestId: "" })
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: 7,
+      turnSequence: 42,
+    })
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: "",
+      turnSequence: 42,
+    })
     await test.sendHuman({
       type: "task-interrupt",
       taskRequestId: "t".repeat(65),
+      turnSequence: 42,
     })
 
     expect(test.errorFrames()).toEqual([
@@ -303,8 +369,13 @@ describe("RoomSession Task interrupt (#409)", () => {
     const test = harness()
     // agent-a is connected in Room state but holds no private resident socket.
     const requestId = await createTask(test)
+    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
 
-    await test.sendHuman({ type: "task-interrupt", taskRequestId: requestId })
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
 
     expect(test.errorFrames()).toEqual(["task_agent_not_reachable"])
   })
@@ -313,9 +384,14 @@ describe("RoomSession Task interrupt (#409)", () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
+    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
     test.stored().participants["agent-a"].connected = false
 
-    await test.sendHuman({ type: "task-interrupt", taskRequestId: requestId })
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
 
     expect(test.errorFrames()).toEqual(["task_target_not_in_room"])
     expect(test.agentControls("agent-a")).toEqual([])
@@ -326,12 +402,15 @@ describe("RoomSession Task interrupt (#409)", () => {
     test.connectAgentSocket("agent-a")
     test.connectAgentSocket("agent-b")
     const requestId = await createTask(test)
+    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
+    await test.publishActivity("agent-b", `task:${requestId}`, "working", 99)
     test.clearAgentFrames("agent-a")
     test.clearAgentFrames("agent-b")
 
     await test.sendHuman({
       type: "task-interrupt",
       taskRequestId: requestId,
+      turnSequence: 42,
       // Every one of these is ignored: routing comes from the canonical Task.
       targetParticipantId: "agent-b",
       agentParticipantId: "agent-b",
@@ -341,6 +420,169 @@ describe("RoomSession Task interrupt (#409)", () => {
 
     expect(test.agentControls("agent-a")).toHaveLength(1)
     expect(test.agentControls("agent-b")).toEqual([])
+  })
+
+  it("rejects a control for a turn that is no longer the active one", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    // The Task is running its turn 42.
+    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
+    test.clearAgentFrames("agent-a")
+
+    // A click delayed in transport still names the PREVIOUS turn.
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 41,
+    })
+
+    expect(test.errorFrames()).toEqual(["task_turn_not_active"])
+    expect(test.agentControls("agent-a")).toEqual([])
+  })
+
+  it("rejects an interrupt for a Task with no running turn", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    test.clearAgentFrames("agent-a")
+
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+
+    expect(test.errorFrames()).toEqual(["task_turn_not_active"])
+    expect(test.agentControls("agent-a")).toEqual([])
+  })
+
+  it("rejects an unusable turn sequence before touching the transport", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
+    test.clearAgentFrames("agent-a")
+
+    for (const turnSequence of [
+      0,
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      "42",
+      null,
+      undefined,
+    ]) {
+      await test.sendHuman({
+        type: "task-interrupt",
+        taskRequestId: requestId,
+        turnSequence,
+      })
+    }
+
+    expect(test.errorFrames()).toEqual([
+      "invalid_task_turn",
+      "invalid_task_turn",
+      "invalid_task_turn",
+      "invalid_task_turn",
+      "invalid_task_turn",
+      "invalid_task_turn",
+      "invalid_task_turn",
+    ])
+    expect(test.agentControls("agent-a")).toEqual([])
+  })
+
+  it("carries the exact turn on every transient activity update", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    const scopeId = `task:${requestId}`
+
+    for (const [state, sequence] of [
+      ["working", 42],
+      ["thinking", 42],
+      ["using_tools", 42],
+      ["responding", 42],
+    ] as const) {
+      const published = await test.publishActivity(
+        "agent-a",
+        scopeId,
+        state,
+        sequence
+      )
+      expect(published.status).toBe(200)
+    }
+    const broadcast = (
+      test.humanSocket.send as ReturnType<typeof vi.fn>
+    ).mock.calls
+      .map((call) => JSON.parse(call[0] as string))
+      .filter((frame) => frame.type === "agentActivity" && frame.activity)
+      .map((frame) => frame.activity)
+    expect(broadcast).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        scopeId,
+        state: "working",
+        turnSequence: 42,
+      },
+      {
+        agentParticipantId: "agent-a",
+        scopeId,
+        state: "thinking",
+        turnSequence: 42,
+      },
+      {
+        agentParticipantId: "agent-a",
+        scopeId,
+        state: "using_tools",
+        turnSequence: 42,
+      },
+      {
+        agentParticipantId: "agent-a",
+        scopeId,
+        state: "responding",
+        turnSequence: 42,
+      },
+    ])
+
+    // The next turn of the same Task replaces the projection with its own
+    // exact turn, and a clear removes the identity entirely.
+    await test.publishActivity("agent-a", scopeId, "working", 47)
+    expect(test.transientActivities()).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        scopeId,
+        state: "working",
+        turnSequence: 47,
+      },
+    ])
+    const cleared = await test.control({
+      action: "agent-activity",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      scopeId,
+      activity: null,
+      turnSequence: 0,
+    })
+    expect(cleared.status).toBe(200)
+    expect(test.transientActivities()).toEqual([])
+  })
+
+  it("rejects an activity without a usable exact turn", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+
+    for (const turnSequence of [0, -1, 1.5, undefined, "42"]) {
+      const published = await test.publishActivity(
+        "agent-a",
+        `task:${requestId}`,
+        "working",
+        turnSequence as number
+      )
+      expect(published.status).toBe(400)
+      expect(published.json.error).toBe("invalid_activity_turn")
+    }
   })
 
   it("rejects a Human interrupt of a Task a Human did not create", async () => {
@@ -365,11 +607,18 @@ describe("RoomSession Task interrupt (#409)", () => {
       },
     })
     stored.nextMessageSequence = 1
+    await test.publishActivity(
+      "agent-a",
+      "task:agent-owned-task",
+      "working",
+      42
+    )
     test.clearAgentFrames("agent-a")
 
     await test.sendHuman({
       type: "task-interrupt",
       taskRequestId: "agent-owned-task",
+      turnSequence: 42,
     })
 
     expect(test.errorFrames()).toEqual(["task_interrupt_not_owner"])

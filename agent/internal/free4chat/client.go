@@ -551,11 +551,23 @@ func (c *Client) RequestPermission(
 // UpdateAgentActivity publishes a bounded transient activity transition. The
 // participant handle stays in private request headers; the body contains no
 // Harness payload and an empty state clears the projection.
+//
+// turnSequence is the exact canonical Room turn this activity belongs to. It
+// is required while an activity is published and must be zero when clearing,
+// so the Room can gate a stale remote interrupt on the turn the Human actually
+// saw running rather than on the Task scope alone.
 func (c *Client) UpdateAgentActivity(
-	participantHandle, scope string, activity types.AgentActivityState,
+	participantHandle, scope string, activity types.AgentActivityState, turnSequence int64,
 ) error {
 	if !validAgentActivityScope(scope) || (activity != "" && !activity.Valid()) {
 		return &Error{Message: "invalid Agent activity", Code: CodeToolError}
+	}
+	if activity == "" {
+		if turnSequence != 0 {
+			return &Error{Message: "invalid Agent activity turn", Code: CodeToolError}
+		}
+	} else if turnSequence <= 0 || turnSequence > types.MaxResidentTurnSequence {
+		return &Error{Message: "invalid Agent activity turn", Code: CodeToolError}
 	}
 	handle, err := parseRoomControlHandle(participantHandle)
 	if err != nil {
@@ -570,8 +582,9 @@ func (c *Client) UpdateAgentActivity(
 		wireActivity = activity
 	}
 	payload, err := json.Marshal(map[string]any{
-		"scopeId":  scope,
-		"activity": wireActivity,
+		"scopeId":      scope,
+		"activity":     wireActivity,
+		"turnSequence": turnSequence,
 	})
 	if err != nil {
 		return &Error{Message: "encode Agent activity", Code: CodeTransient}

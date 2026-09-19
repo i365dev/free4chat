@@ -938,10 +938,11 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     const socket = RecordingWebSocket.instances[0]
     act(() => socket.onopen?.())
 
-    expect(result.current.sendTaskInterrupt("task-0001")).toBe(true)
+    expect(result.current.sendTaskInterrupt("task-0001", 42)).toBe(true)
     expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
       type: "task-interrupt",
       taskRequestId: "task-0001",
+      turnSequence: 42,
     })
     // An interrupt is a control-plane action: it synthesizes no chat, action,
     // or collaboration message, and it selects no Agent or scope.
@@ -953,12 +954,22 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     expect(sentTypes).not.toContain("action")
     expect(sentTypes).not.toContain("collab-request")
 
-    expect(result.current.sendTaskInterrupt("")).toBe(false)
-    expect(result.current.sendTaskInterrupt("   ")).toBe(false)
-    expect(result.current.sendTaskInterrupt("t".repeat(65))).toBe(false)
+    const sentBeforeInvalid = socket.sent.length
+    expect(result.current.sendTaskInterrupt("", 42)).toBe(false)
+    expect(result.current.sendTaskInterrupt("   ", 42)).toBe(false)
+    expect(result.current.sendTaskInterrupt("t".repeat(65), 42)).toBe(false)
+    // #409 exact turn: a click without a positive safe turn sequence can never
+    // be bound to one turn, so nothing is written to the socket.
+    expect(result.current.sendTaskInterrupt("task-0002", 0)).toBe(false)
+    expect(result.current.sendTaskInterrupt("task-0002", -1)).toBe(false)
+    expect(result.current.sendTaskInterrupt("task-0002", 1.5)).toBe(false)
+    expect(
+      result.current.sendTaskInterrupt("task-0002", Number.MAX_SAFE_INTEGER + 1)
+    ).toBe(false)
+    expect(socket.sent.length).toBe(sentBeforeInvalid)
 
     socket.readyState = 3
-    expect(result.current.sendTaskInterrupt("task-0002")).toBe(false)
+    expect(result.current.sendTaskInterrupt("task-0002", 43)).toBe(false)
     unmount()
   })
 

@@ -225,21 +225,22 @@ func TestUpdateAgentActivityUsesBoundedRoomControlWire(t *testing.T) {
 	})
 	handle := base64.RawURLEncoding.EncodeToString(handleBytes)
 	client := New(server.URL + "/mcp")
-	if err := client.UpdateAgentActivity(handle, "task:req-1", types.AgentActivityThinking); err != nil {
+	if err := client.UpdateAgentActivity(handle, "task:req-1", types.AgentActivityThinking, 42); err != nil {
 		t.Fatal(err)
 	}
 	if seenPath != "/api/room/agent-activity" ||
 		seenHeaders.Get("X-Room-Id") != "room-activity" ||
 		seenHeaders.Get("X-Room-Participant-Id") != "agent-activity" ||
 		seenHeaders.Get("X-Room-Participant-Token") != "secret-token" ||
-		seenBody["scopeId"] != "task:req-1" || seenBody["activity"] != string(types.AgentActivityThinking) {
+		seenBody["scopeId"] != "task:req-1" || seenBody["activity"] != string(types.AgentActivityThinking) ||
+		seenBody["turnSequence"] != float64(42) {
 		t.Fatalf("wrong activity wire: path=%q headers=%v body=%#v", seenPath, seenHeaders, seenBody)
 	}
-	if err := client.UpdateAgentActivity(handle, "room", ""); err != nil {
+	if err := client.UpdateAgentActivity(handle, "room", "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if seenBody["activity"] != nil {
-		t.Fatalf("clear activity must be null: %#v", seenBody)
+	if seenBody["activity"] != nil || seenBody["turnSequence"] != float64(0) {
+		t.Fatalf("clear activity must be null with a zero turn: %#v", seenBody)
 	}
 }
 
@@ -252,13 +253,20 @@ func TestUpdateAgentActivityRejectsInvalidScopeAndState(t *testing.T) {
 	for _, test := range []struct {
 		scope string
 		state types.AgentActivityState
+		turn  int64
 	}{
-		{"task:", types.AgentActivityWorking},
-		{"room?", types.AgentActivityWorking},
-		{"room", "private"},
+		{scope: "task:", state: types.AgentActivityWorking, turn: 7},
+		{scope: "room?", state: types.AgentActivityWorking, turn: 7},
+		{scope: "room", state: "private", turn: 7},
+		// #409 exact-turn identity: an activity without a positive, safe turn
+		// sequence cannot gate an interrupt, and a clear must not carry one.
+		{scope: "task:req-1", state: types.AgentActivityWorking, turn: 0},
+		{scope: "task:req-1", state: types.AgentActivityWorking, turn: -3},
+		{scope: "task:req-1", state: types.AgentActivityWorking, turn: types.MaxResidentTurnSequence + 1},
+		{scope: "task:req-1", state: "", turn: 9},
 	} {
-		if err := client.UpdateAgentActivity(handle, test.scope, test.state); err == nil || CodeOf(err) != CodeToolError {
-			t.Fatalf("invalid activity %q/%q error = %v", test.scope, test.state, err)
+		if err := client.UpdateAgentActivity(handle, test.scope, test.state, test.turn); err == nil || CodeOf(err) != CodeToolError {
+			t.Fatalf("invalid activity %q/%q/%d error = %v", test.scope, test.state, test.turn, err)
 		}
 	}
 }

@@ -714,11 +714,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-t",
           state: "responding",
+          turnSequence: 42,
         },
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-t",
           state: "thinking",
+          turnSequence: 43,
         },
       ],
       localParticipantId: "human-local",
@@ -762,6 +764,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       room: "test-room",
       muteState: false,
     }
+    const secondaryParticipant = {
+      peerId: "agent-pi",
+      name: "Pi",
+      kind: "agent",
+      room: "test-room",
+      muteState: false,
+    }
 
     // Task retained and selected, but no transient Agent activity: the Task is
     // not running, so no Interrupt control may be offered.
@@ -782,18 +791,51 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
     idle.unmount()
 
-    // Same Task with live Agent activity: the control appears and one click
-    // sends exactly one interrupt for THAT Task, with no chat message.
+    // Only a SECONDARY participating Agent is active: the canonical Agent owns
+    // no running turn, so no Interrupt may be offered.
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
       messages: [taskRequest],
-      participants: [agentParticipant],
+      participants: [agentParticipant, secondaryParticipant],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-pi",
+          scopeId: "task:task-interrupt",
+          state: "using_tools",
+          turnSequence: 7,
+        },
+      ],
+      sendTaskInterrupt,
+      sendTextMessage,
+      sendActionMessage,
+    })
+    const secondaryOnly = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
+    expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+    secondaryOnly.unmount()
+
+    // Same Task with live CANONICAL Agent activity: the control appears and one
+    // click sends exactly one interrupt bound to that exact turn, with no chat.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [agentParticipant, secondaryParticipant],
       agentActivities: [
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-interrupt",
           state: "using_tools",
+          turnSequence: 42,
+        },
+        {
+          agentParticipantId: "agent-pi",
+          scopeId: "task:task-interrupt",
+          state: "thinking",
+          turnSequence: 99,
         },
       ],
       sendTaskInterrupt,
@@ -807,7 +849,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     fireEvent.click(screen.getByTestId("task-interrupt"))
 
     expect(sendTaskInterrupt).toHaveBeenCalledTimes(1)
-    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-interrupt")
+    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-interrupt", 42)
     expect(sendTextMessage).not.toHaveBeenCalled()
     expect(sendActionMessage).not.toHaveBeenCalled()
   })
@@ -852,6 +894,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-layout",
           state: "using_tools",
+          turnSequence: 42,
         },
       ],
     })

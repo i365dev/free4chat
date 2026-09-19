@@ -40,6 +40,7 @@ import {
   participantsBucket,
   trackAnalyticsEvent,
 } from "@common/utils"
+import { isAgentActivityTurnSequence } from "@do/agentActivity"
 import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import type {
@@ -3825,7 +3826,7 @@ export function useSfuChatRoom(
   // canonical Agent endpoint from the retained collaboration request. The
   // Runtime decides locally whether it still owns a matching live turn.
   const sendTaskInterrupt = useCallback(
-    (taskRequestId: string): boolean => {
+    (taskRequestId: string, turnSequence: number): boolean => {
       // The Task id is an opaque canonical Room correlation value: it is sent
       // exactly as given and never trimmed or otherwise repaired. Only an
       // empty, blank, or oversized value is refused locally.
@@ -3835,10 +3836,14 @@ export function useSfuChatRoom(
         !taskRequestId.trim()
       )
         return false
+      // #409 exact turn: without a positive safe turn sequence the Room cannot
+      // bind the click to one turn, so nothing is sent at all.
+      if (!isAgentActivityTurnSequence(turnSequence)) return false
       if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
       return sendSocketMessage({
         type: "task-interrupt",
         taskRequestId,
+        turnSequence,
       })
     },
     [sendSocketMessage]

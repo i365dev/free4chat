@@ -104,6 +104,7 @@ describe("RoomSession transient Agent activity", () => {
       token: "agentT-token",
       scopeId: "task:request-1",
       activity: "working",
+      turnSequence: 42,
     })
     expect(working).toMatchObject({ status: 200, json: { changed: true } })
     const duplicate = await room.control({
@@ -112,6 +113,7 @@ describe("RoomSession transient Agent activity", () => {
       token: "agentT-token",
       scopeId: "task:request-1",
       activity: "working",
+      turnSequence: 42,
     })
     expect(duplicate).toMatchObject({ status: 200, json: { changed: false } })
     const thinking = await room.control({
@@ -120,6 +122,7 @@ describe("RoomSession transient Agent activity", () => {
       token: "agentT-token",
       scopeId: "task:request-1",
       activity: "thinking",
+      turnSequence: 42,
     })
     expect(thinking.status).toBe(200)
     const clear = await room.control({
@@ -128,6 +131,7 @@ describe("RoomSession transient Agent activity", () => {
       token: "agentT-token",
       scopeId: "task:request-1",
       activity: null,
+      turnSequence: 0,
     })
     expect(clear).toMatchObject({ status: 200, json: { changed: true } })
     expect((room.session as any).transientAgentActivities.size).toBe(0)
@@ -142,6 +146,7 @@ describe("RoomSession transient Agent activity", () => {
       token: "agentU-token",
       scopeId: "task:request-1",
       activity: "working",
+      turnSequence: 42,
     })
     expect(wrongAgent.status).toBe(403)
     const wrongToken = await room.control({
@@ -150,6 +155,7 @@ describe("RoomSession transient Agent activity", () => {
       token: "wrong",
       scopeId: "room",
       activity: "working",
+      turnSequence: 42,
     })
     expect(wrongToken.status).toBe(401)
     const human = await room.control({
@@ -158,7 +164,56 @@ describe("RoomSession transient Agent activity", () => {
       token: "human-token",
       scopeId: "room",
       activity: "working",
+      turnSequence: 42,
     })
     expect(human.status).toBe(403)
+  })
+
+  it("requires an exact positive turn and replaces the identity on the next turn", async () => {
+    const room = harness()
+    for (const turnSequence of [0, -1, 1.5, undefined, "42"]) {
+      const invalid = await room.control({
+        action: "agent-activity",
+        participantId: "agentT",
+        token: "agentT-token",
+        scopeId: "task:request-1",
+        activity: "working",
+        turnSequence,
+      })
+      expect(invalid).toMatchObject({
+        status: 400,
+        json: { error: "invalid_activity_turn" },
+      })
+    }
+
+    await room.control({
+      action: "agent-activity",
+      participantId: "agentT",
+      token: "agentT-token",
+      scopeId: "task:request-1",
+      activity: "working",
+      turnSequence: 42,
+    })
+    // The same state on a new turn is a real change: the projection must carry
+    // the new exact turn so a later interrupt binds to it.
+    const nextTurn = await room.control({
+      action: "agent-activity",
+      participantId: "agentT",
+      token: "agentT-token",
+      scopeId: "task:request-1",
+      activity: "working",
+      turnSequence: 47,
+    })
+    expect(nextTurn).toMatchObject({ status: 200, json: { changed: true } })
+    expect([
+      ...(room.session as any).transientAgentActivities.values(),
+    ]).toEqual([
+      {
+        agentParticipantId: "agentT",
+        scopeId: "task:request-1",
+        state: "working",
+        turnSequence: 47,
+      },
+    ])
   })
 })

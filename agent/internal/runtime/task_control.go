@@ -13,9 +13,16 @@ import (
  * Interrupt in the Room must cancel only the Harness turn the resident
  * Runtime CURRENTLY owns for exactly that Task.
  *
- *	Free4Chat Runtime currently owns Task T's active Harness turn
- *	  + the Room sends a transient private control naming Task T
+ *	Free4Chat Runtime currently owns Task T's active Harness turn, identified
+ *	by the canonical Room sequence of its trigger
+ *	  + the Room sends a transient private control naming Task T and that
+ *	    exact turnSequence
  *	  = cancel that turn through the existing Adapter.CancelTurn()
+ *
+ * A Task scope alone is NOT turn identity: the same Task runs many turns, so
+ * matching only the scope would let a delayed or stale control kill a later
+ * turn. Turn identity is the canonical addressed Room sequence the Runtime
+ * already received as `target` at the serialized admission boundary.
  *
  * It is NOT: Task deletion, leaving the Room, killing the Runtime or the
  * Harness process, clearing Task history, cancelling another client's turn,
@@ -34,12 +41,14 @@ func (r *ResidentRuntime) applyResidentTaskControl(control *types.ResidentTaskCo
 		return
 	}
 	requestedScope := taskScopeForRequestID(control.TaskRequestID)
-	if requestedScope == "" {
+	if requestedScope == "" ||
+		control.TurnSequence <= 0 ||
+		control.TurnSequence > types.MaxResidentTurnSequence {
 		return
 	}
-	if !r.cancelActiveTaskTurn(requestedScope) {
-		// Stale, duplicated, wrong-Task, or no active turn at all: report the
-		// bounded outcome and change nothing.
+	if !r.cancelActiveTaskTurn(requestedScope, control.TurnSequence) {
+		// Stale, duplicated, another Task, or another turn of the same Task:
+		// report the bounded outcome and change nothing.
 		r.log("task_interrupt_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
 		return
 	}
@@ -61,25 +70,39 @@ func taskScopeForRequestID(taskRequestID string) string {
 	return scope
 }
 
-// cancelActiveTaskTurn is the authority boundary. The Runtime cancels only
-// when its own serialized prompt admission currently records exactly this
-// scope as the active turn. ACP's adapter-level CancelTurn is then the correct
-// seam: once the Runtime has proven the active scope matches, it is cancelling
-// its own in-flight prompt (the adapter permits only one at a time) and never
-// another client's conversation.
-func (r *ResidentRuntime) cancelActiveTaskTurn(scope string) bool {
+// cancelActiveTaskTurn is the authority boundary. It requires the exact active
+// turn — same Task scope AND same canonical trigger sequence — and it holds
+// turnControlMu across both the check and the CancelTurn() dispatch.
+//
+// That mutual exclusion with beginActivity/finishActivity is what closes the
+// TOCTOU window: while this dispatch is in flight the old turn cannot complete
+// its active->idle transition, and no successor turn can become active. A
+// control that arrives after the transition observes a different (or cleared)
+// turn identity and is a no-op.
+//
+// ACP's adapter-level CancelTurn is the correct seam here: once the Runtime has
+// proven which turn it owns, the adapter's single in-flight prompt is that
+// turn, so this never cancels another client's conversation. No CancelTurnFor
+// and no HarnessAdapter change is introduced.
+func (r *ResidentRuntime) cancelActiveTaskTurn(scope string, turnSequence int64) bool {
+	if r.options.Adapter == nil {
+		return false
+	}
+	r.turnControlMu.Lock()
+	defer r.turnControlMu.Unlock()
+
 	r.activityMu.Lock()
-	authorized := r.activityTurnActive && r.activityScope == scope
+	authorized := r.activityTurnActive &&
+		r.activityScope == scope &&
+		r.activityTurnSequence == turnSequence
+	// activityMu is released before the adapter call: a cancellation may cause
+	// the Harness to emit a final activity update, which re-enters this Runtime
+	// through observeHarnessActivity and must not deadlock here. turnControlMu
+	// stays held, which is what makes the check-and-dispatch atomic.
 	r.activityMu.Unlock()
 	if !authorized {
 		return false
 	}
-	if r.options.Adapter == nil {
-		return false
-	}
-	// The lock is released before the adapter call: a cancellation may cause
-	// the Harness to emit a final activity update, which re-enters this
-	// Runtime through observeHarnessActivity and must not deadlock here.
 	if err := r.options.Adapter.CancelTurn(); err != nil {
 		r.log("task_interrupt_cancel_failed", map[string]string{"scopeKind": scopeKindOf(scope)})
 		return true

@@ -43,6 +43,7 @@ import {
   hashRoom,
   participantsBucket,
 } from "../common/utils"
+import { isAgentActivityTurnSequence } from "../do/agentActivity"
 import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 
@@ -505,6 +506,21 @@ export default function RoomContent({
   const activeTaskUnavailable = Boolean(
     activeTask && taskIsUnavailable(activeTask, participants)
   )
+  // #409: the interrupt may only target the CANONICAL Agent endpoint of a Task
+  // this Human created, and only the exact turn that Agent's transient
+  // activity currently reports. A secondary participating Agent's activity, or
+  // another Human's Task, must never produce this control.
+  const activeTaskInterruptActivity =
+    activeTask &&
+    effectiveLocalParticipantId &&
+    activeTask.createdByParticipantId === effectiveLocalParticipantId
+      ? (agentActivities ?? []).find(
+          (activity) =>
+            activity.agentParticipantId === activeTask.targetParticipantId &&
+            activity.scopeId === `task:${activeTask.requestId}` &&
+            isAgentActivityTurnSequence(activity.turnSequence)
+        )
+      : undefined
 
   useEffect(() => {
     const pending = pendingLocalTaskSummaries.current
@@ -739,8 +755,8 @@ export default function RoomContent({
   // Room history; a failed send only surfaces the existing lightweight
   // unavailable state next to the control.
   const handleTaskInterrupt = useCallback(
-    (taskRequestId: string) => {
-      setTaskInterruptFailed(!sendTaskInterrupt(taskRequestId))
+    (taskRequestId: string, turnSequence: number) => {
+      setTaskInterruptFailed(!sendTaskInterrupt(taskRequestId, turnSequence))
     },
     [sendTaskInterrupt]
   )
@@ -1768,15 +1784,20 @@ export default function RoomContent({
                     </span>
                   )
                 })}
-                {activeTask && (
-                  // #409: only shown while this Task actually has transient
-                  // Agent activity, i.e. a Harness turn this Runtime owns is
-                  // running. Task.status is a retained-message projection and
-                  // is deliberately NOT used as a running signal.
+                {activeTask && activeTaskInterruptActivity && (
+                  // #409: only shown while the CANONICAL Agent of this Task
+                  // reports transient activity for the exact current turn.
+                  // Task.status is a retained-message projection and is
+                  // deliberately NOT used as a running signal.
                   <button
                     type="button"
                     data-testid="task-interrupt"
-                    onClick={() => handleTaskInterrupt(activeTask.requestId)}
+                    onClick={() =>
+                      handleTaskInterrupt(
+                        activeTask.requestId,
+                        activeTaskInterruptActivity.turnSequence
+                      )
+                    }
                     className="ml-auto rounded border border-gray-700 px-2 py-0.5 text-[11px] text-gray-300 hover:border-red-500/60 hover:text-red-200"
                     aria-label={`Interrupt ${activeTask.title}`}
                   >

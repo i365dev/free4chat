@@ -411,13 +411,15 @@ func TestResidentEventStreamDecodesPrivateTaskControl(t *testing.T) {
 		"type":          "task-control",
 		"control":       "interrupt",
 		"taskRequestId": "req-T-0001",
+		"turnSequence":  42,
 	})
 	if err != nil {
 		t.Fatalf("decode private task control: %v", err)
 	}
 	if wait.TaskControl == nil ||
 		wait.TaskControl.Kind != types.ResidentTaskControlInterrupt ||
-		wait.TaskControl.TaskRequestID != "req-T-0001" {
+		wait.TaskControl.TaskRequestID != "req-T-0001" ||
+		wait.TaskControl.TurnSequence != 42 {
 		t.Fatalf("private task control mismatch: %+v", wait.TaskControl)
 	}
 	if wait.Cursor != 0 || len(wait.Events) != 0 || wait.MediaState != nil || wait.Participants != nil {
@@ -427,7 +429,7 @@ func TestResidentEventStreamDecodesPrivateTaskControl(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal resident wait result: %v", err)
 	}
-	for _, forbidden := range []string{"taskControl", "taskRequestId", "req-T-0001", "task-control", "interrupt"} {
+	for _, forbidden := range []string{"taskControl", "taskRequestId", "req-T-0001", "task-control", "interrupt", "turnSequence"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("private task control leaked into a serialized wait result (%q): %s", forbidden, encoded)
 		}
@@ -443,22 +445,36 @@ func TestResidentEventStreamRejectsMalformedTaskControl(t *testing.T) {
 		frame map[string]any
 	}{
 		{name: "unsupported control", frame: map[string]any{
-			"type": "task-control", "control": "steer", "taskRequestId": "req-T-0001",
+			"type": "task-control", "control": "steer", "taskRequestId": "req-T-0001", "turnSequence": 42,
 		}},
 		{name: "missing control", frame: map[string]any{
-			"type": "task-control", "taskRequestId": "req-T-0001",
+			"type": "task-control", "taskRequestId": "req-T-0001", "turnSequence": 42,
 		}},
 		{name: "missing task request", frame: map[string]any{
-			"type": "task-control", "control": "interrupt",
+			"type": "task-control", "control": "interrupt", "turnSequence": 42,
 		}},
 		{name: "padded task request", frame: map[string]any{
-			"type": "task-control", "control": "interrupt", "taskRequestId": " req-T-0001 ",
+			"type": "task-control", "control": "interrupt", "taskRequestId": " req-T-0001 ", "turnSequence": 42,
 		}},
 		{name: "control rune in task request", frame: map[string]any{
-			"type": "task-control", "control": "interrupt", "taskRequestId": "req\tT",
+			"type": "task-control", "control": "interrupt", "taskRequestId": "req\tT", "turnSequence": 42,
 		}},
 		{name: "oversized task request", frame: map[string]any{
-			"type": "task-control", "control": "interrupt", "taskRequestId": strings.Repeat("t", 65),
+			"type": "task-control", "control": "interrupt", "taskRequestId": strings.Repeat("t", 65), "turnSequence": 42,
+		}},
+		// #409 exact-turn identity: a control must name one positive, safe turn.
+		{name: "missing turn sequence", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": "req-T-0001",
+		}},
+		{name: "zero turn sequence", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": "req-T-0001", "turnSequence": 0,
+		}},
+		{name: "negative turn sequence", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": "req-T-0001", "turnSequence": -7,
+		}},
+		{name: "unsafe turn sequence", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": "req-T-0001",
+			"turnSequence": int64(types.MaxResidentTurnSequence) + 1,
 		}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
