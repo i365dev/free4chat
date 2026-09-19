@@ -841,9 +841,13 @@ type fakeAdapter struct {
 	// absent, the legacy reply-N/turnTargets behavior stays unchanged.
 	turnResults []types.HarnessTurnResult
 	turnWait    <-chan struct{}
-	onFail      func(error)
-	sessions    int
-	generation  int64
+	// scopedTurnWait, when non-nil, blocks the NEXT scoped Harness turn. It is
+	// the scoped equivalent of turnWait and is how a test holds one Task's turn
+	// open while later Tasks are admitted behind it.
+	scopedTurnWait <-chan struct{}
+	onFail         func(error)
+	sessions       int
+	generation     int64
 	// replaceBeforeRun simulates a process/session replacement in the narrow
 	// interval after Runtime.EnsureSession but before it can bind RunTurn.
 	replaceBeforeRun  bool
@@ -986,9 +990,14 @@ func (a *fakeAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, exp
 	a.scopedTurnDetails[scope] = append(a.scopedTurnDetails[scope], combined)
 	a.scopedSessionNews[scope] = append(a.scopedSessionNews[scope], input.Session != nil && input.Session.New)
 	hook := a.scopedRunHook
+	scopedWait := a.scopedTurnWait
+	a.scopedTurnWait = nil
 	a.mu.Unlock()
 	if hook != nil {
 		hook(scope)
+	}
+	if scopedWait != nil {
+		<-scopedWait
 	}
 	a.mu.Lock()
 	if a.turnErr != nil {

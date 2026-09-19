@@ -94,9 +94,27 @@ type pendingSessionAdoption struct {
 	// requestId before it asked for the preparation. The CLI handoff leaves it
 	// empty and keeps its sequence-fenced "next eligible Task" behavior.
 	taskRequestID string
-	// expiresAt bounds an exact prepared adoption. Zero means "no expiry"
-	// (the CLI path, which is cleared by a Task or by hand).
+	// expiresAt bounds an ORPHAN exact prepared adoption: one whose canonical
+	// Task has not been accepted yet. Zero means "no expiry" for the CLI path,
+	// which is cleared by a Task or by hand.
+	//
+	// Once claimed is set this bound no longer applies — see claimed.
 	expiresAt int64
+	// claimed means the EXACT canonical Human-owned Task this preparation was
+	// pinned to has been ACCEPTED into the Runtime's bounded pending queue.
+	//
+	// It is a distinct fact from "expiresAt == 0": the CLI path is unbounded by
+	// design while waiting for "the next eligible Task", whereas a claimed
+	// preparation has already found its one Task and is only waiting for that
+	// Task to reach the serialized admission boundary. Conflating the two would
+	// make the CLI fence and the browser lifecycle indistinguishable in tests
+	// and in the logs.
+	//
+	// A claimed preparation never expires on the orphan TTL: the serialized
+	// drain may legitimately sit behind a long-running predecessor, and the
+	// whole point of the preparation is that ITS Task still loads the selected
+	// conversation when the drain finally reaches it.
+	claimed bool
 }
 
 // declinedPreparedAdoption is the local fail-closed record of one exact
@@ -276,14 +294,75 @@ func (r *ResidentRuntime) pendingAdoptionSnapshot() *pendingSessionAdoption {
 	return &snapshot
 }
 
-// expirePreparedAdoptionLocked drops an exact prepared adoption whose TTL has
-// passed and records its requestId as declined, so the Task it was prepared
-// for can never fall back to a fresh conversation. It reports the adoption
-// that is still armed (nil when it just expired or none was armed). Callers
-// must hold r.mu.
+// claimPreparedAdoptionLocked promotes an ORPHAN exact preparation into a
+// CLAIMED one, and is called ONLY from the point where the exact canonical
+// Human-owned Task trigger has just been accepted into this scope's bounded
+// pending queue.
+//
+// Claiming here — rather than at the serialized Harness admission boundary — is
+// what makes the browser path survivable behind a long-running predecessor:
+//
+//	Task A: 10-minute Harness turn
+//	Human:  Continue session -> PREPARE B -> PREPARED -> canonical Task B
+//	reader: Task B accepted into pendingAddressed   <-- CLAIM happens here
+//	...     Task A still running, well past B's orphan TTL
+//	drain:  Task B -> bindSessionAdoption -> session/load -> RunTurn
+//
+// It deliberately does NOT load anything: the Harness may be executing another
+// Task's turn right now, and #412 load semantics must stay serialized behind
+// the same single drain that every other scoped transition uses.
+//
+// Claiming requires proof, from the accepted event itself, that this IS the
+// exact Task the preparation was pinned to:
+//
+//   - the scope's canonical Task id equals the pinned taskRequestID;
+//   - the trigger is a Human-originated collaboration REQUEST addressed to
+//     THIS Agent participant (the same ownership every Task control uses);
+//   - it comes from the Human the preparation was armed for;
+//   - its canonical sequence is strictly after the fence captured at arm time.
+//
+// A Task trigger the bounded queue REFUSES is never claimed: capacity failure
+// must not make a preparation immortal. Callers must hold r.mu.
+func (r *ResidentRuntime) claimPreparedAdoptionLocked(scope string, event types.RoomEvent) bool {
+	adoption := r.pendingAdoption
+	if adoption == nil || adoption.taskRequestID == "" || adoption.claimed {
+		return false
+	}
+	if taskRequestIDForScope(scope) != adoption.taskRequestID {
+		return false
+	}
+	if event.Sequence <= adoption.armedAfterSequence {
+		return false
+	}
+	if !event.Addressed || event.Collab == nil || event.Collab.Kind != types.CollabRequest {
+		return false
+	}
+	if event.Participant.Kind != types.KindHuman {
+		return false
+	}
+	// r.participantID is read directly: the caller holds r.mu.
+	if event.Collab.TargetParticipantID != r.participantID {
+		return false
+	}
+	if adoption.humanParticipantID == "" ||
+		event.Collab.FromParticipantID != adoption.humanParticipantID {
+		return false
+	}
+	adoption.claimed = true
+	return true
+}
+
+// expirePreparedAdoptionLocked drops an ORPHAN exact prepared adoption whose
+// TTL has passed and records its requestId as declined, so the Task it was
+// prepared for can never fall back to a fresh conversation. It reports the
+// adoption that is still armed (nil when it just expired or none was armed).
+//
+// A CLAIMED preparation is never expired here: its exact canonical Task has
+// already been accepted and is simply waiting its turn in the serialized
+// drain. Callers must hold r.mu.
 func (r *ResidentRuntime) expirePreparedAdoptionLocked(now int64) *pendingSessionAdoption {
 	adoption := r.pendingAdoption
-	if adoption == nil || adoption.expiresAt == 0 || adoption.expiresAt > now {
+	if adoption == nil || adoption.claimed || adoption.expiresAt == 0 || adoption.expiresAt > now {
 		return adoption
 	}
 	r.pendingAdoption = nil
@@ -426,6 +505,14 @@ func (r *ResidentRuntime) admitHarnessSession(scope string, target int64) error 
 	}
 	if adoption != nil {
 		if exact {
+			if adoption.claimed {
+				// The exact canonical Task already proved ownership when it was
+				// accepted into the bounded queue, so the binding is settled.
+				// It is never re-derived here: a frozen-context eviction must
+				// not be able to turn a prepared Task into a fresh
+				// conversation.
+				return r.bindSessionAdoption(scope, adoption)
+			}
 			if !r.adoptionMayBind(scope, target, adoption) {
 				// The Task is not the Human's, or is not Human-owned at all.
 				// The preparation stays armed for the Task it was pinned to and

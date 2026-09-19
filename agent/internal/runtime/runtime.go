@@ -1235,6 +1235,7 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	}
 	newScope := scope != roomScope && !r.scopeStateExistsLocked(scope)
 	queuedChanged := false
+	claimed := false
 	ref, admitted := r.ensureSessionRefLocked(scope)
 	if !admitted {
 		r.mu.Unlock()
@@ -1274,10 +1275,18 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 			// whose autonomous recovery was closed. Unaddressed Room traffic
 			// never reaches this point and can never re-arm anything.
 			r.reopenTurnRecoveryLocked(scope)
+			// #409: an EXACT prepared adoption is claimed only once its own
+			// canonical Human-owned Task has actually been accepted into this
+			// bounded queue. A preparation the queue refuses keeps its orphan
+			// TTL. Nothing is loaded here: the serialized drain owns that.
+			claimed = r.claimPreparedAdoptionLocked(scope, event)
 			queuedChanged = true
 		}
 	}
 	r.mu.Unlock()
+	if claimed {
+		r.log("session_adoption_claimed", map[string]string{"scopeKind": scopeKindOf(scope)})
+	}
 	if queuedChanged {
 		// A newly accepted instruction is exactly "send after current turn":
 		// the existing serial queue grew, so the transient execution

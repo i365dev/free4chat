@@ -379,6 +379,14 @@ interface PendingTaskSessionStart {
   expiresAt: number
 }
 
+/**
+ * #409: the outcome of one attempt to write a session-control frame. A boolean
+ * is not enough: "busy" and "unreachable" produce different bounded errors and
+ * must never be confused, because only "busy" means another Human's live
+ * correlation is still owned by this socket.
+ */
+type AgentSessionFrameOutcome = "delivered" | "busy" | "unreachable"
+
 interface PendingSessionControl {
   /** Room-supplied correlation echoed back by the Runtime. */
   requestId: string
@@ -2737,7 +2745,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       sessionToken?: string
       taskRequestId?: string
     }
-  ): boolean {
+  ): AgentSessionFrameOutcome {
     const pending: PendingSessionControl = {
       requestId: control.requestId,
       operation: control.operation,
@@ -2772,27 +2780,44 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private sendAgentSessionCancel(
     room: RoomRecord,
     participantId: string,
+    humanParticipantId: string,
     taskRequestId: string
   ): void {
+    // A cancel installs NO new correlation, so it must never touch whatever
+    // correlation the socket is currently holding for someone else.
     this.sendAgentSessionFrame(room, participantId, null, {
       type: "task-session-control",
       operation: "cancel",
       requestId: crypto.randomUUID(),
-      humanParticipantId: this.singleHumanIdOf(room) ?? "cancelled",
+      humanParticipantId,
       ...(taskRequestId ? { taskRequestId } : {}),
     })
   }
 
+  /**
+   * #409: the ONE writer of the resident socket's session-control slot.
+   *
+   * The Runtime processes at most one session-control operation at a time, and
+   * the Room protects the SAME single slot on its side. Without that, a second
+   * Human's request would overwrite the first Human's pending correlation,
+   * the Runtime would (correctly) answer `busy` to the second request, and the
+   * FIRST Human's real result would then arrive with no correlation left to
+   * match — leaving them waiting until the browser timeout.
+   *
+   * A live correlation therefore belongs to exactly one in-flight request and
+   * is never overwritten. A frame that installs no correlation (`pending ===
+   * null`, i.e. a best-effort cancel) leaves any current one untouched.
+   */
   private sendAgentSessionFrame(
     room: RoomRecord,
     participantId: string,
     pending: PendingSessionControl | null,
     payload: Record<string, unknown>
-  ): boolean {
+  ): AgentSessionFrameOutcome {
     const participant = room.participants[participantId]
     if (!participant || participant.kind !== "agent" || !participant.connected)
-      return false
-    let delivered = false
+      return "unreachable"
+    const now = Date.now()
     for (const socket of this.ctx.getWebSockets(
       this.agentEventSocketTag(participantId)
     )) {
@@ -2803,33 +2828,48 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participant.connectionNonce !== attachment.connectionNonce
       )
         continue
-      try {
-        attachment.pendingSessionControl = pending ?? undefined
-        if (pending) socket.serializeAttachment(attachment)
-        socket.send(JSON.stringify(payload))
-        delivered = true
-      } catch {
-        // A socket that fails mid-send is not a delivery. Drop the pending
-        // correlation with it: a response can never arrive for a frame that
-        // was never written.
-        attachment.pendingSessionControl = undefined
+      if (pending) {
+        const current = attachment.pendingSessionControl
+        if (current && current.expiresAt > now) {
+          // Another Human's request owns the slot. Refuse immediately and
+          // leave the existing correlation byte-for-byte intact.
+          return "busy"
+        }
+        // An expired record is cleared, and the new request becomes THE
+        // pending correlation, before anything is written to the wire.
+        attachment.pendingSessionControl = pending
         try {
           socket.serializeAttachment(attachment)
         } catch {
-          // A socket whose attachment is not writable is already unusable.
+          attachment.pendingSessionControl = undefined
+          return "unreachable"
         }
+        try {
+          socket.send(JSON.stringify(payload))
+        } catch {
+          // A socket that fails mid-send is not a delivery. Drop ONLY the
+          // correlation this call installed: a response can never arrive for a
+          // frame that was never written.
+          if (attachment.pendingSessionControl === pending) {
+            attachment.pendingSessionControl = undefined
+            try {
+              socket.serializeAttachment(attachment)
+            } catch {
+              // Already unusable.
+            }
+          }
+          return "unreachable"
+        }
+        return "delivered"
       }
-    }
-    return delivered
-  }
-
-  private singleHumanIdOf(room: RoomRecord): string | null {
-    for (const participant of Object.values(room.participants)) {
-      if (participant.kind === "human" && participant.connected) {
-        return participant.id
+      try {
+        socket.send(JSON.stringify(payload))
+      } catch {
+        return "unreachable"
       }
+      return "delivered"
     }
-    return null
+    return "unreachable"
   }
 
   /**
@@ -2990,7 +3030,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("task_session_not_pending")
       return
     }
-    const delivered = this.sendAgentSessionControl(room, target.id, {
+    const outcome = this.sendAgentSessionControl(room, target.id, {
       requestId: crypto.randomUUID(),
       operation: "list",
       browserRequestId: requestId,
@@ -2999,15 +3039,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ...(projectToken ? { projectToken } : {}),
       ...(pageToken ? { pageToken } : {}),
     })
-    if (!delivered) {
-      delete attachment.pendingTaskSessionDiscovery
-      try {
-        socket.serializeAttachment(attachment)
-      } catch {
-        // The socket is already unusable; the pending record is expired.
-      }
-      reject("task_agent_not_reachable")
+    if (outcome === "delivered") return
+    // Nothing was written to the resident socket, so this Human's own pending
+    // record is released. Another Human's live correlation is untouched.
+    delete attachment.pendingTaskSessionDiscovery
+    try {
+      socket.serializeAttachment(attachment)
+    } catch {
+      // The socket is already unusable; the pending record is expired.
     }
+    reject(
+      outcome === "busy" ? "task_session_busy" : "task_agent_not_reachable"
+    )
   }
 
   /**
@@ -3081,7 +3124,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("task_session_not_pending")
       return
     }
-    const delivered = this.sendAgentSessionControl(room, target.id, {
+    const outcome = this.sendAgentSessionControl(room, target.id, {
       requestId: crypto.randomUUID(),
       operation: "prepare",
       browserRequestId: requestId,
@@ -3090,15 +3133,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       sessionToken: message.sessionToken,
       taskRequestId,
     })
-    if (!delivered) {
-      delete attachment.pendingTaskSessionStart
-      try {
-        socket.serializeAttachment(attachment)
-      } catch {
-        // The socket is already unusable; the pending record is expired.
-      }
-      reject("task_agent_not_reachable")
+    if (outcome === "delivered") return
+    delete attachment.pendingTaskSessionStart
+    try {
+      socket.serializeAttachment(attachment)
+    } catch {
+      // The socket is already unusable; the pending record is expired.
     }
+    reject(
+      outcome === "busy" ? "task_session_busy" : "task_agent_not_reachable"
+    )
   }
 
   /**
@@ -3161,7 +3205,21 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // A socket whose attachment is not writable can no longer correlate
       // anything; the pending record is gone either way.
     }
-    if (pending.expiresAt <= Date.now()) return
+    if (pending.expiresAt <= Date.now()) {
+      // The Room gave up on this request, but a matching PREPARE may already
+      // have armed a REAL exact adoption on the Runtime before its result
+      // crossed the wire. Release it best-effort so the Human is not blocked
+      // from retrying for the Runtime's whole orphan window.
+      if (pending.operation === "prepare") {
+        this.sendAgentSessionCancel(
+          room,
+          participant.id,
+          pending.humanParticipantId,
+          pending.taskRequestId ?? ""
+        )
+      }
+      return
+    }
 
     const humanSocket = this.humanSocketFor(
       pending.humanParticipantId,
@@ -3174,6 +3232,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         this.sendAgentSessionCancel(
           room,
           participant.id,
+          pending.humanParticipantId,
           pending.taskRequestId ?? ""
         )
       return
@@ -3185,7 +3244,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     } catch {
       humanAttachment = null
     }
-    if (!humanAttachment) return
+    if (!humanAttachment) {
+      // An unreadable Human attachment is as unusable as a missing socket: no
+      // canonical Task can be owned, so an armed preparation is released.
+      if (pending.operation === "prepare")
+        this.sendAgentSessionCancel(
+          room,
+          participant.id,
+          pending.humanParticipantId,
+          pending.taskRequestId ?? ""
+        )
+      return
+    }
 
     if (pending.operation === "list") {
       const record = humanAttachment.pendingTaskSessionDiscovery
@@ -3220,6 +3290,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.sendAgentSessionCancel(
         room,
         participant.id,
+        pending.humanParticipantId,
         pending.taskRequestId ?? ""
       )
       return
@@ -3243,7 +3314,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     const sender = room.participants[pending.humanParticipantId]
     if (!sender || sender.kind !== "human") {
-      this.sendAgentSessionCancel(room, participant.id, record.taskRequestId)
+      this.sendAgentSessionCancel(
+        room,
+        participant.id,
+        pending.humanParticipantId,
+        record.taskRequestId
+      )
       this.sendHumanTaskSessionStartResult(
         humanSocket,
         pending.browserRequestId,
@@ -3273,7 +3349,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // The append failed after a successful preparation. Release the
       // preparation best-effort; the Runtime's own TTL and its exact
       // requestId pinning are the real guarantee.
-      this.sendAgentSessionCancel(room, participant.id, record.taskRequestId)
+      this.sendAgentSessionCancel(
+        room,
+        participant.id,
+        pending.humanParticipantId,
+        record.taskRequestId
+      )
       this.sendHumanTaskSessionStartResult(
         humanSocket,
         pending.browserRequestId,

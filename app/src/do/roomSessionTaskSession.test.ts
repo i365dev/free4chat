@@ -202,6 +202,29 @@ function harness(continuation = true) {
       webSocketMessage(socket, message),
     sendAgent: (socket: FakeSocket, message: unknown) =>
       webSocketMessage(socket, message),
+    /**
+     * Ages BOTH sides of a pending exchange past their window without
+     * sleeping. The Human record and the resident record share one TTL and are
+     * written microseconds apart in production, so a faithful "the Room gave
+     * up" simulation must move both.
+     */
+    expirePending: (humanSocket: FakeSocket) => {
+      const humanAttachment = humanSocket.attachment() as {
+        pendingTaskSessionDiscovery?: { expiresAt: number }
+        pendingTaskSessionStart?: { expiresAt: number }
+      }
+      if (humanAttachment?.pendingTaskSessionDiscovery)
+        humanAttachment.pendingTaskSessionDiscovery.expiresAt = Date.now() - 1
+      if (humanAttachment?.pendingTaskSessionStart)
+        humanAttachment.pendingTaskSessionStart.expiresAt = Date.now() - 1
+      for (const socket of agentSockets.values()) {
+        const attachment = socket.attachment() as {
+          pendingSessionControl?: { expiresAt: number }
+        }
+        if (attachment?.pendingSessionControl)
+          attachment.pendingSessionControl.expiresAt = Date.now() - 1
+      }
+    },
     stored: () => store.get("room") as RoomRecord,
     putCount: () => puts,
     /** Makes the primary Room record refuse every further write. */
@@ -852,6 +875,347 @@ describe("RoomSession Task Session Continuation (#409)", () => {
       },
     ])
     expect(test.stored().messages).toHaveLength(0)
+  })
+
+  it("refuses a second Human's request instead of overwriting the first Human's live correlation", async () => {
+    const test = harness()
+    const humanA = test.connectHuman("human-1")
+    const humanB = test.connectHuman("human-2")
+    const agentSocket = test.connectAgentSocket("agent-a")
+
+    // Human A's discovery is in flight: the resident socket owns A's exact
+    // correlation and the Runtime is busy with it.
+    await test.sendHuman(humanA, {
+      type: "task-session-list",
+      requestId: "browser-A",
+      targetParticipantId: "agent-a",
+    })
+    const pendingForA = (
+      agentSocket.attachment() as {
+        pendingSessionControl?: { requestId: string; browserRequestId: string }
+      }
+    ).pendingSessionControl
+    expect(pendingForA).toBeDefined()
+
+    // Human B asks for the same Agent while A is still outstanding.
+    await test.sendHuman(humanB, {
+      type: "task-session-list",
+      requestId: "browser-B",
+      targetParticipantId: "agent-a",
+    })
+    // B is refused IMMEDIATELY, and no second frame reaches the Runtime.
+    expect(test.humanResults(humanB)).toEqual([
+      {
+        type: "task-session-list-result",
+        requestId: "browser-B",
+        ok: false,
+        error: "task_session_busy",
+      },
+    ])
+    expect(test.sessionControls("agent-a")).toHaveLength(1)
+    // A's correlation is byte-for-byte intact.
+    expect(
+      (
+        agentSocket.attachment() as {
+          pendingSessionControl?: {
+            requestId: string
+            browserRequestId: string
+          }
+        }
+      ).pendingSessionControl
+    ).toEqual(pendingForA)
+
+    // A's real result therefore still routes to A — no browser timeout.
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "list",
+      requestId: pendingForA!.requestId,
+      ok: true,
+      sessions: [
+        {
+          token: "session-token-1",
+          title: "Session A",
+          projectToken: "project-token-1",
+          projectLabel: "~/a",
+        },
+      ],
+      projects: [{ token: "project-token-1", label: "~/a" }],
+      hasMore: false,
+    })
+    expect(test.humanResults(humanA)).toHaveLength(1)
+    expect(test.humanResults(humanA)[0]).toMatchObject({
+      requestId: "browser-A",
+      ok: true,
+    })
+    expect(test.humanResults(humanB)).toHaveLength(1)
+  })
+
+  it("refuses a second Human's START while another correlation is live", async () => {
+    const test = harness()
+    const humanA = test.connectHuman("human-1")
+    const humanB = test.connectHuman("human-2")
+    const agentSocket = test.connectAgentSocket("agent-a")
+
+    await test.sendHuman(humanA, {
+      type: "task-session-list",
+      requestId: "browser-A",
+      targetParticipantId: "agent-a",
+    })
+    await test.sendHuman(humanB, {
+      type: "task-session-start",
+      requestId: "browser-B",
+      targetParticipantId: "agent-a",
+      sessionToken: "session-token-1",
+      summary: "Continue this conversation",
+    })
+
+    expect(test.sessionControls("agent-a")).toHaveLength(1)
+    expect(test.humanResults(humanB)).toEqual([
+      {
+        type: "task-session-start-result",
+        requestId: "browser-B",
+        ok: false,
+        error: "task_session_busy",
+      },
+    ])
+    expect(test.stored().messages).toHaveLength(0)
+
+    // B's refused START left no trace on A's correlation, and A still works.
+    const pendingForA = (
+      agentSocket.attachment() as {
+        pendingSessionControl?: { requestId: string }
+      }
+    ).pendingSessionControl
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "list",
+      requestId: pendingForA!.requestId,
+      ok: true,
+      sessions: [],
+      projects: [],
+      hasMore: false,
+    })
+    expect(test.humanResults(humanA)).toEqual([
+      {
+        type: "task-session-list-result",
+        requestId: "browser-A",
+        ok: true,
+        sessions: [],
+        projects: [],
+        hasMore: false,
+      },
+    ])
+  })
+
+  it("clears only an EXPIRED correlation and admits the new request normally", async () => {
+    const test = harness()
+    const humanSocket = test.connectHuman("human-1")
+    const agentSocket = test.connectAgentSocket("agent-a")
+
+    await test.sendHuman(humanSocket, {
+      type: "task-session-list",
+      requestId: "browser-old",
+      targetParticipantId: "agent-a",
+    })
+    const stale = (
+      agentSocket.attachment() as {
+        pendingSessionControl?: { requestId: string }
+      }
+    ).pendingSessionControl
+    // Both sides of the abandoned exchange are past their window.
+    test.expirePending(humanSocket)
+
+    await test.sendHuman(humanSocket, {
+      type: "task-session-list",
+      requestId: "browser-new",
+      targetParticipantId: "agent-a",
+    })
+
+    // The expired record was replaced, and the new control was delivered.
+    const current = (
+      agentSocket.attachment() as {
+        pendingSessionControl?: { requestId: string; expiresAt: number }
+      }
+    ).pendingSessionControl
+    expect(current).toBeDefined()
+    expect(current!.requestId).not.toBe(stale!.requestId)
+    expect(current!.expiresAt).toBeGreaterThan(Date.now())
+    expect(test.sessionControls("agent-a")).toHaveLength(2)
+    expect(test.humanResults(humanSocket)).toHaveLength(0)
+
+    // The stale result is ignored, the current one routes.
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "list",
+      requestId: stale!.requestId,
+      ok: true,
+      sessions: [],
+      projects: [],
+      hasMore: false,
+    })
+    expect(test.humanResults(humanSocket)).toHaveLength(0)
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "list",
+      requestId: current!.requestId,
+      ok: true,
+      sessions: [],
+      projects: [],
+      hasMore: false,
+    })
+    expect(test.humanResults(humanSocket)).toEqual([
+      {
+        type: "task-session-list-result",
+        requestId: "browser-new",
+        ok: true,
+        sessions: [],
+        projects: [],
+        hasMore: false,
+      },
+    ])
+  })
+
+  it("never lets a best-effort cancel clobber another live correlation", async () => {
+    const test = harness()
+    const humanSocket = test.connectHuman("human-1")
+    const agentSocket = test.connectAgentSocket("agent-a")
+
+    // Human A has a live discovery correlation on the resident socket.
+    await test.sendHuman(humanSocket, {
+      type: "task-session-list",
+      requestId: "browser-A",
+      targetParticipantId: "agent-a",
+    })
+    const live = (
+      agentSocket.attachment() as {
+        pendingSessionControl?: { requestId: string; browserRequestId: string }
+      }
+    ).pendingSessionControl
+    expect(live).toBeDefined()
+
+    // A best-effort cancel for an UNRELATED old Task is written.
+    ;(
+      test.session as unknown as {
+        sendAgentSessionCancel: (
+          room: RoomRecord,
+          participantId: string,
+          humanParticipantId: string,
+          taskRequestId: string
+        ) => void
+      }
+    ).sendAgentSessionCancel(test.stored(), "agent-a", "human-1", "req-OLD")
+
+    const frames = test.sessionControls("agent-a")
+    const cancel = frames.find((frame) => frame.operation === "cancel")
+    expect(cancel).toBeDefined()
+    expect(cancel!.taskRequestId).toBe("req-OLD")
+    // The unrelated live correlation is untouched.
+    expect(
+      (
+        agentSocket.attachment() as {
+          pendingSessionControl?: {
+            requestId: string
+            browserRequestId: string
+          }
+        }
+      ).pendingSessionControl
+    ).toEqual(live)
+
+    // Its response therefore still routes normally.
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "list",
+      requestId: live!.requestId,
+      ok: true,
+      sessions: [],
+      projects: [],
+      hasMore: false,
+    })
+    expect(test.humanResults(humanSocket)).toEqual([
+      {
+        type: "task-session-list-result",
+        requestId: "browser-A",
+        ok: true,
+        sessions: [],
+        projects: [],
+        hasMore: false,
+      },
+    ])
+    // The cancel itself is fire-and-forget and produces no browser result.
+    expect(test.humanResults(humanSocket)).toHaveLength(1)
+  })
+
+  it("releases a late PREPARED ack whose Room pending window already expired", async () => {
+    const test = harness()
+    const humanSocket = test.connectHuman("human-1")
+    const agentSocket = test.connectAgentSocket("agent-a")
+
+    await test.sendHuman(humanSocket, {
+      type: "task-session-start",
+      requestId: "browser-1",
+      targetParticipantId: "agent-a",
+      sessionToken: "session-token-1",
+      summary: "Continue this conversation",
+    })
+    const prepare = test.sessionControls("agent-a")[0]
+    const taskRequestId = prepare.taskRequestId as string
+
+    // The Room gave up while the Runtime was still arming the adoption.
+    test.expirePending(humanSocket)
+    // The Runtime's PREPARED ack still crosses the wire.
+    ;(
+      agentSocket.attachment() as {
+        pendingSessionControl: { expiresAt: number }
+      }
+    ).pendingSessionControl.expiresAt = Date.now() - 1
+
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "prepare",
+      requestId: prepare.requestId,
+      ok: true,
+    })
+
+    // No canonical Task, no browser acknowledgement, and an EXACT release so
+    // the Runtime does not stay armed for its whole orphan window.
+    expect(test.stored().messages).toHaveLength(0)
+    expect(test.humanResults(humanSocket)).toHaveLength(0)
+    const cancels = test
+      .sessionControls("agent-a")
+      .filter((frame) => frame.operation === "cancel")
+    expect(cancels).toHaveLength(1)
+    expect(cancels[0].taskRequestId).toBe(taskRequestId)
+    expect(cancels[0].humanParticipantId).toBe("human-1")
+
+    // The slot is free again, so a fresh Continue attempt is admitted
+    // immediately instead of blocking behind the abandoned preparation.
+    await test.sendHuman(humanSocket, {
+      type: "task-session-start",
+      requestId: "browser-2",
+      targetParticipantId: "agent-a",
+      sessionToken: "session-token-2",
+      summary: "Continue this conversation",
+    })
+    const retry = test
+      .sessionControls("agent-a")
+      .filter((frame) => frame.operation === "prepare")
+    expect(retry).toHaveLength(2)
+    expect(retry[1].sessionToken).toBe("session-token-2")
+
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "prepare",
+      requestId: retry[1].requestId,
+      ok: true,
+    })
+    expect(test.stored().messages).toHaveLength(1)
+    expect(test.humanResults(humanSocket)).toEqual([
+      {
+        type: "task-session-start-result",
+        requestId: "browser-2",
+        ok: true,
+      },
+    ])
   })
 
   it("fails closed when the originating Human socket is gone", async () => {
