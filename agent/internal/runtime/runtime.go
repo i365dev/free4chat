@@ -263,6 +263,14 @@ type ResidentRuntime struct {
 	// applied to a successor turn.
 	interruptScope  string
 	interruptTarget int64
+	// session handoff (#409 V1, Pi only): ONE locally armed adoption plus the
+	// bounded set of Task scopes that already adopted a native session. The ACP
+	// session id lives only in pendingAdoption and is dropped once the adapter
+	// has loaded it; adoptedLostScopes is the fact that keeps an adopted Task
+	// from ever falling back to a fresh conversation.
+	pendingAdoption   *pendingSessionAdoption
+	adoptedScopes     map[string]struct{}
+	adoptedLostScopes map[string]struct{}
 	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
 	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
 	// mediaMu; without this generation fence, a late old callback could end a
@@ -398,6 +406,8 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		pendingPermissions: make(map[string]*pendingRoomPermission),
 		activities:         make(map[string]activityTurnState),
 		taskExecutionFacts: make(map[string]taskExecutionFacts),
+		adoptedScopes:      make(map[string]struct{}),
+		adoptedLostScopes:  make(map[string]struct{}),
 	}
 	configurePermissionResponder(runtime)
 	configureActivityHandler(runtime)
@@ -1324,9 +1334,14 @@ func (r *ResidentRuntime) drainTurns() {
 			"scopeKind":    scopeKindOf(scope),
 			"retryAttempt": strconv.Itoa(r.turnRetryIndexFor(scope, target)),
 		})
-		// Ensure before rendering so the prompt accurately knows whether this
-		// is the same retained ACP conversation or a real session/new.
-		if err := r.ensureHarnessSession(scope); err != nil {
+		// Admit the Harness session before rendering so the prompt accurately
+		// knows whether this is the same retained ACP conversation or a real
+		// session/new. This is also the single serialized boundary where an
+		// armed Pi session adoption binds to THIS canonical Task scope: a Task
+		// that adopts a native session never issues session/new for its scope,
+		// and an adopted Task whose session is gone fails closed instead of
+		// starting a fresh conversation.
+		if err := r.admitHarnessSession(scope, target); err != nil {
 			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}

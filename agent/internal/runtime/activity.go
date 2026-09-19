@@ -23,7 +23,9 @@ func configureActivityHandler(r *ResidentRuntime) {
 	r.options.Adapter.OnFailure(func(error) {
 		// Unexpected Harness process death is the ONE boundary that means a
 		// Task's retained Harness session is gone. Room/resident transport
-		// reconnects are not session loss and must never publish it.
+		// reconnects are not session loss and must never publish it. An adopted
+		// Task additionally stops being eligible for a fresh session.
+		r.noteAdoptedScopeLoss()
 		r.noteTaskSessionLoss()
 		r.clearActivity()
 		r.failClosedResidentMediaState()

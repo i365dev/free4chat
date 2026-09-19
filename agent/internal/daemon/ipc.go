@@ -83,6 +83,14 @@ type IpcRequest struct {
 	// It is ephemeral launch material: never returned in daemon responses,
 	// never persisted to workspace/status/logs, never enters Room/MCP/ACP.
 	AgentEnv map[string]string `json:"agentEnv,omitempty"`
+	// #409 V1 Pi session handoff (local CLI only). SessionID is an opaque ACP
+	// identity: it is accepted from `handoff --adopt`, held by one resident
+	// Runtime until it binds to a Task, and never written to status, Room
+	// state, workspace files, or logs.
+	SessionID          string `json:"sessionId,omitempty"`
+	SessionCursor      string `json:"sessionCursor,omitempty"`
+	SessionCwd         string `json:"sessionCwd,omitempty"`
+	HumanParticipantID string `json:"humanParticipantId,omitempty"`
 }
 
 // IpcResponse is the single-line reply envelope.

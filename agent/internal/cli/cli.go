@@ -58,6 +58,10 @@ func usageText() string {
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
   free4chat-agent live-view describe [--json]
   free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [--instance <id>]
+  free4chat-agent handoff --list [--cwd <path>] [--cursor <token>] [--instance <id>]
+  free4chat-agent handoff --adopt <session-id> [--human <participant-id>] [--cwd <path>] [--instance <id>]
+  free4chat-agent handoff --clear [--instance <id>]
+  free4chat-agent handoff --status [--instance <id>]
   free4chat-agent context read [--before-sequence <n>] [--after-sequence <n>] [--limit <1-50>] [--before-transcript-sequence <n>] [--after-transcript-sequence <n>] [--transcript-limit <1-50>] [--instance <id>]
   free4chat-agent version [--json]
   free4chat-agent doctor [--json]
@@ -295,6 +299,13 @@ func run(args []string) error {
 			return errUsage()
 		}
 		return runPeers(room)
+
+	case "handoff":
+		// #409 V1: local-only existing-session handoff, Pi only. This command
+		// never creates a Room Task and never exposes an ACP session id to the
+		// Room: it arms ONE local adoption on the selected resident Runtime, and
+		// the next eligible canonical Human Task binds it.
+		return runHandoff(rest)
 
 	case "context":
 		if len(rest) == 0 || rest[0] != "read" {
