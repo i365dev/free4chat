@@ -4,7 +4,6 @@ import {
   agentActivityKey,
   isAgentActivityScope,
   isAgentActivityState,
-  isAgentActivityTurnSequence,
 } from "./agentActivity"
 import {
   agentCapabilitiesFrom,
@@ -124,6 +123,7 @@ import {
   taskAgentParticipates,
   type TaskProjectionIndex,
 } from "./taskScope"
+import { isAgentActivityTurnSequence } from "../common/agentActivity"
 import {
   ROOM_APP_MAX_PAYLOAD_BYTES,
   ROOM_APP_PROTOCOL_VERSION,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
+import { isAgentActivityTurnSequence } from "@common/agentActivity"
 import { LOCAL_PEER_ID } from "@common/consts"
 import {
   mergeRoomAndEphemeralMessages,
@@ -40,7 +41,6 @@ import {
   participantsBucket,
   trackAnalyticsEvent,
 } from "@common/utils"
-import { isAgentActivityTurnSequence } from "@do/agentActivity"
 import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
 
 import type {

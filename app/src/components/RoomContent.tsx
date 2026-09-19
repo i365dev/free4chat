@@ -13,7 +13,10 @@ import TaskLiveView from "./TaskLiveView"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
-import { agentActivityLabel } from "../common/agentActivity"
+import {
+  agentActivityLabel,
+  isAgentActivityTurnSequence,
+} from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   buildRoomInviteUrl,
@@ -43,7 +46,6 @@ import {
   hashRoom,
   participantsBucket,
 } from "../common/utils"
-import { isAgentActivityTurnSequence } from "../do/agentActivity"
 import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 

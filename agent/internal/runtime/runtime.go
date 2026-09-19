@@ -894,36 +894,20 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 	go func() {
 		for {
 			result, err := stream.Receive(ctx)
-			if err != nil {
-				if !r.isStopped() {
-					// A dead transport can never deliver a Room permission
-					// decision, so any turn parked on one must fail closed
-					// instead of waiting for its own timeout.
-					r.cancelPendingPermissions(err)
-				}
+			outcome, wake := r.applyResidentFrame(stream, result, err)
+			switch outcome {
+			case residentFrameDropped:
+				// This reader no longer owns the transport; stop without
+				// touching the replacement stream's lifecycle.
+				return
+			case residentFrameFailed:
 				select {
 				case readErrors <- err:
 				default:
 				}
 				return
 			}
-			if result.TaskControl != nil {
-				// PRIVATE RESIDENT TRANSPORT ONLY: a transient Task control is
-				// not a Room event, carries no cursor, and is applied
-				// immediately — never queued behind a running turn.
-				r.applyResidentTaskControl(result.TaskControl)
-				continue
-			}
-			if result.MediaState == nil {
-				// A resident envelope without the mandatory media projection is
-				// not an authorization observation. Keep event delivery alive,
-				// but revoke local media until a complete envelope arrives.
-				r.failClosedResidentMediaState()
-			}
-			r.advanceFromWait(result)
-			// A media-only envelope is observation, not an activation event. Do
-			// not use it as a Harness wakeup/retry boundary for pre-existing work.
-			if len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
+			if wake {
 				select {
 				case envelopeReady <- struct{}{}:
 				default:
@@ -988,6 +972,71 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 	}
 }
 
+// residentFrameOutcome is the disposition of one private resident frame.
+type residentFrameOutcome int
+
+const (
+	// residentFrameDropped: this reader no longer owns the stream, so both the
+	// frame and the reader are finished.
+	residentFrameDropped residentFrameOutcome = iota
+	// residentFrameApplied: the frame was applied to Runtime state.
+	residentFrameApplied
+	// residentFrameFailed: the transport failed while this reader owned it.
+	residentFrameFailed
+)
+
+// applyResidentFrame applies exactly one transport frame to Runtime state.
+//
+// The resident reader is an asynchronous goroutine, so ownership is re-checked
+// immediately before EVERY effect it derives from the transport: a reconnect
+// can install a replacement stream while this reader is still unwinding, and a
+// late frame or error from the abandoned transport must never cancel a
+// replacement-era Room permission, apply a Task control to replacement-era turn
+// state, or advance the replacement stream's cursor, media fail-closed state,
+// or turn scheduling.
+func (r *ResidentRuntime) applyResidentFrame(
+	stream types.ResidentEventStream,
+	result types.WaitResult,
+	err error,
+) (residentFrameOutcome, bool) {
+	if err != nil {
+		if !r.isStopped() && r.isCurrentResidentStream(stream) {
+			// A dead transport can never deliver a Room permission decision, so
+			// any turn parked on one must fail closed instead of waiting for its
+			// own timeout.
+			r.cancelPendingPermissions(err)
+		}
+		if !r.isCurrentResidentStream(stream) {
+			return residentFrameDropped, false
+		}
+		return residentFrameFailed, false
+	}
+	if result.TaskControl != nil {
+		if !r.isCurrentResidentStream(stream) {
+			return residentFrameDropped, false
+		}
+		// PRIVATE RESIDENT TRANSPORT ONLY: a transient Task control is not a
+		// Room event, carries no cursor, and is applied immediately — never
+		// queued behind a running turn.
+		r.applyResidentTaskControl(result.TaskControl)
+		return residentFrameApplied, false
+	}
+	if !r.isCurrentResidentStream(stream) {
+		return residentFrameDropped, false
+	}
+	if result.MediaState == nil {
+		// A resident envelope without the mandatory media projection is not an
+		// authorization observation. Keep event delivery alive, but revoke
+		// local media until a complete envelope arrives.
+		r.failClosedResidentMediaState()
+	}
+	r.advanceFromWait(result)
+	// A media-only envelope is observation, not an activation event. Do not use
+	// it as a Harness wakeup/retry boundary for pre-existing work.
+	wake := len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped()
+	return residentFrameApplied, wake
+}
+
 func (r *ResidentRuntime) setResidentStream(
 	stream types.ResidentEventStream,
 ) bool {
@@ -1012,6 +1061,19 @@ func (r *ResidentRuntime) clearResidentStream(
 		r.resident = nil
 	}
 	r.residentMu.Unlock()
+}
+
+// isCurrentResidentStream reports whether this exact stream is still the one
+// the Runtime has installed. The resident reader is an asynchronous goroutine,
+// so a reader can still be unwinding after the Runtime has already replaced
+// its transport; every Runtime-side effect derived from that transport must be
+// fenced on this identity.
+func (r *ResidentRuntime) isCurrentResidentStream(
+	stream types.ResidentEventStream,
+) bool {
+	r.residentMu.Lock()
+	defer r.residentMu.Unlock()
+	return r.resident == stream
 }
 
 func (r *ResidentRuntime) closeResidentStream() {
