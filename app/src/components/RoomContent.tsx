@@ -13,7 +13,10 @@ import TaskLiveView from "./TaskLiveView"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
-import { agentActivityLabel } from "../common/agentActivity"
+import {
+  agentActivityLabel,
+  isAgentActivityTurnSequence,
+} from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   buildRoomInviteUrl,
@@ -244,6 +247,9 @@ export default function RoomContent({
   const [taskAgent, setTaskAgent] = useState<TaskAgent | null>(null)
   const [taskInstruction, setTaskInstruction] = useState("")
   const [taskError, setTaskError] = useState("")
+  // #409: the only Interrupt UI state is the local send failure of the last
+  // click. There is deliberately no persisted "Interrupted" Task state.
+  const [taskInterruptFailed, setTaskInterruptFailed] = useState(false)
   const [activeInteraction, setActiveInteraction] = useState("room")
   const [activeRoomAppId, setActiveRoomAppId] = useState<string | null>(null)
   const [expandedRoomAppId, setExpandedRoomAppId] = useState<string | null>(
@@ -317,6 +323,7 @@ export default function RoomContent({
     readRoomAttachment,
     sendCollabResult,
     sendPermissionResponse,
+    sendTaskInterrupt,
     localMicState,
     toggleMicrophone,
     toggleScreenShare,
@@ -501,6 +508,21 @@ export default function RoomContent({
   const activeTaskUnavailable = Boolean(
     activeTask && taskIsUnavailable(activeTask, participants)
   )
+  // #409: the interrupt may only target the CANONICAL Agent endpoint of a Task
+  // this Human created, and only the exact turn that Agent's transient
+  // activity currently reports. A secondary participating Agent's activity, or
+  // another Human's Task, must never produce this control.
+  const activeTaskInterruptActivity =
+    activeTask &&
+    effectiveLocalParticipantId &&
+    activeTask.createdByParticipantId === effectiveLocalParticipantId
+      ? (agentActivities ?? []).find(
+          (activity) =>
+            activity.agentParticipantId === activeTask.targetParticipantId &&
+            activity.scopeId === `task:${activeTask.requestId}` &&
+            isAgentActivityTurnSequence(activity.turnSequence)
+        )
+      : undefined
 
   useEffect(() => {
     const pending = pendingLocalTaskSummaries.current
@@ -543,6 +565,12 @@ export default function RoomContent({
     )
       setActiveInteraction("room")
   }, [activeInteraction, taskProjections])
+
+  useEffect(() => {
+    // A send-failure notice belongs to the Task it was raised for; switching
+    // Tasks or leaving the Task must not carry it over.
+    setTaskInterruptFailed(false)
+  }, [activeInteraction])
 
   useEffect(() => {
     // Resident hosts survive presentation changes and ordinary transport
@@ -723,6 +751,16 @@ export default function RoomContent({
       closeTaskComposer()
     },
     [closeTaskComposer, sendCollabRequest, taskAgent, taskInstruction]
+  )
+
+  // #409: one bounded transient control. It sends no chat text and creates no
+  // Room history; a failed send only surfaces the existing lightweight
+  // unavailable state next to the control.
+  const handleTaskInterrupt = useCallback(
+    (taskRequestId: string, turnSequence: number) => {
+      setTaskInterruptFailed(!sendTaskInterrupt(taskRequestId, turnSequence))
+    },
+    [sendTaskInterrupt]
   )
 
   const toggleAgentVoice = useCallback(
@@ -1734,7 +1772,7 @@ export default function RoomContent({
             {activeTaskActivities.length > 0 && (
               <div
                 data-testid="task-agent-activity"
-                className="flex flex-none flex-wrap gap-x-3 gap-y-1 border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
+                className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
               >
                 {activeTaskActivities.map((activity) => {
                   const participant = participants.find(
@@ -1748,6 +1786,28 @@ export default function RoomContent({
                     </span>
                   )
                 })}
+                {activeTask && activeTaskInterruptActivity && (
+                  // #409: only shown while the CANONICAL Agent of this Task
+                  // reports transient activity for the exact current turn.
+                  // Task.status is a retained-message projection and is
+                  // deliberately NOT used as a running signal.
+                  <button
+                    type="button"
+                    data-testid="task-interrupt"
+                    onClick={() =>
+                      handleTaskInterrupt(
+                        activeTask.requestId,
+                        activeTaskInterruptActivity.turnSequence
+                      )
+                    }
+                    className="ml-auto rounded border border-gray-700 px-2 py-0.5 text-[11px] text-gray-300 hover:border-red-500/60 hover:text-red-200"
+                    aria-label={`Interrupt ${activeTask.title}`}
+                  >
+                    {taskInterruptFailed
+                      ? "Interrupt unavailable"
+                      : "Interrupt"}
+                  </button>
+                )}
               </div>
             )}
             {/* The conversation pane always renders the selected Room/Task

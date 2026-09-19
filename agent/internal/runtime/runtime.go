@@ -209,14 +209,11 @@ type ResidentRuntime struct {
 	// (SendText). A subsystem's successful operation clears ONLY its own
 	// error — a successful wait never hides an unresolved Harness or send
 	// failure. Empty = no current unresolved condition.
-	lastErrorSource        string
-	providerClaim          string
-	providerHandles        *ProviderHandleStore
-	permissionMu           sync.Mutex
-	pendingPermissions     map[string]*pendingRoomPermission
-	permissionReaderMu     sync.Mutex
-	permissionReaderCancel context.CancelFunc
-	permissionReaderDone   chan struct{}
+	lastErrorSource    string
+	providerClaim      string
+	providerHandles    *ProviderHandleStore
+	permissionMu       sync.Mutex
+	pendingPermissions map[string]*pendingRoomPermission
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -237,9 +234,16 @@ type ResidentRuntime struct {
 	residentMediaState      types.ResidentMediaState
 	residentMediaStateValid bool
 	activityMu              sync.Mutex
-	activities              map[string]types.AgentActivityState
+	// turnControlMu serializes the active-turn transitions (begin/finish/
+	// clear) with the exact-turn interrupt check AND its CancelTurn()
+	// dispatch, so a control that matched a turn can never be applied to that
+	// turn's successor. Lock order: turnControlMu -> activityMu; CancelTurn()
+	// runs while turnControlMu is held, never while activityMu is.
+	turnControlMu           sync.Mutex
+	activities              map[string]activityTurnState
 	activityTurnActive      bool
 	activityScope           string
+	activityTurnSequence    int64
 	activityPublishMu       sync.Mutex
 	activityPublishQueue    map[string]activityPublication
 	activityPublisherActive bool
@@ -376,7 +380,7 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		providerClaim:      providerClaim,
 		providerHandles:    providerHandles,
 		pendingPermissions: make(map[string]*pendingRoomPermission),
-		activities:         make(map[string]types.AgentActivityState),
+		activities:         make(map[string]activityTurnState),
 	}
 	configurePermissionResponder(runtime)
 	configureActivityHandler(runtime)
@@ -869,20 +873,48 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 	defer cancel()
 	heartbeatErrors := make(chan error, 1)
 	retrySignals := make(chan struct{}, 1)
-	type receiveResult struct {
-		result types.WaitResult
-		err    error
-	}
-	receiveResults := make(chan receiveResult, 1)
-	receiveNext := func() {
-		go func() {
+	// envelopeReady wakes the serial turn scheduler after ingestion; it never
+	// carries payload, so a coalesced wake can only cause one extra no-op
+	// drain.
+	envelopeReady := make(chan struct{}, 1)
+	readErrors := make(chan error, 1)
+
+	/*
+	 * ONE long-lived owner of stream.Receive for the whole stream lifetime.
+	 *
+	 * coder/websocket closes the entire connection when a read context is
+	 * canceled, so a reader must never be stopped mid-read — and that is why
+	 * this is a single reader rather than one started per envelope. It also
+	 * ingests every envelope itself instead of handing frames to the loop,
+	 * which is what lets a private Task control (#409) reach the Runtime while
+	 * the serial loop is synchronously inside the very Harness turn that
+	 * control must be able to cancel. The loop below therefore only schedules
+	 * turns; it never reads or ingests the resident transport.
+	 */
+	go func() {
+		for {
 			result, err := stream.Receive(ctx)
-			select {
-			case receiveResults <- receiveResult{result: result, err: err}:
-			case <-ctx.Done():
+			outcome, wake := r.applyResidentFrame(stream, result, err)
+			switch outcome {
+			case residentFrameDropped:
+				// This reader no longer owns the transport; stop without
+				// touching the replacement stream's lifecycle.
+				return
+			case residentFrameFailed:
+				select {
+				case readErrors <- err:
+				default:
+				}
+				return
 			}
-		}()
-	}
+			if wake {
+				select {
+				case envelopeReady <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
 	interval := r.residentHeartbeatInterval()
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -912,7 +944,6 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 		}
 	}()
 
-	receiveNext()
 	for {
 		select {
 		case heartbeatErr := <-heartbeatErrors:
@@ -921,33 +952,92 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			if r.shouldRetryHumanTaskAcceptance() && !r.isStopped() {
 				r.drainTurnsWithRetryClock()
 			}
-		case received := <-receiveResults:
-			if received.err != nil {
-				select {
-				case heartbeatErr := <-heartbeatErrors:
-					return heartbeatErr
-				default:
-				}
-				if r.isStopped() {
-					return nil
-				}
-				return received.err
+		case err := <-readErrors:
+			select {
+			case heartbeatErr := <-heartbeatErrors:
+				return heartbeatErr
+			default:
 			}
-			if received.result.MediaState == nil {
-				// A resident envelope without the mandatory media projection is
-				// not an authorization observation. Keep event delivery alive,
-				// but revoke local media until a complete envelope arrives.
-				r.failClosedResidentMediaState()
+			if r.isStopped() {
+				return nil
 			}
-			r.advanceFromWait(received.result)
-			// A media-only envelope is observation, not an activation event. Do
-			// not use it as a Harness wakeup/retry boundary for pre-existing work.
-			if len(received.result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
+			return err
+		case <-envelopeReady:
+			if !r.isStopped() {
+				// The reader has already ingested and acknowledged delivery of
+				// this envelope; the loop only runs the serial turn drain.
 				r.drainTurnsWithRetryClock()
 			}
-			receiveNext()
 		}
 	}
+}
+
+// residentFrameOutcome is the disposition of one private resident frame.
+type residentFrameOutcome int
+
+const (
+	// residentFrameDropped: this reader no longer owns the stream, so both the
+	// frame and the reader are finished. Transport failures are reported as
+	// residentFrameFailed instead, even when ownership was already lost, so the
+	// reader's own loop can always finish.
+	residentFrameDropped residentFrameOutcome = iota
+	// residentFrameApplied: the frame was applied to Runtime state.
+	residentFrameApplied
+	// residentFrameFailed: the transport failed while this reader owned it.
+	residentFrameFailed
+)
+
+// applyResidentFrame applies exactly one transport frame to Runtime state.
+//
+// The resident reader is an asynchronous goroutine, so ownership is re-checked
+// immediately before EVERY effect it derives from the transport: a reconnect
+// can install a replacement stream while this reader is still unwinding, and a
+// late frame or error from the abandoned transport must never cancel a
+// replacement-era Room permission, apply a Task control to replacement-era turn
+// state, or advance the replacement stream's cursor, media fail-closed state,
+// or turn scheduling.
+func (r *ResidentRuntime) applyResidentFrame(
+	stream types.ResidentEventStream,
+	result types.WaitResult,
+	err error,
+) (residentFrameOutcome, bool) {
+	if err != nil {
+		if !r.isStopped() && r.isCurrentResidentStream(stream) {
+			// A dead transport can never deliver a Room permission decision, so
+			// any turn parked on one must fail closed instead of waiting for its
+			// own timeout.
+			r.cancelPendingPermissions(err)
+		}
+		// The reader ALWAYS reports its own transport failure so its loop can
+		// finish (a stop or a reconnect clears r.resident before this returns).
+		// Only the Runtime-visible effects above are ownership-fenced; the
+		// signal itself never touches the replacement stream's lifecycle.
+		return residentFrameFailed, false
+	}
+	if result.TaskControl != nil {
+		if !r.isCurrentResidentStream(stream) {
+			return residentFrameDropped, false
+		}
+		// PRIVATE RESIDENT TRANSPORT ONLY: a transient Task control is not a
+		// Room event, carries no cursor, and is applied immediately — never
+		// queued behind a running turn.
+		r.applyResidentTaskControl(result.TaskControl)
+		return residentFrameApplied, false
+	}
+	if !r.isCurrentResidentStream(stream) {
+		return residentFrameDropped, false
+	}
+	if result.MediaState == nil {
+		// A resident envelope without the mandatory media projection is not an
+		// authorization observation. Keep event delivery alive, but revoke
+		// local media until a complete envelope arrives.
+		r.failClosedResidentMediaState()
+	}
+	r.advanceFromWait(result)
+	// A media-only envelope is observation, not an activation event. Do not use
+	// it as a Harness wakeup/retry boundary for pre-existing work.
+	wake := len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped()
+	return residentFrameApplied, wake
 }
 
 func (r *ResidentRuntime) setResidentStream(
@@ -974,6 +1064,19 @@ func (r *ResidentRuntime) clearResidentStream(
 		r.resident = nil
 	}
 	r.residentMu.Unlock()
+}
+
+// isCurrentResidentStream reports whether this exact stream is still the one
+// the Runtime has installed. The resident reader is an asynchronous goroutine,
+// so a reader can still be unwinding after the Runtime has already replaced
+// its transport; every Runtime-side effect derived from that transport must be
+// fenced on this identity.
+func (r *ResidentRuntime) isCurrentResidentStream(
+	stream types.ResidentEventStream,
+) bool {
+	r.residentMu.Lock()
+	defer r.residentMu.Unlock()
+	return r.resident == stream
 }
 
 func (r *ResidentRuntime) closeResidentStream() {
@@ -1299,9 +1402,9 @@ func (r *ResidentRuntime) drainTurns() {
 			voiceOutput.Cancel()
 		}
 
-		r.beginActivity(scope)
+		r.beginActivity(scope, target)
 		result, err := r.runHarnessTurn(scope, *input, generation)
-		r.finishActivity(scope)
+		r.finishActivity(scope, target)
 		if err != nil {
 			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return

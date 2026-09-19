@@ -123,6 +123,7 @@ import {
   taskAgentParticipates,
   type TaskProjectionIndex,
 } from "./taskScope"
+import { isAgentActivityTurnSequence } from "../common/agentActivity"
 import {
   ROOM_APP_MAX_PAYLOAD_BYTES,
   ROOM_APP_PROTOCOL_VERSION,
@@ -226,6 +227,10 @@ const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
 const MAX_TASK_LIVE_VIEWS = 16
+// #409: a Task interrupt names one canonical collaboration request id. The
+// bound matches the Runtime's private resident control bound; the browser can
+// never widen it into a payload.
+const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
 const TASK_LIVE_VIEW_KEY_PREFIX = "task-live-view:"
 const MAX_PENDING_PERMISSION_REQUESTS = 32
 // The resident event stream is intentionally one bounded frame. The 2 MiB
@@ -687,6 +692,9 @@ type ControlRequest =
       token: string
       scopeId: unknown
       activity: unknown
+      // #409: the exact canonical Room turn this activity belongs to. It is
+      // transient control correlation only.
+      turnSequence: unknown
     }
   | {
       action: "agent-media-attach"
@@ -774,6 +782,20 @@ type ClientMessage =
       type: "permission-response"
       requestId: string
       selectedOptionId: string
+    }
+  | {
+      // #409: a transient, Human-triggered interrupt of the Harness turn this
+      // Room's Agent currently owns for one Task. The browser supplies ONLY
+      // the Task correlation id: the owner Human and the target Agent are
+      // derived from the canonical retained collaboration request. Nothing
+      // about this control is appended to Room history, and an interrupt that
+      // finds no matching live turn is a no-op in the Runtime.
+      type: "task-interrupt"
+      taskRequestId: string
+      // #409: the exact turn the Human saw running. The Room refuses a
+      // control that does not match the current transient activity, so a
+      // request delayed in transport cannot hit the Task's next turn.
+      turnSequence: number
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
@@ -2497,6 +2519,54 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return `agent-event:${participantId}`
   }
 
+  /**
+   * #409: deliver one transient Task control frame on an Agent's own private
+   * resident socket. This is deliberately NOT an event push:
+   *
+   *  - it is never appended to Room history, never increments a sequence, and
+   *    never reaches the public MCP wait_for_events projection;
+   *  - it goes only to sockets currently bound to THIS Agent participant and
+   *    its current connection nonce, so a replaced/stale socket is skipped;
+   *  - it reports delivery instead of pretending success, which is what lets
+   *    the caller answer `task_agent_not_reachable`.
+   */
+  private sendAgentTaskControl(
+    room: RoomRecord,
+    participantId: string,
+    control: { control: string; taskRequestId: string; turnSequence: number }
+  ): boolean {
+    const participant = room.participants[participantId]
+    if (!participant || participant.kind !== "agent" || !participant.connected)
+      return false
+    let delivered = false
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(participantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        !attachment ||
+        attachment.participantId !== participantId ||
+        participant.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "task-control",
+            control: control.control,
+            taskRequestId: control.taskRequestId,
+            turnSequence: control.turnSequence,
+          })
+        )
+        delivered = true
+      } catch {
+        // A socket that fails mid-send is not a delivery; the caller reports
+        // task_agent_not_reachable instead of pretending the control landed.
+      }
+    }
+    return delivered
+  }
+
   private deserializeAgentEventAttachment(
     socket: WebSocket
   ): AgentEventSocketAttachment | null {
@@ -3093,6 +3163,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return this.json({ error: "invalid_activity_scope" }, 403)
       }
 
+      // #409: turnSequence is ADDITIVE exact-turn metadata, never a required
+      // field. A pre-#414 Agent Runtime omits it entirely, and its activity must
+      // keep projecting normally — it simply carries no interrupt authority.
+      //
+      //   absent    = legacy compatible (accepted, no exact-turn identity)
+      //   valid     = exact-turn capable (accepted, interrupt eligible)
+      //   malformed = rejected (fail closed)
+      //
+      // A clear is compatible with both producers: legacy `null` without a turn,
+      // and the new explicit `turnSequence: 0`.
+      let activityTurnSequence: number | undefined
+      if (normalizedActivity === null) {
+        if (request.turnSequence !== undefined && request.turnSequence !== 0)
+          return this.json({ error: "invalid_activity_turn" }, 400)
+      } else if (request.turnSequence === undefined) {
+        activityTurnSequence = undefined
+      } else if (isAgentActivityTurnSequence(request.turnSequence)) {
+        activityTurnSequence = request.turnSequence
+      } else {
+        return this.json({ error: "invalid_activity_turn" }, 400)
+      }
+
       const key = agentActivityKey(participant.id, request.scopeId)
       const previous = this.transientAgentActivities.get(key)
       if (normalizedActivity === null) {
@@ -3106,7 +3198,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         })
         return this.json({ ok: true, changed: true })
       }
-      if (previous?.state === normalizedActivity)
+      // Dedup compares state AND exact-turn identity, and never inherits a turn
+      // from the previous activity: legacy->legacy and same-turn->same-turn are
+      // unchanged, while legacy->exact, exact->legacy and exact->other-turn are
+      // all real changes.
+      if (
+        previous?.state === normalizedActivity &&
+        previous.turnSequence === activityTurnSequence
+      )
         return this.json({ ok: true, changed: false })
       if (
         !previous &&
@@ -3117,6 +3216,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         agentParticipantId: participant.id,
         scopeId: request.scopeId,
         state: normalizedActivity,
+        // A legacy activity stays absent here: no fabricated 0/-1/cursor, so
+        // the browser can never mistake it for interrupt authority.
+        ...(activityTurnSequence === undefined
+          ? {}
+          : { turnSequence: activityTurnSequence }),
       }
       this.transientAgentActivities.set(key, activity)
       await this.broadcast({ type: "agentActivity", activity })
@@ -5994,6 +6098,90 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         selectedOptionId
       )
       if (result.ok === false) reject(result.error)
+      return
+    }
+
+    // #409: Task-scoped remote interrupt. This is a control-plane action, not
+    // conversation content: it appends no Room message, increments no
+    // sequence, wakes no waiter, emits no analytics, and never enters the
+    // public MCP wait_for_events projection. It is delivered only to the
+    // canonical Agent endpoint's own private resident socket, and only the
+    // Human who created that Human→Agent Task may trigger it.
+    if (message.type === "task-interrupt") {
+      const reject = (error: string) =>
+        socket.send(JSON.stringify({ type: "error", error }))
+      const rawTaskRequestId = message.taskRequestId
+      if (
+        typeof rawTaskRequestId !== "string" ||
+        rawTaskRequestId.length === 0 ||
+        rawTaskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH
+      ) {
+        reject("invalid_task_request")
+        return
+      }
+      const taskProjection = buildTaskProjectionIndex(
+        room.messages,
+        room.participants
+      )
+      const resolution = resolveTaskRequest(
+        taskProjection,
+        rawTaskRequestId,
+        room.participants
+      )
+      if (resolution.ok === false) {
+        reject(resolution.error)
+        return
+      }
+      // Ownership comes from the canonical collaboration request, never from
+      // the browser: only the Human who created this Human→Agent Task may
+      // stop its Agent's turn. Another Human in the same Room cannot.
+      const owner = room.participants[resolution.request.fromParticipantId]
+      if (!owner || owner.kind !== "human" || owner.id !== participant.id) {
+        reject("task_interrupt_not_owner")
+        return
+      }
+      // The canonical endpoint only. An interrupt is never rerouted to
+      // another participating Agent after the original one disconnects.
+      const canonicalAgentId = initialTaskAgentParticipantId(
+        resolution.request,
+        room.participants
+      )
+      if (!canonicalAgentId) {
+        reject("task_target_not_in_room")
+        return
+      }
+      // #409 exact turn: the request must name the turn the Room currently
+      // shows as running for THIS Task and THIS Agent. A request that was
+      // delayed in transport, or that names a turn of another Agent's
+      // activity, is refused here — before any private frame is written.
+      if (!isAgentActivityTurnSequence(message.turnSequence)) {
+        reject("invalid_task_turn")
+        return
+      }
+      const activeTurn = this.transientAgentActivities.get(
+        agentActivityKey(canonicalAgentId, `task:${resolution.requestId}`)
+      )
+      if (
+        !activeTurn ||
+        activeTurn.turnSequence !== message.turnSequence ||
+        activeTurn.state === undefined
+      ) {
+        reject("task_turn_not_active")
+        return
+      }
+      if (
+        !this.sendAgentTaskControl(room, canonicalAgentId, {
+          control: "interrupt",
+          taskRequestId: resolution.requestId,
+          turnSequence: message.turnSequence,
+        })
+      ) {
+        reject("task_agent_not_reachable")
+        return
+      }
+      // No acknowledgement frame is sent: the interrupt is edge-triggered and
+      // the Runtime decides locally whether it owns a matching live turn. The
+      // Task itself remains open and usable either way.
       return
     }
 

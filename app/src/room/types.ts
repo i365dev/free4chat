@@ -18,6 +18,16 @@ export interface AgentActivityProjection {
   agentParticipantId: string
   scopeId: string
   state: AgentActivityState
+  // #409: the exact canonical Room turn this activity belongs to — the
+  // sequence of the addressed Room event that started it. It is transient
+  // control correlation only (never persisted, never Room content), and it is
+  // what lets a Human interrupt bind to the exact turn they are looking at
+  // instead of to the Task scope.
+  //
+  // Additive and optional: a pre-#414 Agent Runtime omits it, and that legacy
+  // activity keeps projecting normally while carrying no interrupt authority.
+  // A missing value is never back-filled with 0, -1, or a Room cursor.
+  turnSequence?: number
 }
 
 export type RoomMediaTrackKind = "audio" | "video"

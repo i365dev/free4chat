@@ -476,6 +476,12 @@ func TestResidentPermissionStreamFailureClearsLocalMapping(t *testing.T) {
 	rt.resident = stream
 	rt.residentMu.Unlock()
 
+	// The resident transport has exactly ONE long-lived reader, and it is what
+	// observes transport loss for every consumer — including a turn parked on
+	// a Room permission decision.
+	loopDone := make(chan error, 1)
+	go func() { loopDone <- rt.consumeResidentEventStream(stream) }()
+
 	result := make(chan error, 1)
 	go func() {
 		_, err := rt.respondToPermission(context.Background(), harness.ACPPermissionRequest{
@@ -504,6 +510,11 @@ func TestResidentPermissionStreamFailureClearsLocalMapping(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("permission responder remained blocked after stream failure")
+	}
+	select {
+	case <-loopDone:
+	case <-time.After(time.Second):
+		t.Fatal("resident reader did not stop after transport failure")
 	}
 	rt.permissionMu.Lock()
 	defer rt.permissionMu.Unlock()

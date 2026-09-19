@@ -17,6 +17,13 @@ const (
 	maxResidentEventBytes   = 2 * 1024 * 1024
 	residentEventReadLimit  = maxResidentEventBytes + 1
 	defaultAgentLeaseMillis = 90 * 1000
+
+	// residentTaskControlType is the private control envelope emitted only on
+	// this resident socket. It is not part of the public MCP protocol.
+	residentTaskControlType = "task-control"
+	// maxResidentTaskRequestID bounds the correlation id carried by a private
+	// control frame. The Room already bounds task request ids well below this.
+	maxResidentTaskRequestID = 64
 )
 
 // residentEventStream is deliberately a one-reader/one-writer wrapper around
@@ -29,6 +36,9 @@ type residentEventStream struct {
 
 // residentEventEnvelope is kept separate from WaitResult so the public MCP
 // wait_for_events contract remains independent of this private transport.
+// Control, TaskRequestID, and TurnSequence are read ONLY for the private
+// "task-control" envelope type; an ordinary "events" envelope never carries
+// them.
 type residentEventEnvelope struct {
 	Type         string                     `json:"type"`
 	Events       []types.RoomEvent          `json:"events"`
@@ -39,6 +49,10 @@ type residentEventEnvelope struct {
 	MediaState   *types.ResidentMediaState  `json:"mediaState,omitempty"`
 	Expired      bool                       `json:"expired,omitempty"`
 	Truncated    bool                       `json:"truncated,omitempty"`
+	// Private resident-only Task control (#409).
+	Control       string `json:"control,omitempty"`
+	TaskRequestID string `json:"taskRequestId,omitempty"`
+	TurnSequence  int64  `json:"turnSequence,omitempty"`
 }
 
 // OpenResidentEventStream opens the Runtime-owned hibernatable Room event
@@ -132,6 +146,20 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 	if envelope.Type == "expired" || envelope.Expired {
 		return types.WaitResult{}, &Error{Message: "room expired", Code: CodeRoomExpired}
 	}
+	if envelope.Type == residentTaskControlType {
+		// PRIVATE RESIDENT TRANSPORT ONLY: a transient control frame, not a
+		// Room event. It carries no cursor and must never be projected as
+		// wait_for_events content.
+		control, err := parseResidentTaskControl(
+			envelope.Control,
+			envelope.TaskRequestID,
+			envelope.TurnSequence,
+		)
+		if err != nil {
+			return types.WaitResult{}, err
+		}
+		return types.WaitResult{TaskControl: control}, nil
+	}
 	if envelope.Type != "events" || envelope.Cursor < 0 || envelope.ExpiresAt <= 0 {
 		return types.WaitResult{}, &Error{Message: "resident event stream returned an invalid envelope", Code: CodeToolError}
 	}
@@ -165,6 +193,45 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 		}
 	}
 	return wait, nil
+}
+
+// parseResidentTaskControl validates one private resident control frame. A
+// malformed, unknown, unidentified, or oversized control fails closed: it is
+// neither degraded into an ordinary Room event nor partially applied.
+func parseResidentTaskControl(rawControl, rawTaskRequestID string, rawTurnSequence int64) (*types.ResidentTaskControl, error) {
+	kind := types.ResidentTaskControlKind(rawControl)
+	if kind != types.ResidentTaskControlInterrupt {
+		return nil, &Error{Message: "resident event stream returned an unsupported task control", Code: CodeToolError}
+	}
+	if !validResidentTaskRequestID(rawTaskRequestID) {
+		return nil, &Error{Message: "resident event stream returned an invalid task control", Code: CodeToolError}
+	}
+	// A control must name the EXACT turn it targets. A missing, zero,
+	// negative, or unrepresentable sequence cannot identify one turn, so it is
+	// rejected instead of widening into "any turn of this Task".
+	if rawTurnSequence <= 0 || rawTurnSequence > types.MaxResidentTurnSequence {
+		return nil, &Error{Message: "resident event stream returned an invalid task turn", Code: CodeToolError}
+	}
+	return &types.ResidentTaskControl{
+		Kind:          kind,
+		TaskRequestID: rawTaskRequestID,
+		TurnSequence:  rawTurnSequence,
+	}, nil
+}
+
+// validResidentTaskRequestID bounds an opaque Task correlation id without
+// rewriting it. The value is never trimmed: a padded id is rejected instead of
+// being silently repaired into a different Task identity.
+func validResidentTaskRequestID(value string) bool {
+	if value == "" || len(value) > maxResidentTaskRequestID {
+		return false
+	}
+	for _, r := range value {
+		if r <= ' ' || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *residentEventStream) Heartbeat(ctx context.Context, cursor int64) error {
