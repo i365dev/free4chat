@@ -1025,7 +1025,9 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
       "Interrupting"
     )
-    fireEvent.click(screen.getByTestId("task-execution-status"))
+    // Both interrupt controls are disabled for the exact turn already being
+    // interrupted, and the status label itself is presentation only.
+    expect(screen.getByTestId("task-interrupt")).toBeDisabled()
     expect(
       screen.queryByTestId("task-interrupt-and-send")
     ).not.toBeInTheDocument()

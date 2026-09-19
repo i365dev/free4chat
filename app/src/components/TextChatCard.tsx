@@ -2020,27 +2020,23 @@ const TextChatCard = memo(function TextChatCard({
               </div>
             )}
             {taskExecution && taskExecution.label !== "" && (
-              <button
-                type="button"
+              // Presentation only: interrupting stays an explicit, deliberate
+              // control (the Task activity strip's Interrupt button and the
+              // composer's Interrupt & send), never a stray click on a label.
+              <span
                 data-testid="task-execution-status"
-                disabled={taskExecution.interruptible}
-                onClick={() => taskExecution.onInterrupt()}
-                title={
-                  taskExecution.interruptible
-                    ? "Interrupt the current turn"
-                    : undefined
-                }
-                className={`shrink-0 rounded-lg px-2 py-1 text-[11px] ${
+                aria-live="polite"
+                className={`shrink-0 px-2 py-1 text-[11px] ${
                   taskExecution.availability === "session_lost"
                     ? "text-amber-300"
                     : taskExecution.interrupting
                     ? "text-amber-200"
                     : "text-blue-200/80"
-                } ${taskExecution.interruptible ? "hover:text-red-200" : ""}`}
+                }`}
               >
                 {taskExecution.label}
                 {taskExecution.detail ? ` · ${taskExecution.detail}` : ""}
-              </button>
+              </span>
             )}
             {taskExecution?.interruptible && message.trim() !== "" && (
               <button

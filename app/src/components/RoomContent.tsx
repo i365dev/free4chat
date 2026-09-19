@@ -2046,6 +2046,7 @@ export default function RoomContent({
                   <button
                     type="button"
                     data-testid="task-interrupt"
+                    disabled={activeTaskInterrupting}
                     onClick={() =>
                       handleTaskInterrupt(
                         activeTask.requestId,
