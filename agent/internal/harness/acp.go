@@ -193,10 +193,11 @@ type ACPCapabilities struct {
 	// into types.HarnessCapabilities and does not mean a native session is
 	// discoverable, loadable, or continuable.
 	LoadSessionPresent bool
-	// ListPresent mirrors the Node-style presence check on the
-	// sessionCapabilities.list key. It gates the adapter's own session/list
-	// primitive; like ResumePresent it is a protocol advertisement, not
-	// Free4Chat product support.
+	// ListPresent mirrors the sessionCapabilities.list capability OBJECT. It
+	// is reported only for a real object: an omitted key, an explicit null,
+	// and a malformed scalar/array all mean "not advertised". It gates the
+	// adapter's own session/list primitive; like ResumePresent it is a
+	// protocol advertisement, not Free4Chat product support.
 	ListPresent bool
 	// ResumePresent mirrors the Node `resume != null` check: the mere
 	// presence of the sessionCapabilities.resume key counts as the Harness
@@ -836,13 +837,36 @@ func parseAgentCapabilities(raw []byte) (*ACPCapabilities, error) {
 	if _, ok := doc.SessionCapabilities["resume"]; ok {
 		caps.ResumePresent = true
 	}
-	if _, ok := doc.SessionCapabilities["list"]; ok {
+	// ACP defines sessionCapabilities.list as a capability OBJECT, so a mere
+	// key presence check is not enough here: `"list": null` (or any other
+	// malformed scalar/array) means "not advertised" and must never gate a
+	// real session/list call. resume/close keep their existing presence-only
+	// semantics intentionally — this correction is scoped to the new flag.
+	if entry, ok := doc.SessionCapabilities["list"]; ok && isACPCapabilityObject(entry) {
 		caps.ListPresent = true
 	}
 	if _, ok := doc.SessionCapabilities["close"]; ok {
 		caps.ClosePresent = true
 	}
 	return caps, nil
+}
+
+// isACPCapabilityObject reports whether a sessionCapabilities entry is a real
+// capability object. ACP models every sessionCapabilities member as an object,
+// so an explicit null, a boolean, a string, or an array is not an
+// advertisement. A malformed entry is treated as absent — never upgraded into
+// support — which matches parseAgentCapabilities' fail-safe style of not
+// failing the whole handshake over one unusable capability entry.
+func isACPCapabilityObject(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return false
+	}
+	// JSON null unmarshals into a nil map without error.
+	return object != nil
 }
 
 func parseSessionControls(raw []byte) *ACPSessionControls {

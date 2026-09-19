@@ -25,6 +25,11 @@ import (
  * history/transcript, no credentials, no raw `_meta`, no provider secrets. A
  * result is returned to the caller only — never persisted, never projected
  * into status/Room/analytics, and never logged with session ids.
+ *
+ * Opaque values (session id, pagination cursor) and path values (cwd) are
+ * identity, so they are preserved byte-for-byte in both directions and are
+ * never normalized. A value the local policy cannot accept is rejected
+ * outright; it is never silently repaired and then used.
  */
 
 // Bounds for one session/list exchange. A Harness is untrusted input at this
@@ -83,9 +88,13 @@ type acpSessionInfoWire struct {
 }
 
 // ListSessions issues one bounded ACP `session/list` control request for the
-// given working directory and opaque cursor. An empty cwd means the adapter's
-// own workspace directory; empty values simply omit the optional wire fields,
-// so an unfiltered first page sends `{}`.
+// given working directory and opaque cursor. An exactly empty cwd means the
+// adapter's own workspace directory; an exactly empty cursor means "first
+// page". Either empty value omits its optional wire field, so an unfiltered
+// first page sends `{}`.
+//
+// cwd and cursor are identity-bearing values, so they are never trimmed: a
+// caller-supplied value that is not exactly empty reaches the wire unchanged.
 //
 // The call is gated on the Harness having advertised
 // `sessionCapabilities.list`: an unsupported method must never reach the wire.
@@ -95,14 +104,12 @@ type acpSessionInfoWire struct {
 //
 // The returned page is bounded and validated; see parseACPSessionPage.
 func (a *ACPAdapter) ListSessions(cwd string, cursor string) (ACPSessionPage, error) {
-	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		cwd = a.workingDir
 	}
 	if !validACPSessionPath(cwd, maxACPSessionCwdLength) {
 		return ACPSessionPage{}, errors.New("ACP session/list working directory is invalid")
 	}
-	cursor = strings.TrimSpace(cursor)
 	if len([]rune(cursor)) > maxACPSessionCursorLength || hasACPControlRunes(cursor) {
 		return ACPSessionPage{}, errors.New("ACP session/list cursor is invalid")
 	}
@@ -137,7 +144,9 @@ func (a *ACPAdapter) ListSessions(cwd string, cursor string) (ACPSessionPage, er
 // parseACPSessionPage projects one session/list result. Anything
 // identity-bearing must be well-formed or the whole page fails closed: a
 // caller that silently received a repaired session id could load the wrong
-// conversation. Only the display-only title is bounded rather than rejected.
+// conversation, and a repaired cursor could silently skip or repeat results.
+// Only the display-only title is normalized and bounded rather than rejected,
+// because it is not identity.
 func parseACPSessionPage(raw json.RawMessage) (ACPSessionPage, error) {
 	if len(raw) == 0 {
 		return ACPSessionPage{}, errors.New("ACP session/list returned no result")
@@ -167,27 +176,29 @@ func parseACPSessionPage(raw json.RawMessage) (ACPSessionPage, error) {
 		}
 		page.Sessions = append(page.Sessions, info)
 	}
-	cursor := strings.TrimSpace(wire.NextCursor)
-	if len([]rune(cursor)) > maxACPSessionCursorLength || hasACPControlRunes(cursor) {
+	// The cursor is an opaque token: it is stored and handed back to the
+	// caller exactly as the Harness sent it.
+	if len([]rune(wire.NextCursor)) > maxACPSessionCursorLength || hasACPControlRunes(wire.NextCursor) {
 		return ACPSessionPage{}, errors.New("ACP session/list returned an invalid pagination cursor")
 	}
-	page.NextCursor = cursor
+	page.NextCursor = wire.NextCursor
 	return page, nil
 }
 
 func projectACPSessionInfo(wire acpSessionInfoWire) (ACPSessionInfo, error) {
-	sessionID := strings.TrimSpace(wire.SessionID)
-	if sessionID == "" {
+	// sessionId and cwd are identity-bearing and are never trimmed: a value
+	// that survives validation is projected byte-for-byte, and a value that
+	// does not is rejected here rather than quietly repaired.
+	if wire.SessionID == "" {
 		return ACPSessionInfo{}, errors.New("ACP session/list returned a session without an id")
 	}
-	if len([]rune(sessionID)) > maxACPSessionIDLength || hasACPControlRunes(sessionID) {
+	if len([]rune(wire.SessionID)) > maxACPSessionIDLength || hasACPControlRunes(wire.SessionID) {
 		return ACPSessionInfo{}, errors.New("ACP session/list returned an invalid session id")
 	}
-	cwd := strings.TrimSpace(wire.Cwd)
-	if !validACPSessionPath(cwd, maxACPSessionCwdLength) {
+	if !validACPSessionPath(wire.Cwd, maxACPSessionCwdLength) {
 		return ACPSessionInfo{}, errors.New("ACP session/list returned an invalid session working directory")
 	}
-	updatedAt := strings.TrimSpace(wire.UpdatedAt)
+	updatedAt := wire.UpdatedAt
 	if updatedAt != "" {
 		if len([]rune(updatedAt)) > maxACPSessionUpdatedAtLength {
 			return ACPSessionInfo{}, errors.New("ACP session/list returned an invalid updatedAt timestamp")
@@ -197,8 +208,8 @@ func projectACPSessionInfo(wire acpSessionInfoWire) (ACPSessionInfo, error) {
 		}
 	}
 	return ACPSessionInfo{
-		SessionID: sessionID,
-		Cwd:       cwd,
+		SessionID: wire.SessionID,
+		Cwd:       wire.Cwd,
 		Title:     sanitizeACPDisplayText(wire.Title, maxACPSessionTitleLength),
 		UpdatedAt: updatedAt,
 	}, nil
@@ -210,11 +221,13 @@ func projectACPSessionInfo(wire acpSessionInfoWire) (ACPSessionInfo, error) {
 // the scope points at the loaded session, its session generation advances, and
 // subsequent RunTurn/RunTurnFor calls for that scope use the loaded session.
 //
-// An empty cwd means the adapter's own workspace directory. An empty session
-// id, an empty or over-long scope, or an id already retained by a different
-// logical scope is rejected locally — one native session backs at most one
-// scope, because scopeForSessionIDLocked maps an ACP session id back to
-// exactly one scope for activity/permission projection.
+// An exactly empty cwd means the adapter's own workspace directory. An empty
+// session id, an empty or over-long scope, or an id already retained by a
+// different logical scope is rejected locally — one native session backs at
+// most one scope, because scopeForSessionIDLocked maps an ACP session id back
+// to exactly one scope for activity/permission projection. sessionID and cwd
+// are identity-bearing and are never trimmed: an accepted value is sent to the
+// Harness exactly as given.
 //
 // The capability gate is `loadSession:true` from initialize. Like every other
 // non-turn control request this is bounded by ControlTimeoutMs. A failed or
@@ -233,14 +246,13 @@ func (a *ACPAdapter) LoadSession(scope string, sessionID string, cwd string) err
 	if scope != "room" && len(scope) > types.MaxLogicalScopeLength {
 		return errors.New("ACP logical scope is too long")
 	}
-	sessionID = strings.TrimSpace(sessionID)
+	// sessionID and cwd are identity-bearing: never trimmed, only validated.
 	if sessionID == "" {
 		return errors.New("ACP session id is empty")
 	}
 	if len([]rune(sessionID)) > maxACPSessionIDLength || hasACPControlRunes(sessionID) {
 		return errors.New("ACP session id is invalid")
 	}
-	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		cwd = a.workingDir
 	}
@@ -334,10 +346,11 @@ func (a *ACPAdapter) LoadSession(scope string, sessionID string, cwd string) err
 	return nil
 }
 
-// validACPSessionPath bounds a path-shaped adapter input. An empty value is
-// valid: callers use it to omit an optional wire field. Absolute-path
-// enforcement is deliberately left to the Harness — the adapter must not
-// reject a workspace the Runtime already launched it with.
+// validACPSessionPath bounds a path-shaped adapter input without altering it.
+// An exactly empty value is valid: callers use it to omit an optional wire
+// field. The value is never trimmed — whitespace inside a path is data.
+// Absolute-path enforcement is deliberately left to the Harness; the adapter
+// must not reject a workspace the Runtime already launched it with.
 func validACPSessionPath(value string, limit int) bool {
 	return len([]rune(value)) <= limit && !hasACPControlRunes(value)
 }
@@ -353,7 +366,8 @@ func hasACPControlRunes(value string) bool {
 
 // sanitizeACPDisplayText bounds display-only Harness text and folds control
 // characters (including newlines) so a descriptor can never carry multi-line
-// or terminal-shaped content into a caller's rendering.
+// or terminal-shaped content into a caller's rendering. This is the ONE place
+// normalization is allowed: a title is presentation, not identity.
 func sanitizeACPDisplayText(value string, limit int) string {
 	cleaned := strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {

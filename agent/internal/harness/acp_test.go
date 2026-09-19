@@ -1545,6 +1545,45 @@ func TestParseAgentCapabilitiesSessionListAndLoadPresence(t *testing.T) {
 			t.Fatalf("capability presence mismatch for %s: %+v", absent, parsed)
 		}
 	}
+
+	// ACP models sessionCapabilities.list as a capability OBJECT: an omitted
+	// key, an explicit null, and a malformed scalar/array are all "not
+	// advertised". Presence of the key alone must never gate a real
+	// session/list call.
+	for _, testCase := range []struct {
+		raw  string
+		list bool
+	}{
+		{raw: `{"sessionCapabilities":{}}`},
+		{raw: `{"sessionCapabilities":{"list":null}}`},
+		{raw: `{"sessionCapabilities":{"list":true}}`},
+		{raw: `{"sessionCapabilities":{"list":false}}`},
+		{raw: `{"sessionCapabilities":{"list":[]}}`},
+		{raw: `{"sessionCapabilities":{"list":"yes"}}`},
+		{raw: `{"sessionCapabilities":{"list":0}}`},
+		{raw: `{"sessionCapabilities":{"list":{}}}`, list: true},
+		{raw: `{"sessionCapabilities":{"list":{"pageSize":10}}}`, list: true},
+	} {
+		parsed, err := parseAgentCapabilities(json.RawMessage(testCase.raw))
+		if err != nil {
+			t.Fatalf("parse failed for %s: %v", testCase.raw, err)
+		}
+		if parsed.ListPresent != testCase.list {
+			t.Fatalf("sessionCapabilities.list mismatch for %s: got ListPresent=%v want=%v",
+				testCase.raw, parsed.ListPresent, testCase.list)
+		}
+	}
+
+	// Regression fence: this PR only tightens the NEW list flag. resume/close
+	// keep their existing presence-only semantics, including the null case.
+	existing, err := parseAgentCapabilities(json.RawMessage(
+		`{"loadSession":true,"sessionCapabilities":{"resume":null,"close":null}}`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if !existing.ResumePresent || !existing.ClosePresent {
+		t.Fatalf("existing resume/close presence semantics changed: %+v", existing)
+	}
 }
 
 // TestSessionPrimitivesNeverBroadenHarnessCapabilities keeps the #409
@@ -1641,6 +1680,90 @@ func TestACPListSessionsSendsExactBoundedRequest(t *testing.T) {
 	if got := acpTraceParams(t, tracePath, "session/list"); !reflect.DeepEqual(got, wantParams) {
 		t.Fatalf("session/list wire request mismatch: got=%v want=%v", got, wantParams)
 	}
+}
+
+// TestACPSessionOpaqueValuesArePreservedExactly fences the rule that identity
+// and path values are never normalized: an accepted session id, cursor, or cwd
+// reaches the wire (and the caller) byte-for-byte. A value the local policy
+// cannot accept is rejected instead — never trimmed and then used.
+func TestACPSessionOpaqueValuesArePreservedExactly(t *testing.T) {
+	t.Run("request values reach the wire verbatim", func(t *testing.T) {
+		tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+		adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+			"FAKE_LIST_CAP": "1",
+			"FAKE_LOAD_CAP": "1",
+			"FAKE_TRACE":    tracePath,
+		}), AdapterOptions{})
+		defer adapter.Close()
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure failed: %v", err)
+		}
+
+		page, err := adapter.ListSessions(" /workspace/project ", " cursor-token ")
+		if err != nil {
+			t.Fatalf("list failed: %v", err)
+		}
+		// The fake echoes the request cwd, so this also proves the response
+		// path keeps a padded path intact.
+		if page.Sessions[0].Cwd != " /workspace/project " {
+			t.Fatalf("cwd was normalized: %q", page.Sessions[0].Cwd)
+		}
+		wantList := []map[string]any{{"cwd": " /workspace/project ", "cursor": " cursor-token "}}
+		if got := acpTraceParams(t, tracePath, "session/list"); !reflect.DeepEqual(got, wantList) {
+			t.Fatalf("session/list params were normalized: got=%v want=%v", got, wantList)
+		}
+
+		if err := adapter.LoadSession("room", " native-id ", " /workspace/project "); err != nil {
+			t.Fatalf("load failed: %v", err)
+		}
+		wantLoad := []map[string]any{{
+			"sessionId":  " native-id ",
+			"cwd":        " /workspace/project ",
+			"mcpServers": []any{},
+		}}
+		if got := acpTraceParams(t, tracePath, "session/load"); !reflect.DeepEqual(got, wantLoad) {
+			t.Fatalf("session/load params were normalized: got=%v want=%v", got, wantLoad)
+		}
+		if got := adapter.SessionDiagnostics(); len(got) != 1 || got[0].SessionID != " native-id " {
+			t.Fatalf("loaded identity was normalized: %+v", got)
+		}
+	})
+
+	t.Run("response values are projected verbatim", func(t *testing.T) {
+		adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+			"FAKE_LIST_CAP": "1",
+			"FAKE_LIST_RAW": `{"sessions":[{"sessionId":" native-id ","cwd":" /workspace/project ","title":" padded "},{"sessionId":" "}],"nextCursor":" next-page "}`,
+		}), AdapterOptions{})
+		defer adapter.Close()
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure failed: %v", err)
+		}
+
+		page, err := adapter.ListSessions("", "")
+		if err != nil {
+			t.Fatalf("list failed: %v", err)
+		}
+		if len(page.Sessions) != 2 {
+			t.Fatalf("unexpected page: %+v", page.Sessions)
+		}
+		if page.Sessions[0].SessionID != " native-id " || page.Sessions[0].Cwd != " /workspace/project " {
+			t.Fatalf("identity/path was normalized: %+v", page.Sessions[0])
+		}
+		// The display-only title is still sanitized: it is not identity.
+		if page.Sessions[0].Title != "padded" {
+			t.Fatalf("display title must still be sanitized: %q", page.Sessions[0].Title)
+		}
+		// A whitespace-only id is a non-empty opaque token: it is preserved,
+		// never collapsed into "missing" by a trim.
+		if page.Sessions[1].SessionID != " " {
+			t.Fatalf("whitespace-only id was normalized: %q", page.Sessions[1].SessionID)
+		}
+		// The cursor round-trips exactly, so the next page cannot silently
+		// skip or repeat results.
+		if page.NextCursor != " next-page " {
+			t.Fatalf("pagination cursor was normalized: %q", page.NextCursor)
+		}
+	})
 }
 
 // TestACPListSessionsRejectsMalformedAndOversizedResults proves a buggy or
@@ -1833,7 +1956,7 @@ func TestACPLoadSessionRejectsInvalidInputAndAliasedScope(t *testing.T) {
 	}{
 		{name: "empty scope", scope: "", id: "native-1", want: "logical scope is empty"},
 		{name: "over-long scope", scope: strings.Repeat("s", types.MaxLogicalScopeLength+1), id: "native-1", want: "logical scope is too long"},
-		{name: "empty id", scope: "room", id: "   ", want: "session id is empty"},
+		{name: "empty id", scope: "room", id: "", want: "session id is empty"},
 		{name: "over-long id", scope: "room", id: strings.Repeat("s", 300), want: "session id is invalid"},
 		{name: "control rune in id", scope: "room", id: "native\u0000id", want: "session id is invalid"},
 	} {
