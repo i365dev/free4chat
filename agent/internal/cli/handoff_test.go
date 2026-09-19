@@ -75,7 +75,7 @@ func TestHandoffAdoptSendsTheExactLocalRequest(t *testing.T) {
 	}
 	request := nextHandoffRequest(t, fixture)
 	if request.Op != "handoff-adopt" || request.InstanceID != "pi-1" ||
-		request.SessionID != "native-pi-1" || request.SessionCwd != "/workspace/project" ||
+		request.SessionID != "native-pi-1" || !cwdIs(request.SessionCwd, "/workspace/project") ||
 		request.HumanParticipantID != "human-1" {
 		t.Fatalf("handoff --adopt request mismatch: %#v", request)
 	}
@@ -98,7 +98,7 @@ func TestHandoffListSendsDiscoveryBoundsAndPrintsDescriptors(t *testing.T) {
 	}
 	request := nextHandoffRequest(t, fixture)
 	if request.Op != "handoff-list" || request.InstanceID != "pi-1" ||
-		request.SessionCwd != "/workspace/project" || request.SessionCursor != "page-2" {
+		!cwdIs(request.SessionCwd, "/workspace/project") || request.SessionCursor != "page-2" {
 		t.Fatalf("handoff --list request mismatch: %#v", request)
 	}
 	if !strings.Contains(output, "native-pi-1") || !strings.Contains(output, "Native Pi conversation") {
@@ -162,5 +162,43 @@ func TestHandoffAdoptNeverRepairsTheSessionIdentity(t *testing.T) {
 	}
 	if request := nextHandoffRequest(t, fixture); request.SessionID != padded {
 		t.Fatalf("the CLI repaired the opaque session id: %q", request.SessionID)
+	}
+}
+
+// cwdIs asserts the presence-aware --cwd value.
+func cwdIs(value *string, want string) bool {
+	return value != nil && *value == want
+}
+
+// TestHandoffListCwdIsOptional proves the #409 §8 CLI contract: `handoff
+// --list` with no --cwd asks for GLOBAL discovery, and only an explicit --cwd
+// becomes a project filter. The invoking shell's directory is never smuggled
+// in as a discovery filter.
+func TestHandoffListCwdIsOptional(t *testing.T) {
+	fixture := handoffFixture(t)
+	output, code := runCliWithFakeDaemon(t, fixture, "handoff", "--list", "--instance", "pi-1")
+	if code != 0 {
+		t.Fatalf("handoff --list exited %d: %s", code, output)
+	}
+	request := nextHandoffRequest(t, fixture)
+	if request.Op != "handoff-list" || request.SessionCwd != nil {
+		t.Fatalf("an omitted --cwd must mean global discovery: %#v", request)
+	}
+	if request.SessionCursor != "" {
+		t.Fatalf("an omitted --cursor must stay empty: %#v", request)
+	}
+}
+
+// TestHandoffExplicitEmptyCwdIsStillExplicit fences the presence distinction:
+// `--cwd ""` is a REQUEST for the empty path, not an omission.
+func TestHandoffExplicitEmptyCwdIsStillExplicit(t *testing.T) {
+	fixture := handoffFixture(t)
+	output, code := runCliWithFakeDaemon(t, fixture, "handoff", "--list", "--instance", "pi-1", "--cwd", "")
+	if code != 0 {
+		t.Fatalf("handoff --list exited %d: %s", code, output)
+	}
+	request := nextHandoffRequest(t, fixture)
+	if !cwdIs(request.SessionCwd, "") {
+		t.Fatalf("an explicit empty --cwd must stay present: %#v", request)
 	}
 }

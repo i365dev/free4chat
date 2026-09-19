@@ -369,7 +369,13 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		page, err := rt.ListHarnessSessions(request.SessionCwd, request.SessionCursor)
+		// #409: --cwd is presence-aware. Omitted means NO cwd filter at all, so
+		// discovery is global across the Harness's projects; the invoking
+		// shell's own directory is never substituted (§8).
+		page, err := rt.ListHarnessSessions(harness.ACPSessionListOptions{
+			Cwd:    request.SessionCwd,
+			Cursor: request.SessionCursor,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -387,7 +393,7 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		}
 		if err := rt.ArmSessionAdoption(
 			request.SessionID,
-			request.SessionCwd,
+			cwdOrEmpty(request.SessionCwd),
 			request.HumanParticipantID,
 		); err != nil {
 			return nil, err
@@ -433,6 +439,15 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 	default:
 		return nil, errors.New("unknown daemon operation")
 	}
+}
+
+// cwdOrEmpty dereferences an optional cwd for the paths that keep the legacy
+// "empty means the adapter's own workspace" meaning (#409 §8).
+func cwdOrEmpty(cwd *string) string {
+	if cwd == nil {
+		return ""
+	}
+	return *cwd
 }
 
 // rejectIfStopping keeps a draining daemon from admitting new residents.
@@ -546,15 +561,23 @@ func (d *Daemon) prepareRuntime(
 			AgentEnv:          request.AgentEnv,
 			RuntimeExecutable: d.runtimeExecutableCopy,
 		}),
-		Capabilities:        request.Capabilities,
-		SiteOrigin:          siteOrigin,
-		TranscriptPath:      transcriptPath,
-		Speech:              &speechConfig,
-		HostSeed:            hostSeed,
-		HostVoiceGate:       d.voiceGate,
-		ProviderClaim:       request.ProviderClaim,
-		ProviderHandles:     d.providerHandles,
-		TranscriptProducers: d.transcriptProducers,
+		Capabilities: request.Capabilities,
+		// #409: the ONE product-level support policy, copied from the resolved
+		// launcher registry entry. The daemon never decides per-Harness
+		// behavior itself, and never infers it from ACP advertisement.
+		TaskSessionContinuation: launcher.TaskSessionContinuation,
+		// #409: the daemon owns the disposable per-resident workspace root; the
+		// Runtime only reads it to hide Free4Chat's own throwaway sessions from
+		// the product picker. Ownership stays here.
+		DisposableWorkspaceRoot: WorkspacesRoot(),
+		SiteOrigin:              siteOrigin,
+		TranscriptPath:          transcriptPath,
+		Speech:                  &speechConfig,
+		HostSeed:                hostSeed,
+		HostVoiceGate:           d.voiceGate,
+		ProviderClaim:           request.ProviderClaim,
+		ProviderHandles:         d.providerHandles,
+		TranscriptProducers:     d.transcriptProducers,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the

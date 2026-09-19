@@ -123,6 +123,17 @@ import {
   taskAgentParticipates,
   type TaskProjectionIndex,
 } from "./taskScope"
+import {
+  agentSupportsTaskSessionContinuation,
+  hasOutstandingTaskSessionRequest,
+  isTaskSessionError,
+  isValidTaskSessionToken,
+  sanitizeRuntimeFeatures,
+  validateTaskSessionListResult,
+  TASK_SESSION_PENDING_TTL_MS,
+  type TaskSessionError,
+  type TaskSessionListOutcome,
+} from "./taskSession"
 import { isAgentActivityTurnSequence } from "../common/agentActivity"
 import {
   ROOM_APP_MAX_PAYLOAD_BYTES,
@@ -343,11 +354,71 @@ export interface RoomSessionEnv {
   MIXPANEL_PROJECT_TOKEN?: string
 }
 
+/**
+ * #409 Task Session Continuation pending records.
+ *
+ * These live in the WebSocket ATTACHMENT, never in ordinary DO object memory:
+ * a Durable Object can hibernate while its sockets survive, and an in-memory
+ * Map<requestId, callback> would silently lose the correlation. Each record is
+ * bounded (one or two per socket), carries no session id and no cwd, and
+ * expires, so a Human who abandons the picker cannot leave a slot occupied.
+ */
+interface PendingTaskSessionDiscovery {
+  /** Browser-supplied correlation echoed back on the result frame. */
+  requestId: string
+  targetAgentId: string
+  expiresAt: number
+}
+
+interface PendingTaskSessionStart {
+  requestId: string
+  /** Canonical collaboration requestId, generated before PREPARE was sent. */
+  taskRequestId: string
+  targetAgentId: string
+  summary: string
+  expiresAt: number
+}
+
+/**
+ * #409: the outcome of one attempt to write a session-control frame. A boolean
+ * is not enough: "busy" and "unreachable" produce different bounded errors and
+ * must never be confused, because only "busy" means another Human's live
+ * correlation is still owned by this socket.
+ */
+type AgentSessionFrameOutcome = "delivered" | "busy" | "unreachable"
+
+interface PendingSessionControl {
+  /** Room-supplied correlation echoed back by the Runtime. */
+  requestId: string
+  operation: "list" | "prepare"
+  browserRequestId: string
+  humanParticipantId: string
+  humanConnectionNonce: string
+  /** prepare only: the canonical Task this preparation is pinned to. */
+  taskRequestId?: string
+  expiresAt: number
+}
+
+/**
+ * #409: bounds one browser-supplied session-request correlation id without
+ * repairing it. The value is echoed back verbatim or refused.
+ */
+function isValidTaskSessionRequestId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH &&
+    value.trim() === value
+  )
+}
+
 interface ConnectionAttachment {
   participantId: string
   token: string
   connectionNonce: string
   roomAppUnicastRateSamples?: Array<{ at: number; bytes: number }>
+  pendingTaskSessionDiscovery?: PendingTaskSessionDiscovery
+  pendingTaskSessionStart?: PendingTaskSessionStart
 }
 
 interface AgentEventSocketAttachment {
@@ -355,6 +426,7 @@ interface AgentEventSocketAttachment {
   participantId: string
   connectionNonce: string
   cursor: number
+  pendingSessionControl?: PendingSessionControl
 }
 
 interface StoredParticipant extends RoomParticipant {
@@ -816,6 +888,31 @@ type ClientMessage =
       text: string
     }
   | {
+      // #409 Task Session Continuation, discovery. ONE bounded private
+      // request/response exchange on this Human's own socket: it appends no
+      // Room message, increments no sequence, wakes no waiter, and writes no
+      // DO storage. `requestId` is the browser's correlation id and is echoed
+      // back unchanged; the real ACP session id, cwd, and provider cursor
+      // never reach the browser at all.
+      type: "task-session-list"
+      requestId: string
+      targetParticipantId: string
+      projectToken?: string
+      pageToken?: string
+    }
+  | {
+      // #409 Task Session Continuation, one-click start. The Room validates,
+      // asks the resident Runtime to PREPARE the exact canonical Task id, and
+      // only appends the canonical collaboration Task after that PREPARED
+      // acknowledgement. A failed preparation therefore creates NO Task at all
+      // and never silently falls back to a new session.
+      type: "task-session-start"
+      requestId: string
+      targetParticipantId: string
+      sessionToken: string
+      summary: string
+    }
+  | {
       type: "task-interrupt"
       taskRequestId: string
       // #409: the exact turn the Human saw running. The Room refuses a
@@ -1117,6 +1214,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ] as const) {
           if (key in participant) {
             delete participant[key]
+            changed = true
+          }
+        }
+        // #409: a persisted Runtime feature projection is re-sanitized on
+        // every load. A record written by an older/newer generation may carry
+        // anything, and the feature must never be enabled by stale or forged
+        // state.
+        if (participant.runtimeFeatures !== undefined) {
+          const storedFeatures = sanitizeRuntimeFeatures(
+            participant.runtimeFeatures
+          )
+          if (storedFeatures) participant.runtimeFeatures = storedFeatures
+          else {
+            delete participant.runtimeFeatures
             changed = true
           }
         }
@@ -2611,6 +2722,654 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return delivered
   }
 
+  /**
+   * #409: the ONE outbound private session-control frame family.
+   *
+   * It rides the same resident socket as `task-control`, is never a Room
+   * event, and commits its pending correlation into the socket's hibernation
+   * ATTACHMENT before the frame is written — so a response can only ever be
+   * accepted while this exact resident socket still owns the request, even if
+   * the Durable Object hibernated in between.
+   */
+  private sendAgentSessionControl(
+    room: RoomRecord,
+    participantId: string,
+    control: {
+      requestId: string
+      operation: "list" | "prepare"
+      browserRequestId: string
+      humanParticipantId: string
+      humanConnectionNonce: string
+      projectToken?: string
+      pageToken?: string
+      sessionToken?: string
+      taskRequestId?: string
+    }
+  ): AgentSessionFrameOutcome {
+    const pending: PendingSessionControl = {
+      requestId: control.requestId,
+      operation: control.operation,
+      browserRequestId: control.browserRequestId,
+      humanParticipantId: control.humanParticipantId,
+      humanConnectionNonce: control.humanConnectionNonce,
+      expiresAt: Date.now() + TASK_SESSION_PENDING_TTL_MS,
+      ...(control.taskRequestId
+        ? { taskRequestId: control.taskRequestId }
+        : {}),
+    }
+    return this.sendAgentSessionFrame(room, participantId, pending, {
+      type: "task-session-control",
+      operation: control.operation,
+      requestId: control.requestId,
+      humanParticipantId: control.humanParticipantId,
+      ...(control.projectToken ? { projectToken: control.projectToken } : {}),
+      ...(control.pageToken ? { pageToken: control.pageToken } : {}),
+      ...(control.sessionToken ? { sessionToken: control.sessionToken } : {}),
+      ...(control.taskRequestId
+        ? { taskRequestId: control.taskRequestId }
+        : {}),
+    })
+  }
+
+  /**
+   * #409: best-effort release of a prepared adoption whose canonical Task will
+   * now never exist. Correctness never depends on it: the Runtime bounds the
+   * preparation with its own short TTL and pins it to one exact requestId, so
+   * it can never bind to any other Task.
+   */
+  private sendAgentSessionCancel(
+    room: RoomRecord,
+    participantId: string,
+    humanParticipantId: string,
+    taskRequestId: string
+  ): void {
+    // A cancel installs NO new correlation, so it must never touch whatever
+    // correlation the socket is currently holding for someone else.
+    this.sendAgentSessionFrame(room, participantId, null, {
+      type: "task-session-control",
+      operation: "cancel",
+      requestId: crypto.randomUUID(),
+      humanParticipantId,
+      ...(taskRequestId ? { taskRequestId } : {}),
+    })
+  }
+
+  /**
+   * #409: the ONE writer of the resident socket's session-control slot.
+   *
+   * The Runtime processes at most one session-control operation at a time, and
+   * the Room protects the SAME single slot on its side. Without that, a second
+   * Human's request would overwrite the first Human's pending correlation,
+   * the Runtime would (correctly) answer `busy` to the second request, and the
+   * FIRST Human's real result would then arrive with no correlation left to
+   * match — leaving them waiting until the browser timeout.
+   *
+   * A live correlation therefore belongs to exactly one in-flight request and
+   * is never overwritten. A frame that installs no correlation (`pending ===
+   * null`, i.e. a best-effort cancel) leaves any current one untouched.
+   */
+  private sendAgentSessionFrame(
+    room: RoomRecord,
+    participantId: string,
+    pending: PendingSessionControl | null,
+    payload: Record<string, unknown>
+  ): AgentSessionFrameOutcome {
+    const participant = room.participants[participantId]
+    if (!participant || participant.kind !== "agent" || !participant.connected)
+      return "unreachable"
+    const now = Date.now()
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(participantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        !attachment ||
+        attachment.participantId !== participantId ||
+        participant.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      if (pending) {
+        const current = attachment.pendingSessionControl
+        if (current && current.expiresAt > now) {
+          // Another Human's request owns the slot. Refuse immediately and
+          // leave the existing correlation byte-for-byte intact.
+          return "busy"
+        }
+        // An expired record is cleared, and the new request becomes THE
+        // pending correlation, before anything is written to the wire.
+        attachment.pendingSessionControl = pending
+        try {
+          socket.serializeAttachment(attachment)
+        } catch {
+          attachment.pendingSessionControl = undefined
+          return "unreachable"
+        }
+        try {
+          socket.send(JSON.stringify(payload))
+        } catch {
+          // A socket that fails mid-send is not a delivery. Drop ONLY the
+          // correlation this call installed: a response can never arrive for a
+          // frame that was never written.
+          if (attachment.pendingSessionControl === pending) {
+            attachment.pendingSessionControl = undefined
+            try {
+              socket.serializeAttachment(attachment)
+            } catch {
+              // Already unusable.
+            }
+          }
+          return "unreachable"
+        }
+        return "delivered"
+      }
+      try {
+        socket.send(JSON.stringify(payload))
+      } catch {
+        return "unreachable"
+      }
+      return "delivered"
+    }
+    return "unreachable"
+  }
+
+  /**
+   * #409: the ONLY way a private session-control result reaches a browser. The
+   * frame goes to the exact originating Human socket — matched by participant
+   * id AND connection nonce — and to no one else. Human sockets are untagged,
+   * so this mirrors the Room App unicast lookup.
+   */
+  private humanSocketFor(
+    participantId: string,
+    connectionNonce: string
+  ): WebSocket | null {
+    for (const candidate of this.ctx.getWebSockets()) {
+      if (this.deserializeAgentEventAttachment(candidate)) continue
+      let candidateAttachment: Partial<ConnectionAttachment> | null = null
+      try {
+        candidateAttachment =
+          candidate.deserializeAttachment() as Partial<ConnectionAttachment> | null
+      } catch {
+        continue
+      }
+      if (
+        candidateAttachment?.participantId === participantId &&
+        candidateAttachment.connectionNonce === connectionNonce &&
+        candidate.readyState === 1
+      )
+        return candidate
+    }
+    return null
+  }
+
+  private sendHumanTaskSessionListResult(
+    socket: WebSocket,
+    requestId: string,
+    outcome: TaskSessionListOutcome
+  ): void {
+    let payload: Record<string, unknown>
+    if (outcome.ok === true) {
+      payload = {
+        type: "task-session-list-result",
+        requestId,
+        ok: true,
+        sessions: outcome.sessions,
+        projects: outcome.projects,
+        hasMore: outcome.hasMore,
+        ...(outcome.nextPageToken
+          ? { nextPageToken: outcome.nextPageToken }
+          : {}),
+      }
+    } else {
+      payload = {
+        type: "task-session-list-result",
+        requestId,
+        ok: false,
+        error: outcome.error,
+      }
+    }
+    try {
+      socket.send(JSON.stringify(payload))
+    } catch {
+      // Result delivery is best-effort and never changes Room state.
+    }
+  }
+
+  private sendHumanTaskSessionStartResult(
+    socket: WebSocket,
+    requestId: string,
+    ok: boolean,
+    error?: TaskSessionError
+  ): void {
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "task-session-start-result",
+          requestId,
+          ok,
+          ...(ok || !error ? {} : { error }),
+        })
+      )
+    } catch {
+      // Result delivery is best-effort and never changes Room state.
+    }
+  }
+
+  /**
+   * Drops expired pending records from one Human socket attachment. Lazy and
+   * bounded: no alarm, no timer, no storage write.
+   */
+  private pruneTaskSessionPending(
+    attachment: ConnectionAttachment,
+    now: number
+  ): void {
+    const discovery = attachment.pendingTaskSessionDiscovery
+    if (discovery && discovery.expiresAt <= now)
+      delete attachment.pendingTaskSessionDiscovery
+    const start = attachment.pendingTaskSessionStart
+    if (start && start.expiresAt <= now)
+      delete attachment.pendingTaskSessionStart
+  }
+
+  /**
+   * #409: private discovery request. It deliberately touches NO DO storage, no
+   * alarm, no broadcast, no waiter, and no Room message: opening and closing
+   * the picker repeatedly must not keep the Room hot or write Room state.
+   */
+  private async handleTaskSessionList(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    room: RoomRecord,
+    participant: RoomParticipant,
+    message: Extract<ClientMessage, { type: "task-session-list" }>
+  ): Promise<void> {
+    const requestId = message.requestId
+    if (!isValidTaskSessionRequestId(requestId)) return
+    const reject = (error: TaskSessionError) =>
+      this.sendHumanTaskSessionListResult(socket, requestId, {
+        ok: false,
+        error,
+      })
+    if (participant.kind !== "human") {
+      reject("session_continuation_unsupported")
+      return
+    }
+    const targetId =
+      typeof message.targetParticipantId === "string"
+        ? message.targetParticipantId.trim()
+        : ""
+    const target = room.participants[targetId]
+    if (!target || !agentSupportsTaskSessionContinuation(target)) {
+      reject("session_continuation_unsupported")
+      return
+    }
+    const projectToken = message.projectToken
+    if (projectToken !== undefined && !isValidTaskSessionToken(projectToken)) {
+      reject("invalid_session_control")
+      return
+    }
+    const pageToken = message.pageToken
+    if (pageToken !== undefined && !isValidTaskSessionToken(pageToken)) {
+      reject("invalid_session_control")
+      return
+    }
+    const now = Date.now()
+    this.pruneTaskSessionPending(attachment, now)
+    if (hasOutstandingTaskSessionRequest(attachment, now)) {
+      reject("task_session_busy")
+      return
+    }
+    attachment.pendingTaskSessionDiscovery = {
+      requestId,
+      targetAgentId: target.id,
+      expiresAt: now + TASK_SESSION_PENDING_TTL_MS,
+    }
+    try {
+      socket.serializeAttachment(attachment)
+    } catch {
+      delete attachment.pendingTaskSessionDiscovery
+      reject("task_session_not_pending")
+      return
+    }
+    const outcome = this.sendAgentSessionControl(room, target.id, {
+      requestId: crypto.randomUUID(),
+      operation: "list",
+      browserRequestId: requestId,
+      humanParticipantId: participant.id,
+      humanConnectionNonce: attachment.connectionNonce,
+      ...(projectToken ? { projectToken } : {}),
+      ...(pageToken ? { pageToken } : {}),
+    })
+    if (outcome === "delivered") return
+    // Nothing was written to the resident socket, so this Human's own pending
+    // record is released. Another Human's live correlation is untouched.
+    delete attachment.pendingTaskSessionDiscovery
+    try {
+      socket.serializeAttachment(attachment)
+    } catch {
+      // The socket is already unusable; the pending record is expired.
+    }
+    reject(
+      outcome === "busy" ? "task_session_busy" : "task_agent_not_reachable"
+    )
+  }
+
+  /**
+   * #409: one-click Start with an existing local session.
+   *
+   * The canonical Task is NOT created here. The Room first pins an EXACT
+   * requestId and asks the resident Runtime to PREPARE that id for the
+   * selected session; the Task is appended only after the Runtime acknowledges
+   * PREPARED. That ordering is what makes session/new impossible for this
+   * Task: the Runtime is already bound to the native conversation before the
+   * canonical Task event can reach it.
+   */
+  private async handleTaskSessionStart(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    room: RoomRecord,
+    participant: RoomParticipant,
+    message: Extract<ClientMessage, { type: "task-session-start" }>
+  ): Promise<void> {
+    const requestId = message.requestId
+    if (!isValidTaskSessionRequestId(requestId)) return
+    const reject = (error: TaskSessionError) =>
+      this.sendHumanTaskSessionStartResult(socket, requestId, false, error)
+    if (participant.kind !== "human") {
+      reject("session_continuation_unsupported")
+      return
+    }
+    const targetId =
+      typeof message.targetParticipantId === "string"
+        ? message.targetParticipantId.trim()
+        : ""
+    const target = room.participants[targetId]
+    if (!target || !agentSupportsTaskSessionContinuation(target)) {
+      reject("session_continuation_unsupported")
+      return
+    }
+    if (!isValidTaskSessionToken(message.sessionToken)) {
+      reject("invalid_session_control")
+      return
+    }
+    // The instruction is bounded by the SAME canonical collaboration rule the
+    // ordinary Start Task path uses: this creates a normal Task, so it must
+    // satisfy the normal requirements.
+    const summary =
+      typeof message.summary === "string" ? message.summary.trim() : ""
+    if (!summary || summary.length > MAX_COLLAB_SUMMARY_LENGTH) {
+      reject("invalid_session_control")
+      return
+    }
+    const now = Date.now()
+    this.pruneTaskSessionPending(attachment, now)
+    if (hasOutstandingTaskSessionRequest(attachment, now)) {
+      reject("task_session_busy")
+      return
+    }
+    // The canonical Task identity is generated BEFORE the preparation, so the
+    // Runtime can pin the adoption to exactly this id. It is indistinguishable
+    // from any other Human-created Task from here on.
+    const taskRequestId = crypto.randomUUID()
+    attachment.pendingTaskSessionStart = {
+      requestId,
+      taskRequestId,
+      targetAgentId: target.id,
+      summary,
+      expiresAt: now + TASK_SESSION_PENDING_TTL_MS,
+    }
+    try {
+      socket.serializeAttachment(attachment)
+    } catch {
+      delete attachment.pendingTaskSessionStart
+      reject("task_session_not_pending")
+      return
+    }
+    const outcome = this.sendAgentSessionControl(room, target.id, {
+      requestId: crypto.randomUUID(),
+      operation: "prepare",
+      browserRequestId: requestId,
+      humanParticipantId: participant.id,
+      humanConnectionNonce: attachment.connectionNonce,
+      sessionToken: message.sessionToken,
+      taskRequestId,
+    })
+    if (outcome === "delivered") return
+    delete attachment.pendingTaskSessionStart
+    try {
+      socket.serializeAttachment(attachment)
+    } catch {
+      // The socket is already unusable; the pending record is expired.
+    }
+    reject(
+      outcome === "busy" ? "task_session_busy" : "task_agent_not_reachable"
+    )
+  }
+
+  /**
+   * #409: the Runtime answered one private session-control request.
+   *
+   * A result is accepted ONLY against the exact pending correlation this
+   * resident socket still owns. An unknown, stale, expired, or mismatched
+   * result is IGNORED — and deliberately does not close the healthy resident
+   * stream, because a malformed or late control response is not a transport
+   * fault.
+   */
+  private async handleAgentSessionResult(
+    socket: WebSocket,
+    attachment: AgentEventSocketAttachment,
+    raw: string
+  ): Promise<void> {
+    let message: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+      message = parsed as Record<string, unknown>
+    } catch {
+      return
+    }
+    if (message.type !== "task-session-result") return
+    const operation = message.operation
+    if (
+      operation !== "list" &&
+      operation !== "prepare" &&
+      operation !== "cancel"
+    )
+      return
+    const requestId = message.requestId
+    if (!isValidTaskSessionRequestId(requestId)) return
+    const room = await this.activeRoom()
+    if (!room) return
+    const participant = room.participants[attachment.participantId]
+    if (
+      !participant ||
+      participant.kind !== "agent" ||
+      participant.connectionNonce !== attachment.connectionNonce
+    )
+      return
+    const pending = attachment.pendingSessionControl
+    // A result is accepted ONLY against the exact request this socket still
+    // owns. An unknown/mismatched requestId is ignored WITHOUT touching the
+    // pending record: a stray or buggy frame must never be able to cancel a
+    // legitimate in-flight request. Only a list/prepare request ever stores a
+    // pending correlation, so a `cancel` result can never match one.
+    if (
+      !pending ||
+      pending.requestId !== requestId ||
+      pending.operation !== operation
+    )
+      return
+    delete attachment.pendingSessionControl
+    try {
+      socket.serializeAttachment(attachment)
+    } catch {
+      // A socket whose attachment is not writable can no longer correlate
+      // anything; the pending record is gone either way.
+    }
+    if (pending.expiresAt <= Date.now()) {
+      // The Room gave up on this request, but a matching PREPARE may already
+      // have armed a REAL exact adoption on the Runtime before its result
+      // crossed the wire. Release it best-effort so the Human is not blocked
+      // from retrying for the Runtime's whole orphan window.
+      if (pending.operation === "prepare") {
+        this.sendAgentSessionCancel(
+          room,
+          participant.id,
+          pending.humanParticipantId,
+          pending.taskRequestId ?? ""
+        )
+      }
+      return
+    }
+
+    const humanSocket = this.humanSocketFor(
+      pending.humanParticipantId,
+      pending.humanConnectionNonce
+    )
+    if (!humanSocket) {
+      // The originating Human is gone. NO Task may be created for a Human who
+      // is no longer there to own it, so the preparation is released.
+      if (pending.operation === "prepare")
+        this.sendAgentSessionCancel(
+          room,
+          participant.id,
+          pending.humanParticipantId,
+          pending.taskRequestId ?? ""
+        )
+      return
+    }
+    let humanAttachment: ConnectionAttachment | null = null
+    try {
+      humanAttachment =
+        humanSocket.deserializeAttachment() as ConnectionAttachment | null
+    } catch {
+      humanAttachment = null
+    }
+    if (!humanAttachment) {
+      // An unreadable Human attachment is as unusable as a missing socket: no
+      // canonical Task can be owned, so an armed preparation is released.
+      if (pending.operation === "prepare")
+        this.sendAgentSessionCancel(
+          room,
+          participant.id,
+          pending.humanParticipantId,
+          pending.taskRequestId ?? ""
+        )
+      return
+    }
+
+    if (pending.operation === "list") {
+      const record = humanAttachment.pendingTaskSessionDiscovery
+      if (
+        !record ||
+        record.requestId !== pending.browserRequestId ||
+        record.targetAgentId !== participant.id ||
+        record.expiresAt <= Date.now()
+      )
+        return
+      delete humanAttachment.pendingTaskSessionDiscovery
+      try {
+        humanSocket.serializeAttachment(humanAttachment)
+      } catch {
+        // The result is still delivered; only the pending slot is stale.
+      }
+      this.sendHumanTaskSessionListResult(
+        humanSocket,
+        pending.browserRequestId,
+        validateTaskSessionListResult(message)
+      )
+      return
+    }
+
+    const record = humanAttachment.pendingTaskSessionStart
+    if (
+      !record ||
+      record.requestId !== pending.browserRequestId ||
+      record.targetAgentId !== participant.id ||
+      record.expiresAt <= Date.now()
+    ) {
+      this.sendAgentSessionCancel(
+        room,
+        participant.id,
+        pending.humanParticipantId,
+        pending.taskRequestId ?? ""
+      )
+      return
+    }
+    delete humanAttachment.pendingTaskSessionStart
+    try {
+      humanSocket.serializeAttachment(humanAttachment)
+    } catch {
+      // The start decision below still uses the value we already read.
+    }
+    if (message.ok !== true) {
+      this.sendHumanTaskSessionStartResult(
+        humanSocket,
+        pending.browserRequestId,
+        false,
+        isTaskSessionError(message.error)
+          ? message.error
+          : "session_continuation_unavailable"
+      )
+      return
+    }
+    const sender = room.participants[pending.humanParticipantId]
+    if (!sender || sender.kind !== "human") {
+      this.sendAgentSessionCancel(
+        room,
+        participant.id,
+        pending.humanParticipantId,
+        record.taskRequestId
+      )
+      this.sendHumanTaskSessionStartResult(
+        humanSocket,
+        pending.browserRequestId,
+        false,
+        "task_session_not_pending"
+      )
+      return
+    }
+    // PREPARED. ONLY NOW is the canonical Task created, with the exact
+    // requestId the Runtime already pinned — the SAME canonical
+    // collaboration ingestion every ordinary Start Task uses.
+    let appended = false
+    try {
+      const ingest = await this.ingestCollabWorkRequest(room, sender, {
+        requestId: record.taskRequestId,
+        targetParticipantId: record.targetAgentId,
+        summary: record.summary,
+      })
+      appended = ingest.status !== "rejected"
+    } catch {
+      // A controlled append refusal (for example the primary Room record
+      // exceeding its state budget) is still an append failure: no Task
+      // exists, and the preparation must be released.
+      appended = false
+    }
+    if (!appended) {
+      // The append failed after a successful preparation. Release the
+      // preparation best-effort; the Runtime's own TTL and its exact
+      // requestId pinning are the real guarantee.
+      this.sendAgentSessionCancel(
+        room,
+        participant.id,
+        pending.humanParticipantId,
+        record.taskRequestId
+      )
+      this.sendHumanTaskSessionStartResult(
+        humanSocket,
+        pending.browserRequestId,
+        false,
+        "session_continuation_unavailable"
+      )
+      return
+    }
+    this.sendHumanTaskSessionStartResult(
+      humanSocket,
+      pending.browserRequestId,
+      true
+    )
+  }
+
   private deserializeAgentEventAttachment(
     socket: WebSocket
   ): AgentEventSocketAttachment | null {
@@ -2626,6 +3385,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         attachment.cursor < 0
       )
         return null
+      // #409: a malformed pending session-control record is dropped rather
+      // than trusted. Discovery simply reports no pending correlation; it is
+      // never allowed to authorize a delivery.
+      if (attachment.pendingSessionControl !== undefined) {
+        const pending = attachment.pendingSessionControl
+        if (
+          !pending ||
+          typeof pending !== "object" ||
+          typeof pending.requestId !== "string" ||
+          (pending.operation !== "list" && pending.operation !== "prepare") ||
+          typeof pending.browserRequestId !== "string" ||
+          typeof pending.humanParticipantId !== "string" ||
+          typeof pending.humanConnectionNonce !== "string" ||
+          (pending.taskRequestId !== undefined &&
+            typeof pending.taskRequestId !== "string") ||
+          !Number.isSafeInteger(pending.expiresAt)
+        )
+          delete (attachment as { pendingSessionControl?: unknown })
+            .pendingSessionControl
+      }
       return attachment as AgentEventSocketAttachment
     } catch {
       return null
@@ -2741,6 +3520,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       message = parsed && typeof parsed === "object" ? parsed : {}
     } catch {
       socket.close(1003, "Invalid message")
+      return
+    }
+    // #409: the resident socket carries exactly two inbound application
+    // frames: the ordinary lease heartbeat, and a private session-control
+    // result. Anything else still closes the stream — a malformed or late
+    // RESULT, by contrast, is ignored by its own handler instead of being
+    // treated as a transport fault.
+    if (message.type === "task-session-result") {
+      await this.handleAgentSessionResult(socket, attachment, raw)
       return
     }
     if (message.type !== "heartbeat") {
@@ -3476,6 +4264,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // capability list chosen by its Runtime/Harness. Invalid input rejects
       // the join — never repaired silently (see do/collab.ts).
       let registeredCapabilities: AgentCapabilities = { text: true }
+      // #409: the additive Runtime feature projection is sanitized fail-closed.
+      // A projection that is not exactly the documented closed shape is
+      // DROPPED (it never rejects the join): the feature is optional discovery
+      // metadata, so a malformed one must not be able to admit a Runtime that
+      // would otherwise join fine.
+      const registeredFeatures = isAgent
+        ? sanitizeRuntimeFeatures(request.participant.runtimeFeatures)
+        : undefined
       if (isAgent) {
         const validated = validateAdvertisedCapabilities(
           request.participant.capabilities?.advertised ?? []
@@ -3500,6 +4296,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       delete (participantWire as Record<string, unknown>).runtimeProviderHandle
       delete (participantWire as Record<string, unknown>)
         .runtimeProviderReattachProofHash
+      // The raw wire projection never persists either: only the sanitized
+      // canonical value below is stored on the participant.
+      delete (participantWire as Record<string, unknown>).runtimeFeatures
       const participant: RoomParticipant = {
         ...participantWire,
         connected: isAgent,
@@ -3510,6 +4309,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               media: undefined,
               ...(registeredRuntimeHost
                 ? { runtimeHostId: registeredRuntimeHost.runtimeHostId }
+                : {}),
+              ...(registeredFeatures
+                ? { runtimeFeatures: registeredFeatures }
                 : {}),
             }
           : {}),
@@ -3698,12 +4500,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         runtimeHostProviders: {},
         runtimeHostProviderClaims: {},
       }
+      // #409: the same fail-closed sanitization as the join path. The raw
+      // wire projection never becomes participant state.
+      const createdFeatures = sanitizeRuntimeFeatures(
+        request.participant.runtimeFeatures
+      )
+      const createdWire = { ...request.participant } as Record<string, unknown>
+      delete createdWire.runtimeFeatures
       const participant: RoomParticipant = {
-        ...request.participant,
+        ...(createdWire as typeof request.participant),
         connected: true,
         lastSeenAt: now,
         capabilities: agentCapabilitiesFrom(validated.capabilities),
         media: undefined,
+        ...(createdFeatures ? { runtimeFeatures: createdFeatures } : {}),
       }
       room.participants[participant.id] = participant
       const pendingDuration = this.updateCollaborationActivity(room)
@@ -6483,6 +7293,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // No acknowledgement frame is sent: the interrupt is edge-triggered and
       // the Runtime decides locally whether it owns a matching live turn. The
       // Task itself remains open and usable either way.
+      return
+    }
+
+    // #409 Task Session Continuation. Both operations are private, transient
+    // control-plane exchanges on this Human's own socket: they append no Room
+    // message, increment no sequence, wake no waiter, emit no analytics, and
+    // write NO DO storage for discovery. Only a successfully PREPARED start
+    // ever reaches the ordinary canonical collaboration ingestion below.
+    if (message.type === "task-session-list") {
+      await this.handleTaskSessionList(
+        socket,
+        attachment,
+        room,
+        participant,
+        message
+      )
+      return
+    }
+    if (message.type === "task-session-start") {
+      await this.handleTaskSessionStart(
+        socket,
+        attachment,
+        room,
+        participant,
+        message
+      )
       return
     }
 

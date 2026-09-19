@@ -1059,6 +1059,215 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     )
     unmount()
   })
+
+  /*
+   * #409 Task Session Continuation. The browser seam is deliberately thin:
+   * one bounded private request, one correlated private result, and NOTHING
+   * that looks like chat, an action, or a collaboration request.
+   */
+
+  it("sends one bounded private discovery request and resolves its exact result", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("picker-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    const pending = result.current.requestTaskSessions(" agent-pi ", {
+      projectToken: "project-token-1",
+    })
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    expect(frame).toMatchObject({
+      type: "task-session-list",
+      targetParticipantId: "agent-pi",
+      projectToken: "project-token-1",
+    })
+    expect(typeof frame.requestId).toBe("string")
+
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-list-result",
+          requestId: frame.requestId,
+          ok: true,
+          sessions: [
+            {
+              token: "session-token-1",
+              title: "Fix shooter interpolation",
+              projectToken: "project-token-1",
+              projectLabel: "~/workspace/free4chat",
+            },
+          ],
+          projects: [
+            { token: "project-token-1", label: "~/workspace/free4chat" },
+          ],
+          hasMore: true,
+          nextPageToken: "page-token-1",
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({
+      ok: true,
+      page: {
+        sessions: [
+          {
+            token: "session-token-1",
+            title: "Fix shooter interpolation",
+            projectToken: "project-token-1",
+            projectLabel: "~/workspace/free4chat",
+          },
+        ],
+        projects: [
+          { token: "project-token-1", label: "~/workspace/free4chat" },
+        ],
+        hasMore: true,
+        nextPageToken: "page-token-1",
+      },
+    })
+    // A discovery request synthesizes no conversation content.
+    const types = socket.sent.map((message) => JSON.parse(message).type)
+    expect(types.filter((type) => type === "task-session-list")).toHaveLength(1)
+    expect(types).not.toContain("chat")
+    expect(types).not.toContain("action")
+    expect(types).not.toContain("collab-request")
+    unmount()
+  })
+
+  it("resolves a correlated bounded discovery failure without touching the Room error banner", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("picker-fail-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    const pending = result.current.requestTaskSessions("agent-pi")
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-list-result",
+          requestId: frame.requestId,
+          ok: false,
+          error: "session_selection_expired",
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      error: "session_selection_expired",
+    })
+    // An unrelated/unknown result can never settle a pending request.
+    const other = result.current.requestTaskSessions("agent-pi")
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-list-result",
+          requestId: "not-the-pending-request",
+          ok: true,
+          sessions: [],
+          projects: [],
+        }),
+      })
+    )
+    await expect(
+      Promise.race([other.then(() => "settled"), Promise.resolve("pending")])
+    ).resolves.toBe("pending")
+    unmount()
+  })
+
+  it("sends one bounded private start and resolves its exact result", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("start-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    const pending = result.current.startTaskWithSession(
+      " agent-pi ",
+      "session-token-1",
+      "  Continue the work  "
+    )
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    expect(frame).toMatchObject({
+      type: "task-session-start",
+      targetParticipantId: "agent-pi",
+      sessionToken: "session-token-1",
+      summary: "Continue the work",
+    })
+    // Exactly one structured request: no chat, no action, no collab-request.
+    const types = socket.sent.map((message) => JSON.parse(message).type)
+    expect(types.filter((type) => type === "task-session-start")).toHaveLength(
+      1
+    )
+    expect(types).not.toContain("collab-request")
+
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-start-result",
+          requestId: frame.requestId,
+          ok: false,
+          error: "session_selection_expired",
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      error: "session_selection_expired",
+    })
+    unmount()
+  })
+
+  it("refuses a private session request without writing to a closed socket", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("closed-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const sentBefore = socket.sent.length
+    socket.readyState = 3
+
+    await expect(
+      result.current.requestTaskSessions("agent-pi")
+    ).resolves.toEqual({
+      ok: false,
+      error: "session_continuation_unavailable",
+    })
+    await expect(
+      result.current.startTaskWithSession("agent-pi", "session-token-1", "go")
+    ).resolves.toEqual({
+      ok: false,
+      error: "session_continuation_unavailable",
+    })
+    expect(socket.sent.length).toBe(sentBefore)
+    unmount()
+  })
+
+  it("refuses a malformed private start before writing to the socket", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("malformed-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const sentBefore = socket.sent.length
+
+    await expect(
+      result.current.startTaskWithSession("", "session-token-1", "go")
+    ).resolves.toEqual({ ok: false, error: "invalid_session_control" })
+    await expect(
+      result.current.startTaskWithSession("agent-pi", "", "go")
+    ).resolves.toEqual({ ok: false, error: "invalid_session_control" })
+    await expect(
+      result.current.startTaskWithSession("agent-pi", "t".repeat(65), "go")
+    ).resolves.toEqual({ ok: false, error: "invalid_session_control" })
+    expect(socket.sent.length).toBe(sentBefore)
+    unmount()
+  })
 })
 
 describe("useSfuChatRoom room attachments (#123)", () => {

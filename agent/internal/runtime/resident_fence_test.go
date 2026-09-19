@@ -68,6 +68,10 @@ func (s *gatedResidentStream) Receive(ctx context.Context) (types.WaitResult, er
 	}
 }
 
+func (s *gatedResidentStream) SendSessionResult(context.Context, types.ResidentSessionResult) error {
+	return nil
+}
+
 func (s *gatedResidentStream) Heartbeat(context.Context, int64) error {
 	select {
 	case <-s.failHB:

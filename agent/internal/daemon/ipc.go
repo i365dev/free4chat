@@ -87,9 +87,13 @@ type IpcRequest struct {
 	// identity: it is accepted from `handoff --adopt`, held by one resident
 	// Runtime until it binds to a Task, and never written to status, Room
 	// state, workspace files, or logs.
-	SessionID          string `json:"sessionId,omitempty"`
-	SessionCursor      string `json:"sessionCursor,omitempty"`
-	SessionCwd         string `json:"sessionCwd,omitempty"`
+	SessionID     string  `json:"sessionId,omitempty"`
+	SessionCursor string  `json:"sessionCursor,omitempty"`
+	SessionCwd    *string `json:"sessionCwd,omitempty"`
+	// SessionCwd is presence-aware on purpose: `handoff --list` with no --cwd
+	// means GLOBAL discovery (the adapter omits cwd from session/list), while
+	// `--cwd X` means exactly X. An omitted field and an explicitly empty one
+	// are therefore different requests and are never collapsed into "".
 	HumanParticipantID string `json:"humanParticipantId,omitempty"`
 }
 

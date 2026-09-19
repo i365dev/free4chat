@@ -59,6 +59,7 @@ func usageText() string {
   free4chat-agent live-view describe [--json]
   free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [--instance <id>]
   free4chat-agent handoff --list [--cwd <path>] [--cursor <token>] [--instance <id>]
+      (no --cwd lists sessions across every project; --cwd filters to exactly that path)
   free4chat-agent handoff --adopt <session-id> [--human <participant-id>] [--cwd <path>] [--instance <id>]
   free4chat-agent handoff --clear [--instance <id>]
   free4chat-agent handoff --status [--instance <id>]
@@ -115,6 +116,19 @@ func option(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+// optionalOption is option() with PRESENCE. It returns nil when the flag is
+// absent and a pointer to the value (possibly an explicit "") when it is
+// present, so a caller can distinguish "not given" from "given as empty".
+func optionalOption(args []string, name string) *string {
+	for index, candidate := range args {
+		if candidate == name && index+1 < len(args) {
+			value := args[index+1]
+			return &value
+		}
+	}
+	return nil
 }
 
 func nonnegativeSequenceOption(args []string, name string) (*int64, error) {

@@ -801,16 +801,18 @@ func parseJoinLike(result map[string]any) (types.JoinResult, error) {
 }
 
 // JoinRoom joins an existing room and returns the new capability set.
-// host optionally carries the #176 Phase A Runtime Host projection; the
-// payload omits it entirely for legacy callers.
-func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
-	return c.joinRoom(roomID, name, capabilities, host, "", "")
+// host optionally carries the #176 Phase A Runtime Host projection; features
+// optionally carries the additive RuntimeFeatureProjection. Both are omitted
+// from the payload entirely for legacy callers, so an older Room sees exactly
+// the request it saw before.
+func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {
+	return c.joinRoom(roomID, name, capabilities, host, features, "", "")
 }
 
 // JoinRoomWithRuntimeProvider sends the one-time claim hash or an existing
 // daemon-memory provider handle only to the private MCP tool call. Neither
 // value is logged, returned to a Harness, or put in diagnostics.
-func (c *Client) JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
+func (c *Client) JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
 	if providerClaimHash != "" && !types.ValidRuntimeProviderCredential(providerClaimHash) {
 		return types.JoinResult{}, &Error{Message: "runtime provider claim is malformed", Code: CodeToolError}
 	}
@@ -820,10 +822,10 @@ func (c *Client) JoinRoomWithRuntimeProvider(roomID, name string, capabilities [
 	if providerClaimHash != "" && runtimeProviderHandle != "" {
 		return types.JoinResult{}, &Error{Message: "runtime provider credentials conflict", Code: CodeToolError}
 	}
-	return c.joinRoom(roomID, name, capabilities, host, providerClaimHash, runtimeProviderHandle)
+	return c.joinRoom(roomID, name, capabilities, host, features, providerClaimHash, runtimeProviderHandle)
 }
 
-func (c *Client) joinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
+func (c *Client) joinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
 	args := map[string]any{"roomId": roomID, "name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
@@ -832,6 +834,11 @@ func (c *Client) joinRoom(roomID, name string, capabilities []string, host *type
 	// is omitted (never repaired, never blocks the text join).
 	if host != nil && host.Valid() {
 		args["runtimeHost"] = *host
+	}
+	// Additive Runtime feature projection: omitted when it carries no feature,
+	// so an unmodified/older Room never sees an unknown field.
+	if features != nil && !features.Empty() {
+		args["runtimeFeatures"] = *features
 	}
 	if providerClaimHash != "" {
 		args["providerClaimHash"] = providerClaimHash
@@ -852,10 +859,15 @@ func (c *Client) joinRoom(roomID, name string, capabilities []string, host *type
 // the Room-scoped runtimeHostId cannot be derived yet — the caller obtains
 // the final roomId here and pushes the derived projection afterwards via
 // UpdateRuntimeHost (#178 review fix 3).
-func (c *Client) CreateRoom(name string, capabilities []string) (types.CreateRoomResult, error) {
+func (c *Client) CreateRoom(name string, capabilities []string, features *types.RuntimeFeatureProjection) (types.CreateRoomResult, error) {
 	args := map[string]any{"name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
+	}
+	// The create path projects the same additive feature metadata; the
+	// room-scoped runtimeHostId still arrives later via UpdateRuntimeHost.
+	if features != nil && !features.Empty() {
+		args["runtimeFeatures"] = *features
 	}
 	result, err := c.callTool("create_room", args)
 	if err != nil {

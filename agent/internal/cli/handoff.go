@@ -34,9 +34,12 @@ func runHandoff(args []string) error {
 	switch {
 	case list:
 		return runViaDaemon(&daemon.IpcRequest{
-			Op:            "handoff-list",
-			InstanceID:    instanceID,
-			SessionCwd:    option(args, "--cwd"),
+			Op:         "handoff-list",
+			InstanceID: instanceID,
+			// Presence is meaningful: no --cwd means GLOBAL discovery across
+			// every project the Harness knows about; --cwd X means exactly X.
+			// The invoking shell's own directory is never substituted.
+			SessionCwd:    optionalOption(args, "--cwd"),
 			SessionCursor: option(args, "--cursor"),
 		})
 	case status:
@@ -55,7 +58,7 @@ func runHandoff(args []string) error {
 			Op:                 "handoff-adopt",
 			InstanceID:         instanceID,
 			SessionID:          adopt,
-			SessionCwd:         option(args, "--cwd"),
+			SessionCwd:         optionalOption(args, "--cwd"),
 			HumanParticipantID: option(args, "--human"),
 		})
 	}

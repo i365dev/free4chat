@@ -77,6 +77,26 @@ type ACPSessionPage struct {
 	NextCursor string
 }
 
+// ACPSessionListOptions carries one session/list request. It exists so that
+// "no cwd filter" and "this exact cwd" are two DIFFERENT values rather than
+// two meanings of "".
+//
+//	Cwd == nil  -> omit `cwd` from the ACP frame entirely: global discovery
+//	               across every project the Harness knows about.
+//	Cwd != nil  -> send *Cwd byte-for-byte, including an explicitly empty
+//	               string. The value is never trimmed or normalized, because
+//	               cwd is identity: a repaired path could select the wrong
+//	               project's sessions.
+//
+// The earlier signature encoded both meanings as "", which silently turned
+// global discovery into "the adapter's own workspace" and made an invoking
+// shell's cd an invisible filter. Callers that genuinely want the adapter's
+// workspace must now say so explicitly.
+type ACPSessionListOptions struct {
+	Cwd    *string
+	Cursor string
+}
+
 // acpSessionInfoWire is the raw ACP v1 SessionInfo shape. `_meta` and
 // `additionalDirectories` are deliberately not decoded: this adapter retains
 // no Harness-private metadata through session discovery.
@@ -88,10 +108,12 @@ type acpSessionInfoWire struct {
 }
 
 // ListSessions issues one bounded ACP `session/list` control request for the
-// given working directory and opaque cursor. An exactly empty cwd means the
-// adapter's own workspace directory; an exactly empty cursor means "first
-// page". Either empty value omits its optional wire field, so an unfiltered
-// first page sends `{}`.
+// given options. See ACPSessionListOptions for the exact nil-vs-set cwd
+// semantics: a nil cwd asks for GLOBAL discovery and a non-nil cwd is sent
+// byte-for-byte. How "global" is spelled on the wire is the launcher's
+// declared bridge behavior (`LauncherSessionListGlobalCwd`); by default the
+// field is omitted, which is what ACP means by an unfiltered request. An
+// exactly empty cursor means "first page" and is likewise omitted.
 //
 // cwd and cursor are identity-bearing values, so they are never trimmed: a
 // caller-supplied value that is not exactly empty reaches the wire unchanged.
@@ -103,11 +125,9 @@ type acpSessionInfoWire struct {
 // cannot block the caller and is torn down rather than left ambiguous.
 //
 // The returned page is bounded and validated; see parseACPSessionPage.
-func (a *ACPAdapter) ListSessions(cwd string, cursor string) (ACPSessionPage, error) {
-	if cwd == "" {
-		cwd = a.workingDir
-	}
-	if !validACPSessionPath(cwd, maxACPSessionCwdLength) {
+func (a *ACPAdapter) ListSessions(options ACPSessionListOptions) (ACPSessionPage, error) {
+	cursor := options.Cursor
+	if options.Cwd != nil && !validACPSessionPath(*options.Cwd, maxACPSessionCwdLength) {
 		return ACPSessionPage{}, errors.New("ACP session/list working directory is invalid")
 	}
 	if len([]rune(cursor)) > maxACPSessionCursorLength || hasACPControlRunes(cursor) {
@@ -128,8 +148,16 @@ func (a *ACPAdapter) ListSessions(cwd string, cursor string) (ACPSessionPage, er
 	}
 
 	params := map[string]any{}
-	if cwd != "" {
-		params["cwd"] = cwd
+	switch {
+	case options.Cwd != nil:
+		params["cwd"] = *options.Cwd
+	case a.launcher.SessionListGlobalCwd == types.GlobalSessionListCwdEmpty:
+		// This bridge reads an ABSENT cwd as "my own last session cwd", so
+		// the only spelling of "no filter" it understands is an explicitly
+		// empty value. See LauncherSessionListGlobalCwd.
+		params["cwd"] = ""
+	default:
+		// ACP-correct: an unfiltered request omits the field entirely.
 	}
 	if cursor != "" {
 		params["cursor"] = cursor

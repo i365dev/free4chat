@@ -85,7 +85,60 @@ type AgentLauncher struct {
 	// Environment holds explicit launch-time overrides for this trusted
 	// launcher (e.g. Codex read-only mode).
 	Environment map[string]string `json:"-"`
+	// TaskSessionContinuation is the ONE centralized product-level support
+	// policy for Task Session Continuation (#409): may a Human continue one of
+	// this Harness's existing native sessions from the Room Start Task surface?
+	//
+	// It is deliberately NOT derived from ACP capability advertisement.
+	// `sessionCapabilities.list` + `loadSession` only say the bridge implements
+	// two methods: the #409 spike proved OpenCode and Hermes advertise both and
+	// still cannot continue a native session, while Pi was verified end-to-end.
+	// Support is therefore a named product decision recorded here, next to the
+	// launcher it describes, and nowhere else.
+	//
+	//	pi   true  (verified end-to-end)
+	//	...  false until that exact native-CLI -> ACP continuation path is
+	//	           verified for the pinned bridge, then only this flag changes
+	//
+	// Enabling a Harness later is: flip this flag + add its provider-specific
+	// regression/probe. It is never a UI, Room-protocol, or Runtime redesign.
+	//
+	// This flag is presentation/discovery policy only, and is therefore NEVER
+	// authorization: the Room still validates the current resident socket and
+	// the Human's Task ownership, and the Runtime re-checks this policy before
+	// it lists or prepares anything.
+	TaskSessionContinuation bool `json:"taskSessionContinuation,omitempty"`
+	// SessionListGlobalCwd declares how THIS bridge expresses "no cwd filter"
+	// on the session/list wire.
+	//
+	// ACP makes `cwd` optional, but bridges disagree about what omission
+	// MEANS. Verified against the pinned bridge while dogfooding:
+	//
+	//	pi-acp@0.0.33
+	//	  const effectiveCwd = params.cwd ?? this.lastSessionCwd
+	//	  const filtered = effectiveCwd ? all.filter(s => s.cwd === effectiveCwd) : all
+	//
+	// so an OMITTED cwd silently resolves to that bridge's own last session
+	// cwd (the Runtime's disposable workspace), while an explicitly EMPTY
+	// string is what actually means "every project". Recorded here, next to
+	// the launcher it describes, because it is a property of the pinned bridge
+	// and nothing else in Free4Chat may branch on a Harness identity.
+	SessionListGlobalCwd LauncherSessionListGlobalCwd `json:"sessionListGlobalCwd,omitempty"`
 }
+
+// LauncherSessionListGlobalCwd is the closed set of "no cwd filter" spellings.
+type LauncherSessionListGlobalCwd string
+
+const (
+	// GlobalSessionListCwdOmitted is the ACP-correct default: an unfiltered
+	// request omits `cwd` from session/list entirely.
+	GlobalSessionListCwdOmitted LauncherSessionListGlobalCwd = ""
+	// GlobalSessionListCwdEmpty sends an explicitly EMPTY `cwd`. It is
+	// required by a bridge that substitutes its own last session cwd when the
+	// field is absent, so omission there is a silent PROJECT filter, not
+	// global discovery.
+	GlobalSessionListCwdEmpty LauncherSessionListGlobalCwd = "empty"
+)
 
 // HarnessCapabilities reports what the negotiated Harness session supports
 // and that Free4Chat can actually use. There is deliberately no Resume field:
@@ -137,6 +190,38 @@ type HostSpeechReadiness struct {
 // type shape. Callers must omit (never repair) an invalid projection.
 func (p RuntimeHostProjection) Valid() bool {
 	return ValidRuntimeHostID(p.RuntimeHostID)
+}
+
+// RuntimeFeatureProjection is the additive, coarse, PARTICIPANT-scoped
+// projection of product-level Runtime features that a resident publishes when
+// it joins or creates a Room. It is the discovery half of Task Session
+// Continuation: the Room stores it on the Agent participant and shows the
+// browser whether "Continue session" may be offered for THAT Agent.
+//
+// It is deliberately participant-scoped rather than host-scoped: one local
+// Runtime Host can run several residents with different Harnesses, and a Pi
+// resident must never make a Codex resident on the same host look capable.
+//
+// It is also deliberately NOT a slice of arbitrary capability tokens. A
+// Runtime feature is a closed, Runtime-owned fact with a fixed shape, so it
+// cannot be forged by naming a string, and it never has to share a namespace
+// with user-advertised capability descriptions.
+//
+// Every field is omitempty, so an older Runtime that does not know this
+// projection simply omits it and an older Room never sees it. It is discovery
+// metadata only — NEVER authorization. The Room still validates the current
+// resident socket and Task ownership; the Runtime re-checks its own product
+// policy on every private session-control request.
+type RuntimeFeatureProjection struct {
+	// TaskSessionContinuation means "this resident can list and load one of
+	// its Harness's existing native sessions for a Human-created Task".
+	TaskSessionContinuation bool `json:"taskSessionContinuation,omitempty"`
+}
+
+// Empty reports whether this projection carries no feature at all, so a caller
+// can omit the wire field entirely instead of sending an empty object.
+func (p RuntimeFeatureProjection) Empty() bool {
+	return !p.TaskSessionContinuation
 }
 
 // ValidRuntimeHostID is the single validation rule shared with the Room
@@ -817,6 +902,11 @@ type WaitResult struct {
 	// deliberately excluded from JSON so no public/MCP surface can observe or
 	// re-emit it, and it carries no cursor of its own.
 	TaskControl *ResidentTaskControl `json:"-"`
+	// SessionControl is populated only by the private resident event stream:
+	// one bounded Task Session Continuation request (list/prepare/cancel).
+	// Like TaskControl it is excluded from JSON, carries no cursor, and never
+	// reaches the public wait_for_events projection.
+	SessionControl *ResidentSessionControl `json:"-"`
 }
 
 // ResidentTaskControlKind is the closed set of private resident control
@@ -852,6 +942,168 @@ type ResidentTaskControl struct {
 	// saw running. A Task scope alone is not turn identity: the same Task can
 	// run many turns, and a stale control must never cancel a later one.
 	TurnSequence int64 `json:"turnSequence"`
+}
+
+/*
+ * Task Session Continuation over the private resident socket (#409).
+ *
+ * This is the second, narrower family on the SAME resident socket as
+ * ResidentTaskControl. It is the product path behind
+ * "Start Task -> Continue session -> pick a local session -> Start", and it is
+ * deliberately generic: nothing here mentions Pi, ACP, or any Harness. Pi is
+ * simply the first built-in Harness whose launcher policy enables it.
+ *
+ * The whole family is PRIVATE and TRANSIENT:
+ *
+ *   - it is never a Room message, sequence, waiter wake, or analytics event;
+ *   - it is never persisted in Room or Runtime durable state;
+ *   - the Room relays only bounded, sanitized presentation data to the ONE
+ *     requesting Human socket;
+ *   - real ACP session ids, real cwd values, and real ACP pagination cursors
+ *     never leave the Runtime (see ResidentTaskSession).
+ */
+
+// ResidentSessionControlKind is the closed set of private session-control
+// operations. An unknown operation is rejected, never degraded.
+type ResidentSessionControlKind string
+
+const (
+	// ResidentSessionControlList asks for one bounded page of the Harness's
+	// existing native sessions, optionally filtered to one project.
+	ResidentSessionControlList ResidentSessionControlKind = "list"
+	// ResidentSessionControlPrepare asks the Runtime to arm ONE adoption of
+	// the selected session, pinned to the EXACT canonical Task requestId the
+	// Room is about to create. Nothing is created in the Room by this frame.
+	ResidentSessionControlPrepare ResidentSessionControlKind = "prepare"
+	// ResidentSessionControlCancel is a best-effort release of a prepared
+	// adoption whose canonical Task will now never exist. Correctness never
+	// depends on it: the prepared adoption is bounded by its own short TTL and
+	// can only ever bind to its own exact requestId.
+	ResidentSessionControlCancel ResidentSessionControlKind = "cancel"
+)
+
+// MaxResidentSessionRequestID bounds the Room-generated correlation id that
+// pairs one control with its result.
+const MaxResidentSessionRequestID = 64
+
+// MaxResidentSessionRows bounds one product discovery page. It is deliberately
+// far below the adapter's own 50-entry ACP page bound: this feeds a compact
+// picker, and the browser must never receive a bulk export.
+const MaxResidentSessionRows = 10
+
+// MaxResidentSessionProjects bounds the Runtime-local project catalog one
+// Human can grow through discovery.
+const MaxResidentSessionProjects = 24
+
+// MaxResidentSessionTokenLength bounds every opaque Runtime-issued selection,
+// project, and pagination token.
+const MaxResidentSessionTokenLength = 64
+
+// MaxResidentSessionTitleLength bounds the display-only Harness-provided
+// session title.
+const MaxResidentSessionTitleLength = 256
+
+// MaxResidentSessionProjectLabelLength bounds the display-only project label.
+const MaxResidentSessionProjectLabelLength = 256
+
+// ResidentSessionControl is one PRIVATE resident-only session-control request.
+// Every field except Kind/RequestID is operation-specific and optional.
+//
+// The tokens are opaque Runtime-local handles. The Room relays them unchanged
+// and can never resolve one itself: a token is not authority, not a session
+// id, and not a cwd. TaskRequestID is the canonical Room collaboration
+// requestId the ROOM already generated for the Task it is about to create; it
+// is the exact identity the prepared adoption is pinned to.
+type ResidentSessionControl struct {
+	Kind      ResidentSessionControlKind
+	RequestID string
+	// ProjectToken/PageToken are list-only and mutually usable: a project
+	// filter selects an exact cwd locally, a page token continues a previous
+	// page.
+	ProjectToken string
+	PageToken    string
+	// SessionToken is prepare-only: the exact selection to adopt.
+	SessionToken string
+	// TaskRequestID is prepare-only: the canonical Task this adoption may
+	// bind to, and the ONLY one it can ever bind to.
+	TaskRequestID string
+	// HumanParticipantID is the Room participant id of the authenticated Human
+	// that made this request. It is required for every operation: a selection,
+	// project, or page token is bound to exactly one Human, and an adoption may
+	// only ever bind to a Task that Human owns. It is a Room-visible
+	// correlation id, never a capability or token.
+	HumanParticipantID string
+}
+
+// ResidentTaskSession is the bounded, sanitized presentation of one native
+// Harness session. It is the ONLY session shape a browser may ever see.
+//
+// Token is a cryptographically random, Human-bound, short-lived Runtime-local
+// handle. The real ACP session id and the real cwd stay in Runtime memory: the
+// browser never receives them, never round-trips them, and never uses a
+// display string as identity.
+type ResidentTaskSession struct {
+	Token string `json:"token"`
+	// Title is UNTRUSTED presentation: arbitrary user or model text, already
+	// bounded and control-folded by the adapter. It is plain text, never HTML
+	// and never markdown.
+	Title string `json:"title"`
+	// ProjectToken is the Runtime-issued handle for the exact project this
+	// session belongs to. ProjectLabel is its human-facing display path.
+	ProjectToken string `json:"projectToken"`
+	ProjectLabel string `json:"projectLabel"`
+	// UpdatedAt is an optional RFC3339 timestamp, passed through only when the
+	// adapter already validated it.
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+// ResidentTaskSessionProject is one bounded project choice built from
+// discovered session metadata. Projects are ONLY directories the Harness
+// reported for its own sessions: the Runtime never scans the filesystem.
+type ResidentTaskSessionProject struct {
+	Token string `json:"token"`
+	Label string `json:"label"`
+}
+
+// ResidentSessionErrorCode is the closed set of bounded, actionable failure
+// classes a Human may be shown. Raw adapter, ACP, or path text is never
+// forwarded: a Harness error message can quote local identity.
+type ResidentSessionErrorCode string
+
+const (
+	// ResidentSessionErrorUnsupported means this resident's product policy
+	// does not enable Task Session Continuation at all.
+	ResidentSessionErrorUnsupported ResidentSessionErrorCode = "session_continuation_unsupported"
+	// ResidentSessionErrorInvalid means the control frame was malformed.
+	ResidentSessionErrorInvalid ResidentSessionErrorCode = "invalid_session_control"
+	// ResidentSessionErrorBusy means another session-control operation is
+	// already in flight for this Runtime (one outstanding, always).
+	ResidentSessionErrorBusy ResidentSessionErrorCode = "session_control_busy"
+	// ResidentSessionErrorExpired means a selection, project, or page token is
+	// unknown, expired, or belongs to another Human. The UI reloads discovery;
+	// it never falls back to a fresh session.
+	ResidentSessionErrorExpired ResidentSessionErrorCode = "session_selection_expired"
+	// ResidentSessionErrorUnavailable means discovery or preparation could not
+	// be completed (Harness gone, list/load failed, adoption already armed).
+	ResidentSessionErrorUnavailable ResidentSessionErrorCode = "session_continuation_unavailable"
+)
+
+// ResidentSessionResult is the Runtime's bounded answer to one
+// ResidentSessionControl. Exactly one result is sent per requestId, on the
+// same resident socket the control arrived on.
+type ResidentSessionResult struct {
+	Kind      ResidentSessionControlKind
+	RequestID string
+	OK        bool
+	// Error is set only when OK is false and is always one of the closed
+	// ResidentSessionErrorCode values above.
+	Error ResidentSessionErrorCode
+	// Sessions/Projects/NextPageToken are list-only. NextPageToken is a FRESH
+	// Runtime-issued token, never the provider's opaque cursor.
+	Sessions      []ResidentTaskSession        `json:"sessions,omitempty"`
+	Projects      []ResidentTaskSessionProject `json:"projects,omitempty"`
+	NextPageToken string                       `json:"nextPageToken,omitempty"`
+	HasMore       bool                         `json:"hasMore,omitempty"`
 }
 
 // CollabRequestArgs are the arguments for send_collab_request.
@@ -935,13 +1187,15 @@ type Free4ChatClient interface {
 	ListTools() ([]string, error)
 	RoomInfo(roomID string) (RoomInfo, error)
 	// JoinRoom optionally carries the #176 Phase A Runtime Host projection
-	// (nil omits it from the wire payload entirely).
-	JoinRoom(roomID, name string, capabilities []string, host *RuntimeHostProjection) (JoinResult, error)
+	// (nil omits it from the wire payload entirely) and the additive
+	// RuntimeFeatureProjection (nil/empty omits it too, so an old Room and an
+	// old Runtime keep working unchanged in both directions).
+	JoinRoom(roomID, name string, capabilities []string, host *RuntimeHostProjection, features *RuntimeFeatureProjection) (JoinResult, error)
 	// CreateRoom NEVER carries a runtimeHost: the Room-scoped id is derived
 	// from the final server-generated roomId, which does not exist at call
 	// time (#178 review fix 3). Push the derived projection afterwards via
 	// UpdateRuntimeHost.
-	CreateRoom(name string, capabilities []string) (CreateRoomResult, error)
+	CreateRoom(name string, capabilities []string, features *RuntimeFeatureProjection) (CreateRoomResult, error)
 	// UpdateRuntimeHost re-projects this Agent's Runtime Host capability
 	// projection (#176 Phase A) after a local readiness change (e.g. #167
 	// credential hot reload) without rejoining the room.
@@ -984,9 +1238,16 @@ type RoomContextClient interface {
 // canonical Room event envelope and refreshes the existing Agent lease.
 // Participant capabilities remain private to the Runtime and are never
 // passed through this interface to a Harness.
+//
+// SendSessionResult is the ONLY Runtime -> Room application frame on this
+// socket besides Heartbeat. It answers exactly one ResidentSessionControl on
+// the same connection the control arrived on, carries no cursor, and is never
+// a Room event. Implementations must serialize it with Heartbeat: the resident
+// socket is a one-writer transport.
 type ResidentEventStream interface {
 	Receive(context.Context) (WaitResult, error)
 	Heartbeat(context.Context, int64) error
+	SendSessionResult(context.Context, ResidentSessionResult) error
 	Close() error
 }
 
@@ -1001,7 +1262,7 @@ type ResidentEventClient interface {
 // adapter clients retain the small Phase-A interface. The production MCP
 // client implements it; both values are private bearer material.
 type RuntimeHostProviderClient interface {
-	JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *RuntimeHostProjection, providerClaimHash, runtimeProviderHandle string) (JoinResult, error)
+	JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *RuntimeHostProjection, features *RuntimeFeatureProjection, providerClaimHash, runtimeProviderHandle string) (JoinResult, error)
 	UpdateRuntimeHostWithRuntimeProvider(participantHandle string, host RuntimeHostProjection, runtimeProviderHandle string) error
 }
 

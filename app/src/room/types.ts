@@ -149,6 +149,28 @@ export interface PendingRuntimeHostProviderClaim {
   reattachProofHash?: string
 }
 
+/**
+ * #409 Task Session Continuation: the additive, coarse, PARTICIPANT-scoped
+ * projection a resident Runtime publishes about its own product features.
+ *
+ * It is deliberately NOT a capability string. A Runtime feature is a closed,
+ * Runtime-owned fact with a fixed shape, so it cannot be forged by naming a
+ * token and it never shares a namespace with user-advertised capability
+ * descriptions.
+ *
+ * Discovery/presentation metadata only — NEVER authorization. The Room still
+ * validates the current resident socket and the Human's Task ownership on
+ * every private session-control request, and the Runtime re-checks its own
+ * product policy.
+ *
+ * Every field is optional, so an older Runtime simply omits this and an older
+ * Room never sees it (additive rolling compatibility).
+ */
+export interface RoomRuntimeFeatures {
+  /** This resident can list and load an existing native Harness session. */
+  taskSessionContinuation?: boolean
+}
+
 export interface AgentCapabilities {
   text: true
   // #106 Phase A: the capability tokens this Agent explicitly chose to
@@ -262,6 +284,9 @@ export interface RoomParticipant {
   // RoomRecord.runtimeHosts, shared by all same-host Agents; the credential
   // itself never becomes Room state.
   runtimeHostId?: string
+  // #409: additive Runtime feature projection (agents only). Absent for every
+  // older Runtime, so "Continue session" is simply not offered there.
+  runtimeFeatures?: RoomRuntimeFeatures
   media?: RoomMediaState
 }
 

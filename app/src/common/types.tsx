@@ -20,6 +20,11 @@ export interface UserInfo {
   // #176 Phase A: the Room-scoped Runtime Host id behind this Agent (agents
   // only). Readiness itself travels once per host in Room state.
   runtimeHostId?: string
+  // #409: this Agent's resident Runtime advertises Task Session Continuation,
+  // so Start Task may offer "Continue session". Discovery/presentation only —
+  // the Room still authorizes every private session request server-side, and
+  // an Agent that never sent this projection is simply never offered it.
+  taskSessionContinuation?: boolean
   // Derived client-side from one Runtime Host TTS projection plus the Room's
   // participant-specific agentVoice authorization. Never persisted here.
   voiceAvailable?: boolean

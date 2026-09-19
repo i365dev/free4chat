@@ -4,6 +4,12 @@ import { useRouter } from "next/router"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
+import {
+  appendDedupedTaskSessions,
+  taskSessionErrorMessage,
+  type RelayTaskSession,
+  type RelayTaskSessionProject,
+} from "@do/taskSession"
 
 import AgentInviteControl from "./AgentInviteControl"
 import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
@@ -11,6 +17,7 @@ import RoomAppHost from "./RoomAppHost"
 import RoomAppLauncher from "./RoomAppLauncher"
 import RoomAudioSinks from "./RoomAudioSinks"
 import TaskLiveView from "./TaskLiveView"
+import TaskSessionPicker from "./TaskSessionPicker"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
@@ -258,6 +265,40 @@ export default function RoomContent({
   const [taskAgent, setTaskAgent] = useState<TaskAgent | null>(null)
   const [taskInstruction, setTaskInstruction] = useState("")
   const [taskError, setTaskError] = useState("")
+  // #409 Task Session Continuation. The DEFAULT is always `new`: the Human
+  // explicitly chooses "Continue session" and then explicitly chooses ONE
+  // session, because resuming the wrong conversation is worse than one extra
+  // click. Discovery is LAZY — opening this modal exports nothing.
+  const [taskSessionMode, setTaskSessionMode] = useState<"new" | "continue">(
+    "new"
+  )
+  const [taskSessionStatus, setTaskSessionStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle")
+  const [taskSessions, setTaskSessions] = useState<RelayTaskSession[]>([])
+  const [taskSessionProjects, setTaskSessionProjects] = useState<
+    RelayTaskSessionProject[]
+  >([])
+  const [taskSessionPageToken, setTaskSessionPageToken] = useState<
+    string | undefined
+  >(undefined)
+  const [taskSessionHasMore, setTaskSessionHasMore] = useState(false)
+  const [taskSessionLoadingMore, setTaskSessionLoadingMore] = useState(false)
+  const [taskSessionProjectToken, setTaskSessionProjectToken] = useState<
+    string | null
+  >(null)
+  const [taskSessionSelection, setTaskSessionSelection] =
+    useState<RelayTaskSession | null>(null)
+  const [taskSessionError, setTaskSessionError] = useState("")
+  // A start is in flight: the modal must not close optimistically, because a
+  // failed preparation creates NO Task at all.
+  const [taskStarting, setTaskStarting] = useState(false)
+  // Monotonic guard so a late discovery response for a superseded view can
+  // never repopulate the picker.
+  const taskSessionRequestSeq = useRef(0)
+  // Mirrors `taskSessions` so an async failure can decide truthfully whether
+  // rows are already on screen without reading state inside an updater.
+  const taskSessionsRef = useRef<RelayTaskSession[]>([])
   // #409: the only Interrupt UI state is the local send failure of the last
   // click. There is deliberately no persisted "Interrupted" Task state.
   const [taskInterruptFailed, setTaskInterruptFailed] = useState(false)
@@ -347,6 +388,8 @@ export default function RoomContent({
     sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
+    requestTaskSessions,
+    startTaskWithSession,
     sendCollabResponse,
     readRoomAttachment,
     sendCollabResult,
@@ -899,38 +942,241 @@ export default function RoomContent({
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
+  // #409: whether THIS Agent's resident Runtime advertised Task Session
+  // Continuation. It is read from the additive Runtime feature projection, so
+  // an older Runtime (agent-v0.5.34) simply never sets it and the modal stays
+  // exactly as it is today.
+  const taskAgentContinuation = useMemo(() => {
+    if (!taskAgent) return false
+    const participant = participants.find(
+      (candidate) => candidate.peerId === taskAgent.peerId
+    )
+    return participant?.taskSessionContinuation === true
+  }, [participants, taskAgent])
+
+  const resetTaskSessionPicker = useCallback(() => {
+    taskSessionRequestSeq.current += 1
+    setTaskSessionMode("new")
+    setTaskSessionStatus("idle")
+    taskSessionsRef.current = []
+    setTaskSessions([])
+    setTaskSessionProjects([])
+    setTaskSessionPageToken(undefined)
+    setTaskSessionHasMore(false)
+    setTaskSessionLoadingMore(false)
+    setTaskSessionProjectToken(null)
+    setTaskSessionSelection(null)
+    setTaskSessionError("")
+    setTaskStarting(false)
+  }, [])
+
   const handleStartTask = useCallback(
     (peerId: string, name: string) => {
       const participant = participants.find(
         (candidate) => candidate.peerId === peerId && candidate.kind === "agent"
       )
       if (!participant) return
+      resetTaskSessionPicker()
       setTaskAgent({ peerId, name })
       setTaskInstruction("")
       setTaskError("")
     },
-    [participants]
+    [participants, resetTaskSessionPicker]
   )
 
   const closeTaskComposer = useCallback(() => {
+    // A start in flight must not be abandoned half-way: the Human either sees
+    // its result or explicitly waits for it.
+    if (taskStarting) return
+    resetTaskSessionPicker()
     setTaskAgent(null)
     setTaskInstruction("")
     setTaskError("")
-  }, [])
+  }, [resetTaskSessionPicker, taskStarting])
+
+  /**
+   * #409: one bounded discovery page for the CURRENT picker view. Called
+   * lazily on "Continue session", on a project change, and on Load more —
+   * never on modal open, never on a timer, and never in a background refresh.
+   */
+  const loadTaskSessions = useCallback(
+    async (
+      targetAgentId: string,
+      options: {
+        projectToken?: string
+        pageToken?: string
+        append: boolean
+      }
+    ) => {
+      const seq = ++taskSessionRequestSeq.current
+      if (!options.append) {
+        setTaskSessionStatus("loading")
+        setTaskSessionError("")
+      } else {
+        setTaskSessionLoadingMore(true)
+      }
+      const result = await requestTaskSessions(targetAgentId, {
+        ...(options.projectToken ? { projectToken: options.projectToken } : {}),
+        ...(options.pageToken ? { pageToken: options.pageToken } : {}),
+      })
+      // A superseded view (modal closed, project switched) never repopulates.
+      if (seq !== taskSessionRequestSeq.current) return
+      setTaskSessionLoadingMore(false)
+      if (result.ok === false) {
+        if (options.append) {
+          // A failed Load more keeps the rows already shown.
+          setTaskSessionError(taskSessionErrorMessage(result.error))
+          setTaskSessionStatus(
+            taskSessionsRef.current.length > 0 ? "ready" : "error"
+          )
+          return
+        }
+        setTaskSessionStatus("error")
+        setTaskSessionError(taskSessionErrorMessage(result.error))
+        return
+      }
+      setTaskSessions((previous) => {
+        const next = options.append
+          ? appendDedupedTaskSessions(previous, result.page.sessions)
+          : result.page.sessions
+        taskSessionsRef.current = next
+        return next
+      })
+      // The project catalog is cumulative: a project discovered on page 1
+      // stays selectable after Load more.
+      setTaskSessionProjects((previous) => {
+        const seen = new Set(previous.map((project) => project.token))
+        const merged = [...previous]
+        for (const project of result.page.projects) {
+          if (seen.has(project.token)) continue
+          seen.add(project.token)
+          merged.push(project)
+        }
+        return merged
+      })
+      setTaskSessionPageToken(result.page.nextPageToken)
+      setTaskSessionHasMore(result.page.hasMore)
+      setTaskSessionStatus("ready")
+    },
+    [requestTaskSessions]
+  )
+
+  const handleTaskSessionModeChange = useCallback(
+    (mode: "new" | "continue") => {
+      setTaskSessionMode(mode)
+      setTaskError("")
+      if (mode === "new") {
+        // Returning to New session abandons the picker: no discovery request
+        // is left in flight and no selection is silently retained.
+        resetTaskSessionPicker()
+        setTaskSessionMode("new")
+        return
+      }
+      if (!taskAgent) return
+      void loadTaskSessions(taskAgent.peerId, { append: false })
+    },
+    [loadTaskSessions, resetTaskSessionPicker, taskAgent]
+  )
+
+  const handleTaskSessionProjectChange = useCallback(
+    (token: string | null) => {
+      if (!taskAgent) return
+      setTaskSessionProjectToken(token)
+      setTaskSessionSelection(null)
+      void loadTaskSessions(taskAgent.peerId, {
+        ...(token ? { projectToken: token } : {}),
+        append: false,
+      })
+    },
+    [loadTaskSessions, taskAgent]
+  )
+
+  /**
+   * #409: an EXPLICIT refresh re-runs the whole Runtime -> Harness
+   * `session/list` round trip for the current project view. It is deliberately
+   * not a re-render of loaded rows and not a browser cache: the Room re-asks
+   * the resident Runtime, which re-asks the Harness, so a provider that gained
+   * or lost a session since the last look is reflected immediately.
+   */
+  const handleTaskSessionRefresh = useCallback(() => {
+    if (!taskAgent) return
+    void loadTaskSessions(taskAgent.peerId, {
+      ...(taskSessionProjectToken
+        ? { projectToken: taskSessionProjectToken }
+        : {}),
+      append: false,
+    })
+  }, [loadTaskSessions, taskAgent, taskSessionProjectToken])
+
+  const handleTaskSessionLoadMore = useCallback(() => {
+    if (!taskAgent || !taskSessionPageToken) return
+    void loadTaskSessions(taskAgent.peerId, {
+      ...(taskSessionProjectToken
+        ? { projectToken: taskSessionProjectToken }
+        : {}),
+      pageToken: taskSessionPageToken,
+      append: true,
+    })
+  }, [
+    loadTaskSessions,
+    taskAgent,
+    taskSessionPageToken,
+    taskSessionProjectToken,
+  ])
 
   const submitTask = useCallback(
-    (event: React.FormEvent<HTMLFormElement>) => {
+    async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault()
-      if (!taskAgent) return
-      const sent = sendCollabRequest(taskAgent.peerId, taskInstruction)
-      if (!sent) {
-        setTaskError("Could not start the task. Check your connection.")
+      if (!taskAgent || taskStarting) return
+      if (taskSessionMode === "new" || !taskAgentContinuation) {
+        // The New session path is structurally unchanged.
+        const sent = sendCollabRequest(taskAgent.peerId, taskInstruction)
+        if (!sent) {
+          setTaskError("Could not start the task. Check your connection.")
+          return
+        }
+        pendingLocalTaskSummaries.current.push(taskInstruction.trim())
+        closeTaskComposer()
+        return
+      }
+      const selection = taskSessionSelection
+      if (!selection) {
+        setTaskError("Choose a local session to continue.")
+        return
+      }
+      setTaskError("")
+      setTaskStarting(true)
+      const result = await startTaskWithSession(
+        taskAgent.peerId,
+        selection.token,
+        taskInstruction
+      )
+      setTaskStarting(false)
+      if (result.ok === false) {
+        // The modal stays OPEN and the typed instruction is preserved: a
+        // failed preparation created no Task, and Free4Chat never silently
+        // falls back to a new session.
+        setTaskError(taskSessionErrorMessage(result.error))
         return
       }
       pendingLocalTaskSummaries.current.push(taskInstruction.trim())
-      closeTaskComposer()
+      setTaskAgent(null)
+      setTaskInstruction("")
+      setTaskError("")
+      resetTaskSessionPicker()
     },
-    [closeTaskComposer, sendCollabRequest, taskAgent, taskInstruction]
+    [
+      closeTaskComposer,
+      resetTaskSessionPicker,
+      sendCollabRequest,
+      startTaskWithSession,
+      taskAgent,
+      taskAgentContinuation,
+      taskInstruction,
+      taskSessionMode,
+      taskSessionSelection,
+      taskStarting,
+    ]
   )
 
   // #409: one bounded transient control. It sends no chat text and creates no
@@ -2152,6 +2398,75 @@ export default function RoomContent({
                 ×
               </button>
             </div>
+            {/* #409: the session choice is offered ONLY when this Agent's
+                resident Runtime advertised Task Session Continuation. An
+                older Runtime (agent-v0.5.34) never does, so this block is
+                absent and the modal is byte-for-byte the previous one. */}
+            {taskAgentContinuation && (
+              <fieldset
+                className="mb-4"
+                disabled={taskStarting}
+                data-testid="task-session-mode"
+              >
+                <legend className="mb-2 block text-sm text-gray-200">
+                  Session
+                </legend>
+                <div
+                  role="radiogroup"
+                  aria-label="Session"
+                  className="flex gap-2"
+                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={taskSessionMode === "new"}
+                    data-testid="task-session-mode-new"
+                    onClick={() => handleTaskSessionModeChange("new")}
+                    className={`flex-1 rounded-md border px-3 py-1.5 text-xs ${
+                      taskSessionMode === "new"
+                        ? "border-blue-400 bg-blue-600/20 text-white"
+                        : "border-gray-700 text-gray-300 hover:bg-gray-800"
+                    }`}
+                  >
+                    New session
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={taskSessionMode === "continue"}
+                    data-testid="task-session-mode-continue"
+                    onClick={() => handleTaskSessionModeChange("continue")}
+                    className={`flex-1 rounded-md border px-3 py-1.5 text-xs ${
+                      taskSessionMode === "continue"
+                        ? "border-blue-400 bg-blue-600/20 text-white"
+                        : "border-gray-700 text-gray-300 hover:bg-gray-800"
+                    }`}
+                  >
+                    Continue session
+                  </button>
+                </div>
+                {taskSessionMode === "continue" && (
+                  <div className="mt-3">
+                    <TaskSessionPicker
+                      status={taskSessionStatus}
+                      sessions={taskSessions}
+                      projects={taskSessionProjects}
+                      hasMore={taskSessionHasMore}
+                      loadingMore={taskSessionLoadingMore}
+                      error={taskSessionError}
+                      selectedToken={taskSessionSelection?.token ?? null}
+                      projectToken={taskSessionProjectToken}
+                      onSelect={setTaskSessionSelection}
+                      onProjectChange={handleTaskSessionProjectChange}
+                      onLoadMore={handleTaskSessionLoadMore}
+                      onRefresh={handleTaskSessionRefresh}
+                      refreshing={taskSessionStatus === "loading"}
+                      disabled={taskStarting}
+                    />
+                  </div>
+                )}
+              </fieldset>
+            )}
             <label
               htmlFor="start-task-instruction"
               className="mb-2 block text-sm text-gray-200"
@@ -2165,7 +2480,8 @@ export default function RoomContent({
               maxLength={MAX_COLLAB_SUMMARY_LENGTH}
               rows={4}
               autoFocus
-              className="w-full resize-none rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-400"
+              disabled={taskStarting}
+              className="w-full resize-none rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-400 disabled:opacity-50"
             />
             {taskError && (
               <p role="alert" className="mt-2 text-xs text-rose-300">
@@ -2182,10 +2498,20 @@ export default function RoomContent({
               </button>
               <button
                 type="submit"
-                disabled={!taskInstruction.trim()}
+                disabled={
+                  !taskInstruction.trim() ||
+                  taskStarting ||
+                  (taskAgentContinuation &&
+                    taskSessionMode === "continue" &&
+                    !taskSessionSelection)
+                }
                 className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Send
+                {taskStarting
+                  ? "Starting…"
+                  : taskAgentContinuation
+                  ? "Start task"
+                  : "Send"}
               </button>
             </div>
           </form>

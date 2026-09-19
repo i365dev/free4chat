@@ -13,6 +13,12 @@ import (
 // builtInLaunchers mirrors the frozen Node registry exactly: explicit
 // supported Harnesses, each trusted-room/experimental (ACP is a control
 // protocol, not a sandbox).
+//
+// TaskSessionContinuation is this registry's ONE product-level support policy
+// (#409). It is NOT a capability advertisement and must never be derived from
+// `sessionCapabilities.list` / `loadSession`: the #409 spike proved OpenCode
+// and Hermes advertise both and still cannot continue a native session, while
+// Pi was verified end-to-end. See types.AgentLauncher for the full contract.
 var builtInLaunchers = []types.AgentLauncher{
 	{
 		ID:          "hermes",
@@ -23,6 +29,10 @@ var builtInLaunchers = []types.AgentLauncher{
 		Security:    types.SecurityTrustedRoom,
 		Notes: "Experimental trusted-room mode only. Current Hermes ACP has native file, shell, browser, memory, " +
 			"and code tools; its current CLI exposes no safe no-tools profile.",
+		// ACP advertises list/resume but session/list returned ZERO native
+		// sessions in the #409 probe: a known native id loads, discovery does
+		// not. Not eligible until that is fixed and re-verified.
+		TaskSessionContinuation: false,
 	},
 	{
 		ID:          "opencode",
@@ -32,6 +42,10 @@ var builtInLaunchers = []types.AgentLauncher{
 		Maturity:    types.MaturityNative,
 		Security:    types.SecurityTrustedRoom,
 		Notes:       "Native ACP over stdio in pure mode (external plugins disabled); OpenCode defaults to loopback, an ephemeral port, and mDNS disabled.",
+		// #409 runtime evidence: list + load are advertised and a native
+		// session is discoverable/replayable, but the next ACP prompt failed
+		// with -32603. Verified partial, so NOT eligible.
+		TaskSessionContinuation: false,
 	},
 	{
 		ID:          "codex",
@@ -42,6 +56,10 @@ var builtInLaunchers = []types.AgentLauncher{
 		Security:    types.SecurityTrustedRoom,
 		Environment: map[string]string{"INITIAL_AGENT_MODE": "read-only"},
 		Notes:       "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
+		// Source-supported (session/list asks Codex for `cli`/`vscode`/`exec`/
+		// `appServer` threads; load/resume call threadResume) but NOT
+		// runtime-verified for the exact native-CLI -> ACP continuation path.
+		TaskSessionContinuation: false,
 	},
 	{
 		ID:          "claude",
@@ -51,6 +69,9 @@ var builtInLaunchers = []types.AgentLauncher{
 		Maturity:    types.MaturityBridge,
 		Security:    types.SecurityTrustedRoom,
 		Notes:       "ACP bridge maintained by the Agent Client Protocol project.",
+		// Source-supported (session/list delegates to the Claude Agent SDK
+		// session store) but NOT runtime-verified. Not eligible.
+		TaskSessionContinuation: false,
 	},
 	{
 		ID:          "pi",
@@ -60,6 +81,18 @@ var builtInLaunchers = []types.AgentLauncher{
 		Maturity:    types.MaturityBridge,
 		Security:    types.SecurityTrustedRoom,
 		Notes:       "ACP bridge listed by the official ACP registry.",
+		// The ONLY Harness verified end-to-end (#409): native Pi CLI session
+		// -> ACP session/list -> session/load -> continued conversation with
+		// preserved context, re-confirmed by the 0.5.34 dogfood. This is the
+		// single place where Pi is selected as enabled.
+		TaskSessionContinuation: true,
+		// VERIFIED against the pinned bridge on a real 122-session store:
+		// omitting `cwd` returned 0 sessions (pi-acp@0.0.33 substitutes its
+		// own last session cwd), while an explicitly empty `cwd` returned the
+		// real page across 22 project directories. Without this, "Continue
+		// session" would have shown an empty picker for the only enabled
+		// Harness.
+		SessionListGlobalCwd: types.GlobalSessionListCwdEmpty,
 	},
 }
 

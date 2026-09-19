@@ -16,11 +16,13 @@ import (
 )
 
 type residentTestStream struct {
-	results    chan types.WaitResult
-	closed     chan struct{}
-	closeOnce  sync.Once
-	heartbeats chan int64
-	receiveErr error
+	mu             sync.Mutex
+	results        chan types.WaitResult
+	closed         chan struct{}
+	closeOnce      sync.Once
+	heartbeats     chan int64
+	sessionResults []types.ResidentSessionResult
+	receiveErr     error
 }
 
 func newResidentTestStream() *residentTestStream {
@@ -45,6 +47,16 @@ func (s *residentTestStream) Receive(ctx context.Context) (types.WaitResult, err
 	}
 }
 
+// SendSessionResult records one private session-control reply. The test stream
+// accepts it on the same channel as the outbound heartbeat-equivalent so a test
+// can assert the exact bounded result the Room would receive.
+func (s *residentTestStream) SendSessionResult(_ context.Context, result types.ResidentSessionResult) error {
+	s.mu.Lock()
+	s.sessionResults = append(s.sessionResults, result)
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *residentTestStream) Heartbeat(ctx context.Context, cursor int64) error {
 	select {
 	case s.heartbeats <- cursor:
@@ -54,6 +66,14 @@ func (s *residentTestStream) Heartbeat(ctx context.Context, cursor int64) error 
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// sessionResultSnapshot returns the private session-control replies this test
+// stream has received.
+func (s *residentTestStream) sessionResultSnapshot() []types.ResidentSessionResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]types.ResidentSessionResult(nil), s.sessionResults...)
 }
 
 func (s *residentTestStream) Close() error {
@@ -83,8 +103,8 @@ func (c *parsedLeaseResidentClient) OpenResidentEventStream(
 	return c.stream, nil
 }
 
-func (c *residentTestClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection) (types.JoinResult, error) {
-	joined, err := c.fakeClient.JoinRoom(roomID, name, capabilities, host)
+func (c *residentTestClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {
+	joined, err := c.fakeClient.JoinRoom(roomID, name, capabilities, host, features)
 	joined.AgentLeaseMs = 30 // Deliberately differs from the 90s compatibility fallback.
 	return joined, err
 }

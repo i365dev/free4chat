@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -24,6 +25,20 @@ const (
 	// maxResidentTaskRequestID bounds the correlation id carried by a private
 	// control frame. The Room already bounds task request ids well below this.
 	maxResidentTaskRequestID = 64
+
+	// residentSessionControlType / residentSessionResultType are the second
+	// private family on this socket (#409 Task Session Continuation). Both are
+	// strictly private: never a Room event, never persisted, never returned by
+	// the public wait_for_events contract.
+	residentSessionControlType = "task-session-control"
+	residentSessionResultType  = "task-session-result"
+	// maxResidentSessionToken bounds every opaque Runtime-issued token the
+	// Room relays back. The Runtime mints them well below this.
+	maxResidentSessionToken = 128
+	// maxResidentSessionResultBytes bounds one outbound result frame. The
+	// product page bounds (10 rows, 24 projects) sit far below it; this is the
+	// fail-closed transport guard.
+	maxResidentSessionResultBytes = 64 * 1024
 )
 
 // residentEventStream is deliberately a one-reader/one-writer wrapper around
@@ -32,6 +47,12 @@ const (
 // authenticated MCP/Room client methods.
 type residentEventStream struct {
 	conn *websocket.Conn
+	// writeMu serializes every outbound frame. This socket has more than one
+	// legitimate writer now (the heartbeat ticker and a session-control
+	// reply), and coder/websocket only guarantees that all methods except
+	// Reader/Read may be called concurrently — it does NOT make two
+	// concurrent Writes safe on the wire.
+	writeMu sync.Mutex
 }
 
 // residentEventEnvelope is kept separate from WaitResult so the public MCP
@@ -53,6 +74,15 @@ type residentEventEnvelope struct {
 	Control       string `json:"control,omitempty"`
 	TaskRequestID string `json:"taskRequestId,omitempty"`
 	TurnSequence  int64  `json:"turnSequence,omitempty"`
+	// Private resident-only Task Session Continuation control (#409).
+	// Operation is the closed "list" | "prepare" | "cancel" set; the tokens
+	// are opaque Runtime-local handles relayed unchanged.
+	Operation          string `json:"operation,omitempty"`
+	RequestID          string `json:"requestId,omitempty"`
+	ProjectToken       string `json:"projectToken,omitempty"`
+	PageToken          string `json:"pageToken,omitempty"`
+	SessionToken       string `json:"sessionToken,omitempty"`
+	HumanParticipantID string `json:"humanParticipantId,omitempty"`
 }
 
 // OpenResidentEventStream opens the Runtime-owned hibernatable Room event
@@ -146,6 +176,16 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 	if envelope.Type == "expired" || envelope.Expired {
 		return types.WaitResult{}, &Error{Message: "room expired", Code: CodeRoomExpired}
 	}
+	if envelope.Type == residentSessionControlType {
+		// PRIVATE RESIDENT TRANSPORT ONLY: one bounded session-control
+		// request, not a Room event. Like a Task control it carries no cursor
+		// and must never be projected as wait_for_events content.
+		control, err := parseResidentSessionControl(envelope)
+		if err != nil {
+			return types.WaitResult{}, err
+		}
+		return types.WaitResult{SessionControl: control}, nil
+	}
 	if envelope.Type == residentTaskControlType {
 		// PRIVATE RESIDENT TRANSPORT ONLY: a transient control frame, not a
 		// Room event. It carries no cursor and must never be projected as
@@ -219,6 +259,71 @@ func parseResidentTaskControl(rawControl, rawTaskRequestID string, rawTurnSequen
 	}, nil
 }
 
+// parseResidentSessionControl validates one private session-control frame
+// fail-closed. An unknown operation, a missing/oversized correlation id, or a
+// token that is not a bounded opaque value is rejected outright: it is never
+// degraded into an ordinary Room event and never partially applied.
+func parseResidentSessionControl(envelope residentEventEnvelope) (*types.ResidentSessionControl, error) {
+	kind := types.ResidentSessionControlKind(envelope.Operation)
+	switch kind {
+	case types.ResidentSessionControlList, types.ResidentSessionControlPrepare, types.ResidentSessionControlCancel:
+	default:
+		return nil, &Error{Message: "resident event stream returned an unsupported session control", Code: CodeToolError}
+	}
+	if !validResidentTaskRequestID(envelope.RequestID) {
+		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+	}
+	// Every operation is Human-scoped. A control that names no Human cannot be
+	// bound to a selection, so it is rejected rather than widened to "anyone".
+	if !validResidentTaskRequestID(envelope.HumanParticipantID) {
+		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+	}
+	for _, token := range []string{envelope.ProjectToken, envelope.PageToken, envelope.SessionToken} {
+		if token != "" && !validResidentSessionToken(token) {
+			return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+		}
+	}
+	if envelope.SessionToken != "" && kind != types.ResidentSessionControlPrepare {
+		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+	}
+	if envelope.TaskRequestID != "" {
+		// prepare pins the adoption to exactly this canonical Task id; cancel
+		// names the preparation it releases. Any other operation carrying one
+		// is malformed.
+		if (kind != types.ResidentSessionControlPrepare && kind != types.ResidentSessionControlCancel) ||
+			!validResidentTaskRequestID(envelope.TaskRequestID) {
+			return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+		}
+	}
+	if kind == types.ResidentSessionControlPrepare && (envelope.SessionToken == "" || envelope.TaskRequestID == "") {
+		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+	}
+	return &types.ResidentSessionControl{
+		Kind:               kind,
+		RequestID:          envelope.RequestID,
+		ProjectToken:       envelope.ProjectToken,
+		PageToken:          envelope.PageToken,
+		SessionToken:       envelope.SessionToken,
+		TaskRequestID:      envelope.TaskRequestID,
+		HumanParticipantID: envelope.HumanParticipantID,
+	}, nil
+}
+
+// validResidentSessionToken bounds one opaque Runtime-issued token. The value
+// is never trimmed or repaired: a padded token is rejected rather than
+// silently resolved into a different selection.
+func validResidentSessionToken(value string) bool {
+	if value == "" || len(value) > maxResidentSessionToken {
+		return false
+	}
+	for _, r := range value {
+		if r <= ' ' || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // validResidentTaskRequestID bounds an opaque Task correlation id without
 // rewriting it. The value is never trimmed: a padded id is rejected instead of
 // being silently repaired into a different Task identity.
@@ -245,10 +350,59 @@ func (s *residentEventStream) Heartbeat(ctx context.Context, cursor int64) error
 	if err != nil {
 		return &Error{Message: "encode resident event heartbeat", Code: CodeToolError}
 	}
-	if err := s.conn.Write(ctx, websocket.MessageText, payload); err != nil {
+	if err := s.write(ctx, payload); err != nil {
 		return &Error{Message: "resident event heartbeat failed", Code: CodeTransient}
 	}
 	return nil
+}
+
+// SendSessionResult answers exactly one private session-control request on the
+// SAME connection it arrived on. It is a transient control-plane frame: no
+// cursor, no Room sequence, no storage, no analytics.
+//
+// The result is bounded before it is encoded. An oversized result fails closed
+// with one minimal error result instead of a truncated payload, so the Room can
+// never mistake an incomplete page for a complete one.
+func (s *residentEventStream) SendSessionResult(ctx context.Context, result types.ResidentSessionResult) error {
+	payload, err := json.Marshal(map[string]any{
+		"type":          residentSessionResultType,
+		"operation":     string(result.Kind),
+		"requestId":     result.RequestID,
+		"ok":            result.OK,
+		"error":         string(result.Error),
+		"sessions":      result.Sessions,
+		"projects":      result.Projects,
+		"nextPageToken": result.NextPageToken,
+		"hasMore":       result.HasMore,
+	})
+	if err != nil || len(payload) > maxResidentSessionResultBytes {
+		fallback, fallbackErr := json.Marshal(map[string]any{
+			"type":      residentSessionResultType,
+			"operation": string(result.Kind),
+			"requestId": result.RequestID,
+			"ok":        false,
+			"error":     string(types.ResidentSessionErrorUnavailable),
+		})
+		if fallbackErr != nil {
+			return &Error{Message: "encode resident session result", Code: CodeToolError}
+		}
+		payload = fallback
+	}
+	if err := s.write(ctx, payload); err != nil {
+		return &Error{Message: "resident session result failed", Code: CodeTransient}
+	}
+	return nil
+}
+
+// write is the ONE outbound path for this socket, so the heartbeat ticker and
+// a session-control reply can never interleave a frame on the wire.
+func (s *residentEventStream) write(ctx context.Context, payload []byte) error {
+	if len(payload) > maxResidentEventBytes {
+		return &Error{Message: "resident event stream frame exceeds its limit", Code: CodeToolError}
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.conn.Write(ctx, websocket.MessageText, payload)
 }
 
 func (s *residentEventStream) Close() error {

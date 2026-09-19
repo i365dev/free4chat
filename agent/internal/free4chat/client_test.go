@@ -479,7 +479,7 @@ func TestJoinRoomAndLifecycleCalls(t *testing.T) {
 		}
 	})
 
-	joined, err := client.JoinRoom("test-room", "Pi", []string{"code"}, nil)
+	joined, err := client.JoinRoom("test-room", "Pi", []string{"code"}, nil, nil)
 	if err != nil {
 		t.Fatalf("join failed: %v", err)
 	}
@@ -526,7 +526,7 @@ func TestRuntimeProviderCredentialsStayOnPrivateMCPWire(t *testing.T) {
 		}
 	})
 	host := types.RuntimeHostProjection{RuntimeHostID: "host-176-provider", Speech: types.HostSpeechReadiness{STT: true}}
-	joined, err := client.JoinRoomWithRuntimeProvider("room-176", "Pi", nil, &host, claimHash, "")
+	joined, err := client.JoinRoomWithRuntimeProvider("room-176", "Pi", nil, &host, nil, claimHash, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func TestHTTPStatusClassification(t *testing.T) {
 			w.WriteHeader(tc.status)
 			_, _ = w.Write([]byte(tc.body))
 		})
-		_, err := client.JoinRoom("r", "n", nil, nil)
+		_, err := client.JoinRoom("r", "n", nil, nil, nil)
 		e, ok := err.(*Error)
 		if !ok || e.Code != tc.wantCode {
 			t.Fatalf("status %d: expected %s got %v", tc.status, tc.wantCode, err)
@@ -779,7 +779,7 @@ func TestCreateRoomValidatesInvite(t *testing.T) {
 			},
 		}))
 	})
-	created, err := client.CreateRoom("Pi", nil)
+	created, err := client.CreateRoom("Pi", nil, nil)
 	if err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
@@ -801,7 +801,7 @@ func TestCreateRoomValidatesInvite(t *testing.T) {
 			},
 		}))
 	})
-	if _, err := bad.CreateRoom("Pi", nil); err == nil {
+	if _, err := bad.CreateRoom("Pi", nil, nil); err == nil {
 		t.Fatal("invalid invite kind must fail")
 	}
 }
@@ -1025,15 +1025,15 @@ func TestJoinCarriesRuntimeHostProjectionCreateRoomNeverDoes(t *testing.T) {
 	}
 
 	// Legacy join: no runtimeHost key at all.
-	if _, err := client.JoinRoom("room", "Pi", nil, nil); err != nil {
+	if _, err := client.JoinRoom("room", "Pi", nil, nil, nil); err != nil {
 		t.Fatalf("legacy join failed: %v", err)
 	}
 	// Hosted join: projection rides the arguments.
-	if _, err := client.JoinRoom("room", "Pi", nil, &host); err != nil {
+	if _, err := client.JoinRoom("room", "Pi", nil, &host, nil); err != nil {
 		t.Fatalf("hosted join failed: %v", err)
 	}
 	// Create NEVER carries runtimeHost: the roomId does not exist yet.
-	if _, err := client.CreateRoom("Pi", nil); err != nil {
+	if _, err := client.CreateRoom("Pi", nil, nil); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
 	// Hot-reload projection push.

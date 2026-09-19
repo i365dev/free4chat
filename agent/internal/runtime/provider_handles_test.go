@@ -38,7 +38,7 @@ type providerJoinClient struct {
 	providerUpdateErr error
 }
 
-func (c *providerJoinClient) JoinRoomWithRuntimeProvider(_ string, _ string, _ []string, _ *types.RuntimeHostProjection, claimHash, providerHandle string) (types.JoinResult, error) {
+func (c *providerJoinClient) JoinRoomWithRuntimeProvider(_ string, _ string, _ []string, _ *types.RuntimeHostProjection, _ *types.RuntimeFeatureProjection, claimHash, providerHandle string) (types.JoinResult, error) {
 	c.claimHash = claimHash
 	c.joinProof = providerHandle
 	return types.JoinResult{

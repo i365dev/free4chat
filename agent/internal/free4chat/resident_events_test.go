@@ -363,7 +363,7 @@ func TestJoinResultParsesServerAgentLease(t *testing.T) {
 		}
 		respondToolsList(w)
 	})
-	joined, err := client.JoinRoom("room", "Agent", nil, nil)
+	joined, err := client.JoinRoom("room", "Agent", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,5 +489,264 @@ func TestResidentEventStreamRejectsMalformedTaskControl(t *testing.T) {
 				t.Fatalf("malformed control was partially applied: %+v", wait)
 			}
 		})
+	}
+}
+
+// TestResidentEventStreamDecodesPrivateSessionControl proves the #409 session
+// control family is decoded into the private resident projection only: it is
+// not a Room event, carries no cursor, and can never leak into a
+// public/MCP-shaped WaitResult.
+func TestResidentEventStreamDecodesPrivateSessionControl(t *testing.T) {
+	list, err := receiveResidentFrame(t, map[string]any{
+		"type":               "task-session-control",
+		"operation":          "list",
+		"requestId":          "req-list-0001",
+		"humanParticipantId": "human-1",
+		"projectToken":       "project-token-1",
+		"pageToken":          "page-token-1",
+	})
+	if err != nil {
+		t.Fatalf("decode private session list control: %v", err)
+	}
+	if list.SessionControl == nil ||
+		list.SessionControl.Kind != types.ResidentSessionControlList ||
+		list.SessionControl.RequestID != "req-list-0001" ||
+		list.SessionControl.HumanParticipantID != "human-1" ||
+		list.SessionControl.ProjectToken != "project-token-1" ||
+		list.SessionControl.PageToken != "page-token-1" {
+		t.Fatalf("private session list control mismatch: %+v", list.SessionControl)
+	}
+	if list.Cursor != 0 || len(list.Events) != 0 || list.MediaState != nil ||
+		list.Participants != nil || list.TaskControl != nil {
+		t.Fatalf("a session control must not be projected as a Room event: %+v", list)
+	}
+	encoded, err := json.Marshal(list)
+	if err != nil {
+		t.Fatalf("marshal resident wait result: %v", err)
+	}
+	for _, forbidden := range []string{
+		"sessionControl", "projectToken", "pageToken", "sessionToken",
+		"project-token-1", "page-token-1", "task-session-control", "human-1",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("private session control leaked into a serialized wait result (%q): %s", forbidden, encoded)
+		}
+	}
+
+	prepare, err := receiveResidentFrame(t, map[string]any{
+		"type":               "task-session-control",
+		"operation":          "prepare",
+		"requestId":          "req-prepare-0001",
+		"humanParticipantId": "human-1",
+		"sessionToken":       "session-token-1",
+		"taskRequestId":      "req-A-0001",
+	})
+	if err != nil {
+		t.Fatalf("decode private session prepare control: %v", err)
+	}
+	if prepare.SessionControl == nil ||
+		prepare.SessionControl.Kind != types.ResidentSessionControlPrepare ||
+		prepare.SessionControl.SessionToken != "session-token-1" ||
+		prepare.SessionControl.TaskRequestID != "req-A-0001" {
+		t.Fatalf("private session prepare control mismatch: %+v", prepare.SessionControl)
+	}
+
+	cancel, err := receiveResidentFrame(t, map[string]any{
+		"type":               "task-session-control",
+		"operation":          "cancel",
+		"requestId":          "req-cancel-0001",
+		"humanParticipantId": "human-1",
+		"taskRequestId":      "req-A-0001",
+	})
+	if err != nil {
+		t.Fatalf("decode private session cancel control: %v", err)
+	}
+	if cancel.SessionControl == nil ||
+		cancel.SessionControl.Kind != types.ResidentSessionControlCancel ||
+		cancel.SessionControl.TaskRequestID != "req-A-0001" {
+		t.Fatalf("private session cancel control mismatch: %+v", cancel.SessionControl)
+	}
+}
+
+// TestResidentEventStreamRejectsMalformedSessionControl proves a malformed
+// session control fails closed: it is neither degraded into an ordinary Room
+// event nor partially applied.
+func TestResidentEventStreamRejectsMalformedSessionControl(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		frame map[string]any
+	}{
+		{name: "unsupported operation", frame: map[string]any{
+			"type": "task-session-control", "operation": "browse", "requestId": "req-1", "humanParticipantId": "human-1",
+		}},
+		{name: "missing operation", frame: map[string]any{
+			"type": "task-session-control", "requestId": "req-1", "humanParticipantId": "human-1",
+		}},
+		{name: "missing request id", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "humanParticipantId": "human-1",
+		}},
+		{name: "padded request id", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": " req-1 ", "humanParticipantId": "human-1",
+		}},
+		{name: "oversized request id", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": strings.Repeat("r", 65), "humanParticipantId": "human-1",
+		}},
+		// Every operation is Human-scoped: an unbound control can never be
+		// widened into "anyone".
+		{name: "missing human", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": "req-1",
+		}},
+		{name: "padded human", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": "req-1", "humanParticipantId": " human-1 ",
+		}},
+		{name: "oversized token", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": "req-1",
+			"humanParticipantId": "human-1", "projectToken": strings.Repeat("t", 129),
+		}},
+		{name: "control rune in token", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": "req-1",
+			"humanParticipantId": "human-1", "pageToken": "page\t1",
+		}},
+		{name: "prepare without a session token", frame: map[string]any{
+			"type": "task-session-control", "operation": "prepare", "requestId": "req-1",
+			"humanParticipantId": "human-1", "taskRequestId": "req-A-0001",
+		}},
+		{name: "prepare without a task request", frame: map[string]any{
+			"type": "task-session-control", "operation": "prepare", "requestId": "req-1",
+			"humanParticipantId": "human-1", "sessionToken": "session-token-1",
+		}},
+		{name: "list carrying a session token", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": "req-1",
+			"humanParticipantId": "human-1", "sessionToken": "session-token-1",
+		}},
+		{name: "list carrying a task request", frame: map[string]any{
+			"type": "task-session-control", "operation": "list", "requestId": "req-1",
+			"humanParticipantId": "human-1", "taskRequestId": "req-A-0001",
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			wait, err := receiveResidentFrame(t, testCase.frame)
+			if err == nil {
+				t.Fatalf("malformed session control must fail closed: %+v", wait)
+			}
+			if CodeOf(err) != CodeToolError {
+				t.Fatalf("want a tool-protocol error, got %v", err)
+			}
+			if wait.SessionControl != nil || len(wait.Events) != 0 || wait.Cursor != 0 {
+				t.Fatalf("malformed control was partially applied: %+v", wait)
+			}
+		})
+	}
+}
+
+// TestResidentEventStreamSendsBoundedSessionResult proves the ONLY outbound
+// session frame shape, and that an oversized result fails closed into one
+// minimal error result rather than a truncated page.
+func TestResidentEventStreamSendsBoundedSessionResult(t *testing.T) {
+	seen := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept resident stream: %v", err)
+			return
+		}
+		// The oversized case deliberately exceeds the default 32 KiB read
+		// limit; raise it here so the frame is actually observable.
+		conn.SetReadLimit(maxResidentEventBytes + 1)
+		for index := 0; index < 2; index++ {
+			_, payload, readErr := conn.Read(context.Background())
+			if readErr != nil {
+				return
+			}
+			seen <- string(payload)
+		}
+	}))
+	t.Cleanup(server.Close)
+	nextFrame := func() string {
+		t.Helper()
+		select {
+		case payload := <-seen:
+			return payload
+		case <-time.After(10 * time.Second):
+			t.Fatal("timed out waiting for an outbound resident frame")
+			return ""
+		}
+	}
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+
+	if err := stream.SendSessionResult(context.Background(), types.ResidentSessionResult{
+		Kind:      types.ResidentSessionControlList,
+		RequestID: "req-list-0001",
+		OK:        true,
+		Sessions: []types.ResidentTaskSession{{
+			Token:        "session-token-1",
+			Title:        "Native Pi conversation",
+			ProjectToken: "project-token-1",
+			ProjectLabel: "/private/tmp",
+			UpdatedAt:    "2026-09-19T10:00:00Z",
+		}},
+		Projects:      []types.ResidentTaskSessionProject{{Token: "project-token-1", Label: "/private/tmp"}},
+		NextPageToken: "page-token-1",
+		HasMore:       true,
+	}); err != nil {
+		t.Fatalf("send session result: %v", err)
+	}
+	var frame map[string]any
+	if err := json.Unmarshal([]byte(nextFrame()), &frame); err != nil {
+		t.Fatalf("decode session result frame: %v", err)
+	}
+	if frame["type"] != "task-session-result" ||
+		frame["operation"] != "list" ||
+		frame["requestId"] != "req-list-0001" ||
+		frame["ok"] != true ||
+		frame["nextPageToken"] != "page-token-1" ||
+		frame["hasMore"] != true {
+		t.Fatalf("session result frame mismatch: %v", frame)
+	}
+	if _, hasCursor := frame["cursor"]; hasCursor {
+		t.Fatalf("a session result must never carry a Room cursor: %v", frame)
+	}
+	rows, ok := frame["sessions"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("session rows mismatch: %v", frame["sessions"])
+	}
+
+	// An oversized page fails closed into ONE minimal error result.
+	huge := make([]types.ResidentTaskSession, 0, 200)
+	for index := 0; index < 200; index++ {
+		huge = append(huge, types.ResidentTaskSession{
+			Token:        strings.Repeat("t", 64),
+			Title:        strings.Repeat("x", 256),
+			ProjectToken: strings.Repeat("p", 64),
+			ProjectLabel: strings.Repeat("y", 256),
+		})
+	}
+	if err := stream.SendSessionResult(context.Background(), types.ResidentSessionResult{
+		Kind:      types.ResidentSessionControlList,
+		RequestID: "req-list-0002",
+		OK:        true,
+		Sessions:  huge,
+	}); err != nil {
+		t.Fatalf("send oversized session result: %v", err)
+	}
+	var fallback map[string]any
+	if err := json.Unmarshal([]byte(nextFrame()), &fallback); err != nil {
+		t.Fatalf("decode fallback frame: %v", err)
+	}
+	if fallback["ok"] != false ||
+		fallback["error"] != string(types.ResidentSessionErrorUnavailable) ||
+		fallback["requestId"] != "req-list-0002" {
+		t.Fatalf("an oversized result must fail closed: %v", fallback)
+	}
+	if _, hasRows := fallback["sessions"]; hasRows {
+		t.Fatalf("a failed-closed result must carry no rows: %v", fallback)
 	}
 }

@@ -121,6 +121,18 @@ type Options struct {
 	// Room-selected Live Transcript Runtime Host. Nil disables the optional
 	// producer path fail-closed while preserving text and legacy media.
 	TranscriptProducers media.LiveTranscriptCoordinator
+	// TaskSessionContinuation is the launcher-registry PRODUCT policy for
+	// continuing an existing native Harness session from the Room Start Task
+	// surface (#409). It is copied from the resolved launcher, never inferred
+	// from ACP capability advertisement, and it is discovery/presentation
+	// policy only — never authorization.
+	TaskSessionContinuation bool
+	// DisposableWorkspaceRoot is the daemon-owned root of per-resident
+	// throwaway workspaces. Session discovery hides any session whose cwd lies
+	// inside it: those are Free4Chat's own disposable resident workspaces, not
+	// the Human's projects. The Runtime only reads this path for filtering; it
+	// never owns, creates, or walks it. Empty disables the filter.
+	DisposableWorkspaceRoot string
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
@@ -271,6 +283,16 @@ type ResidentRuntime struct {
 	pendingAdoption   *pendingSessionAdoption
 	adoptedScopes     map[string]struct{}
 	adoptedLostScopes map[string]struct{}
+	// declinedPrepared is the bounded local record of EXACT prepared
+	// requestIds whose adoption expired before their Task arrived. See
+	// session_adoption.go.
+	declinedPrepared []declinedPreparedAdoption
+	// Task Session Continuation discovery cache (#409). Runtime-local,
+	// in-memory only, Human-bound, TTL-bounded, and never persisted.
+	sessionControlBusy  bool
+	taskSessionSessions map[string]taskSessionSelection
+	taskSessionProjects map[string]taskSessionProject
+	taskSessionPages    map[string]taskSessionPage
 	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
 	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
 	// mediaMu; without this generation fence, a late old callback could end a
@@ -393,21 +415,24 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		providerHandles = NewProviderHandleStore()
 	}
 	runtime := &ResidentRuntime{
-		options:            options,
-		log:                options.Log,
-		state:              StateStarting,
-		eventBuffer:        NewEventBuffer(0, 0),
-		advertisedCaps:     append([]string(nil), options.Capabilities...),
-		stopCh:             make(chan struct{}),
-		resolvedRoomID:     options.RoomID,
-		speechConfig:       speechConfig,
-		providerClaim:      providerClaim,
-		providerHandles:    providerHandles,
-		pendingPermissions: make(map[string]*pendingRoomPermission),
-		activities:         make(map[string]activityTurnState),
-		taskExecutionFacts: make(map[string]taskExecutionFacts),
-		adoptedScopes:      make(map[string]struct{}),
-		adoptedLostScopes:  make(map[string]struct{}),
+		options:             options,
+		log:                 options.Log,
+		state:               StateStarting,
+		eventBuffer:         NewEventBuffer(0, 0),
+		advertisedCaps:      append([]string(nil), options.Capabilities...),
+		stopCh:              make(chan struct{}),
+		resolvedRoomID:      options.RoomID,
+		speechConfig:        speechConfig,
+		providerClaim:       providerClaim,
+		providerHandles:     providerHandles,
+		pendingPermissions:  make(map[string]*pendingRoomPermission),
+		activities:          make(map[string]activityTurnState),
+		taskExecutionFacts:  make(map[string]taskExecutionFacts),
+		adoptedScopes:       make(map[string]struct{}),
+		adoptedLostScopes:   make(map[string]struct{}),
+		taskSessionSessions: make(map[string]taskSessionSelection),
+		taskSessionProjects: make(map[string]taskSessionProject),
+		taskSessionPages:    make(map[string]taskSessionPage),
 	}
 	configurePermissionResponder(runtime)
 	configureActivityHandler(runtime)
@@ -556,7 +581,7 @@ func (r *ResidentRuntime) AdoptCreate() (types.CreateRoomResult, error) {
 	}
 	// #176 Phase A: the create-first lifecycle projects the host identity
 	// exactly like a normal join.
-	created, err := r.options.Client.CreateRoom(r.options.Name, r.advertisedCopy())
+	created, err := r.options.Client.CreateRoom(r.options.Name, r.advertisedCopy(), r.CurrentRuntimeFeatures())
 	if err != nil {
 		return types.CreateRoomResult{}, err
 	}
@@ -613,6 +638,7 @@ func (r *ResidentRuntime) join() error {
 	// identity — a reconnect can never inherit another host's state.
 	roomID := r.activeRoomID()
 	host := r.hostProjectionFor(roomID)
+	features := r.CurrentRuntimeFeatures()
 	r.mu.Lock()
 	providerClaim := r.providerClaim
 	r.mu.Unlock()
@@ -636,22 +662,22 @@ func (r *ResidentRuntime) join() error {
 			providerHandle = ""
 		}
 		joined, err = providerClient.JoinRoomWithRuntimeProvider(
-			roomID, r.options.Name, r.advertisedCopy(), host, claimHash, providerHandle,
+			roomID, r.options.Name, r.advertisedCopy(), host, features, claimHash, providerHandle,
 		)
 		// A true Human departure removes the association. An old daemon-memory
 		// handle must not keep the Runtime from retaining text residency, so
 		// discard it and rejoin without a Host projection on that exact failure.
 		if err != nil && providerHandle != "" && free4chat.CodeOf(err) == free4chat.CodeRuntimeProviderHandleInvalid {
 			r.providerHandles.Delete(roomID, host.RuntimeHostID)
-			joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), nil)
+			joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), nil, features)
 		}
 	} else {
-		joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), host)
+		joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), host, features)
 		// If a daemon restarted after a claim was redeemed, it has no private
 		// proof by design. Preserve text-only residency rather than pretending
 		// the public Host projection is authorized.
 		if err != nil && host != nil && providerClaim == "" && free4chat.CodeOf(err) == free4chat.CodeRuntimeProviderProofRequired {
-			joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), nil)
+			joined, err = r.options.Client.JoinRoom(roomID, r.options.Name, r.advertisedCopy(), nil, features)
 		}
 	}
 	if err != nil {
@@ -1041,6 +1067,16 @@ func (r *ResidentRuntime) applyResidentFrame(
 		// signal itself never touches the replacement stream's lifecycle.
 		return residentFrameFailed, false
 	}
+	if result.SessionControl != nil {
+		if !r.isCurrentResidentStream(stream) {
+			return residentFrameDropped, false
+		}
+		// PRIVATE RESIDENT TRANSPORT ONLY: a session control is not a Room
+		// event, carries no cursor, and is handled off the reader goroutine so
+		// a slow discovery can never delay an exact-turn interrupt.
+		r.dispatchSessionControl(stream, result.SessionControl)
+		return residentFrameApplied, false
+	}
 	if result.TaskControl != nil {
 		if !r.isCurrentResidentStream(stream) {
 			return residentFrameDropped, false
@@ -1199,6 +1235,7 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	}
 	newScope := scope != roomScope && !r.scopeStateExistsLocked(scope)
 	queuedChanged := false
+	claimed := false
 	ref, admitted := r.ensureSessionRefLocked(scope)
 	if !admitted {
 		r.mu.Unlock()
@@ -1238,10 +1275,18 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 			// whose autonomous recovery was closed. Unaddressed Room traffic
 			// never reaches this point and can never re-arm anything.
 			r.reopenTurnRecoveryLocked(scope)
+			// #409: an EXACT prepared adoption is claimed only once its own
+			// canonical Human-owned Task has actually been accepted into this
+			// bounded queue. A preparation the queue refuses keeps its orphan
+			// TTL. Nothing is loaded here: the serialized drain owns that.
+			claimed = r.claimPreparedAdoptionLocked(scope, event)
 			queuedChanged = true
 		}
 	}
 	r.mu.Unlock()
+	if claimed {
+		r.log("session_adoption_claimed", map[string]string{"scopeKind": scopeKindOf(scope)})
+	}
 	if queuedChanged {
 		// A newly accepted instruction is exactly "send after current turn":
 		// the existing serial queue grew, so the transient execution
