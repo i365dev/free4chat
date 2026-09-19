@@ -247,6 +247,22 @@ type ResidentRuntime struct {
 	activityPublishMu       sync.Mutex
 	activityPublishQueue    map[string]activityPublication
 	activityPublisherActive bool
+	// taskExecution* hold the one transient Task execution projection (#409):
+	// derived facts plus the same newest-state publisher design as activity.
+	// taskExecutionMu guards only the facts that cannot be derived (the last
+	// intentional outcome and a lost-session availability); the queue depth and
+	// the current turn are always read from their authoritative owners.
+	taskExecutionMu              sync.Mutex
+	taskExecutionFacts           map[string]taskExecutionFacts
+	taskExecutionPublishMu       sync.Mutex
+	taskExecutionPublishQueue    map[string]taskExecutionPublication
+	taskExecutionPublisherActive bool
+	// interruptScope/interruptTarget mark the exact canonical turn a Human
+	// interrupt was dispatched for. They are cleared when that same turn
+	// settles, so the settlement is reported truthfully and can never be
+	// applied to a successor turn.
+	interruptScope  string
+	interruptTarget int64
 	// mediaGeneration invalidates callbacks from a stopped/replaced bridge.
 	// Bridge teardown reports TrackEnded asynchronously so it cannot re-enter
 	// mediaMu; without this generation fence, a late old callback could end a
@@ -381,6 +397,7 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		providerHandles:    providerHandles,
 		pendingPermissions: make(map[string]*pendingRoomPermission),
 		activities:         make(map[string]activityTurnState),
+		taskExecutionFacts: make(map[string]taskExecutionFacts),
 	}
 	configurePermissionResponder(runtime)
 	configureActivityHandler(runtime)
@@ -1171,6 +1188,7 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 		return
 	}
 	newScope := scope != roomScope && !r.scopeStateExistsLocked(scope)
+	queuedChanged := false
 	ref, admitted := r.ensureSessionRefLocked(scope)
 	if !admitted {
 		r.mu.Unlock()
@@ -1210,9 +1228,17 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 			// whose autonomous recovery was closed. Unaddressed Room traffic
 			// never reaches this point and can never re-arm anything.
 			r.reopenTurnRecoveryLocked(scope)
+			queuedChanged = true
 		}
 	}
 	r.mu.Unlock()
+	if queuedChanged {
+		// A newly accepted instruction is exactly "send after current turn":
+		// the existing serial queue grew, so the transient execution
+		// projection (queue depth, and no longer "interrupted") is refreshed
+		// after releasing r.mu because publication never runs under it.
+		r.noteTaskQueueChanged(scope)
+	}
 }
 
 // reportTaskScopeCapacityFailure publishes the existing canonical collaboration
@@ -1403,9 +1429,31 @@ func (r *ResidentRuntime) drainTurns() {
 		}
 
 		r.beginActivity(scope, target)
+		r.beginTaskTurn(scope, target)
 		result, err := r.runHarnessTurn(scope, *input, generation)
+		interrupted := r.consumeTurnInterrupted(scope, target)
 		r.finishActivity(scope, target)
+		if interrupted {
+			// A Human explicitly asked Free4Chat to stop THIS exact canonical
+			// turn, and that authorization was dispatched while the turn was
+			// still the Runtime's own active one. Its settlement is therefore
+			// terminal: never auto-retry it, never replay the instruction, and
+			// never publish the cancelled turn's tail as an Agent reply. The
+			// serial drain continues, so an already-queued successor turn runs
+			// next on the retained session.
+			//
+			// The settlement acknowledges the cancelled trigger BEFORE it
+			// refreshes execution, so the just-finished turn is never counted
+			// as queued behind itself.
+			r.settleInterruptedTurn(scope, target, maxSeq, generation, err)
+			continue
+		}
 		if err != nil {
+			// A failed turn keeps its canonical trigger pending for the
+			// existing retry/recovery policy, so the settled projection may
+			// truthfully count that still-pending work as queued — it is real
+			// state, never a phantom of the turn that just stopped running.
+			r.publishTaskExecution(scope)
 			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}
@@ -1781,6 +1829,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 		r.mu.Unlock()
 		r.cancelPendingPermissions(errors.New("runtime stopped"))
 		r.clearActivity()
+		r.clearTaskExecutionLocal()
 		close(r.stopCh)
 		r.closeResidentStream()
 		transitioned = true

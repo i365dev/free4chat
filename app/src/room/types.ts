@@ -30,6 +30,30 @@ export interface AgentActivityProjection {
   turnSequence?: number
 }
 
+// #409: the Runtime-authoritative TRANSIENT execution state of one Task. It is
+// not the retained Task lifecycle (Starting|Working|Completed|Failed) and not
+// Harness activity (working|thinking|using_tools|responding): execution owns
+// control truth only, which is why "running with 2 queued" is one projection
+// rather than an enum value. The Room stores it transiently and the browser
+// only renders it; neither derives it from Room history.
+export type TaskExecutionPhase = "running" | "interrupting"
+
+export type TaskExecutionOutcome = "interrupted"
+
+export type TaskExecutionAvailability = "session_lost"
+
+export interface TaskExecutionProjection {
+  agentParticipantId: string
+  taskRequestId: string
+  // Canonical Room sequence of the exact turn the Runtime currently owns.
+  // Absent means no turn is current.
+  currentTurnSequence?: number
+  phase?: TaskExecutionPhase
+  queuedCount: number
+  lastOutcome?: TaskExecutionOutcome
+  availability?: TaskExecutionAvailability
+}
+
 export type RoomMediaTrackKind = "audio" | "video"
 
 export interface RoomMediaTrack {
@@ -480,6 +504,10 @@ export interface RoomState {
   // Transient coarse Runtime activity. This is kept outside RoomRecord and
   // disappears on Runtime disconnect or Durable Object restart.
   agentActivities?: AgentActivityProjection[]
+  // #409 transient Runtime-authoritative Task execution projection. Same
+  // lifetime rules as agentActivities: outside RoomRecord, never persisted,
+  // gone on Runtime disconnect or Durable Object restart.
+  taskExecutions?: TaskExecutionProjection[]
   // Coarse Worker media admission switch. Per-Agent UI availability still
   // comes from the Runtime Host's TTS readiness, never from this field.
   agentVoiceMediaAvailable: boolean

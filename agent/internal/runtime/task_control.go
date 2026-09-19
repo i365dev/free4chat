@@ -52,6 +52,10 @@ func (r *ResidentRuntime) applyResidentTaskControl(control *types.ResidentTaskCo
 		r.log("task_interrupt_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
 		return
 	}
+	// The dispatch succeeded, so this exact turn is now truthfully
+	// "interrupting" (until it settles). Published outside turnControlMu: the
+	// projection snapshot takes that same lock.
+	r.publishTaskExecution(requestedScope)
 	r.log("task_interrupt_requested", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
 }
 
@@ -104,8 +108,15 @@ func (r *ResidentRuntime) cancelActiveTaskTurn(scope string, turnSequence int64)
 		return false
 	}
 	if err := r.options.Adapter.CancelTurn(); err != nil {
+		// The dispatch did not land, so nothing was interrupted: do not claim
+		// an interrupting phase, and do not mark the turn as intentionally
+		// stopped.
 		r.log("task_interrupt_cancel_failed", map[string]string{"scopeKind": scopeKindOf(scope)})
-		return true
+		return false
 	}
+	// Marked while the exact-turn check and the dispatch are still atomic with
+	// respect to begin/finish transitions, so the marker can only ever be
+	// consumed by THIS turn's settlement.
+	r.markTurnInterruptedLocked(scope, turnSequence)
 	return true
 }

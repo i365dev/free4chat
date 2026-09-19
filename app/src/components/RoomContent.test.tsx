@@ -890,6 +890,267 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(sendActionMessage).not.toHaveBeenCalled()
   })
 
+  it("renders the Runtime execution projection and its structured controls", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-exec",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-codex",
+        summary: "Long-running task",
+      },
+    }
+    const participants = [
+      {
+        peerId: "local-peer-id",
+        name: "Hannah",
+        kind: "human",
+        room: "test-room",
+        muteState: false,
+      },
+      {
+        peerId: "agent-codex",
+        name: "Codex",
+        kind: "agent",
+        room: "test-room",
+      },
+    ]
+    const activity = {
+      agentParticipantId: "agent-codex",
+      scopeId: "task:task-exec",
+      state: "thinking" as const,
+      turnSequence: 42,
+    }
+    const base = {
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants,
+      agentActivities: [activity],
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    }
+
+    // Running + activity, and Running with a queue depth.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...base,
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          currentTurnSequence: 42,
+          phase: "running",
+          queuedCount: 0,
+        },
+      ],
+    })
+    const running = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
+      "Codex · Thinking…"
+    )
+    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+      "Running"
+    )
+    running.unmount()
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...base,
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          currentTurnSequence: 42,
+          phase: "running",
+          queuedCount: 2,
+        },
+      ],
+    })
+    const queuedBehind = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
+    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+      "Running · 2 queued"
+    )
+    queuedBehind.unmount()
+
+    // Queued but not current: no interrupt control is offered.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...base,
+      agentActivities: [],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          queuedCount: 1,
+        },
+      ],
+    })
+    const queuedOnly = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
+    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+      "Queued · 1 queued"
+    )
+    expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+    queuedOnly.unmount()
+
+    // Interrupting: the interrupt control is disabled.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...base,
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          currentTurnSequence: 42,
+          phase: "interrupting",
+          queuedCount: 0,
+        },
+      ],
+    })
+    const interrupting = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
+    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+      "Interrupting"
+    )
+    // Both interrupt controls are disabled for the exact turn already being
+    // interrupted, and the status label itself is presentation only.
+    expect(screen.getByTestId("task-interrupt")).toBeDisabled()
+    expect(
+      screen.queryByTestId("task-interrupt-and-send")
+    ).not.toBeInTheDocument()
+    interrupting.unmount()
+
+    // Interrupted and Session lost are rendered as published, never derived.
+    for (const [execution, expected] of [
+      [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          queuedCount: 0,
+          lastOutcome: "interrupted" as const,
+        },
+        "Interrupted",
+      ],
+      [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          queuedCount: 0,
+          availability: "session_lost" as const,
+        },
+        "Session lost",
+      ],
+    ] as const) {
+      mockUseSfuChatRoom.mockReturnValue({
+        ...base,
+        agentActivities: [],
+        taskExecutions: [execution],
+      })
+      const view = render(
+        <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+      )
+      fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
+      expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+        expected
+      )
+      view.unmount()
+    }
+  })
+
+  it("sends one structured interrupt & send for a text draft only", () => {
+    const sendTaskInterruptAndSend = vi.fn(() => true)
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-exec-send",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-codex",
+        summary: "Long-running task",
+      },
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [
+        {
+          peerId: "local-peer-id",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-codex",
+          scopeId: "task:task-exec-send",
+          state: "using_tools",
+          turnSequence: 42,
+        },
+      ],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec-send",
+          currentTurnSequence: 42,
+          phase: "running",
+          queuedCount: 0,
+        },
+      ],
+      sendTaskInterruptAndSend,
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec-send"))
+
+    // No draft text: only the existing interrupt control is offered.
+    expect(
+      screen.queryByTestId("task-interrupt-and-send")
+    ).not.toBeInTheDocument()
+
+    const textarea = screen.getByLabelText("Message the room or @ an Agent")
+    fireEvent.change(textarea, { target: { value: "Try the other approach" } })
+    fireEvent.click(screen.getByTestId("task-interrupt-and-send"))
+
+    expect(sendTaskInterruptAndSend).toHaveBeenCalledTimes(1)
+    expect(sendTaskInterruptAndSend).toHaveBeenCalledWith(
+      "task-exec-send",
+      42,
+      "Try the other approach"
+    )
+  })
+
   it("keeps the interaction shell bounded while Task activity is visible", () => {
     const taskRequest: Message = {
       peerId: "human-local",

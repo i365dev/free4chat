@@ -31,11 +31,18 @@ type interruptAdapter struct {
 	cancelMu sync.Mutex
 	cancels  int
 	gateMu   sync.Mutex
-	gate     chan struct{}
+	// gates is a queue of per-turn barriers: a test can arm the successor's
+	// barrier before releasing the current turn, so both turns are
+	// deterministically observable.
+	gates   []chan struct{}
+	current chan struct{}
 	// Optional barriers for the deterministic TOCTOU test: CancelTurn reports
 	// entry and then blocks until released.
 	cancelEntered chan struct{}
 	cancelRelease chan struct{}
+	// holdTurn keeps a parked Harness turn parked even after CancelTurn
+	// returns, so a test can observe the post-dispatch phase deterministically.
+	holdTurn chan struct{}
 	// turnFinished signals that a parked Harness turn body returned.
 	turnFinished chan struct{}
 }
@@ -67,21 +74,29 @@ func (a *interruptAdapter) cancelCount() int {
 	return a.cancels
 }
 
-// blockNextTurn installs a fresh gate so the next Harness turn parks until
+// blockNextTurn arms a fresh barrier so the next Harness turn parks until
 // CancelTurn (or the test) releases it.
 func (a *interruptAdapter) blockNextTurn() {
 	gate := make(chan struct{})
 	a.gateMu.Lock()
-	a.gate = gate
+	a.gates = append(a.gates, gate)
 	a.gateMu.Unlock()
 }
 
 func (a *interruptAdapter) waitTurn() {
 	a.gateMu.Lock()
-	gate := a.gate
+	if len(a.gates) > 0 {
+		a.current = a.gates[0]
+		a.gates = a.gates[1:]
+	}
+	gate := a.current
+	hold := a.holdTurn
 	a.gateMu.Unlock()
 	if gate != nil {
 		<-gate
+	}
+	if hold != nil {
+		<-hold
 	}
 	if a.turnFinished != nil {
 		select {
@@ -91,10 +106,16 @@ func (a *interruptAdapter) waitTurn() {
 	}
 }
 
+// releaseTurn releases the CURRENT parked turn, or the oldest barrier that has
+// not been taken yet. Gates armed for a successor stay armed.
 func (a *interruptAdapter) releaseTurn() {
 	a.gateMu.Lock()
-	gate := a.gate
-	a.gate = nil
+	gate := a.current
+	a.current = nil
+	if gate == nil && len(a.gates) > 0 {
+		gate = a.gates[0]
+		a.gates = a.gates[1:]
+	}
 	a.gateMu.Unlock()
 	if gate == nil {
 		return
@@ -376,19 +397,29 @@ func TestTaskInterruptCancelsARealACPTurn(t *testing.T) {
 	waitForActiveScope(t, rt, "task:"+taskID)
 
 	// The Human clicks Interrupt: the Room's private control frame arrives
-	// while the real ACP turn is still parked on its prompt.
+	// while the real ACP turn is still parked on its prompt. Only a real
+	// session/cancel makes the scripted child return, so a settled turn is the
+	// proof that the exact dispatch reached the Harness.
 	stream.results <- types.WaitResult{TaskControl: interruptControl(taskID, 1)}
-	select {
-	case text := <-settled:
-		if text != "cancelled" {
-			t.Fatalf("cancelled ACP turn returned unexpected text: %q", text)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("task interrupt did not cancel the real ACP turn")
-	}
 	waitForResidentTurnToSettle(t, rt)
 	if got := activeScope(rt); got != "" {
 		t.Fatalf("cancelled ACP turn stayed active: %q", got)
+	}
+	// A cancelled turn's tail text is never published as an Agent reply.
+	select {
+	case text := <-settled:
+		t.Fatalf("a cancelled turn's output must be suppressed, got %q", text)
+	default:
+	}
+	// The intentionally interrupted trigger is consumed, not retried.
+	if scope, target, ok := rt.nextRunnableTurn(); ok {
+		t.Fatalf("an interrupted trigger stayed pending: %s/%d", scope, target)
+	}
+	rt.taskExecutionMu.Lock()
+	outcome := rt.taskExecutionFacts["task:"+taskID].lastOutcome
+	rt.taskExecutionMu.Unlock()
+	if outcome != types.TaskExecutionOutcomeInterrupted {
+		t.Fatalf("intentional settlement was not recorded: %q", outcome)
 	}
 	// The Task itself remains open: its retained ACP session is still there,
 	// so the interrupt neither deleted the Task nor recreated a conversation.

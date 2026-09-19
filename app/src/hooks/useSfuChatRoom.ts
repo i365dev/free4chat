@@ -47,6 +47,7 @@ import type {
   LiveTranscriptSegment,
   LiveTranscriptState,
   AgentActivityProjection,
+  TaskExecutionProjection,
   RoomAttachmentProjection,
   RoomAttachmentRead,
   RuntimeHostProjection,
@@ -98,6 +99,9 @@ const FILE_BUFFER_LOW_WATER_MARK = 64 * 1024
 // #409: the browser may only name an existing Task. The bound matches the
 // Room's canonical collaboration request id bound.
 const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
+// The Room bounds a canonical Task instruction at 4000 characters; the browser
+// applies the same bound before sending.
+const MAX_TASK_TEXT_LENGTH = 4000
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const AGENT_IMAGE_MAX_DIMENSION = 1600
 const AGENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"])
@@ -600,6 +604,11 @@ export function useSfuChatRoom(
     useState(false)
   const [agentActivities, setAgentActivities] = useState<
     AgentActivityProjection[]
+  >([])
+  // #409: the Room's transient Task execution projection. The browser only
+  // renders it; it never derives or optimistically invents execution state.
+  const [taskExecutions, setTaskExecutions] = useState<
+    TaskExecutionProjection[]
   >([])
   const [runtimeConnectionStatus, setRuntimeConnectionStatus] = useState<
     "idle" | "preparing" | "copied"
@@ -2713,6 +2722,7 @@ export function useSfuChatRoom(
       const nextActivities = state.agentActivities ?? []
       agentActivitiesRef.current = nextActivities
       setAgentActivities(nextActivities)
+      setTaskExecutions(state.taskExecutions ?? [])
       const localParticipantId = sessionRef.current?.participantId
       const currentParticipantIds = new Set(
         state.participants.map((participant) => participant.id)
@@ -3820,6 +3830,32 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  // #409: the ONE structured "interrupt the current turn and queue this
+  // instruction" command. It is deliberately not send-then-interrupt from the
+  // browser: the Room persists the instruction first and only then stops the
+  // exact turn, so an ambiguous partial order can never lose the instruction.
+  // Text only; attachment drafts keep using the ordinary queued Send path.
+  const sendTaskInterruptAndSend = useCallback(
+    (taskRequestId: string, turnSequence: number, text: string): boolean => {
+      const instruction = text.trim()
+      if (
+        !taskRequestId ||
+        taskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH ||
+        !instruction
+      )
+        return false
+      if (!isAgentActivityTurnSequence(turnSequence)) return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      return sendSocketMessage({
+        type: "task-interrupt-and-send",
+        taskRequestId,
+        turnSequence,
+        text: instruction.slice(0, MAX_TASK_TEXT_LENGTH),
+      })
+    },
+    [sendSocketMessage]
+  )
+
   // #409: transient Task-scoped interrupt. This is a control-plane seam only:
   // it sends no chat/action message, creates no Room history, and never
   // decides which Agent is targeted — the Room derives the Task owner and the
@@ -4304,6 +4340,7 @@ export function useSfuChatRoom(
     sendCollabResult,
     sendPermissionResponse,
     sendTaskInterrupt,
+    sendTaskInterruptAndSend,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
     localMicState,
@@ -4324,6 +4361,7 @@ export function useSfuChatRoom(
     agentVoice,
     agentVoiceMediaAvailable,
     agentActivities,
+    taskExecutions,
     setAgentVoice,
     createRuntimeProviderClaim,
     connectLocalRuntime,

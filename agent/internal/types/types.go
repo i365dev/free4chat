@@ -243,6 +243,120 @@ func (state AgentActivityState) Valid() bool {
 	}
 }
 
+// TaskExecutionPhase is the closed transient phase of the exact turn a Runtime
+// currently owns for one Task. It is control truth only: it does not replace
+// the retained Task lifecycle and it carries no Harness activity.
+type TaskExecutionPhase string
+
+const (
+	TaskExecutionPhaseRunning TaskExecutionPhase = "running"
+	// TaskExecutionPhaseInterrupting means a Human interrupt for this exact
+	// turn was authorized and dispatched; the turn has not settled yet.
+	TaskExecutionPhaseInterrupting TaskExecutionPhase = "interrupting"
+)
+
+func (phase TaskExecutionPhase) Valid() bool {
+	switch phase {
+	case TaskExecutionPhaseRunning, TaskExecutionPhaseInterrupting:
+		return true
+	default:
+		return false
+	}
+}
+
+// TaskExecutionOutcome is the closed transient outcome of the last settled
+// turn of one Task. It never claims a Harness-provided reason.
+type TaskExecutionOutcome string
+
+const (
+	// TaskExecutionOutcomeInterrupted means Free4Chat dispatched an interrupt
+	// for that exact turn and that same turn subsequently settled.
+	TaskExecutionOutcomeInterrupted TaskExecutionOutcome = "interrupted"
+)
+
+func (outcome TaskExecutionOutcome) Valid() bool {
+	return outcome == TaskExecutionOutcomeInterrupted
+}
+
+// TaskExecutionAvailability is the closed transient availability of one Task's
+// retained Harness session. It is never an ACP session id, process id, path, or
+// credential.
+type TaskExecutionAvailability string
+
+const (
+	// TaskExecutionAvailabilitySessionLost means the retained Harness session
+	// for this Task died unexpectedly and no replacement turn has started yet.
+	TaskExecutionAvailabilitySessionLost TaskExecutionAvailability = "session_lost"
+)
+
+func (availability TaskExecutionAvailability) Valid() bool {
+	return availability == TaskExecutionAvailabilitySessionLost
+}
+
+// TaskExecutionProjection is the Runtime-authoritative TRANSIENT execution
+// state of exactly one Task: which exact canonical turn this Runtime owns now,
+// how many accepted instructions wait behind it, the last intentional
+// settlement, and whether the retained Harness session is gone.
+//
+// It is deliberately NOT: the retained Task lifecycle
+// (Starting|Working|Completed|Failed), Harness activity
+// (working|thinking|using_tools|responding), a queue of its own, or persisted
+// history. "Running with N queued" is a valid single state, which is why this
+// is a projection and not an enum. It is presented to Humans and never carries
+// task text, prompts, paths, credentials, or ACP identifiers.
+type TaskExecutionProjection struct {
+	TaskRequestID string `json:"taskRequestId"`
+	// CurrentTurnSequence is the canonical Room sequence of the exact turn this
+	// Runtime owns for the Task; 0 means no turn is current.
+	CurrentTurnSequence int64 `json:"currentTurnSequence,omitempty"`
+	// Phase is present only while CurrentTurnSequence is.
+	Phase TaskExecutionPhase `json:"phase,omitempty"`
+	// QueuedCount counts accepted instructions waiting behind the current turn
+	// (or all of them when no turn is current).
+	QueuedCount int `json:"queuedCount"`
+	// LastOutcome is present only while it is still meaningful.
+	LastOutcome TaskExecutionOutcome `json:"lastOutcome,omitempty"`
+	// Availability is present only while the retained session is known lost.
+	Availability TaskExecutionAvailability `json:"availability,omitempty"`
+}
+
+// Valid enforces the projection's closed shape fail-closed: a phase may only
+// exist with a positive current turn, and every present enum must be known.
+func (p TaskExecutionProjection) Valid() bool {
+	if p.TaskRequestID == "" || len(p.TaskRequestID) > MaxResidentTaskRequestID {
+		return false
+	}
+	if p.QueuedCount < 0 || p.QueuedCount > MaxTaskExecutionQueuedCount {
+		return false
+	}
+	if p.CurrentTurnSequence < 0 || p.CurrentTurnSequence > MaxResidentTurnSequence {
+		return false
+	}
+	if p.CurrentTurnSequence == 0 {
+		if p.Phase != "" {
+			return false
+		}
+	} else if !p.Phase.Valid() {
+		return false
+	}
+	if p.LastOutcome != "" && !p.LastOutcome.Valid() {
+		return false
+	}
+	if p.Availability != "" && !p.Availability.Valid() {
+		return false
+	}
+	return true
+}
+
+// MaxResidentTaskRequestID bounds a Task correlation id on private control
+// transports.
+const MaxResidentTaskRequestID = 64
+
+// MaxTaskExecutionQueuedCount bounds a reported queue depth. The Runtime's own
+// serial queue is bounded well below this; the bound exists so a malformed or
+// hostile publisher can never project an absurd number.
+const MaxTaskExecutionQueuedCount = 64
+
 // RoomPermissionToolCall is the bounded Human-facing projection of one ACP
 // tool call. Raw ACP input/content and native protocol identifiers stay local
 // to the Harness adapter.
@@ -915,6 +1029,14 @@ type PermissionRequestClient interface {
 // never leaves Room activity state.
 type ResidentActivityClient interface {
 	UpdateAgentActivity(participantHandle, scope string, activity AgentActivityState, turnSequence int64) error
+}
+
+// ResidentTaskExecutionClient is the one narrow Runtime-to-Room transport for
+// the transient Task execution projection. Publication is best-effort
+// presentation: a failure here must never fail a Harness turn, the pending
+// queue, a Room join, or the Agent lifecycle, so callers log and continue.
+type ResidentTaskExecutionClient interface {
+	UpdateTaskExecution(participantHandle string, projection TaskExecutionProjection) error
 }
 
 // AttachmentRead is read_attachment's normalized result: either an image

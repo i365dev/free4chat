@@ -1053,6 +1053,17 @@ func (a *fakeAdapter) OnFailure(handler types.AdapterFailureHandler) {
 	a.mu.Unlock()
 }
 
+// fireFailure drives the registered unexpected-failure boundary exactly like an
+// adapter process death would.
+func (a *fakeAdapter) fireFailure(err error) {
+	a.mu.Lock()
+	handler := a.onFail
+	a.mu.Unlock()
+	if handler != nil {
+		handler(err)
+	}
+}
+
 func (a *fakeAdapter) CancelTurn() error { return nil }
 
 func (a *fakeAdapter) Close() error {

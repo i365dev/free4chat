@@ -973,6 +973,51 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     unmount()
   })
 
+  it("sends exactly one structured interrupt & send and refuses incomplete input", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("interrupt-send-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    expect(
+      result.current.sendTaskInterruptAndSend(
+        "task-0001",
+        42,
+        "  Try the other approach  "
+      )
+    ).toBe(true)
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
+      type: "task-interrupt-and-send",
+      taskRequestId: "task-0001",
+      turnSequence: 42,
+      text: "Try the other approach",
+    })
+    // One structured command only: the browser never sequences chat + interrupt
+    // itself.
+    const sentTypes = socket.sent.map((message) => JSON.parse(message).type)
+    expect(
+      sentTypes.filter((type) => type === "task-interrupt-and-send")
+    ).toHaveLength(1)
+    expect(sentTypes).not.toContain("chat")
+    expect(sentTypes).not.toContain("task-interrupt")
+
+    const sentBefore = socket.sent.length
+    expect(
+      result.current.sendTaskInterruptAndSend("task-0001", 42, "   ")
+    ).toBe(false)
+    expect(result.current.sendTaskInterruptAndSend("", 42, "text")).toBe(false)
+    expect(
+      result.current.sendTaskInterruptAndSend("task-0001", 0, "text")
+    ).toBe(false)
+    expect(
+      result.current.sendTaskInterruptAndSend("task-0001", 1.5, "text")
+    ).toBe(false)
+    expect(socket.sent.length).toBe(sentBefore)
+    unmount()
+  })
+
   it("reuses one pending local Runtime connection claim across repeated clicks", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, "clipboard", {
