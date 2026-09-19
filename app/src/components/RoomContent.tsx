@@ -337,6 +337,11 @@ export default function RoomContent({
     string | undefined
   >(undefined)
   const [roomAppsLauncherOpen, setRoomAppsLauncherOpen] = useState(false)
+  // Phone composition: below `md` the participant/Stage panel is a
+  // deliberately secondary surface, so exactly ONE boolean decides whether the
+  // `⋯` sheet reveals it. At `md` and above this state is irrelevant and the
+  // ordinary split layout is untouched.
+  const [mobileRoomSheetOpen, setMobileRoomSheetOpen] = useState(false)
   // Core's Stage/Chat split breakpoint, also used to size the inline recent set
   // and to decide between the desktop popover and the phone-fitted launcher.
   const [isMd, setIsMd] = useState(false)
@@ -680,6 +685,55 @@ export default function RoomContent({
   // The exact turn this Human may interrupt right now, or undefined when the
   // authoritative projection reports no current turn.
   const activeTaskTurn = activeTaskExecution?.currentTurnSequence
+
+  // Phone signal line: ONE bounded, truncated sentence that tells a narrow
+  // screen how many participants are here and what the active Agent is doing.
+  // It reuses exactly the projections the desktop activity strip already
+  // renders — the active Task's coarse AgentActivity first (the same verb the
+  // `task-agent-activity` strip shows), the authoritative Task execution label
+  // (#421 Fix C) when no AgentActivity survives, and the Room-scope
+  // AgentActivity when no Task is selected. Presentation only: it never derives
+  // queueing or "running" state of its own, and it is deliberately bounded to
+  // labels (never the execution detail) so it stays one short line. Like every
+  // projection it reads, it is a plain per-render derivation.
+  const mobileRoomSignal = (() => {
+    // `participants` is the hook's connected-participant projection
+    // (buildParticipants is the single source of truth), so its length is the
+    // connected count the participant grid already shows.
+    const connectedCount = participants.length
+    const parts = [
+      `${connectedCount} participant${connectedCount === 1 ? "" : "s"}`,
+    ]
+    const taskActivity = activeTaskActivities[0]
+    const roomActivity = activeTask
+      ? undefined
+      : (agentActivities ?? []).find(
+          (activity) =>
+            activity.scopeId === "room" &&
+            participants.some(
+              (participant) =>
+                participant.peerId === activity.agentParticipantId &&
+                participant.kind === "agent"
+            )
+        )
+    const activity = activeTask ? taskActivity : roomActivity
+    const state = activity
+      ? `${agentActivityLabel(activity.state)}…`
+      : activeTask
+      ? activeTaskExecutionLabel?.label ?? ""
+      : ""
+    if (state === "") return parts.join(" · ")
+    const agentParticipantId =
+      activity?.agentParticipantId ??
+      (activeTask ? activeTask.targetParticipantId : undefined)
+    // The desktop strip's own bounded fallback, so a Task whose Agent already
+    // left still reads as an Agent rather than leaking an internal id.
+    const agentName = participants.find(
+      (participant) => participant.peerId === agentParticipantId
+    )?.name
+    parts.push(agentName ?? "Agent", state)
+    return parts.join(" · ")
+  })()
 
   useEffect(() => {
     const pending = pendingLocalTaskSummaries.current
@@ -1367,6 +1421,36 @@ export default function RoomContent({
     return () => window.removeEventListener("resize", check)
   }, [])
 
+  // Phone sheet geometry. The participant/Stage panel is ONE mount — one
+  // participant list, one Stage, one launcher, one resident App host — so the
+  // sheet never duplicates it: the same element is either the ordinary desktop
+  // split pane or the phone overlay, and the shell around it is `contents` (a
+  // no-op in the desktop box tree) whenever it is not an overlay.
+  //
+  // A fullscreen Room App is a Room layout state, not a phone sheet: it already
+  // hides and inerts every surrounding surface, so it keeps the whole content
+  // region instead of being trapped behind a closed sheet.
+  const mobileSheetVisible =
+    mobileRoomSheetOpen && !isMd && !isRoomAppFullscreen
+  const stagePanelVisible = mobileSheetVisible || isRoomAppFullscreen
+
+  // A viewport that crosses to `md` while the phone sheet is open must land on
+  // the ordinary desktop split; phone-only overlay state never leaks into it.
+  useEffect(() => {
+    if (isMd) setMobileRoomSheetOpen(false)
+  }, [isMd])
+
+  // Escape closes the phone sheet, exactly like its explicit close control.
+  useEffect(() => {
+    if (!mobileSheetVisible) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return
+      setMobileRoomSheetOpen(false)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [mobileSheetVisible])
+
   useEffect(() => {
     // A Room App is a large visual surface like screen share, so it gets the
     // wide Stage rather than a conversation-sized pane.
@@ -1731,9 +1815,35 @@ export default function RoomContent({
           data-testid="room-header-identity"
           className="flex min-w-0 items-center gap-2"
         >
-          <h1 className="min-w-0 flex-1 truncate text-lg font-medium lg:flex-none">
-            #{roomName}
-          </h1>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <h1 className="min-w-0 truncate text-lg font-medium lg:flex-none">
+              #{roomName}
+            </h1>
+            {/* Phone signal line. Below `md` this is the whole "who is here and
+                what is the Agent doing" projection, so the interaction pane can
+                own the viewport instead of a row of participant cards. It is
+                plain bounded text and never a control. */}
+            <p
+              data-testid="room-mobile-signal"
+              className="truncate text-xs text-gray-400 md:hidden"
+            >
+              {mobileRoomSignal}
+            </p>
+          </div>
+          {/* Phone overflow: the SINGLE entry point for the secondary Room
+              surfaces. It reveals the one participant/Stage panel that already
+              exists — no control is duplicated into a second header or sheet. */}
+          <button
+            type="button"
+            data-testid="room-mobile-overflow"
+            aria-expanded={mobileSheetVisible}
+            aria-label="More room controls"
+            title="More room controls"
+            onClick={() => setMobileRoomSheetOpen((open) => !open)}
+            className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-sm leading-none text-gray-300 hover:bg-gray-700 md:hidden"
+          >
+            <span aria-hidden="true">⋯</span>
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -1890,300 +2000,389 @@ export default function RoomContent({
 
       <div
         ref={containerRef}
-        className="room-content flex flex-1 flex-col overflow-hidden md:flex-row"
+        className="room-content flex flex-1 flex-col overflow-hidden max-md:relative md:flex-row"
       >
-        {/* Room App focus mode is an ordinary Room layout state, not a
-            viewport-fixed overlay: every surrounding surface below is already
-            hidden and inert, so the Stage simply takes the whole Room content
-            region and the resident host fills it. A `position: fixed`
-            descendant could not escape this split, `overflow-hidden` Stage on
-            iPad Safari — it was clipped at the old Stage/chat boundary, taking
-            the host's right-side chrome ("Exit fullscreen") with it. */}
+        {/* Phone composition. Below `md` the participant/Stage panel is hidden
+            by default so the Room/Task interaction owns the viewport, and the
+            `⋯` control reveals this ONE panel as a full-height sheet.
+
+            The sheet is geometry, not a second copy: swapping `contents` for
+            the overlay moves the same mounted panel, so participant cards, the
+            Stage switcher, the App launcher, `WorkspaceSnapshots` and every
+            resident App host keep exactly one instance and their
+            iframe/MessagePort state. It covers this content region, which
+            begins directly below the header, rather than a hard-coded header
+            height — so the header keeps the only copy of Copy link / Invite
+            Agent / Live Transcript / mic / Leave reachable while it is open.
+            `max-md:relative` above is the containing block for it and is
+            deliberately absent at `md`+, where the desktop box tree is exactly
+            the one that shipped. */}
         <div
-          data-testid="room-stage"
-          className="room-panel room-participants-panel flex flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r"
-          style={
-            isRoomAppFullscreen
-              ? { width: "100%" }
-              : isMd
-              ? { width: `${splitRatio}%` }
-              : undefined
+          data-testid={mobileSheetVisible ? "room-mobile-sheet" : undefined}
+          className={
+            mobileSheetVisible
+              ? "absolute inset-0 z-30 flex flex-col overflow-y-auto overscroll-contain bg-gray-900"
+              : "contents"
           }
         >
-          {/* #111: Agent workspace snapshots — observation only, available in
-              every room type; Human screen share is untouched below. */}
+          {mobileSheetVisible && (
+            <div className="flex flex-none items-center justify-between gap-2 border-b border-gray-800 bg-gray-950/80 px-3 py-2">
+              <span className="min-w-0 truncate text-xs uppercase tracking-wide text-gray-400">
+                Participants &amp; Stage
+              </span>
+              <button
+                type="button"
+                data-testid="room-mobile-sheet-close"
+                onClick={() => setMobileRoomSheetOpen(false)}
+                aria-label="Close participants and Stage"
+                className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
+              >
+                Close
+              </button>
+            </div>
+          )}
+          {/* Room App focus mode is an ordinary Room layout state, not a
+              viewport-fixed overlay: every surrounding surface below is already
+              hidden and inert, so the Stage simply takes the whole Room content
+              region and the resident host fills it. A `position: fixed`
+              descendant could not escape this split, `overflow-hidden` Stage on
+              iPad Safari — it was clipped at the old Stage/chat boundary, taking
+              the host's right-side chrome ("Exit fullscreen") with it. */}
           <div
-            className={isRoomAppFullscreen ? "hidden" : undefined}
-            hidden={isRoomAppFullscreen}
-            aria-hidden={isRoomAppFullscreen}
-            inert={isRoomAppFullscreen}
+            data-testid="room-stage"
+            className={`room-panel room-participants-panel ${
+              stagePanelVisible ? "flex" : "hidden md:flex"
+            } flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r`}
+            style={
+              isRoomAppFullscreen
+                ? { width: "100%" }
+                : isMd
+                ? { width: `${splitRatio}%` }
+                : undefined
+            }
           >
-            <WorkspaceSnapshots
-              participants={participants}
-              getLocalRoomAuth={getLocalRoomAuth}
-            />
-          </div>
-          <div className="relative flex flex-1 flex-col overflow-hidden">
-            {/* #98: the Stage entry is progressive disclosure, not the whole
+            {/* #111: Agent workspace snapshots — observation only, available in
+              every room type; Human screen share is untouched below. */}
+            <div
+              className={isRoomAppFullscreen ? "hidden" : undefined}
+              hidden={isRoomAppFullscreen}
+              aria-hidden={isRoomAppFullscreen}
+              inert={isRoomAppFullscreen}
+            >
+              <WorkspaceSnapshots
+                participants={participants}
+                getLocalRoomAuth={getLocalRoomAuth}
+              />
+            </div>
+            <div className="relative flex flex-1 flex-col overflow-hidden">
+              {/* #98: the Stage entry is progressive disclosure, not the whole
                 catalog. Room stays permanently reachable, at most a few
                 recent/current Apps stay inline, and every promoted runtime
                 remains one action away in the launcher. Stage selection stays
                 independent from the conversation scope in the right pane. */}
-            {(roomApps.length > 0 ||
-              activeScreenShares.length > 0 ||
-              Boolean(activeTaskLiveView)) && (
-              <div
-                role="tablist"
-                aria-label="Stage"
-                data-testid="stage-switcher"
-                className={`scrollbar-thin z-10 flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/80 p-2 ${
-                  isRoomAppFullscreen ? "hidden" : "flex"
-                }`}
-                hidden={isRoomAppFullscreen}
-                aria-hidden={isRoomAppFullscreen}
-                inert={isRoomAppFullscreen}
-              >
-                {inlineRoomApps.map((app) => {
-                  const selected = activeRoomAppId === app.id
-                  return (
-                    <button
-                      key={app.id}
-                      type="button"
-                      aria-pressed={selected}
-                      data-testid={`stage-app-${app.id}`}
-                      data-current-app={selected ? "true" : undefined}
-                      title={app.label}
-                      onClick={() => {
-                        if (selected) {
-                          // Hide, do not destroy: the resident host keeps its
-                          // iframe, MessagePort and App-local state.
-                          setExpandedRoomAppId(null)
-                          setActiveRoomAppId(null)
-                          return
-                        }
-                        selectRoomApp(app.id)
-                      }}
-                      className={`flex max-w-[9rem] shrink-0 items-center gap-1 rounded px-2 py-1 text-xs ${
-                        selected
-                          ? "bg-blue-600 text-white"
-                          : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
-                      }`}
-                    >
-                      {/* A long Lab label must never break the Room layout: the
-                          chip truncates and the full label stays in `title`. */}
-                      <span
-                        data-testid={`stage-app-label-${app.id}`}
-                        className="truncate"
+              {(roomApps.length > 0 ||
+                activeScreenShares.length > 0 ||
+                Boolean(activeTaskLiveView)) && (
+                <div
+                  role="tablist"
+                  aria-label="Stage"
+                  data-testid="stage-switcher"
+                  className={`scrollbar-thin z-10 flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/80 p-2 ${
+                    isRoomAppFullscreen ? "hidden" : "flex"
+                  }`}
+                  hidden={isRoomAppFullscreen}
+                  aria-hidden={isRoomAppFullscreen}
+                  inert={isRoomAppFullscreen}
+                >
+                  {inlineRoomApps.map((app) => {
+                    const selected = activeRoomAppId === app.id
+                    return (
+                      <button
+                        key={app.id}
+                        type="button"
+                        aria-pressed={selected}
+                        data-testid={`stage-app-${app.id}`}
+                        data-current-app={selected ? "true" : undefined}
+                        title={app.label}
+                        onClick={() => {
+                          if (selected) {
+                            // Hide, do not destroy: the resident host keeps its
+                            // iframe, MessagePort and App-local state.
+                            setExpandedRoomAppId(null)
+                            setActiveRoomAppId(null)
+                            return
+                          }
+                          selectRoomApp(app.id)
+                        }}
+                        className={`flex max-w-[9rem] shrink-0 items-center gap-1 rounded px-2 py-1 text-xs ${
+                          selected
+                            ? "bg-blue-600 text-white"
+                            : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                        }`}
                       >
-                        {app.label}
-                      </span>
-                      {/* The current App stays explicit even when its chip is
-                          scrolled out of view or truncated. */}
-                      {selected && (
+                        {/* A long Lab label must never break the Room layout: the
+                          chip truncates and the full label stays in `title`. */}
                         <span
-                          aria-hidden="true"
-                          className="flex-none text-[10px]"
+                          data-testid={`stage-app-label-${app.id}`}
+                          className="truncate"
                         >
-                          ●
+                          {app.label}
                         </span>
-                      )}
-                    </button>
-                  )
-                })}
-                {activeScreenShares.length > 0 && (
-                  <button
-                    type="button"
-                    data-testid="stage-view-screen"
-                    onClick={() => {
-                      setRoomAppsLauncherOpen(false)
-                      setExpandedRoomAppId(null)
-                      setStageView("screen")
-                      setActiveRoomAppId(null)
-                    }}
-                    aria-pressed={stageView === "screen" && !visibleRoomApp}
-                    className={`shrink-0 rounded px-2 py-1 text-xs ${
-                      stageView === "screen" && !visibleRoomApp
-                        ? "bg-blue-600 text-white"
-                        : "text-gray-400 hover:bg-gray-800"
-                    }`}
-                  >
-                    Screen
-                  </button>
-                )}
-                {activeTaskLiveView && (
-                  <button
-                    type="button"
-                    data-testid="stage-view-live-view"
-                    onClick={() => {
-                      setRoomAppsLauncherOpen(false)
-                      setExpandedRoomAppId(null)
-                      setStageView("live-view")
-                      setActiveRoomAppId(null)
-                    }}
-                    aria-pressed={stageView === "live-view" && !visibleRoomApp}
-                    className={`shrink-0 rounded px-2 py-1 text-xs ${
-                      stageView === "live-view" && !visibleRoomApp
-                        ? "bg-blue-600 text-white"
-                        : "text-gray-400 hover:bg-gray-800"
-                    }`}
-                  >
-                    Live View
-                  </button>
-                )}
-                {roomApps.length > 0 && (
-                  <div
-                    ref={attachRoomAppsLauncherAnchor}
-                    className="relative flex shrink-0 items-center"
-                  >
+                        {/* The current App stays explicit even when its chip is
+                          scrolled out of view or truncated. */}
+                        {selected && (
+                          <span
+                            aria-hidden="true"
+                            className="flex-none text-[10px]"
+                          >
+                            ●
+                          </span>
+                        )}
+                      </button>
+                    )
+                  })}
+                  {activeScreenShares.length > 0 && (
                     <button
                       type="button"
-                      data-testid="stage-apps-launcher"
-                      aria-haspopup="dialog"
-                      aria-expanded={roomAppsLauncherOpen}
-                      title="Search all Room Apps"
-                      onClick={() => setRoomAppsLauncherOpen((open) => !open)}
-                      className={`rounded px-2 py-1 text-xs ${
-                        roomAppsLauncherOpen
-                          ? "bg-gray-800 text-gray-200"
-                          : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                      data-testid="stage-view-screen"
+                      onClick={() => {
+                        setRoomAppsLauncherOpen(false)
+                        setExpandedRoomAppId(null)
+                        setStageView("screen")
+                        setActiveRoomAppId(null)
+                      }}
+                      aria-pressed={stageView === "screen" && !visibleRoomApp}
+                      className={`shrink-0 rounded px-2 py-1 text-xs ${
+                        stageView === "screen" && !visibleRoomApp
+                          ? "bg-blue-600 text-white"
+                          : "text-gray-400 hover:bg-gray-800"
                       }`}
                     >
-                      Apps…
+                      Screen
                     </button>
-                    {roomAppsLauncherOpen && (
-                      <RoomAppLauncher
-                        apps={roomApps}
-                        recentAppIds={prunedRecentRoomAppIds}
-                        activeAppId={activeRoomAppId}
-                        onSelect={selectRoomApp}
-                        onClose={() => setRoomAppsLauncherOpen(false)}
-                        isDesktop={isMd}
-                        anchorRef={roomAppsLauncherAnchorRef}
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            {/* Resident App hosts: every launched App stays mounted for this
+                  )}
+                  {activeTaskLiveView && (
+                    <button
+                      type="button"
+                      data-testid="stage-view-live-view"
+                      onClick={() => {
+                        setRoomAppsLauncherOpen(false)
+                        setExpandedRoomAppId(null)
+                        setStageView("live-view")
+                        setActiveRoomAppId(null)
+                      }}
+                      aria-pressed={
+                        stageView === "live-view" && !visibleRoomApp
+                      }
+                      className={`shrink-0 rounded px-2 py-1 text-xs ${
+                        stageView === "live-view" && !visibleRoomApp
+                          ? "bg-blue-600 text-white"
+                          : "text-gray-400 hover:bg-gray-800"
+                      }`}
+                    >
+                      Live View
+                    </button>
+                  )}
+                  {roomApps.length > 0 && (
+                    <div
+                      ref={attachRoomAppsLauncherAnchor}
+                      className="relative flex shrink-0 items-center"
+                    >
+                      <button
+                        type="button"
+                        data-testid="stage-apps-launcher"
+                        aria-haspopup="dialog"
+                        aria-expanded={roomAppsLauncherOpen}
+                        title="Search all Room Apps"
+                        onClick={() => setRoomAppsLauncherOpen((open) => !open)}
+                        className={`rounded px-2 py-1 text-xs ${
+                          roomAppsLauncherOpen
+                            ? "bg-gray-800 text-gray-200"
+                            : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+                        }`}
+                      >
+                        Apps…
+                      </button>
+                      {roomAppsLauncherOpen && (
+                        <RoomAppLauncher
+                          apps={roomApps}
+                          recentAppIds={prunedRecentRoomAppIds}
+                          activeAppId={activeRoomAppId}
+                          onSelect={selectRoomApp}
+                          onClose={() => setRoomAppsLauncherOpen(false)}
+                          isDesktop={isMd}
+                          anchorRef={roomAppsLauncherAnchorRef}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* Resident App hosts: every launched App stays mounted for this
                 browser Room session. Stage navigation only toggles visibility,
                 so hiding one never destroys its iframe or MessagePort. Hidden
                 slots are display:none + inert + aria-hidden, which keeps them
                 out of hit-testing, focus and the accessibility tree while they
                 keep receiving the bounded App messages. */}
-            {roomAppSelf &&
-              residentRoomApps.map((app) => {
-                const productionAppId = resolveProductionRoomAppId(app.id)
-                const isFullscreen =
-                  expandedRoomAppId === app.id && activeRoomAppId === app.id
-                const visible = visibleRoomApp?.id === app.id || isFullscreen
-                const reconnectBlocked =
-                  isFullscreen && connectionStatus === "reconnecting"
-                return (
-                  <div
-                    key={app.id}
-                    data-testid={`room-app-slot-${app.id}`}
-                    aria-hidden={!visible || reconnectBlocked}
-                    inert={!visible || reconnectBlocked}
-                    className={
-                      visible ? "flex min-h-0 flex-1 flex-col" : "hidden"
-                    }
-                  >
-                    <RoomAppHost
-                      app={app}
-                      appInstanceId={roomAppInstanceId(roomName, app.id)}
-                      self={roomAppSelf}
-                      participants={roomAppParticipants}
-                      subscribe={subscribeRoomAppMessages}
-                      send={sendRoomAppMessage}
-                      onReady={handleRoomAppReady}
-                      onEngaged={handleRoomAppEngaged}
-                      subscribeUnicast={subscribeRoomAppUnicast}
-                      subscribeUnicastResults={subscribeRoomAppUnicastResults}
-                      sendUnicast={sendRoomAppUnicast}
-                      isFullscreen={isFullscreen}
-                      onToggleFullscreen={() => toggleRoomAppFullscreen(app.id)}
-                      onInvite={
-                        productionAppId
-                          ? () => copyInviteLink(productionAppId)
-                          : undefined
+              {roomAppSelf &&
+                residentRoomApps.map((app) => {
+                  const productionAppId = resolveProductionRoomAppId(app.id)
+                  const isFullscreen =
+                    expandedRoomAppId === app.id && activeRoomAppId === app.id
+                  const visible = visibleRoomApp?.id === app.id || isFullscreen
+                  const reconnectBlocked =
+                    isFullscreen && connectionStatus === "reconnecting"
+                  return (
+                    <div
+                      key={app.id}
+                      data-testid={`room-app-slot-${app.id}`}
+                      aria-hidden={!visible || reconnectBlocked}
+                      inert={!visible || reconnectBlocked}
+                      className={
+                        visible ? "flex min-h-0 flex-1 flex-col" : "hidden"
                       }
-                      onClose={() => hideRoomApp(app.id)}
-                      onUnavailable={hideRoomApp}
-                    />
-                  </div>
-                )
-              })}
-            {/* #402 fullscreen safety surface: focus mode intentionally hides
+                    >
+                      <RoomAppHost
+                        app={app}
+                        appInstanceId={roomAppInstanceId(roomName, app.id)}
+                        self={roomAppSelf}
+                        participants={roomAppParticipants}
+                        subscribe={subscribeRoomAppMessages}
+                        send={sendRoomAppMessage}
+                        onReady={handleRoomAppReady}
+                        onEngaged={handleRoomAppEngaged}
+                        subscribeUnicast={subscribeRoomAppUnicast}
+                        subscribeUnicastResults={subscribeRoomAppUnicastResults}
+                        sendUnicast={sendRoomAppUnicast}
+                        isFullscreen={isFullscreen}
+                        onToggleFullscreen={() =>
+                          toggleRoomAppFullscreen(app.id)
+                        }
+                        onInvite={
+                          productionAppId
+                            ? () => copyInviteLink(productionAppId)
+                            : undefined
+                        }
+                        onClose={() => hideRoomApp(app.id)}
+                        onUnavailable={hideRoomApp}
+                      />
+                    </div>
+                  )
+                })}
+              {/* #402 fullscreen safety surface: focus mode intentionally hides
                 the ordinary Room header, so a minimal Room-owned mic control
                 stays reachable without closing the App or reloading. It is
                 chrome outside the iframe, owned by RoomContent, and reuses the
                 same state as the header control. */}
-            {isRoomAppFullscreen && roomAppSelf && (
-              <div
-                className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-start p-2"
-                style={{
-                  paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom))",
-                }}
-              >
-                <RoomMicControl
-                  micState={localMicState}
-                  enabled={connectionStatus === "connected"}
-                  onToggle={toggleMicrophone}
-                  testId="room-mic-control-fullscreen"
-                  fullscreen
-                />
-              </div>
-            )}
-            {!visibleRoomApp &&
-              !isRoomAppFullscreen &&
-              (activeScreenShares.length > 0 ? (
-                <>
-                  <div
-                    className={
-                      showTaskLiveView ? "hidden" : "flex min-h-0 flex-1"
-                    }
-                  >
-                    {activeShare && (
-                      <ScreenShareViewer
-                        key={activeShare.peerId}
-                        stream={activeShare.screenShareStream!}
-                        name={activeShare.name}
+              {isRoomAppFullscreen && roomAppSelf && (
+                <div
+                  className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-start p-2"
+                  style={{
+                    paddingBottom: "calc(0.5rem + env(safe-area-inset-bottom))",
+                  }}
+                >
+                  <RoomMicControl
+                    micState={localMicState}
+                    enabled={connectionStatus === "connected"}
+                    onToggle={toggleMicrophone}
+                    testId="room-mic-control-fullscreen"
+                    fullscreen
+                  />
+                </div>
+              )}
+              {!visibleRoomApp &&
+                !isRoomAppFullscreen &&
+                (activeScreenShares.length > 0 ? (
+                  <>
+                    <div
+                      className={
+                        showTaskLiveView ? "hidden" : "flex min-h-0 flex-1"
+                      }
+                    >
+                      {activeShare && (
+                        <ScreenShareViewer
+                          key={activeShare.peerId}
+                          stream={activeShare.screenShareStream!}
+                          name={activeShare.name}
+                        />
+                      )}
+                    </div>
+                    {showTaskLiveView && activeTaskLiveView && (
+                      <TaskLiveView
+                        key={activeTask!.requestId}
+                        snapshot={activeTaskLiveView}
+                        stateStore={taskLiveViewState}
+                        onVisible={handleLiveViewVisible}
+                        onInteract={handleLiveViewInteracted}
                       />
                     )}
-                  </div>
-                  {showTaskLiveView && activeTaskLiveView && (
-                    <TaskLiveView
-                      key={activeTask!.requestId}
-                      snapshot={activeTaskLiveView}
-                      stateStore={taskLiveViewState}
-                      onVisible={handleLiveViewVisible}
-                      onInteract={handleLiveViewInteracted}
-                    />
-                  )}
-                  <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                    <div className="room-participant-strip scrollbar-thin flex flex-none flex-row gap-2 overflow-x-auto border-t border-gray-800 p-2">
+                      {participants.map((p) => (
+                        <div
+                          key={p.peerId}
+                          className={`flex-shrink-0 rounded-xl transition-all ${
+                            p.screenShareEnabled &&
+                            p.peerId !== LOCAL_PEER_ID &&
+                            p.peerId === activeSharePeerId
+                              ? "ring-2 ring-blue-400"
+                              : ""
+                          } ${
+                            p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
+                              ? "cursor-pointer"
+                              : ""
+                          }`}
+                          onClick={() => {
+                            if (
+                              p.screenShareEnabled &&
+                              p.peerId !== LOCAL_PEER_ID
+                            ) {
+                              setActiveSharePeerId(p.peerId)
+                            }
+                          }}
+                        >
+                          <UserCard
+                            peerId={p.peerId}
+                            name={p.name}
+                            kind={p.kind}
+                            room={p.room}
+                            muteState={p.muteState}
+                            audioStream={p.audioStream}
+                            screenShareStream={p.screenShareStream}
+                            screenShareEnabled={p.screenShareEnabled}
+                            onMuteSelf={toggleMicrophone}
+                            micState={localMicState}
+                            onToggleScreenShare={wrappedToggleScreenShare}
+                            screenshareAllowed={screenshareAllowed}
+                            voiceAvailable={
+                              p.voiceAvailable && agentVoiceMediaAvailable
+                            }
+                            voiceEnabled={p.voiceEnabled}
+                            onToggleAgentVoice={toggleAgentVoice}
+                            onStartTask={handleStartTask}
+                            className="w-[84px]"
+                            compact
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : showTaskLiveView && activeTaskLiveView ? (
+                  <TaskLiveView
+                    key={activeTask!.requestId}
+                    snapshot={activeTaskLiveView}
+                    stateStore={taskLiveViewState}
+                    onVisible={handleLiveViewVisible}
+                    onInteract={handleLiveViewInteracted}
+                  />
+                ) : (
+                  <div
+                    data-testid="room-stage-participants"
+                    className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3"
+                  >
                     {participants.map((p) => (
                       <div
                         key={p.peerId}
-                        className={`flex-shrink-0 rounded-xl transition-all ${
-                          p.screenShareEnabled &&
-                          p.peerId !== LOCAL_PEER_ID &&
-                          p.peerId === activeSharePeerId
-                            ? "ring-2 ring-blue-400"
-                            : ""
-                        } ${
-                          p.screenShareEnabled && p.peerId !== LOCAL_PEER_ID
-                            ? "cursor-pointer"
-                            : ""
-                        }`}
-                        onClick={() => {
-                          if (
-                            p.screenShareEnabled &&
-                            p.peerId !== LOCAL_PEER_ID
-                          ) {
-                            setActiveSharePeerId(p.peerId)
-                          }
-                        }}
+                        className="flex flex-col items-center gap-1"
                       >
                         <UserCard
                           peerId={p.peerId}
@@ -2197,74 +2396,31 @@ export default function RoomContent({
                           onMuteSelf={toggleMicrophone}
                           micState={localMicState}
                           onToggleScreenShare={wrappedToggleScreenShare}
-                          screenshareAllowed={screenshareAllowed}
                           voiceAvailable={
                             p.voiceAvailable && agentVoiceMediaAvailable
                           }
                           voiceEnabled={p.voiceEnabled}
                           onToggleAgentVoice={toggleAgentVoice}
                           onStartTask={handleStartTask}
-                          className="w-[84px]"
-                          compact
+                          screenshareAllowed={screenshareAllowed}
+                          className="w-40 flex-none"
                         />
                       </div>
                     ))}
                   </div>
-                </>
-              ) : showTaskLiveView && activeTaskLiveView ? (
-                <TaskLiveView
-                  key={activeTask!.requestId}
-                  snapshot={activeTaskLiveView}
-                  stateStore={taskLiveViewState}
-                  onVisible={handleLiveViewVisible}
-                  onInteract={handleLiveViewInteracted}
-                />
-              ) : (
-                <div
-                  data-testid="room-stage-participants"
-                  className="room-participants-grid scrollbar-thin flex h-full flex-wrap content-start items-start justify-center gap-2 overflow-y-auto p-3"
-                >
-                  {participants.map((p) => (
-                    <div
-                      key={p.peerId}
-                      className="flex flex-col items-center gap-1"
-                    >
-                      <UserCard
-                        peerId={p.peerId}
-                        name={p.name}
-                        kind={p.kind}
-                        room={p.room}
-                        muteState={p.muteState}
-                        audioStream={p.audioStream}
-                        screenShareStream={p.screenShareStream}
-                        screenShareEnabled={p.screenShareEnabled}
-                        onMuteSelf={toggleMicrophone}
-                        micState={localMicState}
-                        onToggleScreenShare={wrappedToggleScreenShare}
-                        voiceAvailable={
-                          p.voiceAvailable && agentVoiceMediaAvailable
-                        }
-                        voiceEnabled={p.voiceEnabled}
-                        onToggleAgentVoice={toggleAgentVoice}
-                        onStartTask={handleStartTask}
-                        screenshareAllowed={screenshareAllowed}
-                        className="w-40 flex-none"
-                      />
-                    </div>
-                  ))}
-                </div>
-              ))}
+                ))}
 
-            {!isRoomAppFullscreen &&
-              floatingReactions.map((r) => (
-                <div
-                  key={r.id}
-                  className="pointer-events-none absolute bottom-4 animate-float-up text-2xl"
-                  style={{ left: `${r.x}%` }}
-                >
-                  {r.emoji}
-                </div>
-              ))}
+              {!isRoomAppFullscreen &&
+                floatingReactions.map((r) => (
+                  <div
+                    key={r.id}
+                    className="pointer-events-none absolute bottom-4 animate-float-up text-2xl"
+                    style={{ left: `${r.x}%` }}
+                  >
+                    {r.emoji}
+                  </div>
+                ))}
+            </div>
           </div>
         </div>
 
@@ -2288,8 +2444,11 @@ export default function RoomContent({
               : "flex flex-1 flex-col overflow-hidden"
           }`}
           hidden={isRoomAppFullscreen}
-          aria-hidden={isRoomAppFullscreen}
-          inert={isRoomAppFullscreen}
+          // The phone sheet covers this pane, so it gets the same
+          // "covered means inert" contract the fullscreen guard already uses:
+          // focus can never Tab into a hidden composer behind the sheet.
+          aria-hidden={isRoomAppFullscreen || mobileSheetVisible}
+          inert={isRoomAppFullscreen || mobileSheetVisible}
         >
           <div
             role="tablist"
