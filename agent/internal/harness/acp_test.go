@@ -1465,6 +1465,679 @@ func TestCapabilitiesNeverAdvertiseResume(t *testing.T) {
 	}
 }
 
+// acpTraceFrame is one request frame the fake ACP child received, as recorded
+// by FAKE_TRACE. These tests use it to assert the exact wire method and
+// payload the adapter sent.
+type acpTraceFrame struct {
+	Method string
+	Params string
+}
+
+func readACPTraceFrames(t *testing.T, path string) []acpTraceFrame {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read ACP trace: %v", err)
+	}
+	var frames []acpTraceFrame
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) != "IN" {
+			continue
+		}
+		var message struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if json.Unmarshal([]byte(parts[1]), &message) != nil || message.Method == "" {
+			continue
+		}
+		frames = append(frames, acpTraceFrame{Method: message.Method, Params: compactJSON(message.Params)})
+	}
+	return frames
+}
+
+func acpTraceParams(t *testing.T, path string, method string) []map[string]any {
+	t.Helper()
+	var params []map[string]any
+	for _, frame := range readACPTraceFrames(t, path) {
+		if frame.Method != method {
+			continue
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(frame.Params), &decoded); err != nil {
+			t.Fatalf("decode %s params %q: %v", method, frame.Params, err)
+		}
+		params = append(params, decoded)
+	}
+	return params
+}
+
+func TestParseAgentCapabilitiesSessionListAndLoadPresence(t *testing.T) {
+	raw := json.RawMessage(`{
+	  "promptCapabilities": {"image": true},
+	  "loadSession": true,
+	  "sessionCapabilities": {"list": {}, "resume": {}, "close": {}}
+	}`)
+	caps, err := parseAgentCapabilities(raw)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if !caps.LoadSessionPresent || !caps.ListPresent || !caps.ResumePresent || !caps.ClosePresent || !caps.Images {
+		t.Fatalf("advertised capability presence broken: %+v", caps)
+	}
+
+	// Absent, false, null, and non-boolean loadSession must all read as "not
+	// advertised" instead of failing the whole handshake.
+	for _, absent := range []string{
+		`{"promptCapabilities":{},"sessionCapabilities":{"close":{}}}`,
+		`{"loadSession":false,"sessionCapabilities":{"close":{}}}`,
+		`{"loadSession":null,"sessionCapabilities":{"close":{}}}`,
+		`{"loadSession":"true","sessionCapabilities":{"close":{}}}`,
+		`{"loadSession":true,"sessionCapabilities":{"close":{}}}`,
+	} {
+		parsed, err := parseAgentCapabilities(json.RawMessage(absent))
+		if err != nil {
+			t.Fatalf("parse failed for %s: %v", absent, err)
+		}
+		wantLoad := strings.Contains(absent, `"loadSession":true`)
+		if parsed.LoadSessionPresent != wantLoad || parsed.ListPresent {
+			t.Fatalf("capability presence mismatch for %s: %+v", absent, parsed)
+		}
+	}
+
+	// ACP models sessionCapabilities.list as a capability OBJECT: an omitted
+	// key, an explicit null, and a malformed scalar/array are all "not
+	// advertised". Presence of the key alone must never gate a real
+	// session/list call.
+	for _, testCase := range []struct {
+		raw  string
+		list bool
+	}{
+		{raw: `{"sessionCapabilities":{}}`},
+		{raw: `{"sessionCapabilities":{"list":null}}`},
+		{raw: `{"sessionCapabilities":{"list":true}}`},
+		{raw: `{"sessionCapabilities":{"list":false}}`},
+		{raw: `{"sessionCapabilities":{"list":[]}}`},
+		{raw: `{"sessionCapabilities":{"list":"yes"}}`},
+		{raw: `{"sessionCapabilities":{"list":0}}`},
+		{raw: `{"sessionCapabilities":{"list":{}}}`, list: true},
+		{raw: `{"sessionCapabilities":{"list":{"pageSize":10}}}`, list: true},
+	} {
+		parsed, err := parseAgentCapabilities(json.RawMessage(testCase.raw))
+		if err != nil {
+			t.Fatalf("parse failed for %s: %v", testCase.raw, err)
+		}
+		if parsed.ListPresent != testCase.list {
+			t.Fatalf("sessionCapabilities.list mismatch for %s: got ListPresent=%v want=%v",
+				testCase.raw, parsed.ListPresent, testCase.list)
+		}
+	}
+
+	// Regression fence: this PR only tightens the NEW list flag. resume/close
+	// keep their existing presence-only semantics, including the null case.
+	existing, err := parseAgentCapabilities(json.RawMessage(
+		`{"loadSession":true,"sessionCapabilities":{"resume":null,"close":null}}`))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if !existing.ResumePresent || !existing.ClosePresent {
+		t.Fatalf("existing resume/close presence semantics changed: %+v", existing)
+	}
+}
+
+// TestSessionPrimitivesNeverBroadenHarnessCapabilities keeps the #409
+// invariant: the adapter can now list and load sessions, but the
+// Runtime-visible capability projection must still claim neither, and the
+// session descriptor must stay a bounded, metadata-free shape.
+func TestSessionPrimitivesNeverBroadenHarnessCapabilities(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_RESUME_CAP": "1",
+		"FAKE_LIST_CAP":   "1",
+		"FAKE_LOAD_CAP":   "1",
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	if adapter.caps == nil || !adapter.caps.ListPresent || !adapter.caps.LoadSessionPresent {
+		t.Fatalf("harness advertisements must still be observed: %+v", adapter.caps)
+	}
+	caps := adapter.Capabilities()
+	if caps == nil || !caps.Text || caps.Images {
+		t.Fatalf("capability projection mismatch: %+v", caps)
+	}
+	if fields := reflect.TypeOf(*caps).NumField(); fields != 2 {
+		t.Fatalf("HarnessCapabilities must stay Text+Images only, got %d fields", fields)
+	}
+	if fields := reflect.TypeOf(ACPSessionInfo{}).NumField(); fields != 4 {
+		t.Fatalf("ACPSessionInfo must stay a bounded 4-field descriptor, got %d fields", fields)
+	}
+}
+
+func TestACPListSessionsSendsExactBoundedRequest(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, workspace := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_LIST_CAP": "1",
+		"FAKE_TRACE":    tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+
+	page, err := adapter.ListSessions("/workspace/project", "cursor-1")
+	if err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	want := []ACPSessionInfo{
+		{
+			SessionID: "native-session-1",
+			Cwd:       "/workspace/project",
+			Title:     "First native session",
+			UpdatedAt: "2026-09-18T10:00:00Z",
+		},
+		{
+			SessionID: "native-session-2",
+			Cwd:       "/workspace/project",
+			Title:     "Second native session",
+			UpdatedAt: "2026-09-18T11:30:00Z",
+		},
+	}
+	if !reflect.DeepEqual(page.Sessions, want) {
+		t.Fatalf("session descriptors mismatch: got %+v want %+v", page.Sessions, want)
+	}
+	if page.NextCursor != "cursor-page-2" {
+		t.Fatalf("pagination cursor was not preserved: %q", page.NextCursor)
+	}
+	// Agent-private _meta must not survive the projection.
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		t.Fatalf("marshal page: %v", err)
+	}
+	for _, forbidden := range []string{"_meta", "messageCount", "hasErrors"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("session descriptor retained harness-private %q: %s", forbidden, encoded)
+		}
+	}
+	// Exactly one session/list frame carrying only the requested filter and
+	// pagination fields.
+	wantParams := []map[string]any{{"cwd": "/workspace/project", "cursor": "cursor-1"}}
+	if got := acpTraceParams(t, tracePath, "session/list"); !reflect.DeepEqual(got, wantParams) {
+		t.Fatalf("session/list wire request mismatch: got=%v want=%v", got, wantParams)
+	}
+
+	// An empty cwd/cursor omits both optional fields; an empty cwd still
+	// means the adapter's own workspace directory.
+	page, err = adapter.ListSessions("", "")
+	if err != nil {
+		t.Fatalf("unfiltered list failed: %v", err)
+	}
+	if len(page.Sessions) != 2 || page.Sessions[0].Cwd != workspace {
+		t.Fatalf("empty cwd must default to the adapter workspace: %+v", page.Sessions)
+	}
+	wantParams = append(wantParams, map[string]any{"cwd": workspace})
+	if got := acpTraceParams(t, tracePath, "session/list"); !reflect.DeepEqual(got, wantParams) {
+		t.Fatalf("session/list wire request mismatch: got=%v want=%v", got, wantParams)
+	}
+}
+
+// TestACPSessionOpaqueValuesArePreservedExactly fences the rule that identity
+// and path values are never normalized: an accepted session id, cursor, or cwd
+// reaches the wire (and the caller) byte-for-byte. A value the local policy
+// cannot accept is rejected instead — never trimmed and then used.
+func TestACPSessionOpaqueValuesArePreservedExactly(t *testing.T) {
+	t.Run("request values reach the wire verbatim", func(t *testing.T) {
+		tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+		adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+			"FAKE_LIST_CAP": "1",
+			"FAKE_LOAD_CAP": "1",
+			"FAKE_TRACE":    tracePath,
+		}), AdapterOptions{})
+		defer adapter.Close()
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure failed: %v", err)
+		}
+
+		page, err := adapter.ListSessions(" /workspace/project ", " cursor-token ")
+		if err != nil {
+			t.Fatalf("list failed: %v", err)
+		}
+		// The fake echoes the request cwd, so this also proves the response
+		// path keeps a padded path intact.
+		if page.Sessions[0].Cwd != " /workspace/project " {
+			t.Fatalf("cwd was normalized: %q", page.Sessions[0].Cwd)
+		}
+		wantList := []map[string]any{{"cwd": " /workspace/project ", "cursor": " cursor-token "}}
+		if got := acpTraceParams(t, tracePath, "session/list"); !reflect.DeepEqual(got, wantList) {
+			t.Fatalf("session/list params were normalized: got=%v want=%v", got, wantList)
+		}
+
+		if err := adapter.LoadSession("room", " native-id ", " /workspace/project "); err != nil {
+			t.Fatalf("load failed: %v", err)
+		}
+		wantLoad := []map[string]any{{
+			"sessionId":  " native-id ",
+			"cwd":        " /workspace/project ",
+			"mcpServers": []any{},
+		}}
+		if got := acpTraceParams(t, tracePath, "session/load"); !reflect.DeepEqual(got, wantLoad) {
+			t.Fatalf("session/load params were normalized: got=%v want=%v", got, wantLoad)
+		}
+		if got := adapter.SessionDiagnostics(); len(got) != 1 || got[0].SessionID != " native-id " {
+			t.Fatalf("loaded identity was normalized: %+v", got)
+		}
+	})
+
+	t.Run("response values are projected verbatim", func(t *testing.T) {
+		adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+			"FAKE_LIST_CAP": "1",
+			"FAKE_LIST_RAW": `{"sessions":[{"sessionId":" native-id ","cwd":" /workspace/project ","title":" padded "},{"sessionId":" "}],"nextCursor":" next-page "}`,
+		}), AdapterOptions{})
+		defer adapter.Close()
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure failed: %v", err)
+		}
+
+		page, err := adapter.ListSessions("", "")
+		if err != nil {
+			t.Fatalf("list failed: %v", err)
+		}
+		if len(page.Sessions) != 2 {
+			t.Fatalf("unexpected page: %+v", page.Sessions)
+		}
+		if page.Sessions[0].SessionID != " native-id " || page.Sessions[0].Cwd != " /workspace/project " {
+			t.Fatalf("identity/path was normalized: %+v", page.Sessions[0])
+		}
+		// The display-only title is still sanitized: it is not identity.
+		if page.Sessions[0].Title != "padded" {
+			t.Fatalf("display title must still be sanitized: %q", page.Sessions[0].Title)
+		}
+		// A whitespace-only id is a non-empty opaque token: it is preserved,
+		// never collapsed into "missing" by a trim.
+		if page.Sessions[1].SessionID != " " {
+			t.Fatalf("whitespace-only id was normalized: %q", page.Sessions[1].SessionID)
+		}
+		// The cursor round-trips exactly, so the next page cannot silently
+		// skip or repeat results.
+		if page.NextCursor != " next-page " {
+			t.Fatalf("pagination cursor was normalized: %q", page.NextCursor)
+		}
+	})
+}
+
+// TestACPListSessionsRejectsMalformedAndOversizedResults proves a buggy or
+// hostile Harness result can neither panic the adapter nor push an unbounded
+// number of sessions into a caller.
+func TestACPListSessionsRejectsMalformedAndOversizedResults(t *testing.T) {
+	oversizedPage := func(count int) string {
+		entries := make([]string, 0, count)
+		for index := 0; index < count; index++ {
+			entries = append(entries, `{"sessionId":"native-`+strconv.Itoa(index)+`","cwd":"/workspace"}`)
+		}
+		return `{"sessions":[` + strings.Join(entries, ",") + `]}`
+	}
+
+	cases := []struct {
+		name         string
+		raw          string
+		extraEnv     map[string]string
+		wantErr      string
+		wantSessions int
+		wantCursor   string
+	}{
+		{name: "empty page", raw: `{"sessions":[]}`},
+		{name: "missing sessions array", raw: `{}`, wantErr: "missing the sessions array"},
+		{name: "null result", raw: `null`, wantErr: "missing the sessions array"},
+		{name: "top-level array", raw: `[]`, wantErr: "malformed result"},
+		{name: "non-array sessions", raw: `{"sessions":"none"}`, wantErr: "malformed result"},
+		{name: "oversized page", raw: oversizedPage(51), wantErr: "exceeding the 50-session bound"},
+		{name: "session without id", raw: `{"sessions":[{"cwd":"/workspace"}]}`, wantErr: "without an id"},
+		{
+			name:    "oversized session id",
+			raw:     `{"sessions":[{"sessionId":"` + strings.Repeat("s", 300) + `"}]}`,
+			wantErr: "invalid session id",
+		},
+		{
+			name:    "control rune in session id",
+			raw:     `{"sessions":[{"sessionId":"native\u0000id"}]}`,
+			wantErr: "invalid session id",
+		},
+		{
+			name:    "invalid updatedAt",
+			raw:     `{"sessions":[{"sessionId":"native-1","updatedAt":"yesterday"}]}`,
+			wantErr: "invalid updatedAt",
+		},
+		{
+			name:    "oversized cwd",
+			raw:     `{"sessions":[{"sessionId":"native-1","cwd":"/` + strings.Repeat("c", 5000) + `"}]}`,
+			wantErr: "invalid session working directory",
+		},
+		{
+			name:    "oversized cursor",
+			raw:     `{"sessions":[],"nextCursor":"` + strings.Repeat("c", 2000) + `"}`,
+			wantErr: "invalid pagination cursor",
+		},
+		{
+			name:         "long title is bounded not fatal",
+			raw:          `{"sessions":[{"sessionId":"native-1","title":"` + strings.Repeat("t", 900) + `"}]}`,
+			wantSessions: 1,
+		},
+		{
+			name:         "missing nextCursor ends pagination",
+			extraEnv:     map[string]string{"FAKE_LIST_NO_CURSOR": "1"},
+			wantSessions: 2,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			env := map[string]string{"FAKE_LIST_CAP": "1"}
+			if testCase.raw != "" {
+				env["FAKE_LIST_RAW"] = testCase.raw
+			}
+			for key, value := range testCase.extraEnv {
+				env[key] = value
+			}
+			adapter, _ := newTestAdapter(t, scriptLauncher("normal", env), AdapterOptions{})
+			defer adapter.Close()
+			if err := adapter.EnsureSession(); err != nil {
+				t.Fatalf("ensure failed: %v", err)
+			}
+
+			page, err := adapter.ListSessions("", "")
+			if testCase.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
+					t.Fatalf("want %q, got page=%+v err=%v", testCase.wantErr, page, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("list failed: %v", err)
+			}
+			if len(page.Sessions) != testCase.wantSessions {
+				t.Fatalf("session count mismatch: got %+v", page.Sessions)
+			}
+			if page.NextCursor != testCase.wantCursor {
+				t.Fatalf("cursor mismatch: got %q want %q", page.NextCursor, testCase.wantCursor)
+			}
+			if testCase.name == "long title is bounded not fatal" {
+				if title := page.Sessions[0].Title; len([]rune(title)) != maxACPSessionTitleLength {
+					t.Fatalf("title was not bounded to %d runes: %d", maxACPSessionTitleLength, len([]rune(title)))
+				}
+			}
+		})
+	}
+}
+
+func TestACPLoadSessionReplacesRetainedSessionIdentity(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, workspace := newTestAdapter(t, scriptLauncher("session_echo", map[string]string{
+		"FAKE_LOAD_CAP": "1",
+		"FAKE_TRACE":    tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	initialGeneration := adapter.SessionGeneration()
+	initial := adapter.SessionDiagnostics()
+	if len(initial) != 1 || initial[0].Scope != "room" || initial[0].SessionID == "" || initial[0].SessionID == "native-session-1" {
+		t.Fatalf("unexpected initial room session: %+v", initial)
+	}
+
+	if err := adapter.LoadSession("room", "native-session-1", "/workspace/project"); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	loaded := adapter.SessionDiagnostics()
+	if len(loaded) != 1 || loaded[0].Scope != "room" || loaded[0].SessionID != "native-session-1" {
+		t.Fatalf("logical scope did not adopt the loaded session: %+v", loaded)
+	}
+	if loaded[0].Generation <= initialGeneration || adapter.SessionGeneration() != loaded[0].Generation {
+		t.Fatalf("load must advance the scope generation: initial=%d loaded=%+v", initialGeneration, loaded)
+	}
+	// Exact wire method and payload: sessionId + cwd + an explicit empty
+	// mcpServers list (Free4Chat installs no MCP servers into the Harness).
+	wantParams := []map[string]any{{
+		"sessionId":  "native-session-1",
+		"cwd":        "/workspace/project",
+		"mcpServers": []any{},
+	}}
+	if got := acpTraceParams(t, tracePath, "session/load"); !reflect.DeepEqual(got, wantParams) {
+		t.Fatalf("session/load wire request mismatch: got=%v want=%v", got, wantParams)
+	}
+
+	// The decisive property: a following turn is addressed to the loaded
+	// session, not to the discarded session/new conversation.
+	result, err := adapter.RunTurn(turnInput("continue"), adapter.SessionGeneration())
+	if err != nil || result.Text != "reply-1 session=native-session-1" {
+		t.Fatalf("turn after load did not use the loaded session: %+v %v", result, err)
+	}
+
+	// A scoped load replaces only that scope's conversation.
+	if err := adapter.EnsureSessionFor("task:T"); err != nil {
+		t.Fatalf("ensure scoped session failed: %v", err)
+	}
+	scopedGeneration := adapter.SessionGenerationFor("task:T")
+	if err := adapter.LoadSession("task:T", "native-session-2", workspace); err != nil {
+		t.Fatalf("scoped load failed: %v", err)
+	}
+	if generation := adapter.SessionGenerationFor("task:T"); generation <= scopedGeneration {
+		t.Fatalf("scoped load must advance that scope's generation: %d -> %d", scopedGeneration, generation)
+	}
+	scopedResult, err := adapter.RunTurnFor("task:T", turnInput("scoped"), adapter.SessionGenerationFor("task:T"))
+	if err != nil || scopedResult.Text != "reply-2 session=native-session-2" {
+		t.Fatalf("scoped turn after load did not use the loaded session: %+v %v", scopedResult, err)
+	}
+	for _, diagnostic := range adapter.SessionDiagnostics() {
+		if diagnostic.Scope == "room" && diagnostic.SessionID != "native-session-1" {
+			t.Fatalf("scoped load disturbed the room conversation: %+v", adapter.SessionDiagnostics())
+		}
+	}
+}
+
+func TestACPLoadSessionRejectsInvalidInputAndAliasedScope(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("session_echo", map[string]string{
+		"FAKE_LOAD_CAP": "1",
+		"FAKE_TRACE":    tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	roomSessionID := adapter.SessionDiagnostics()[0].SessionID
+
+	for _, testCase := range []struct {
+		name  string
+		scope string
+		id    string
+		want  string
+	}{
+		{name: "empty scope", scope: "", id: "native-1", want: "logical scope is empty"},
+		{name: "over-long scope", scope: strings.Repeat("s", types.MaxLogicalScopeLength+1), id: "native-1", want: "logical scope is too long"},
+		{name: "empty id", scope: "room", id: "", want: "session id is empty"},
+		{name: "over-long id", scope: "room", id: strings.Repeat("s", 300), want: "session id is invalid"},
+		{name: "control rune in id", scope: "room", id: "native\u0000id", want: "session id is invalid"},
+	} {
+		if err := adapter.LoadSession(testCase.scope, testCase.id, ""); err == nil || !strings.Contains(err.Error(), testCase.want) {
+			t.Fatalf("%s: want %q, got %v", testCase.name, testCase.want, err)
+		}
+	}
+	// Rejected input must never reach the wire or change session identity.
+	if got := acpTraceParams(t, tracePath, "session/load"); len(got) != 0 {
+		t.Fatalf("rejected loads must not reach the wire: %v", got)
+	}
+	if got := adapter.SessionDiagnostics(); len(got) != 1 || got[0].SessionID != roomSessionID {
+		t.Fatalf("rejected loads changed adapter session identity: %+v", got)
+	}
+
+	// One native session may back exactly one logical scope.
+	if err := adapter.LoadSession("room", "native-session-1", ""); err != nil {
+		t.Fatalf("room load failed: %v", err)
+	}
+	roomSessionID = adapter.SessionDiagnostics()[0].SessionID
+	if roomSessionID != "native-session-1" {
+		t.Fatalf("room load did not retain the loaded session: %q", roomSessionID)
+	}
+	if err := adapter.LoadSession("task:T", "native-session-1", ""); err == nil ||
+		!strings.Contains(err.Error(), "already retained by another logical scope") {
+		t.Fatalf("aliasing a native session into a second scope must fail: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:T"); err != nil {
+		t.Fatalf("ensure scoped session failed: %v", err)
+	}
+	if err := adapter.LoadSession("task:T", roomSessionID, ""); err == nil ||
+		!strings.Contains(err.Error(), "already retained by another logical scope") {
+		t.Fatalf("adopting the room session into a scope must fail: %v", err)
+	}
+	if got := acpTraceParams(t, tracePath, "session/load"); len(got) != 1 {
+		t.Fatalf("rejected aliased loads must not reach the wire: %v", got)
+	}
+}
+
+func TestACPSessionPrimitivesWithoutCapabilityFailLocally(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_TRACE": tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	before := adapter.SessionDiagnostics()
+	generationBefore := adapter.SessionGeneration()
+
+	if _, err := adapter.ListSessions("", ""); err == nil ||
+		!strings.Contains(err.Error(), "does not advertise sessionCapabilities.list") {
+		t.Fatalf("an unadvertised session/list must fail locally: %v", err)
+	}
+	if err := adapter.LoadSession("room", "native-session-1", ""); err == nil ||
+		!strings.Contains(err.Error(), "does not advertise loadSession") {
+		t.Fatalf("an unadvertised session/load must fail locally: %v", err)
+	}
+	for _, frame := range readACPTraceFrames(t, tracePath) {
+		if frame.Method == "session/list" || frame.Method == "session/load" {
+			t.Fatalf("an unsupported method reached the wire: %+v", frame)
+		}
+	}
+	if got := adapter.SessionDiagnostics(); !reflect.DeepEqual(got, before) || adapter.SessionGeneration() != generationBefore {
+		t.Fatalf("a rejected primitive changed adapter session identity: %+v", got)
+	}
+}
+
+// TestACPSessionPrimitivesAreBoundedByControlTimeout proves the new control
+// calls reuse the existing ControlTimeoutMs lifecycle: a Harness that accepts
+// the frame and never answers is torn down instead of blocking a caller
+// forever on a session whose state is now ambiguous.
+func TestACPSessionPrimitivesAreBoundedByControlTimeout(t *testing.T) {
+	for _, testCase := range []struct {
+		method string
+		env    map[string]string
+	}{
+		{method: "session/list", env: map[string]string{"FAKE_LIST_CAP": "1"}},
+		{method: "session/load", env: map[string]string{"FAKE_LOAD_CAP": "1"}},
+	} {
+		t.Run(testCase.method, func(t *testing.T) {
+			env := map[string]string{"FAKE_SILENT_METHOD": testCase.method}
+			for key, value := range testCase.env {
+				env[key] = value
+			}
+			adapter := NewACPAdapter(scriptLauncher("normal", env), t.TempDir(), AdapterOptions{
+				ControlTimeoutMs: 250,
+			})
+			defer adapter.Close()
+			if err := adapter.EnsureSession(); err != nil {
+				t.Fatalf("ensure failed: %v", err)
+			}
+
+			started := time.Now()
+			var err error
+			if testCase.method == "session/list" {
+				_, err = adapter.ListSessions("", "")
+			} else {
+				err = adapter.LoadSession("room", "native-session-1", "")
+			}
+			elapsed := time.Since(started)
+			var timeoutErr *ControlRequestTimeoutError
+			if !errors.As(err, &timeoutErr) || timeoutErr.Method != testCase.method {
+				t.Fatalf("want a %s control timeout, got %v", testCase.method, err)
+			}
+			if elapsed > 8*time.Second {
+				t.Fatalf("control timeout must stay bounded, took %s", elapsed)
+			}
+			sessionID, hasProc, hasStdin, pending, _ := adapterStateSnapshot(adapter)
+			if sessionID != "" || hasProc || hasStdin || pending != 0 {
+				t.Fatalf("a timed-out %s must fail closed: session=%q proc=%v stdin=%v pending=%d",
+					testCase.method, sessionID, hasProc, hasStdin, pending)
+			}
+			if got := adapter.SessionDiagnostics(); len(got) != 0 {
+				t.Fatalf("a timed-out %s must not retain a session: %+v", testCase.method, got)
+			}
+		})
+	}
+}
+
+// TestACPChildDeathAfterLoadDoesNotRetainPhantomSession pins today's
+// process-death behavior for a loaded session: the loaded identity is
+// invalidated and the adapter must not present the loaded session as still
+// active. The next EnsureSession still creates a fresh session — a truthful
+// session-lost projection and any automatic re-load are deliberate #409
+// follow-ups, not part of this adapter capability PR.
+func TestACPChildDeathAfterLoadDoesNotRetainPhantomSession(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("session_echo", map[string]string{
+		"FAKE_LOAD_CAP":           "1",
+		"FAKE_UNIQUE_SESSION_IDS": "1",
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	if err := adapter.LoadSession("room", "native-session-5", ""); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	loadedGeneration := adapter.SessionGeneration()
+	if got := adapter.SessionDiagnostics(); len(got) != 1 || got[0].SessionID != "native-session-5" {
+		t.Fatalf("load did not retain the loaded session: %+v", got)
+	}
+
+	adapter.mu.Lock()
+	process := adapter.proc
+	adapter.mu.Unlock()
+	if process == nil || process.cmd.Process == nil {
+		t.Fatal("ACP process disappeared before the death probe")
+	}
+	if err := process.cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill ACP process: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(adapter.SessionDiagnostics()) == 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := adapter.SessionDiagnostics(); len(got) != 0 {
+		t.Fatalf("loaded session survived process death in diagnostics: %+v", got)
+	}
+
+	// A turn must fail rather than pretend the loaded conversation is alive.
+	if result, err := adapter.RunTurn(turnInput("after-death"), loadedGeneration); err == nil {
+		t.Fatalf("a turn must not run after the loaded session's process died: %+v", result)
+	}
+	// Respawn is the existing behavior and must not resurrect the loaded id.
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("post-death ensure failed: %v", err)
+	}
+	recovered := adapter.SessionDiagnostics()
+	if len(recovered) != 1 || recovered[0].SessionID == "native-session-5" {
+		t.Fatalf("a fresh session must not be presented as the loaded one: %+v", recovered)
+	}
+	if adapter.SessionGeneration() <= loadedGeneration {
+		t.Fatalf("respawn must advance the generation: %d -> %d", loadedGeneration, adapter.SessionGeneration())
+	}
+}
+
 func TestRenderUntrustedRoomTurnInvariants(t *testing.T) {
 	input := turnInput("hello")
 	rendered := RenderUntrustedRoomTurn(&input)
