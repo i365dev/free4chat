@@ -21,6 +21,10 @@ func configureActivityHandler(r *ResidentRuntime) {
 		setter.SetActivityHandler(r.observeHarnessActivity)
 	}
 	r.options.Adapter.OnFailure(func(error) {
+		// Unexpected Harness process death is the ONE boundary that means a
+		// Task's retained Harness session is gone. Room/resident transport
+		// reconnects are not session loss and must never publish it.
+		r.noteTaskSessionLoss()
 		r.clearActivity()
 		r.failClosedResidentMediaState()
 	})
@@ -138,6 +142,10 @@ func (r *ResidentRuntime) beginActivity(scope string, turnSequence int64) {
 	}
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
+	// The exact turn is now current for this Task: refresh its transient
+	// execution projection (current turn, running phase, queue depth, and no
+	// longer "interrupted"/"session lost").
+	r.beginTaskTurn(scope, turnSequence)
 	if unchanged {
 		return
 	}
@@ -183,6 +191,8 @@ func (r *ResidentRuntime) finishActivity(scope string, turnSequence int64) {
 		r.activityTurnActive = false
 		r.activityScope = ""
 		r.activityTurnSequence = 0
+		// Both locks are already held here; use the non-locking inner variant.
+		r.clearTurnInterruptedActivityLocked(scope, turnSequence)
 	}
 	_, existed := r.activities[scope]
 	delete(r.activities, scope)

@@ -94,6 +94,20 @@ interface TextChatCardProps {
     taskRequestId: string,
     wakeAgent: boolean
   ) => Promise<void> | void
+  /** #409: transient execution presentation of the selected Task's canonical
+   * Agent, published by the Runtime through the Room. The browser renders it
+   * and offers the two structured controls; it never derives execution state
+   * itself. `onInterruptAndSend` is text-only: an attachment draft keeps using
+   * the ordinary queued Send path. */
+  taskExecution?: {
+    label: string
+    detail?: string
+    availability?: string
+    interrupting: boolean
+    interruptible: boolean
+    onInterrupt: () => void
+    onInterruptAndSend: (text: string) => boolean
+  }
   onSendAction: (
     actionType: ActionType,
     actionPayload: Record<string, string>
@@ -1483,6 +1497,7 @@ const TextChatCard = memo(function TextChatCard({
   taskRequestId,
   taskAvailable = true,
   onSendTaskFile,
+  taskExecution,
 }: TextChatCardProps) {
   const taskScoped = Boolean(taskRequestId)
   const taskUnavailable = taskScoped && !taskAvailable
@@ -1611,6 +1626,19 @@ const TextChatCard = memo(function TextChatCard({
 
   const handleSend = () => {
     void sendCurrentMessage()
+  }
+
+  // #409: "interrupt & send" is one Room-side operation, so the browser sends
+  // the instruction and the interrupt together instead of sequencing two
+  // frames itself. Text only: an attachment draft keeps the queued Send path.
+  const handleInterruptAndSend = () => {
+    if (!taskExecution || !taskExecution.interruptible) return
+    if (draftAttachment || sendingDraft) return
+    const text = message.trim()
+    if (!text) return
+    if (!taskExecution.onInterruptAndSend(text)) return
+    setMessage("")
+    setSelectedAgents([])
   }
 
   const handleKeyDown = (event: React.KeyboardEvent) => {
@@ -1990,6 +2018,43 @@ const TextChatCard = memo(function TextChatCard({
                   </>
                 )}
               </div>
+            )}
+            {taskExecution && taskExecution.label !== "" && (
+              <button
+                type="button"
+                data-testid="task-execution-status"
+                disabled={taskExecution.interruptible}
+                onClick={() => taskExecution.onInterrupt()}
+                title={
+                  taskExecution.interruptible
+                    ? "Interrupt the current turn"
+                    : undefined
+                }
+                className={`shrink-0 rounded-lg px-2 py-1 text-[11px] ${
+                  taskExecution.availability === "session_lost"
+                    ? "text-amber-300"
+                    : taskExecution.interrupting
+                    ? "text-amber-200"
+                    : "text-blue-200/80"
+                } ${taskExecution.interruptible ? "hover:text-red-200" : ""}`}
+              >
+                {taskExecution.label}
+                {taskExecution.detail ? ` · ${taskExecution.detail}` : ""}
+              </button>
+            )}
+            {taskExecution?.interruptible && message.trim() !== "" && (
+              <button
+                type="button"
+                data-testid="task-interrupt-and-send"
+                onClick={handleInterruptAndSend}
+                disabled={
+                  taskUnavailable || sendingDraft || Boolean(draftAttachment)
+                }
+                className="shrink-0 rounded-lg border border-amber-500/50 px-2 py-1 text-[11px] text-amber-200 transition hover:bg-amber-500/10 disabled:opacity-30"
+                title="Queue this instruction, then stop the current turn"
+              >
+                Interrupt &amp; send
+              </button>
             )}
             {taskScoped && onSendTaskFile && (
               <button

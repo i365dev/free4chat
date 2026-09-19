@@ -614,6 +614,60 @@ func (c *Client) UpdateAgentActivity(
 	return &Error{Message: "Agent activity rejected", Code: CodeToolError}
 }
 
+// UpdateTaskExecution publishes the transient Task execution projection. It
+// reuses the existing Runtime->Room control route (the same one activity,
+// permissions, and surfaces use): no new transport, no persistence, and no
+// harness payload. The participant handle travels only in private headers.
+//
+// The Room owns authorization: it derives the Agent from this authenticated
+// request and only accepts a projection for a Task whose canonical endpoint is
+// that Agent. Publication is best-effort presentation, so callers must treat
+// any error here as non-fatal for the turn and the queue.
+func (c *Client) UpdateTaskExecution(
+	participantHandle string, projection types.TaskExecutionProjection,
+) error {
+	if !projection.Valid() {
+		return &Error{Message: "invalid Task execution projection", Code: CodeToolError}
+	}
+	handle, err := parseRoomControlHandle(participantHandle)
+	if err != nil {
+		return err
+	}
+	endpoint, err := c.roomControlEndpoint("/api/room/agent-task-execution")
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(projection)
+	if err != nil {
+		return &Error{Message: "encode Task execution", Code: CodeTransient}
+	}
+	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return &Error{Message: "create Task execution request", Code: CodeTransient}
+	}
+	request.Header.Set("Content-Type", headerContentType)
+	request.Header.Set("Accept", headerContentType)
+	request.Header.Set("User-Agent", defaultUserAgent)
+	request.Header.Set("Origin", endpoint.Scheme+"://"+endpoint.Host)
+	request.Header.Set("X-Room-Id", handle.Room)
+	request.Header.Set("X-Room-Participant-Id", handle.ParticipantID)
+	request.Header.Set("X-Room-Participant-Token", handle.ParticipantToken)
+	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return &Error{Message: "Task execution request failed", Code: CodeTransient}
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode <= 299 {
+		return nil
+	}
+	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+		return &Error{Message: "Task execution temporarily unavailable", Code: CodeTransient}
+	}
+	return &Error{Message: "Task execution rejected", Code: CodeToolError}
+}
+
+var _ types.ResidentTaskExecutionClient = (*Client)(nil)
+
 func validAgentActivityScope(value string) bool {
 	if len(value) == 0 || len(value) > types.MaxLogicalScopeLength || strings.TrimSpace(value) != value {
 		return false

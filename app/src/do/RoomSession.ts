@@ -149,6 +149,12 @@ import {
   TASK_ATTACHMENT_WAKE_HEADER,
 } from "../common/taskAttachmentWake"
 import {
+  isTaskExecutionAvailability,
+  isTaskExecutionOutcome,
+  isTaskExecutionPhase,
+  MAX_TASK_EXECUTION_QUEUED_COUNT,
+} from "../common/taskExecution"
+import {
   validateTaskLiveViewDraft,
   validateTaskLiveViewSnapshot,
   type TaskLiveViewSnapshot,
@@ -156,6 +162,7 @@ import {
 import type {
   AgentCapabilities,
   AgentEvent,
+  TaskExecutionProjection,
   RoomCapabilities,
   RoomAttachment,
   RoomAttachmentProjection,
@@ -697,6 +704,15 @@ type ControlRequest =
       turnSequence: unknown
     }
   | {
+      // #409: the Runtime-authoritative transient Task execution projection.
+      // The publishing Agent is derived from this authenticated request; the
+      // body never names one.
+      action: "agent-task-execution"
+      participantId: string
+      token: string
+      projection: unknown
+    }
+  | {
       action: "agent-media-attach"
       participantId: string
       token: string
@@ -790,6 +806,16 @@ type ClientMessage =
       // derived from the canonical retained collaboration request. Nothing
       // about this control is appended to Room history, and an interrupt that
       // finds no matching live turn is a no-op in the Runtime.
+      // #409: one structured Human command. Free4Chat persists the
+      // replacement instruction FIRST and only then asks the Runtime to stop
+      // the exact current turn, so the instruction can never be lost by an
+      // interrupt that wins the race.
+      type: "task-interrupt-and-send"
+      taskRequestId: string
+      turnSequence: number
+      text: string
+    }
+  | {
       type: "task-interrupt"
       taskRequestId: string
       // #409: the exact turn the Human saw running. The Room refuses a
@@ -865,6 +891,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private readonly transientAgentActivities = new Map<
     string,
     AgentActivityProjection
+  >()
+  // #409 transient Task execution projection, keyed by canonical
+  // (agentParticipantId, taskRequestId). In-memory only: never persisted, never
+  // a Room message/sequence, never a waiter wake, never MCP context.
+  private readonly transientTaskExecutions = new Map<
+    string,
+    TaskExecutionProjection
   >()
   private taskLiveViewsCache: Map<string, TaskLiveViewSnapshot> | null = null
   private taskLiveViewsLoad: {
@@ -1685,6 +1718,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       agentActivities: [...this.transientAgentActivities.values()].filter(
         (activity) => room.participants[activity.agentParticipantId]?.connected
       ),
+      taskExecutions: [...this.transientTaskExecutions.values()].filter(
+        (execution) =>
+          room.participants[execution.agentParticipantId]?.connected
+      ),
     }
   }
 
@@ -1692,6 +1729,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const [key, activity] of this.transientAgentActivities) {
       if (activity.agentParticipantId === participantId)
         this.transientAgentActivities.delete(key)
+    }
+    // #409: execution state is bound to the same transient Agent connection
+    // lifetime. A replaced/stale resident socket must never leave execution
+    // truth behind for the next connection.
+    for (const [key, execution] of this.transientTaskExecutions) {
+      if (execution.agentParticipantId === participantId)
+        this.transientTaskExecutions.delete(key)
     }
   }
 
@@ -3127,6 +3171,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (request.action === "agent-wait") return this.waitForAgent(request)
+
+    if (request.action === "agent-task-execution") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      const projection = this.normalizeTaskExecution(
+        room,
+        participant,
+        request.projection
+      )
+      if (projection === null)
+        return this.json({ error: "invalid_task_execution" }, 400)
+      const key = agentActivityKey(
+        participant.id,
+        `task:${projection.taskRequestId}`
+      )
+      // Transient in-memory projection only: no Room message, no sequence, no
+      // storage write, no waiter wake, no analytics.
+      this.transientTaskExecutions.set(key, projection)
+      await this.broadcast({ type: "taskExecution", execution: projection })
+      return this.json({ ok: true })
+    }
 
     if (request.action === "agent-activity") {
       const room = await this.activeRoom()
@@ -5782,6 +5855,229 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.sendRoomAppUnicastResult(socket, message, true)
   }
 
+  /**
+   * Appends ONE canonical Human text message, optionally as a Task
+   * instruction, and returns the durable append result.
+   *
+   * This is the single append path shared by ordinary Room chat and by the
+   * structured "#409 interrupt & send" command, which must persist its
+   * replacement instruction BEFORE asking the Runtime to stop the current
+   * turn. It deliberately owns everything the ordinary chat path already did:
+   * Task resolution, Human Task target authorization, text bounds,
+   * append + save, targeted tracking, broadcast, and waiter wakeup. Ordinary
+   * Room chat behavior is unchanged.
+   */
+  private async appendHumanText(
+    room: RoomRecord,
+    participant: RoomParticipant,
+    input: { text: string; targets?: unknown; taskRequestId?: unknown }
+  ): Promise<
+    | { ok: true; message: RoomMessage; taskRequestId?: string }
+    | { ok: false; error: string }
+  > {
+    const taskProjection =
+      input.taskRequestId === undefined
+        ? undefined
+        : buildTaskProjectionIndex(room.messages, room.participants)
+    const taskRequest =
+      taskProjection === undefined
+        ? undefined
+        : resolveTaskRequest(
+            taskProjection,
+            input.taskRequestId,
+            room.participants
+          )
+    if (taskRequest && taskRequest.ok === false)
+      return { ok: false, error: taskRequest.error }
+    const taskTargets =
+      taskRequest && taskRequest.ok === true
+        ? resolveHumanTaskTargets(
+            taskRequest,
+            participant,
+            room.participants,
+            input.targets,
+            MAX_TARGETS
+          )
+        : undefined
+    if (taskTargets && taskTargets.ok === false)
+      return { ok: false, error: taskTargets.error }
+
+    const roomMessage = this.appendMessage(room, {
+      id: crypto.randomUUID(),
+      peerId: participant.id,
+      name: participant.name,
+      kind: participant.kind,
+      type: "text",
+      text: input.text.trim().slice(0, 4000),
+      ...(taskRequest && taskRequest.ok === true
+        ? {
+            taskRequestId: taskRequest.requestId,
+            targets: taskTargets?.ok ? taskTargets.targets : [],
+          }
+        : (() => {
+            const targets = normalizeChatTargets(room, input.targets)
+            return targets.length ? { targets } : {}
+          })()),
+      createdAt: Date.now(),
+    })
+    await this.saveRoom(room)
+    // #234: one server-authoritative TargetedMessage per canonical targeted
+    // text message; the message's targets are the validated current
+    // participant ids persisted on roomMessage.
+    this.trackTargetedMessage(room, roomMessage)
+    await this.broadcast({ type: "message", message: roomMessage })
+    this.resolveAgentWaiters(room)
+    return {
+      ok: true,
+      message: roomMessage,
+      ...(taskRequest && taskRequest.ok === true
+        ? { taskRequestId: taskRequest.requestId }
+        : {}),
+    }
+  }
+
+  /**
+   * #409: resolve the exact Live interrupt target of one Task interrupt: the
+   * authenticated Human must own the canonical Task, the canonical Agent
+   * endpoint must be reachable, and the Room must currently show exactly this
+   * turn's activity for that Agent. Shared by `task-interrupt` and
+   * `task-interrupt-and-send` so both authorize identically.
+   */
+  private resolveInterruptTarget(
+    room: RoomRecord,
+    participant: RoomParticipant,
+    rawTaskRequestId: unknown,
+    requestedTurn: unknown
+  ):
+    | {
+        ok: true
+        requestId: string
+        canonicalAgentId: string
+        turnSequence: number
+      }
+    | { ok: false; error: string } {
+    if (
+      typeof rawTaskRequestId !== "string" ||
+      rawTaskRequestId.length === 0 ||
+      rawTaskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH
+    )
+      return { ok: false, error: "invalid_task_request" }
+    const resolution = resolveTaskRequest(
+      buildTaskProjectionIndex(room.messages, room.participants),
+      rawTaskRequestId,
+      room.participants
+    )
+    if (resolution.ok === false) return { ok: false, error: resolution.error }
+    const owner = room.participants[resolution.request.fromParticipantId]
+    if (!owner || owner.kind !== "human" || owner.id !== participant.id)
+      return { ok: false, error: "task_interrupt_not_owner" }
+    const canonicalAgentId = initialTaskAgentParticipantId(
+      resolution.request,
+      room.participants
+    )
+    if (!canonicalAgentId)
+      return { ok: false, error: "task_target_not_in_room" }
+    if (!isAgentActivityTurnSequence(requestedTurn))
+      return { ok: false, error: "invalid_task_turn" }
+    const activeTurn = this.transientAgentActivities.get(
+      agentActivityKey(canonicalAgentId, `task:${resolution.requestId}`)
+    )
+    if (!activeTurn || activeTurn.turnSequence !== requestedTurn)
+      return { ok: false, error: "task_turn_not_active" }
+    return {
+      ok: true,
+      requestId: resolution.requestId,
+      canonicalAgentId,
+      turnSequence: requestedTurn,
+    }
+  }
+
+  /**
+   * #409: validate one published Task execution projection fail-closed and
+   * attribute it to the canonical Agent endpoint of the canonical Task.
+   *
+   * Execution truth belongs to the Runtime, but the Room is the authorization
+   * boundary: a secondary Agent that later participates in the same Task may
+   * never overwrite the canonical Agent's execution state.
+   */
+  private normalizeTaskExecution(
+    room: RoomRecord,
+    participant: RoomParticipant,
+    raw: unknown
+  ): TaskExecutionProjection | null {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+    const candidate = raw as Record<string, unknown>
+    const taskRequestId = candidate.taskRequestId
+    if (
+      typeof taskRequestId !== "string" ||
+      taskRequestId.length === 0 ||
+      taskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH
+    )
+      return null
+    const resolution = resolveTaskRequest(
+      buildTaskProjectionIndex(room.messages, room.participants),
+      taskRequestId,
+      room.participants
+    )
+    if (resolution.ok === false) return null
+    const canonicalAgentId = initialTaskAgentParticipantId(
+      resolution.request,
+      room.participants
+    )
+    if (!canonicalAgentId || canonicalAgentId !== participant.id) return null
+
+    const queuedCount = candidate.queuedCount
+    if (
+      typeof queuedCount !== "number" ||
+      !Number.isSafeInteger(queuedCount) ||
+      queuedCount < 0 ||
+      queuedCount > MAX_TASK_EXECUTION_QUEUED_COUNT
+    )
+      return null
+    const currentTurnSequence = candidate.currentTurnSequence
+    if (currentTurnSequence !== undefined) {
+      if (!isAgentActivityTurnSequence(currentTurnSequence)) return null
+      if (!isTaskExecutionPhase(candidate.phase)) return null
+    } else if (candidate.phase !== undefined) {
+      // A phase without a current turn would be a claim about nothing.
+      return null
+    }
+    if (
+      candidate.lastOutcome !== undefined &&
+      !isTaskExecutionOutcome(candidate.lastOutcome)
+    )
+      return null
+    if (
+      candidate.availability !== undefined &&
+      !isTaskExecutionAvailability(candidate.availability)
+    )
+      return null
+
+    return {
+      agentParticipantId: participant.id,
+      taskRequestId: resolution.requestId,
+      queuedCount,
+      ...(currentTurnSequence === undefined
+        ? {}
+        : {
+            currentTurnSequence: currentTurnSequence as number,
+            phase: candidate.phase as TaskExecutionProjection["phase"],
+          }),
+      ...(candidate.lastOutcome === undefined
+        ? {}
+        : {
+            lastOutcome:
+              candidate.lastOutcome as TaskExecutionProjection["lastOutcome"],
+          }),
+      ...(candidate.availability === undefined
+        ? {}
+        : {
+            availability:
+              candidate.availability as TaskExecutionProjection["availability"],
+          }),
+    }
+  }
+
   private async handleClientMessage(
     socket: WebSocket,
     attachment: ConnectionAttachment,
@@ -6101,6 +6397,57 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
 
+    // #409: Interrupt & send. Ordering is the whole point of this command:
+    // validate everything first, then append + persist + broadcast + wake the
+    // canonical Task instruction through the existing path, and ONLY THEN
+    // dispatch the private exact-turn interrupt. The replacement instruction is
+    // therefore durable before the current turn is asked to stop; if the
+    // interrupt cannot be delivered the instruction simply stays queued.
+    if (message.type === "task-interrupt-and-send") {
+      const reject = (error: string) =>
+        socket.send(JSON.stringify({ type: "error", error }))
+      const text = typeof message.text === "string" ? message.text.trim() : ""
+      if (!text) {
+        reject("invalid_task_instruction")
+        return
+      }
+      const turn = this.resolveInterruptTarget(
+        room,
+        participant,
+        message.taskRequestId,
+        message.turnSequence
+      )
+      if (turn.ok === false) {
+        reject(turn.error)
+        return
+      }
+
+      // Step 1: the canonical, durable, woken Task instruction.
+      const instruction = await this.appendHumanText(room, participant, {
+        text,
+        taskRequestId: turn.requestId,
+      })
+      if (instruction.ok === false) {
+        reject(instruction.error)
+        return
+      }
+
+      // Step 2: only now stop the exact turn the Human was looking at.
+      if (
+        !this.sendAgentTaskControl(room, turn.canonicalAgentId, {
+          control: "interrupt",
+          taskRequestId: turn.requestId,
+          turnSequence: message.turnSequence,
+        })
+      ) {
+        // Truthful partial success: the instruction is durably queued and the
+        // interrupt did not land. Never roll the instruction back.
+        reject("instruction_queued_interrupt_unavailable")
+        return
+      }
+      return
+    }
+
     // #409: Task-scoped remote interrupt. This is a control-plane action, not
     // conversation content: it appends no Room message, increments no
     // sequence, wakes no waiter, emits no analytics, and never enters the
@@ -6110,70 +6457,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (message.type === "task-interrupt") {
       const reject = (error: string) =>
         socket.send(JSON.stringify({ type: "error", error }))
-      const rawTaskRequestId = message.taskRequestId
-      if (
-        typeof rawTaskRequestId !== "string" ||
-        rawTaskRequestId.length === 0 ||
-        rawTaskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH
-      ) {
-        reject("invalid_task_request")
-        return
-      }
-      const taskProjection = buildTaskProjectionIndex(
-        room.messages,
-        room.participants
+      // Exactly the same authorization the structured interrupt & send uses:
+      // canonical Task, owning Human, canonical Agent endpoint, and the exact
+      // turn the Room currently shows for that Agent.
+      const target = this.resolveInterruptTarget(
+        room,
+        participant,
+        message.taskRequestId,
+        message.turnSequence
       )
-      const resolution = resolveTaskRequest(
-        taskProjection,
-        rawTaskRequestId,
-        room.participants
-      )
-      if (resolution.ok === false) {
-        reject(resolution.error)
-        return
-      }
-      // Ownership comes from the canonical collaboration request, never from
-      // the browser: only the Human who created this Human→Agent Task may
-      // stop its Agent's turn. Another Human in the same Room cannot.
-      const owner = room.participants[resolution.request.fromParticipantId]
-      if (!owner || owner.kind !== "human" || owner.id !== participant.id) {
-        reject("task_interrupt_not_owner")
-        return
-      }
-      // The canonical endpoint only. An interrupt is never rerouted to
-      // another participating Agent after the original one disconnects.
-      const canonicalAgentId = initialTaskAgentParticipantId(
-        resolution.request,
-        room.participants
-      )
-      if (!canonicalAgentId) {
-        reject("task_target_not_in_room")
-        return
-      }
-      // #409 exact turn: the request must name the turn the Room currently
-      // shows as running for THIS Task and THIS Agent. A request that was
-      // delayed in transport, or that names a turn of another Agent's
-      // activity, is refused here — before any private frame is written.
-      if (!isAgentActivityTurnSequence(message.turnSequence)) {
-        reject("invalid_task_turn")
-        return
-      }
-      const activeTurn = this.transientAgentActivities.get(
-        agentActivityKey(canonicalAgentId, `task:${resolution.requestId}`)
-      )
-      if (
-        !activeTurn ||
-        activeTurn.turnSequence !== message.turnSequence ||
-        activeTurn.state === undefined
-      ) {
-        reject("task_turn_not_active")
+      if (target.ok === false) {
+        reject(target.error)
         return
       }
       if (
-        !this.sendAgentTaskControl(room, canonicalAgentId, {
+        !this.sendAgentTaskControl(room, target.canonicalAgentId, {
           control: "interrupt",
-          taskRequestId: resolution.requestId,
-          turnSequence: message.turnSequence,
+          taskRequestId: target.requestId,
+          turnSequence: target.turnSequence as number,
         })
       ) {
         reject("task_agent_not_reachable")
@@ -6288,61 +6589,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     if (message.type === "chat" && message.text.trim()) {
-      const taskProjection =
-        message.taskRequestId === undefined
-          ? undefined
-          : buildTaskProjectionIndex(room.messages, room.participants)
-      const taskRequest =
-        taskProjection === undefined
-          ? undefined
-          : resolveTaskRequest(
-              taskProjection,
-              message.taskRequestId,
-              room.participants
-            )
-      if (taskRequest && taskRequest.ok === false) {
-        socket.send(JSON.stringify({ type: "error", error: taskRequest.error }))
-        return
-      }
-      const taskTargets =
-        taskRequest && taskRequest.ok === true
-          ? resolveHumanTaskTargets(
-              taskRequest,
-              participant,
-              room.participants,
-              message.targets,
-              MAX_TARGETS
-            )
-          : undefined
-      if (taskTargets && taskTargets.ok === false) {
-        socket.send(JSON.stringify({ type: "error", error: taskTargets.error }))
-        return
-      }
-      const roomMessage = this.appendMessage(room, {
-        id: crypto.randomUUID(),
-        peerId: participant.id,
-        name: participant.name,
-        kind: participant.kind,
-        type: "text",
-        text: message.text.trim().slice(0, 4000),
-        ...(taskRequest && taskRequest.ok === true
-          ? {
-              taskRequestId: taskRequest.requestId,
-              targets: taskTargets?.ok ? taskTargets.targets : [],
-            }
-          : (() => {
-              const targets = normalizeChatTargets(room, message.targets)
-              return targets.length ? { targets } : {}
-            })()),
-        createdAt: Date.now(),
+      const instruction = await this.appendHumanText(room, participant, {
+        text: message.text,
+        targets: message.targets,
+        taskRequestId: message.taskRequestId,
       })
-      await this.saveRoom(room)
-      // #234: one server-authoritative TargetedMessage per canonical
-      // targeted text message; the message's targets are the validated
-      // current participant ids persisted on roomMessage.
-      this.trackTargetedMessage(room, roomMessage)
-      await this.broadcast({ type: "message", message: roomMessage })
-      this.resolveAgentWaiters(room)
+      if (instruction.ok === false) {
+        socket.send(JSON.stringify({ type: "error", error: instruction.error }))
+        return
+      }
       return
     }
 

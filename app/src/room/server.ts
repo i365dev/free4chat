@@ -13,11 +13,16 @@ const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const MAX_PERMISSION_REQUEST_BODY_BYTES = 64 * 1024
 const AGENT_EVENT_PATH = "/api/room/agent-events"
 const AGENT_ACTIVITY_PATH = "/api/room/agent-activity"
+// #409: the Runtime-only transient Task execution projection rides the same
+// control route as activity/permissions/surfaces. It is not a second
+// transport: the Worker only authenticates and forwards the bounded body.
+const AGENT_TASK_EXECUTION_PATH = "/api/room/agent-task-execution"
 const ROOM_REQUEST_PATHS = new Set([
   "/api/room/attachments",
   "/api/room/live-transcript/append",
   AGENT_EVENT_PATH,
   AGENT_ACTIVITY_PATH,
+  AGENT_TASK_EXECUTION_PATH,
   "/api/room/permissions/request",
   "/api/room/runtime-provider/connect",
   "/api/room/surfaces/read",
@@ -147,6 +152,45 @@ export async function handleRoomRequest(
   // an MCP tool and accepts no media identifiers, speaker labels, provider
   // payloads, or raw audio: the authenticated RoomSession action derives the
   // speaker from sourceParticipantId and applies epoch/dedup authorization.
+  if (pathname === AGENT_TASK_EXECUTION_PATH) {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
+    if (declaredSize > 4096) return json({ error: "request_too_large" }, 413)
+    let body: Record<string, unknown>
+    try {
+      const bytes = new Uint8Array(await request.arrayBuffer())
+      if (bytes.byteLength > 4096)
+        return json({ error: "request_too_large" }, 413)
+      body = JSON.parse(new TextDecoder().decode(bytes)) as Record<
+        string,
+        unknown
+      >
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "agent-task-execution",
+        participantId,
+        token,
+        // Forwarded verbatim; RoomSession validates every field fail-closed and
+        // attributes it to the canonical Agent of the canonical Task.
+        projection: body,
+      }),
+    })
+  }
+
   if (pathname === "/api/room/live-transcript/append") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)

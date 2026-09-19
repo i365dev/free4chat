@@ -373,11 +373,11 @@ func (r *ResidentRuntime) ackPending(sequence int64) {
 
 func (r *ResidentRuntime) ackPendingFor(scope string, sequence int64) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	ref := r.sessionRefLocked(scope)
 	if ref == nil {
 		return
 	}
+	removed := false
 	for index, pending := range *ref.pendingAddressed {
 		if pending != sequence {
 			continue
@@ -385,7 +385,12 @@ func (r *ResidentRuntime) ackPendingFor(scope string, sequence int64) {
 		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
 		delete(*ref.pendingContexts, sequence)
 		r.forgetTurnRecoveryLocked(scope, sequence)
-		return
+		removed = true
+		break
+	}
+	r.mu.Unlock()
+	if removed {
+		r.publishTaskExecution(scope)
 	}
 }
 
@@ -434,6 +439,7 @@ func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, th
 		r.mu.Unlock()
 		return
 	}
+	removed := false
 	if through > *ref.deliveredThrough {
 		*ref.deliveredThrough = through
 	}
@@ -447,9 +453,15 @@ func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, th
 		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
 		delete(*ref.pendingContexts, target)
 		r.forgetTurnRecoveryLocked(scope, target)
+		removed = true
 		break
 	}
 	r.mu.Unlock()
+	if removed {
+		// The consumed trigger is no longer waiting; refresh the transient
+		// execution projection outside r.mu (it is presentation only).
+		r.publishTaskExecution(scope)
+	}
 }
 
 func (r *ResidentRuntime) transcriptDeliveryMarkers() (meeting, live int64) {

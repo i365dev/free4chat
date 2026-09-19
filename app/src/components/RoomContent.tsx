@@ -42,6 +42,7 @@ import {
   ROOM_APP_INLINE_SHORTCUTS_MOBILE,
   writeRecentRoomAppIds,
 } from "../common/roomAppRecents"
+import { taskExecutionLabel } from "../common/taskExecution"
 import {
   buildTaskProjections,
   isTaskTerminal,
@@ -351,6 +352,7 @@ export default function RoomContent({
     sendCollabResult,
     sendPermissionResponse,
     sendTaskInterrupt,
+    sendTaskInterruptAndSend,
     localMicState,
     toggleMicrophone,
     toggleScreenShare,
@@ -372,6 +374,7 @@ export default function RoomContent({
     leaveRoom,
     localParticipantId,
     agentActivities,
+    taskExecutions,
     roomAppsEnabled,
     sendRoomAppMessage,
     subscribeRoomAppMessages,
@@ -586,6 +589,22 @@ export default function RoomContent({
   // this Human created, and only the exact turn that Agent's transient
   // activity currently reports. A secondary participating Agent's activity, or
   // another Human's Task, must never produce this control.
+  // #409: the Runtime-authoritative execution projection of the canonical
+  // Agent for the selected Task. The browser renders exactly what the Room
+  // published; it never derives queueing or "interrupted" locally.
+  const activeTaskExecution = activeTask
+    ? (taskExecutions ?? []).find(
+        (execution) =>
+          execution.taskRequestId === activeTask.requestId &&
+          execution.agentParticipantId === activeTask.targetParticipantId
+      )
+    : undefined
+  const activeTaskExecutionLabel = activeTaskExecution
+    ? taskExecutionLabel(activeTaskExecution)
+    : undefined
+  const activeTaskInterrupting =
+    activeTaskExecution?.phase === "interrupting" &&
+    activeTaskExecution.currentTurnSequence !== undefined
   const activeTaskInterruptActivity =
     activeTask &&
     effectiveLocalParticipantId &&
@@ -922,6 +941,18 @@ export default function RoomContent({
       setTaskInterruptFailed(!sendTaskInterrupt(taskRequestId, turnSequence))
     },
     [sendTaskInterrupt]
+  )
+
+  // #409: one structured command. The Room durably queues the instruction
+  // BEFORE it stops the exact turn, so a failed interrupt still leaves the
+  // instruction queued (reported truthfully, never silently resent).
+  const handleTaskInterruptAndSend = useCallback(
+    (taskRequestId: string, turnSequence: number, text: string) => {
+      const sent = sendTaskInterruptAndSend(taskRequestId, turnSequence, text)
+      setTaskInterruptFailed(!sent)
+      return sent
+    },
+    [sendTaskInterruptAndSend]
   )
 
   const toggleAgentVoice = useCallback(
@@ -2045,6 +2076,34 @@ export default function RoomContent({
                 onSendText={wrappedSendText}
                 onSendFile={wrappedSendFile}
                 onSendTaskFile={wrappedSendTaskFile}
+                taskExecution={
+                  activeTask
+                    ? {
+                        label: activeTaskExecutionLabel?.label ?? "",
+                        detail: activeTaskExecutionLabel?.detail,
+                        availability: activeTaskExecution?.availability,
+                        interrupting: activeTaskInterrupting,
+                        interruptible:
+                          Boolean(activeTaskInterruptActivity) &&
+                          !activeTaskInterrupting,
+                        onInterrupt: () => {
+                          if (!activeTaskInterruptActivity) return
+                          handleTaskInterrupt(
+                            activeTask.requestId,
+                            activeTaskInterruptActivity.turnSequence
+                          )
+                        },
+                        onInterruptAndSend: (text: string) =>
+                          activeTaskInterruptActivity
+                            ? handleTaskInterruptAndSend(
+                                activeTask.requestId,
+                                activeTaskInterruptActivity.turnSequence,
+                                text
+                              )
+                            : false,
+                      }
+                    : undefined
+                }
                 onSendAction={sendActionMessage}
                 localParticipantId={effectiveLocalParticipantId}
                 onCollabRespond={handleCollabRespond}
