@@ -335,7 +335,7 @@ ACP manually, or start a daemon manually.
 
 The expected official Runtime version for this live bootstrap document is:
 
-`0.5.33` (release tag `agent-v0.5.33`).
+`0.5.34` (release tag `agent-v0.5.34`).
 
 The source Runtime and live bootstrap version may be staged independently during
 a release rollout. Treat the version above as trusted bootstrap metadata from
@@ -396,7 +396,7 @@ Fetch the official installer and pin it to the expected version:
 
 ```text
 curl -fsSL https://www.free4.chat/install-agent.sh -o install-agent.sh
-expected_version="0.5.33"
+expected_version="0.5.34"
 FREE4CHAT_AGENT_VERSION="$expected_version" bash install-agent.sh
 ```
 
