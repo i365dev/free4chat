@@ -37,6 +37,17 @@ type turnRetryPlan struct {
 	failureClass string
 	attempt      int
 	delay        time.Duration
+	// dueAt is when this retry becomes eligible. The retry clock waits for the
+	// EARLIEST due plan across every scope, so one Task's slow back-off can
+	// never delay another Task's retry (#421).
+	dueAt time.Time
+}
+
+// turnRetryState is the bounded autonomous retry budget of ONE canonical
+// pending turn. Plan is nil while the retry is running or already dispatched.
+type turnRetryState struct {
+	attempt int
+	plan    *turnRetryPlan
 }
 
 // canonicalTurnKey identifies one canonical pending turn: the logical scope
@@ -93,10 +104,11 @@ func permanentTurnFailure(err error) bool {
 func (r *ResidentRuntime) turnRetryIndexFor(scope string, target int64) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.turnRetryScope != scope || r.turnRetryTarget != target {
+	state := r.turnRetries[canonicalTurnKey{scope: normalizeScope(scope), target: target}]
+	if state == nil {
 		return 0
 	}
-	return r.turnRetryAttempt
+	return state.attempt
 }
 
 // failTurn records one failed Harness turn, emits the bounded secret-free
@@ -116,6 +128,10 @@ func (r *ResidentRuntime) failTurn(
 	elapsedMs := time.Since(started).Milliseconds()
 	scopeKind := scopeKindOf(scope)
 	retryAttempt := r.turnRetryIndexFor(scope, target)
+	// A failed turn ends its drain pass for THIS scope. Without this, a
+	// deterministic failure would be relaunched immediately by the settling
+	// lane's own refill, and an independent scope would never get its turn.
+	r.markTurnFailedInPass(scope, target)
 	r.mu.Lock()
 	r.lastError = err.Error()
 	r.lastErrorSource = lastErrorSource
@@ -152,16 +168,19 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 		r.mu.Unlock()
 		return
 	}
-	if r.turnRetryScope != scope || r.turnRetryTarget != target {
-		r.turnRetryScope = scope
-		r.turnRetryTarget = target
-		r.turnRetryAttempt = 0
-		r.turnRetryPlan = nil
+	// The budget belongs to this exact canonical turn. A concurrent failure of
+	// a DIFFERENT Task creates or advances its OWN entry, so neither Task can
+	// reset or exhaust the other's retry budget (#421).
+	key := canonicalTurnKey{scope: normalizeScope(scope), target: target}
+	state := r.turnRetries[key]
+	if state == nil {
+		state = &turnRetryState{}
+		r.turnRetries[key] = state
 	}
-	r.turnRetryAttempt++
-	attempt := r.turnRetryAttempt
+	state.attempt++
+	attempt := state.attempt
 	if attempt > maxTurnRetryAttempts {
-		r.turnRetryPlan = nil
+		state.plan = nil
 		// The budget for this exact canonical turn is spent: close its
 		// autonomous recovery so later unrelated Room traffic can only keep
 		// it pending, never re-execute it.
@@ -178,13 +197,14 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 	if r.turnRetryDelay != nil {
 		delay = r.turnRetryDelay(attempt - 1)
 	}
-	r.turnRetryPlan = &turnRetryPlan{
+	state.plan = &turnRetryPlan{
 		scope:        scope,
 		target:       target,
 		scopeKind:    scopeKind,
 		failureClass: failureClass,
 		attempt:      attempt,
 		delay:        delay,
+		dueAt:        time.Now().Add(delay),
 	}
 	r.mu.Unlock()
 	r.log("retry_scheduled", map[string]string{
@@ -196,16 +216,30 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 	})
 }
 
-// takeTurnRetryPlan pops the armed plan, if any.
-func (r *ResidentRuntime) takeTurnRetryPlan() (turnRetryPlan, bool) {
+// nextTurnRetry reports the next bounded retry this Runtime owes. It returns
+// wait > 0 when the earliest armed plan is not due yet. A plan that IS due is
+// consumed here, so the clock cannot dispatch the same retry twice.
+func (r *ResidentRuntime) nextTurnRetry() (plan turnRetryPlan, wait time.Duration, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.turnRetryPlan == nil {
-		return turnRetryPlan{}, false
+	var earliest *turnRetryState
+	for _, state := range r.turnRetries {
+		if state == nil || state.plan == nil {
+			continue
+		}
+		if earliest == nil || state.plan.dueAt.Before(earliest.plan.dueAt) {
+			earliest = state
+		}
 	}
-	plan := *r.turnRetryPlan
-	r.turnRetryPlan = nil
-	return plan, true
+	if earliest == nil {
+		return turnRetryPlan{}, 0, false
+	}
+	if remaining := time.Until(earliest.plan.dueAt); remaining > 0 {
+		return *earliest.plan, remaining, true
+	}
+	plan = *earliest.plan
+	earliest.plan = nil
+	return plan, 0, true
 }
 
 // clearTurnRetry drops the retry budget for a canonical turn that has just
@@ -213,12 +247,7 @@ func (r *ResidentRuntime) takeTurnRetryPlan() (turnRetryPlan, bool) {
 // never replays Harness cognition.
 func (r *ResidentRuntime) clearTurnRetry(scope string, target int64) {
 	r.mu.Lock()
-	if r.turnRetryScope == scope && r.turnRetryTarget == target {
-		r.turnRetryScope = ""
-		r.turnRetryTarget = 0
-		r.turnRetryAttempt = 0
-		r.turnRetryPlan = nil
-	}
+	delete(r.turnRetries, canonicalTurnKey{scope: normalizeScope(scope), target: target})
 	r.mu.Unlock()
 }
 
@@ -235,7 +264,15 @@ func (r *ResidentRuntime) unresolvedTurnFailureLocked() bool {
 	if r.lastErrorSource == "harness" || r.lastErrorSource == "send" {
 		return true
 	}
-	return r.turnRetryPlan != nil || r.turnRetryAttempt > maxTurnRetryAttempts
+	for _, state := range r.turnRetries {
+		if state == nil {
+			continue
+		}
+		if state.plan != nil || state.attempt > maxTurnRetryAttempts {
+			return true
+		}
+	}
+	return false
 }
 
 // turnRecoveryClosed reports whether autonomous recovery of one canonical
@@ -308,20 +345,20 @@ func (r *ResidentRuntime) reopenTurnRecoveryLocked(scope string) {
 			continue
 		}
 		delete(r.closedTurnRecovery, key)
-		if r.turnRetryScope == key.scope && r.turnRetryTarget == key.target {
-			r.turnRetryScope = ""
-			r.turnRetryTarget = 0
-			r.turnRetryAttempt = 0
-			r.turnRetryPlan = nil
-		}
+		delete(r.turnRetries, key)
 	}
 }
 
-// drainTurnsWithRetryClock is the event-loop entry point. It runs the serial
-// turn drain and then rides the bounded autonomous retry clock, so a pending
-// addressed turn never needs an unrelated future Room event before it is
-// retried. It adds no goroutine and no scheduler: the wait is the existing
-// stop-aware sleep on the one event-loop goroutine that already owns drainTurns.
+// drainTurnsWithRetryClock is the event-loop entry point. It runs the bounded
+// turn drain to quiescence and then rides the autonomous retry clock, so a
+// pending addressed turn never needs an unrelated future Room event before it
+// is retried. It adds no goroutine and no scheduler: the wait is the existing
+// stop-aware sleep on the one event-loop goroutine that already owns the drain.
+//
+// Blocking here is deliberate and matches the pre-#421 contract. The resident
+// frame READER is a separate goroutine that has already ingested every frame —
+// including a private Task interrupt — so a long Harness turn can never delay
+// an interrupt or a Room event. Only turn SCHEDULING waits.
 func (r *ResidentRuntime) drainTurnsWithRetryClock() {
 	r.drainTurns()
 	r.runTurnRetryClock()
@@ -332,18 +369,22 @@ func (r *ResidentRuntime) drainTurnsWithRetryClock() {
 // armed by a fresh failed turn, so the loop is bounded by construction.
 func (r *ResidentRuntime) runTurnRetryClock() {
 	for {
-		plan, ok := r.takeTurnRetryPlan()
+		plan, wait, ok := r.nextTurnRetry()
 		if !ok {
 			return
+		}
+		if wait > 0 {
+			if !r.sleep(wait) {
+				return
+			}
+			continue
 		}
 		if target, pending := r.peekPendingFor(plan.scope); !pending || target != plan.target {
 			// The canonical turn settled while the clock was armed. Never
 			// resurrect a stale retry for a different or already-delivered
 			// trigger.
-			return
-		}
-		if !r.sleep(plan.delay) {
-			return
+			r.clearTurnRetry(plan.scope, plan.target)
+			continue
 		}
 		r.log("retry_started", map[string]string{
 			"scopeKind":    plan.scopeKind,
@@ -351,6 +392,9 @@ func (r *ResidentRuntime) runTurnRetryClock() {
 			"retryAttempt": strconv.Itoa(plan.attempt),
 			"retryDelayMs": strconv.FormatInt(plan.delay.Milliseconds(), 10),
 		})
+		// The retried turn is now dispatched (or deferred behind a busy lane);
+		// its own settlement re-enters both the scheduler and this clock, so
+		// this loop never spins on a plan it already consumed.
 		r.drainTurns()
 		if r.isStopped() {
 			return

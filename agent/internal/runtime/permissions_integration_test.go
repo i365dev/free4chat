@@ -535,9 +535,8 @@ func waitForResidentTurnToSettle(t *testing.T, rt *ResidentRuntime) {
 	t.Helper()
 	waitFor(t, time.Second, func() bool {
 		rt.mu.Lock()
-		running := rt.turnRunning
-		rt.mu.Unlock()
-		return !running
+		defer rt.mu.Unlock()
+		return len(rt.activeTurns) == 0
 	}, "resident ACP turn to settle")
 }
 

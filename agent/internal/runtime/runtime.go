@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
+	"github.com/i365dev/free4chat/agent/internal/harness"
 	"github.com/i365dev/free4chat/agent/internal/media"
 	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -133,6 +134,16 @@ type Options struct {
 	// the Human's projects. The Runtime only reads this path for filtering; it
 	// never owns, creates, or walks it. Empty disables the filter.
 	DisposableWorkspaceRoot string
+	// TaskExecution is the launcher-registry EXECUTION policy for this
+	// resident (#421): how many of this Harness's retained conversations may
+	// execute a turn at the same time. It is copied from the resolved
+	// launcher, never inferred from ACP capability advertisement, and the
+	// zero value is the fail-safe serial policy.
+	TaskExecution types.TaskExecutionPolicy
+	// TurnLaneOverride, when positive, replaces the policy lane count. It
+	// exists only so the bounded-concurrency cost probe can be reproduced
+	// against a real Runtime; it is never a product control.
+	TurnLaneOverride int
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
@@ -156,7 +167,16 @@ type ResidentRuntime struct {
 	lastError         string
 	stopped           bool
 	harnessFailed     bool
-	turnRunning       bool
+	// activeTurns holds the canonical turn this Runtime is executing RIGHT
+	// NOW for each logical scope. It replaces the single `turnRunning` bool
+	// (#421): logical scopes were always isolated for conversation state, and
+	// this makes them isolated for execution capacity too, bounded by
+	// turnLanes. A scope appears at most once, which is the per-session
+	// serialization invariant at the scheduler level.
+	activeTurns map[string]activeTurnLane
+	// turnLanes is the bounded number of turns that may execute at once,
+	// resolved ONCE from the launcher execution policy. It is at least 1.
+	turnLanes int
 	// deliveredThrough is the highest Room event sequence successfully
 	// consumed by the current retained Harness conversation. It is NOT the
 	// Room transport cursor: receiving an event only advances cursor.
@@ -178,10 +198,19 @@ type ResidentRuntime struct {
 	// (scope, target) so a later Room event can never reset the retry budget
 	// of the same still-pending turn; only a different canonical turn or a
 	// successful delivery starts a new budget.
-	turnRetryScope   string
-	turnRetryTarget  int64
-	turnRetryAttempt int
-	turnRetryPlan    *turnRetryPlan
+	turnRetries map[canonicalTurnKey]*turnRetryState
+	// turnIdleCond broadcasts whenever a turn releases its lane, so the
+	// quiescent drain can wait for all lanes instead of polling.
+	turnIdleCond *sync.Cond
+	// drainGeneration advances once per drain pass. A turn that FAILED during
+	// a pass is fenced out of the rest of that pass, which preserves the
+	// long-standing rule that one failed Harness turn ends its drain pass
+	// instead of being re-executed in a tight loop. The next pass — a new Room
+	// event, or the bounded retry clock — makes it runnable again.
+	drainGeneration int64
+	// turnFailedGeneration records, per scope, the drain pass in which its head
+	// turn last failed.
+	turnFailedGeneration map[string]int64
 	// closedTurnRecovery records the canonical turns whose autonomous
 	// recovery is over: the bounded retry budget is spent, or the Harness
 	// failure is permanent and no retry can resolve it. Such a turn stays
@@ -253,9 +282,6 @@ type ResidentRuntime struct {
 	// runs while turnControlMu is held, never while activityMu is.
 	turnControlMu           sync.Mutex
 	activities              map[string]activityTurnState
-	activityTurnActive      bool
-	activityScope           string
-	activityTurnSequence    int64
 	activityPublishMu       sync.Mutex
 	activityPublishQueue    map[string]activityPublication
 	activityPublisherActive bool
@@ -269,12 +295,12 @@ type ResidentRuntime struct {
 	taskExecutionPublishMu       sync.Mutex
 	taskExecutionPublishQueue    map[string]taskExecutionPublication
 	taskExecutionPublisherActive bool
-	// interruptScope/interruptTarget mark the exact canonical turn a Human
-	// interrupt was dispatched for. They are cleared when that same turn
-	// settles, so the settlement is reported truthfully and can never be
-	// applied to a successor turn.
-	interruptScope  string
-	interruptTarget int64
+	// interrupts marks the exact canonical turn a Human interrupt was
+	// dispatched for, per logical scope. An entry is cleared when that same
+	// turn settles, so the settlement is reported truthfully and can never be
+	// applied to a successor turn. Keying by scope is what keeps an interrupt
+	// on Task A from ever being consumed by Task B (#421).
+	interrupts map[string]int64
 	// session handoff (#409 V1, Pi only): ONE locally armed adoption plus the
 	// bounded set of Task scopes that already adopted a native session. The ACP
 	// session id lives only in pendingAdoption and is dropped once the adapter
@@ -415,25 +441,31 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		providerHandles = NewProviderHandleStore()
 	}
 	runtime := &ResidentRuntime{
-		options:             options,
-		log:                 options.Log,
-		state:               StateStarting,
-		eventBuffer:         NewEventBuffer(0, 0),
-		advertisedCaps:      append([]string(nil), options.Capabilities...),
-		stopCh:              make(chan struct{}),
-		resolvedRoomID:      options.RoomID,
-		speechConfig:        speechConfig,
-		providerClaim:       providerClaim,
-		providerHandles:     providerHandles,
-		pendingPermissions:  make(map[string]*pendingRoomPermission),
-		activities:          make(map[string]activityTurnState),
-		taskExecutionFacts:  make(map[string]taskExecutionFacts),
-		adoptedScopes:       make(map[string]struct{}),
-		adoptedLostScopes:   make(map[string]struct{}),
-		taskSessionSessions: make(map[string]taskSessionSelection),
-		taskSessionProjects: make(map[string]taskSessionProject),
-		taskSessionPages:    make(map[string]taskSessionPage),
+		options:              options,
+		log:                  options.Log,
+		state:                StateStarting,
+		eventBuffer:          NewEventBuffer(0, 0),
+		advertisedCaps:       append([]string(nil), options.Capabilities...),
+		stopCh:               make(chan struct{}),
+		resolvedRoomID:       options.RoomID,
+		speechConfig:         speechConfig,
+		providerClaim:        providerClaim,
+		providerHandles:      providerHandles,
+		pendingPermissions:   make(map[string]*pendingRoomPermission),
+		activities:           make(map[string]activityTurnState),
+		activeTurns:          make(map[string]activeTurnLane),
+		turnFailedGeneration: make(map[string]int64),
+		interrupts:           make(map[string]int64),
+		turnLanes:            resolveTurnLanes(options.TaskExecution, options.TurnLaneOverride),
+		turnRetries:          make(map[canonicalTurnKey]*turnRetryState),
+		taskExecutionFacts:   make(map[string]taskExecutionFacts),
+		adoptedScopes:        make(map[string]struct{}),
+		adoptedLostScopes:    make(map[string]struct{}),
+		taskSessionSessions:  make(map[string]taskSessionSelection),
+		taskSessionProjects:  make(map[string]taskSessionProject),
+		taskSessionPages:     make(map[string]taskSessionPage),
 	}
+	runtime.turnIdleCond = sync.NewCond(&runtime.mu)
 	configurePermissionResponder(runtime)
 	configureActivityHandler(runtime)
 	return runtime
@@ -855,6 +887,14 @@ func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
 				_ = stream.Close()
 				return
 			}
+			// Bounded reconciliation (#421). The Room deletes a participant's
+			// transient execution projections when its resident socket is
+			// replaced, so a reconnected Runtime must re-publish the CURRENT
+			// truth for the Tasks it is still executing. This is one small
+			// request per Task scope that exists — never a replay of activity,
+			// never a poll — and it is what lets a Human who reconnects later
+			// see "Running/Queued" instead of nothing.
+			r.republishTaskExecutions()
 			err = r.consumeResidentEventStream(stream)
 			r.clearResidentStream(stream)
 			_ = stream.Close()
@@ -1319,280 +1359,558 @@ func (r *ResidentRuntime) restoreStateAfterRetry() {
 	switch {
 	case r.unresolvedTurnFailureLocked():
 		r.state = StateReconnecting
-	case r.turnRunning:
+	case len(r.activeTurns) > 0:
 		r.state = StateTurn
 	default:
 		r.state = StateWaiting
 	}
 }
 
-// drainTurns serially processes queued addressed events. Room transport
-// receipt, successful Harness context delivery, and reply persistence are
-// distinct boundaries: only RunTurn success acknowledges an addressed target
-// and advances deliveredThrough. A failed/ambiguous Harness turn is therefore
-// intentionally eligible for at-least-once retry; a later SendText failure is
-// not. A turn whose bounded autonomous recovery is closed is deliberately
-// skipped without being re-executed or acknowledged.
+// MaxTurnLanes is the hard product ceiling on simultaneously executing
+// Harness turns for ONE resident, regardless of what any launcher policy
+// claims. The cost probe (#421) measured one Pi session at ~360 MB and two at
+// ~425 MB of local RSS, so a small explicit bound is a product requirement,
+// not a tuning detail: this is deliberately not a worker pool.
+const MaxTurnLanes = 2
+
+// resolveTurnLanes clamps the launcher execution policy into the one bounded
+// lane count this Runtime will ever use. The fail-safe result of any missing,
+// malformed, or over-large value is one lane, which is exactly the pre-#421
+// serial behavior.
+func resolveTurnLanes(policy types.TaskExecutionPolicy, override int) int {
+	lanes := policy.Lanes()
+	if override > 0 {
+		lanes = override
+	}
+	if lanes < 1 {
+		return 1
+	}
+	if lanes > MaxTurnLanes {
+		return MaxTurnLanes
+	}
+	return lanes
+}
+
+// restoreStateAfterTurns recomputes the resident's truthful state after ONE
+// turn releases its lane. It deliberately ignores which turn settled: with
+// bounded concurrency the state is a property of the whole resident, not of
+// one turn.
+func (r *ResidentRuntime) restoreStateAfterTurns() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return
+	}
+	switch {
+	case r.unresolvedTurnFailureLocked():
+		r.state = StateReconnecting
+	case len(r.activeTurns) > 0:
+		r.state = StateTurn
+	default:
+		r.state = StateWaiting
+	}
+}
+
+// activeTurnCount reports how many turns this Runtime is executing now.
+func (r *ResidentRuntime) activeTurnCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.activeTurns)
+}
+
+// beginTurnLane reserves one execution slot for the exact canonical turn of
+// one scope. It reports false when the scope is already executing a turn —
+// the per-scope serialization invariant — or when every lane is busy.
+//
+// The check and the reservation are one critical section, so two concurrent
+// schedulers can never both claim the last lane or the same scope.
+func (r *ResidentRuntime) beginTurnLane(scope string, target int64) turnLaneResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return laneCapacityFull
+	}
+	if _, running := r.activeTurns[scope]; running {
+		return laneScopeBusy
+	}
+	if len(r.activeTurns) >= r.turnLanes {
+		return laneCapacityFull
+	}
+	r.activeTurns[scope] = activeTurnLane{target: target, generation: r.drainGeneration}
+	return laneGranted
+}
+
+// markTurnFailedInPass fences one scope out of the remainder of the drain pass
+// that launched its failed turn. It keeps a deterministic Harness failure from
+// being re-executed in a tight loop while still letting an independent scope's
+// turn proceed in the same pass.
+func (r *ResidentRuntime) markTurnFailedInPass(scope string, target int64) {
+	r.mu.Lock()
+	lane, ok := r.activeTurns[scope]
+	if ok && lane.target == target {
+		r.turnFailedGeneration[scope] = lane.generation
+	}
+	r.mu.Unlock()
+}
+
+// failedInCurrentPassLocked reports whether this scope's head turn already
+// failed during the current drain pass. Callers must hold r.mu.
+func (r *ResidentRuntime) failedInCurrentPassLocked(scope string) bool {
+	generation, ok := r.turnFailedGeneration[scope]
+	return ok && generation == r.drainGeneration
+}
+
+// turnLaneResult is the closed outcome of one lane reservation attempt.
+// activeTurnLane is one executing turn together with the drain pass that
+// launched it, so a failure can be attributed to the right pass.
+type activeTurnLane struct {
+	target     int64
+	generation int64
+}
+
+type turnLaneResult int
+
+const (
+	laneGranted turnLaneResult = iota
+	// laneScopeBusy means THIS scope already executes a turn. With a serial
+	// policy this is also how a second independent Task waits its turn.
+	laneScopeBusy
+	// laneCapacityFull means every lane is executing another scope's turn.
+	laneCapacityFull
+)
+
+// finishTurnLane releases one scope's execution slot. It is idempotent and
+// only ever releases the exact turn it was granted for, so a late settlement
+// can never free a successor turn's slot.
+func (r *ResidentRuntime) finishTurnLane(scope string, target int64) {
+	r.mu.Lock()
+	if running, ok := r.activeTurns[scope]; ok && running.target == target {
+		delete(r.activeTurns, scope)
+	}
+	r.turnIdleCond.Broadcast()
+	r.mu.Unlock()
+}
+
+// turnLaneAvailableLocked reports whether one more turn could start right
+// now. Callers must hold r.mu.
+func (r *ResidentRuntime) turnLaneAvailableLocked() bool {
+	return !r.stopped && len(r.activeTurns) < r.turnLanes
+}
+
+// scopeRunningLocked reports whether this scope already executes a turn.
+// Callers must hold r.mu.
+func (r *ResidentRuntime) scopeRunningLocked(scope string) bool {
+	_, running := r.activeTurns[scope]
+	return running
+}
+
+// scopeRunning reports whether one logical scope is executing a turn now.
+func (r *ResidentRuntime) scopeRunning(scope string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.scopeRunningLocked(normalizeScope(scope))
+}
+
+// drainTurns starts as many queued addressed turns as the bounded execution
+// policy allows, then returns. It replaces the pre-#421 single blocking serial
+// drain: one logical scope still executes at most one turn at a time, but
+// INDEPENDENT scopes may now execute concurrently up to turnLanes.
+//
+// The delivery boundaries are unchanged. Room transport receipt, successful
+// Harness context delivery, and reply persistence stay distinct: only RunTurn
+// success acknowledges an addressed target and advances deliveredThrough. A
+// failed/ambiguous Harness turn is therefore still eligible for at-least-once
+// retry; a later SendText failure is not. A turn whose bounded autonomous
+// recovery is closed is still skipped without being re-executed.
+//
+// Fairness is deliberate and simple: candidate scopes are always visited in
+// pendingScopesLocked order, which is Room-scope-first then scope admission
+// order. A long-lived Task therefore occupies ONE lane and can never consume
+// the others, so an independent Task keeps making progress beside it. There is
+// no scheduler, no queue, and no worker pool here: only a bounded count.
 func (r *ResidentRuntime) drainTurns() {
 	r.mu.Lock()
-	if r.turnRunning || r.stopped {
-		r.mu.Unlock()
-		return
-	}
-	if _, _, runnable := r.nextRunnableTurnLocked(); !runnable {
-		// Every remaining unacknowledged turn has closed autonomous recovery.
-		// Nothing may run until an explicit recovery boundary re-arms it, so
-		// do not claim a turn state for work that will not run.
-		r.mu.Unlock()
-		return
-	}
-	r.turnRunning = true
-	r.state = StateTurn
+	r.drainGeneration++
 	r.mu.Unlock()
-
-	defer func() {
+	for {
+		r.launchTurns()
 		r.mu.Lock()
-		r.turnRunning = false
-		if !r.stopped {
-			// A pending bounded retry, an exhausted budget, a parked canonical
-			// turn, or any unresolved Harness/send failure is a truthful
-			// reconnect state: the resident still holds unacknowledged work it
-			// could not hand to the Harness. A permanent non-retryable Harness
-			// failure must keep reporting that state instead of being
-			// overwritten to waiting.
-			if r.unresolvedTurnFailureLocked() {
-				r.state = StateReconnecting
-			} else {
-				r.state = StateWaiting
-			}
+		if r.stopped || len(r.activeTurns) == 0 {
+			r.mu.Unlock()
+			return
 		}
+		// Every lane is occupied. Sleep until one settles; its own completion
+		// path re-enters the launcher, so a freed lane is always refilled.
+		r.turnIdleCond.Wait()
 		r.mu.Unlock()
-	}()
+	}
+}
 
-	for !r.isStopped() {
-		scope, target, ok := r.nextRunnableTurn()
-		if !ok {
-			return
+// launchTurns starts as many queued addressed turns as the bounded execution
+// policy allows, then returns without waiting.
+func (r *ResidentRuntime) launchTurns() {
+	if r.isStopped() {
+		return
+	}
+	// ONE pass over the candidates. Each candidate is considered once and its
+	// lane is claimed before the next is examined, so a turn that settles
+	// quickly can never be relaunched by the same pass.
+	for _, candidate := range r.runnableTurns() {
+		if r.boundToRunningConversation(candidate.scope) {
+			// Two Task scopes named the SAME native conversation. The adapter
+			// enforces one turn per conversation; the scheduler simply does
+			// not offer it work until the owner settles, so no turn is
+			// dispatched only to be refused.
+			continue
 		}
-		started := time.Now()
-		r.log("turn_started", map[string]string{
+		switch r.beginTurnLane(candidate.scope, candidate.target) {
+		case laneCapacityFull:
+			// Normal, not a failure: the work stays pending and the next turn
+			// settlement re-enters this function.
+			return
+		case laneScopeBusy:
+			// Raced with another scheduler that claimed this exact scope.
+			continue
+		}
+		r.mu.Lock()
+		r.state = StateTurn
+		r.mu.Unlock()
+		scope, target := candidate.scope, candidate.target
+		r.loopWG.Add(1)
+		go func() {
+			defer r.loopWG.Done()
+			r.runTurn(scope, target)
+			// runTurn has already released its lane, so this can safely refill
+			// the scheduler and wake any waiting drain.
+			r.afterTurnSettled()
+		}()
+	}
+}
+
+// MaxPendingTurnCandidates bounds how many scopes one scheduling pass will
+// inspect. Logical task scopes are already bounded, so this only stops a
+// malformed state from turning one pass into an unbounded scan.
+const MaxPendingTurnCandidates = 16
+
+// turnCandidate is one scope whose head canonical turn could execute now.
+type turnCandidate struct {
+	scope  string
+	target int64
+}
+
+// runnableTurns lists, in fair order, the scopes whose head canonical turn is
+// eligible to execute right now. It is the same candidate order the serial
+// drain always used — Room scope first, then scope admission order — so a
+// long-lived Task can never starve an independent one: it occupies one lane,
+// not the queue.
+func (r *ResidentRuntime) runnableTurns() []turnCandidate {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []turnCandidate
+	for _, scope := range r.pendingScopesLocked() {
+		if r.scopeRunningLocked(scope) || r.failedInCurrentPassLocked(scope) {
+			continue
+		}
+		ref := r.sessionRefLocked(scope)
+		if ref == nil || len(*ref.pendingAddressed) == 0 {
+			continue
+		}
+		target := (*ref.pendingAddressed)[0]
+		if r.turnRecoveryClosedLocked(scope, target) {
+			continue
+		}
+		out = append(out, turnCandidate{scope: scope, target: target})
+		if len(out) >= MaxPendingTurnCandidates {
+			break
+		}
+	}
+	return out
+}
+
+// boundToRunningConversation reports whether this scope's retained native
+// conversation is currently executing a turn for a DIFFERENT scope. An
+// adapter without the ownership seam always answers "no", which is correct for
+// a serial adapter because it can only ever execute one turn at a time.
+func (r *ResidentRuntime) boundToRunningConversation(scope string) bool {
+	ownership, ok := r.options.Adapter.(types.ScopedTurnOwnership)
+	if !ok {
+		return false
+	}
+	owner, busy := ownership.TurnOwnerFor(scope)
+	if !busy || owner == "" || owner == scope {
+		return false
+	}
+	return true
+}
+
+// afterTurnSettled is the single completion path of one finished turn. It runs
+// on that turn's own goroutine, so it adds no goroutine and cannot outlive the
+// turn's lifecycle.
+//
+// It refills the freed lane — an already-queued successor turn runs next, on
+// the same retained conversation — and wakes any drain waiting for
+// quiescence. It deliberately does NOT drive the autonomous retry clock: that
+// remains the job of drainTurnsWithRetryClock, exactly as before, so a plain
+// drain still performs one pass and never silently retries a failed turn.
+func (r *ResidentRuntime) afterTurnSettled() {
+	if r.isStopped() {
+		return
+	}
+	r.launchTurns()
+	r.mu.Lock()
+	r.turnIdleCond.Broadcast()
+	r.mu.Unlock()
+}
+
+// runTurn executes ONE canonical turn of ONE logical scope. It owns exactly
+// one execution lane for its whole duration and releases it before returning,
+// so a caller can immediately re-enter the scheduler.
+func (r *ResidentRuntime) runTurn(scope string, target int64) {
+	defer func() {
+		r.finishTurnLane(scope, target)
+		r.restoreStateAfterTurns()
+	}()
+	started := time.Now()
+	r.log("turn_started", map[string]string{
+		"scopeKind":    scopeKindOf(scope),
+		"retryAttempt": strconv.Itoa(r.turnRetryIndexFor(scope, target)),
+	})
+	// Admit the Harness session before rendering so the prompt accurately
+	// knows whether this is the same retained ACP conversation or a real
+	// session/new. This is also the single serialized boundary where an
+	// armed Pi session adoption binds to THIS canonical Task scope: a Task
+	// that adopts a native session never issues session/new for its scope,
+	// and an adopted Task whose session is gone fails closed instead of
+	// starting a fresh conversation.
+	if err := r.admitHarnessSession(scope, target); err != nil {
+		r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
+		return
+	}
+	generation, err := r.harnessSessionGeneration(scope)
+	if err != nil {
+		r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
+		return
+	}
+	newSession := r.observeHarnessSessionFor(scope, generation, target)
+	events, contextErr := r.pendingContextFor(scope, target)
+	if contextErr != nil {
+		r.mu.Lock()
+		r.lastError = contextErr.Error()
+		r.lastErrorSource = "harness"
+		r.state = StateReconnecting
+		r.mu.Unlock()
+		r.log("turn_context_unavailable", map[string]string{
 			"scopeKind":    scopeKindOf(scope),
-			"retryAttempt": strconv.Itoa(r.turnRetryIndexFor(scope, target)),
+			"failureClass": turnFailureOther,
+			"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
 		})
-		// Admit the Harness session before rendering so the prompt accurately
-		// knows whether this is the same retained ACP conversation or a real
-		// session/new. This is also the single serialized boundary where an
-		// armed Pi session adoption binds to THIS canonical Task scope: a Task
-		// that adopts a native session never issues session/new for its scope,
-		// and an adopted Task whose session is gone fails closed instead of
-		// starting a fresh conversation.
-		if err := r.admitHarnessSession(scope, target); err != nil {
-			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
+		// The frozen delta may have failed on a transient Room read, so
+		// the bounded retry clock still applies to this canonical turn.
+		r.markTurnFailedInPass(scope, target)
+		r.scheduleTurnRetry(scope, target, turnFailureOther, time.Since(started).Milliseconds())
+		return
+	}
+	if len(events) == 0 {
+		// A duplicate pending target can only be safely discarded when the
+		// successful-delivery cursor already covers it. Otherwise bounded
+		// local context was lost, so retain the trigger for a later retry
+		// rather than silently claiming Harness delivery.
+		if target <= r.effectiveDeliveryStartFor(scope) {
+			r.ackPendingFor(scope, target)
 			return
 		}
-		generation, err := r.harnessSessionGeneration(scope)
-		if err != nil {
-			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
-			return
+		r.log("turn_context_unavailable", map[string]string{
+			"scopeKind":    scopeKindOf(scope),
+			"failureClass": turnFailureOther,
+			"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+		})
+		r.markTurnFailedInPass(scope, target)
+		return
+	}
+	maxSeq := events[0].Sequence
+	for _, event := range events[1:] {
+		if event.Sequence > maxSeq {
+			maxSeq = event.Sequence
 		}
-		newSession := r.observeHarnessSessionFor(scope, generation, target)
-		events, contextErr := r.pendingContextFor(scope, target)
-		if contextErr != nil {
+	}
+
+	input := BuildHarnessTurn(events, &TurnContextOptions{
+		Self:         r.selfContext(),
+		Participants: r.rosterSnapshot(),
+	})
+	// A new conversation and "this turn still needs the Free4Chat host
+	// contract" are two different facts. An adopted Task (#409) continues an
+	// EXISTING native conversation, so it must never be described as new,
+	// while its first Free4Chat-controlled turn still needs the same
+	// bootstrap. Both are derived from the existing generation markers:
+	// newSession is true until a Harness delivery for this generation is
+	// successfully acknowledged, so a failed or never-acknowledged first
+	// adopted turn keeps Bootstrap true on its retry.
+	adoptedScope := r.isAdoptedScope(scope)
+	input.Session = &types.HarnessSessionContext{
+		New:       newSession && !adoptedScope,
+		Bootstrap: newSession && adoptedScope,
+		// The rendered Room-event sequence is a stable, sanitized context
+		// fact. Do not expose the private resident transport cursor, which
+		// may have advanced beyond this turn while the Harness was running.
+		CurrentRoomSequence: maxSeq,
+	}
+	r.enrichAttachments(input)
+	meetingThrough := r.attachTranscriptFor(scope, input)
+	liveThrough := r.attachLiveTranscriptFor(scope, input)
+
+	// A Human-originated Task becomes Working only after its scoped session
+	// is available and immediately before the first real cognition turn.
+	// Agent-originated collaboration keeps its explicit response semantics.
+	if request := humanTaskRequestFor(events, r.currentParticipantID()); request != nil {
+		if _, err := r.CollabResponse(types.CollabResponseArgs{
+			RequestID: request.RequestID,
+			Decision:  "accepted",
+			Summary:   "Agent started working.",
+		}); err != nil {
 			r.mu.Lock()
-			r.lastError = contextErr.Error()
-			r.lastErrorSource = "harness"
+			r.lastError = err.Error()
+			r.lastErrorSource = "send"
 			r.state = StateReconnecting
 			r.mu.Unlock()
-			r.log("turn_context_unavailable", map[string]string{
+			r.log("collab_accept_failed", map[string]string{
 				"scopeKind":    scopeKindOf(scope),
-				"failureClass": turnFailureOther,
-				"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+				"failureClass": turnFailureSend,
 			})
-			// The frozen delta may have failed on a transient Room read, so
-			// the bounded retry clock still applies to this canonical turn.
-			r.scheduleTurnRetry(scope, target, turnFailureOther, time.Since(started).Milliseconds())
-			return
-		}
-		if len(events) == 0 {
-			// A duplicate pending target can only be safely discarded when the
-			// successful-delivery cursor already covers it. Otherwise bounded
-			// local context was lost, so retain the trigger for a later retry
-			// rather than silently claiming Harness delivery.
-			if target <= r.effectiveDeliveryStartFor(scope) {
-				r.ackPendingFor(scope, target)
-				continue
-			}
-			r.log("turn_context_unavailable", map[string]string{
-				"scopeKind":    scopeKindOf(scope),
-				"failureClass": turnFailureOther,
-				"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
-			})
-			return
-		}
-		maxSeq := events[0].Sequence
-		for _, event := range events[1:] {
-			if event.Sequence > maxSeq {
-				maxSeq = event.Sequence
-			}
-		}
-
-		input := BuildHarnessTurn(events, &TurnContextOptions{
-			Self:         r.selfContext(),
-			Participants: r.rosterSnapshot(),
-		})
-		// A new conversation and "this turn still needs the Free4Chat host
-		// contract" are two different facts. An adopted Task (#409) continues an
-		// EXISTING native conversation, so it must never be described as new,
-		// while its first Free4Chat-controlled turn still needs the same
-		// bootstrap. Both are derived from the existing generation markers:
-		// newSession is true until a Harness delivery for this generation is
-		// successfully acknowledged, so a failed or never-acknowledged first
-		// adopted turn keeps Bootstrap true on its retry.
-		adoptedScope := r.isAdoptedScope(scope)
-		input.Session = &types.HarnessSessionContext{
-			New:       newSession && !adoptedScope,
-			Bootstrap: newSession && adoptedScope,
-			// The rendered Room-event sequence is a stable, sanitized context
-			// fact. Do not expose the private resident transport cursor, which
-			// may have advanced beyond this turn while the Harness was running.
-			CurrentRoomSequence: maxSeq,
-		}
-		r.enrichAttachments(input)
-		meetingThrough := r.attachTranscriptFor(scope, input)
-		liveThrough := r.attachLiveTranscriptFor(scope, input)
-
-		// A Human-originated Task becomes Working only after its scoped session
-		// is available and immediately before the first real cognition turn.
-		// Agent-originated collaboration keeps its explicit response semantics.
-		if request := humanTaskRequestFor(events, r.currentParticipantID()); request != nil {
-			if _, err := r.CollabResponse(types.CollabResponseArgs{
-				RequestID: request.RequestID,
-				Decision:  "accepted",
-				Summary:   "Agent started working.",
-			}); err != nil {
-				r.mu.Lock()
-				r.lastError = err.Error()
-				r.lastErrorSource = "send"
-				r.state = StateReconnecting
-				r.mu.Unlock()
-				r.log("collab_accept_failed", map[string]string{
-					"scopeKind":    scopeKindOf(scope),
-					"failureClass": turnFailureSend,
-				})
-				return
-			}
-			r.mu.Lock()
-			// A successful canonical acceptance resolves the send-origin
-			// admission failure before cognition starts. Do not let the stale
-			// reconnect state survive into the healthy Harness turn.
-			if r.lastErrorSource == "send" {
-				r.lastError = ""
-				r.lastErrorSource = ""
-			}
-			r.mu.Unlock()
-		}
-
-		// A newly addressed turn wins the speaker: stale audio from the
-		// previous response must never keep playing over the new one.
-		if voiceOutput := r.voiceOutput(); voiceOutput != nil {
-			voiceOutput.Cancel()
-		}
-
-		r.beginActivity(scope, target)
-		r.beginTaskTurn(scope, target)
-		result, err := r.runHarnessTurn(scope, *input, generation)
-		interrupted := r.consumeTurnInterrupted(scope, target)
-		r.finishActivity(scope, target)
-		if interrupted {
-			// A Human explicitly asked Free4Chat to stop THIS exact canonical
-			// turn, and that authorization was dispatched while the turn was
-			// still the Runtime's own active one. Its settlement is therefore
-			// terminal: never auto-retry it, never replay the instruction, and
-			// never publish the cancelled turn's tail as an Agent reply. The
-			// serial drain continues, so an already-queued successor turn runs
-			// next on the retained session.
-			//
-			// The settlement acknowledges the cancelled trigger BEFORE it
-			// refreshes execution, so the just-finished turn is never counted
-			// as queued behind itself.
-			r.settleInterruptedTurn(scope, target, maxSeq, generation, err)
-			continue
-		}
-		if err != nil {
-			// A failed turn keeps its canonical trigger pending for the
-			// existing retry/recovery policy, so the settled projection may
-			// truthfully count that still-pending work as queued — it is real
-			// state, never a phantom of the turn that just stopped running.
-			r.publishTaskExecution(scope)
-			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
-			return
-		}
-		r.log("turn_succeeded", map[string]string{
-			"scopeKind": scopeKindOf(scope),
-			"elapsedMs": strconv.FormatInt(time.Since(started).Milliseconds(), 10),
-		})
-		if r.isStopped() {
-			return
-		}
-
-		// RunTurn succeeded: commit every delivery marker before lifecycle
-		// handling or text persistence. If either of those later operations
-		// fails, replaying this already-consumed Harness prompt would be wrong.
-		r.acknowledgeHarnessDeliveryFor(scope, target, maxSeq, generation)
-		r.acknowledgeTranscriptDeliveryFor(scope, meetingThrough, liveThrough)
-		// The canonical turn is delivered: its bounded autonomous retry budget
-		// is spent and a later send failure must never replay cognition.
-		r.clearTurnRetry(scope, target)
-		r.mu.Lock()
-		r.harnessFailed = false
-		// #228: a successful turn proves the Harness recovered — clear ONLY
-		// the harness-origin error (a concurrent wait/send failure stays). A
-		// canonical turn parked with closed autonomous recovery is still
-		// unacknowledged, so its failure must stay visible until an explicit
-		// recovery boundary resolves it.
-		if r.lastErrorSource == "harness" && len(r.closedTurnRecovery) == 0 {
-			r.lastError = ""
-			r.lastErrorSource = ""
-		}
-		r.mu.Unlock()
-		// A lifecycle result is never ordinary reply text. Its body may contain
-		// an untruthful success claim, so consume the closed local intent before
-		// any SendText attempt. Confirmed leave hands cleanup to the daemon after
-		// this turn unwinds; rejected/failed intents use fixed truthful text.
-		if r.handleLifecycleIntent(input, result) {
-			return
-		}
-
-		text := strings.TrimSpace(result.Text)
-		if text == "" {
-			continue
-		}
-		handle, err := r.requireHandle()
-		if err != nil {
-			r.failTurn(scope, target, "harness", turnFailureSend, started, err, false)
-			return
-		}
-		sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
-		if err != nil {
-			r.failTurn(scope, target, "send", turnFailureSend, started, err, false)
+			// A failed canonical acceptance also ends this scope's drain pass:
+			// the retry belongs to the bounded heartbeat clock, not to an
+			// immediate relaunch by the settling lane.
+			r.markTurnFailedInPass(scope, target)
 			return
 		}
 		r.mu.Lock()
-		// #228: a successful send proves delivery recovered — clear ONLY the
-		// send-origin error (a concurrent wait/harness failure stays).
+		// A successful canonical acceptance resolves the send-origin
+		// admission failure before cognition starts. Do not let the stale
+		// reconnect state survive into the healthy Harness turn.
 		if r.lastErrorSource == "send" {
 			r.lastError = ""
 			r.lastErrorSource = ""
 		}
 		r.mu.Unlock()
-		r.log("message_persisted", map[string]string{
-			"sequence": strconv.FormatInt(sent.Sequence, 10),
+	}
+
+	// A newly addressed turn wins the speaker: stale audio from the
+	// previous response must never keep playing over the new one.
+	if voiceOutput := r.voiceOutput(); voiceOutput != nil {
+		voiceOutput.Cancel()
+	}
+
+	r.beginActivity(scope, target)
+	r.beginTaskTurn(scope, target)
+	result, err := r.runHarnessTurn(scope, *input, generation)
+	interrupted := r.consumeTurnInterrupted(scope, target)
+	r.finishActivity(scope, target)
+	if errors.Is(err, harness.ErrSessionPromptBusy) {
+		// Another logical scope is executing the ONE turn this native
+		// conversation may run. This is a deferral, not a Harness failure: the
+		// canonical trigger stays pending, the bounded retry budget is NOT
+		// spent, and the owning turn's settlement re-enters the scheduler,
+		// which offers this scope its turn then.
+		r.publishTaskExecution(scope)
+		r.log("turn_deferred_session_busy", map[string]string{
+			"scopeKind": scopeKindOf(scope),
 		})
-		// Voice Reply is additive: speak only after the text reply is
-		// persisted; a nil/unready output keeps the turn text-only.
-		if voiceOutput := r.voiceOutput(); voiceOutput != nil {
-			voiceOutput.Speak(text)
-		}
+		return
+	}
+	if interrupted {
+		// A Human explicitly asked Free4Chat to stop THIS exact canonical
+		// turn, and that authorization was dispatched while the turn was
+		// still the Runtime's own active one. Its settlement is therefore
+		// terminal: never auto-retry it, never replay the instruction, and
+		// never publish the cancelled turn's tail as an Agent reply. The
+		// serial drain continues, so an already-queued successor turn runs
+		// next on the retained session.
+		//
+		// The settlement acknowledges the cancelled trigger BEFORE it
+		// refreshes execution, so the just-finished turn is never counted
+		// as queued behind itself.
+		r.settleInterruptedTurn(scope, target, maxSeq, generation, err)
+		return
+	}
+	if err != nil {
+		// A failed turn keeps its canonical trigger pending for the
+		// existing retry/recovery policy, so the settled projection may
+		// truthfully count that still-pending work as queued — it is real
+		// state, never a phantom of the turn that just stopped running.
+		r.publishTaskExecution(scope)
+		r.markTurnFailedInPass(scope, target)
+		r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
+		return
+	}
+	r.log("turn_succeeded", map[string]string{
+		"scopeKind": scopeKindOf(scope),
+		"elapsedMs": strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+	})
+	if r.isStopped() {
+		return
+	}
+
+	// RunTurn succeeded: commit every delivery marker before lifecycle
+	// handling or text persistence. If either of those later operations
+	// fails, replaying this already-consumed Harness prompt would be wrong.
+	r.acknowledgeHarnessDeliveryFor(scope, target, maxSeq, generation)
+	r.acknowledgeTranscriptDeliveryFor(scope, meetingThrough, liveThrough)
+	// The canonical turn is delivered: its bounded autonomous retry budget
+	// is spent and a later send failure must never replay cognition.
+	r.clearTurnRetry(scope, target)
+	r.mu.Lock()
+	r.harnessFailed = false
+	// #228: a successful turn proves the Harness recovered — clear ONLY
+	// the harness-origin error (a concurrent wait/send failure stays). A
+	// canonical turn parked with closed autonomous recovery is still
+	// unacknowledged, so its failure must stay visible until an explicit
+	// recovery boundary resolves it.
+	if r.lastErrorSource == "harness" && len(r.closedTurnRecovery) == 0 {
+		r.lastError = ""
+		r.lastErrorSource = ""
+	}
+	r.mu.Unlock()
+	// A lifecycle result is never ordinary reply text. Its body may contain
+	// an untruthful success claim, so consume the closed local intent before
+	// any SendText attempt. Confirmed leave hands cleanup to the daemon after
+	// this turn unwinds; rejected/failed intents use fixed truthful text.
+	if r.handleLifecycleIntent(input, result) {
+		// A lifecycle intent ends this scope's work for this pass, exactly as a
+		// failed turn does: the resident is leaving, so re-launching its head
+		// turn would contradict the intent it just acted on.
+		r.markTurnFailedInPass(scope, target)
+		return
+	}
+
+	text := strings.TrimSpace(result.Text)
+	if text == "" {
+		return
+	}
+	handle, err := r.requireHandle()
+	if err != nil {
+		r.failTurn(scope, target, "harness", turnFailureSend, started, err, false)
+		return
+	}
+	sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
+	if err != nil {
+		r.failTurn(scope, target, "send", turnFailureSend, started, err, false)
+		return
+	}
+	r.mu.Lock()
+	// #228: a successful send proves delivery recovered — clear ONLY the
+	// send-origin error (a concurrent wait/harness failure stays).
+	if r.lastErrorSource == "send" {
+		r.lastError = ""
+		r.lastErrorSource = ""
+	}
+	r.mu.Unlock()
+	r.log("message_persisted", map[string]string{
+		"sequence": strconv.FormatInt(sent.Sequence, 10),
+	})
+	// Voice Reply is additive: speak only after the text reply is
+	// persisted; a nil/unready output keeps the turn text-only.
+	if voiceOutput := r.voiceOutput(); voiceOutput != nil {
+		voiceOutput.Speak(text)
 	}
 }
 

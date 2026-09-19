@@ -119,20 +119,20 @@ func (r *ResidentRuntime) publishActivityNow(handle, scope string, state types.A
 	}
 }
 
-// beginActivity is called at the serialized prompt admission boundary. It
-// atomically replaces the active turn identity with the exact canonical Room
-// sequence this turn runs for (turnControlMu), and publishes that same
-// sequence with the transient activity so the browser can bind an interrupt to
-// the exact turn it is looking at.
+// beginActivity is called at the prompt admission boundary of ONE logical
+// scope. It atomically replaces that scope's active turn identity with the
+// exact canonical Room sequence this turn runs for (turnControlMu), and
+// publishes the same sequence with the transient activity so the browser can
+// bind an interrupt to the exact turn it is looking at.
+//
+// The identity is stored per scope, which is what makes a concurrent turn of
+// an INDEPENDENT Task unable to observe, replace, or clear it (#421).
 func (r *ResidentRuntime) beginActivity(scope string, turnSequence int64) {
 	if !validActivityScope(scope) || turnSequence <= 0 {
 		return
 	}
 	r.turnControlMu.Lock()
 	r.activityMu.Lock()
-	r.activityTurnActive = true
-	r.activityScope = scope
-	r.activityTurnSequence = turnSequence
 	previous, existed := r.activities[scope]
 	unchanged := existed && previous.state == types.AgentActivityWorking &&
 		previous.sequence == turnSequence
@@ -153,22 +153,23 @@ func (r *ResidentRuntime) beginActivity(scope string, turnSequence int64) {
 	r.publishActivity(scope, types.AgentActivityWorking, turnSequence)
 }
 
-// observeHarnessActivity accepts normalized events only while the adapter's
-// current serialized prompt is active. It therefore ignores late events from
-// a settled/cancelled turn and cannot resurrect a cleared state. Every state
-// of one turn keeps that turn's exact sequence.
+// observeHarnessActivity accepts normalized events only while THAT scope's
+// prompt is active. It therefore ignores late events from a settled or
+// cancelled turn, cannot resurrect a cleared state, and cannot attribute one
+// Task's activity to another. Every state of one turn keeps that turn's exact
+// sequence.
 func (r *ResidentRuntime) observeHarnessActivity(scope string, state types.AgentActivityState) {
 	if !validActivityScope(scope) || !state.Valid() {
 		return
 	}
 	r.activityMu.Lock()
-	if !r.activityTurnActive || r.activityScope != scope {
+	current, active := r.activities[scope]
+	if !active {
 		r.activityMu.Unlock()
 		return
 	}
-	turnSequence := r.activityTurnSequence
-	if current, ok := r.activities[scope]; ok && current.state == state &&
-		current.sequence == turnSequence {
+	turnSequence := current.sequence
+	if current.state == state {
 		r.activityMu.Unlock()
 		return
 	}
@@ -188,20 +189,28 @@ func (r *ResidentRuntime) finishActivity(scope string, turnSequence int64) {
 	}
 	r.turnControlMu.Lock()
 	r.activityMu.Lock()
-	if r.activityScope == scope && r.activityTurnSequence == turnSequence {
-		r.activityTurnActive = false
-		r.activityScope = ""
-		r.activityTurnSequence = 0
+	// Only THIS scope's identity is cleared, and only when it still describes
+	// THIS exact turn: a concurrent Task's activity is untouched.
+	if current, ok := r.activities[scope]; ok && current.sequence == turnSequence {
+		delete(r.activities, scope)
 		// Both locks are already held here; use the non-locking inner variant.
 		r.clearTurnInterruptedActivityLocked(scope, turnSequence)
 	}
-	_, existed := r.activities[scope]
-	delete(r.activities, scope)
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
-	if existed {
-		r.publishActivity(scope, "", 0)
+	r.publishActivity(scope, "", 0)
+}
+
+// activeTurnOf reports the exact canonical turn this Runtime is executing for
+// one scope, and whether it is executing one at all.
+func (r *ResidentRuntime) activeTurnOf(scope string) (int64, bool) {
+	r.activityMu.Lock()
+	defer r.activityMu.Unlock()
+	current, ok := r.activities[scope]
+	if !ok {
+		return 0, false
 	}
+	return current.sequence, true
 }
 
 // clearActivity is best-effort externally but authoritative locally. It is
@@ -215,9 +224,10 @@ func (r *ResidentRuntime) clearActivity() {
 		entries = append(entries, scope)
 	}
 	r.activities = make(map[string]activityTurnState)
-	r.activityTurnActive = false
-	r.activityScope = ""
-	r.activityTurnSequence = 0
+	// A cleared transport boundary drops every interrupt marker with the turn
+	// identity it described. With concurrency there may be several, so this is
+	// a whole-map reset rather than the single marker the serial model kept.
+	r.interrupts = make(map[string]int64)
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
 	for _, scope := range entries {
@@ -229,9 +239,7 @@ func (r *ResidentRuntime) resetActivityLocal() {
 	r.turnControlMu.Lock()
 	r.activityMu.Lock()
 	r.activities = make(map[string]activityTurnState)
-	r.activityTurnActive = false
-	r.activityScope = ""
-	r.activityTurnSequence = 0
+	r.interrupts = make(map[string]int64)
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
 	r.activityPublishMu.Lock()

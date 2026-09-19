@@ -508,6 +508,13 @@ func (d *Daemon) prepareRuntime(
 	if envErr2 != nil {
 		return nil, "", "", envErr2
 	}
+	// Opt-in stuck-turn watchdog (#421). Unset (the default) keeps the
+	// truthful long-task model: no idle bound, only the safety ceiling,
+	// process death, and explicit Human interrupt.
+	turnIdleTimeoutMs, envErr3 := optionalMilliseconds("FREE4CHAT_ACP_TURN_IDLE_TIMEOUT_MS")
+	if envErr3 != nil {
+		return nil, "", "", envErr3
+	}
 
 	instanceID := NewID()
 	workspace := filepath.Join(WorkspacesRoot(), instanceID)
@@ -553,8 +560,9 @@ func (d *Daemon) prepareRuntime(
 		},
 		Client: free4chat.New(mcpURL),
 		Adapter: harness.NewACPAdapter(launcher, workspace, harness.AdapterOptions{
-			TurnTimeoutMs: turnTimeoutMs,
-			CancelGraceMs: cancelGraceMs,
+			TurnTimeoutMs:     turnTimeoutMs,
+			TurnIdleTimeoutMs: turnIdleTimeoutMs,
+			CancelGraceMs:     cancelGraceMs,
 			// Ephemeral per-resident Harness launch material transferred from
 			// the CLI. Never returned in responses, never persisted to status,
 			// workspace, or logs; dropped with the resident.
@@ -566,6 +574,9 @@ func (d *Daemon) prepareRuntime(
 		// launcher registry entry. The daemon never decides per-Harness
 		// behavior itself, and never infers it from ACP advertisement.
 		TaskSessionContinuation: launcher.TaskSessionContinuation,
+		// #421: the ONE product-level EXECUTION policy, copied from the same
+		// registry entry and for the same reason.
+		TaskExecution: launcher.TaskExecution,
 		// #409: the daemon owns the disposable per-resident workspace root; the
 		// Runtime only reads it to hide Free4Chat's own throwaway sessions from
 		// the product picker. Ownership stays here.

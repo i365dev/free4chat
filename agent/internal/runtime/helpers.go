@@ -315,13 +315,18 @@ func (r *ResidentRuntime) pendingScopesLocked() []string {
 	return out
 }
 
-// nextRunnableTurn returns the canonical turn the serial drain may execute
+// nextRunnableTurn returns the canonical turn the bounded drain may execute
 // next: the head of the oldest scope holding unacknowledged work whose
-// autonomous recovery is still open. A canonical turn whose recovery is
-// closed stays pending and unacknowledged, so it is skipped rather than
-// re-executed or acknowledged; skipping also keeps it from blocking another
-// scope's fresh work. Only an explicit recovery boundary — a new addressed
-// trigger for that same scope — reopens it (see reopenTurnRecoveryLocked).
+// autonomous recovery is still open and which is not ALREADY executing. A
+// canonical turn whose recovery is closed stays pending and unacknowledged, so
+// it is skipped rather than re-executed or acknowledged; skipping also keeps
+// it from blocking another scope's fresh work. Only an explicit recovery
+// boundary — a new addressed trigger for that same scope — reopens it (see
+// reopenTurnRecoveryLocked).
+//
+// Excluding already-running scopes is what makes the drain's candidate order
+// both fair and terminating under concurrency: every loop iteration either
+// claims a scope for execution or finds no further candidate.
 func (r *ResidentRuntime) nextRunnableTurn() (string, int64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -331,6 +336,9 @@ func (r *ResidentRuntime) nextRunnableTurn() (string, int64, bool) {
 // nextRunnableTurnLocked is nextRunnableTurn for callers already holding r.mu.
 func (r *ResidentRuntime) nextRunnableTurnLocked() (string, int64, bool) {
 	for _, scope := range r.pendingScopesLocked() {
+		if r.scopeRunningLocked(scope) {
+			continue
+		}
 		ref := r.sessionRefLocked(scope)
 		if ref == nil || len(*ref.pendingAddressed) == 0 {
 			continue

@@ -304,9 +304,13 @@ func (a *ACPAdapter) LoadSession(scope string, sessionID string, cwd string) err
 		a.mu.Unlock()
 		return errors.New("ACP agent does not advertise loadSession")
 	}
-	if a.promptActive {
+	if a.activeTurns[sessionID] != nil {
+		// Replacing a conversation that is executing a turn would rebind that
+		// running prompt to a different session. Fence on THIS session only,
+		// so adopting another Task's session can proceed while a different
+		// conversation keeps running (#421).
 		a.mu.Unlock()
-		return errors.New("ACP prompt is already running")
+		return errors.New("ACP prompt is already running for this session")
 	}
 	if scope != "room" {
 		if _, ok := a.sessions[scope]; !ok && len(a.sessions) >= types.MaxLogicalTaskScopes {
@@ -350,10 +354,11 @@ func (a *ACPAdapter) LoadSession(scope string, sessionID string, cwd string) err
 	if a.stdin == nil || a.proc == nil || a.caps == nil {
 		return errors.New("ACP process exited while loading session")
 	}
-	if a.promptActive {
-		// A turn started while the load was in flight. Its prompt is bound to
-		// the previous session identity, so the replacement fails closed
-		// rather than silently rebinding a running turn to another session.
+	if a.activeTurns[sessionID] != nil {
+		// A turn started on THIS session while the load was in flight. Its
+		// prompt is bound to the previous session identity, so the
+		// replacement fails closed rather than silently rebinding a running
+		// turn to another session.
 		return errors.New("ACP prompt started while loading session")
 	}
 	if scope == "room" {

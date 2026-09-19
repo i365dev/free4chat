@@ -6847,10 +6847,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const currentTurnSequence = candidate.currentTurnSequence
     if (currentTurnSequence !== undefined) {
       if (!isAgentActivityTurnSequence(currentTurnSequence)) return null
+      // A RUNNING or INTERRUPTING phase must name the exact turn it describes,
+      // and "queued" can never accompany one: queued means no turn is
+      // executing.
       if (!isTaskExecutionPhase(candidate.phase)) return null
-    } else if (candidate.phase !== undefined) {
-      // A phase without a current turn would be a claim about nothing.
-      return null
+      if (candidate.phase === "queued") return null
+    } else {
+      // No current turn. #421 allows exactly one phase here: QUEUED, which
+      // requires real accepted work waiting, so a Runtime can never publish a
+      // "waiting" state for a Task that has nothing to run.
+      if (candidate.phase !== undefined && candidate.phase !== "queued")
+        return null
+      if (candidate.phase === "queued" && queuedCount === 0) return null
     }
     if (
       candidate.lastOutcome !== undefined &&
@@ -6868,7 +6876,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       taskRequestId: resolution.requestId,
       queuedCount,
       ...(currentTurnSequence === undefined
-        ? {}
+        ? candidate.phase === undefined
+          ? {}
+          : { phase: candidate.phase as TaskExecutionProjection["phase"] }
         : {
             currentTurnSequence: currentTurnSequence as number,
             phase: candidate.phase as TaskExecutionProjection["phase"],

@@ -34,6 +34,15 @@ type discoveryFixture struct {
 
 func newDiscoveryFixture(t *testing.T, disposableRoot string) *discoveryFixture {
 	t.Helper()
+	// The default fixture keeps the fail-safe serial execution policy, which is
+	// what every #409 test above pins.
+	return newDiscoveryFixtureWithPolicy(t, disposableRoot, types.TaskExecutionPolicy{})
+}
+
+// newDiscoveryFixtureWithPolicy is the same fixture under an explicit #421
+// execution policy, so continuation can be re-pinned under concurrency.
+func newDiscoveryFixtureWithPolicy(t *testing.T, disposableRoot string, policy types.TaskExecutionPolicy) *discoveryFixture {
+	t.Helper()
 	adapter := newAdoptionAdapter("pi")
 	client := newExecutionClient()
 	logs := &logCapture{}
@@ -46,6 +55,7 @@ func newDiscoveryFixture(t *testing.T, disposableRoot string) *discoveryFixture 
 		Log:                     logs.log,
 		TaskSessionContinuation: true,
 		DisposableWorkspaceRoot: disposableRoot,
+		TaskExecution:           policy,
 	})
 	rt.adoptJoin(types.JoinResult{
 		ParticipantID:     "agent",
