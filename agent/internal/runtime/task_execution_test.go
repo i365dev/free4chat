@@ -321,3 +321,270 @@ func TestTaskExecutionPublicationIsBestEffort(t *testing.T) {
 		t.Fatalf("a successful turn was not consumed: %d pending", pending)
 	}
 }
+
+// freezeTaskExecutionPublisher stops the drain goroutine from consuming the
+// newest-state queue, so a test can observe enqueues deterministically instead
+// of racing publication.
+func freezeTaskExecutionPublisher(rt *ResidentRuntime) {
+	rt.taskExecutionPublishMu.Lock()
+	rt.taskExecutionPublisherActive = true
+	rt.taskExecutionPublishMu.Unlock()
+}
+
+// popTaskExecutionPublication removes and returns the queued projection for one
+// scope, if any. Only valid while the publisher is frozen.
+func popTaskExecutionPublication(
+	rt *ResidentRuntime,
+	scope string,
+) (types.TaskExecutionProjection, bool) {
+	rt.taskExecutionPublishMu.Lock()
+	defer rt.taskExecutionPublishMu.Unlock()
+	publication, ok := rt.taskExecutionPublishQueue[scope]
+	if !ok {
+		return types.TaskExecutionProjection{}, false
+	}
+	delete(rt.taskExecutionPublishQueue, scope)
+	return publication.projection, true
+}
+
+// TestTaskExecutionLifecycleIsOwnedByTheTurnPipeline pins fix #1: the coarse
+// activity helper must not own the Task execution lifecycle, and one canonical
+// turn start must produce exactly one begin transition. The publisher is frozen
+// so an enqueue is observable rather than hidden by latest-state coalescing.
+func TestTaskExecutionLifecycleIsOwnedByTheTurnPipeline(t *testing.T) {
+	rt, _, _ := newExecutionRuntime(t)
+	defer rt.Stop()
+	freezeTaskExecutionPublisher(rt)
+
+	const scope = "task:req-T"
+
+	// A previous intentional outcome must survive beginActivity untouched.
+	rt.setTaskExecutionOutcome(scope, types.TaskExecutionOutcomeInterrupted)
+	rt.beginActivity(scope, 5)
+	if _, queued := popTaskExecutionPublication(rt, scope); queued {
+		t.Fatal("beginActivity must not publish a Task execution projection")
+	}
+	rt.taskExecutionMu.Lock()
+	outcome := rt.taskExecutionFacts[scope].lastOutcome
+	rt.taskExecutionMu.Unlock()
+	if outcome != types.TaskExecutionOutcomeInterrupted {
+		t.Fatalf("beginActivity performed the execution begin transition: %+v", outcome)
+	}
+
+	// The serialized turn pipeline performs it, exactly once.
+	rt.beginTaskTurn(scope, 5)
+	begin, queued := popTaskExecutionPublication(rt, scope)
+	if !queued {
+		t.Fatal("the turn pipeline must publish the began turn")
+	}
+	if begin.CurrentTurnSequence != 5 || begin.Phase != types.TaskExecutionPhaseRunning {
+		t.Fatalf("began-turn projection mismatch: %+v", begin)
+	}
+	if _, again := popTaskExecutionPublication(rt, scope); again {
+		t.Fatal("one turn start must produce exactly one execution begin transition")
+	}
+	rt.taskExecutionMu.Lock()
+	_, retained := rt.taskExecutionFacts[scope]
+	rt.taskExecutionMu.Unlock()
+	if retained {
+		t.Fatal("beginTaskTurn must clear the previous outcome")
+	}
+
+	// The same holds through the real pipeline: one canonical turn start, on a
+	// scope this test has not touched manually.
+	rt.taskExecutionPublishMu.Lock()
+	rt.taskExecutionPublisherActive = false
+	rt.taskExecutionPublishMu.Unlock()
+	const pipelineScope = "task:req-U"
+	adapter := rt.options.Adapter.(*interruptAdapter)
+	adapter.blockNextTurn()
+	drained := startTurn(rt, scopedEvent(9, pipelineScope, "instruction"))
+	waitFor(t, 2*time.Second, func() bool { return adapter.runCount(pipelineScope) >= 1 },
+		"the canonical trigger to run")
+	if got := adapter.runCount(pipelineScope); got != 1 {
+		t.Fatalf("one trigger must run exactly once, got %d", got)
+	}
+	running, ok := rt.latestTaskExecution(pipelineScope)
+	if !ok || running.CurrentTurnSequence != 9 || running.QueuedCount != 0 {
+		t.Fatalf("real turn did not publish its running projection: %+v", running)
+	}
+	adapter.releaseTurn()
+	waitForDone(t, drained, "turn to finish")
+}
+
+// latestTaskExecution reads the newest published projection for one scope from
+// the frozen queue, or from a recording client otherwise.
+func (r *ResidentRuntime) latestTaskExecution(scope string) (types.TaskExecutionProjection, bool) {
+	return r.snapshotTaskExecution(scope)
+}
+
+// TestTaskExecutionSettlementNeverCountsTheFinishedTurnAsQueued pins fix #2 by
+// stepping the real serialized pipeline with the publisher frozen: at no point
+// may a settled projection report the turn that just stopped running as queued
+// behind itself. Nothing here depends on publisher scheduling.
+func TestTaskExecutionSettlementNeverCountsTheFinishedTurnAsQueued(t *testing.T) {
+	const scope = "task:req-T"
+
+	settled := func(t *testing.T, projection types.TaskExecutionProjection) {
+		t.Helper()
+		if projection.CurrentTurnSequence == 0 && projection.QueuedCount > 0 {
+			// The only way a settled projection can be non-empty here is real
+			// successor work; a self-count is the bug this test fences.
+			if projection.QueuedCount == 1 && projection.LastOutcome == "" {
+				t.Fatalf("settled projection counted the finished turn as queued: %+v", projection)
+			}
+		}
+	}
+
+	t.Run("successful single turn", func(t *testing.T) {
+		rt, _, _ := newExecutionRuntime(t)
+		defer rt.Stop()
+		freezeTaskExecutionPublisher(rt)
+		rt.acceptEvent(scopedEvent(42, scope, "instruction"))
+
+		rt.beginActivity(scope, 42)
+		rt.beginTaskTurn(scope, 42)
+		if projection, ok := popTaskExecutionPublication(rt, scope); !ok ||
+			projection.CurrentTurnSequence != 42 || projection.QueuedCount != 0 {
+			t.Fatalf("running projection mismatch: %+v", projection)
+		}
+
+		// The successful settlement: finish, then acknowledge the trigger, then
+		// refresh. The acknowledge must be what produces the settled state.
+		rt.finishActivity(scope, 42)
+		if projection, ok := popTaskExecutionPublication(rt, scope); ok {
+			settled(t, projection)
+			t.Fatalf("no settled projection may exist before the trigger is consumed: %+v", projection)
+		}
+		rt.acknowledgeHarnessDeliveryFor(scope, 42, 42, 0)
+		projection, ok := popTaskExecutionPublication(rt, scope)
+		if !ok {
+			t.Fatal("consuming the trigger must refresh the settled projection")
+		}
+		settled(t, projection)
+		if projection.CurrentTurnSequence != 0 || projection.QueuedCount != 0 {
+			t.Fatalf("final projection mismatch: %+v", projection)
+		}
+	})
+
+	t.Run("interrupted single turn", func(t *testing.T) {
+		rt, _, _ := newExecutionRuntime(t)
+		defer rt.Stop()
+		freezeTaskExecutionPublisher(rt)
+		rt.acceptEvent(scopedEvent(42, scope, "instruction"))
+
+		rt.beginActivity(scope, 42)
+		rt.beginTaskTurn(scope, 42)
+		popTaskExecutionPublication(rt, scope)
+
+		rt.markTurnInterruptedLocked(scope, 42)
+		if !rt.consumeTurnInterrupted(scope, 42) {
+			t.Fatal("the exact interrupted turn must be consumable")
+		}
+		rt.finishActivity(scope, 42)
+		if projection, ok := popTaskExecutionPublication(rt, scope); ok {
+			settled(t, projection)
+			t.Fatalf("no settled projection may exist before the cancelled trigger is consumed: %+v", projection)
+		}
+		rt.settleInterruptedTurn(scope, 42, 42, 0, nil)
+
+		projection, ok := popTaskExecutionPublication(rt, scope)
+		if !ok {
+			t.Fatal("the interrupted settlement must publish")
+		}
+		settled(t, projection)
+		if projection.CurrentTurnSequence != 0 || projection.QueuedCount != 0 ||
+			projection.LastOutcome != types.TaskExecutionOutcomeInterrupted {
+			t.Fatalf("interrupted settlement mismatch: %+v", projection)
+		}
+	})
+
+	t.Run("interrupted turn with a real successor", func(t *testing.T) {
+		rt, _, _ := newExecutionRuntime(t)
+		defer rt.Stop()
+		freezeTaskExecutionPublisher(rt)
+		rt.acceptEvent(scopedEvent(42, scope, "instruction"))
+		// The successor is already durably queued behind the running turn.
+		rt.acceptEvent(scopedEvent(43, scope, "replacement instruction"))
+
+		rt.beginActivity(scope, 42)
+		rt.beginTaskTurn(scope, 42)
+		running, _ := popTaskExecutionPublication(rt, scope)
+		if running.CurrentTurnSequence != 42 || running.QueuedCount != 1 {
+			t.Fatalf("running-with-successor projection mismatch: %+v", running)
+		}
+
+		rt.markTurnInterruptedLocked(scope, 42)
+		rt.consumeTurnInterrupted(scope, 42)
+		rt.finishActivity(scope, 42)
+		if projection, ok := popTaskExecutionPublication(rt, scope); ok {
+			t.Fatalf("no settled projection may exist before the cancelled trigger is consumed: %+v", projection)
+		}
+		rt.settleInterruptedTurn(scope, 42, 42, 0, nil)
+
+		afterCancel, ok := popTaskExecutionPublication(rt, scope)
+		if !ok {
+			t.Fatal("the interrupted settlement must publish")
+		}
+		settled(t, afterCancel)
+		// Only the real successor 43 remains queued; 42 was consumed and is
+		// never counted as its own successor.
+		if afterCancel.CurrentTurnSequence != 0 || afterCancel.QueuedCount != 1 ||
+			afterCancel.LastOutcome != types.TaskExecutionOutcomeInterrupted {
+			t.Fatalf("post-interrupt queue projection mismatch: %+v", afterCancel)
+		}
+
+		// The successor then starts normally and is the only queued-then-running
+		// work left.
+		rt.beginActivity(scope, 43)
+		rt.beginTaskTurn(scope, 43)
+		successor, _ := popTaskExecutionPublication(rt, scope)
+		if successor.CurrentTurnSequence != 43 || successor.QueuedCount != 0 ||
+			successor.LastOutcome != "" {
+			t.Fatalf("successor projection mismatch: %+v", successor)
+		}
+	})
+}
+
+// TestTaskExecutionRealTurnSettlementIsTruthful drives the REAL serialized
+// pipeline for a single successful turn and asserts the delivered stream never
+// presents the just-finished turn as queued behind itself.
+func TestTaskExecutionRealTurnSettlementIsTruthful(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	drained := startTurn(rt, scopedEvent(42, "task:req-T", "instruction"))
+	waitForActiveScope(t, rt, "task:req-T")
+	adapter.releaseTurn()
+	waitForDone(t, drained, "turn to settle")
+
+	final := waitForExecution(t, client, "req-T", "settled projection", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 0 && p.QueuedCount == 0
+	})
+	if final.LastOutcome != "" || final.Availability != "" {
+		t.Fatalf("a plain successful turn must settle without an outcome: %+v", final)
+	}
+	// Only projections emitted AFTER the running state can be settled states.
+	// An instruction accepted while nothing runs is legitimately "Queued" for a
+	// moment before the serialized drain starts it.
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	afterRunning := -1
+	for index, projection := range client.projections {
+		if projection.CurrentTurnSequence == 42 {
+			afterRunning = index
+			break
+		}
+	}
+	if afterRunning < 0 {
+		t.Fatalf("no running projection was published: %+v", client.projections)
+	}
+	for _, projection := range client.projections[afterRunning+1:] {
+		if projection.CurrentTurnSequence != 0 {
+			t.Fatalf("a second turn appeared for a single instruction: %+v", projection)
+		}
+		if projection.QueuedCount > 0 {
+			t.Fatalf("a settled projection counted the finished turn as queued: %+v", projection)
+		}
+	}
+}

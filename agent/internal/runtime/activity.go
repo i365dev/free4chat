@@ -142,10 +142,9 @@ func (r *ResidentRuntime) beginActivity(scope string, turnSequence int64) {
 	}
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
-	// The exact turn is now current for this Task: refresh its transient
-	// execution projection (current turn, running phase, queue depth, and no
-	// longer "interrupted"/"session lost").
-	r.beginTaskTurn(scope, turnSequence)
+	// This helper owns AgentActivity ONLY. The Task execution lifecycle is
+	// owned by the serialized turn pipeline (drainTurns), which calls
+	// beginTaskTurn/finishTaskTurn explicitly for the same exact turn.
 	if unchanged {
 		return
 	}

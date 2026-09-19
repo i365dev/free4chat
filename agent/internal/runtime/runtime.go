@@ -1433,7 +1433,6 @@ func (r *ResidentRuntime) drainTurns() {
 		result, err := r.runHarnessTurn(scope, *input, generation)
 		interrupted := r.consumeTurnInterrupted(scope, target)
 		r.finishActivity(scope, target)
-		r.finishTaskTurn(scope, target, interrupted)
 		if interrupted {
 			// A Human explicitly asked Free4Chat to stop THIS exact canonical
 			// turn, and that authorization was dispatched while the turn was
@@ -1442,10 +1441,19 @@ func (r *ResidentRuntime) drainTurns() {
 			// never publish the cancelled turn's tail as an Agent reply. The
 			// serial drain continues, so an already-queued successor turn runs
 			// next on the retained session.
+			//
+			// The settlement acknowledges the cancelled trigger BEFORE it
+			// refreshes execution, so the just-finished turn is never counted
+			// as queued behind itself.
 			r.settleInterruptedTurn(scope, target, maxSeq, generation, err)
 			continue
 		}
 		if err != nil {
+			// A failed turn keeps its canonical trigger pending for the
+			// existing retry/recovery policy, so the settled projection may
+			// truthfully count that still-pending work as queued — it is real
+			// state, never a phantom of the turn that just stopped running.
+			r.publishTaskExecution(scope)
 			r.failTurn(scope, target, "harness", turnFailureClassOf(err), started, err, !permanentTurnFailure(err))
 			return
 		}

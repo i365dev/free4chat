@@ -195,19 +195,6 @@ func (r *ResidentRuntime) beginTaskTurn(scope string, turnSequence int64) {
 	r.publishTaskExecution(scope)
 }
 
-// finishTaskTurn records the settlement of one exact turn. An intentionally
-// interrupted turn keeps that outcome until a new instruction or turn replaces
-// it; any other settlement simply drops the current-turn presentation.
-func (r *ResidentRuntime) finishTaskTurn(scope string, turnSequence int64, interrupted bool) {
-	if !taskExecutionScope(scope) {
-		return
-	}
-	if interrupted {
-		r.setTaskExecutionOutcome(scope, types.TaskExecutionOutcomeInterrupted)
-	}
-	r.publishTaskExecution(scope)
-}
-
 // noteTaskQueueChanged republishes a Task's execution after its pending queue
 // changed (an instruction was accepted, consumed, or discarded).
 func (r *ResidentRuntime) noteTaskQueueChanged(scope string) {
@@ -344,8 +331,18 @@ func (r *ResidentRuntime) settleInterruptedTurn(scope string, target, through, g
 	if through <= 0 {
 		through = target
 	}
+	// ORDER MATTERS: record the outcome, then terminally consume the trigger,
+	// and only then refresh the projection. The cancelled turn has already left
+	// the pending queue by the time any settled state is derived, so a Task with
+	// no successor settles as "Interrupted · 0 queued" instead of counting the
+	// turn it just cancelled as queued behind itself.
+	r.setTaskExecutionOutcome(scope, types.TaskExecutionOutcomeInterrupted)
 	r.acknowledgeHarnessDeliveryFor(scope, target, through, generation)
 	r.clearTurnRetry(scope, target)
+	// acknowledgeHarnessDeliveryFor already refreshes when it removed the
+	// trigger; this covers the idempotent case where it had nothing left to
+	// remove, so the interrupted outcome is always published.
+	r.publishTaskExecution(scope)
 	reason := "cancelled"
 	if turnErr != nil {
 		// The cancelled turn may also have surfaced a real transport/Harness
