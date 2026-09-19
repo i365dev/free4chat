@@ -605,8 +605,12 @@ func TestSessionHandoffIsPiOnlyAndSinglePending(t *testing.T) {
 	if _, err := other.rt.ListHarnessSessions(harness.ACPSessionListOptions{}); !errors.Is(err, errSessionAdoptionUnsupported) {
 		t.Fatalf("policy-disabled listing must be rejected, got %v", err)
 	}
-	if other.rt.CurrentRuntimeFeatures() != nil {
-		t.Fatal("a policy-disabled Harness must advertise no feature")
+	// The Task Session Continuation gate is what this test pins. The projection
+	// itself is still present because #421's execution reconciliation is a
+	// property of this Runtime BUILD for every launcher, and the two features
+	// are independent.
+	if features := other.rt.CurrentRuntimeFeatures(); features != nil && features.TaskSessionContinuation {
+		t.Fatalf("a policy-disabled Harness must not advertise Task Session Continuation: %+v", features)
 	}
 
 	// An ENABLED policy with an adapter that lacks the session primitives is

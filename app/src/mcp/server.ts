@@ -59,6 +59,9 @@ const runtimeHostSchema = z.object({
 // older Runtime simply omits the whole object.
 const runtimeFeaturesSchema = z.object({
   taskSessionContinuation: z.boolean().optional(),
+  // #421: the resident understands the private execution-resync control. An
+  // older Runtime omits it, and the Room then sends nothing.
+  taskExecutionReconciliation: z.boolean().optional(),
 })
 // 256-bit base64url opaque capability values. The MCP boundary validates the
 // shape but never logs, projects, or includes either value in room_info.

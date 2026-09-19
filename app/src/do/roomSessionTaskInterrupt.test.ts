@@ -303,7 +303,12 @@ describe("RoomSession Task interrupt (#409)", () => {
     ).toBe(sentBefore)
   })
 
-  it("rejects a Human who does not own the Task and sends no control", async () => {
+  it("lets a current Human who did not create the Task interrupt its exact live turn", async () => {
+    // #421 supervision is Room-shared once a canonical Task exists: the
+    // original ephemeral creator is provenance, not a durable credential, and
+    // it expires after the reconnect grace. A returning Human already may send
+    // a follow-up and resolve the Task's permission, so requiring the creator
+    // id here was internally inconsistent.
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
@@ -315,8 +320,15 @@ describe("RoomSession Task interrupt (#409)", () => {
       "human-2"
     )
 
-    expect(test.errorFrames()).toEqual(["task_interrupt_not_owner"])
-    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.errorFrames()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 42,
+      },
+    ])
   })
 
   it("rejects an unknown or stale Task id", async () => {
@@ -627,7 +639,7 @@ describe("RoomSession Task interrupt (#409)", () => {
     }
   })
 
-  it("rejects a Human interrupt of a Task a Human did not create", async () => {
+  it("accepts a current Human interrupt of a canonical Task regardless of its creator", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const stored = test.stored()
@@ -663,7 +675,17 @@ describe("RoomSession Task interrupt (#409)", () => {
       turnSequence: 42,
     })
 
-    expect(test.errorFrames()).toEqual(["task_interrupt_not_owner"])
-    expect(test.agentControls("agent-a")).toEqual([])
+    // The canonical Task exists, its canonical Agent endpoint is reachable,
+    // and 42 is its exact live turn, so a current Human may supervise it. The
+    // origin participant kind is not an authorization input.
+    expect(test.errorFrames()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: "agent-owned-task",
+        turnSequence: 42,
+      },
+    ])
   })
 })

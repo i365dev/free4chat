@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  agentSupportsTaskExecutionReconciliation,
   agentSupportsTaskSessionContinuation,
   appendDedupedTaskSessions,
   boundedTaskSessionText,
@@ -57,6 +58,75 @@ describe("sanitizeRuntimeFeatures (#409)", () => {
         futureFeature: true,
       })
     ).toEqual({ taskSessionContinuation: true })
+  })
+
+  it("keeps each #421 feature INDEPENDENTLY", () => {
+    // A Runtime that supports only execution reconciliation (any launcher, not
+    // just Pi) must keep that feature: dropping it because Task Session
+    // Continuation is absent would silently disable DO-hibernation recovery.
+    expect(
+      sanitizeRuntimeFeatures({ taskExecutionReconciliation: true })
+    ).toEqual({ taskExecutionReconciliation: true })
+    expect(
+      sanitizeRuntimeFeatures({
+        taskSessionContinuation: true,
+        taskExecutionReconciliation: true,
+      })
+    ).toEqual({
+      taskSessionContinuation: true,
+      taskExecutionReconciliation: true,
+    })
+    // A legacy Runtime (agent-v0.5.34) is unchanged by the new field.
+    expect(
+      sanitizeRuntimeFeatures({
+        taskSessionContinuation: true,
+        taskExecutionReconciliation: false,
+      })
+    ).toEqual({ taskSessionContinuation: true })
+    for (const input of [
+      { taskExecutionReconciliation: false },
+      { taskExecutionReconciliation: "true" },
+      { taskexecutionreconciliation: true },
+    ])
+      expect(sanitizeRuntimeFeatures(input)).toBeUndefined()
+  })
+
+  it("gates the private reconciliation control on the advertised feature", () => {
+    expect(
+      agentSupportsTaskExecutionReconciliation({
+        kind: "agent",
+        connected: true,
+        runtimeFeatures: { taskExecutionReconciliation: true },
+      })
+    ).toBe(true)
+    // agent-v0.5.34: the feature is absent, so nothing may be sent.
+    expect(
+      agentSupportsTaskExecutionReconciliation({
+        kind: "agent",
+        connected: true,
+        runtimeFeatures: { taskSessionContinuation: true },
+      })
+    ).toBe(false)
+    expect(
+      agentSupportsTaskExecutionReconciliation({
+        kind: "agent",
+        connected: true,
+      })
+    ).toBe(false)
+    expect(
+      agentSupportsTaskExecutionReconciliation({
+        kind: "agent",
+        connected: false,
+        runtimeFeatures: { taskExecutionReconciliation: true },
+      })
+    ).toBe(false)
+    expect(
+      agentSupportsTaskExecutionReconciliation({
+        kind: "human",
+        connected: true,
+        runtimeFeatures: { taskExecutionReconciliation: true },
+      })
+    ).toBe(false)
   })
 
   it("gates the Continue affordance on the projection only", () => {

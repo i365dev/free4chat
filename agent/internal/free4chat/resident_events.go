@@ -39,6 +39,21 @@ const (
 	// product page bounds (10 rows, 24 projects) sit far below it; this is the
 	// fail-closed transport guard.
 	maxResidentSessionResultBytes = 64 * 1024
+
+	// residentTaskExecutionResyncType is the third private frame family
+	// (#421): a FIRE-AND-FORGET request asking the Runtime to re-state the
+	// CURRENT transient execution projection of every Task scope it owns.
+	//
+	// It exists because Room execution projections are memory-only, so a
+	// hibernated Durable Object loses them while the resident socket survives
+	// and the local Harness keeps working. The Room sends it only to a
+	// resident that advertises RuntimeFeatureProjection
+	// .TaskExecutionReconciliation.
+	//
+	// It carries no payload, no request id, and no tokens: it can never
+	// correlate with, overwrite, or be answered into the Task Session
+	// Continuation request/response family.
+	residentTaskExecutionResyncType = "task-execution-resync"
 )
 
 // residentEventStream is deliberately a one-reader/one-writer wrapper around
@@ -175,6 +190,13 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 	}
 	if envelope.Type == "expired" || envelope.Expired {
 		return types.WaitResult{}, &Error{Message: "room expired", Code: CodeRoomExpired}
+	}
+	if envelope.Type == residentTaskExecutionResyncType {
+		// PRIVATE RESIDENT TRANSPORT ONLY: a fire-and-forget reconciliation
+		// request. It is deliberately matched BEFORE the session-control and
+		// "events" branches so it can never be degraded into another family,
+		// and it carries no cursor, so the reader's cursor is untouched.
+		return types.WaitResult{TaskExecutionResync: true}, nil
 	}
 	if envelope.Type == residentSessionControlType {
 		// PRIVATE RESIDENT TRANSPORT ONLY: one bounded session-control

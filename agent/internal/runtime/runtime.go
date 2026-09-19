@@ -1127,6 +1127,27 @@ func (r *ResidentRuntime) applyResidentFrame(
 		r.applyResidentTaskControl(result.TaskControl)
 		return residentFrameApplied, false
 	}
+	if result.TaskExecutionResync {
+		if !r.isCurrentResidentStream(stream) {
+			return residentFrameDropped, false
+		}
+		// PRIVATE RESIDENT TRANSPORT ONLY (#421): a fire-and-forget request
+		// from the Room to re-state the CURRENT execution truth of every Task
+		// scope this Runtime owns, because the Room's memory-only projections
+		// were lost (a hibernated Durable Object) while this resident socket
+		// and the local Harness both survived.
+		//
+		// It is deliberately NOT a session control: it shares no correlation
+		// state with #420 discovery/PREPARE and can never overwrite or answer
+		// a pending session control. It answers nothing — the projections it
+		// publishes are the same ones a normal turn transition publishes.
+		//
+		// republishTaskExecutions only enqueues into the existing newest-state
+		// publisher, so a repeated or hostile resync collapses into the same
+		// bounded work and never blocks the reader.
+		r.republishTaskExecutions()
+		return residentFrameApplied, false
+	}
 	if !r.isCurrentResidentStream(stream) {
 		return residentFrameDropped, false
 	}

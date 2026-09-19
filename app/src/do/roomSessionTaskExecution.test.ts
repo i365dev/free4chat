@@ -501,23 +501,13 @@ describe("RoomSession interrupt & send (#409)", () => {
     })
   })
 
-  it("rejects wrong Humans, stale turns, and wrong Tasks without side effects", async () => {
+  it("rejects stale turns and wrong Tasks without side effects", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
     await publishActivity(test, requestId, 42)
     const messagesBefore = test.stored().messages.length
 
-    // Another Human does not own the Task.
-    await test.sendHuman(
-      {
-        type: "task-interrupt-and-send",
-        taskRequestId: requestId,
-        turnSequence: 42,
-        text: "not mine",
-      },
-      "human-2"
-    )
     // A turn that is no longer the current one.
     await test.sendHuman({
       type: "task-interrupt-and-send",
@@ -541,7 +531,6 @@ describe("RoomSession interrupt & send (#409)", () => {
     })
 
     expect(test.errorFrames()).toEqual([
-      "task_interrupt_not_owner",
       "task_turn_not_active",
       "unknown_task_request",
       "invalid_task_instruction",

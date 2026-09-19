@@ -526,8 +526,10 @@ func TestTaskSessionPolicyIsTheOnlyGate(t *testing.T) {
 	})
 	setRoster(rt, "human-1")
 
-	if rt.CurrentRuntimeFeatures() != nil {
-		t.Fatal("a policy-disabled resident must advertise no feature at all")
+	// Task Session Continuation is the gated feature; #421 execution
+	// reconciliation is advertised independently of any launcher policy.
+	if features := rt.CurrentRuntimeFeatures(); features != nil && features.TaskSessionContinuation {
+		t.Fatalf("a policy-disabled resident must not advertise Task Session Continuation: %+v", features)
 	}
 	result := rt.runSessionControl(&types.ResidentSessionControl{
 		Kind:               types.ResidentSessionControlList,
@@ -543,16 +545,21 @@ func TestTaskSessionPolicyIsTheOnlyGate(t *testing.T) {
 }
 
 // TestTaskSessionFeatureProjectionIsAdditive proves the advertised projection
-// is exactly the closed shape, and is absent when the policy is off.
+// is the closed shape, that Task Session Continuation follows the launcher
+// policy, and that #421 execution reconciliation is an INDEPENDENT build-level
+// feature no launcher policy can disable.
 func TestTaskSessionFeatureProjectionIsAdditive(t *testing.T) {
 	enabled := newDiscoveryFixture(t, "")
 	projection := enabled.rt.CurrentRuntimeFeatures()
 	if projection == nil || !projection.TaskSessionContinuation {
 		t.Fatalf("an enabled resident must advertise the feature: %+v", projection)
 	}
+	if !projection.TaskExecutionReconciliation {
+		t.Fatalf("every resident of this build advertises execution reconciliation: %+v", projection)
+	}
 
 	// A Harness that does not implement the session primitives cannot support
-	// the feature even when its launcher policy says so.
+	// Task Session Continuation even when its launcher policy says so.
 	plain := NewResidentRuntime(Options{
 		InstanceID:              "plain",
 		RoomID:                  "room-plain",
@@ -562,8 +569,12 @@ func TestTaskSessionFeatureProjectionIsAdditive(t *testing.T) {
 		TaskSessionContinuation: true,
 	})
 	t.Cleanup(plain.Stop)
-	if plain.CurrentRuntimeFeatures() != nil {
-		t.Fatal("a resident without the session primitives must not advertise the feature")
+	plainFeatures := plain.CurrentRuntimeFeatures()
+	if plainFeatures != nil && plainFeatures.TaskSessionContinuation {
+		t.Fatalf("a resident without the session primitives must not advertise continuation: %+v", plainFeatures)
+	}
+	if plainFeatures == nil || !plainFeatures.TaskExecutionReconciliation {
+		t.Fatalf("execution reconciliation does not depend on session primitives: %+v", plainFeatures)
 	}
 }
 

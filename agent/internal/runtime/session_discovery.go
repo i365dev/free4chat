@@ -149,6 +149,12 @@ func (r *ResidentRuntime) taskSessionPolicyEnabled() bool {
 func (r *ResidentRuntime) CurrentRuntimeFeatures() *types.RuntimeFeatureProjection {
 	features := types.RuntimeFeatureProjection{
 		TaskSessionContinuation: r.taskSessionPolicyEnabled(),
+		// #421: this Runtime understands the private, fire-and-forget
+		// execution reconciliation control. It is advertised unconditionally
+		// because it is a property of THIS Runtime build, not of a launcher:
+		// any resident can re-state the transient execution projection of the
+		// Task scopes it owns.
+		TaskExecutionReconciliation: true,
 	}
 	if features.Empty() {
 		return nil

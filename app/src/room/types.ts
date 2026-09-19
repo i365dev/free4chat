@@ -174,6 +174,19 @@ export interface PendingRuntimeHostProviderClaim {
 export interface RoomRuntimeFeatures {
   /** This resident can list and load an existing native Harness session. */
   taskSessionContinuation?: boolean
+  /**
+   * #421: this resident understands the private, fire-and-forget
+   * `task-execution-resync` control and will re-state the CURRENT transient
+   * execution projection of every Task scope it owns.
+   *
+   * It exists because Room execution projections are memory-only: a hibernated
+   * Durable Object loses them while the resident Agent socket survives and the
+   * local Harness keeps working. The Room must never send that control to a
+   * resident that does not advertise this, because an older Runtime would
+   * receive an unknown private frame. Support is advertised, never inferred
+   * from a version string.
+   */
+  taskExecutionReconciliation?: boolean
 }
 
 export interface AgentCapabilities {

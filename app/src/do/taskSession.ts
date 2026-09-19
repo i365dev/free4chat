@@ -96,8 +96,34 @@ export function sanitizeRuntimeFeatures(
   if (!input || typeof input !== "object" || Array.isArray(input))
     return undefined
   const candidate = input as Record<string, unknown>
-  if (candidate.taskSessionContinuation !== true) return undefined
-  return { taskSessionContinuation: true }
+  // Every feature is kept INDEPENDENTLY: a Runtime that advertises only
+  // reconciliation (any launcher) must not have that dropped because it does
+  // not also support Task Session Continuation.
+  const features: RoomRuntimeFeatures = {}
+  if (candidate.taskSessionContinuation === true)
+    features.taskSessionContinuation = true
+  if (candidate.taskExecutionReconciliation === true)
+    features.taskExecutionReconciliation = true
+  return Object.keys(features).length > 0 ? features : undefined
+}
+
+/**
+ * Reports whether the Room may send the private execution-resync control to
+ * this resident.
+ *
+ * This is a TRANSPORT-COMPATIBILITY gate, not authorization: the frame carries
+ * no authority, no tokens, and no payload, and the Runtime re-derives every
+ * projection it publishes. It exists only so a new Room never writes an
+ * unknown private frame to a Runtime that predates it.
+ */
+export function agentSupportsTaskExecutionReconciliation(
+  participant: Pick<RoomParticipant, "kind" | "connected" | "runtimeFeatures">
+): boolean {
+  return (
+    participant.kind === "agent" &&
+    participant.connected &&
+    participant.runtimeFeatures?.taskExecutionReconciliation === true
+  )
 }
 
 /**

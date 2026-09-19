@@ -289,12 +289,19 @@ func TestHandoffListCwdIsPresenceAware(t *testing.T) {
 // itself never decides per-Harness behavior.
 func TestDaemonProjectsTheLauncherTaskSessionPolicy(t *testing.T) {
 	enabled := newDaemonRuntimeForPolicy(t, "pi", true)
-	if enabled.CurrentRuntimeFeatures() == nil {
-		t.Fatal("a pi resident must advertise Task Session Continuation")
+	enabledFeatures := enabled.CurrentRuntimeFeatures()
+	if enabledFeatures == nil || !enabledFeatures.TaskSessionContinuation {
+		t.Fatalf("a pi resident must advertise Task Session Continuation: %+v", enabledFeatures)
 	}
 	disabled := newDaemonRuntimeForPolicy(t, "codex", false)
-	if disabled.CurrentRuntimeFeatures() != nil {
-		t.Fatal("a non-verified Harness must not advertise Task Session Continuation")
+	disabledFeatures := disabled.CurrentRuntimeFeatures()
+	if disabledFeatures != nil && disabledFeatures.TaskSessionContinuation {
+		t.Fatalf("a non-verified Harness must not advertise Task Session Continuation: %+v", disabledFeatures)
+	}
+	// #421 execution reconciliation is a build-level feature: it is advertised
+	// for EVERY launcher, independently of the continuation policy above.
+	if disabledFeatures == nil || !disabledFeatures.TaskExecutionReconciliation {
+		t.Fatalf("execution reconciliation is not launcher-gated: %+v", disabledFeatures)
 	}
 }
 

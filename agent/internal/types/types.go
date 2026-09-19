@@ -302,12 +302,27 @@ type RuntimeFeatureProjection struct {
 	// TaskSessionContinuation means "this resident can list and load one of
 	// its Harness's existing native sessions for a Human-created Task".
 	TaskSessionContinuation bool `json:"taskSessionContinuation,omitempty"`
+	// TaskExecutionReconciliation means "this resident understands the private
+	// fire-and-forget `task-execution-resync` control and will re-state the
+	// CURRENT transient execution projection of every Task scope it owns".
+	//
+	// It exists for ONE reason (#421): Room execution projections are
+	// deliberately transient and memory-only, so a Durable Object that
+	// hibernates loses them while the resident Agent socket survives and the
+	// local Harness keeps working. A returning Human then has no truthful
+	// state to recover unless the Room can ask the Runtime to re-state it.
+	//
+	// A Room must NEVER send that control to a resident that does not
+	// advertise this, because an older Runtime would receive an unknown private
+	// frame. Support is therefore advertised, never inferred from a version
+	// string.
+	TaskExecutionReconciliation bool `json:"taskExecutionReconciliation,omitempty"`
 }
 
 // Empty reports whether this projection carries no feature at all, so a caller
 // can omit the wire field entirely instead of sending an empty object.
 func (p RuntimeFeatureProjection) Empty() bool {
-	return !p.TaskSessionContinuation
+	return !p.TaskSessionContinuation && !p.TaskExecutionReconciliation
 }
 
 // ValidRuntimeHostID is the single validation rule shared with the Room
@@ -1029,6 +1044,15 @@ type WaitResult struct {
 	// Like TaskControl it is excluded from JSON, carries no cursor, and never
 	// reaches the public wait_for_events projection.
 	SessionControl *ResidentSessionControl `json:"-"`
+	// TaskExecutionResync is populated only by the private resident event
+	// stream (#421): a FIRE-AND-FORGET request to re-state the current
+	// transient execution projection of every Task scope this Runtime owns.
+	//
+	// It has no request id and no response by design. It is not a Task Session
+	// Continuation control, shares none of its correlation state, and can
+	// never be answered into it. Like the other private frames it carries no
+	// cursor and never reaches the public wait_for_events projection.
+	TaskExecutionResync bool `json:"-"`
 }
 
 // ResidentTaskControlKind is the closed set of private resident control

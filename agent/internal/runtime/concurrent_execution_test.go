@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/harness"
+
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -757,4 +759,119 @@ func TestInterruptAndSendIsolatesTheReplacementToItsOwnTask(t *testing.T) {
 	}
 	adapter.release("task:req-B")
 	waitForScopeSettled(t, rt, adapter, "task:req-B", 1)
+}
+
+// TestExecutionContextResyncRepublishesWithoutTouchingSessionControl is the
+// Runtime half of the DO-hibernation recovery (#421).
+//
+// The Room's transient execution projections are memory-only, so after a
+// hibernation a returning Human sees nothing even though this Runtime never
+// reconnected and the local Harness kept working. The Room therefore sends ONE
+// fire-and-forget `task-execution-resync` frame, and the Runtime answers it by
+// re-stating the CURRENT execution truth of every Task scope it owns.
+//
+// The frame is a separate family from #409/#420 session control: it holds no
+// correlation, consumes none, and leaves a live pending session control
+// strictly alone.
+func TestExecutionContextResyncRepublishesWithoutTouchingSessionControl(t *testing.T) {
+	adapter := newLaneAdapter()
+	client := newExecutionClient()
+	rt := NewResidentRuntime(Options{
+		InstanceID:    "execution-resync",
+		RoomID:        "room-execution-resync",
+		Name:          "Agent",
+		Client:        client,
+		Adapter:       adapter,
+		TaskExecution: crossSessionPolicy(2),
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	t.Cleanup(rt.Stop)
+
+	startScopedTurn(rt, 1, "task:req-A", "long running")
+	waitForRunning(t, adapter, "task:req-A")
+	waitForExecution(t, client, "req-A", "running projection", func(p types.TaskExecutionProjection) bool {
+		return p.Phase == types.TaskExecutionPhaseRunning
+	})
+
+	// Hold a live #420 discovery correlation, exactly as a Human browsing
+	// sessions would while a Task keeps running.
+	rt.mu.Lock()
+	rt.sessionControlBusy = true
+	pending := []harness.ACPSessionInfo{{SessionID: "native-pi-1", Cwd: "/workspace"}}
+	rt.taskSessionPages["page-live"] = taskSessionPage{
+		pending: pending,
+		human:   "human-1",
+		expires: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	rt.mu.Unlock()
+
+	before := client.projectionCount()
+	// The Room's fire-and-forget trigger.
+	if outcome, _ := rt.applyResidentFrame(nil, types.WaitResult{TaskExecutionResync: true}, nil); !isAppliedResidentFrame(outcome) {
+		t.Fatalf("the resync frame was not applied: %v", outcome)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		return client.projectionCount() > before
+	}, "the runtime to re-state its execution truth")
+
+	latest, ok := client.latest("req-A")
+	if !ok || latest.Phase != types.TaskExecutionPhaseRunning || latest.CurrentTurnSequence != 1 {
+		t.Fatalf("reconciliation must re-state the running turn: %+v", latest)
+	}
+
+	// The #420 correlation is untouched: the frame carries no request id and
+	// can neither consume nor overwrite one.
+	rt.mu.Lock()
+	busy := rt.sessionControlBusy
+	page, pageLive := rt.taskSessionPages["page-live"]
+	rt.mu.Unlock()
+	if !busy {
+		t.Fatal("the reconciliation trigger cleared a live session-control correlation")
+	}
+	if !pageLive || page.human != "human-1" || len(page.pending) != 1 {
+		t.Fatalf("the reconciliation trigger disturbed the session page cache: %+v", page)
+	}
+
+	adapter.release("task:req-A")
+	waitForScopeSettled(t, rt, adapter, "task:req-A", 1)
+}
+
+// TestRuntimeAdvertisesExecutionContextReconciliation proves the additive
+// feature a new Room needs before it may send the private trigger. Without it a
+// Room must send nothing, because agent-v0.5.34 would receive an unknown frame.
+func TestRuntimeAdvertisesExecutionContextReconciliation(t *testing.T) {
+	rt := NewResidentRuntime(Options{
+		InstanceID: "feature-projection",
+		RoomID:     "room-feature-projection",
+		Name:       "Agent",
+		Client:     &fakeClient{},
+		Adapter:    &legacyOnlyAdapter{},
+	})
+	t.Cleanup(rt.Stop)
+
+	features := rt.CurrentRuntimeFeatures()
+	if features == nil {
+		t.Fatal("a Runtime must advertise its execution reconciliation support")
+	}
+	if !features.TaskExecutionReconciliation {
+		t.Fatalf("execution reconciliation was not advertised: %+v", features)
+	}
+	// The #420 feature is independent and follows the launcher policy, which is
+	// disabled here: advertising reconciliation must not imply continuation.
+	if features.TaskSessionContinuation {
+		t.Fatalf("reconciliation must not fabricate Task Session Continuation: %+v", features)
+	}
+	if features.Empty() {
+		t.Fatal("a projection with a true feature must not report empty")
+	}
+}
+
+// isAppliedResidentFrame reports whether one frame outcome reached the Runtime.
+func isAppliedResidentFrame(outcome residentFrameOutcome) bool {
+	return outcome == residentFrameApplied
 }

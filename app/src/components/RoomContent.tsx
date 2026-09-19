@@ -628,10 +628,19 @@ export default function RoomContent({
   const activeTaskUnavailable = Boolean(
     activeTask && taskIsUnavailable(activeTask, participants)
   )
-  // #409: the interrupt may only target the CANONICAL Agent endpoint of a Task
-  // this Human created, and only the exact turn that Agent's transient
-  // activity currently reports. A secondary participating Agent's activity, or
-  // another Human's Task, must never produce this control.
+  // #409/#421: the interrupt targets the CANONICAL Agent endpoint of the
+  // selected Task and only the exact turn that Agent's transient activity
+  // currently reports. A secondary participating Agent's activity must never
+  // produce this control.
+  //
+  // It is deliberately NOT gated on this Human having created the Task.
+  // Free4Chat is an anonymous temporary Room: the Human who started a Task may
+  // leave for longer than the reconnect grace and return as a NEW participant
+  // id, and supervision of an existing canonical Task is Room-shared — the
+  // same boundary that already lets any current Human send a Task follow-up or
+  // resolve the Task's permission request. The Room (not this control)
+  // enforces that the caller is a current authenticated Human and that the
+  // turn is exactly the live one.
   // #409: the Runtime-authoritative execution projection of the canonical
   // Agent for the selected Task. The browser renders exactly what the Room
   // published; it never derives queueing or "interrupted" locally.
@@ -649,9 +658,7 @@ export default function RoomContent({
     activeTaskExecution?.phase === "interrupting" &&
     activeTaskExecution.currentTurnSequence !== undefined
   const activeTaskInterruptActivity =
-    activeTask &&
-    effectiveLocalParticipantId &&
-    activeTask.createdByParticipantId === effectiveLocalParticipantId
+    activeTask && effectiveLocalParticipantId
       ? (agentActivities ?? []).find(
           (activity) =>
             activity.agentParticipantId === activeTask.targetParticipantId &&
