@@ -77,10 +77,14 @@ func turnFailureClassOf(err error) string {
 	return turnFailureOther
 }
 
-// permanentTurnFailure reports a deterministic Harness misconfiguration that
-// a retry cannot resolve (a legacy adapter that cannot serve a task scope).
+// permanentTurnFailure reports a deterministic Harness failure that a retry
+// cannot resolve: a legacy adapter that cannot serve a task scope at all, or a
+// Task whose adopted native conversation is gone. Both stay pending and
+// unacknowledged, but retrying them is provably pointless, and leaving them
+// "runnable" would keep re-executing the same failing head of the serial queue
+// instead of letting another scope's fresh work proceed.
 func permanentTurnFailure(err error) bool {
-	return errors.Is(err, errScopedHarnessUnsupported)
+	return errors.Is(err, errScopedHarnessUnsupported) || errors.Is(err, errAdoptedSessionUnavailable)
 }
 
 // turnRetryIndexFor reports how many autonomous retries the canonical turn

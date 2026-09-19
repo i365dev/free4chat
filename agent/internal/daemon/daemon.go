@@ -364,6 +364,59 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 			return nil, writeErr
 		}
 		return map[string]any{"surface": read.Surface, "localPath": localPath}, nil
+	case "handoff-list":
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		page, err := rt.ListHarnessSessions(request.SessionCwd, request.SessionCursor)
+		if err != nil {
+			return nil, err
+		}
+		// Local CLI output only. The descriptors are bounded by the adapter
+		// (#412): session identity stays local and is never projected into Room
+		// state, status, or logs.
+		return map[string]any{
+			"sessions":   page.Sessions,
+			"nextCursor": page.NextCursor,
+		}, nil
+	case "handoff-adopt":
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		if err := rt.ArmSessionAdoption(
+			request.SessionID,
+			request.SessionCwd,
+			request.HumanParticipantID,
+		); err != nil {
+			return nil, err
+		}
+		armed, human := rt.SessionAdoptionState()
+		return map[string]any{
+			"state":              "armed",
+			"armed":              armed,
+			"humanParticipantId": human,
+		}, nil
+	case "handoff-clear":
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		if err := rt.ClearSessionAdoption(); err != nil {
+			return nil, err
+		}
+		return map[string]any{"state": "cleared"}, nil
+	case "handoff-state":
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		armed, human := rt.SessionAdoptionState()
+		return map[string]any{
+			"armed":              armed,
+			"humanParticipantId": human,
+		}, nil
 	case "context-read":
 		rt, err := d.resolveRuntime(request.InstanceID)
 		if err != nil {

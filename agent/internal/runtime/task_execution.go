@@ -246,8 +246,12 @@ func (r *ResidentRuntime) noteTaskSessionLoss() {
 			continue
 		}
 		// Only a Task that actually had a retained Harness conversation can
-		// lose one.
-		if state.observedHarnessGeneration <= 0 && state.bootstrappedHarnessGeneration <= 0 {
+		// lose one: either a normal scoped session this Runtime observed, or a
+		// Task that adopted an existing native session (which may have died
+		// during its very first Free4Chat turn, before any generation was
+		// observed here).
+		_, adopted := r.adoptedScopes[scope]
+		if !adopted && state.observedHarnessGeneration <= 0 && state.bootstrappedHarnessGeneration <= 0 {
 			continue
 		}
 		scopes = append(scopes, scope)
@@ -255,13 +259,21 @@ func (r *ResidentRuntime) noteTaskSessionLoss() {
 	r.mu.Unlock()
 
 	for _, scope := range scopes {
-		r.taskExecutionMu.Lock()
-		r.taskExecutionFacts[scope] = taskExecutionFacts{
-			availability: types.TaskExecutionAvailabilitySessionLost,
-		}
-		r.taskExecutionMu.Unlock()
-		r.publishTaskExecution(scope)
+		r.markTaskSessionLost(scope)
 	}
+}
+
+// markTaskSessionLost records and publishes the truthful availability of one
+// Task whose Harness conversation is gone. It is the single place that fact is
+// written, so an adopted Task that could not load its native session and an
+// adopted Task whose Harness died later present the same actionable state.
+func (r *ResidentRuntime) markTaskSessionLost(scope string) {
+	r.taskExecutionMu.Lock()
+	r.taskExecutionFacts[scope] = taskExecutionFacts{
+		availability: types.TaskExecutionAvailabilitySessionLost,
+	}
+	r.taskExecutionMu.Unlock()
+	r.publishTaskExecution(scope)
 }
 
 // clearTaskExecutionLocal drops all transient execution facts. It is used on
