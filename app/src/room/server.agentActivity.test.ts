@@ -59,6 +59,51 @@ describe("Runtime Agent activity route", () => {
     })
   })
 
+  it("forwards a legacy Agent body with no turnSequence untouched", async () => {
+    let forwardedBody: Record<string, unknown> | undefined
+    const env = {
+      SFU_ROOM: {
+        idFromName: (name: string) => ({ name }),
+        get: () => ({
+          fetch: async (_url: string | URL, init?: RequestInit) => {
+            forwardedBody = JSON.parse(String(init?.body ?? "{}")) as Record<
+              string,
+              unknown
+            >
+            return Response.json({ ok: true })
+          },
+        }),
+      },
+    } as unknown as RoomProtocolEnv
+
+    // A pre-#414 Agent Runtime sends only scopeId + activity. The route must
+    // not invent a turn: an absent field stays absent, so the Durable Object
+    // takes its legacy-compatible path.
+    const response = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/agent-activity", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "X-Room-Id": "room-1",
+          "X-Room-Participant-Id": "agent-1",
+          "X-Room-Participant-Token": "private-token",
+        },
+        body: JSON.stringify({ scopeId: "task:req-1", activity: "thinking" }),
+      }),
+      env
+    )
+
+    expect(response.status).toBe(200)
+    expect(forwardedBody).toEqual({
+      action: "agent-activity",
+      participantId: "agent-1",
+      token: "private-token",
+      scopeId: "task:req-1",
+      activity: "thinking",
+    })
+    expect("turnSequence" in (forwardedBody ?? {})).toBe(false)
+  })
+
   it("rejects the wrong method before touching the Durable Object", async () => {
     const env = {
       SFU_ROOM: {

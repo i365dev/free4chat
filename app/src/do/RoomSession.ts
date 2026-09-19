@@ -3163,16 +3163,27 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return this.json({ error: "invalid_activity_scope" }, 403)
       }
 
-      // #409: an activity that gates a remote interrupt must name the exact
-      // turn it belongs to. A clear carries no turn.
+      // #409: turnSequence is ADDITIVE exact-turn metadata, never a required
+      // field. A pre-#414 Agent Runtime omits it entirely, and its activity must
+      // keep projecting normally — it simply carries no interrupt authority.
+      //
+      //   absent    = legacy compatible (accepted, no exact-turn identity)
+      //   valid     = exact-turn capable (accepted, interrupt eligible)
+      //   malformed = rejected (fail closed)
+      //
+      // A clear is compatible with both producers: legacy `null` without a turn,
+      // and the new explicit `turnSequence: 0`.
+      let activityTurnSequence: number | undefined
       if (normalizedActivity === null) {
-        if (request.turnSequence !== 0 && request.turnSequence !== undefined)
+        if (request.turnSequence !== undefined && request.turnSequence !== 0)
           return this.json({ error: "invalid_activity_turn" }, 400)
-      } else if (!isAgentActivityTurnSequence(request.turnSequence)) {
+      } else if (request.turnSequence === undefined) {
+        activityTurnSequence = undefined
+      } else if (isAgentActivityTurnSequence(request.turnSequence)) {
+        activityTurnSequence = request.turnSequence
+      } else {
         return this.json({ error: "invalid_activity_turn" }, 400)
       }
-      const activityTurnSequence =
-        normalizedActivity === null ? 0 : (request.turnSequence as number)
 
       const key = agentActivityKey(participant.id, request.scopeId)
       const previous = this.transientAgentActivities.get(key)
@@ -3187,8 +3198,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         })
         return this.json({ ok: true, changed: true })
       }
-      // The same state on a DIFFERENT turn is a real change: the projection
-      // must carry the new exact turn so interrupts bind to it.
+      // Dedup compares state AND exact-turn identity, and never inherits a turn
+      // from the previous activity: legacy->legacy and same-turn->same-turn are
+      // unchanged, while legacy->exact, exact->legacy and exact->other-turn are
+      // all real changes.
       if (
         previous?.state === normalizedActivity &&
         previous.turnSequence === activityTurnSequence
@@ -3203,7 +3216,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         agentParticipantId: participant.id,
         scopeId: request.scopeId,
         state: normalizedActivity,
-        turnSequence: activityTurnSequence,
+        // A legacy activity stays absent here: no fabricated 0/-1/cursor, so
+        // the browser can never mistake it for interrupt authority.
+        ...(activityTurnSequence === undefined
+          ? {}
+          : { turnSequence: activityTurnSequence }),
       }
       this.transientAgentActivities.set(key, activity)
       await this.broadcast({ type: "agentActivity", activity })

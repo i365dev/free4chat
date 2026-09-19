@@ -791,6 +791,35 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
     idle.unmount()
 
+    // A legacy Agent Runtime (pre-#414 binary) reports canonical activity with
+    // no exact turn: the Human still sees it working, but there is no interrupt
+    // authority to bind a click to.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [agentParticipant],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-codex",
+          scopeId: "task:task-interrupt",
+          state: "thinking",
+        },
+      ],
+      sendTaskInterrupt,
+      sendTextMessage,
+      sendActionMessage,
+    })
+    const legacyActivity = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
+      "Codex · Thinking…"
+    )
+    expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+    legacyActivity.unmount()
+
     // Only a SECONDARY participating Agent is active: the canonical Agent owns
     // no running turn, so no Interrupt may be offered.
     mockUseSfuChatRoom.mockReturnValue({

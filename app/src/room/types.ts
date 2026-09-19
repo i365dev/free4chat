@@ -23,7 +23,11 @@ export interface AgentActivityProjection {
   // control correlation only (never persisted, never Room content), and it is
   // what lets a Human interrupt bind to the exact turn they are looking at
   // instead of to the Task scope.
-  turnSequence: number
+  //
+  // Additive and optional: a pre-#414 Agent Runtime omits it, and that legacy
+  // activity keeps projecting normally while carrying no interrupt authority.
+  // A missing value is never back-filled with 0, -1, or a Room cursor.
+  turnSequence?: number
 }
 
 export type RoomMediaTrackKind = "audio" | "video"

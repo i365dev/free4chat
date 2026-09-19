@@ -95,6 +95,15 @@ function harness() {
   return { session, control, store }
 }
 
+function activities(room: ReturnType<typeof harness>) {
+  return [...(room.session as any).transientAgentActivities.values()] as {
+    agentParticipantId: string
+    scopeId: string
+    state: string
+    turnSequence?: number
+  }[]
+}
+
 describe("RoomSession transient Agent activity", () => {
   it("authenticates task ownership, coalesces states, and never persists activity", async () => {
     const room = harness()
@@ -169,9 +178,11 @@ describe("RoomSession transient Agent activity", () => {
     expect(human.status).toBe(403)
   })
 
-  it("requires an exact positive turn and replaces the identity on the next turn", async () => {
+  it("still rejects an explicitly malformed turn", async () => {
     const room = harness()
-    for (const turnSequence of [0, -1, 1.5, undefined, "42"]) {
+    // An ABSENT field is the legacy-compatible case (covered below); these are
+    // explicit values that cannot identify a turn and must fail closed.
+    for (const turnSequence of [0, -1, 1.5, "42", null, {}]) {
       const invalid = await room.control({
         action: "agent-activity",
         participantId: "agentT",
@@ -185,7 +196,10 @@ describe("RoomSession transient Agent activity", () => {
         json: { error: "invalid_activity_turn" },
       })
     }
+  })
 
+  it("requires an exact positive turn and replaces the identity on the next turn", async () => {
+    const room = harness()
     await room.control({
       action: "agent-activity",
       participantId: "agentT",
@@ -205,9 +219,7 @@ describe("RoomSession transient Agent activity", () => {
       turnSequence: 47,
     })
     expect(nextTurn).toMatchObject({ status: 200, json: { changed: true } })
-    expect([
-      ...(room.session as any).transientAgentActivities.values(),
-    ]).toEqual([
+    expect(activities(room)).toEqual([
       {
         agentParticipantId: "agentT",
         scopeId: "task:request-1",
@@ -215,5 +227,94 @@ describe("RoomSession transient Agent activity", () => {
         turnSequence: 47,
       },
     ])
+  })
+
+  it("accepts a legacy Agent activity that carries no turnSequence", async () => {
+    const room = harness()
+    // Pre-#414 Agent binaries send only scopeId + activity. The projection must
+    // still appear; it just carries no exact-turn identity.
+    const legacy = await room.control({
+      action: "agent-activity",
+      participantId: "agentT",
+      token: "agentT-token",
+      scopeId: "task:request-1",
+      activity: "thinking",
+    })
+    expect(legacy).toMatchObject({ status: 200, json: { changed: true } })
+    expect(activities(room)).toEqual([
+      {
+        agentParticipantId: "agentT",
+        scopeId: "task:request-1",
+        state: "thinking",
+      },
+    ])
+    expect("turnSequence" in activities(room)[0]).toBe(false)
+
+    // A legacy replay of the same state is still unchanged.
+    const replay = await room.control({
+      action: "agent-activity",
+      participantId: "agentT",
+      token: "agentT-token",
+      scopeId: "task:request-1",
+      activity: "thinking",
+    })
+    expect(replay).toMatchObject({ status: 200, json: { changed: false } })
+
+    // A legacy clear (null with no turn) is accepted too.
+    const clear = await room.control({
+      action: "agent-activity",
+      participantId: "agentT",
+      token: "agentT-token",
+      scopeId: "task:request-1",
+      activity: null,
+    })
+    expect(clear).toMatchObject({ status: 200, json: { changed: true } })
+    expect(activities(room)).toEqual([])
+  })
+
+  it("tracks legacy and exact-turn producers without inheriting identity", async () => {
+    const room = harness()
+    const publish = (activity: unknown, turnSequence?: unknown) =>
+      room.control({
+        action: "agent-activity",
+        participantId: "agentT",
+        token: "agentT-token",
+        scopeId: "task:request-1",
+        activity,
+        ...(turnSequence === undefined ? {} : { turnSequence }),
+      })
+
+    // legacy -> exact: a real change that starts carrying exact-turn identity.
+    expect(await publish("thinking")).toMatchObject({
+      status: 200,
+      json: { changed: true },
+    })
+    expect(await publish("thinking", 42)).toMatchObject({
+      status: 200,
+      json: { changed: true },
+    })
+    expect(activities(room)).toEqual([
+      {
+        agentParticipantId: "agentT",
+        scopeId: "task:request-1",
+        state: "thinking",
+        turnSequence: 42,
+      },
+    ])
+
+    // exact -> legacy (old producer): a real change that LOSES the identity
+    // instead of inheriting 42 from the previous activity.
+    expect(await publish("thinking")).toMatchObject({
+      status: 200,
+      json: { changed: true },
+    })
+    expect(activities(room)).toEqual([
+      {
+        agentParticipantId: "agentT",
+        scopeId: "task:request-1",
+        state: "thinking",
+      },
+    ])
+    expect("turnSequence" in activities(room)[0]).toBe(false)
   })
 })

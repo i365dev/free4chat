@@ -457,6 +457,46 @@ describe("RoomSession Task interrupt (#409)", () => {
     expect(test.agentControls("agent-a")).toEqual([])
   })
 
+  it("never treats a legacy activity without a turn as interrupt authority", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    // A pre-#414 Agent Runtime publishes activity with no exact turn. It is
+    // still projected (the Human sees the Agent working) but it can never
+    // authorize a control.
+    const legacy = await test.control({
+      action: "agent-activity",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      scopeId: `task:${requestId}`,
+      activity: "working",
+    })
+    expect(legacy.status).toBe(200)
+    expect(test.transientActivities()).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        scopeId: `task:${requestId}`,
+        state: "working",
+      },
+    ])
+    test.clearAgentFrames("agent-a")
+
+    // A browser that guesses a turn is refused by the exact-turn gate, and a
+    // request without one is refused before any lookup.
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+    await test.sendHuman({ type: "task-interrupt", taskRequestId: requestId })
+
+    expect(test.errorFrames()).toEqual([
+      "task_turn_not_active",
+      "invalid_task_turn",
+    ])
+    expect(test.agentControls("agent-a")).toEqual([])
+  })
+
   it("rejects an unusable turn sequence before touching the transport", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
@@ -568,12 +608,14 @@ describe("RoomSession Task interrupt (#409)", () => {
     expect(test.transientActivities()).toEqual([])
   })
 
-  it("rejects an activity without a usable exact turn", async () => {
+  it("rejects an explicitly malformed activity turn", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
 
-    for (const turnSequence of [0, -1, 1.5, undefined, "42"]) {
+    // An ABSENT turnSequence is the legacy-compatible case (covered above);
+    // these explicit values cannot identify a turn and must fail closed.
+    for (const turnSequence of [0, -1, 1.5, "42", null]) {
       const published = await test.publishActivity(
         "agent-a",
         `task:${requestId}`,
