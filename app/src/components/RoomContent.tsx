@@ -48,6 +48,13 @@ import {
 } from "../common/roomAppRecents"
 import { taskExecutionLabel } from "../common/taskExecution"
 import {
+  isLargeTaskPaste,
+  taskBriefLabel,
+  taskPasteAttachment,
+  taskPasteFitsAttachment,
+  TASK_BRIEF_DEFAULT_LABEL,
+} from "../common/taskPaste"
+import {
   buildTaskProjections,
   isTaskTerminal,
   roomMessagesForView,
@@ -261,6 +268,15 @@ export default function RoomContent({
   const [runtimeConnectError, setRuntimeConnectError] = useState("")
   const [taskAgent, setTaskAgent] = useState<TaskAgent | null>(null)
   const [taskInstruction, setTaskInstruction] = useState("")
+  // #421: a large Start Task paste becomes a Task-correlated brief attachment
+  // instead of textarea content, so the exact document reaches the Agent's
+  // first turn instead of being silently truncated by the composer bound.
+  const [taskBrief, setTaskBrief] = useState<File | null>(null)
+  const [taskBriefNotice, setTaskBriefNotice] = useState("")
+  // The EXACT pasted document, kept only so a bounded Task label can be
+  // derived from it. It never leaves the composer as text: the attachment is
+  // the only carrier of the brief.
+  const taskBriefText = useRef("")
   const [taskError, setTaskError] = useState("")
   // #409 Task Session Continuation. The DEFAULT is always `new`: the Human
   // explicitly chooses "Continue session" and then explicitly chooses ONE
@@ -385,6 +401,7 @@ export default function RoomContent({
     sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
+    startTaskWithBrief,
     requestTaskSessions,
     startTaskWithSession,
     sendCollabResponse,
@@ -995,6 +1012,8 @@ export default function RoomContent({
     resetTaskSessionPicker()
     setTaskAgent(null)
     setTaskInstruction("")
+    setTaskBrief(null)
+    setTaskBriefNotice("")
     setTaskError("")
   }, [resetTaskSessionPicker, taskStarting])
 
@@ -1128,11 +1147,73 @@ export default function RoomContent({
     taskSessionProjectToken,
   ])
 
+  /**
+   * #421: a large Start Task paste is a Task BRIEF, not textarea content.
+   *
+   * It reuses the ONE shared big-paste primitive the active-Task composer
+   * already uses, so the exact document becomes a Task-correlated text/markdown
+   * attachment and the canonical Task references it. The textarea keeps only
+   * the Human's own short instruction, which is what the Agent's wake carries.
+   *
+   * The whole rule is a PASTE rule, never a total-length rule: text the Human
+   * typed or edited is never silently moved or dropped. A paste the bounded
+   * Task attachment store cannot hold fails visibly instead of truncating.
+   */
+  const handleTaskInstructionPaste = (
+    event: React.ClipboardEvent<HTMLTextAreaElement>
+  ) => {
+    if (taskBrief || taskStarting) return
+    const pasted = event.clipboardData?.getData("text/plain") ?? ""
+    if (!isLargeTaskPaste(pasted)) return
+    if (!taskPasteFitsAttachment(pasted)) {
+      setTaskBriefNotice(
+        "That paste is larger than a task brief can hold (768 KB). Split it, or attach it inside the task."
+      )
+      return
+    }
+    taskBriefText.current = pasted
+    setTaskBrief(taskPasteAttachment(pasted))
+    setTaskBriefNotice("")
+    setTaskError("")
+    // Keep the giant body out of the textarea; the chip carries it.
+    event.preventDefault()
+  }
+
   const submitTask = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault()
       if (!taskAgent || taskStarting) return
+      // #421: a staged large brief is the Task's context. The canonical Task
+      // summary is either the Human's own short instruction or a bounded label
+      // derived from the brief — never a truncated copy of it, because the
+      // exact document travels in the referenced attachment.
+      const briefSummary = taskBrief
+        ? taskInstruction.trim() ||
+          taskBriefLabel(taskBriefText.current) ||
+          TASK_BRIEF_DEFAULT_LABEL
+        : ""
       if (taskSessionMode === "new" || !taskAgentContinuation) {
+        if (taskBrief) {
+          setTaskError("")
+          setTaskStarting(true)
+          const started = await startTaskWithBrief(
+            taskAgent.peerId,
+            briefSummary,
+            taskBrief
+          )
+          setTaskStarting(false)
+          if (!started) {
+            // FAIL CLOSED: no Task was created and the Human's brief is still
+            // staged, so a Task can never start with missing context.
+            setTaskError(
+              "Could not attach the brief, so the task was not started. Your text is still here."
+            )
+            return
+          }
+          pendingLocalTaskSummaries.current.push(briefSummary)
+          closeTaskComposer()
+          return
+        }
         // The New session path is structurally unchanged.
         const sent = sendCollabRequest(taskAgent.peerId, taskInstruction)
         if (!sent) {
@@ -1153,7 +1234,7 @@ export default function RoomContent({
       const result = await startTaskWithSession(
         taskAgent.peerId,
         selection.token,
-        taskInstruction
+        taskBrief ? briefSummary : taskInstruction
       )
       setTaskStarting(false)
       if (result.ok === false) {
@@ -1163,7 +1244,9 @@ export default function RoomContent({
         setTaskError(taskSessionErrorMessage(result.error))
         return
       }
-      pendingLocalTaskSummaries.current.push(taskInstruction.trim())
+      pendingLocalTaskSummaries.current.push(
+        taskBrief ? briefSummary : taskInstruction.trim()
+      )
       setTaskAgent(null)
       setTaskInstruction("")
       setTaskError("")
@@ -1173,9 +1256,11 @@ export default function RoomContent({
       closeTaskComposer,
       resetTaskSessionPicker,
       sendCollabRequest,
+      startTaskWithBrief,
       startTaskWithSession,
       taskAgent,
       taskAgentContinuation,
+      taskBrief,
       taskInstruction,
       taskSessionMode,
       taskSessionSelection,
@@ -2526,12 +2611,46 @@ export default function RoomContent({
               id="start-task-instruction"
               value={taskInstruction}
               onChange={(event) => setTaskInstruction(event.target.value)}
+              onPaste={handleTaskInstructionPaste}
               maxLength={MAX_COLLAB_SUMMARY_LENGTH}
               rows={4}
               autoFocus
               disabled={taskStarting}
               className="w-full resize-none rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none focus:border-blue-400 disabled:opacity-50"
             />
+            {/* #421: a large paste is the Task brief, carried as one
+                Task-correlated text/markdown attachment. The exact document is
+                preserved; only a bounded label is shown here. */}
+            {taskBrief && (
+              <div
+                data-testid="task-brief-chip"
+                className="mt-2 flex items-start gap-2 rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-gray-300"
+              >
+                <span aria-hidden="true">📎</span>
+                <span className="min-w-0 flex-1 break-words">
+                  {taskBrief.name} · {taskBriefText.current.length} characters
+                  attached as this task&apos;s brief
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    taskBriefText.current = ""
+                    setTaskBrief(null)
+                    setTaskBriefNotice("")
+                  }}
+                  disabled={taskStarting}
+                  className="shrink-0 text-gray-400 hover:text-white disabled:opacity-50"
+                  aria-label="Remove the attached brief"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+            {taskBriefNotice && (
+              <p role="alert" className="mt-2 text-xs text-amber-300">
+                {taskBriefNotice}
+              </p>
+            )}
             {taskError && (
               <p role="alert" className="mt-2 text-xs text-rose-300">
                 {taskError}
@@ -2548,7 +2667,10 @@ export default function RoomContent({
               <button
                 type="submit"
                 disabled={
-                  !taskInstruction.trim() ||
+                  // #421: a staged brief IS the instruction, so the primary
+                  // action stays reachable for a brief-only start — the Human
+                  // must never have to create an empty Task first.
+                  (!taskInstruction.trim() && !taskBrief) ||
                   taskStarting ||
                   (taskAgentContinuation &&
                     taskSessionMode === "continue" &&

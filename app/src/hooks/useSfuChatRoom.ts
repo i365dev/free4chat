@@ -33,6 +33,7 @@ import {
 } from "@common/sfuEgress"
 import {
   encodeTaskAttachmentWake,
+  TASK_ATTACHMENT_PENDING_HEADER,
   TASK_ATTACHMENT_WAKE_HEADER,
 } from "@common/taskAttachmentWake"
 import {
@@ -4007,8 +4008,18 @@ export function useSfuChatRoom(
   // #305: Human-originated task entry. This is deliberately only a thin
   // socket seam; the Room derives the sender, validates the connected Agent,
   // generates the requestId, and appends the canonical collaboration event.
+  //
+  // #421: the Start Task modal's large-brief path pins the canonical Task
+  // requestId and references the brief attachment it already staged against
+  // that exact id, so the brief is part of the canonical Task event itself.
+  // Both fields stay optional and the Room validates them exactly like any
+  // other canonical request.
   const sendCollabRequest = useCallback(
-    (targetParticipantId: string, summary: string): boolean => {
+    (
+      targetParticipantId: string,
+      summary: string,
+      context?: { requestId: string; attachmentIds: string[] }
+    ): boolean => {
       const target = targetParticipantId.trim()
       const instruction = summary.trim()
       if (!target || !instruction) return false
@@ -4017,10 +4028,76 @@ export function useSfuChatRoom(
         type: "collab-request",
         targetParticipantId: target,
         summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
+        ...(context
+          ? {
+              requestId: context.requestId,
+              attachmentIds: context.attachmentIds,
+            }
+          : {}),
       })
       return true
     },
     [sendSocketMessage]
+  )
+
+  /**
+   * #421: start ONE canonical Task whose initial brief is a large pasted
+   * document.
+   *
+   * The ordering is the whole point. The browser pins the canonical Task
+   * requestId, stages the exact brief as a Task-correlated attachment against
+   * that id, and only then creates the Task with an explicit reference to it.
+   * The brief is therefore INSIDE the canonical Task event: the Agent's first
+   * turn already has it, and no second wake, no follow-up upload race, and no
+   * duplicate Room artifact is involved.
+   *
+   * It fails CLOSED. Any failure before the Task is appended returns false and
+   * leaves the modal open with the Human's brief intact — Free4Chat never
+   * starts a Task whose context is silently missing.
+   */
+  const startTaskWithBrief = useCallback(
+    async (
+      targetParticipantId: string,
+      instruction: string,
+      brief: File
+    ): Promise<boolean> => {
+      const target = targetParticipantId.trim()
+      const summary = instruction.trim()
+      if (!target || !summary) return false
+      const session = sessionRef.current
+      if (!session) return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      if (!isAgentTextFile(brief)) return false
+      const taskRequestId = crypto.randomUUID()
+      const response = await fetch("/api/room/attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": agentTextMime(brief) ?? "text/markdown",
+          "X-Room-Id": roomName,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+          "X-File-Name": encodeURIComponent(brief.name.slice(0, 256)),
+          "X-Task-Request-Id": taskRequestId,
+          // Marks this upload as PRE-TASK context: the canonical Task does not
+          // exist yet, and the marker is the only reason an unknown Task id is
+          // accepted. The Room still requires an authenticated Human and a
+          // well-formed canonical id, and the attachment is never addressed.
+          [TASK_ATTACHMENT_PENDING_HEADER]: "1",
+        },
+        body: brief,
+      })
+      if (!response.ok) return false
+      const payload = (await response.json().catch(() => null)) as {
+        attachment?: { id?: unknown }
+      } | null
+      const attachmentId = payload?.attachment?.id
+      if (typeof attachmentId !== "string" || !attachmentId) return false
+      return sendCollabRequest(target, summary, {
+        requestId: taskRequestId,
+        attachmentIds: [attachmentId],
+      })
+    },
+    [roomName, sendCollabRequest]
   )
 
   // #409: the ONE structured "interrupt the current turn and queue this
@@ -4640,6 +4717,7 @@ export function useSfuChatRoom(
     sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
+    startTaskWithBrief,
     requestTaskSessions,
     startTaskWithSession,
     sendCollabResponse,
