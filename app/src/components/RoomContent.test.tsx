@@ -39,6 +39,10 @@ import {
 } from "../common/roomApp"
 import * as roomAppModule from "../common/roomApp"
 import type { RoomAppTransportEnvelope } from "../common/roomApp"
+import {
+  ROOM_APP_INLINE_RECENT_MAX,
+  ROOM_APP_INLINE_RECENT_MAX_DESKTOP,
+} from "../common/roomAppRecents"
 import { RoomSession } from "../do/RoomSession"
 import type { RoomRecord, RoomState } from "../room/types"
 
@@ -311,6 +315,9 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
   afterEach(() => {
     delete (window as { turnstile?: unknown }).turnstile
+    // #98 recency is remembered per browser tab, so one test's opened Apps must
+    // never leak into the next test's inline Stage strip.
+    window.sessionStorage.clear()
     setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
@@ -1281,9 +1288,48 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     const slotHost = (appId: string) =>
       within(slot(appId)).getByTestId("room-app-host")
 
+    /**
+     * #98: the Stage strip is progressive disclosure, so an App that is neither
+     * current nor recent lives behind the `Apps…` launcher. Opening an App is
+     * the same one-action flow either way, so these tests select by App, not by
+     * chip: an inline chip is used when present, otherwise the launcher opens
+     * and the App is picked there.
+     */
+    function openAppInLauncher(
+      container: ReturnType<typeof within>,
+      appId: string
+    ) {
+      const inline = container.queryAllByTestId(`stage-app-${appId}`)
+      if (inline.length > 0) {
+        fireEvent.click(inline[0])
+        return
+      }
+      fireEvent.click(container.getByTestId("stage-apps-launcher"))
+      fireEvent.click(container.getByTestId(`launcher-app-${appId}`))
+    }
+
+    /** Opens the `Apps…` launcher surface (idempotent within one assertion). */
+    function openAppsLauncher(container: ReturnType<typeof within>) {
+      if (container.queryAllByTestId("room-app-launcher").length > 0) return
+      fireEvent.click(container.getByTestId("stage-apps-launcher"))
+    }
+
+    /**
+     * Waits for the catalog-driven Stage strip, then opens the launcher. Tests
+     * with fake timers must use `openAppsLauncher` instead: `findBy*` is
+     * timer-driven and would never settle there.
+     */
+    async function openAppsLauncherWhenReady(
+      container: ReturnType<typeof within>
+    ) {
+      if (container.queryAllByTestId("room-app-launcher").length === 0)
+        await container.findByTestId("stage-apps-launcher")
+      openAppsLauncher(container)
+    }
+
     /** Launches a curated App and completes its iframe handshake. */
     function launchAndHandshake(appId: string) {
-      fireEvent.click(screen.getByTestId(`stage-app-${appId}`))
+      openAppInLauncher(screen, appId)
       const iframe = slotIframe(appId)
       const frameWindow = loadAppIframe(iframe)
       const port = channels[channels.length - 1].port1
@@ -1466,8 +1512,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           "true"
         )
       )
-      expect(screen.getByTestId("stage-app-test-app-1")).toBeInTheDocument()
-      expect(screen.getByTestId("stage-app-test-app-2")).toBeInTheDocument()
+      // The strip stays bounded: the deep-linked App is inline, and the rest of
+      // the catalog is one launcher action away.
+      expect(screen.getByTestId("stage-app-test-app-3")).toBeInTheDocument()
+      await openAppsLauncherWhenReady(screen)
+      expect(screen.getByTestId("launcher-app-test-app-1")).toBeInTheDocument()
+      expect(screen.getByTestId("launcher-app-test-app-2")).toBeInTheDocument()
+      fireEvent.click(screen.getByTestId("room-app-launcher-close"))
       const host = slotHost("test-app-3")
       const iframe = slotIframe("test-app-3")
       expect(iframe).toHaveAttribute(
@@ -1524,9 +1575,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
             "true"
           )
         )
-        const expectedStageIds = TEST_ROOM_APP_CATALOG.map((app) => app.id)
-        for (const stageId of expectedStageIds)
-          expect(screen.getByTestId(`stage-app-${stageId}`)).toBeInTheDocument()
+        // The whole supplied catalog remains discoverable through the launcher.
+        await openAppsLauncherWhenReady(screen)
+        for (const stageId of TEST_ROOM_APP_CATALOG.map((app) => app.id))
+          expect(
+            screen.getByTestId(`launcher-app-${stageId}`)
+          ).toBeInTheDocument()
+        fireEvent.click(screen.getByTestId("room-app-launcher-close"))
 
         const host = slotHost(id)
         const iframe = slotIframe(id)
@@ -1559,33 +1614,66 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       }
     )
 
-    it("shows the full supplied catalog while keeping only two App hosts resident", async () => {
+    it("keeps the full supplied catalog reachable while bounding the inline strip", async () => {
       vi.stubEnv("NODE_ENV", "production")
       renderAppRoom()
 
       const stageIds = TEST_ROOM_APP_CATALOG.map((app) => app.id)
-      // The picker must expose the whole supplied catalog, and that catalog must
-      // stay larger than the residency bound for the bound to mean anything.
+      // The launcher must expose the whole supplied catalog, and that catalog
+      // must stay larger than both bounds for those bounds to mean anything.
       expect(stageIds.length).toBeGreaterThan(ROOM_APP_MAX_INSTANCES)
+      expect(stageIds.length).toBeGreaterThan(ROOM_APP_INLINE_RECENT_MAX)
+
+      // Nothing has been opened yet: no App is inline, but every promoted App is
+      // already one action away and keeps its Lab-provided label verbatim.
+      for (const id of stageIds)
+        expect(screen.queryByTestId(`stage-app-${id}`)).toBeNull()
+      await openAppsLauncherWhenReady(screen)
       for (const app of TEST_ROOM_APP_CATALOG) {
-        const button = await screen.findByTestId(`stage-app-${app.id}`)
+        const button = await screen.findByTestId(`launcher-app-${app.id}`)
         expect(button).toBeInTheDocument()
         // The user-visible label comes from the Lab definition, without a badge.
-        expect(button.textContent).toBe(app.label)
+        expect(button.textContent).toContain(app.label)
       }
+      fireEvent.click(screen.getByTestId("room-app-launcher-close"))
+      expect(screen.queryByTestId("room-app-launcher")).toBeNull()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-4"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-6"))
+      openAppInLauncher(screen, "test-app-1")
+      openAppInLauncher(screen, "test-app-4")
+      openAppInLauncher(screen, "test-app-6")
 
+      // The residency bound still means something.
       expect(screen.getAllByTestId("room-app-iframe")).toHaveLength(
         ROOM_APP_MAX_INSTANCES
       )
       expect(screen.queryByTestId("room-app-slot-test-app-1")).toBeNull()
       expect(screen.getByTestId("room-app-slot-test-app-4")).toBeInTheDocument()
       expect(screen.getByTestId("room-app-slot-test-app-6")).toBeInTheDocument()
+
+      // The strip renders the current App plus a bounded recent set — never the
+      // whole catalog — while the launcher still exposes every App. jsdom's
+      // 1024px viewport is above Core's md breakpoint, so the wide bound applies.
+      const inlineChips = stageIds.flatMap((id) => {
+        const chip = screen.queryByTestId(`stage-app-${id}`)
+        return chip ? [chip] : []
+      })
+      expect(inlineChips).toHaveLength(ROOM_APP_INLINE_RECENT_MAX_DESKTOP)
+      // Reading order is recency order: the current App first, then the Apps
+      // opened before it in this Room.
+      const inlineIds = inlineChips
+        .slice()
+        .sort((left, right) =>
+          left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING
+            ? -1
+            : 1
+        )
+        .map((chip) =>
+          chip.getAttribute("data-testid")!.replace("stage-app-", "")
+        )
+      expect(inlineIds).toEqual(["test-app-6", "test-app-4", "test-app-1"])
+      await openAppsLauncherWhenReady(screen)
       for (const id of stageIds)
-        expect(screen.getByTestId(`stage-app-${id}`)).toBeInTheDocument()
+        expect(screen.getByTestId(`launcher-app-${id}`)).toBeInTheDocument()
     })
 
     it("refreshes the Lab catalog during a long-lived Room and retires removed Apps", async () => {
@@ -1602,7 +1690,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           await Promise.resolve()
           await Promise.resolve()
         })
-        expect(screen.getByTestId("stage-app-test-app-1")).toBeInTheDocument()
+        // Fake timers are active, so the catalog is already flushed by the
+        // `act` above and the strip must be present without `findBy*` waiting.
+        openAppsLauncher(screen)
+        expect(
+          screen.getByTestId("launcher-app-test-app-1")
+        ).toBeInTheDocument()
+        fireEvent.click(screen.getByTestId("room-app-launcher-close"))
         expect(catalogLoader).toHaveBeenCalledTimes(1)
 
         await act(async () => {
@@ -1731,10 +1825,14 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         })
 
         expect(catalogLoader).toHaveBeenCalledTimes(2)
-        // The new metadata reaches the UI...
-        expect(screen.getByTestId("stage-app-test-app-1").textContent).toBe(
-          "Test App 1 renamed"
-        )
+        // The new metadata reaches the UI. The chip's own label is asserted
+        // separately from its current-App marker so a truncating layout and the
+        // recency affordance cannot silently rewrite the Lab-provided label.
+        expect(
+          within(screen.getByTestId("stage-app-test-app-1")).getByTestId(
+            "stage-app-label-test-app-1"
+          ).textContent
+        ).toBe("Test App 1 renamed")
         expect(
           within(slotHost("test-app-1")).getByText("Test App 1 renamed")
         ).toBeInTheDocument()
@@ -1890,10 +1988,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       vi.stubEnv("NODE_ENV", "production")
       renderAppRoom()
 
-      for (const { id, label } of TEST_ROOM_APP_CATALOG.slice(7)) {
-        const button = await screen.findByTestId(`stage-app-${id}`)
-        expect(button.textContent).toBe(label)
-      }
+      // The launcher is the catalog surface, so the Lab-provided label must
+      // reach it verbatim for Apps that were never opened in this Room.
+      await openAppsLauncherWhenReady(screen)
+      for (const { id, label } of TEST_ROOM_APP_CATALOG.slice(7))
+        expect(screen.getByTestId(`launcher-app-${id}`).textContent).toBe(label)
     })
 
     it("keeps copied ordinary Room links unchanged", async () => {
@@ -2051,7 +2150,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         "true"
       )
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
 
       const host = await screen.findByTestId("room-app-host")
       const stage = screen.getByTestId("room-stage")
@@ -2089,7 +2188,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("keeps the resident App while the conversation switches between Room and Task", async () => {
       renderAppRoom({ messages: [taskRequestMessage] })
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const host = await screen.findByTestId("room-app-host")
 
       fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
@@ -2113,19 +2212,19 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       const send = vi.fn(() => false)
       renderAppRoom({ sendRoomAppMessage: send })
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const iframe = slotIframe("test-app-1")
       loadAppIframe(iframe)
       expect(channels).toHaveLength(1)
 
       // Hide by toggling the Stage entry off.
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(slotHidden("test-app-1")).toBe(true)
       expect(slotIframe("test-app-1")).toBe(iframe)
       expect(channels[0].port1.close).not.toHaveBeenCalled()
 
       // Show it again: same host, same session, no new MessagePort.
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(slotHidden("test-app-1")).toBe(false)
       expect(slotIframe("test-app-1")).toBe(iframe)
       expect(channels).toHaveLength(1)
@@ -2144,7 +2243,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
 
       // The Room App takes the Stage; the visual participant surface goes away.
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(screen.getByTestId("room-app-iframe")).toBeInTheDocument()
       expect(screen.queryByTestId("room-stage-participants")).toBeNull()
 
@@ -2160,16 +2259,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       const sink = audioSink("peer-bob")!
 
       // A Room App replaces the visible participant surface...
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(audioSink("peer-bob")).toBe(sink)
 
       // ...is hidden again...
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
       expect(audioSink("peer-bob")).toBe(sink)
 
       // ...and reopened.
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(audioSink("peer-bob")).toBe(sink)
       expect(audioSink("peer-bob")!.srcObject).toBe(remoteAudioStream)
       // One playback element per remote participant, never one per surface.
@@ -2188,7 +2287,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(audioSink("peer-bob")).toBe(sink)
       expect(sink.srcObject).toBe(remoteAudioStream)
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(audioSink("peer-bob")).toBe(sink)
       expect(
         document.querySelectorAll(
@@ -2201,7 +2300,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       renderAppRoom({ participants: [localParticipant, remoteSpeaker] })
       const sink = audioSink("peer-bob")!
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const host = slotHost("test-app-1")
 
       fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
@@ -2236,7 +2335,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("uses a generic fullscreen layout without replacing the resident host", async () => {
       renderAppRoom()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const iframe = slotIframe("test-app-1")
       loadAppIframe(iframe)
       const host = slotHost("test-app-1")
@@ -2305,7 +2404,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     it("makes the fullscreen Stage own the whole Room content region", async () => {
       renderAppRoom()
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const host = slotHost("test-app-1")
 
       // Normal split layout: the Stage owns its share of the Room content row.
@@ -2382,7 +2481,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         toggleMicrophone,
       })
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(screen.getByTestId("room-app-iframe")).toBeInTheDocument()
       // The participant grid is gone, but Room voice and its control are not.
       expect(screen.queryByTestId("room-stage-participants")).toBeNull()
@@ -2417,7 +2516,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         toggleMicrophone,
       })
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const host = slotHost("test-app-1")
       expect(
         screen.queryByTestId("room-mic-control-fullscreen")
@@ -2448,7 +2547,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     it("exits focus mode with Escape or Close while keeping the App resident", async () => {
       renderAppRoom()
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const iframe = slotIframe("test-app-1")
       loadAppIframe(iframe)
       const host = slotHost("test-app-1")
@@ -2471,7 +2570,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(channels).toHaveLength(1)
       expect(channels[0].port1.close).not.toHaveBeenCalled()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(slotHidden("test-app-1")).toBe(false)
       expect(slotIframe("test-app-1")).toBe(iframe)
       expect(channels).toHaveLength(1)
@@ -2479,8 +2578,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     it("does not expand an inactive resident App and clears focus when Stage changes", async () => {
       renderAppRoom()
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-1")
+      openAppInLauncher(screen, "test-app-2")
 
       const hiddenAppAHost = slotHost("test-app-1")
       const inactiveFullscreenButton = hiddenAppAHost.querySelector(
@@ -2495,7 +2594,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       )
       expect(appBHost).toHaveAttribute("data-layout", "fullscreen")
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(appBHost).toHaveAttribute("data-layout", "stage")
       expect(slotHidden("test-app-2")).toBe(true)
       expect(slotHidden("test-app-1")).toBe(false)
@@ -2503,7 +2602,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     it("keeps focus mode and the same iframe through a transient transport reconnect", async () => {
       const view = renderAppRoom()
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const iframe = slotIframe("test-app-1")
       loadAppIframe(iframe)
       const host = slotHost("test-app-1")
@@ -2575,7 +2674,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     it("leaves focus mode if the active App becomes unavailable", async () => {
       renderAppRoom()
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const iframe = slotIframe("test-app-1")
       loadAppIframe(iframe)
       const host = slotHost("test-app-1")
@@ -2599,7 +2698,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("treats visual Close as Hide and restores the same session on reopen", async () => {
       renderAppRoom()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-2")
       const iframe = slotIframe("test-app-2")
       loadAppIframe(iframe)
       expect(channels).toHaveLength(1)
@@ -2614,7 +2713,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(slotIframe("test-app-2")).toBe(iframe)
       expect(channels[0].port1.close).not.toHaveBeenCalled()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-2")
       expect(slotHidden("test-app-2")).toBe(false)
       expect(slotIframe("test-app-2")).toBe(iframe)
       expect(channels).toHaveLength(1)
@@ -2623,13 +2722,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("keeps one resident App while another is shown and restores the same iframe", async () => {
       renderAppRoom()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const appAIframe = slotIframe("test-app-1")
       loadAppIframe(appAIframe)
       const appAPort = channels[0].port1
       expect(channels).toHaveLength(1)
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-2")
 
       expect(slotHidden("test-app-1")).toBe(true)
       expect(slotHidden("test-app-2")).toBe(false)
@@ -2644,7 +2743,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(channels).toHaveLength(2)
 
       // Back to App A: the exact same iframe/port/App-local state.
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(slotHidden("test-app-1")).toBe(false)
       expect(slotIframe("test-app-1")).toBe(appAIframe)
       expect(appAPort.close).not.toHaveBeenCalled()
@@ -2673,8 +2772,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       const aliceView = within(alice.container)
       const bobView = within(bob.container)
 
-      fireEvent.click(aliceView.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(bobView.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(aliceView, "test-app-1")
+      openAppInLauncher(bobView, "test-app-1")
       const aliceIframe = aliceView.getByTestId(
         "room-app-iframe"
       ) as HTMLIFrameElement
@@ -2686,8 +2785,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(channels).toHaveLength(2)
 
       // Both Humans hide App A for this browser session.
-      fireEvent.click(aliceView.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(bobView.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(aliceView, "test-app-1")
+      openAppInLauncher(bobView, "test-app-1")
       expect(
         aliceView.getByTestId("room-app-slot-test-app-1").className
       ).toContain("hidden")
@@ -2700,8 +2799,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         expect(channel.port1.close).not.toHaveBeenCalled()
 
       // Reopening restores the same iframes and sessions on both browsers.
-      fireEvent.click(aliceView.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(bobView.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(aliceView, "test-app-1")
+      openAppInLauncher(bobView, "test-app-1")
       expect(aliceView.getByTestId("room-app-iframe")).toBe(aliceIframe)
       expect(bobView.getByTestId("room-app-iframe")).toBe(bobIframe)
       expect(channels).toHaveLength(2)
@@ -2719,11 +2818,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         sendRoomAppMessage: send,
       })
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const frameWindow = loadAppIframe(slotIframe("test-app-1"))
       completeHandshake(frameWindow, "test-app-1", channels[0].port1)
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(slotHidden("test-app-1")).toBe(true)
 
       // A hidden resident App still receives the bounded logical messages it
@@ -2757,7 +2856,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       })
 
       fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const iframe = slotIframe("test-app-1")
       loadAppIframe(iframe)
 
@@ -2765,7 +2864,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(slotHidden("test-app-1")).toBe(true)
       expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(slotHidden("test-app-1")).toBe(false)
 
       fireEvent.click(screen.getByTestId("stage-view-screen"))
@@ -2786,7 +2885,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         participants: [localParticipant, remoteScreenShare],
       })
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
       expect(screen.queryByTestId("stage-view-live-view")).toBeNull()
 
@@ -2804,7 +2903,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       })
 
       fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-2")
       expect(await screen.findByTestId("room-app-host")).toBeInTheDocument()
       expect(screen.queryByTestId("stage-view-screen")).toBeNull()
 
@@ -2817,8 +2916,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("keeps hidden App slots non-interactive", async () => {
       renderAppRoom()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-1")
+      openAppInLauncher(screen, "test-app-2")
 
       // display:none removes the hidden host from hit-testing and tab order;
       // inert + aria-hidden state the intent explicitly.
@@ -2836,7 +2935,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("keeps resident hosts across an ordinary transport reconnect", async () => {
       const view = renderAppRoom()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
+      openAppInLauncher(screen, "test-app-1")
       const iframe = slotIframe("test-app-1")
       loadAppIframe(iframe)
       expect(channels).toHaveLength(1)
@@ -2880,8 +2979,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("tears resident hosts down on a stable disable, closing each port once", async () => {
       const view = renderAppRoom()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-1")
+      openAppInLauncher(screen, "test-app-2")
       loadAppIframe(slotIframe("test-app-1"))
       loadAppIframe(slotIframe("test-app-2"))
       expect(channels).toHaveLength(2)
@@ -2910,8 +3009,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     it("closes every resident MessagePort exactly once when the Room unmounts", async () => {
       const view = renderAppRoom()
 
-      fireEvent.click(screen.getByTestId("stage-app-test-app-1"))
-      fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+      openAppInLauncher(screen, "test-app-1")
+      openAppInLauncher(screen, "test-app-2")
       loadAppIframe(slotIframe("test-app-1"))
       loadAppIframe(slotIframe("test-app-2"))
       expect(channels).toHaveLength(2)
@@ -3233,7 +3332,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
         // The Room had already switched: RoomContent now mounts test-app-2 while
         // the acquisition intent remains the landing that acquired the Room.
-        fireEvent.click(screen.getByTestId("stage-app-test-app-2"))
+        openAppInLauncher(screen, "test-app-2")
         const iframe = slotIframe("test-app-2") as HTMLIFrameElement
         completeHandshake(
           loadAppIframe(iframe),
@@ -3719,5 +3818,371 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         .mock.calls.filter(([name]) => name === "LiveViewVisible")
     ).toHaveLength(1)
     expect(document.querySelector("video")).toBeInTheDocument()
+  })
+
+  /**
+   * #98: the in-Room App strip must scale by progressive disclosure. These hold
+   * the product line the launcher exists for: Room first, a bounded recent set
+   * second, the whole promoted catalog one lightweight action away.
+   */
+  describe("Room App launcher (#98)", () => {
+    const localParticipant = {
+      peerId: "local-peer",
+      name: "Alice",
+      kind: "human" as const,
+      room: "test-room",
+      muteState: "unmuted" as const,
+      audioStream: null,
+      screenShareStream: null,
+      screenShareEnabled: false,
+      voiceAvailable: false,
+      voiceEnabled: false,
+    }
+
+    function renderAppRoom(overrides: Record<string, unknown> = {}) {
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+        ...overrides,
+      })
+      return render(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+    }
+
+    function openLauncher() {
+      fireEvent.click(screen.getByTestId("stage-apps-launcher"))
+    }
+
+    /**
+     * One Lab catalog revision, parsed by the same parser the browser loader
+     * runs, so a refresh reaches RoomContent as brand-new objects.
+     */
+    function catalogRevision({
+      relabel,
+      remove,
+    }: { relabel?: Record<string, string>; remove?: string[] } = {}) {
+      const revision = parseRoomAppCatalog({
+        version: 1,
+        apps: TEST_ROOM_APP_CATALOG_RESPONSE.apps
+          .filter((entry) => !remove?.includes(entry.id))
+          .map((entry) => ({
+            ...entry,
+            label: relabel?.[entry.id] ?? entry.label,
+          })),
+      })
+      if (!revision) throw new Error("the fixture catalog must parse")
+      return revision
+    }
+
+    /**
+     * jsdom cannot lay the Room out, so this only proves the strip is a local
+     * scroller rather than a page-widening row; the real viewport geometry is
+     * asserted in the Playwright compatibility gate.
+     */
+    function pageOverflowFree(): boolean {
+      const strip = screen.getByTestId("stage-switcher")
+      return strip.className.includes("overflow-x-auto")
+    }
+
+    /** Inline chip ids in the strip's actual reading order. */
+    function inlineChipIds(): string[] {
+      return Array.from(
+        document.querySelectorAll('button[data-testid^="stage-app-"]')
+      )
+        .map((chip) => chip.getAttribute("data-testid")!)
+        .filter((testId) => testId.startsWith("stage-app-"))
+        .map((testId) => testId.slice("stage-app-".length))
+    }
+
+    it("keeps every App discoverable without handing the strip the whole catalog", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+
+      await screen.findByTestId("stage-apps-launcher")
+      // A fresh Room stays minimal: the launcher is the only App entry, and
+      // nothing is inline until something is actually opened.
+      expect(inlineChipIds()).toEqual([])
+      // The Room itself is on screen the whole time — Apps never replace it.
+      expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+      expect(pageOverflowFree()).toBe(true)
+
+      openLauncher()
+      for (const app of TEST_ROOM_APP_CATALOG)
+        expect(screen.getByTestId(`launcher-app-${app.id}`)).toBeInTheDocument()
+
+      // Picking an App is one action: the launcher closes on selection and the
+      // App becomes the current Stage surface without any strip archaeology.
+      fireEvent.click(screen.getByTestId("launcher-app-test-app-6"))
+      expect(screen.queryByTestId("room-app-launcher")).toBeNull()
+      expect(screen.getByTestId("stage-app-test-app-6")).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      )
+      // Leaving the Stage is still one action through the host chrome, and it
+      // returns to the Room surface without destroying the resident App.
+      fireEvent.click(
+        within(screen.getByTestId("room-app-host")).getByRole("button", {
+          name: "Close",
+        })
+      )
+      expect(
+        screen.getByTestId("room-app-slot-test-app-6").className
+      ).toContain("hidden")
+      expect(screen.getByTestId("stage-app-test-app-6")).toHaveAttribute(
+        "aria-pressed",
+        "false"
+      )
+      expect(screen.getByTestId("stage-apps-launcher")).toBeInTheDocument()
+    })
+
+    it("bounds the inline strip by recency and never duplicates an App", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+
+      for (const id of [
+        "test-app-1",
+        "test-app-2",
+        "test-app-3",
+        "test-app-2",
+      ]) {
+        openLauncher()
+        fireEvent.click(screen.getByTestId(`launcher-app-${id}`))
+      }
+
+      // Most recent first, no duplicates, strictly bounded: the current App
+      // plus the two Apps opened before it, and test-app-1 is gone.
+      expect(inlineChipIds()).toEqual([
+        "test-app-2",
+        "test-app-3",
+        "test-app-1",
+      ])
+      expect(inlineChipIds()).not.toContain("test-app-4")
+      expect(inlineChipIds().length).toBeLessThanOrEqual(
+        ROOM_APP_INLINE_RECENT_MAX_DESKTOP
+      )
+    })
+
+    it("remembers recency for this browser tab only, namespaced by Room", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+      openLauncher()
+      fireEvent.click(screen.getByTestId("launcher-app-test-app-4"))
+
+      const stored = Object.keys(window.sessionStorage).filter((key) =>
+        key.startsWith("free4chat:room-app-recents")
+      )
+      expect(stored).toHaveLength(1)
+      expect(stored[0]).toContain("test-room")
+      expect(window.sessionStorage.getItem(stored[0])).toContain("test-app-4")
+      // No durable preference, account or favorite of any kind.
+      expect(window.localStorage.length).toBe(0)
+    })
+
+    it("filters the catalog by text and explains an empty search", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+      openLauncher()
+
+      const search = screen.getByTestId("room-app-search")
+      fireEvent.change(search, { target: { value: "test app 1" } })
+      expect(screen.getByTestId("launcher-app-test-app-1")).toBeInTheDocument()
+      expect(screen.queryByTestId("launcher-app-test-app-2")).toBeNull()
+
+      fireEvent.change(search, { target: { value: "nothing here" } })
+      expect(screen.getByTestId("room-app-search-empty")).toBeInTheDocument()
+      expect(screen.queryByTestId("launcher-app-test-app-1")).toBeNull()
+    })
+
+    it("opens, searches, selects and closes with the keyboard alone", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+      const launcherEntry = await screen.findByTestId("stage-apps-launcher")
+
+      // Opening moves focus into search so no pointer is needed.
+      launcherEntry.focus()
+      fireEvent.click(launcherEntry)
+      const search = screen.getByTestId("room-app-search")
+      expect(document.activeElement).toBe(search)
+
+      fireEvent.change(search, { target: { value: "test app 3" } })
+      fireEvent.keyDown(search, { key: "Enter" })
+      expect(screen.queryByTestId("room-app-launcher")).toBeNull()
+      expect(screen.getByTestId("stage-app-test-app-3")).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      )
+
+      // Escape closes an open launcher without changing the current App.
+      openLauncher()
+      fireEvent.keyDown(screen.getByTestId("room-app-search"), {
+        key: "Escape",
+      })
+      expect(screen.queryByTestId("room-app-launcher")).toBeNull()
+      expect(screen.getByTestId("stage-app-test-app-3")).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      )
+    })
+
+    it("keeps an outside click closing the launcher without stealing the Room", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+      openLauncher()
+      expect(screen.getByTestId("room-app-launcher")).toBeInTheDocument()
+      fireEvent.mouseDown(document.body)
+      expect(screen.queryByTestId("room-app-launcher")).toBeNull()
+      expect(screen.getByTestId("stage-apps-launcher")).toBeInTheDocument()
+    })
+
+    it("retires a catalog-removed App from recency instead of showing a dead chip", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      vi.useFakeTimers()
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValueOnce(TEST_ROOM_APP_CATALOG)
+        .mockResolvedValue(
+          catalogRevision({ remove: ["test-app-1", "test-app-2"] })
+        )
+      let view: ReturnType<typeof render> | undefined
+      try {
+        view = renderAppRoom()
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        openLauncher()
+        fireEvent.click(screen.getByTestId("launcher-app-test-app-1"))
+        // Selecting closes the launcher, so each pick reopens it.
+        openLauncher()
+        fireEvent.click(screen.getByTestId("launcher-app-test-app-2"))
+        expect(inlineChipIds()).toEqual(["test-app-2", "test-app-1"])
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+
+        expect(catalogLoader).toHaveBeenCalledTimes(2)
+        expect(inlineChipIds()).toEqual([])
+        openLauncher()
+        expect(screen.queryByTestId("launcher-app-test-app-1")).toBeNull()
+        expect(screen.queryByTestId("launcher-app-test-app-2")).toBeNull()
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+      }
+    })
+
+    it("keeps a catalog-maximum label from breaking the strip", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      // The Lab catalog allows labels up to 64 characters: a long real-world
+      // label must not widen the Room layout.
+      const longLabel = `${"Very Long App Label ".repeat(4)}`.slice(0, 64)
+      expect(longLabel).toHaveLength(64)
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValue(
+          catalogRevision({ relabel: { "test-app-1": longLabel } })
+        )
+      try {
+        renderAppRoom()
+        await screen.findByTestId("stage-apps-launcher")
+        openLauncher()
+        fireEvent.click(screen.getByTestId("launcher-app-test-app-1"))
+
+        const label = screen.getByTestId("stage-app-label-test-app-1")
+        expect(label.textContent).toBe(longLabel)
+        expect(label.className).toContain("truncate")
+        const chip = screen.getByTestId("stage-app-test-app-1")
+        expect(chip.className).toContain("max-w-")
+        expect(chip).toHaveAttribute("title", longLabel)
+      } finally {
+        catalogLoader.mockRestore()
+      }
+    })
+
+    it("keeps the compact Room + Apps surface on a ~390px phone", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const originalWidth = window.innerWidth
+      window.innerWidth = 390
+      try {
+        renderAppRoom()
+        await screen.findByTestId("stage-apps-launcher")
+        openLauncher()
+        fireEvent.click(screen.getByTestId("launcher-app-test-app-1"))
+        openLauncher()
+        fireEvent.click(screen.getByTestId("launcher-app-test-app-2"))
+
+        expect(window.innerWidth).toBe(390)
+        // A narrow layout keeps the current App plus one recent shortcut — not
+        // the wide strip's three — and never the whole catalog.
+        expect(inlineChipIds()).toEqual(["test-app-2", "test-app-1"])
+        expect(inlineChipIds().length).toBeLessThanOrEqual(
+          ROOM_APP_INLINE_RECENT_MAX
+        )
+        expect(inlineChipIds().length).toBeLessThan(
+          ROOM_APP_INLINE_RECENT_MAX_DESKTOP
+        )
+        // The launcher entry itself always fits: no horizontal archaeology.
+        expect(screen.getByTestId("stage-apps-launcher")).toBeInTheDocument()
+
+        // The launcher still exposes the entire catalog on the narrow surface.
+        openLauncher()
+        for (const app of TEST_ROOM_APP_CATALOG)
+          expect(
+            screen.getByTestId(`launcher-app-${app.id}`)
+          ).toBeInTheDocument()
+      } finally {
+        window.innerWidth = originalWidth
+      }
+    })
+
+    it("keeps the current App truthful across a catalog refresh", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      vi.useFakeTimers()
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValueOnce(TEST_ROOM_APP_CATALOG)
+        .mockResolvedValue(
+          catalogRevision({ relabel: { "test-app-3": "Renamed 3" } })
+        )
+      let view: ReturnType<typeof render> | undefined
+      try {
+        view = renderAppRoom()
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        openLauncher()
+        fireEvent.click(screen.getByTestId("launcher-app-test-app-3"))
+        expect(screen.getByTestId("stage-app-test-app-3")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            ROOM_APP_CATALOG_REFRESH_INTERVAL_MS
+          )
+        })
+
+        expect(catalogLoader).toHaveBeenCalledTimes(2)
+        openLauncher()
+        const current = screen.getByTestId("launcher-app-test-app-3")
+        expect(current).toHaveAttribute("aria-current", "true")
+        expect(current.textContent).toContain("Renamed 3")
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+      }
+    })
   })
 })

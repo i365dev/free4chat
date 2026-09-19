@@ -1,9 +1,11 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
 import {
+  FIXTURE_ROOM_APP_EXTRA_IDS,
+  FIXTURE_ROOM_APP_EXTRA_LABELS,
   FIXTURE_ROOM_APP_ID,
   FIXTURE_ROOM_APP_ORIGIN,
-  FIXTURE_ROOM_APP_PATH,
+  FIXTURE_ROOM_APP_PATHS,
   fixtureRoomAppCatalogJson,
 } from "../fixtures/room-app-fixture"
 import { FIXTURE_ROOM_APP_DOCUMENT } from "../fixtures/fixture-room-app-document"
@@ -80,7 +82,7 @@ async function installFixtureRoomApp(page: Page) {
       })
       return
     }
-    if (pathname === FIXTURE_ROOM_APP_PATH) {
+    if (FIXTURE_ROOM_APP_PATHS.includes(pathname)) {
       await route.fulfill({
         status: 200,
         contentType: "text/html; charset=utf-8",
@@ -98,8 +100,28 @@ async function installFixtureRoomApp(page: Page) {
 
 const host = (page: Page) => page.getByTestId("room-app-host")
 const appIframe = (page: Page) => page.getByTestId("room-app-iframe")
+const launcherEntry = (page: Page) => page.getByTestId("stage-apps-launcher")
+const launcher = (page: Page) => page.getByTestId("room-app-launcher")
+const launcherAppButton = (page: Page) =>
+  page.getByTestId(`launcher-app-${FIXTURE_ROOM_APP_ID}`)
 const stageAppButton = (page: Page) =>
   page.getByTestId(`stage-app-${FIXTURE_ROOM_APP_ID}`)
+
+/**
+ * #98: the Stage strip no longer renders the whole Lab catalog. Opening an App
+ * is still one action — it is just the launcher entry plus the App row — so the
+ * compatibility gate goes through the same progressive-disclosure surface a
+ * Human uses instead of assuming a permanent chip per App.
+ */
+async function openRoomAppFromLauncher(page: Page) {
+  await expect(launcherEntry(page)).toBeVisible()
+  await launcherEntry(page).click()
+  await expect(launcher(page)).toBeVisible()
+  await expect(launcherAppButton(page)).toBeVisible()
+  await launcherAppButton(page).click()
+  // Selection closes the launcher: one quick action, no lingering surface.
+  await expect(launcher(page)).toHaveCount(0)
+}
 const exitControl = (page: Page) =>
   page.locator(
     '[data-testid="room-app-host"] button[aria-label="Exit fullscreen"]'
@@ -321,8 +343,13 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
   })
 
   await test.step("open the fixture Room App through the real host boundary", async () => {
+    // A fresh Room starts with no recent Apps: the strip is the launcher entry
+    // alone, and nothing is inline until something is actually opened.
+    await expect(launcherEntry(page)).toBeVisible()
+    await expect(stageAppButton(page)).toHaveCount(0)
+    await openRoomAppFromLauncher(page)
+    // The opened App is now both the current Stage App and an inline shortcut.
     await expect(stageAppButton(page)).toBeVisible()
-    await stageAppButton(page).click()
     await expect(appIframe(page)).toBeVisible()
     await expect(host(page)).toHaveAttribute("data-layout", "stage")
     // The real bootstrap handshake completed inside the real sandbox.
@@ -441,6 +468,8 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
   })
 
   await test.step("reopen the App without a stale fullscreen state", async () => {
+    // It stayed current/recent, so the one-action inline shortcut is enough.
+    await expect(stageAppButton(page)).toBeVisible()
     await stageAppButton(page).click()
     await expect(appIframe(page)).toBeVisible()
     await expect(host(page)).toHaveAttribute("data-layout", "stage")
@@ -454,6 +483,47 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       "fullscreen control after reopen"
     )
     await expectNoPageOverflow(page, "App reopened")
+  })
+
+  await test.step("the launcher is a searchable, bounded catalog surface", async () => {
+    // Start from the Room: the launcher must be reachable without an App open.
+    await host(page).getByRole("button", { name: "Close" }).click()
+    await expect(appIframe(page)).toBeHidden()
+    await launcherEntry(page).click()
+    await expect(launcher(page)).toBeVisible()
+
+    // The whole supplied catalog stays reachable — not just the Apps this Room
+    // happened to open — with the canonical catalog labels.
+    await expect(launcherAppButton(page)).toBeVisible()
+    for (const [index, id] of FIXTURE_ROOM_APP_EXTRA_IDS.entries()) {
+      const row = page.getByTestId(`launcher-app-${id}`)
+      await expect(row).toBeVisible()
+      await expect(row).toContainText(FIXTURE_ROOM_APP_EXTRA_LABELS[index])
+    }
+    await expect(launcher(page).getByRole("menuitem")).toHaveCount(
+      FIXTURE_ROOM_APP_EXTRA_IDS.length + 1
+    )
+
+    // The search box really filters the catalog, and says so when nothing
+    // matches instead of rendering an empty box.
+    const search = page.getByTestId("room-app-search")
+    await search.fill("no such Room App")
+    await expect(page.getByTestId("room-app-search-empty")).toBeVisible()
+    await expect(launcherAppButton(page)).toHaveCount(0)
+    await search.fill("")
+    await expect(launcherAppButton(page)).toBeVisible()
+
+    // The 390px profile must not be able to push the launcher off-screen.
+    await expectInsideViewport(page, launcher(page), "Room App launcher")
+    await expectNoPageOverflow(page, "launcher open")
+
+    // Keyboard path: type to filter, then open with Enter alone.
+    await search.fill("fixture")
+    await search.press("Enter")
+    await expect(launcher(page)).toHaveCount(0)
+    await expect(appIframe(page)).toBeVisible()
+    await expect(host(page)).toHaveAttribute("data-layout", "stage")
+    await expectNoPageOverflow(page, "opened by keyboard")
   })
 
   await test.step("the fixture App stays interactive inside the sandbox", async () => {

@@ -14,6 +14,33 @@ export const FIXTURE_ROOM_APP_ID = "core-fixture-app"
 export const FIXTURE_ROOM_APP_LABEL = "Core Fixture App"
 export const FIXTURE_ROOM_APP_PATH = `/${FIXTURE_ROOM_APP_ID}`
 
+/**
+ * #98: the launcher only has something to prove when the catalog is bigger than
+ * the inline strip. These extra entries are ordinary ACTIVE catalog rows (the
+ * same bounded v1 shape, served at the same trusted origin); they all resolve to
+ * the same boring fixture document, because none of them is launched. Their only
+ * job is to make "every promoted App is discoverable through the launcher" a
+ * real assertion instead of a one-row tautology.
+ */
+export const FIXTURE_ROOM_APP_EXTRA_IDS = [
+  "fixture-second-app",
+  "fixture-third-app",
+  "fixture-fourth-app",
+  "fixture-fifth-app",
+] as const
+
+export const FIXTURE_ROOM_APP_EXTRA_LABELS = [
+  "Fixture Second App",
+  "Fixture Third App",
+  "Fixture Fourth App",
+  "Fixture Fifth App",
+]
+
+export const FIXTURE_ROOM_APP_PATHS = [
+  FIXTURE_ROOM_APP_PATH,
+  ...FIXTURE_ROOM_APP_EXTRA_IDS.map((id) => `/${id}`),
+]
+
 /** The pinned trusted Room App origin (src/common/roomApp.ts). */
 export const FIXTURE_ROOM_APP_ORIGIN = "https://room-apps.free4.chat"
 
@@ -34,6 +61,12 @@ export function fixtureRoomAppCatalog(): {
         path: FIXTURE_ROOM_APP_PATH,
         status: "active",
       },
+      ...FIXTURE_ROOM_APP_EXTRA_IDS.map((id, index) => ({
+        id,
+        label: FIXTURE_ROOM_APP_EXTRA_LABELS[index],
+        path: `/${id}`,
+        status: "active",
+      })),
     ],
   }
 }
