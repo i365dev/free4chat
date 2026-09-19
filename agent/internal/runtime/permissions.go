@@ -222,8 +222,8 @@ func projectRoomPermission(
 		if _, exists := offered[option.OptionID]; exists {
 			return types.RoomPermissionRequest{}, nil, errors.New("duplicate Harness permission option id")
 		}
-		name := strings.TrimSpace(option.Name)
-		if !validRoomPermissionText(name, maxRoomPermissionName) {
+		name, ok := boundedRoomPermissionName(option.Name)
+		if !ok {
 			return types.RoomPermissionRequest{}, nil, errors.New("invalid Harness permission option name")
 		}
 		optionKind := strings.TrimSpace(option.Kind)
@@ -302,6 +302,58 @@ func isBlindGenericExecutePermission(kind, title, summary string, details map[st
 
 func validRoomPermissionText(value string, maxUTF16 int) bool {
 	return value != "" && len(utf16.Encode([]rune(value))) <= maxUTF16
+}
+
+// boundedRoomPermissionName turns one native, human-facing approval label into
+// a bounded Room-safe DISPLAY label.
+//
+// #429: a Harness may legitimately offer a valid approval option whose display
+// label is longer than the Room's presentation budget — the real codex-acp
+// `accept_execpolicy_amendment` label is about 175 UTF-16 units. The option's
+// identity is its opaque OptionID, so a long label is a presentation problem,
+// never a reason to drop an otherwise valid request and leave the Human with
+// nothing to approve.
+//
+// Only the presentation is normalized: the label is trimmed exactly like every
+// other Room permission text, returned byte-for-byte unchanged when it already
+// fits, and otherwise cut on a UTF-16 boundary with a visible ellipsis inside
+// the same budget. Empty or whitespace-only labels still fail closed, because
+// an option with no human-readable label at all is not presentable.
+func boundedRoomPermissionName(value string) (string, bool) {
+	name := strings.TrimSpace(value)
+	if name == "" {
+		return "", false
+	}
+	if len(utf16.Encode([]rune(name))) <= maxRoomPermissionName {
+		return name, true
+	}
+	return truncateRoomPermissionText(name, maxRoomPermissionName), true
+}
+
+// truncateRoomPermissionText cuts value to at most maxUTF16 UTF-16 code units,
+// reserving one unit for a visible ellipsis, and never splits a rune or a
+// surrogate pair: a trailing high surrogate whose pair partner was cut is
+// dropped with it. Validity is measured in UTF-16 because that is the budget
+// the Room presentation already enforces, and it keeps emoji and other astral
+// characters intact.
+func truncateRoomPermissionText(value string, maxUTF16 int) string {
+	if maxUTF16 <= 0 {
+		return ""
+	}
+	// The ellipsis itself is a single UTF-16 code unit.
+	budget := maxUTF16 - 1
+	units := utf16.Encode([]rune(value))
+	if len(units) <= budget {
+		return value
+	}
+	units = units[:budget]
+	if len(units) == 0 {
+		return "…"
+	}
+	if last := units[len(units)-1]; last >= 0xD800 && last <= 0xDBFF {
+		units = units[:len(units)-1]
+	}
+	return string(utf16.Decode(units)) + "…"
 }
 
 func newRoomPermissionCorrelationID() (string, error) {
