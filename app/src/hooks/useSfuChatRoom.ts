@@ -94,6 +94,9 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024
 const FILE_CHUNK_SIZE = 32 * 1024
 const FILE_BUFFER_HIGH_WATER_MARK = 256 * 1024
 const FILE_BUFFER_LOW_WATER_MARK = 64 * 1024
+// #409: the browser may only name an existing Task. The bound matches the
+// Room's canonical collaboration request id bound.
+const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const AGENT_IMAGE_MAX_DIMENSION = 1600
 const AGENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"])
@@ -3816,10 +3819,31 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
-  // #117: authenticated Human on-demand read of one existing room
-  // collaboration artifact. Credentials ride in request headers only; the
-  // response is validated strictly (id match, MIME allow-list, size bounds,
-  // exact base64 length) before it can reach any UI. Nothing is cached here.
+  // #409: transient Task-scoped interrupt. This is a control-plane seam only:
+  // it sends no chat/action message, creates no Room history, and never
+  // decides which Agent is targeted — the Room derives the Task owner and the
+  // canonical Agent endpoint from the retained collaboration request. The
+  // Runtime decides locally whether it still owns a matching live turn.
+  const sendTaskInterrupt = useCallback(
+    (taskRequestId: string): boolean => {
+      // The Task id is an opaque canonical Room correlation value: it is sent
+      // exactly as given and never trimmed or otherwise repaired. Only an
+      // empty, blank, or oversized value is refused locally.
+      if (
+        !taskRequestId ||
+        taskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH ||
+        !taskRequestId.trim()
+      )
+        return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      return sendSocketMessage({
+        type: "task-interrupt",
+        taskRequestId,
+      })
+    },
+    [sendSocketMessage]
+  )
+
   const readRoomAttachment = useCallback(
     async (attachmentId: string): Promise<RoomAttachmentRead> => {
       if (!attachmentId) throw new Error("attachmentId is required")
@@ -4274,6 +4298,7 @@ export function useSfuChatRoom(
     sendCollabResponse,
     sendCollabResult,
     sendPermissionResponse,
+    sendTaskInterrupt,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
     localMicState,

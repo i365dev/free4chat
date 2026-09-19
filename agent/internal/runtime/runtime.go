@@ -209,14 +209,11 @@ type ResidentRuntime struct {
 	// (SendText). A subsystem's successful operation clears ONLY its own
 	// error — a successful wait never hides an unresolved Harness or send
 	// failure. Empty = no current unresolved condition.
-	lastErrorSource        string
-	providerClaim          string
-	providerHandles        *ProviderHandleStore
-	permissionMu           sync.Mutex
-	pendingPermissions     map[string]*pendingRoomPermission
-	permissionReaderMu     sync.Mutex
-	permissionReaderCancel context.CancelFunc
-	permissionReaderDone   chan struct{}
+	lastErrorSource    string
+	providerClaim      string
+	providerHandles    *ProviderHandleStore
+	permissionMu       sync.Mutex
+	pendingPermissions map[string]*pendingRoomPermission
 
 	loopWG      sync.WaitGroup
 	cleanupOnce sync.Once
@@ -869,20 +866,64 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 	defer cancel()
 	heartbeatErrors := make(chan error, 1)
 	retrySignals := make(chan struct{}, 1)
-	type receiveResult struct {
-		result types.WaitResult
-		err    error
-	}
-	receiveResults := make(chan receiveResult, 1)
-	receiveNext := func() {
-		go func() {
+	// envelopeReady wakes the serial turn scheduler after ingestion; it never
+	// carries payload, so a coalesced wake can only cause one extra no-op
+	// drain.
+	envelopeReady := make(chan struct{}, 1)
+	readErrors := make(chan error, 1)
+
+	/*
+	 * ONE long-lived owner of stream.Receive for the whole stream lifetime.
+	 *
+	 * coder/websocket closes the entire connection when a read context is
+	 * canceled, so a reader must never be stopped mid-read — and that is why
+	 * this is a single reader rather than one started per envelope. It also
+	 * ingests every envelope itself instead of handing frames to the loop,
+	 * which is what lets a private Task control (#409) reach the Runtime while
+	 * the serial loop is synchronously inside the very Harness turn that
+	 * control must be able to cancel. The loop below therefore only schedules
+	 * turns; it never reads or ingests the resident transport.
+	 */
+	go func() {
+		for {
 			result, err := stream.Receive(ctx)
-			select {
-			case receiveResults <- receiveResult{result: result, err: err}:
-			case <-ctx.Done():
+			if err != nil {
+				if !r.isStopped() {
+					// A dead transport can never deliver a Room permission
+					// decision, so any turn parked on one must fail closed
+					// instead of waiting for its own timeout.
+					r.cancelPendingPermissions(err)
+				}
+				select {
+				case readErrors <- err:
+				default:
+				}
+				return
 			}
-		}()
-	}
+			if result.TaskControl != nil {
+				// PRIVATE RESIDENT TRANSPORT ONLY: a transient Task control is
+				// not a Room event, carries no cursor, and is applied
+				// immediately — never queued behind a running turn.
+				r.applyResidentTaskControl(result.TaskControl)
+				continue
+			}
+			if result.MediaState == nil {
+				// A resident envelope without the mandatory media projection is
+				// not an authorization observation. Keep event delivery alive,
+				// but revoke local media until a complete envelope arrives.
+				r.failClosedResidentMediaState()
+			}
+			r.advanceFromWait(result)
+			// A media-only envelope is observation, not an activation event. Do
+			// not use it as a Harness wakeup/retry boundary for pre-existing work.
+			if len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
+				select {
+				case envelopeReady <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
 	interval := r.residentHeartbeatInterval()
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -912,7 +953,6 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 		}
 	}()
 
-	receiveNext()
 	for {
 		select {
 		case heartbeatErr := <-heartbeatErrors:
@@ -921,31 +961,22 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			if r.shouldRetryHumanTaskAcceptance() && !r.isStopped() {
 				r.drainTurnsWithRetryClock()
 			}
-		case received := <-receiveResults:
-			if received.err != nil {
-				select {
-				case heartbeatErr := <-heartbeatErrors:
-					return heartbeatErr
-				default:
-				}
-				if r.isStopped() {
-					return nil
-				}
-				return received.err
+		case err := <-readErrors:
+			select {
+			case heartbeatErr := <-heartbeatErrors:
+				return heartbeatErr
+			default:
 			}
-			if received.result.MediaState == nil {
-				// A resident envelope without the mandatory media projection is
-				// not an authorization observation. Keep event delivery alive,
-				// but revoke local media until a complete envelope arrives.
-				r.failClosedResidentMediaState()
+			if r.isStopped() {
+				return nil
 			}
-			r.advanceFromWait(received.result)
-			// A media-only envelope is observation, not an activation event. Do
-			// not use it as a Harness wakeup/retry boundary for pre-existing work.
-			if len(received.result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped() {
+			return err
+		case <-envelopeReady:
+			if !r.isStopped() {
+				// The reader has already ingested and acknowledged delivery of
+				// this envelope; the loop only runs the serial turn drain.
 				r.drainTurnsWithRetryClock()
 			}
-			receiveNext()
 		}
 	}
 }

@@ -688,6 +688,36 @@ type WaitResult struct {
 	// MediaState is populated only by the private resident event stream. The
 	// public wait_for_events contract remains text/roster-only.
 	MediaState *ResidentMediaState `json:"mediaState,omitempty"`
+	// TaskControl is populated only by the private resident event stream: a
+	// transient Task-scoped control frame, never a Room event. It is
+	// deliberately excluded from JSON so no public/MCP surface can observe or
+	// re-emit it, and it carries no cursor of its own.
+	TaskControl *ResidentTaskControl `json:"-"`
+}
+
+// ResidentTaskControlKind is the closed set of private resident control
+// frames. It is not a Room message, a lifecycle intent, or a Harness prompt.
+type ResidentTaskControlKind string
+
+const (
+	// ResidentTaskControlInterrupt asks the Runtime to cancel the Harness turn
+	// it currently owns for exactly one Task scope. It is edge-triggered: a
+	// control that arrives with no matching active turn is a local no-op and
+	// is never retained for a later turn.
+	ResidentTaskControlInterrupt ResidentTaskControlKind = "interrupt"
+)
+
+// ResidentTaskControl is a PRIVATE RESIDENT TRANSPORT ONLY control frame
+// (#409). It travels on the Agent's own resident event socket, is never
+// persisted in Room state, never increments a Room sequence, and is never
+// returned by the public wait_for_events contract.
+//
+// It carries no authority by itself: the Runtime authorizes it against the
+// Harness turn it currently owns. TaskRequestID stays a Room-visible
+// correlation id — never an ACP session id, participant handle, or token.
+type ResidentTaskControl struct {
+	Kind          ResidentTaskControlKind `json:"kind"`
+	TaskRequestID string                  `json:"taskRequestId"`
 }
 
 // CollabRequestArgs are the arguments for send_collab_request.

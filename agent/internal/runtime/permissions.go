@@ -138,9 +138,10 @@ func (r *ResidentRuntime) respondToPermission(
 		r.removePendingPermission(correlationID, pending)
 		return harness.ACPPermissionResponse{}, errors.New("Room permission request failed")
 	}
-	r.ensurePermissionEventReader()
-	defer r.stopPermissionEventReader()
-
+	// No second reader is started here. The resident event stream has exactly
+	// one long-lived reader, and it ingests every envelope (including this
+	// Room response) even while the serial loop is synchronously inside the
+	// ACP turn that is waiting for this decision.
 	select {
 	case decision := <-pending.done:
 		if decision.err != nil {
@@ -371,72 +372,9 @@ func (r *ResidentRuntime) handleRoomPermissionEvent(event types.RoomEvent) bool 
 	return true
 }
 
-// ensurePermissionEventReader temporarily consumes the already-open resident
-// WebSocket while the main resident loop is synchronously inside the ACP turn.
-// It is intentionally one reader shared by all pending local permissions.
-func (r *ResidentRuntime) ensurePermissionEventReader() {
-	r.residentMu.Lock()
-	stream := r.resident
-	r.residentMu.Unlock()
-	if stream == nil {
-		return
-	}
-	r.permissionReaderMu.Lock()
-	if r.permissionReaderCancel != nil {
-		r.permissionReaderMu.Unlock()
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	r.permissionReaderCancel = cancel
-	r.permissionReaderDone = done
-	r.permissionReaderMu.Unlock()
-
-	go func() {
-		defer close(done)
-		defer func() {
-			r.permissionReaderMu.Lock()
-			if r.permissionReaderDone == done {
-				r.permissionReaderCancel = nil
-				r.permissionReaderDone = nil
-			}
-			r.permissionReaderMu.Unlock()
-		}()
-		for {
-			result, err := stream.Receive(ctx)
-			if err != nil {
-				if ctx.Err() == nil && !r.isStopped() {
-					r.cancelPendingPermissions(err)
-				}
-				return
-			}
-			r.advanceFromWait(result)
-			if !r.hasPendingPermissions() {
-				return
-			}
-		}
-	}()
-}
-
-func (r *ResidentRuntime) stopPermissionEventReader() {
-	r.permissionReaderMu.Lock()
-	if r.hasPendingPermissions() {
-		r.permissionReaderMu.Unlock()
-		return
-	}
-	cancel := r.permissionReaderCancel
-	done := r.permissionReaderDone
-	r.permissionReaderCancel = nil
-	r.permissionReaderDone = nil
-	r.permissionReaderMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	if done != nil {
-		<-done
-	}
-}
-
+// hasPendingPermissions reports whether this Runtime is waiting for at least
+// one Room permission decision. The resident event stream's single long-lived
+// reader delivers those decisions, so no second reader is started for them.
 func (r *ResidentRuntime) hasPendingPermissions() bool {
 	r.permissionMu.Lock()
 	defer r.permissionMu.Unlock()

@@ -735,6 +735,83 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(activity).toHaveTextContent("Pi · Thinking…")
   })
 
+  it("offers Interrupt only while the selected Task has Agent activity", () => {
+    const sendTaskInterrupt = vi.fn(() => true)
+    // Local spies: an interrupt must never synthesize chat or action content.
+    const sendTextMessage = vi.fn()
+    const sendActionMessage = vi.fn()
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-interrupt",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-codex",
+        summary: "Long-running task",
+      },
+    }
+    const agentParticipant = {
+      peerId: "agent-codex",
+      name: "Codex",
+      kind: "agent",
+      room: "test-room",
+      muteState: false,
+    }
+
+    // Task retained and selected, but no transient Agent activity: the Task is
+    // not running, so no Interrupt control may be offered.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [agentParticipant],
+      agentActivities: [],
+      sendTaskInterrupt,
+      sendTextMessage,
+      sendActionMessage,
+    })
+    const idle = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
+    expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+    idle.unmount()
+
+    // Same Task with live Agent activity: the control appears and one click
+    // sends exactly one interrupt for THAT Task, with no chat message.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [agentParticipant],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-codex",
+          scopeId: "task:task-interrupt",
+          state: "using_tools",
+        },
+      ],
+      sendTaskInterrupt,
+      sendTextMessage,
+      sendActionMessage,
+    })
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
+    fireEvent.click(screen.getByTestId("task-interrupt"))
+
+    expect(sendTaskInterrupt).toHaveBeenCalledTimes(1)
+    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-interrupt")
+    expect(sendTextMessage).not.toHaveBeenCalled()
+    expect(sendActionMessage).not.toHaveBeenCalled()
+  })
+
   it("keeps the interaction shell bounded while Task activity is visible", () => {
     const taskRequest: Message = {
       peerId: "human-local",

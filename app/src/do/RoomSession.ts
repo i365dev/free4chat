@@ -226,6 +226,10 @@ const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const ATTACHMENT_CHUNK_SIZE = 64 * 1024
 const MAX_TARGETS = 8
 const MAX_TASK_LIVE_VIEWS = 16
+// #409: a Task interrupt names one canonical collaboration request id. The
+// bound matches the Runtime's private resident control bound; the browser can
+// never widen it into a payload.
+const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
 const TASK_LIVE_VIEW_KEY_PREFIX = "task-live-view:"
 const MAX_PENDING_PERMISSION_REQUESTS = 32
 // The resident event stream is intentionally one bounded frame. The 2 MiB
@@ -774,6 +778,16 @@ type ClientMessage =
       type: "permission-response"
       requestId: string
       selectedOptionId: string
+    }
+  | {
+      // #409: a transient, Human-triggered interrupt of the Harness turn this
+      // Room's Agent currently owns for one Task. The browser supplies ONLY
+      // the Task correlation id: the owner Human and the target Agent are
+      // derived from the canonical retained collaboration request. Nothing
+      // about this control is appended to Room history, and an interrupt that
+      // finds no matching live turn is a no-op in the Runtime.
+      type: "task-interrupt"
+      taskRequestId: string
     }
   | { type: "mute"; muted: boolean }
   | { type: "unpublish"; trackName: string }
@@ -2495,6 +2509,53 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private agentEventSocketTag(participantId: string): string {
     return `agent-event:${participantId}`
+  }
+
+  /**
+   * #409: deliver one transient Task control frame on an Agent's own private
+   * resident socket. This is deliberately NOT an event push:
+   *
+   *  - it is never appended to Room history, never increments a sequence, and
+   *    never reaches the public MCP wait_for_events projection;
+   *  - it goes only to sockets currently bound to THIS Agent participant and
+   *    its current connection nonce, so a replaced/stale socket is skipped;
+   *  - it reports delivery instead of pretending success, which is what lets
+   *    the caller answer `task_agent_not_reachable`.
+   */
+  private sendAgentTaskControl(
+    room: RoomRecord,
+    participantId: string,
+    control: { control: string; taskRequestId: string }
+  ): boolean {
+    const participant = room.participants[participantId]
+    if (!participant || participant.kind !== "agent" || !participant.connected)
+      return false
+    let delivered = false
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(participantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        !attachment ||
+        attachment.participantId !== participantId ||
+        participant.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      try {
+        socket.send(
+          JSON.stringify({
+            type: "task-control",
+            control: control.control,
+            taskRequestId: control.taskRequestId,
+          })
+        )
+        delivered = true
+      } catch {
+        // A socket that fails mid-send is not a delivery; the caller reports
+        // task_agent_not_reachable instead of pretending the control landed.
+      }
+    }
+    return delivered
   }
 
   private deserializeAgentEventAttachment(
@@ -5994,6 +6055,70 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         selectedOptionId
       )
       if (result.ok === false) reject(result.error)
+      return
+    }
+
+    // #409: Task-scoped remote interrupt. This is a control-plane action, not
+    // conversation content: it appends no Room message, increments no
+    // sequence, wakes no waiter, emits no analytics, and never enters the
+    // public MCP wait_for_events projection. It is delivered only to the
+    // canonical Agent endpoint's own private resident socket, and only the
+    // Human who created that Human→Agent Task may trigger it.
+    if (message.type === "task-interrupt") {
+      const reject = (error: string) =>
+        socket.send(JSON.stringify({ type: "error", error }))
+      const rawTaskRequestId = message.taskRequestId
+      if (
+        typeof rawTaskRequestId !== "string" ||
+        rawTaskRequestId.length === 0 ||
+        rawTaskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH
+      ) {
+        reject("invalid_task_request")
+        return
+      }
+      const taskProjection = buildTaskProjectionIndex(
+        room.messages,
+        room.participants
+      )
+      const resolution = resolveTaskRequest(
+        taskProjection,
+        rawTaskRequestId,
+        room.participants
+      )
+      if (resolution.ok === false) {
+        reject(resolution.error)
+        return
+      }
+      // Ownership comes from the canonical collaboration request, never from
+      // the browser: only the Human who created this Human→Agent Task may
+      // stop its Agent's turn. Another Human in the same Room cannot.
+      const owner = room.participants[resolution.request.fromParticipantId]
+      if (!owner || owner.kind !== "human" || owner.id !== participant.id) {
+        reject("task_interrupt_not_owner")
+        return
+      }
+      // The canonical endpoint only. An interrupt is never rerouted to
+      // another participating Agent after the original one disconnects.
+      const canonicalAgentId = initialTaskAgentParticipantId(
+        resolution.request,
+        room.participants
+      )
+      if (!canonicalAgentId) {
+        reject("task_target_not_in_room")
+        return
+      }
+      if (
+        !this.sendAgentTaskControl(room, canonicalAgentId, {
+          control: "interrupt",
+          taskRequestId: resolution.requestId,
+        })
+      ) {
+        reject("task_agent_not_reachable")
+        return
+      }
+      // No acknowledgement frame is sent: the interrupt is edge-triggered and
+      // the Runtime decides locally whether it owns a matching live turn. The
+      // Task itself remains open and usable either way.
       return
     }
 

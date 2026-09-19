@@ -373,3 +373,105 @@ func TestJoinResultParsesServerAgentLease(t *testing.T) {
 }
 
 var _ types.ResidentEventClient = (*Client)(nil)
+
+// receiveResidentFrame serves exactly one resident frame and returns what the
+// client decoded from it.
+func receiveResidentFrame(t *testing.T, frame map[string]any) (types.WaitResult, error) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		payload, _ := json.Marshal(frame)
+		_ = conn.Write(context.Background(), websocket.MessageText, payload)
+		// Close from the server side too, so the test does not pay the client's
+		// close-handshake timeout on every case.
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+	return stream.Receive(context.Background())
+}
+
+// TestResidentEventStreamDecodesPrivateTaskControl proves the #409 control
+// frame is decoded into the private resident projection only: it is not a Room
+// event, it carries no cursor, and it cannot leak into a public/MCP-shaped
+// WaitResult.
+func TestResidentEventStreamDecodesPrivateTaskControl(t *testing.T) {
+	wait, err := receiveResidentFrame(t, map[string]any{
+		"type":          "task-control",
+		"control":       "interrupt",
+		"taskRequestId": "req-T-0001",
+	})
+	if err != nil {
+		t.Fatalf("decode private task control: %v", err)
+	}
+	if wait.TaskControl == nil ||
+		wait.TaskControl.Kind != types.ResidentTaskControlInterrupt ||
+		wait.TaskControl.TaskRequestID != "req-T-0001" {
+		t.Fatalf("private task control mismatch: %+v", wait.TaskControl)
+	}
+	if wait.Cursor != 0 || len(wait.Events) != 0 || wait.MediaState != nil || wait.Participants != nil {
+		t.Fatalf("a task control must not be projected as a Room event: %+v", wait)
+	}
+	encoded, err := json.Marshal(wait)
+	if err != nil {
+		t.Fatalf("marshal resident wait result: %v", err)
+	}
+	for _, forbidden := range []string{"taskControl", "taskRequestId", "req-T-0001", "task-control", "interrupt"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("private task control leaked into a serialized wait result (%q): %s", forbidden, encoded)
+		}
+	}
+}
+
+// TestResidentEventStreamRejectsMalformedTaskControl proves a malformed or
+// oversized control fails closed instead of degrading into an ordinary Room
+// event or a silent no-op.
+func TestResidentEventStreamRejectsMalformedTaskControl(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		frame map[string]any
+	}{
+		{name: "unsupported control", frame: map[string]any{
+			"type": "task-control", "control": "steer", "taskRequestId": "req-T-0001",
+		}},
+		{name: "missing control", frame: map[string]any{
+			"type": "task-control", "taskRequestId": "req-T-0001",
+		}},
+		{name: "missing task request", frame: map[string]any{
+			"type": "task-control", "control": "interrupt",
+		}},
+		{name: "padded task request", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": " req-T-0001 ",
+		}},
+		{name: "control rune in task request", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": "req\tT",
+		}},
+		{name: "oversized task request", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": strings.Repeat("t", 65),
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			wait, err := receiveResidentFrame(t, testCase.frame)
+			if err == nil {
+				t.Fatalf("malformed task control must fail closed: %+v", wait)
+			}
+			if CodeOf(err) != CodeToolError {
+				t.Fatalf("want a tool-protocol error, got %v", err)
+			}
+			if wait.TaskControl != nil || len(wait.Events) != 0 || wait.Cursor != 0 {
+				t.Fatalf("malformed control was partially applied: %+v", wait)
+			}
+		})
+	}
+}
