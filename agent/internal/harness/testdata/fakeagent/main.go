@@ -9,14 +9,24 @@
 //	permission     answer a targeted turn after an auto-cancelled permission ask
 //	permission_wait  park a permission ask until the client chooses an offered option
 //	cancel         hold the requested turn until session/cancel arrives
+//	session_echo   reply with the exact session id the prompt was addressed to
 //	exit           die shortly after the first prompt completes
 //	restart        die after the first prompt; fresh process answers differently
 //	timeout_stuck  ignore the first prompt forever (survives SIGTERM); next process recovers
 //	envelope       reply with the exact FAKE_REPLY_TEXT payload (#165 addressing tests)
 //
+// Session discovery/load (#409) is scripted through initialize plus
+// session/list and session/load handlers; see FAKE_LIST_CAP, FAKE_LOAD_CAP,
+// FAKE_LIST_RAW and FAKE_LIST_NO_CURSOR below.
+//
 // Markers/env: FAKE_EXIT_MARKER, FAKE_STATE_MARKER, FAKE_CANCEL_MARKER,
 // FAKE_IMAGE_CAP ("1" advertises image support), FAKE_REPLY_TEXT,
 // FAKE_POLICY_CAP ("1" advertises native modes/config options),
+// FAKE_RESUME_CAP ("1" advertises sessionCapabilities.resume),
+// FAKE_LIST_CAP ("1" advertises sessionCapabilities.list and answers
+// session/list), FAKE_LOAD_CAP ("1" advertises loadSession and answers
+// session/load), FAKE_LIST_RAW (exact raw session/list result payload),
+// FAKE_LIST_NO_CURSOR ("1" omits nextCursor),
 // FAKE_UNIQUE_SESSION_IDS ("1" makes session ids process-unique for tests).
 package main
 
@@ -188,15 +198,67 @@ func main() {
 			if os.Getenv("FAKE_RESUME_CAP") == "1" {
 				sessionCaps["resume"] = map[string]any{}
 			}
+			if os.Getenv("FAKE_LIST_CAP") == "1" {
+				sessionCaps["list"] = map[string]any{}
+			}
 			reply(message.ID, map[string]any{
 				"protocolVersion": 1,
 				"agentCapabilities": map[string]any{
+					"loadSession": os.Getenv("FAKE_LOAD_CAP") == "1",
 					"promptCapabilities": map[string]any{
 						"image": os.Getenv("FAKE_IMAGE_CAP") == "1",
 					},
 					"sessionCapabilities": sessionCaps,
 				},
 			})
+
+		case message.Method == "session/list":
+			// FAKE_LIST_RAW scripts an exact wire payload so tests can prove
+			// the adapter's defensive bounds (malformed/oversized/absent
+			// fields) without a bespoke child per case.
+			if raw := os.Getenv("FAKE_LIST_RAW"); raw != "" {
+				reply(message.ID, json.RawMessage(raw))
+				continue
+			}
+			var listParams struct {
+				Cwd    string `json:"cwd"`
+				Cursor string `json:"cursor"`
+			}
+			_ = json.Unmarshal(message.Params, &listParams)
+			cwd := listParams.Cwd
+			if cwd == "" {
+				cwd = "/workspace"
+			}
+			// The first entry deliberately carries agent-private _meta: the
+			// adapter must never retain or project it.
+			result := map[string]any{
+				"sessions": []any{
+					map[string]any{
+						"sessionId": "native-session-1",
+						"cwd":       cwd,
+						"title":     "First native session",
+						"updatedAt": "2026-09-18T10:00:00Z",
+						"_meta":     map[string]any{"messageCount": 12, "hasErrors": false},
+					},
+					map[string]any{
+						"sessionId": "native-session-2",
+						"cwd":       cwd,
+						"title":     "Second native session",
+						"updatedAt": "2026-09-18T11:30:00Z",
+					},
+				},
+			}
+			if os.Getenv("FAKE_LIST_NO_CURSOR") != "1" {
+				result["nextCursor"] = "cursor-page-2"
+			}
+			reply(message.ID, result)
+
+		case message.Method == "session/load":
+			if os.Getenv("FAKE_LOAD_CAP") != "1" {
+				reply(message.ID, map[string]any{"error": "session/load was not advertised"})
+				continue
+			}
+			reply(message.ID, map[string]any{})
 
 		case message.Method == "session/new":
 			a.nextSessionID++
@@ -425,6 +487,12 @@ func main() {
 					text = fmt.Sprintf("reply-%d", a.promptCount)
 				}
 				updateChunk(promptSessionID, text)
+				reply(message.ID, map[string]any{"stopReason": "end_turn"})
+			case "session_echo":
+				// Echoes the exact session id the prompt was addressed to, so
+				// a test can prove which conversation a turn really used.
+				a.promptCount++
+				updateChunk(promptSessionID, fmt.Sprintf("reply-%d session=%s", a.promptCount, promptSessionID))
 				reply(message.ID, map[string]any{"stopReason": "end_turn"})
 			case "thought":
 				// Emits internal reasoning that must NEVER surface in the

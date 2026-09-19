@@ -183,14 +183,28 @@ type ACPPermissionResponder func(context.Context, ACPPermissionRequest) (ACPPerm
 // state. The ACP payload remains private to the adapter.
 type ACPActivityHandler func(scope string, state types.AgentActivityState)
 
-// ACPCapabilities is the parsed initialize response projection.
+// ACPCapabilities is the parsed initialize response projection. Presence
+// fields describe what the Harness ADVERTISES; they are never a claim that
+// Free4Chat can use a native CLI session (#409).
 type ACPCapabilities struct {
 	Images bool
+	// LoadSessionPresent mirrors agentCapabilities.loadSession == true. It
+	// gates the adapter's own session/load primitive; it is not projected
+	// into types.HarnessCapabilities and does not mean a native session is
+	// discoverable, loadable, or continuable.
+	LoadSessionPresent bool
+	// ListPresent mirrors the Node-style presence check on the
+	// sessionCapabilities.list key. It gates the adapter's own session/list
+	// primitive; like ResumePresent it is a protocol advertisement, not
+	// Free4Chat product support.
+	ListPresent bool
 	// ResumePresent mirrors the Node `resume != null` check: the mere
 	// presence of the sessionCapabilities.resume key counts as the Harness
 	// advertising resume. It is recorded for diagnostics only and is
 	// deliberately NOT projected into types.HarnessCapabilities: Free4Chat
-	// never sends `session/load`, so it cannot offer usable resume.
+	// sends `session/load` (never `session/resume`) and only through the
+	// concrete ACPAdapter primitive, so no upper layer may offer usable
+	// resume on the strength of this flag.
 	ResumePresent bool
 	// ClosePresent gates the graceful session/close attempt on shutdown.
 	ClosePresent bool
@@ -287,10 +301,11 @@ type ACPAdapter struct {
 	pendingPermissions map[string]*pendingPermission
 	nextID             int64
 	gen                int64 // lifecycle generation of the current child
-	// sessionGeneration advances only after a session/new response succeeds.
-	// Unlike gen it is meaningful to the Runtime: a replacement session has
-	// no retained conversation memory, while a transport reconnect alone does
-	// not change it.
+	// sessionGeneration advances only after a session/new response succeeds —
+	// or after a successful session/load replaces the retained conversation
+	// (LoadSession). Unlike gen it is meaningful to the Runtime: a replaced
+	// session has no retained conversation memory, while a transport
+	// reconnect alone does not change it.
 	sessionGeneration   int64
 	sessionID           string
 	caps                *ACPCapabilities
@@ -476,9 +491,10 @@ func (a *ACPAdapter) SetConfigOption(configID, value string) error {
 	return nil
 }
 
-// SessionGeneration identifies the current successfully-created ACP
-// conversation generation. It deliberately does not expose the ACP session
-// id, which is adapter-private transport state.
+// SessionGeneration identifies the current ACP conversation generation for
+// the default Room scope. It advances when session/new creates a conversation
+// and when LoadSession replaces it with an existing one. It deliberately does
+// not expose the ACP session id, which is adapter-private transport state.
 func (a *ACPAdapter) SessionGeneration() int64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -804,14 +820,24 @@ func parseAgentCapabilities(raw []byte) (*ACPCapabilities, error) {
 		PromptCapabilities struct {
 			Image bool `json:"image"`
 		} `json:"promptCapabilities"`
+		// Decoded as raw JSON so a Harness sending null or a non-boolean
+		// value degrades to "not advertised" instead of failing the whole
+		// handshake.
+		LoadSession         json.RawMessage            `json:"loadSession"`
 		SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, errors.New("ACP agent did not advertise capabilities")
 	}
-	caps := &ACPCapabilities{Images: doc.PromptCapabilities.Image}
+	caps := &ACPCapabilities{
+		Images:             doc.PromptCapabilities.Image,
+		LoadSessionPresent: compactJSON(doc.LoadSession) == "true",
+	}
 	if _, ok := doc.SessionCapabilities["resume"]; ok {
 		caps.ResumePresent = true
+	}
+	if _, ok := doc.SessionCapabilities["list"]; ok {
+		caps.ListPresent = true
 	}
 	if _, ok := doc.SessionCapabilities["close"]; ok {
 		caps.ClosePresent = true
