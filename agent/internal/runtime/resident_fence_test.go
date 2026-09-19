@@ -226,8 +226,10 @@ func TestApplyResidentFrameDropsEveryStaleStreamEffect(t *testing.T) {
 			errors.New("abandoned transport failed"),
 		)
 
-		if outcome != residentFrameDropped {
-			t.Fatalf("a stale transport error must be dropped: %v", outcome)
+		// The reader still reports its OWN transport failure so its loop can
+		// finish; only the Runtime-visible effect is fenced.
+		if outcome != residentFrameFailed {
+			t.Fatalf("a stale transport error must not be applied: %v", outcome)
 		}
 		rt.permissionMu.Lock()
 		remaining := len(rt.pendingPermissions)
@@ -362,6 +364,41 @@ func TestStaleResidentReaderCannotAdvanceReplacementDelivery(t *testing.T) {
 	}
 	if got := adapterRunCountFor(rt); got != 0 {
 		t.Fatalf("a stale reader created Room work: %d", got)
+	}
+}
+
+// TestResidentReaderReportsItsOwnFailureAfterTheStreamWasCleared pins the
+// shutdown path: Stop (and any reconnect) clears r.resident before the parked
+// reader returns, and the reader must still report its own transport failure so
+// its loop can finish. Effects stay fenced; only the signal is unconditional.
+func TestResidentReaderReportsItsOwnFailureAfterTheStreamWasCleared(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	defer rt.Stop()
+
+	stream := newGatedResidentStream()
+	if !rt.setResidentStream(stream) {
+		t.Fatal("the stream was not installed")
+	}
+	loop := make(chan error, 1)
+	go func() { loop <- rt.consumeResidentEventStream(stream) }()
+
+	// The Runtime releases the transport first, exactly like Stop/clear.
+	rt.clearResidentStream(stream)
+	if rt.isCurrentResidentStream(stream) {
+		t.Fatal("a cleared stream must not stay current")
+	}
+	stream.frames <- errors.New("transport failed after clear")
+
+	select {
+	case err := <-loop:
+		if err == nil {
+			t.Fatal("a failed transport must finish the reader loop with its error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the reader loop never finished after its transport failed")
+	}
+	if got := rt.currentCursor(); got != 0 {
+		t.Fatalf("a cleared reader advanced delivery state: %d", got)
 	}
 }
 

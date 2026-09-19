@@ -977,7 +977,9 @@ type residentFrameOutcome int
 
 const (
 	// residentFrameDropped: this reader no longer owns the stream, so both the
-	// frame and the reader are finished.
+	// frame and the reader are finished. Transport failures are reported as
+	// residentFrameFailed instead, even when ownership was already lost, so the
+	// reader's own loop can always finish.
 	residentFrameDropped residentFrameOutcome = iota
 	// residentFrameApplied: the frame was applied to Runtime state.
 	residentFrameApplied
@@ -1006,9 +1008,10 @@ func (r *ResidentRuntime) applyResidentFrame(
 			// own timeout.
 			r.cancelPendingPermissions(err)
 		}
-		if !r.isCurrentResidentStream(stream) {
-			return residentFrameDropped, false
-		}
+		// The reader ALWAYS reports its own transport failure so its loop can
+		// finish (a stop or a reconnect clears r.resident before this returns).
+		// Only the Runtime-visible effects above are ownership-fenced; the
+		// signal itself never touches the replacement stream's lifecycle.
 		return residentFrameFailed, false
 	}
 	if result.TaskControl != nil {
