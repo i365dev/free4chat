@@ -31,6 +31,13 @@ type adoptionLoadCall struct {
 	cwd       string
 }
 
+// adoptionTurnInput is one Harness turn this adapter was actually asked to run,
+// with the exact scoped input the Runtime rendered for it.
+type adoptionTurnInput struct {
+	scope string
+	input types.HarnessTurnInput
+}
+
 // adoptionAdapter is a Pi-named adapter that records the exact order of every
 // session lifecycle call per scope. "new:" is recorded only when a scoped
 // session is ACTUALLY created (a real session/new), never merely because the
@@ -41,9 +48,15 @@ type adoptionAdapter struct {
 	recordMu sync.Mutex
 	events   []string
 	loads    []adoptionLoadCall
+	inputs   []adoptionTurnInput
 	sessions []harness.ACPSessionInfo
 	loadErr  error
 	listErr  error
+	// loadHook runs INSIDE LoadSession, after the Runtime has committed the
+	// adopted ownership for the scope and before the load reports success. It
+	// is how a test deterministically places a Harness death in the load
+	// window without sleeps.
+	loadHook func()
 }
 
 func newAdoptionAdapter(name string) *adoptionAdapter {
@@ -74,6 +87,37 @@ func (a *adoptionAdapter) loadCalls() []adoptionLoadCall {
 	a.recordMu.Lock()
 	defer a.recordMu.Unlock()
 	return append([]adoptionLoadCall(nil), a.loads...)
+}
+
+// turnInputs snapshots every Harness turn this adapter ran, in order.
+func (a *adoptionAdapter) turnInputs() []adoptionTurnInput {
+	a.recordMu.Lock()
+	defer a.recordMu.Unlock()
+	return append([]adoptionTurnInput(nil), a.inputs...)
+}
+
+// latestSessionContext returns the session facts of the newest turn for one
+// scope, or nil when no turn ran for it.
+func (a *adoptionAdapter) latestSessionContext(scope string) *types.HarnessSessionContext {
+	inputs := a.turnInputs()
+	for index := len(inputs) - 1; index >= 0; index-- {
+		if inputs[index].scope == scope {
+			return inputs[index].input.Session
+		}
+	}
+	return nil
+}
+
+// sessionContextsFor returns the session facts of every turn of one scope, in
+// order, so a test can prove what a retry was told.
+func (a *adoptionAdapter) sessionContextsFor(scope string) []*types.HarnessSessionContext {
+	var out []*types.HarnessSessionContext
+	for _, entry := range a.turnInputs() {
+		if entry.scope == scope {
+			out = append(out, entry.input.Session)
+		}
+	}
+	return out
 }
 
 // count reports how many recorded events start with prefix.
@@ -112,7 +156,11 @@ func (a *adoptionAdapter) LoadSession(scope string, sessionID string, cwd string
 	a.record("load:" + scope)
 	a.recordMu.Lock()
 	a.loads = append(a.loads, adoptionLoadCall{scope: scope, sessionID: sessionID, cwd: cwd})
+	hook := a.loadHook
 	a.recordMu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	if a.loadErr != nil {
 		return a.loadErr
 	}
@@ -134,6 +182,9 @@ func (a *adoptionAdapter) EnsureSessionFor(scope string) error {
 
 func (a *adoptionAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expectedGeneration int64) (types.HarnessTurnResult, error) {
 	a.record("run:" + scope)
+	a.recordMu.Lock()
+	a.inputs = append(a.inputs, adoptionTurnInput{scope: scope, input: input})
+	a.recordMu.Unlock()
 	return a.fakeAdapter.RunTurnFor(scope, input, expectedGeneration)
 }
 
@@ -605,5 +656,255 @@ func TestRoomScopeIsUnaffectedByAdoption(t *testing.T) {
 	}
 	if got := adapter.count("load:"); got != 0 {
 		t.Fatalf("a Room-scope turn loaded a Task adoption: %v", adapter.recorded())
+	}
+}
+
+// drainNow runs the existing serial drain once, without accepting a new event:
+// the test can therefore drive exactly the work that was already pending.
+func drainNow(rt *ResidentRuntime) chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		rt.drainTurns()
+		close(done)
+	}()
+	return done
+}
+
+// adoptedLostSnapshot reports the adopted-and-unavailable set.
+func adoptedLostSnapshot(rt *ResidentRuntime) []string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	out := make([]string, 0, len(rt.adoptedLostScopes))
+	for scope := range rt.adoptedLostScopes {
+		out = append(out, scope)
+	}
+	return out
+}
+
+// TestSessionAdoptionIgnoresTasksQueuedBeforeArming is the causal fence: the
+// adoption belongs to the first eligible Task created AFTER it was armed, never
+// to a Task that was already accepted and waiting in the serial queue.
+func TestSessionAdoptionIgnoresTasksQueuedBeforeArming(t *testing.T) {
+	fixture := newAdoptionFixture(t, "pi")
+	rt, adapter, client := fixture.rt, fixture.adapter, fixture.client
+	setRoster(rt, "human-1")
+
+	// Task B (canonical sequence 10) is already accepted and queued.
+	rt.acceptEvent(taskRequestEvent(10, "task:req-B", "req-B", "human-1"))
+
+	// The operator arms the handoff now. The fence is the Runtime's canonical
+	// receipt/admission boundary, so it already covers the queued Task.
+	if err := rt.ArmSessionAdoption("native-pi-1", "", "human-1"); err != nil {
+		t.Fatalf("arm adoption: %v", err)
+	}
+	rt.mu.Lock()
+	fence := rt.pendingAdoption.armedAfterSequence
+	rt.mu.Unlock()
+	if fence < 10 {
+		t.Fatalf("the fence ignored an already-admitted Task: %d", fence)
+	}
+
+	// The pre-arm Task runs on its completely normal fresh-session path and
+	// leaves the adoption armed.
+	waitForDone(t, drainNow(rt), "pre-arm Task turn")
+	if got := adapter.count("new:task:req-B"); got != 1 {
+		t.Fatalf("the pre-arm Task lost its fresh session: %v", adapter.recorded())
+	}
+	if got := adapter.count("load:"); got != 0 {
+		t.Fatalf("a Task queued before arming consumed the adoption: %v", adapter.recorded())
+	}
+	if armed, human := rt.SessionAdoptionState(); !armed || human != "human-1" {
+		t.Fatalf("the adoption was not left armed: armed=%v human=%q", armed, human)
+	}
+	waitForExecution(t, client, "req-B", "pre-arm Task settled", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 0 && p.QueuedCount == 0
+	})
+
+	// Task C (sequence 11) is created after arming: it is the next eligible
+	// Task and consumes the adoption.
+	rt.acceptEvent(taskRequestEvent(11, "task:req-C", "req-C", "human-1"))
+	waitForDone(t, drainNow(rt), "post-arm Task turn")
+	loads := adapter.loadCalls()
+	if len(loads) != 1 || loads[0].scope != "task:req-C" || loads[0].sessionID != "native-pi-1" {
+		t.Fatalf("the post-arm Task did not adopt: %+v (%v)", loads, adapter.recorded())
+	}
+	if got := adapter.count("new:task:req-C"); got != 0 {
+		t.Fatalf("the adopted Task created a fresh session: %v", adapter.recorded())
+	}
+	if armed, _ := rt.SessionAdoptionState(); armed {
+		t.Fatal("the adoption was not consumed")
+	}
+}
+
+// TestAdoptedOwnershipIsCommittedBeforeTheLoad is the load/death race gate: the
+// canonical Task is bound to the selected native conversation BEFORE the
+// external session/load, so a Harness death inside the load window can never
+// leave the scope eligible for a fresh conversation.
+func TestAdoptedOwnershipIsCommittedBeforeTheLoad(t *testing.T) {
+	fixture := newAdoptionFixture(t, "pi")
+	rt, adapter, client := fixture.rt, fixture.adapter, fixture.client
+	setRoster(rt, "human-1")
+	if err := rt.ArmSessionAdoption("native-pi-1", "", "human-1"); err != nil {
+		t.Fatalf("arm adoption: %v", err)
+	}
+
+	// The Harness dies while session/load is still in flight, and the load then
+	// reports success. No sleeps: the hook runs inside LoadSession.
+	adapter.recordMu.Lock()
+	adapter.loadHook = func() { adapter.fireFailure(errors.New("harness exited during load")) }
+	adapter.recordMu.Unlock()
+
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-T", "req-T", "human-1")), "adopted Task turn")
+
+	if loads := len(adapter.loadCalls()); loads != 1 {
+		t.Fatalf("the load was not attempted exactly once: %v", adapter.recorded())
+	}
+	// The decisive assertion: ownership was committed before the external call,
+	// so the death was observed for THIS scope and the first Harness turn never
+	// started.
+	if scopes := rt.adoptedScopesSnapshot(); len(scopes) != 1 || scopes[0] != "task:req-T" {
+		t.Fatalf("the adopted ownership was not committed before the load: %v", scopes)
+	}
+	if lost := adoptedLostSnapshot(rt); len(lost) != 1 || lost[0] != "task:req-T" {
+		t.Fatalf("the in-flight Harness death was overwritten by load success: %v", lost)
+	}
+	if got := adapter.runCount("task:req-T"); got != 0 {
+		t.Fatalf("the first Task turn ran on a conversation that died during load: %v", adapter.recorded())
+	}
+	lost := waitForExecution(t, client, "req-T", "session lost projection", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilitySessionLost
+	})
+	if lost.CurrentTurnSequence != 0 {
+		t.Fatalf("a dead adopted session claimed a current turn: %+v", lost)
+	}
+
+	// A later instruction still fails closed and never replaces the
+	// conversation.
+	waitForDone(t, startTurn(rt, scopedEvent(2, "task:req-T", "instruction after loss")), "post-loss instruction")
+	if got := adapter.count("new:task:req-T"); got != 0 {
+		t.Fatalf("the lost adoption was replaced by a fresh session: %v", adapter.recorded())
+	}
+	if got := adapter.runCount("task:req-T"); got != 0 {
+		t.Fatalf("a replacement conversation ran a Harness turn: %v", adapter.recorded())
+	}
+	stillLost := waitForExecution(t, client, "req-T", "still lost", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilitySessionLost
+	})
+	if stillLost.CurrentTurnSequence != 0 {
+		t.Fatalf("a dead adopted session claimed a current turn: %+v", stillLost)
+	}
+}
+
+// TestAdoptedTurnBootstrapSemantics pins the three facts the prompt renders
+// from, straight off the real turn pipeline: an adopted first turn continues an
+// EXISTING conversation while still needing the Free4Chat contract, a follow-up
+// needs neither, and an ordinary Task is unchanged.
+func TestAdoptedTurnBootstrapSemantics(t *testing.T) {
+	fixture := newAdoptionFixture(t, "pi")
+	rt, adapter := fixture.rt, fixture.adapter
+	setRoster(rt, "human-1")
+	if err := rt.ArmSessionAdoption("native-pi-1", "", "human-1"); err != nil {
+		t.Fatalf("arm adoption: %v", err)
+	}
+
+	// First adopted turn: not new, but it does need the Free4Chat bootstrap.
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-T", "req-T", "human-1")), "first adopted turn")
+	first := adapter.latestSessionContext("task:req-T")
+	if first == nil || first.New || !first.Bootstrap {
+		t.Fatalf("the first adopted turn must be Bootstrap-only: %+v", first)
+	}
+	if first.CurrentRoomSequence != 1 {
+		t.Fatalf("the adopted turn lost its canonical Room sequence: %+v", first)
+	}
+
+	// The successfully acknowledged first turn means the contract was taught:
+	// the follow-up is a plain delta turn.
+	waitForDone(t, startTurn(rt, scopedEvent(2, "task:req-T", "follow-up")), "adopted follow-up")
+	followUp := adapter.latestSessionContext("task:req-T")
+	if followUp == nil || followUp.New || followUp.Bootstrap {
+		t.Fatalf("the adopted follow-up must be a plain delta turn: %+v", followUp)
+	}
+
+	// An ordinary Task in the same Runtime keeps the existing behavior: a new
+	// conversation, bootstrapped as before.
+	waitForDone(t, startTurn(rt, taskRequestEvent(3, "task:req-O", "req-O", "human-1")), "ordinary Task turn")
+	ordinary := adapter.latestSessionContext("task:req-O")
+	if ordinary == nil || !ordinary.New || ordinary.Bootstrap {
+		t.Fatalf("an ordinary Task must stay a new-session bootstrap: %+v", ordinary)
+	}
+}
+
+// TestAdoptedBootstrapSurvivesAFailedFirstTurn proves the Free4Chat contract is
+// not silently marked as delivered: until the existing successful-delivery
+// boundary acknowledges the first adopted turn, a retry is still a bootstrap.
+func TestAdoptedBootstrapSurvivesAFailedFirstTurn(t *testing.T) {
+	fixture := newAdoptionFixture(t, "pi")
+	rt, adapter := fixture.rt, fixture.adapter
+	setRoster(rt, "human-1")
+	if err := rt.ArmSessionAdoption("native-pi-1", "", "human-1"); err != nil {
+		t.Fatalf("arm adoption: %v", err)
+	}
+	adapter.fakeAdapter.mu.Lock()
+	adapter.fakeAdapter.turnErr = errors.New("harness turn failed")
+	adapter.fakeAdapter.mu.Unlock()
+
+	// The first adopted delivery fails after the prompt was rendered.
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-T", "req-T", "human-1")), "failed first attempt")
+	contexts := adapter.sessionContextsFor("task:req-T")
+	if len(contexts) != 1 || contexts[0].New || !contexts[0].Bootstrap {
+		t.Fatalf("first attempt must be Bootstrap-only: %+v", contexts)
+	}
+
+	// The canonical turn is still unacknowledged, so its retry must still carry
+	// the Free4Chat bootstrap.
+	adapter.fakeAdapter.mu.Lock()
+	adapter.fakeAdapter.turnErr = nil
+	adapter.fakeAdapter.mu.Unlock()
+	waitForDone(t, drainNow(rt), "adopted retry")
+	contexts = adapter.sessionContextsFor("task:req-T")
+	if len(contexts) != 2 || contexts[1].New || !contexts[1].Bootstrap {
+		t.Fatalf("an unacknowledged first turn must keep bootstrapping: %+v", contexts)
+	}
+	if got := adapter.count("new:task:req-T"); got != 0 {
+		t.Fatalf("the retry created a fresh session: %v", adapter.recorded())
+	}
+
+	// Only after that delivery is acknowledged does the next turn become a
+	// plain delta turn.
+	waitForDone(t, startTurn(rt, scopedEvent(2, "task:req-T", "follow-up")), "adopted follow-up")
+	contexts = adapter.sessionContextsFor("task:req-T")
+	if len(contexts) != 3 || contexts[2].New || contexts[2].Bootstrap {
+		t.Fatalf("the acknowledged follow-up must be a plain delta turn: %+v", contexts)
+	}
+}
+
+// TestSessionAdoptionNeverRepairsIdentity pins the #412 identity contract at
+// this seam: an opaque ACP session id is accepted unchanged or rejected
+// outright, and the working directory reaches session/load byte-for-byte.
+func TestSessionAdoptionNeverRepairsIdentity(t *testing.T) {
+	fixture := newAdoptionFixture(t, "pi")
+	rt, adapter := fixture.rt, fixture.adapter
+	setRoster(rt, "human-1")
+
+	// A padded id is an explicit rejection, never a silently trimmed adoption.
+	for _, padded := range []string{" native-pi-1", "native-pi-1 ", " native-pi-1 ", "native pi-1"} {
+		if err := rt.ArmSessionAdoption(padded, "", "human-1"); err == nil {
+			t.Fatalf("session id %q must be rejected, not repaired", padded)
+		}
+		if armed, _ := rt.SessionAdoptionState(); armed {
+			t.Fatalf("rejected identity %q armed an adoption", padded)
+		}
+	}
+
+	// A path that legitimately contains spaces (including a trailing one) is
+	// identity, so it is passed through unchanged.
+	const cwd = "/tmp/native pi workspace "
+	if err := rt.ArmSessionAdoption("native-pi-1", cwd, "human-1"); err != nil {
+		t.Fatalf("arm adoption: %v", err)
+	}
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-T", "req-T", "human-1")), "adopted turn")
+	loads := adapter.loadCalls()
+	if len(loads) != 1 || loads[0].sessionID != "native-pi-1" || loads[0].cwd != cwd {
+		t.Fatalf("identity was mutated before session/load: %+v", loads)
 	}
 }

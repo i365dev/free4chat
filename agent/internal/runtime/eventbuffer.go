@@ -69,6 +69,19 @@ func (b *EventBuffer) Snapshot() []types.RoomEvent {
 	return out
 }
 
+// LatestSequence reports the highest canonical Room sequence currently
+// buffered, or 0 when the buffer is empty. It is a receipt fact only: the
+// buffer is bounded, so this is never a delivery or admission ledger.
+func (b *EventBuffer) LatestSequence() int64 {
+	latest := int64(0)
+	for _, event := range b.events {
+		if event.Sequence > latest {
+			latest = event.Sequence
+		}
+	}
+	return latest
+}
+
 // Clear drops everything (used on every fresh join adoption).
 func (b *EventBuffer) Clear() {
 	b.events = nil

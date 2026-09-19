@@ -600,11 +600,21 @@ type HarnessLiveTranscript struct {
 	Segments []LiveTranscriptSegment `json:"segments"`
 }
 
-// HarnessSessionContext tells prompt rendering whether the Runtime has just
-// created a genuinely new retained ACP conversation. It carries no ACP id or
-// Room capability: the generation itself stays Runtime-local.
+// HarnessSessionContext tells prompt rendering two independent facts about the
+// retained ACP conversation this turn runs on. It carries no ACP id or Room
+// capability: the generation itself stays Runtime-local.
+//
+// New and Bootstrap are deliberately separate:
+//   - New means the Runtime created a genuinely new ACP conversation for this
+//     scope, so the prompt may say so.
+//   - Bootstrap means this turn still needs the Free4Chat host, authority, and
+//     collaboration contract, which is true both for a new conversation and for
+//     the first Free4Chat-controlled turn of an EXISTING conversation that was
+//     adopted from a native Harness session (#409). An adopted conversation is
+//     not new, but its first Free4Chat turn must still be taught the contract.
 type HarnessSessionContext struct {
 	New                 bool  `json:"new"`
+	Bootstrap           bool  `json:"bootstrap"`
 	CurrentRoomSequence int64 `json:"currentRoomSequence"`
 }
 

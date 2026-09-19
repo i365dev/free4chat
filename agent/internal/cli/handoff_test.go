@@ -148,3 +148,19 @@ func TestHandoffRequiresExactlyOneLocalSelection(t *testing.T) {
 		}
 	}
 }
+
+// TestHandoffAdoptNeverRepairsTheSessionIdentity pins the local transport
+// contract: the CLI forwards the operator's session id exactly as typed (the
+// Runtime/adapter validate it), and only a value that carries no identity at
+// all is refused as a usage error.
+func TestHandoffAdoptNeverRepairsTheSessionIdentity(t *testing.T) {
+	fixture := handoffFixture(t)
+	const padded = " native-pi-1 "
+	output, code := runCliWithFakeDaemon(t, fixture, "handoff", "--adopt", padded, "--instance", "pi-1")
+	if code != 0 {
+		t.Fatalf("handoff --adopt exited %d: %s", code, output)
+	}
+	if request := nextHandoffRequest(t, fixture); request.SessionID != padded {
+		t.Fatalf("the CLI repaired the opaque session id: %q", request.SessionID)
+	}
+}

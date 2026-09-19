@@ -1395,8 +1395,18 @@ func (r *ResidentRuntime) drainTurns() {
 			Self:         r.selfContext(),
 			Participants: r.rosterSnapshot(),
 		})
+		// A new conversation and "this turn still needs the Free4Chat host
+		// contract" are two different facts. An adopted Task (#409) continues an
+		// EXISTING native conversation, so it must never be described as new,
+		// while its first Free4Chat-controlled turn still needs the same
+		// bootstrap. Both are derived from the existing generation markers:
+		// newSession is true until a Harness delivery for this generation is
+		// successfully acknowledged, so a failed or never-acknowledged first
+		// adopted turn keeps Bootstrap true on its retry.
+		adoptedScope := r.isAdoptedScope(scope)
 		input.Session = &types.HarnessSessionContext{
-			New: newSession,
+			New:       newSession && !adoptedScope,
+			Bootstrap: newSession && adoptedScope,
 			// The rendered Room-event sequence is a stable, sanitized context
 			// fact. Do not expose the private resident transport cursor, which
 			// may have advanced beyond this turn while the Harness was running.

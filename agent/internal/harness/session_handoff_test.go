@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
 /*
@@ -115,5 +117,87 @@ func TestACPScopeLoadReplacesSessionWithoutSessionNew(t *testing.T) {
 	}
 	if got := countACPMethod(readACPTraceFrames(t, tracePath), "session/new"); got != 1 {
 		t.Fatalf("turns created an extra session/new: %d", got)
+	}
+}
+
+/*
+ * The prompt half of the same invariant: the first Free4Chat-controlled turn of
+ * an ADOPTED existing conversation must receive the Free4Chat bootstrap contract
+ * without being told that the conversation itself is new.
+ */
+
+// newSessionLine is the fresh-conversation claim that must never appear in an
+// adopted-session prompt.
+const newSessionLine = "This is a new local Harness session."
+
+// adoptedSessionLine is the truthful wording for the first Free4Chat-controlled
+// turn of an existing native conversation.
+const adoptedSessionLine = "This is the first Free4Chat-controlled turn in an existing local Harness session."
+
+func TestAdoptedExistingSessionBootstrapPromptIsTruthful(t *testing.T) {
+	input := bootstrapPromptInput()
+	input.Session = &types.HarnessSessionContext{New: false, Bootstrap: true, CurrentRoomSequence: 7}
+	adopted := RenderUntrustedRoomTurn(input)
+
+	// The Free4Chat host/authority/collaboration contract is still taught once.
+	if !strings.Contains(adopted, hygieneAnchor) {
+		t.Fatalf("the adopted bootstrap prompt is missing the public reply contract:\n%s", adopted)
+	}
+	for _, marker := range []string{"public reply", "tools", "activity", "concise"} {
+		if !strings.Contains(adopted, marker) {
+			t.Fatalf("the adopted bootstrap contract lost the %q guarantee:\n%s", marker, adopted)
+		}
+	}
+	// ... and it says what is actually true about the conversation.
+	if !strings.Contains(adopted, adoptedSessionLine) {
+		t.Fatalf("the adopted bootstrap prompt did not state the existing-session fact:\n%s", adopted)
+	}
+	if !strings.Contains(adopted, "Current Room sequence: 7.") {
+		t.Fatalf("the adopted bootstrap prompt lost the canonical Room sequence:\n%s", adopted)
+	}
+	if strings.Contains(adopted, newSessionLine) {
+		t.Fatalf("an adopted existing conversation was described as new:\n%s", adopted)
+	}
+	// Pull-only Room history is a Free4Chat fact and still applies.
+	if !strings.Contains(adopted, "Earlier bounded Room context may exist") {
+		t.Fatalf("the adopted bootstrap prompt lost the bounded Room-context notice:\n%s", adopted)
+	}
+}
+
+func TestAdoptedFollowUpPromptDoesNotRepeatBootstrap(t *testing.T) {
+	input := bootstrapPromptInput()
+	input.Session = &types.HarnessSessionContext{New: false, Bootstrap: false, CurrentRoomSequence: 8}
+	delta := RenderUntrustedRoomTurn(input)
+
+	if strings.Contains(delta, hygieneAnchor) {
+		t.Fatalf("the Free4Chat contract must not repeat on an adopted follow-up:\n%s", delta)
+	}
+	if strings.Contains(delta, adoptedSessionLine) || strings.Contains(delta, newSessionLine) {
+		t.Fatalf("an adopted follow-up must not restate session bootstrap facts:\n%s", delta)
+	}
+	bootstrapInput := bootstrapPromptInput()
+	bootstrapInput.Session = &types.HarnessSessionContext{New: false, Bootstrap: true, CurrentRoomSequence: 7}
+	if len(delta) >= len(RenderUntrustedRoomTurn(bootstrapInput)) {
+		t.Fatalf("the adopted follow-up (%d bytes) must stay smaller than its bootstrap (%d bytes)",
+			len(delta), len(RenderUntrustedRoomTurn(bootstrapInput)))
+	}
+}
+
+// TestFreshSessionPromptIsUnchanged is the regression fence for the ordinary
+// path: a genuinely new conversation still says so, and does not claim to be an
+// existing one.
+func TestFreshSessionPromptIsUnchanged(t *testing.T) {
+	input := bootstrapPromptInput()
+	input.Session = &types.HarnessSessionContext{New: true, Bootstrap: false, CurrentRoomSequence: 3}
+	fresh := RenderUntrustedRoomTurn(input)
+
+	if !strings.Contains(fresh, newSessionLine) {
+		t.Fatalf("a new conversation must still be described as new:\n%s", fresh)
+	}
+	if strings.Contains(fresh, adoptedSessionLine) {
+		t.Fatalf("a new conversation claimed to be an existing adopted one:\n%s", fresh)
+	}
+	if !strings.Contains(fresh, hygieneAnchor) {
+		t.Fatalf("a new conversation lost the Free4Chat bootstrap contract:\n%s", fresh)
 	}
 }

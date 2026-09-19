@@ -259,17 +259,33 @@ func RenderUntrustedRoomTurn(input *types.HarnessTurnInput) string {
 		}
 	}
 
-	bootstrap := input.Session == nil || input.Session.New
+	// Room context that is bounded, pull-only, and not implicitly loaded is a
+	// fact about Free4Chat Room history, so it is stated for a new conversation
+	// and for an adopted existing one alike.
+	earlierRoomContextLine := "Earlier bounded Room context may exist and has not been loaded into this conversation. Read it on demand with the Runtime-mediated " + runtimeCommand + " context read command when relevant."
+
+	bootstrap := input.Session == nil || input.Session.New || input.Session.Bootstrap
 	lines := []string{}
 	if bootstrap {
 		lines = append(lines, "You are participating in a temporary Free4Chat room.")
 		lines = append(lines, sharedAuthorityRules...)
 		lines = append(lines, strings.Join(publicReplyRules, "\n"))
-		if input.Session != nil && input.Session.New {
-			lines = append(lines,
-				fmt.Sprintf("This is a new local Harness session. Current Room sequence: %d.", input.Session.CurrentRoomSequence),
-				"Earlier bounded Room context may exist and has not been loaded into this conversation. Read it on demand with the Runtime-mediated "+runtimeCommand+" context read command when relevant.",
-			)
+		if input.Session != nil {
+			switch {
+			case input.Session.New:
+				lines = append(lines,
+					fmt.Sprintf("This is a new local Harness session. Current Room sequence: %d.", input.Session.CurrentRoomSequence),
+					earlierRoomContextLine,
+				)
+			case input.Session.Bootstrap:
+				// #409 V1: this scope adopted an EXISTING native Harness
+				// conversation. It still needs the Free4Chat host contract, but
+				// the prompt must not claim the conversation itself is new.
+				lines = append(lines,
+					fmt.Sprintf("This is the first Free4Chat-controlled turn in an existing local Harness session. Current Room sequence: %d.", input.Session.CurrentRoomSequence),
+					earlierRoomContextLine,
+				)
+			}
 		}
 	}
 	if self := input.Room.Self; self != nil {

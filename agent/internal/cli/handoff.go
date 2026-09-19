@@ -44,14 +44,17 @@ func runHandoff(args []string) error {
 	case clear:
 		return runViaDaemon(&daemon.IpcRequest{Op: "handoff-clear", InstanceID: instanceID})
 	default:
-		sessionID := strings.TrimSpace(adopt)
-		if sessionID == "" {
+		// The session id is opaque identity: it is sent exactly as the operator
+		// gave it, never trimmed or repaired here. A value that carries no
+		// identity at all (empty, or only whitespace) is refused as a usage
+		// error, and anything else is validated by the Runtime/adapter.
+		if strings.TrimSpace(adopt) == "" {
 			return errUsage()
 		}
 		return runViaDaemon(&daemon.IpcRequest{
 			Op:                 "handoff-adopt",
 			InstanceID:         instanceID,
-			SessionID:          sessionID,
+			SessionID:          adopt,
 			SessionCwd:         option(args, "--cwd"),
 			HumanParticipantID: option(args, "--human"),
 		})
