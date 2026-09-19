@@ -312,6 +312,33 @@ describe("RoomContent — narrow-screen composition", () => {
     expect(classes(stage)).not.toContain("hidden")
   })
 
+  it("keeps the secondary Room controls out of permanent phone chrome", () => {
+    window.innerWidth = PHONE_WIDTH
+    renderRoom()
+
+    const toolbar = screen.getByTestId("room-header-toolbar")
+    const mobileLeave = screen
+      .getAllByRole("button", { name: "Leave" })
+      .find((button) => classes(button).includes("room-header-leave"))!
+
+    // Closed phone: the header is title + signal + overflow only, so the
+    // interaction gets the viewport. Everything is still one mount.
+    expect(classes(toolbar)).toContain("hidden")
+    expect(classes(toolbar)).toContain("md:grid")
+    expect(classes(toolbar)).not.toContain("grid")
+    expect(classes(mobileLeave)).toContain("hidden")
+
+    // Open phone: the same elements become the sheet's control row.
+    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
+    expect(classes(screen.getByTestId("room-header-toolbar"))).toContain("grid")
+    expect(classes(screen.getByTestId("room-header-toolbar"))).not.toContain(
+      "hidden"
+    )
+    expect(classes(mobileLeave)).toContain("inline-flex")
+    expect(classes(mobileLeave)).not.toContain("hidden")
+    expect(screen.getAllByRole("button", { name: "Copy link" })).toHaveLength(1)
+  })
+
   it("closes the sheet with Escape and with its own close control", () => {
     window.innerWidth = PHONE_WIDTH
     renderRoom()

@@ -1850,16 +1850,30 @@ export default function RoomContent({
               leaveRoom()
               router.push("/")
             }}
-            className="room-header-leave shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:hidden"
+            className={`room-header-leave ${
+              mobileSheetVisible ? "inline-flex" : "hidden"
+            } shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:hidden`}
           >
             Leave
           </button>
         </div>
         <div
           data-testid="room-header-features"
-          className="flex flex-none flex-col gap-2 lg:ml-auto lg:flex-row lg:items-center lg:gap-2"
+          className={`${
+            mobileSheetVisible ? "flex" : "hidden md:flex"
+          } flex-none flex-col gap-2 lg:ml-auto lg:flex-row lg:items-center lg:gap-2`}
         >
-          <div className="room-header-toolbar grid grid-cols-3 gap-2 lg:flex lg:items-center">
+          {/* #421: on a phone every control here is SECONDARY to supervising
+              the Agent, so the whole toolbar belongs to the `⋯` overflow rather
+              than to permanent chrome. It is the same single element either
+              way — below `md` the overflow decides whether it is displayed, and
+              at `md`+ it is always the ordinary toolbar. */}
+          <div
+            data-testid="room-header-toolbar"
+            className={`${
+              mobileSheetVisible ? "grid" : "hidden md:grid"
+            } room-header-toolbar grid-cols-3 gap-2 lg:flex lg:items-center`}
+          >
             <button
               type="button"
               onClick={copyRoomLink}
