@@ -2,7 +2,9 @@ import { isAllowedOrigin } from "../common/origin"
 import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
 import {
   encodeTaskAttachmentWake,
+  parseTaskAttachmentPending,
   parseTaskAttachmentWake,
+  TASK_ATTACHMENT_PENDING_HEADER,
   TASK_ATTACHMENT_WAKE_HEADER,
 } from "../common/taskAttachmentWake"
 import type { RoomSession } from "../do/RoomSession"
@@ -427,6 +429,17 @@ export async function handleRoomRequest(
   )
   if (taskWake !== undefined)
     headers.set(TASK_ATTACHMENT_WAKE_HEADER, encodeTaskAttachmentWake(taskWake))
+  // #421: the pre-Task context marker is the ONLY reason the Room accepts a
+  // Task-correlated upload for a Task that does not exist yet, so it crosses
+  // the transport as exactly one recognized token. The Worker forwards the
+  // canonical value, never the caller's bytes: an absent or unrecognized
+  // header stays absent and the Room keeps refusing an unknown Task.
+  if (
+    parseTaskAttachmentPending(
+      request.headers.get(TASK_ATTACHMENT_PENDING_HEADER)
+    )
+  )
+    headers.set(TASK_ATTACHMENT_PENDING_HEADER, "1")
   return stub.fetch("https://room/attachment", {
     method: "POST",
     headers,
