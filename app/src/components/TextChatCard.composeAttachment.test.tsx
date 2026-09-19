@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { UserInfo } from "@common/types"
 
-import TextChatCard from "./TextChatCard"
+import TextChatCard, { TASK_PASTE_ATTACHMENT_THRESHOLD } from "./TextChatCard"
 
 /**
  * #363 A1/A2: the Room composer is compose-first for attachments. Picking a
@@ -112,6 +112,51 @@ function typeAtCaret(
   composer.selectionStart = caret
   composer.selectionEnd = caret
   composer.dispatchEvent(new Event("input", { bubbles: true }))
+}
+
+/**
+ * #409: fire a paste the way a browser does. `dispatchEvent` returns false
+ * when the composer prevented the default action — that is exactly the
+ * mechanism that keeps a huge pasted body out of the textarea. jsdom does
+ * not implement the paste default action itself, so when the composer did
+ * NOT prevent it the browser's normal caret insertion is applied here.
+ */
+function pasteText(composer: HTMLTextAreaElement, text: string): boolean {
+  const notPrevented = fireEvent.paste(composer, {
+    clipboardData: { getData: () => text },
+  })
+  if (notPrevented) {
+    const start = composer.selectionStart ?? composer.value.length
+    const end = composer.selectionEnd ?? start
+    typeAtCaret(
+      composer,
+      composer.value.slice(0, start) + text + composer.value.slice(end),
+      start + text.length
+    )
+  }
+  return notPrevented
+}
+
+/** A realistic large brief with deliberate leading/trailing whitespace and
+ * non-ASCII text: conversion must preserve every byte of it. */
+function briefFixture(): string {
+  const body = Array.from(
+    { length: 80 },
+    (_, i) => `- 需求 ${i}: 保持原始内容 exact, no normalization`
+  ).join("\n")
+  return `\n  # 大 brief\n\n${body}\n\n  尾部空格保留  \n`
+}
+
+/** The generated File body is exactly what the upload path POSTs, so byte
+ * equality is the real "exact content" contract. jsdom's File has no
+ * `text()`/`arrayBuffer()`, so read it the browser way. */
+function fileBytes(file: File): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsArrayBuffer(file)
+  })
 }
 
 beforeEach(() => {
@@ -398,5 +443,186 @@ describe("Active Task composer attachments (#363 A2)", () => {
       "Attachments aren't available in this task"
     )
     expect(screen.getByTestId("composer-attachment")).toBeInTheDocument()
+  })
+})
+
+describe("Task composer large-paste briefs (#409)", () => {
+  it("turns one large Task paste into a staged brief instead of textarea text", () => {
+    const { composer, onSendTaskFile } = renderCard({
+      taskRequestId: "task-42",
+    })
+    const brief = briefFixture()
+    expect(brief.length).toBeGreaterThan(TASK_PASTE_ATTACHMENT_THRESHOLD)
+
+    const notPrevented = pasteText(composer, brief)
+
+    // The default insertion was prevented, so the giant body never reaches
+    // the textarea and cannot pollute the Task conversation.
+    expect(notPrevented).toBe(false)
+    expect(composer.value).toBe("")
+    // The existing composer attachment chip carries it.
+    expect(screen.getByTestId("composer-attachment")).toBeInTheDocument()
+    expect(screen.getByText("task-brief.md")).toBeInTheDocument()
+    // Still just a draft stage: nothing is sent by pasting.
+    expect(onSendTaskFile).not.toHaveBeenCalled()
+  })
+
+  it("keeps the textarea usable for the short instruction after the paste", () => {
+    const { composer, onSendTaskFile } = renderCard({
+      taskRequestId: "task-42",
+    })
+
+    pasteText(composer, briefFixture())
+    typeMessage(composer, "先 review，不要修改代码。")
+
+    expect(composer.value).toBe("先 review，不要修改代码。")
+    expect(screen.getByTestId("composer-attachment")).toBeInTheDocument()
+    expect(onSendTaskFile).not.toHaveBeenCalled()
+  })
+
+  it("sends a large paste as an attachment-only wake with the exact content", async () => {
+    const { composer, onSendText, onSendTaskFile } = renderCard({
+      taskRequestId: "task-42",
+    })
+    const brief = briefFixture()
+
+    pasteText(composer, brief)
+    await pressSend()
+
+    expect(onSendTaskFile).toHaveBeenCalledTimes(1)
+    const [file, taskId, wakeAgent] = onSendTaskFile.mock.calls[0] as [
+      File,
+      string,
+      boolean
+    ]
+    expect(taskId).toBe("task-42")
+    // No text: the Task attachment path wakes the Task Agent by itself.
+    expect(wakeAgent).toBe(true)
+    expect(file.name).toBe("task-brief.md")
+    expect(file.type).toBe("text/markdown")
+    // Exact content: no trim, no normalization, no wrapper prose, no
+    // truncation, and no summary.
+    expect(new TextDecoder().decode(await fileBytes(file))).toBe(brief)
+    // The attachment already wakes the Task: no pointless "please read
+    // task-brief.md" follow-up message is sent.
+    expect(onSendText).not.toHaveBeenCalled()
+  })
+
+  it("sends the brief first and the short instruction as the single wake", async () => {
+    const { composer, onSendText, onSendTaskFile } = renderCard({
+      taskRequestId: "task-42",
+    })
+
+    pasteText(composer, briefFixture())
+    typeMessage(composer, "先 review，不要修改代码。")
+    await pressSend()
+
+    // Text present: the brief is Task context only, so the following
+    // addressed Task text stays the single wake boundary.
+    expect(onSendTaskFile).toHaveBeenCalledTimes(1)
+    expect(onSendTaskFile.mock.calls[0][1]).toBe("task-42")
+    expect(onSendTaskFile.mock.calls[0][2]).toBe(false)
+    expect(onSendText).toHaveBeenCalledWith(
+      "先 review，不要修改代码。",
+      [],
+      "task-42"
+    )
+    expect(onSendTaskFile.mock.invocationCallOrder[0]).toBeLessThan(
+      onSendText.mock.invocationCallOrder[0]
+    )
+  })
+
+  it("leaves a below-threshold Task paste as ordinary inline text", async () => {
+    const { composer, onSendText, onSendTaskFile } = renderCard({
+      taskRequestId: "task-42",
+    })
+    const short = "x".repeat(TASK_PASTE_ATTACHMENT_THRESHOLD - 1)
+
+    const notPrevented = pasteText(composer, short)
+
+    // The composer did not hijack it: the ordinary textarea content stays.
+    expect(notPrevented).toBe(true)
+    expect(composer.value).toBe(short)
+    expect(screen.queryByTestId("composer-attachment")).toBeNull()
+
+    await pressSend()
+    expect(onSendText).toHaveBeenCalledWith(short, [], "task-42")
+    expect(onSendTaskFile).not.toHaveBeenCalled()
+  })
+
+  it("keeps a paste at exactly the threshold as ordinary inline text", () => {
+    const { composer } = renderCard({ taskRequestId: "task-42" })
+    const atThreshold = "y".repeat(TASK_PASTE_ATTACHMENT_THRESHOLD)
+
+    // The rule is a strict `>`: predictable, with no off-by-one surprise.
+    expect(pasteText(composer, atThreshold)).toBe(true)
+    expect(composer.value).toBe(atThreshold)
+    expect(screen.queryByTestId("composer-attachment")).toBeNull()
+  })
+
+  it("never silently overwrites an existing composer draft attachment", async () => {
+    const { composer, fileInput, onSendTaskFile } = renderCard({
+      taskRequestId: "task-42",
+    })
+    const picked = fileFixture("human-notes.md", "text/markdown")
+    pickFile(fileInput, picked)
+
+    const notPrevented = pasteText(composer, briefFixture())
+
+    // The Human's own draft wins: the paste stays ordinary textarea content
+    // and the single-draft composer (#363) is never replaced.
+    expect(notPrevented).toBe(true)
+    expect(screen.getByText("human-notes.md")).toBeInTheDocument()
+    expect(screen.queryByText("task-brief.md")).toBeNull()
+
+    await pressSend()
+    // The persisted attachment is still the Human's own file. The oversized
+    // text half stays the existing message validation's responsibility.
+    expect(onSendTaskFile).toHaveBeenCalledTimes(1)
+    expect(onSendTaskFile.mock.calls[0][0]).toBe(picked)
+  })
+
+  it("keeps a large paste as text without a task attachment path", () => {
+    const { composer, onSendFile } = renderCard({
+      taskRequestId: "task-42",
+      onSendTaskFile: undefined,
+    })
+    const brief = briefFixture()
+
+    // A generated draft would be unsendable here, so pasting stays normal.
+    expect(pasteText(composer, brief)).toBe(true)
+    expect(composer.value).toBe(brief)
+    expect(screen.queryByTestId("composer-attachment")).toBeNull()
+    expect(onSendFile).not.toHaveBeenCalled()
+  })
+
+  it("ignores a paste with no plain-text payload", () => {
+    const { composer } = renderCard({ taskRequestId: "task-42" })
+
+    // Never generate an empty attachment the Task path would reject.
+    const notPrevented = fireEvent.paste(composer, {
+      clipboardData: { getData: () => "" },
+    })
+
+    expect(notPrevented).toBe(true)
+    expect(screen.queryByTestId("composer-attachment")).toBeNull()
+  })
+
+  it("leaves a large paste in the ordinary Room composer as text", async () => {
+    const { composer, onSendFile, onSendText, onSendTaskFile } = renderCard()
+    const brief = briefFixture()
+
+    expect(pasteText(composer, brief)).toBe(true)
+
+    // The pasted text is preserved verbatim in the textarea; only the
+    // pre-existing send-time trim applies to the outgoing message.
+    expect(composer.value).toBe(brief)
+    expect(screen.queryByTestId("composer-attachment")).toBeNull()
+
+    await pressSend()
+    // Ordinary Room behaviour is completely unchanged.
+    expect(onSendText).toHaveBeenCalledWith(brief.trim(), [])
+    expect(onSendTaskFile).not.toHaveBeenCalled()
+    expect(onSendFile).not.toHaveBeenCalled()
   })
 })

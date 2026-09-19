@@ -106,7 +106,9 @@ function taskRequest(requestId: string, sequence: number): Message {
 function attachment(
   id: string,
   fileName: string,
-  taskRequestId?: string
+  taskRequestId?: string,
+  mimeType: RoomAttachmentProjection["mimeType"] = "text/plain",
+  size = 6
 ): RoomAttachmentProjection {
   return {
     id,
@@ -114,8 +116,8 @@ function attachment(
     senderName: "Hannah",
     senderKind: "human",
     fileName,
-    mimeType: "text/plain",
-    size: 6,
+    mimeType,
+    size,
     sequence: 10,
     createdAt: 10,
     ...(taskRequestId ? { taskRequestId } : {}),
@@ -453,5 +455,187 @@ describe("Human Task attachment presentation (#363 A2)", () => {
     fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
     expect(screen.getByText("task-t.txt")).toBeInTheDocument()
     expect(screen.queryByText("task-u.txt")).toBeNull()
+  })
+
+  it("previews a generated Task brief through the existing viewer", async () => {
+    // #409: the auto-generated brief is an ordinary bounded Task attachment,
+    // so it rides the EXISTING Room attachment projection into the existing
+    // preview viewer. No new preview UI is involved.
+    const readRoomAttachment = vi.fn().mockResolvedValue({
+      attachment: {
+        id: "brief-t",
+        fileName: "task-brief.md",
+        mimeType: "text/markdown",
+        size: 6,
+        taskRequestId: "T",
+      },
+      data: btoa("brief!"),
+    })
+    renderRoom({
+      messages: [taskRequest("T", 1)],
+      attachments: [
+        attachment("brief-t", "task-brief.md", "T", "text/markdown", 6),
+      ],
+      readRoomAttachment,
+    })
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
+    expect(screen.getByText("task-brief.md")).toBeInTheDocument()
+    expect(screen.getByText("text/markdown · 6 B")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("Preview"))
+
+    await waitFor(() =>
+      expect(readRoomAttachment).toHaveBeenCalledWith("brief-t")
+    )
+    await waitFor(() => expect(screen.getByText("brief!")).toBeInTheDocument())
+  })
+})
+
+describe("Task composer large-paste brief wiring (#409)", () => {
+  /** Fire a paste the way a browser does, applying the default caret
+   * insertion only when the composer did not prevent it. */
+  function pasteText(composer: HTMLTextAreaElement, text: string): boolean {
+    const notPrevented = fireEvent.paste(composer, {
+      clipboardData: { getData: () => text },
+    })
+    if (notPrevented) {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      )?.set
+      const next = composer.value + text
+      setter!.call(composer, next)
+      composer.selectionStart = next.length
+      composer.selectionEnd = next.length
+      composer.dispatchEvent(new Event("input", { bubbles: true }))
+    }
+    return notPrevented
+  }
+
+  const PASTED_BRIEF = `\n  # Investigation brief\n\n${Array.from(
+    { length: 60 },
+    (_, i) => `- step ${i}: reproduce and report, do not modify code`
+  ).join("\n")}\n\n  尾部空白保留  \n`
+
+  function fileBytes(file: File): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () =>
+        resolve(new Uint8Array(reader.result as ArrayBuffer))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsArrayBuffer(file)
+    })
+  }
+
+  it("routes a large Task paste into the bounded task attachment path only", async () => {
+    const sendFileMessage = vi.fn()
+    const sendTaskAttachment = vi.fn().mockResolvedValue(undefined)
+    const sendTextMessage = vi.fn()
+    renderRoom({
+      messages: [taskRequest("T", 1)],
+      sendFileMessage,
+      sendTaskAttachment,
+      sendTextMessage,
+    })
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
+    const composer = screen.getByLabelText(
+      "Message the room or @ an Agent"
+    ) as HTMLTextAreaElement
+    expect(PASTED_BRIEF.length).toBeGreaterThan(2000)
+    expect(pasteText(composer, PASTED_BRIEF)).toBe(false)
+
+    // The giant body never becomes inline Task conversation text.
+    expect(composer.value).toBe("")
+    expect(screen.getByText("task-brief.md")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByLabelText("Send message"))
+
+    // The generated brief reaches the SAME task-correlated upload the Human
+    // Task attachment already uses, so the existing Room attachment
+    // projection — and its existing Preview viewer — needs no new wiring.
+    await waitFor(() => expect(sendTaskAttachment).toHaveBeenCalledTimes(1))
+    const [file, taskId, wakeAgent] = sendTaskAttachment.mock.calls[0] as [
+      File,
+      string,
+      boolean
+    ]
+    expect(taskId).toBe("T")
+    expect(wakeAgent).toBe(true)
+    expect(file.name).toBe("task-brief.md")
+    expect(file.type).toBe("text/markdown")
+    expect(new TextDecoder().decode(await fileBytes(file))).toBe(PASTED_BRIEF)
+    expect(sendFileMessage).not.toHaveBeenCalled()
+    expect(sendTextMessage).not.toHaveBeenCalled()
+  })
+
+  it("keeps the short instruction as the single addressed Task wake", async () => {
+    const sendFileMessage = vi.fn()
+    const sendTaskAttachment = vi.fn().mockResolvedValue(undefined)
+    const sendTextMessage = vi.fn()
+    renderRoom({
+      messages: [taskRequest("T", 1)],
+      sendFileMessage,
+      sendTaskAttachment,
+      sendTextMessage,
+    })
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-T"))
+    const composer = screen.getByLabelText(
+      "Message the room or @ an Agent"
+    ) as HTMLTextAreaElement
+    pasteText(composer, PASTED_BRIEF)
+
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set
+    setter!.call(composer, "review only")
+    composer.dispatchEvent(new Event("input", { bubbles: true }))
+
+    fireEvent.click(screen.getByLabelText("Send message"))
+
+    await waitFor(() => expect(sendTaskAttachment).toHaveBeenCalledTimes(1))
+    expect(sendTaskAttachment.mock.calls[0][1]).toBe("T")
+    expect(sendTaskAttachment.mock.calls[0][2]).toBe(false)
+    await waitFor(() =>
+      expect(sendTextMessage).toHaveBeenCalledWith("review only", [], "T")
+    )
+    expect(sendFileMessage).not.toHaveBeenCalled()
+  })
+
+  it("leaves a large Room composer paste as ordinary text", async () => {
+    const sendFileMessage = vi.fn()
+    const sendTaskAttachment = vi.fn().mockResolvedValue(undefined)
+    const sendTextMessage = vi.fn()
+    renderRoom({
+      messages: [taskRequest("T", 1)],
+      sendFileMessage,
+      sendTaskAttachment,
+      sendTextMessage,
+    })
+
+    // No Task selected: the ordinary Room composer.
+    const composer = screen.getByLabelText(
+      "Message the room or @ an Agent"
+    ) as HTMLTextAreaElement
+    expect(pasteText(composer, PASTED_BRIEF)).toBe(true)
+    expect(composer.value).toBe(PASTED_BRIEF)
+    expect(screen.queryByTestId("composer-attachment")).toBeNull()
+
+    fireEvent.click(screen.getByLabelText("Send message"))
+
+    await waitFor(() =>
+      // RoomContent always forwards the (absent) Task correlation as the
+      // third argument, so the Room scope stays explicitly task-less.
+      expect(sendTextMessage).toHaveBeenCalledWith(
+        PASTED_BRIEF.trim(),
+        [],
+        undefined
+      )
+    )
+    expect(sendTaskAttachment).not.toHaveBeenCalled()
+    expect(sendFileMessage).not.toHaveBeenCalled()
   })
 })

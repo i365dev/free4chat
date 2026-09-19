@@ -46,6 +46,24 @@ const EMPTY_MESSAGES: Message[] = []
 const EMPTY_PENDING_FILES: PendingFile[] = []
 const NOOP_PREVIEW = () => undefined
 
+/**
+ * #409: a large paste in a Task composer is a Task BRIEF, not a chat
+ * message. Above this many CHARACTERS one pasted string is converted into a
+ * generated Task text attachment instead of being inserted into the
+ * textarea, so a huge prompt cannot pollute the Task conversation.
+ *
+ * This is a deliberate UX threshold for a clean Task timeline — NOT a
+ * security or transport limit. The bounded Task attachment path keeps its
+ * own hard store bound, and an ordinary Room message keeps the Room-level
+ * bound it already had. Character length only: no token estimator, no LLM,
+ * no language-specific heuristics.
+ */
+export const TASK_PASTE_ATTACHMENT_THRESHOLD = 2000
+
+/** Stable name/type for the generated Task brief attachment. */
+const TASK_PASTE_ATTACHMENT_FILE_NAME = "task-brief.md"
+const TASK_PASTE_ATTACHMENT_MIME_TYPE = "text/markdown"
+
 interface TextChatCardProps {
   room: string
   nickName: string
@@ -1647,6 +1665,34 @@ const TextChatCard = memo(function TextChatCard({
     setDraftAttachmentError("")
   }
 
+  // #409: the trigger is a large PASTE, never the textarea's total length —
+  // long text the Human typed or edited must never silently disappear from
+  // the composer. Only a Task composer with the task-correlated attachment
+  // path converts; an ordinary Room composer keeps pasting as plain text.
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!taskScoped || !onSendTaskFile) return
+    if (taskUnavailable || sendingDraft) return
+    // The composer holds exactly one draft attachment (#363): never silently
+    // replace the Human's own staged file with a generated one. The pasted
+    // text stays ordinary textarea content and the existing message
+    // validation remains responsible for it.
+    if (draftAttachment) return
+    const pasted = event.clipboardData?.getData("text/plain") ?? ""
+    if (pasted.length <= TASK_PASTE_ATTACHMENT_THRESHOLD) return
+    // Exact content, byte for byte: no trim, no normalization, no wrapper
+    // prose, no summary, no truncation. The Task attachment path already
+    // wakes the Task Agent on its own, so no extra "please read the
+    // attachment" message is sent either.
+    setDraftAttachment(
+      new File([pasted], TASK_PASTE_ATTACHMENT_FILE_NAME, {
+        type: TASK_PASTE_ATTACHMENT_MIME_TYPE,
+      })
+    )
+    setDraftAttachmentError("")
+    // Keep the giant body out of the textarea; the composer chip carries it.
+    event.preventDefault()
+  }
+
   const handlePoll = () => {
     closeMenu()
     setShowPollCreator(true)
@@ -1977,6 +2023,7 @@ const TextChatCard = memo(function TextChatCard({
               value={message}
               disabled={taskUnavailable}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               onChange={(e) => {
                 const nextMessage = e.target.value
                 setMessage(nextMessage)
