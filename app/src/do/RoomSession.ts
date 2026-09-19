@@ -6794,7 +6794,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #409/#421: resolve the exact Live interrupt target of one Task interrupt.
+   * #409/#421 Fix C: resolve the exact Live interrupt target of one Task
+   * interrupt.
    *
    * SUPERVISION IS ROOM-SHARED ONCE A CANONICAL TASK EXISTS. Every requirement
    * that makes the interrupt EXACT is still enforced here:
@@ -6805,8 +6806,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
    *   - the canonical Human→Agent Task exists in the retained Room log;
    *   - its canonical Agent endpoint is currently reachable;
    *   - taskRequestId is exact, never repaired or inferred;
-   *   - requestedTurn matches the Room's CURRENT transient activity for that
-   *     Task's canonical scope, so a stale or wrong turn can never be named;
+   *   - requestedTurn matches the AUTHORITATIVE Task execution projection of
+   *     that Task's canonical scope, so a stale or wrong turn can never be
+   *     named — and a genuinely running Task stays controllable even when the
+   *     presentation-only AgentActivity projection is missing or stale;
    *   - the caller supplies no Agent, session, or native identity at all.
    *
    * It deliberately does NOT require caller.id == Task.fromParticipantId.
@@ -6841,6 +6844,70 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         turnSequence: number
       }
     | { ok: false; error: string } {
+    const authorized = this.resolveInterruptTask(
+      room,
+      participant,
+      rawTaskRequestId
+    )
+    if (authorized.ok === false) return authorized
+    if (!isAgentActivityTurnSequence(requestedTurn))
+      return { ok: false, error: "invalid_task_turn" }
+    // #421 Fix C: the EXACT turn comes from the authoritative Task execution
+    // projection, never from the presentation-only AgentActivity map. The two
+    // are separate Room-side stores fed by separate Runtime requests, and a
+    // hibernated/reconciled Room restores execution truth only — so an
+    // AgentActivity-shaped check made a genuinely running Task uncontrollable
+    // (production: `task_turn_not_active` on a Task the Room itself showed as
+    // Running). Exact turn matching is NOT weakened: the requested turn must
+    // equal the authoritative current turn of THIS canonical Task.
+    const activeTurn = this.transientTaskExecutions.get(
+      agentActivityKey(
+        authorized.canonicalAgentId,
+        `task:${authorized.requestId}`
+      )
+    )
+    if (!activeTurn || activeTurn.currentTurnSequence !== requestedTurn)
+      return { ok: false, error: "task_turn_not_active" }
+    return {
+      ok: true,
+      requestId: authorized.requestId,
+      canonicalAgentId: authorized.canonicalAgentId,
+      turnSequence: requestedTurn,
+    }
+  }
+
+  /**
+   * #421 Fix C: the exact-turn part of interrupt authorization, resolved ONLY
+   * from the authoritative Task execution projection.
+   *
+   * Returns the current authoritative turn of the canonical Task, or null when
+   * that Task currently has no active turn. A stale/missing AgentActivity can
+   * never invent one, and a live AgentActivity can never outvote it.
+   */
+  private authoritativeTaskTurn(
+    canonicalAgentId: string,
+    requestId: string
+  ): number | null {
+    const execution = this.transientTaskExecutions.get(
+      agentActivityKey(canonicalAgentId, `task:${requestId}`)
+    )
+    return execution?.currentTurnSequence ?? null
+  }
+
+  /**
+   * #421 Fix C: everything a Task control needs EXCEPT the exact turn — the
+   * caller is a current authenticated Human, the canonical Task exists in the
+   * retained Room log, and its canonical Agent endpoint is currently in the
+   * Room. Turn-independent so "interrupt & send" can still queue a valid
+   * instruction when the turn it referenced has already settled.
+   */
+  private resolveInterruptTask(
+    room: RoomRecord,
+    participant: RoomParticipant,
+    rawTaskRequestId: unknown
+  ):
+    | { ok: true; requestId: string; canonicalAgentId: string }
+    | { ok: false; error: string } {
     if (participant.kind !== "human")
       return { ok: false, error: "task_interrupt_not_human" }
     if (
@@ -6861,18 +6928,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
     if (!canonicalAgentId)
       return { ok: false, error: "task_target_not_in_room" }
-    if (!isAgentActivityTurnSequence(requestedTurn))
-      return { ok: false, error: "invalid_task_turn" }
-    const activeTurn = this.transientAgentActivities.get(
-      agentActivityKey(canonicalAgentId, `task:${resolution.requestId}`)
-    )
-    if (!activeTurn || activeTurn.turnSequence !== requestedTurn)
-      return { ok: false, error: "task_turn_not_active" }
     return {
       ok: true,
       requestId: resolution.requestId,
       canonicalAgentId,
-      turnSequence: requestedTurn,
     }
   }
 
@@ -7296,12 +7355,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
 
-    // #409: Interrupt & send. Ordering is the whole point of this command:
-    // validate everything first, then append + persist + broadcast + wake the
-    // canonical Task instruction through the existing path, and ONLY THEN
-    // dispatch the private exact-turn interrupt. The replacement instruction is
-    // therefore durable before the current turn is asked to stop; if the
-    // interrupt cannot be delivered the instruction simply stays queued.
+    // #409/#421 Fix D: Interrupt & send. Ordering is the whole point of this
+    // command: validate everything first, then append + persist + broadcast +
+    // wake the canonical Task instruction through the existing path, and ONLY
+    // THEN dispatch the private exact-turn interrupt. The replacement
+    // instruction is therefore durable before the current turn is asked to
+    // stop; if the interrupt cannot be delivered the instruction simply stays
+    // queued.
+    //
+    // The exact-turn check is deliberately NOT a gate on the instruction. The
+    // Human saw turn N and asked for it to be replaced; if N settled a
+    // millisecond earlier, the instruction is still a valid, canonical Task
+    // instruction and MUST NOT be lost. So: Task/agent authorization stays
+    // fail-closed, the instruction is always appended exactly once, and the
+    // interrupt is dispatched ONLY when N is still the authoritative current
+    // turn. A stale turn therefore never cancels a later turn, and the Human
+    // gets a benign, human-readable outcome instead of an operation failure.
     if (message.type === "task-interrupt-and-send") {
       const reject = (error: string) =>
         socket.send(JSON.stringify({ type: "error", error }))
@@ -7310,33 +7379,54 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         reject("invalid_task_instruction")
         return
       }
-      const turn = this.resolveInterruptTarget(
+      // A well-formed turn is still part of the command contract; a malformed
+      // one is a client protocol violation, not a benign race.
+      if (!isAgentActivityTurnSequence(message.turnSequence)) {
+        reject("invalid_task_turn")
+        return
+      }
+      const task = this.resolveInterruptTask(
         room,
         participant,
-        message.taskRequestId,
-        message.turnSequence
+        message.taskRequestId
       )
-      if (turn.ok === false) {
-        reject(turn.error)
+      if (task.ok === false) {
+        reject(task.error)
         return
       }
 
       // Step 1: the canonical, durable, woken Task instruction.
       const instruction = await this.appendHumanText(room, participant, {
         text,
-        taskRequestId: turn.requestId,
+        taskRequestId: task.requestId,
       })
       if (instruction.ok === false) {
         reject(instruction.error)
         return
       }
 
-      // Step 2: only now stop the exact turn the Human was looking at.
+      // Step 2: only now stop the exact turn the Human was looking at — and
+      // only while that exact turn is still the authoritative current turn.
+      const currentTurn = this.authoritativeTaskTurn(
+        task.canonicalAgentId,
+        task.requestId
+      )
+      if (currentTurn !== message.turnSequence) {
+        // Benign control race. The instruction is already durable and woken;
+        // nothing was cancelled, and in particular no LATER turn can be hit.
+        socket.send(
+          JSON.stringify({
+            type: "task-control-notice",
+            notice: "instruction_queued_turn_finished",
+          })
+        )
+        return
+      }
       if (
-        !this.sendAgentTaskControl(room, turn.canonicalAgentId, {
+        !this.sendAgentTaskControl(room, task.canonicalAgentId, {
           control: "interrupt",
-          taskRequestId: turn.requestId,
-          turnSequence: message.turnSequence,
+          taskRequestId: task.requestId,
+          turnSequence: currentTurn,
         })
       ) {
         // Truthful partial success: the instruction is durably queued and the
@@ -7360,7 +7450,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         socket.send(JSON.stringify({ type: "error", error }))
       // Exactly the same authorization the structured interrupt & send uses:
       // canonical Task, canonical Agent endpoint, and the exact currently
-      // active turn the Room shows for that Agent.
+      // active turn the Room's AUTHORITATIVE execution projection reports.
       const target = this.resolveInterruptTarget(
         room,
         participant,
@@ -7368,6 +7458,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         message.turnSequence
       )
       if (target.ok === false) {
+        // #421 Fix G: a stale exact turn is a benign control race, not an
+        // operation failure — the standalone interrupt has no instruction to
+        // preserve, so it becomes a bounded human-readable outcome. Every
+        // other refusal (unknown Task, unreachable Agent, non-Human caller,
+        // malformed turn) stays a real error.
+        if (target.error === "task_turn_not_active") {
+          socket.send(
+            JSON.stringify({
+              type: "task-control-notice",
+              notice: "interrupt_turn_finished",
+            })
+          )
+          return
+        }
         reject(target.error)
         return
       }
@@ -7375,7 +7479,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         !this.sendAgentTaskControl(room, target.canonicalAgentId, {
           control: "interrupt",
           taskRequestId: target.requestId,
-          turnSequence: target.turnSequence as number,
+          turnSequence: target.turnSequence,
         })
       ) {
         reject("task_agent_not_reachable")

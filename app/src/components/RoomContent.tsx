@@ -21,10 +21,7 @@ import TaskSessionPicker from "./TaskSessionPicker"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
-import {
-  agentActivityLabel,
-  isAgentActivityTurnSequence,
-} from "../common/agentActivity"
+import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   buildRoomInviteUrl,
@@ -418,6 +415,7 @@ export default function RoomContent({
     localParticipantId,
     agentActivities,
     taskExecutions,
+    taskControlNotice,
     roomAppsEnabled,
     sendRoomAppMessage,
     subscribeRoomAppMessages,
@@ -629,9 +627,9 @@ export default function RoomContent({
     activeTask && taskIsUnavailable(activeTask, participants)
   )
   // #409/#421: the interrupt targets the CANONICAL Agent endpoint of the
-  // selected Task and only the exact turn that Agent's transient activity
-  // currently reports. A secondary participating Agent's activity must never
-  // produce this control.
+  // selected Task and only the exact turn that Agent's AUTHORITATIVE execution
+  // projection currently reports. A secondary participating Agent's activity
+  // must never produce this control.
   //
   // It is deliberately NOT gated on this Human having created the Task.
   // Free4Chat is an anonymous temporary Room: the Human who started a Task may
@@ -657,15 +655,14 @@ export default function RoomContent({
   const activeTaskInterrupting =
     activeTaskExecution?.phase === "interrupting" &&
     activeTaskExecution.currentTurnSequence !== undefined
-  const activeTaskInterruptActivity =
-    activeTask && effectiveLocalParticipantId
-      ? (agentActivities ?? []).find(
-          (activity) =>
-            activity.agentParticipantId === activeTask.targetParticipantId &&
-            activity.scopeId === `task:${activeTask.requestId}` &&
-            isAgentActivityTurnSequence(activity.turnSequence)
-        )
-      : undefined
+  // #421 Fix C: AgentActivity is PRESENTATION ONLY. It supplies the coarse
+  // verb ("Using tools…"), and it can be missing or stale after a Room
+  // hibernation or reconciliation — neither of which may make a genuinely
+  // running Task uncontrollable. The exact interrupt turn comes from the
+  // authoritative execution projection above, never from this value.
+  // The exact turn this Human may interrupt right now, or undefined when the
+  // authoritative projection reports no current turn.
+  const activeTaskTurn = activeTaskExecution?.currentTurnSequence
 
   useEffect(() => {
     const pending = pendingLocalTaskSummaries.current
@@ -2274,7 +2271,10 @@ export default function RoomContent({
             data-testid="interaction-content"
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
-            {activeTaskActivities.length > 0 && (
+            {(activeTaskActivities.length > 0 ||
+              activeTaskTurn !== undefined ||
+              activeTaskInterrupting ||
+              Boolean(taskControlNotice)) && (
               <div
                 data-testid="task-agent-activity"
                 className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
@@ -2291,20 +2291,58 @@ export default function RoomContent({
                     </span>
                   )
                 })}
-                {activeTask && activeTaskInterruptActivity && (
-                  // #409: only shown while the CANONICAL Agent of this Task
-                  // reports transient activity for the exact current turn.
-                  // Task.status is a retained-message projection and is
-                  // deliberately NOT used as a running signal.
+                {/* #421 Fix C: the coarse verb above is presentation only, so
+                    fall back to the AUTHORITATIVE execution label. A Task that
+                    the Room reports as Running must never look idle just
+                    because the separate AgentActivity projection is missing
+                    (hibernation, reconciliation). */}
+                {activeTaskActivities.length === 0 &&
+                  (activeTaskExecutionLabel?.label ?? "") !== "" && (
+                    <span>
+                      {activeTask?.targetParticipantId
+                        ? `${
+                            participants.find(
+                              (candidate) =>
+                                candidate.peerId ===
+                                activeTask.targetParticipantId
+                            )?.name ?? "Agent"
+                          } · `
+                        : ""}
+                      {activeTaskExecutionLabel?.label}
+                      {activeTaskExecutionLabel?.detail
+                        ? ` · ${activeTaskExecutionLabel.detail}`
+                        : ""}
+                    </span>
+                  )}
+                {/* #421 Fix G: benign control outcomes are transient LOCAL
+                    feedback. They never become a Room-wide sticky banner. */}
+                {taskControlNotice ? (
+                  <span
+                    role="status"
+                    data-testid="task-control-notice"
+                    className="text-gray-300"
+                  >
+                    {taskControlNotice}
+                  </span>
+                ) : null}
+                {activeTask && activeTaskInterrupting && (
+                  <span data-testid="task-interrupting" className="sr-only">
+                    Interrupting
+                  </span>
+                )}
+                {activeTask && activeTaskTurn !== undefined && (
+                  // #409/#421 Fix C: shown while the AUTHORITATIVE execution
+                  // projection reports a current turn for the CANONICAL Agent
+                  // of this Task. Task.status is a retained-message
+                  // projection and is deliberately NOT used as a running
+                  // signal, and a missing/stale AgentActivity can no longer
+                  // hide the control for a Task that is genuinely running.
                   <button
                     type="button"
                     data-testid="task-interrupt"
                     disabled={activeTaskInterrupting}
                     onClick={() =>
-                      handleTaskInterrupt(
-                        activeTask.requestId,
-                        activeTaskInterruptActivity.turnSequence
-                      )
+                      handleTaskInterrupt(activeTask.requestId, activeTaskTurn)
                     }
                     className="ml-auto rounded border border-gray-700 px-2 py-0.5 text-[11px] text-gray-300 hover:border-red-500/60 hover:text-red-200"
                     aria-label={`Interrupt ${activeTask.title}`}
@@ -2337,24 +2375,28 @@ export default function RoomContent({
                         detail: activeTaskExecutionLabel?.detail,
                         availability: activeTaskExecution?.availability,
                         interrupting: activeTaskInterrupting,
+                        // #421 Fix C: interrupt authority is the AUTHORITATIVE
+                        // execution projection's exact current turn. The
+                        // presentation-only AgentActivity can be absent or
+                        // stale and must never remove control.
                         interruptible:
-                          Boolean(activeTaskInterruptActivity) &&
+                          activeTaskTurn !== undefined &&
                           !activeTaskInterrupting,
                         onInterrupt: () => {
-                          if (!activeTaskInterruptActivity) return
+                          if (activeTaskTurn === undefined) return
                           handleTaskInterrupt(
                             activeTask.requestId,
-                            activeTaskInterruptActivity.turnSequence
+                            activeTaskTurn
                           )
                         },
                         onInterruptAndSend: (text: string) =>
-                          activeTaskInterruptActivity
-                            ? handleTaskInterruptAndSend(
+                          activeTaskTurn === undefined
+                            ? false
+                            : handleTaskInterruptAndSend(
                                 activeTask.requestId,
-                                activeTaskInterruptActivity.turnSequence,
+                                activeTaskTurn,
                                 text
-                              )
-                            : false,
+                              ),
                       }
                     : undefined
                 }

@@ -35,6 +35,10 @@ import {
   encodeTaskAttachmentWake,
   TASK_ATTACHMENT_WAKE_HEADER,
 } from "@common/taskAttachmentWake"
+import {
+  isTaskControlNotice,
+  taskControlNoticeMessage,
+} from "@common/taskExecution"
 import { ActionType, Message, UserInfo } from "@common/types"
 import {
   hashRoom,
@@ -108,6 +112,9 @@ const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
 // The Room bounds a canonical Task instruction at 4000 characters; the browser
 // applies the same bound before sending.
 const MAX_TASK_TEXT_LENGTH = 4000
+// #421 Fix G: how long a benign Task control outcome stays on screen. It is
+// local, transient feedback — never a sticky Room-wide banner.
+const TASK_CONTROL_NOTICE_MS = 6000
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const AGENT_IMAGE_MAX_DIMENSION = 1600
 const AGENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"])
@@ -553,6 +560,8 @@ interface SfuServerMessage {
     | "room-app-unicast-result"
     | "task-session-list-result"
     | "task-session-start-result"
+    | "taskExecution"
+    | "task-control-notice"
   state?: SfuRoomState
   attachment?: RoomAttachmentProjection
   participant?: Partial<SfuParticipant> & {
@@ -567,6 +576,11 @@ interface SfuServerMessage {
   requestId?: string
   expiresAt?: number
   activity?: AgentActivityProjection | null
+  /** #421 Fix C: one authoritative Task execution projection state change. */
+  execution?: TaskExecutionProjection
+  /** #421 Fix G: one benign Task control outcome, for transient local
+   * feedback only — never the Room-wide error banner. */
+  notice?: unknown
   agentParticipantId?: string
   scopeId?: string
   protocolVersion?: number
@@ -661,6 +675,14 @@ export function useSfuChatRoom(
   const [taskExecutions, setTaskExecutions] = useState<
     TaskExecutionProjection[]
   >([])
+  // #421 Fix G: transient, LOCAL feedback for a benign Task control race (for
+  // example "this turn has already finished"). It is deliberately separate
+  // from `error`: a control race must never raise the Room-wide failure
+  // banner, and it clears itself.
+  const [taskControlNotice, setTaskControlNotice] = useState("")
+  const taskControlNoticeTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null)
   const [runtimeConnectionStatus, setRuntimeConnectionStatus] = useState<
     "idle" | "preparing" | "copied"
   >("idle")
@@ -3059,6 +3081,39 @@ export function useSfuChatRoom(
           setAgentActivities(next)
           rebuildParticipants()
         }
+      } else if (message.type === "taskExecution" && message.execution) {
+        // #421 Fix C: the AUTHORITATIVE Task execution projection is a live
+        // signal, not a snapshot that only refreshes on a full Room state.
+        // Without this the Browser could render a stale "Running" or offer an
+        // interrupt for a turn the Room has already replaced, and a
+        // reconnecting Human would never see the projection the resident
+        // Runtime re-stated during reconciliation. Replacement is by the same
+        // canonical (agentParticipantId, taskRequestId) identity the Room uses.
+        const incoming = message.execution
+        setTaskExecutions((previous) => [
+          ...previous.filter(
+            (execution) =>
+              !(
+                execution.agentParticipantId === incoming.agentParticipantId &&
+                execution.taskRequestId === incoming.taskRequestId
+              )
+          ),
+          incoming,
+        ])
+      } else if (
+        message.type === "task-control-notice" &&
+        isTaskControlNotice(message.notice)
+      ) {
+        // #421 Fix G: benign control races are transient LOCAL feedback. They
+        // never go through the Room-wide error banner, and they never displace
+        // a genuine error that is already showing.
+        setTaskControlNotice(taskControlNoticeMessage(message.notice))
+        if (taskControlNoticeTimerRef.current)
+          clearTimeout(taskControlNoticeTimerRef.current)
+        taskControlNoticeTimerRef.current = setTimeout(() => {
+          taskControlNoticeTimerRef.current = null
+          setTaskControlNotice("")
+        }, TASK_CONTROL_NOTICE_MS)
       } else if (
         message.type === "trackPublished" &&
         message.participant?.track
@@ -3584,6 +3639,10 @@ export function useSfuChatRoom(
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       if (mediaReconnectTimerRef.current)
         clearTimeout(mediaReconnectTimerRef.current)
+      if (taskControlNoticeTimerRef.current) {
+        clearTimeout(taskControlNoticeTimerRef.current)
+        taskControlNoticeTimerRef.current = null
+      }
       if (sfuEgressTimerRef.current) {
         clearInterval(sfuEgressTimerRef.current)
         sfuEgressTimerRef.current = null
@@ -4609,6 +4668,7 @@ export function useSfuChatRoom(
     agentVoiceMediaAvailable,
     agentActivities,
     taskExecutions,
+    taskControlNotice,
     setAgentVoice,
     createRuntimeProviderClaim,
     connectLocalRuntime,

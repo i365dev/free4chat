@@ -211,6 +211,39 @@ function harness() {
       )
       return { status: response.status }
     },
+    /**
+     * #421 Fix C: the AUTHORITATIVE Task execution projection. Interrupt
+     * authorization reads this, never AgentActivity.
+     */
+    publishExecution: async (
+      participantId: string,
+      taskRequestId: string,
+      currentTurnSequence: number
+    ) => {
+      const response = await session.fetch(
+        new Request("https://room/control", {
+          method: "POST",
+          body: JSON.stringify({
+            action: "agent-task-execution",
+            participantId,
+            token: `${participantId}-token`,
+            projection: {
+              taskRequestId,
+              currentTurnSequence,
+              phase: "running",
+              queuedCount: 0,
+            },
+          }),
+        })
+      )
+      return { status: response.status }
+    },
+    /** #421 Fix G: benign control outcomes are not error frames. */
+    notices: (socket: WebSocket = humanSocket) =>
+      (socket.send as ReturnType<typeof vi.fn>).mock.calls
+        .map((call) => JSON.parse(call[0] as string))
+        .filter((frame) => frame.type === "task-control-notice")
+        .map((frame) => frame.notice),
   }
 }
 
@@ -232,7 +265,7 @@ async function createTask(
 async function creatorLeftAndHumanReturned(test: ReturnType<typeof harness>) {
   test.connectAgentSocket("agent-a")
   const requestId = await createTask(test)
-  await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
+  await test.publishExecution("agent-a", requestId, 42)
   test.expireHuman("human-1")
   test.joinHuman("human-returned")
   return requestId
@@ -317,7 +350,7 @@ describe("Room-shared Task supervision after the creator expires (#421)", () => 
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
-    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
+    await test.publishExecution("agent-a", requestId, 42)
 
     await test.sendHuman({
       type: "task-interrupt",
@@ -394,9 +427,13 @@ describe("Task supervision security boundaries are unchanged (#421)", () => {
       )
     }
 
-    expect(test.errorFrames()).toEqual([
-      "task_turn_not_active",
-      "task_turn_not_active",
+    // #421 Fix G: a stale exact turn is a benign control race with a
+    // bounded human-readable outcome, never a raw protocol code in the
+    // Room-wide failure banner.
+    expect(test.errorFrames()).toEqual([])
+    expect(test.notices()).toEqual([
+      "interrupt_turn_finished",
+      "interrupt_turn_finished",
     ])
     expect(test.agentControls("agent-a")).toEqual([])
   })
@@ -420,7 +457,7 @@ describe("Task supervision security boundaries are unchanged (#421)", () => {
     // agent-a is a connected Room participant but holds NO private resident
     // socket, so no control can be delivered to it.
     const requestId = await createTask(test)
-    await test.publishActivity("agent-a", `task:${requestId}`, "working", 42)
+    await test.publishExecution("agent-a", requestId, 42)
     test.expireHuman("human-1")
     test.joinHuman("human-returned")
 

@@ -744,7 +744,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(activity).toHaveTextContent("Pi · Thinking…")
   })
 
-  it("offers Interrupt only while the selected Task has Agent activity", () => {
+  it("offers Interrupt from the authoritative execution projection, not AgentActivity", () => {
     const sendTaskInterrupt = vi.fn(() => true)
     // Local spies: an interrupt must never synthesize chat or action content.
     const sendTextMessage = vi.fn()
@@ -779,14 +779,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       muteState: false,
     }
 
-    // Task retained and selected, but no transient Agent activity: the Task is
-    // not running, so no Interrupt control may be offered.
+    // Task retained and selected, but no authoritative execution turn and no
+    // activity: the Task is not running, so no Interrupt control may be
+    // offered.
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
       messages: [taskRequest],
       participants: [agentParticipant],
       agentActivities: [],
+      taskExecutions: [],
       sendTaskInterrupt,
       sendTextMessage,
       sendActionMessage,
@@ -799,8 +801,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     idle.unmount()
 
     // A legacy Agent Runtime (pre-#414 binary) reports canonical activity with
-    // no exact turn: the Human still sees it working, but there is no interrupt
-    // authority to bind a click to.
+    // no exact turn and publishes no execution projection: the Human still sees
+    // it working, but there is no interrupt authority to bind a click to.
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
@@ -813,6 +815,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           state: "thinking",
         },
       ],
+      taskExecutions: [],
       sendTaskInterrupt,
       sendTextMessage,
       sendActionMessage,
@@ -842,6 +845,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           turnSequence: 7,
         },
       ],
+      taskExecutions: [],
       sendTaskInterrupt,
       sendTextMessage,
       sendActionMessage,
@@ -853,8 +857,44 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
     secondaryOnly.unmount()
 
-    // Same Task with live CANONICAL Agent activity: the control appears and one
-    // click sends exactly one interrupt bound to that exact turn, with no chat.
+    // #421 Fix C — the production dogfood case. The authoritative execution
+    // projection names turn 42 and the Agent is still working, but the
+    // presentation-only AgentActivity was lost (a hibernated Room reconciled
+    // execution truth only). Interrupt MUST still be offered, and it must bind
+    // to the authoritative turn.
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest],
+      participants: [agentParticipant, secondaryParticipant],
+      agentActivities: [],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-interrupt",
+          currentTurnSequence: 42,
+          phase: "running",
+          queuedCount: 0,
+        },
+      ],
+      sendTaskInterrupt,
+      sendTextMessage,
+      sendActionMessage,
+    })
+    const noActivity = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
+    fireEvent.click(screen.getByTestId("task-interrupt"))
+    expect(sendTaskInterrupt).toHaveBeenCalledTimes(1)
+    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-interrupt", 42)
+    expect(sendTextMessage).not.toHaveBeenCalled()
+    expect(sendActionMessage).not.toHaveBeenCalled()
+    noActivity.unmount()
+
+    // Same Task with a STALE canonical activity (turn 99) plus the
+    // authoritative turn 42: exactly one click, bound to 42 — never to the
+    // presentation-only value.
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
@@ -865,13 +905,22 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-interrupt",
           state: "using_tools",
-          turnSequence: 42,
+          turnSequence: 99,
         },
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-interrupt",
           state: "thinking",
-          turnSequence: 99,
+          turnSequence: 7,
+        },
+      ],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-interrupt",
+          currentTurnSequence: 42,
+          phase: "running",
+          queuedCount: 0,
         },
       ],
       sendTaskInterrupt,
@@ -884,8 +933,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
     fireEvent.click(screen.getByTestId("task-interrupt"))
 
-    expect(sendTaskInterrupt).toHaveBeenCalledTimes(1)
-    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-interrupt", 42)
+    expect(sendTaskInterrupt).toHaveBeenCalledTimes(2)
+    expect(sendTaskInterrupt).toHaveBeenLastCalledWith("task-interrupt", 42)
     expect(sendTextMessage).not.toHaveBeenCalled()
     expect(sendActionMessage).not.toHaveBeenCalled()
   })

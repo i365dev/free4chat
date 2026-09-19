@@ -204,19 +204,27 @@ async function createTask(
   return requestId
 }
 
-async function publishActivity(
+/**
+ * #421 Fix C: the AUTHORITATIVE Task execution projection. Interrupt and
+ * "interrupt & send" resolve their exact turn from this, never from the
+ * presentation-only AgentActivity.
+ */
+async function publishExecution(
   test: ReturnType<typeof harness>,
   requestId: string,
   turnSequence: number,
   participantId = "agent-a"
 ) {
   return test.control({
-    action: "agent-activity",
+    action: "agent-task-execution",
     participantId,
     token: `${participantId}-token`,
-    scopeId: `task:${requestId}`,
-    activity: "working",
-    turnSequence,
+    projection: {
+      taskRequestId: requestId,
+      currentTurnSequence: turnSequence,
+      phase: "running",
+      queuedCount: 0,
+    },
   })
 }
 
@@ -425,7 +433,7 @@ describe("RoomSession interrupt & send (#409)", () => {
     const test = harness()
     const agentSocket = test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
-    await publishActivity(test, requestId, 42)
+    await publishExecution(test, requestId, 42)
 
     const messagesBefore = test.stored().messages.length
     test.events.length = 0
@@ -480,7 +488,7 @@ describe("RoomSession interrupt & send (#409)", () => {
     const test = harness()
     // The canonical Agent is connected in Room state but holds no socket.
     const requestId = await createTask(test)
-    await publishActivity(test, requestId, 42)
+    await publishExecution(test, requestId, 42)
 
     await test.sendHuman({
       type: "task-interrupt-and-send",
@@ -501,41 +509,57 @@ describe("RoomSession interrupt & send (#409)", () => {
     })
   })
 
-  it("rejects stale turns and wrong Tasks without side effects", async () => {
+  it("never loses the replacement when the named turn is already gone", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
-    await publishActivity(test, requestId, 42)
+    await publishExecution(test, requestId, 42)
     const messagesBefore = test.stored().messages.length
 
-    // A turn that is no longer the current one.
+    // #421 Fix D: the turn the Human saw (41) had already settled. The
+    // instruction is a valid canonical Task instruction and must still be
+    // queued exactly once; only the interrupt is skipped, and the LIVE turn
+    // 42 is never cancelled by a stale request.
     await test.sendHuman({
       type: "task-interrupt-and-send",
       taskRequestId: requestId,
       turnSequence: 41,
-      text: "stale",
+      text: "stale but must survive",
     })
-    // An unknown Task.
+    expect(test.errorFrames()).toEqual([])
+    expect(
+      test
+        .broadcasts()
+        .filter((frame) => frame.type === "task-control-notice")
+        .map((frame) => frame.notice)
+    ).toEqual(["instruction_queued_turn_finished"])
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.stored().messages).toHaveLength(messagesBefore + 1)
+    expect(test.stored().messages[messagesBefore]).toMatchObject({
+      text: "stale but must survive",
+      taskRequestId: requestId,
+      targets: ["agent-a"],
+    })
+
+    // An unknown Task and an empty instruction stay hard refusals with no
+    // side effects at all.
     await test.sendHuman({
       type: "task-interrupt-and-send",
       taskRequestId: "unknown-task",
       turnSequence: 42,
       text: "nowhere",
     })
-    // Empty instruction.
     await test.sendHuman({
       type: "task-interrupt-and-send",
       taskRequestId: requestId,
       turnSequence: 42,
       text: "   ",
     })
-
     expect(test.errorFrames()).toEqual([
-      "task_turn_not_active",
       "unknown_task_request",
       "invalid_task_instruction",
     ])
-    expect(test.stored().messages).toHaveLength(messagesBefore)
+    expect(test.stored().messages).toHaveLength(messagesBefore + 1)
     expect(test.agentControls("agent-a")).toEqual([])
   })
 
