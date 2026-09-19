@@ -11,22 +11,26 @@
  * Nothing is ever written to `localStorage`; there is no server-side state.
  */
 
-/**
- * How many recent Apps stay inline on a wide Stage strip. Deliberately tiny:
- * the launcher, not the strip, is the growing surface.
- */
-export const ROOM_APP_INLINE_RECENT_MAX = 2
-
 /** How many recent Apps the launcher remembers (and may show). */
 export const ROOM_APP_RECENT_MAX = 6
 
 /**
- * A wide Stage strip can afford exactly one more shortcut than a phone: three
- * chips including the current App. The launcher, not the strip, is what grows
- * with the catalog, so both bounds are hard product limits rather than CSS
- * accidents.
+ * Inline App-shortcut bounds, kept as two independent product limits rather
+ * than one derived from the other: the phone and desktop strips are different
+ * products. `Apps…` is added by the strip separately and is NOT counted here.
+ *
+ * Every shortcut slot is taken by the current App first, so on a phone:
+ *
+ *   an App is open → [current App] [Apps…]
+ *   no App is open → [most recent App] [Apps…]
  */
-export const ROOM_APP_INLINE_RECENT_MAX_DESKTOP = 3
+export const ROOM_APP_INLINE_SHORTCUTS_MOBILE = 1
+
+/**
+ * Desktop strip: the current App plus up to two recent shortcuts, then `Apps…`.
+ * Deliberately tiny — the launcher, not the strip, is the growing surface.
+ */
+export const ROOM_APP_INLINE_SHORTCUTS_DESKTOP = 3
 
 const RECENTS_STORAGE_PREFIX = "free4chat:room-app-recents:v1:"
 
@@ -112,15 +116,16 @@ export function writeRecentRoomAppIds(
 
 /**
  * The Apps shown inline: the current App always wins the first slot, then the
- * most recent others — capped, de-duplicated, catalog-order-independent.
+ * most recent others. `maxShortcuts` is an App-shortcut budget — the strip's
+ * `Apps…` entry is separate and never consumes a slot.
  */
 export function inlineRoomAppIds(
   recents: readonly string[],
   activeAppId: string | null | undefined,
   availableAppIds: ReadonlySet<string>,
-  max = ROOM_APP_INLINE_RECENT_MAX
+  maxShortcuts: number
 ): string[] {
-  if (max <= 0) return []
+  if (maxShortcuts <= 0) return []
   const ordered: string[] = []
   if (activeAppId && availableAppIds.has(activeAppId)) ordered.push(activeAppId)
   for (const id of recents) if (availableAppIds.has(id)) ordered.push(id)
@@ -130,7 +135,7 @@ export function inlineRoomAppIds(
     if (seen.has(id)) continue
     seen.add(id)
     inline.push(id)
-    if (inline.length >= max) break
+    if (inline.length >= maxShortcuts) break
   }
   return inline
 }

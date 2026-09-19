@@ -40,8 +40,8 @@ import {
 import * as roomAppModule from "../common/roomApp"
 import type { RoomAppTransportEnvelope } from "../common/roomApp"
 import {
-  ROOM_APP_INLINE_RECENT_MAX,
-  ROOM_APP_INLINE_RECENT_MAX_DESKTOP,
+  ROOM_APP_INLINE_SHORTCUTS_DESKTOP,
+  ROOM_APP_INLINE_SHORTCUTS_MOBILE,
 } from "../common/roomAppRecents"
 import { RoomSession } from "../do/RoomSession"
 import type { RoomRecord, RoomState } from "../room/types"
@@ -1622,7 +1622,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       // The launcher must expose the whole supplied catalog, and that catalog
       // must stay larger than both bounds for those bounds to mean anything.
       expect(stageIds.length).toBeGreaterThan(ROOM_APP_MAX_INSTANCES)
-      expect(stageIds.length).toBeGreaterThan(ROOM_APP_INLINE_RECENT_MAX)
+      expect(stageIds.length).toBeGreaterThan(ROOM_APP_INLINE_SHORTCUTS_DESKTOP)
 
       // Nothing has been opened yet: no App is inline, but every promoted App is
       // already one action away and keeps its Lab-provided label verbatim.
@@ -1657,7 +1657,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         const chip = screen.queryByTestId(`stage-app-${id}`)
         return chip ? [chip] : []
       })
-      expect(inlineChips).toHaveLength(ROOM_APP_INLINE_RECENT_MAX_DESKTOP)
+      expect(inlineChips).toHaveLength(ROOM_APP_INLINE_SHORTCUTS_DESKTOP)
       // Reading order is recency order: the current App first, then the Apps
       // opened before it in this Room.
       const inlineIds = inlineChips
@@ -3839,7 +3839,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       voiceEnabled: false,
     }
 
-    function renderAppRoom(overrides: Record<string, unknown> = {}) {
+    function renderAppRoom(
+      overrides: Record<string, unknown> = {},
+      roomId = "test-room"
+    ) {
       mockUseSfuChatRoom.mockReturnValue({
         ...baseHookReturn,
         connectionStatus: "connected",
@@ -3848,8 +3851,18 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         ...overrides,
       })
       return render(
-        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+        <RoomContent roomName={roomId} nickName="Alice" roomType="audio" />
       )
+    }
+
+    const recentsKey = (roomId: string) =>
+      `free4chat:room-app-recents:v1:${roomId}`
+
+    const storedRecents = (roomId: string) =>
+      window.sessionStorage.getItem(recentsKey(roomId))
+
+    function seedRecents(roomId: string, appIds: string[]) {
+      window.sessionStorage.setItem(recentsKey(roomId), JSON.stringify(appIds))
     }
 
     function openLauncher() {
@@ -3962,7 +3975,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       ])
       expect(inlineChipIds()).not.toContain("test-app-4")
       expect(inlineChipIds().length).toBeLessThanOrEqual(
-        ROOM_APP_INLINE_RECENT_MAX_DESKTOP
+        ROOM_APP_INLINE_SHORTCUTS_DESKTOP
       )
     })
 
@@ -3981,6 +3994,165 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(window.sessionStorage.getItem(stored[0])).toContain("test-app-4")
       // No durable preference, account or favorite of any kind.
       expect(window.localStorage.length).toBe(0)
+    })
+
+    it("hydrates this Room's stored recents without erasing them first", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      seedRecents("test-room", ["test-app-4", "test-app-2"])
+
+      renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+
+      // The regression: persisting the empty initial state used to delete the
+      // key before hydration could read it, so nothing ever survived a reload.
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-4", "test-app-2"])
+      )
+      // And the hydrated list is what the UI and the launcher actually show:
+      // both remembered Apps are inline (no App is open, so nothing is
+      // prepended) and both are offered under "Recent in this Room".
+      expect(inlineChipIds()).toEqual(["test-app-4", "test-app-2"])
+      openLauncher()
+      const recentSection = within(
+        screen.getByTestId("room-app-launcher-recent")
+      )
+      expect(
+        recentSection.getByTestId("launcher-app-test-app-4")
+      ).toBeInTheDocument()
+      expect(
+        recentSection.getByTestId("launcher-app-test-app-2")
+      ).toBeInTheDocument()
+    })
+
+    it("keeps recents across an unmount and remount of the same Room", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const first = renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+      openLauncher()
+      fireEvent.click(screen.getByTestId("launcher-app-test-app-5"))
+      expect(storedRecents("test-room")).toBe(JSON.stringify(["test-app-5"]))
+      first.unmount()
+
+      renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+
+      expect(storedRecents("test-room")).toBe(JSON.stringify(["test-app-5"]))
+      expect(inlineChipIds()).toEqual(["test-app-5"])
+      openLauncher()
+      expect(
+        within(screen.getByTestId("room-app-launcher-recent")).getByTestId(
+          "launcher-app-test-app-5"
+        )
+      ).toBeInTheDocument()
+    })
+
+    it("keeps each Room's recents independent in the same browser tab", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      seedRecents("test-room", ["test-app-4", "test-app-2"])
+      seedRecents("other-room", ["test-app-6"])
+
+      const roomA = renderAppRoom({}, "test-room")
+      await screen.findByTestId("stage-apps-launcher")
+      expect(inlineChipIds()).toEqual(["test-app-4", "test-app-2"])
+      roomA.unmount()
+
+      // Room B must not inherit Room A's list, and must respect its own.
+      renderAppRoom({}, "other-room")
+      await screen.findByTestId("stage-apps-launcher")
+      expect(inlineChipIds()).toEqual(["test-app-6"])
+      expect(storedRecents("other-room")).toBe(JSON.stringify(["test-app-6"]))
+      // Room A's entry is untouched by Room B's lifecycle.
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-4", "test-app-2"])
+      )
+    })
+
+    it("persists the updated recent order after an App opens following hydration", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      seedRecents("test-room", ["test-app-4", "test-app-2"])
+
+      renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-4", "test-app-2"])
+      )
+
+      openLauncher()
+      fireEvent.click(screen.getByTestId("launcher-app-test-app-3"))
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-3", "test-app-4", "test-app-2"])
+      )
+
+      // Reopening an already-recent App only reorders: still no duplicates.
+      openLauncher()
+      fireEvent.click(screen.getByTestId("launcher-app-test-app-4"))
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-4", "test-app-3", "test-app-2"])
+      )
+      expect(inlineChipIds()).toEqual([
+        "test-app-4",
+        "test-app-3",
+        "test-app-2",
+      ])
+      expect(inlineChipIds().length).toBeLessThanOrEqual(
+        ROOM_APP_INLINE_SHORTCUTS_DESKTOP
+      )
+    })
+
+    it("does not erase recents while Room Apps are transiently unavailable", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      seedRecents("test-room", ["test-app-4", "test-app-2"])
+
+      const view = renderAppRoom()
+      await screen.findByTestId("stage-apps-launcher")
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-4", "test-app-2"])
+      )
+
+      // `roomAppsEnabled` also drops during an ordinary SFU/media reconnect.
+      // An empty available-App set is NOT "every remembered App was retired":
+      // in the real browser this erased the tab's recents.
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: false,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-4", "test-app-2"])
+      )
+
+      // Apps come back: the same remembered order is still there.
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "connected",
+        roomAppsEnabled: true,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      expect(storedRecents("test-room")).toBe(
+        JSON.stringify(["test-app-4", "test-app-2"])
+      )
+      expect(inlineChipIds()).toEqual(["test-app-4", "test-app-2"])
+    })
+
+    it("does not write any Room recents entry before a Room is bound", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      seedRecents("test-room", ["test-app-4"])
+      renderAppRoom({}, "")
+      await act(async () => {
+        await Promise.resolve()
+      })
+      // An unbound Room hydrates nothing and erases nothing.
+      expect(storedRecents("test-room")).toBe(JSON.stringify(["test-app-4"]))
     })
 
     it("filters the catalog by text and explains an empty search", async () => {
@@ -4109,28 +4281,29 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       }
     })
 
-    it("keeps the compact Room + Apps surface on a ~390px phone", async () => {
+    it("keeps exactly one App shortcut plus Apps… on a ~390px phone", async () => {
       vi.stubEnv("NODE_ENV", "production")
       const originalWidth = window.innerWidth
+      // Narrow BEFORE mount so the responsive path is the one under test.
       window.innerWidth = 390
       try {
         renderAppRoom()
         await screen.findByTestId("stage-apps-launcher")
-        openLauncher()
-        fireEvent.click(screen.getByTestId("launcher-app-test-app-1"))
-        openLauncher()
-        fireEvent.click(screen.getByTestId("launcher-app-test-app-2"))
+        for (const id of ["test-app-1", "test-app-2", "test-app-3"]) {
+          openLauncher()
+          fireEvent.click(screen.getByTestId(`launcher-app-${id}`))
+        }
 
         expect(window.innerWidth).toBe(390)
-        // A narrow layout keeps the current App plus one recent shortcut — not
-        // the wide strip's three — and never the whole catalog.
-        expect(inlineChipIds()).toEqual(["test-app-2", "test-app-1"])
-        expect(inlineChipIds().length).toBeLessThanOrEqual(
-          ROOM_APP_INLINE_RECENT_MAX
-        )
+        // Exactly one App shortcut — the current App — and never the wide
+        // strip's three, let alone a recents row.
+        expect(inlineChipIds()).toEqual(["test-app-3"])
+        expect(inlineChipIds()).toHaveLength(ROOM_APP_INLINE_SHORTCUTS_MOBILE)
         expect(inlineChipIds().length).toBeLessThan(
-          ROOM_APP_INLINE_RECENT_MAX_DESKTOP
+          ROOM_APP_INLINE_SHORTCUTS_DESKTOP
         )
+        expect(screen.queryByTestId("stage-app-test-app-2")).toBeNull()
+        expect(screen.queryByTestId("stage-app-test-app-1")).toBeNull()
         // The launcher entry itself always fits: no horizontal archaeology.
         expect(screen.getByTestId("stage-apps-launcher")).toBeInTheDocument()
 
@@ -4140,6 +4313,25 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           expect(
             screen.getByTestId(`launcher-app-${app.id}`)
           ).toBeInTheDocument()
+      } finally {
+        window.innerWidth = originalWidth
+      }
+    })
+
+    it("shows the single most recent App shortcut on a phone when nothing is open", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      window.sessionStorage.setItem(
+        "free4chat:room-app-recents:v1:test-room",
+        JSON.stringify(["test-app-4", "test-app-2"])
+      )
+      const originalWidth = window.innerWidth
+      window.innerWidth = 390
+      try {
+        renderAppRoom()
+        await screen.findByTestId("stage-apps-launcher")
+        // No current App, so the single slot is the most recent App — not two.
+        expect(inlineChipIds()).toEqual(["test-app-4"])
+        expect(screen.getByTestId("stage-apps-launcher")).toBeInTheDocument()
       } finally {
         window.innerWidth = originalWidth
       }

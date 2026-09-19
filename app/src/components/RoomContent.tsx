@@ -35,8 +35,8 @@ import {
   pruneRecentRoomAppIds,
   pushRecentRoomAppId,
   readRecentRoomAppIds,
-  ROOM_APP_INLINE_RECENT_MAX,
-  ROOM_APP_INLINE_RECENT_MAX_DESKTOP,
+  ROOM_APP_INLINE_SHORTCUTS_DESKTOP,
+  ROOM_APP_INLINE_SHORTCUTS_MOBILE,
   writeRecentRoomAppIds,
 } from "../common/roomAppRecents"
 import {
@@ -266,6 +266,15 @@ export default function RoomContent({
   // first. Room-scoped and session-scoped only: no accounts, no favorites, no
   // cross-device preferences, and never `localStorage`.
   const [recentRoomAppIds, setRecentRoomAppIds] = useState<string[]>([])
+  // Which Room the recency above has been READ for. Undefined until storage has
+  // been read for the current Room, and that guard is load-bearing: persisting
+  // the initial `[]` would delete the tab's remembered Apps before they were
+  // ever read back, so no recency write or prune may happen until this matches
+  // `roomName`. The read itself stays in an effect, never in render, so server
+  // rendering and the first paint never depend on browser storage.
+  const [recentsHydratedRoom, setRecentsHydratedRoom] = useState<
+    string | undefined
+  >(undefined)
   const [roomAppsLauncherOpen, setRoomAppsLauncherOpen] = useState(false)
   // Core's Stage/Chat split breakpoint, also used to size the inline recent set
   // and to decide between the desktop popover and the phone-fitted launcher.
@@ -422,16 +431,28 @@ export default function RoomContent({
     () => new Set(roomApps.map((app) => app.id)),
     [roomApps]
   )
+  // Retired Apps are forgotten only against a catalog this Room can actually
+  // offer. The browser catalog loads asynchronously AND its enablement flag
+  // drops during an ordinary media reconnect, so an empty `availableRoomAppIds`
+  // must never be read as "every remembered App was retired" — that erased
+  // recency across a reload and across reconnects. While Apps are not currently
+  // offered, the retained list is used verbatim.
+  const roomAppsAvailable = roomAppsEnabled && roomAppCatalogLoaded
   const prunedRecentRoomAppIds = useMemo(
-    () => pruneRecentRoomAppIds(recentRoomAppIds, availableRoomAppIds),
-    [availableRoomAppIds, recentRoomAppIds]
+    () =>
+      roomAppsAvailable
+        ? pruneRecentRoomAppIds(recentRoomAppIds, availableRoomAppIds)
+        : recentRoomAppIds,
+    [availableRoomAppIds, recentRoomAppIds, roomAppsAvailable]
   )
   const inlineRoomApps = useMemo(() => {
     const ids = inlineRoomAppIds(
       prunedRecentRoomAppIds,
       activeRoomAppId,
       availableRoomAppIds,
-      isMd ? ROOM_APP_INLINE_RECENT_MAX_DESKTOP : ROOM_APP_INLINE_RECENT_MAX
+      isMd
+        ? ROOM_APP_INLINE_SHORTCUTS_DESKTOP
+        : ROOM_APP_INLINE_SHORTCUTS_MOBILE
     )
     return ids.flatMap((id) => {
       const app = roomApps.find((candidate) => candidate.id === id)
@@ -647,42 +668,60 @@ export default function RoomContent({
     )
   }, [])
 
+  // True once THIS Room's recency has been read from browser storage. Nothing
+  // may write, prune, or reorder recency before that.
+  const recentsLoadedForRoom =
+    roomName.length > 0 && recentsHydratedRoom === roomName
+
   /**
    * #98: opening an App is what makes it recent — switching to it, deep-linking
    * into it, or picking it in the launcher. Duplicates never accumulate: an App
-   * that is already recent only moves to the front of a bounded list.
+   * that is already recent only moves to the front of a bounded list. It also
+   * waits for this Room's recency to be read, so a deep-linked App cannot be
+   * reordered against a list that has not loaded yet.
    */
   useEffect(() => {
+    if (!recentsLoadedForRoom) return
     if (!activeRoomAppId || !availableRoomAppIds.has(activeRoomAppId)) return
     setRecentRoomAppIds((previous) =>
       pushRecentRoomAppId(previous, activeRoomAppId)
     )
-  }, [activeRoomAppId, availableRoomAppIds])
+  }, [activeRoomAppId, availableRoomAppIds, recentsLoadedForRoom])
 
-  // Recency is remembered for this browser tab only, namespaced by Room name.
-  // `sessionStorage` (never `localStorage`) keeps a reload inside the same Room
-  // consistent without creating any cross-session or cross-device preference.
+  // Recency is hydrated BEFORE anything can persist or prune it, and the order
+  // of these three effects is the contract:
+  //
+  //   1. read this Room's remembered Apps and mark this Room hydrated;
+  //   2. prune the retained list against the CURRENT catalog;
+  //   3. persist.
+  //
+  // Two separate guards make that contract real:
+  //   - an earlier revision persisted first, so a fresh mount wrote the empty
+  //     initial state, deleted the sessionStorage entry, and then rehydrated
+  //     from the key it had just cleared — recents never survived a reload;
+  //   - the catalog loads asynchronously, so pruning/persisting before it is
+  //     authoritative would treat every remembered App as "retired" and erase
+  //     them. Until the catalog has loaded, the remembered list is kept as-is.
   useEffect(() => {
     if (roomName.length === 0) return
-    writeRecentRoomAppIds(roomName, prunedRecentRoomAppIds)
-  }, [prunedRecentRoomAppIds, roomName])
-
-  // Rehydrate the tab's remembered Apps once this browser is bound to a Room;
-  // server rendering and the first paint must not depend on storage.
-  useEffect(() => {
-    if (roomName.length === 0) return
-    setRecentRoomAppIds((previous) =>
-      previous.length > 0 ? previous : readRecentRoomAppIds(roomName)
-    )
+    setRecentRoomAppIds(readRecentRoomAppIds(roomName))
+    setRecentsHydratedRoom(roomName)
   }, [roomName])
 
+  // Prune and persist are deliberately ONE effect. Splitting them created a
+  // window where the persist effect still saw the previous render's derived
+  // list, so a reload could write "nothing is recent" for one commit and erase
+  // the tab's history. Here the value that is written is re-derived from state
+  // in the same effect that writes it, so no stale prune can ever be persisted.
+  //
   // A catalog refresh can retire an App that is still remembered, so the
-  // remembered list is re-filtered against the current catalog rather than
-  // trusted. Ordinary rendering already reads the pruned list, so this only
-  // keeps the retained state (and the tab's stored order) from holding onto an
-  // App the catalog no longer offers — it never touches resident host
-  // lifecycle. The reference is preserved when nothing changed.
+  // retained list is re-filtered against the current catalog rather than
+  // trusted. This only keeps the retained state (and the tab's stored order)
+  // from holding onto an App the catalog no longer offers — it never touches
+  // resident host lifecycle, and writes only once this Room has been hydrated
+  // and the catalog has loaded.
   useEffect(() => {
+    if (!recentsLoadedForRoom || !roomAppsAvailable) return
     setRecentRoomAppIds((previous) => {
       const next = pruneRecentRoomAppIds(previous, availableRoomAppIds)
       return next.length === previous.length &&
@@ -690,7 +729,17 @@ export default function RoomContent({
         ? previous
         : next
     })
-  }, [availableRoomAppIds, prunedRecentRoomAppIds])
+    writeRecentRoomAppIds(
+      roomName,
+      pruneRecentRoomAppIds(recentRoomAppIds, availableRoomAppIds)
+    )
+  }, [
+    availableRoomAppIds,
+    recentRoomAppIds,
+    recentsLoadedForRoom,
+    roomAppsAvailable,
+    roomName,
+  ])
 
   const selectRoomApp = useCallback((appId: string) => {
     // Exactly the inline strip's behavior: hide fullscreen, launch (or reuse)

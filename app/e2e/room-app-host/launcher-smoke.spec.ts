@@ -218,6 +218,44 @@ test("launcher smoke: desktop and ~390px", async ({ page }) => {
     await expect(page.getByTestId("room-app-launcher")).toHaveCount(0)
   })
 
+  await test.step("desktop — recents survive a real page reload in the same tab", async () => {
+    // The regression this proves is a real browser lifecycle, not a helper
+    // round-trip: the reloaded Room must still know what this tab opened.
+    const beforeReload = await page.evaluate(() =>
+      window.sessionStorage.getItem(
+        `free4chat:room-app-recents:v1:${new URLSearchParams(
+          window.location.search
+        ).get("id")}`
+      )
+    )
+    expect(beforeReload).toContain(FIXTURE_ROOM_APP_ID)
+
+    // A reload is the ordinary "reopen the same Room in this tab" path: the
+    // nickname is already remembered, so the Room mounts directly.
+    await page.reload()
+    await expect(page.getByTestId("room-stage")).toBeVisible()
+    await expect(page.getByTestId("stage-apps-launcher")).toBeVisible()
+    const afterReload = await page.evaluate(() =>
+      window.sessionStorage.getItem(
+        `free4chat:room-app-recents:v1:${new URLSearchParams(
+          window.location.search
+        ).get("id")}`
+      )
+    )
+    expect(afterReload).toBe(beforeReload)
+    await page.getByTestId("stage-apps-launcher").click()
+    await expect(page.getByTestId("room-app-launcher-recent")).toBeVisible()
+    await expect(
+      page.getByTestId(`launcher-app-${FIXTURE_ROOM_APP_ID}`)
+    ).toBeVisible()
+    await page.screenshot({
+      path: `${ARTIFACT_DIR}/10-desktop-recents-after-reload.png`,
+      fullPage: false,
+    })
+    await page.keyboard.press("Escape")
+    await expect(page.getByTestId("room-app-launcher")).toHaveCount(0)
+  })
+
   await test.step("phone 390x844 — compact Room + Apps surface", async () => {
     const phone = await page.context().newPage()
     await phone.setViewportSize({ width: 390, height: 844 })
@@ -247,6 +285,27 @@ test("launcher smoke: desktop and ~390px", async ({ page }) => {
     await expect(phone.getByTestId("room-app-iframe")).toBeVisible()
     await phone.screenshot({
       path: `${ARTIFACT_DIR}/09-phone-app-open.png`,
+      fullPage: false,
+    })
+
+    // Open two more Apps: a phone must still show exactly ONE App shortcut
+    // next to `Apps…`, never [current][recent][Apps…].
+    for (const appId of ["fixture-second-app", "fixture-third-app"] as const) {
+      await phone.getByTestId("stage-apps-launcher").click()
+      await phone.getByTestId(`launcher-app-${appId}`).click()
+      // Earlier Apps stay resident (hidden) in their own slots, so the visible
+      // iframe must be located through this App's slot.
+      await expect(
+        phone.locator(`[data-testid="room-app-slot-${appId}"] iframe`)
+      ).toBeVisible()
+    }
+    const phoneLayout = await reportLayout(phone, "phone-three-apps-open")
+    expect(phoneLayout.strip!.rows).toBe(1)
+    expect(phoneLayout.inlineChips).toHaveLength(1)
+    expect(phoneLayout.inlineChips[0]).toBe("stage-app-fixture-third-app")
+    expect(phoneLayout.pageOverflow).toBeLessThanOrEqual(0)
+    await phone.screenshot({
+      path: `${ARTIFACT_DIR}/11-phone-one-shortcut.png`,
       fullPage: false,
     })
     await expect

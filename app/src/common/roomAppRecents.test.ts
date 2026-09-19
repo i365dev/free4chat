@@ -5,8 +5,8 @@ import {
   pruneRecentRoomAppIds,
   pushRecentRoomAppId,
   readRecentRoomAppIds,
-  ROOM_APP_INLINE_RECENT_MAX,
-  ROOM_APP_INLINE_RECENT_MAX_DESKTOP,
+  ROOM_APP_INLINE_SHORTCUTS_DESKTOP,
+  ROOM_APP_INLINE_SHORTCUTS_MOBILE,
   ROOM_APP_RECENT_MAX,
   writeRecentRoomAppIds,
 } from "./roomAppRecents"
@@ -26,11 +26,34 @@ describe("Room App recency", () => {
     window.sessionStorage.clear()
   })
 
-  it("keeps both inline bounds tiny and ordered by width", () => {
-    expect(ROOM_APP_INLINE_RECENT_MAX).toBeLessThanOrEqual(2)
-    expect(ROOM_APP_INLINE_RECENT_MAX_DESKTOP).toBe(
-      ROOM_APP_INLINE_RECENT_MAX + 1
-    )
+  it("declares both inline shortcut bounds as independent product limits", () => {
+    // Explicit, not derived: the phone strip is one App shortcut, the desktop
+    // strip is the current App plus two recents. `Apps…` is counted by neither.
+    expect(ROOM_APP_INLINE_SHORTCUTS_MOBILE).toBe(1)
+    expect(ROOM_APP_INLINE_SHORTCUTS_DESKTOP).toBe(3)
+  })
+
+  it("renders exactly one App shortcut on the phone bound, however many are open", () => {
+    const available = new Set(["app-1", "app-2", "app-3", "app-4"])
+    const recents = ["app-4", "app-3", "app-2", "app-1"]
+    // Current App open: one shortcut, the current one.
+    expect(
+      inlineRoomAppIds(
+        recents,
+        "app-4",
+        available,
+        ROOM_APP_INLINE_SHORTCUTS_MOBILE
+      )
+    ).toEqual(["app-4"])
+    // No current App: still one shortcut — the most recent one.
+    expect(
+      inlineRoomAppIds(
+        recents,
+        null,
+        available,
+        ROOM_APP_INLINE_SHORTCUTS_MOBILE
+      )
+    ).toEqual(["app-4"])
   })
 
   it("moves an opened App to the front", () => {
@@ -79,32 +102,51 @@ describe("Room App recency", () => {
       (previous, id) => pushRecentRoomAppId(previous, id),
       []
     )
-    const inline = inlineRoomAppIds(recents, "app-17", available)
-    expect(inline).toHaveLength(ROOM_APP_INLINE_RECENT_MAX)
+    const inline = inlineRoomAppIds(
+      recents,
+      "app-17",
+      available,
+      ROOM_APP_INLINE_SHORTCUTS_MOBILE
+    )
+    expect(inline).toHaveLength(ROOM_APP_INLINE_SHORTCUTS_MOBILE)
     expect(inline[0]).toBe("app-17")
     expect(inline).not.toContain("app-0")
   })
 
   it("shows the current App even when it was never recorded as recent", () => {
     const available = new Set(["whiteboard", "retro"])
-    expect(inlineRoomAppIds(["retro"], "whiteboard", available, 2)).toEqual([
-      "whiteboard",
-      "retro",
-    ])
+    expect(
+      inlineRoomAppIds(
+        ["retro"],
+        "whiteboard",
+        available,
+        ROOM_APP_INLINE_SHORTCUTS_MOBILE
+      )
+    ).toEqual(["whiteboard"])
   })
 
   it("never lists the current App twice", () => {
     const available = new Set(["whiteboard", "retro"])
     expect(
-      inlineRoomAppIds(["whiteboard", "retro"], "whiteboard", available)
+      inlineRoomAppIds(
+        ["whiteboard", "retro"],
+        "whiteboard",
+        available,
+        ROOM_APP_INLINE_SHORTCUTS_DESKTOP
+      )
     ).toEqual(["whiteboard", "retro"])
   })
 
   it("ignores remembered Apps that are no longer in the catalog", () => {
     const available = new Set(["retro"])
-    expect(inlineRoomAppIds(["gone", "retro"], null, available)).toEqual([
-      "retro",
-    ])
+    expect(
+      inlineRoomAppIds(
+        ["gone", "retro"],
+        null,
+        available,
+        ROOM_APP_INLINE_SHORTCUTS_DESKTOP
+      )
+    ).toEqual(["retro"])
   })
 
   it("round-trips this Room's order through browser-session storage only", () => {
