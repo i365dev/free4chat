@@ -15,18 +15,17 @@ import (
  */
 
 // TestTaskSessionContinuationPolicyIsCentralized pins the current validation
-// state. Pi is VERIFIED end-to-end and is the only enabled Harness; Codex and
-// Claude are source-supported but not runtime-verified, and OpenCode/Hermes
-// were runtime-verified PARTIAL, so none of them may be enabled by default.
+// state. Pi and Codex are VERIFIED end-to-end; Claude, OpenCode, and Hermes
+// remain source-supported until each earns an independent real-provider pass.
 func TestTaskSessionContinuationPolicyIsCentralized(t *testing.T) {
 	want := map[string]bool{
 		"pi":       true,
-		"codex":    false,
+		"codex":    true,
 		"claude":   false,
 		"opencode": false,
 		"hermes":   false,
 	}
-	enabled := make([]string, 0, 1)
+	enabled := make([]string, 0, 2)
 	for id, expected := range want {
 		launcher, err := GetLauncher(id)
 		if err != nil {
@@ -39,10 +38,18 @@ func TestTaskSessionContinuationPolicyIsCentralized(t *testing.T) {
 			enabled = append(enabled, id)
 		}
 	}
-	// EXACTLY ONE place selects a Harness as enabled.
-	if len(enabled) != 1 || enabled[0] != "pi" {
-		t.Fatalf("exactly one Harness may be enabled, and it must be pi: %v", enabled)
+	if len(enabled) != 2 || !containsEnabled(enabled, "pi") || !containsEnabled(enabled, "codex") {
+		t.Fatalf("only independently verified Harnesses may be enabled: %v", enabled)
 	}
+}
+
+func containsEnabled(enabled []string, id string) bool {
+	for _, candidate := range enabled {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCustomLauncherIsNeverEnabled proves a trusted-local custom ACP command
@@ -73,8 +80,8 @@ func TestLauncherPolicySurvivesRegistryCopies(t *testing.T) {
 	if !pi.TaskSessionContinuation {
 		t.Fatal("mutating a returned registry copy must not change the source policy")
 	}
-	if ListLaunchers()[4].TaskSessionContinuation != true {
-		t.Fatal("the registry must keep reporting the pi policy")
+	if !ListLaunchers()[2].TaskSessionContinuation || !ListLaunchers()[4].TaskSessionContinuation {
+		t.Fatal("the registry must keep reporting each verified policy")
 	}
 	// The policy is discovery/presentation metadata, never a Harness capability
 	// advertisement: types.HarnessCapabilities stays text/images only.

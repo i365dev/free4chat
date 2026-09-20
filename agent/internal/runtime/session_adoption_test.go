@@ -563,7 +563,7 @@ func TestAdoptedTaskFailsClosedAfterSessionLoss(t *testing.T) {
 	}
 }
 
-func TestSessionHandoffIsPiOnlyAndSinglePending(t *testing.T) {
+func TestSessionHandoffIsPolicyGatedAndSinglePending(t *testing.T) {
 	fixture := newAdoptionFixture(t, "pi")
 	rt := fixture.rt
 
@@ -595,9 +595,9 @@ func TestSessionHandoffIsPiOnlyAndSinglePending(t *testing.T) {
 	// A Harness whose LAUNCHER POLICY is disabled is rejected — even though
 	// this fake adapter implements every session primitive. Admission is a
 	// product decision, never a capability advertisement.
-	other := newAdoptionFixture(t, "codex")
+	other := newAdoptionFixture(t, "hermes")
 	if other.rt.options.TaskSessionContinuation {
-		t.Fatal("the codex launcher policy must currently be disabled")
+		t.Fatal("the hermes launcher policy must currently be disabled")
 	}
 	if err := other.rt.ArmSessionAdoption("native-1", "", ""); !errors.Is(err, errSessionAdoptionUnsupported) {
 		t.Fatalf("a policy-disabled Harness must be rejected, got %v", err)
