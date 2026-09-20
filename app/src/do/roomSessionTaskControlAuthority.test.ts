@@ -494,7 +494,7 @@ describe("#421 Task control authority (Fix C)", () => {
     ])
   })
 
-  it("I: an explicitly admitted replacement owns the one current projection and its exact interrupt", async () => {
+  it("I: a unique replacement turn outranks a retained terminal projection and receives its exact interrupt", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     test.connectAgentSocket("agent-b")
@@ -506,7 +506,7 @@ describe("#421 Task control authority (Fix C)", () => {
     await test.sendHuman({
       type: "chat",
       text: "@agent-b take over this Task",
-      targets: ["agent-b"],
+      targets: ["agent-a", "agent-b"],
       taskRequestId: requestId,
     })
     await test.publishExecution("agent-b", requestId, {
@@ -514,17 +514,24 @@ describe("#421 Task control authority (Fix C)", () => {
       phase: "running",
     })
 
-    // RoomSession stores only B's server-accepted current executor projection
-    // for this canonical Task — no client-side initial-target or list-order
-    // selection can be involved.
-    expect(test.executions()).toEqual([
-      expect.objectContaining({
-        agentParticipantId: "agent-b",
-        taskRequestId: requestId,
-        currentTurnSequence: 88,
-        phase: "running",
-      }),
-    ])
+    // Both per-Agent truths remain in RoomSession. The unique active turn is
+    // B's, so controls can select B without erasing A's terminal projection.
+    expect(test.executions()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentParticipantId: "agent-a",
+          taskRequestId: requestId,
+          queuedCount: 0,
+        }),
+        expect.objectContaining({
+          agentParticipantId: "agent-b",
+          taskRequestId: requestId,
+          currentTurnSequence: 88,
+          phase: "running",
+        }),
+      ])
+    )
+    expect(test.executions()).toHaveLength(2)
     test.clearAgentFrames("agent-a")
     test.clearAgentFrames("agent-b")
 
@@ -545,6 +552,66 @@ describe("#421 Task control authority (Fix C)", () => {
         turnSequence: 88,
       },
     ])
+  })
+
+  it("preserves simultaneous Agent turns and fails closed for ambiguous controls", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    test.connectAgentSocket("agent-b")
+    const requestId = await createTask(test)
+    await test.sendHuman({
+      type: "chat",
+      text: "@agent-a and @agent-b work on this Task",
+      targets: ["agent-a", "agent-b"],
+      taskRequestId: requestId,
+    })
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 10,
+      phase: "running",
+    })
+    await test.publishExecution("agent-b", requestId, {
+      currentTurnSequence: 20,
+      phase: "running",
+    })
+    expect(test.executions()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentParticipantId: "agent-a",
+          taskRequestId: requestId,
+          currentTurnSequence: 10,
+        }),
+        expect.objectContaining({
+          agentParticipantId: "agent-b",
+          taskRequestId: requestId,
+          currentTurnSequence: 20,
+        }),
+      ])
+    )
+    expect(test.executions()).toHaveLength(2)
+    test.clearAgentFrames("agent-a")
+    test.clearAgentFrames("agent-b")
+
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 10,
+    })
+    await test.sendHuman({
+      type: "task-interrupt-and-send",
+      taskRequestId: requestId,
+      turnSequence: 20,
+      text: "do not guess which Agent to stop",
+    })
+
+    expect(test.errors()).toEqual([
+      "task_execution_ambiguous",
+      "task_execution_ambiguous",
+    ])
+    expect(instructions(test)).toEqual([
+      "@agent-a and @agent-b work on this Task",
+    ])
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.agentControls("agent-b")).toEqual([])
   })
 })
 

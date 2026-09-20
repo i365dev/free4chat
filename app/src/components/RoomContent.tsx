@@ -188,17 +188,26 @@ function taskIsUnavailable(
   )
 }
 
-function authoritativeTaskExecution(
+function selectAuthoritativeTaskExecution(
   taskRequestId: string,
   executions: TaskExecutionProjection[]
-): TaskExecutionProjection | undefined {
-  // RoomSession exposes at most one current executor projection per canonical
-  // Task. Fail closed if a stale client ever observes more than one instead of
-  // choosing by initial target, array order, or a browser timestamp.
+): { execution?: TaskExecutionProjection; ambiguous: boolean } {
   const matching = executions.filter(
     (execution) => execution.taskRequestId === taskRequestId
   )
-  return matching.length === 1 ? matching[0] : undefined
+  const active = matching.filter(
+    (execution) => execution.currentTurnSequence !== undefined
+  )
+  // A unique active turn wins over retained terminal projections. Multiple
+  // active turns remain visible as truth, but cannot authorize a singular
+  // interrupt control.
+  if (active.length === 1) return { execution: active[0], ambiguous: false }
+  if (active.length > 1) return { ambiguous: true }
+  // With no active turn, render a status only when there's one candidate.
+  // Never choose among multiple inactive lanes by array order.
+  return matching.length === 1
+    ? { execution: matching[0], ambiguous: false }
+    : { ambiguous: false }
 }
 
 function ScreenShareViewer({
@@ -685,13 +694,17 @@ export default function RoomContent({
   // resolve the Task's permission request. The Room (not this control)
   // enforces that the caller is a current authenticated Human and that the
   // turn is exactly the live one.
-  // #409: the Runtime-authoritative execution projection of the selected
-  // Task's Room-accepted current executor. The browser renders exactly what
-  // the Room published; it never derives queueing, executor choice, or
-  // "interrupted" locally.
-  const activeTaskExecution = activeTask
-    ? authoritativeTaskExecution(activeTask.requestId, taskExecutions ?? [])
-    : undefined
+  // #409: per-Agent Runtime execution remains authoritative. A unique active
+  // turn selects the executor; multiple active turns stay ambiguous and cannot
+  // expose a singular interrupt target.
+  const taskExecutionSelection = activeTask
+    ? selectAuthoritativeTaskExecution(
+        activeTask.requestId,
+        taskExecutions ?? []
+      )
+    : { ambiguous: false }
+  const activeTaskExecution = taskExecutionSelection.execution
+  const activeTaskExecutionAmbiguous = taskExecutionSelection.ambiguous
   const activeTaskExecutionLabel = activeTaskExecution
     ? taskExecutionLabel(activeTaskExecution)
     : undefined
@@ -2580,6 +2593,7 @@ export default function RoomContent({
               Boolean(activeTaskExecutionLabel?.label) ||
               activeTaskTurn !== undefined ||
               activeTaskInterrupting ||
+              activeTaskExecutionAmbiguous ||
               Boolean(activeTaskLocalError) ||
               Boolean(activeTaskControlNotice)) && (
               <div
@@ -2618,6 +2632,16 @@ export default function RoomContent({
                     {activeTaskExecutionLabel?.detail
                       ? ` · ${activeTaskExecutionLabel.detail}`
                       : ""}
+                  </span>
+                )}
+                {activeTaskExecutionAmbiguous && (
+                  <span
+                    role="status"
+                    data-testid="task-execution-ambiguous"
+                    className="text-amber-200"
+                  >
+                    Multiple Agents are running this Task; interrupt is
+                    unavailable.
                   </span>
                 )}
                 {/* #421 Fix G: benign control outcomes are transient LOCAL

@@ -1003,11 +1003,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     string,
     AgentActivityProjection
   >()
-  // #409 transient Task execution projection, keyed by canonical Task request
-  // id. One Task has one server-accepted current executor projection at a
-  // time; the projection carries that executor's public participant id.
-  // In-memory only: never persisted, never a Room message/sequence, never a
-  // waiter wake, never MCP context.
+  // #409 transient Task execution projection, keyed by canonical
+  // (agentParticipantId, taskRequestId). A canonical Task may have multiple
+  // participating Agents executing concurrently, so retain each Runtime's
+  // independent truth. Interrupt authority is selected separately and only
+  // when one active turn is unambiguous. In-memory only: never persisted,
+  // never a Room message/sequence, never a waiter wake, never MCP context.
   private readonly transientTaskExecutions = new Map<
     string,
     TaskExecutionProjection
@@ -4047,24 +4048,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       if (projection === null)
         return this.json({ error: "invalid_task_execution" }, 400)
-      // Transient in-memory projection only: no Room message, no sequence, no
-      // storage write, no waiter wake, no analytics. The key is the canonical
-      // Task, not an Agent-local lane: a connected Agent can replace the
-      // current executor only after the Human has explicitly admitted it.
-      // This gives browser presentation and Task controls one Room-authorized
-      // answer instead of asking either to select among Agent-local entries.
-      const current = this.transientTaskExecutions.get(projection.taskRequestId)
-      // A non-running report from another participating Agent cannot erase a
-      // live executor's exact interrupt turn. A later running report is an
-      // explicit server-accepted executor transition; normal settlement from
-      // that executor replaces its own projection below.
-      if (
-        current?.agentParticipantId !== projection.agentParticipantId &&
-        current?.currentTurnSequence !== undefined &&
-        projection.currentTurnSequence === undefined
+      const key = agentActivityKey(
+        participant.id,
+        `task:${projection.taskRequestId}`
       )
-        return this.json({ ok: true })
-      this.transientTaskExecutions.set(projection.taskRequestId, projection)
+      // Transient in-memory projection only: no Room message, no sequence, no
+      // storage write, no waiter wake, no analytics. Each admitted Agent's
+      // independent execution lane is retained; neither can overwrite the
+      // other's concurrent turn.
+      this.transientTaskExecutions.set(key, projection)
       await this.broadcast({ type: "taskExecution", execution: projection })
       return this.json({ ok: true })
     }
@@ -6927,7 +6919,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // (production: `task_turn_not_active` on a Task the Room itself showed as
     // Running). Exact turn matching is NOT weakened: the requested turn must
     // equal the authoritative current turn of THIS canonical Task.
-    const activeTurn = this.transientTaskExecutions.get(authorized.requestId)
+    const activeTurn = this.transientTaskExecutions.get(
+      agentActivityKey(
+        authorized.executorAgentId,
+        `task:${authorized.requestId}`
+      )
+    )
     if (!activeTurn || activeTurn.currentTurnSequence !== requestedTurn)
       return { ok: false, error: "task_turn_not_active" }
     if (activeTurn.agentParticipantId !== authorized.executorAgentId)
@@ -6952,13 +6949,30 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
    * outvote it.
    */
   private authoritativeTaskTurn(
+    room: RoomRecord,
     requestId: string,
     executorAgentId: string
   ): number | null {
-    const execution = this.transientTaskExecutions.get(requestId)
-    return execution?.agentParticipantId === executorAgentId
+    const activeExecutions = this.taskExecutionsForRequest(
+      requestId,
+      room
+    ).filter((execution) => execution.currentTurnSequence !== undefined)
+    if (activeExecutions.length !== 1) return null
+    const execution = activeExecutions[0]
+    return execution.agentParticipantId === executorAgentId
       ? execution.currentTurnSequence ?? null
       : null
+  }
+
+  private taskExecutionsForRequest(
+    requestId: string,
+    room: RoomRecord
+  ): TaskExecutionProjection[] {
+    return [...this.transientTaskExecutions.values()].filter(
+      (execution) =>
+        execution.taskRequestId === requestId &&
+        room.participants[execution.agentParticipantId]?.connected === true
+    )
   }
 
   /**
@@ -6993,11 +7007,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       resolution.request,
       room.participants
     )
-    const execution = this.transientTaskExecutions.get(resolution.requestId)
+    const executions = this.taskExecutionsForRequest(resolution.requestId, room)
+    const activeExecutions = executions.filter(
+      (execution) => execution.currentTurnSequence !== undefined
+    )
+    if (activeExecutions.length > 1)
+      return { ok: false, error: "task_execution_ambiguous" }
     const executorAgentId =
-      execution && room.participants[execution.agentParticipantId]?.connected
-        ? execution.agentParticipantId
-        : initialAgentId
+      activeExecutions[0]?.agentParticipantId ??
+      (executions.length === 1
+        ? executions[0].agentParticipantId
+        : initialAgentId)
     if (!executorAgentId) return { ok: false, error: "task_target_not_in_room" }
     return {
       ok: true,
@@ -7494,6 +7514,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // Step 2: only now stop the exact turn the Human was looking at — and
       // only while that exact turn is still the authoritative current turn.
       const currentTurn = this.authoritativeTaskTurn(
+        room,
         task.requestId,
         task.executorAgentId
       )

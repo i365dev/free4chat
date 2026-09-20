@@ -963,7 +963,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       sequence: 2,
       text: "@OpenCode continue this Task",
       taskRequestId: "task-handoff",
-      targets: ["agent-opencode"],
+      targets: ["agent-opencode", "agent-pi"],
     }
     const sendTaskInterrupt = vi.fn()
 
@@ -979,8 +979,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           room: "test-room",
           muteState: false,
         },
-        // Hermes remains connected. The Room has already discarded its old
-        // terminal execution when OpenCode became the Task's current executor.
+        // Hermes remains connected with a retained terminal projection.
         {
           peerId: "agent-hermes",
           name: "Hermes",
@@ -993,13 +992,30 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           kind: "agent",
           room: "test-room",
         },
+        {
+          peerId: "agent-pi",
+          name: "Pi",
+          kind: "agent",
+          room: "test-room",
+        },
       ],
       taskExecutions: [
+        {
+          agentParticipantId: "agent-hermes",
+          taskRequestId: "task-handoff",
+          queuedCount: 0,
+          lastOutcome: "interrupted",
+        },
         {
           agentParticipantId: "agent-opencode",
           taskRequestId: "task-handoff",
           currentTurnSequence: 88,
           phase: "running",
+          queuedCount: 0,
+        },
+        {
+          agentParticipantId: "agent-pi",
+          taskRequestId: "task-handoff",
           queuedCount: 0,
         },
       ],
@@ -1017,6 +1033,92 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
     fireEvent.click(screen.getByTestId("task-interrupt"))
     expect(sendTaskInterrupt).toHaveBeenCalledWith("task-handoff", 88)
+  })
+
+  it("preserves parallel execution truth and hides singular controls when two Agents are running", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-parallel",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-a",
+        summary: "Parallel Task",
+      },
+    }
+    const admission: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "text",
+      sequence: 2,
+      text: "@A and @B work on this Task",
+      taskRequestId: "task-parallel",
+      targets: ["agent-a", "agent-b"],
+    }
+    const sendTaskInterrupt = vi.fn()
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest, admission],
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-a",
+          name: "A",
+          kind: "agent",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-b",
+          name: "B",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-a",
+          taskRequestId: "task-parallel",
+          currentTurnSequence: 10,
+          phase: "running",
+          queuedCount: 0,
+        },
+        {
+          agentParticipantId: "agent-b",
+          taskRequestId: "task-parallel",
+          currentTurnSequence: 20,
+          phase: "running",
+          queuedCount: 0,
+        },
+      ],
+      sendTaskInterrupt,
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-parallel"))
+
+    expect(screen.getByTestId("task-execution-ambiguous")).toHaveTextContent(
+      "Multiple Agents are running this Task"
+    )
+    expect(screen.queryByTestId("task-interrupt")).toBeNull()
+    expect(screen.queryByTestId("task-interrupt-and-send")).toBeNull()
+    expect(sendTaskInterrupt).not.toHaveBeenCalled()
   })
 
   it("renders the Runtime execution projection and its structured controls", () => {

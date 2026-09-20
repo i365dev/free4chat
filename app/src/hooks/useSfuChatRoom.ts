@@ -3112,13 +3112,18 @@ export function useSfuChatRoom(
         // Without this the Browser could render a stale "Running" or offer an
         // interrupt for a turn the Room has already replaced, and a
         // reconnecting Human would never see the projection the resident
-        // Runtime re-stated during reconciliation. The Room now publishes one
-        // current executor per canonical Task, so replacement is by
-        // taskRequestId — never by browser ordering among Agent-local lanes.
+        // Runtime re-stated during reconciliation. Each Agent has an
+        // independent lane inside the canonical Task, so replacement is by
+        // (agentParticipantId, taskRequestId); control selection separately
+        // requires exactly one active turn.
         const incoming = message.execution
         setTaskExecutions((previous) => [
           ...previous.filter(
-            (execution) => execution.taskRequestId !== incoming.taskRequestId
+            (execution) =>
+              !(
+                execution.agentParticipantId === incoming.agentParticipantId &&
+                execution.taskRequestId === incoming.taskRequestId
+              )
           ),
           incoming,
         ])
