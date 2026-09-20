@@ -658,6 +658,40 @@ View interaction do not themselves start a new Agent turn.
 A fresh binary install does not replace a running daemon automatically; see
 [/agent.md](/agent.md) for exact bootstrap semantics.
 
+## Transport is not execution ownership
+
+The browser/Room side and the local execution side are separate owners:
+
+```text
+browser/Room transport  !=  local execution ownership
+```
+
+A browser connection is a way to observe and steer, not the thing that runs the
+work. Concretely:
+
+```text
+Human/browser disconnect
+→ the local Runtime/Harness may keep executing
+
+Human reconnect
+→ the Runtime reconciles bounded shared execution state with the Room
+
+local Runtime/Harness process dies
+→ continuous execution is NOT guaranteed
+```
+
+The Room keeps only bounded shared state, so reconciliation restores a coarse,
+truthful picture (for example whether a Task is still running, waiting, or
+finished) rather than a live replay. What the local process was doing stays
+local; Free4Chat never pretends to own it.
+
+This ownership split defines the product boundary. Free4Chat is **not** a cloud
+job runner, **not** a permanent workspace, and **not** a durable execution
+service. There is no queue that outlives your machine, no server-side job that
+keeps running on your behalf, and no promise that work survives a local process,
+daemon, or machine shutdown. Local execution is bounded by the Host/operator's
+own Runtime and Harness lifecycle, and Room state is temporary.
+
 ## ACP is not a sandbox
 
 ACP defines lifecycle/control, not tool security. A Harness may have native
@@ -984,6 +1018,152 @@ Task
 
 A Task is not a permanent Thread, project, or workspace. It exists only inside
 the temporary Room.
+
+## Starting a Task
+
+Start Task gives one Agent one focused piece of work.
+
+By default a Task starts a **new Harness session**, so the Agent begins with the
+Task brief rather than with an unrelated earlier conversation.
+
+Some Harnesses also support **continuing an existing local session**. When the
+Harness you selected has *verified* session continuation, Start Task offers a
+session choice:
+
+```text
+New session      → the Task starts a fresh Harness conversation
+Continue session → the Task continues an existing local Harness session
+```
+
+The choice appears only for a Harness where continuation has actually been
+verified end to end. Free4Chat does not offer it for a Harness that merely
+advertises the capability.
+
+Session discovery is **local and private**, and it is lazy:
+
+- nothing is read from your machine merely because you opened Start Task;
+- the local session list is requested only when you explicitly open the
+  continuation path;
+- what you see is discovery metadata for the participating Agent, not a
+  shared Room artifact, and it is not published to other participants.
+
+If a continuation start does not succeed, no Task is created; Start Task stays
+open with your instruction instead of silently falling back to a new session.
+
+## Large initial briefs
+
+You can paste a substantial brief directly into Start Task. A real handoff —
+specs, logs, a long prompt — does not have to be sent as a separate follow-up
+message after creating an empty Task.
+
+When the pasted text is larger than the inline instruction field comfortably
+holds, Free4Chat keeps it as **bounded Task-scoped context** instead of
+truncating it:
+
+```text
+Start Task
+→ short instruction stays the Task instruction
+→ oversized pasted brief becomes bounded Task-scoped context
+→ the canonical Task is created with that context already attached
+→ the Agent's first turn already has the brief
+```
+
+The exact text is preserved as an attachment on the Task; it is not summarised,
+rewritten, or silently shortened, and it becomes an ordinary Room-level artifact
+only if you deliberately attach something to the Room instead.
+
+If that context cannot be staged, the Task is **not** started and your text
+stays in the dialog, so a Task never begins with missing context.
+
+The bounded limits for text-like Task context are the same ones described under
+[Task attachments vs ordinary Room file transfer](#task-attachments-vs-ordinary-room-file-transfer)
+below (currently 768 KB for text-like content).
+
+## Long-running and resumable supervision
+
+A Task may run for a long time — many minutes or longer — and you do not have to
+keep watching it.
+
+The browser connection is **not** the owner of local Agent execution:
+
+```text
+closing or leaving the Room/browser
+→ does not by itself cancel a running local Task
+
+returning later
+→ Free4Chat reconciles bounded coarse Task execution state
+→ Task controls are available again
+```
+
+On return you get a truthful, bounded picture rather than a live replay. The
+states you may see include:
+
+- **Starting** / **Working** — the Task is being set up, or an Agent is working;
+- **Running** — an Agent turn is executing right now;
+- **Queued** — accepted work is waiting for execution capacity;
+- **Interrupted** — the active turn was stopped;
+- **Completed** / **Failed** — the Task reached a terminal outcome;
+- **Session lost** — the retained Harness conversation for this Task is gone.
+
+An approval card waiting for your decision is shown as a card in the Task, not as
+a special Task status.
+
+Two different things are deliberately kept apart:
+
+```text
+Human/browser disconnect
+→ local Runtime/Harness may keep executing; the Task can continue
+
+local Runtime/Harness process death
+→ continuous execution is NOT promised
+```
+
+Free4Chat does not provide durable execution across a local process, daemon, or
+machine shutdown. If the local execution died, the Task reflects that truthfully
+(for example `Session lost` or `Interrupted`) instead of pretending it kept
+running, and you can decide how to continue.
+
+Everything here stays inside the temporary Room: it still expires normally, and
+the browser coming back does not make the Room permanent.
+
+## Controlling a running Task
+
+While a Task has an active turn, the Task offers explicit controls.
+
+**Interrupt** stops the exact turn that is running for that Task. It does not
+affect other Tasks, and it does not cancel work that already finished.
+
+**Interrupt & send** is one action, not two. Your typed replacement instruction is
+kept first, and the currently running turn is then interrupted:
+
+```text
+Interrupt & send
+→ your replacement instruction is preserved as Task input
+→ the current turn is stopped when it is still the active one
+→ the replacement becomes the Task's next instruction
+```
+
+If the turn you were reacting to had already finished, the action is not an
+error: your instruction is still accepted as the next Task instruction, nothing
+later is cancelled, and the Task continues normally.
+
+## Execution capacity
+
+Different Tasks belonging to the same Agent do not fight over one conversation:
+
+```text
+per native Harness session  → always serialized (at most one turn at a time)
+
+independent Tasks           → may make bounded concurrent progress
+                              only where that Harness has been verified safe
+```
+
+Concurrency is an explicitly verified capability, not a general promise. Not
+every built-in Harness supports running independent Tasks at the same time, and
+Free4Chat never enables it merely because a Harness can hold several sessions.
+
+When execution capacity is full, further accepted work is shown as **Queued** —
+waiting for an execution lane — rather than appearing stuck or silently dropped.
 
 ## What gets isolated inside a Task
 

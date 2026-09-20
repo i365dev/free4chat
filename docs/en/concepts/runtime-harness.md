@@ -89,6 +89,40 @@ View interaction do not themselves start a new Agent turn.
 A fresh binary install does not replace a running daemon automatically; see
 [/agent.md](/agent.md) for exact bootstrap semantics.
 
+## Transport is not execution ownership
+
+The browser/Room side and the local execution side are separate owners:
+
+```text
+browser/Room transport  !=  local execution ownership
+```
+
+A browser connection is a way to observe and steer, not the thing that runs the
+work. Concretely:
+
+```text
+Human/browser disconnect
+→ the local Runtime/Harness may keep executing
+
+Human reconnect
+→ the Runtime reconciles bounded shared execution state with the Room
+
+local Runtime/Harness process dies
+→ continuous execution is NOT guaranteed
+```
+
+The Room keeps only bounded shared state, so reconciliation restores a coarse,
+truthful picture (for example whether a Task is still running, waiting, or
+finished) rather than a live replay. What the local process was doing stays
+local; Free4Chat never pretends to own it.
+
+This ownership split defines the product boundary. Free4Chat is **not** a cloud
+job runner, **not** a permanent workspace, and **not** a durable execution
+service. There is no queue that outlives your machine, no server-side job that
+keeps running on your behalf, and no promise that work survives a local process,
+daemon, or machine shutdown. Local execution is bounded by the Host/operator's
+own Runtime and Harness lifecycle, and Room state is temporary.
+
 ## ACP is not a sandbox
 
 ACP defines lifecycle/control, not tool security. A Harness may have native
