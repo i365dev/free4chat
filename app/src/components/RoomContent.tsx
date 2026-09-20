@@ -671,6 +671,13 @@ export default function RoomContent({
         (execution) =>
           execution.taskRequestId === activeTask.requestId &&
           execution.agentParticipantId === activeTask.targetParticipantId
+      ) ??
+      // The initial Task target remains the durable Task identity, but a
+      // Human may explicitly admit a replacement after that executor leaves.
+      // Render the Room's accepted replacement projection directly; this is
+      // not a browser-side lifecycle inference.
+      (taskExecutions ?? []).find(
+        (execution) => execution.taskRequestId === activeTask.requestId
       )
     : undefined
   const activeTaskExecutionLabel = activeTaskExecution
@@ -2586,12 +2593,12 @@ export default function RoomContent({
                     (hibernation, reconciliation). */}
                 {(activeTaskExecutionLabel?.label ?? "") !== "" && (
                   <span>
-                    {activeTask?.targetParticipantId
+                    {activeTaskExecution?.agentParticipantId
                       ? `${
                           participants.find(
                             (candidate) =>
                               candidate.peerId ===
-                              activeTask.targetParticipantId
+                              activeTaskExecution.agentParticipantId
                           )?.name ?? "Agent"
                         } · `
                       : ""}

@@ -426,6 +426,104 @@ describe("RoomSession transient Task execution (#409)", () => {
     })
     expect(test.executions()).toEqual([])
   })
+
+  it("accepts replacement execution only after a departed executor's Task is explicitly handed off", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    test.connectAgentSocket("agent-b")
+    const requestId = await createTask(test)
+
+    await publishExecution(test, requestId, 42, "agent-a")
+    expect(test.executions()).toEqual([
+      expect.objectContaining({
+        agentParticipantId: "agent-a",
+        currentTurnSequence: 42,
+        phase: "running",
+      }),
+    ])
+
+    // The original Runtime disappears. Its active execution may no longer
+    // remain authoritative, but the canonical Task itself remains available
+    // for an explicitly selected, connected replacement Agent.
+    test.stored().participants["agent-a"].connected = false
+    await (
+      test.session as unknown as {
+        handleAgentEventClose: (
+          socket: unknown,
+          attachment: unknown
+        ) => Promise<void>
+      }
+    ).handleAgentEventClose(null, {
+      kind: "agent-event",
+      participantId: "agent-a",
+      connectionNonce: "agent-a-nonce",
+      cursor: 0,
+    })
+    expect(test.executions()).toEqual([])
+    expect(
+      await publishExecution(test, requestId, 42, "agent-a")
+    ).toMatchObject({ status: 409, json: { error: "agent_disconnected" } })
+
+    await test.sendHuman({
+      type: "chat",
+      text: "@agent-b continue this Task after agent-a departed",
+      targets: ["agent-b"],
+      taskRequestId: requestId,
+    })
+
+    // A replacement Agent owns its own Runtime turn. The Room must accept its
+    // projection once the Human has explicitly admitted it; it must not keep
+    // authorizing only the departed Task creator forever.
+    const replacement = await publishExecution(test, requestId, 43, "agent-b")
+    expect(replacement).toMatchObject({ status: 200, json: { ok: true } })
+    expect(test.executions()).toEqual([
+      expect.objectContaining({
+        agentParticipantId: "agent-b",
+        currentTurnSequence: 43,
+        phase: "running",
+      }),
+    ])
+
+    // A normal Harness return replaces the running ownership with a terminal
+    // projection. This is Room-facing truth, not merely Runtime local state.
+    const completed = await test.control({
+      action: "agent-task-execution",
+      participantId: "agent-b",
+      token: "agent-b-token",
+      projection: { taskRequestId: requestId, queuedCount: 0 },
+    })
+    expect(completed).toMatchObject({ status: 200, json: { ok: true } })
+    expect(test.executions()).toEqual([
+      expect.objectContaining({
+        agentParticipantId: "agent-b",
+        queuedCount: 0,
+      }),
+    ])
+    expect(test.executions()[0]).not.toHaveProperty("currentTurnSequence")
+
+    // An exact interrupt settlement has the same ownership invariant while
+    // preserving the truthful interrupted outcome for the Task UI.
+    await publishExecution(test, requestId, 44, "agent-b")
+    const interrupted = await test.control({
+      action: "agent-task-execution",
+      participantId: "agent-b",
+      token: "agent-b-token",
+      projection: {
+        taskRequestId: requestId,
+        queuedCount: 0,
+        lastOutcome: "interrupted",
+      },
+    })
+    expect(interrupted).toMatchObject({ status: 200, json: { ok: true } })
+    expect(test.executions()).toEqual([
+      expect.objectContaining({
+        agentParticipantId: "agent-b",
+        queuedCount: 0,
+        lastOutcome: "interrupted",
+      }),
+    ])
+    expect(test.executions()[0]).not.toHaveProperty("currentTurnSequence")
+  })
 })
 
 describe("RoomSession interrupt & send (#409)", () => {

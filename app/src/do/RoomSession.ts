@@ -4031,6 +4031,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      // A participant whose resident socket has gone away may not resurrect
+      // a Task execution through its still-valid bearer handle. Connection
+      // loss is an authoritative execution boundary: the Room clears that
+      // participant's transient projection before a replacement can be
+      // explicitly admitted.
+      if (!participant.connected)
+        return this.json({ error: "agent_disconnected" }, 409)
       const projection = this.normalizeTaskExecution(
         room,
         participant,
@@ -6984,11 +6991,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   /**
    * #409: validate one published Task execution projection fail-closed and
-   * attribute it to the canonical Agent endpoint of the canonical Task.
+   * attribute it to an Agent that is currently participating in the canonical
+   * Task.
    *
    * Execution truth belongs to the Runtime, but the Room is the authorization
-   * boundary: a secondary Agent that later participates in the same Task may
-   * never overwrite the canonical Agent's execution state.
+   * boundary: a connected replacement can publish only after a Human has
+   * explicitly admitted it to the Task. Task identity is not permanently
+   * bound to the first Agent's resident Runtime.
    */
   private normalizeTaskExecution(
     room: RoomRecord,
@@ -7004,17 +7013,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       taskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH
     )
       return null
+    const index = buildTaskProjectionIndex(room.messages, room.participants)
     const resolution = resolveTaskRequest(
-      buildTaskProjectionIndex(room.messages, room.participants),
+      index,
       taskRequestId,
       room.participants
     )
     if (resolution.ok === false) return null
-    const canonicalAgentId = initialTaskAgentParticipantId(
-      resolution.request,
-      room.participants
+    if (
+      !participant.connected ||
+      !taskAgentParticipates(index, resolution.requestId, participant.id)
     )
-    if (!canonicalAgentId || canonicalAgentId !== participant.id) return null
+      return null
 
     const queuedCount = candidate.queuedCount
     if (

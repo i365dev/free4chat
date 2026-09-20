@@ -939,6 +939,78 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(sendActionMessage).not.toHaveBeenCalled()
   })
 
+  it("renders an explicitly handed-off Agent's authoritative execution projection", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-handoff",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-hermes",
+        summary: "Continue after executor loss",
+      },
+    }
+    const handoff: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "text",
+      sequence: 2,
+      text: "@OpenCode continue this Task",
+      taskRequestId: "task-handoff",
+      targets: ["agent-opencode"],
+    }
+    const sendTaskInterrupt = vi.fn()
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest, handoff],
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-opencode",
+          name: "OpenCode",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-opencode",
+          taskRequestId: "task-handoff",
+          currentTurnSequence: 88,
+          phase: "running",
+          queuedCount: 0,
+        },
+      ],
+      sendTaskInterrupt,
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-handoff"))
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
+      "OpenCode · Running"
+    )
+    fireEvent.click(screen.getByTestId("task-interrupt"))
+    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-handoff", 88)
+  })
+
   it("renders the Runtime execution projection and its structured controls", () => {
     const taskRequest: Message = {
       peerId: "human-local",
