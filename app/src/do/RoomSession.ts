@@ -7420,7 +7420,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // gets a benign, human-readable outcome instead of an operation failure.
     if (message.type === "task-interrupt-and-send") {
       const reject = (error: string) =>
-        socket.send(JSON.stringify({ type: "error", error }))
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error,
+            ...(typeof message.taskRequestId === "string"
+              ? { taskRequestId: message.taskRequestId }
+              : {}),
+          })
+        )
       const text = typeof message.text === "string" ? message.text.trim() : ""
       if (!text) {
         reject("invalid_task_instruction")
@@ -7465,6 +7473,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           JSON.stringify({
             type: "task-control-notice",
             notice: "instruction_queued_turn_finished",
+            taskRequestId: task.requestId,
           })
         )
         return
@@ -7494,7 +7503,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // follow-up or resolving the Task's permission request.
     if (message.type === "task-interrupt") {
       const reject = (error: string) =>
-        socket.send(JSON.stringify({ type: "error", error }))
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error,
+            ...(typeof message.taskRequestId === "string"
+              ? { taskRequestId: message.taskRequestId }
+              : {}),
+          })
+        )
       // Exactly the same authorization the structured interrupt & send uses:
       // canonical Task, canonical Agent endpoint, and the exact currently
       // active turn the Room's AUTHORITATIVE execution projection reports.
@@ -7515,6 +7532,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             JSON.stringify({
               type: "task-control-notice",
               notice: "interrupt_turn_finished",
+              taskRequestId: message.taskRequestId,
             })
           )
           return
@@ -7712,7 +7730,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         taskRequestId: message.taskRequestId,
       })
       if (instruction.ok === false) {
-        socket.send(JSON.stringify({ type: "error", error: instruction.error }))
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            error: instruction.error,
+            ...(typeof message.taskRequestId === "string"
+              ? { taskRequestId: message.taskRequestId }
+              : {}),
+          })
+        )
         return
       }
       return
@@ -8001,6 +8027,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             { error: taskResolution.error },
             taskResolution.error === "unknown_task_request" ? 409 : 403
           )
+      } else if (taskResolution.agentParticipantIds.length === 0) {
+        // Attachments have no explicit replacement-Agent target. Unlike a
+        // Human Task text instruction, this endpoint can therefore never
+        // authorize a handoff after every participating Agent has left.
+        return this.json({ error: "task_target_not_in_room" }, 403)
       } else if (participant.kind === "agent") {
         if (!taskResolution.agentParticipantIds.includes(participant.id))
           return this.json({ error: "task_attachment_not_participant" }, 403)

@@ -180,30 +180,45 @@ describe("RoomContent — narrow-screen composition", () => {
     vi.restoreAllMocks()
   })
 
-  it("gives the phone viewport to the Room/Task interaction and hides the Stage panel", () => {
+  it("opens people and the Stage first on a phone, with Room chat as an explicit choice", () => {
     // Narrow BEFORE mount so the responsive path is the one under test.
     window.innerWidth = PHONE_WIDTH
-    renderRoom()
+    renderRoom({
+      participants: [localParticipant, codexParticipant],
+      messages: [taskRequest],
+    })
 
-    // The overflow sheet only exists while it is open.
-    expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
-    // The active interaction owns the viewport.
+    const sheet = screen.getByTestId("room-mobile-sheet")
+    expect(screen.getByTestId("room-mobile-overflow")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    )
+    expect(within(sheet).getByText("People in this Room")).toBeInTheDocument()
+    expect(within(sheet).getByTestId("room-stage")).toBeInTheDocument()
+
+    // The interaction remains mounted, but it no longer wins the initial phone
+    // viewport over presence and the Stage.
     expect(screen.getByTestId("interaction-content")).toBeInTheDocument()
     expect(screen.getByTestId("interaction-tablist")).toBeInTheDocument()
 
-    // The participant/Stage panel is still ONE mounted element — hiding it must
-    // never unmount a participant card, the App launcher or a resident host —
-    // and it is display-hidden for the phone without a bare `flex` competing.
+    // The participant/Stage panel remains one mounted element and is visible.
     const stage = screen.getByTestId("room-stage")
-    expect(stage.className).toContain("hidden md:flex")
-    expect(classes(stage)).toContain("hidden")
-    expect(classes(stage)).toContain("md:flex")
-    expect(classes(stage)).not.toContain("flex")
-    // It is still the real panel, not a placeholder.
+    expect(classes(stage)).toContain("flex")
+    expect(classes(stage)).not.toContain("hidden")
     expect(stage).toHaveClass("room-panel", "room-participants-panel")
     expect(stage).toContainElement(
       screen.getByTestId("room-stage-participants")
     )
+
+    fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+    expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
+    expect(classes(screen.getByTestId("room-stage"))).toContain("hidden")
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+    expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
+    expect(
+      screen.getByTestId("interaction-tab-task-task-live")
+    ).toHaveAttribute("aria-selected", "true")
   })
 
   it("summarises the connected count and the active Agent's coarse state on one line", () => {
@@ -259,7 +274,7 @@ describe("RoomContent — narrow-screen composition", () => {
     task.unmount()
   })
 
-  it("reveals the one participant/Stage panel in the ⋯ sheet without duplicating a control", () => {
+  it("keeps one mounted participant/Stage panel in the people-first sheet", () => {
     window.innerWidth = PHONE_WIDTH
     // Room Apps on, so the Stage switcher and its launcher are part of the
     // panel whose single mount the sheet must reuse.
@@ -273,14 +288,12 @@ describe("RoomContent — narrow-screen composition", () => {
     // Both Leave controls are pre-existing responsive copies (the phone header
     // row and the `lg`-only toolbar one) — not something this composition adds.
     expect(leaveBefore).toBe(2)
-    // Identities captured while the sheet is closed. Opening the sheet must be a
-    // pure layout change: the panel keeps its exact DOM nodes, so participant
-    // media elements, Room App iframes and MessagePorts are never remounted.
+    // The default sheet is a pure layout around the existing panel. Its exact
+    // nodes are retained, so participant media, Room App iframes and
+    // MessagePorts are never remounted.
     const stageBefore = screen.getByTestId("room-stage")
     const gridBefore = screen.getByTestId("room-stage-participants")
     const launcherBefore = screen.getByTestId("stage-apps-launcher")
-
-    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
 
     const sheet = screen.getByTestId("room-mobile-sheet")
     expect(sheet).toBeInTheDocument()
@@ -312,7 +325,7 @@ describe("RoomContent — narrow-screen composition", () => {
     expect(classes(stage)).not.toContain("hidden")
   })
 
-  it("keeps the secondary Room controls out of permanent phone chrome", () => {
+  it("keeps secondary Room controls with the people-first surface", () => {
     window.innerWidth = PHONE_WIDTH
     renderRoom()
 
@@ -321,29 +334,24 @@ describe("RoomContent — narrow-screen composition", () => {
       .getAllByRole("button", { name: "Leave" })
       .find((button) => classes(button).includes("room-header-leave"))!
 
-    // Closed phone: the header is title + signal + overflow only, so the
-    // interaction gets the viewport. Everything is still one mount.
-    expect(classes(toolbar)).toContain("hidden")
-    expect(classes(toolbar)).toContain("md:grid")
-    expect(classes(toolbar)).not.toContain("grid")
-    expect(classes(mobileLeave)).toContain("hidden")
-
-    // Open phone: the same elements become the sheet's control row.
-    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
-    expect(classes(screen.getByTestId("room-header-toolbar"))).toContain("grid")
-    expect(classes(screen.getByTestId("room-header-toolbar"))).not.toContain(
-      "hidden"
-    )
+    // The default people-first surface reveals the one existing control row.
+    expect(classes(toolbar)).toContain("grid")
+    expect(classes(toolbar)).not.toContain("hidden")
     expect(classes(mobileLeave)).toContain("inline-flex")
     expect(classes(mobileLeave)).not.toContain("hidden")
     expect(screen.getAllByRole("button", { name: "Copy link" })).toHaveLength(1)
+
+    // Choosing Room chat hides that secondary chrome while preserving its DOM.
+    fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+    expect(classes(toolbar)).toContain("hidden")
+    expect(classes(toolbar)).toContain("md:grid")
+    expect(classes(mobileLeave)).toContain("hidden")
   })
 
   it("closes the sheet with Escape and with its own close control", () => {
     window.innerWidth = PHONE_WIDTH
     renderRoom()
 
-    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
     expect(screen.getByTestId("room-mobile-sheet")).toBeInTheDocument()
     expect(screen.getByTestId("room-mobile-overflow")).toHaveAttribute(
       "aria-expanded",
@@ -358,6 +366,7 @@ describe("RoomContent — narrow-screen composition", () => {
     )
 
     fireEvent.click(screen.getByTestId("room-mobile-overflow"))
+    expect(screen.getByTestId("room-mobile-sheet")).toBeInTheDocument()
     fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
     expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
     // The panel itself is never unmounted by closing the sheet.
@@ -367,7 +376,6 @@ describe("RoomContent — narrow-screen composition", () => {
   it("closes the sheet when the viewport crosses to md", () => {
     window.innerWidth = PHONE_WIDTH
     renderRoom()
-    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
     expect(screen.getByTestId("room-mobile-sheet")).toBeInTheDocument()
 
     act(() => {
@@ -438,8 +446,8 @@ describe("RoomContent — narrow-screen composition", () => {
     const host = screen.getByTestId("room-app-host")
     fireEvent.click(within(host).getByRole("button", { name: "Fullscreen" }))
 
-    // Focus mode is a Room layout state, not a phone sheet: the same single
-    // panel takes the whole content region without the sheet ever opening.
+    // Focus mode is a Room layout state, not a phone sheet: it replaces the
+    // initial people-first overlay with the same single panel.
     expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
     const stage = screen.getByTestId("room-stage")
     expect(classes(stage)).toContain("flex")

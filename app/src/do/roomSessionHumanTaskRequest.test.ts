@@ -336,6 +336,77 @@ describe("RoomSession Human task entry (#305)", () => {
     expect(project("agent-c")).toBeUndefined()
   })
 
+  it("allows an explicit Human handoff after the original executor leaves", async () => {
+    const test = harness()
+    await test.sendHuman({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Continue after executor loss",
+    })
+    const requestId = test.stored().messages[0].collab?.requestId
+    expect(requestId).toEqual(expect.any(String))
+
+    test.stored().participants["agent-a"].connected = false
+
+    // No explicit target means no arbitrary failover to the still-connected
+    // agent-b.
+    await test.sendHuman({
+      type: "chat",
+      text: "continue without selecting an Agent",
+      taskRequestId: requestId,
+    })
+    expect(test.stored().messages).toHaveLength(1)
+    expect(test.socket.send).toHaveBeenLastCalledWith(
+      JSON.stringify({
+        type: "error",
+        error: "task_target_not_in_room",
+        taskRequestId: requestId,
+      })
+    )
+
+    await test.sendHuman({
+      type: "chat",
+      text: "@Other Agent please take over this Task",
+      targets: ["agent-b"],
+      taskRequestId: requestId,
+    })
+    const handoff = test.stored().messages[1]
+    expect(handoff).toMatchObject({
+      taskRequestId: requestId,
+      targets: ["agent-b"],
+    })
+
+    const project = (message: unknown, participantId: string) =>
+      (
+        test.session as unknown as {
+          toAgentEvent: (
+            message: unknown,
+            participantId: string,
+            projection: ReturnType<typeof buildTaskProjectionIndex>
+          ) => { scopeId?: string; addressed: boolean } | undefined
+        }
+      ).toAgentEvent(message, participantId, test.taskProjection())
+    expect(project(handoff, "agent-b")).toMatchObject({
+      scopeId: `task:${requestId}`,
+      addressed: true,
+    })
+
+    // Agent-b uses its own retained Harness session; the Room simply permits
+    // its scoped reply and does not pretend it inherited agent-a's session.
+    const reply = await test.control({
+      action: "agent-send-text",
+      participantId: "agent-b",
+      token: "agent-b-token",
+      text: "I have the bounded Task context and will continue.",
+      taskRequestId: requestId,
+    })
+    expect(reply.status).toBe(200)
+    expect(test.stored().messages[2]).toMatchObject({
+      peerId: "agent-b",
+      taskRequestId: requestId,
+    })
+  })
+
   it("keeps unrelated Agents out of live and retained Task context", async () => {
     const test = harness()
     await test.sendHuman({
@@ -411,15 +482,27 @@ describe("RoomSession Human task entry (#305)", () => {
     expect(test.stored().messages).toHaveLength(1)
     expect(test.socket.send).toHaveBeenNthCalledWith(
       1,
-      JSON.stringify({ type: "error", error: "task_target_not_agent" })
+      JSON.stringify({
+        type: "error",
+        error: "task_target_not_agent",
+        taskRequestId: requestId,
+      })
     )
     expect(test.socket.send).toHaveBeenNthCalledWith(
       2,
-      JSON.stringify({ type: "error", error: "task_target_not_in_room" })
+      JSON.stringify({
+        type: "error",
+        error: "task_target_not_in_room",
+        taskRequestId: requestId,
+      })
     )
     expect(test.socket.send).toHaveBeenNthCalledWith(
       3,
-      JSON.stringify({ type: "error", error: "task_target_not_in_room" })
+      JSON.stringify({
+        type: "error",
+        error: "task_target_not_in_room",
+        taskRequestId: requestId,
+      })
     )
   })
 
@@ -433,7 +516,11 @@ describe("RoomSession Human task entry (#305)", () => {
     })
 
     expect(test.socket.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: "error", error: "unknown_task_request" })
+      JSON.stringify({
+        type: "error",
+        error: "unknown_task_request",
+        taskRequestId: "not-a-canonical-request",
+      })
     )
     expect(test.stored().messages).toHaveLength(0)
   })

@@ -245,6 +245,44 @@ func TestTaskInterruptCancelsTheOwnedTaskTurnAndKeepsTheTaskUsable(t *testing.T)
 	}
 }
 
+func TestTaskInterruptCanSettleAndRecoverTwiceInTheSameTask(t *testing.T) {
+	rt, adapter := newTaskInterruptRuntime()
+	defer rt.Stop()
+
+	for _, turn := range []struct {
+		sequence int64
+		text     string
+	}{
+		{1, "first long turn"},
+		{2, "second long turn"},
+	} {
+		// The adapter arms the first turn at construction. Every successor needs
+		// its own gate so the exact interrupt sees an in-flight Runtime turn.
+		if turn.sequence > 1 {
+			adapter.blockNextTurn()
+		}
+		drained := startTurn(rt, scopedEvent(turn.sequence, "task:req-T", turn.text))
+		waitForActiveScope(t, rt, "task:req-T")
+		rt.applyResidentTaskControl(interruptControl("req-T", turn.sequence))
+		waitForDone(t, drained, "interrupted turn to settle")
+		if got := activeScope(rt); got != "" {
+			t.Fatalf("turn %d remained active after its interrupt: %q", turn.sequence, got)
+		}
+	}
+
+	if got := adapter.cancelCount(); got != 2 {
+		t.Fatalf("two exact interrupts must dispatch two cancels, got %d", got)
+	}
+	adapter.blockNextTurn()
+	followUp := startTurn(rt, scopedEvent(3, "task:req-T", "follow-up after two interrupts"))
+	waitForActiveScope(t, rt, "task:req-T")
+	if got := adapter.runCount("task:req-T"); got != 3 {
+		t.Fatalf("follow-up must run exactly once after two recoveries, got %d runs", got)
+	}
+	adapter.releaseTurn()
+	waitForDone(t, followUp, "follow-up after repeated interrupts")
+}
+
 func TestTaskInterruptIgnoresANonMatchingTask(t *testing.T) {
 	rt, adapter := newTaskInterruptRuntime()
 	defer rt.Stop()

@@ -101,9 +101,6 @@ interface TextChatCardProps {
    * itself. `onInterruptAndSend` is text-only: an attachment draft keeps using
    * the ordinary queued Send path. */
   taskExecution?: {
-    label: string
-    detail?: string
-    availability?: string
     interrupting: boolean
     interruptible: boolean
     onInterrupt: () => void
@@ -2015,25 +2012,6 @@ const TextChatCard = memo(function TextChatCard({
                   </>
                 )}
               </div>
-            )}
-            {taskExecution && taskExecution.label !== "" && (
-              // Presentation only: interrupting stays an explicit, deliberate
-              // control (the Task activity strip's Interrupt button and the
-              // composer's Interrupt & send), never a stray click on a label.
-              <span
-                data-testid="task-execution-status"
-                aria-live="polite"
-                className={`shrink-0 px-2 py-1 text-[11px] ${
-                  taskExecution.availability === "session_lost"
-                    ? "text-amber-300"
-                    : taskExecution.interrupting
-                    ? "text-amber-200"
-                    : "text-blue-200/80"
-                }`}
-              >
-                {taskExecution.label}
-                {taskExecution.detail ? ` · ${taskExecution.detail}` : ""}
-              </span>
             )}
             {taskExecution?.interruptible && message.trim() !== "" && (
               <button
