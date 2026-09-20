@@ -135,6 +135,9 @@ interface TextChatCardProps {
   taskRequestId?: string
   /** Current presentation availability for the active Task. */
   taskAvailable?: boolean
+  /** The original Task executor left, but a connected Agent can be explicitly
+   * selected through the existing @ mention picker to continue this Task. */
+  taskRequiresExplicitTarget?: boolean
 }
 
 // These details are retained only to render historical `game` action
@@ -1494,6 +1497,7 @@ const TextChatCard = memo(function TextChatCard({
   onPermissionRespond,
   taskRequestId,
   taskAvailable = true,
+  taskRequiresExplicitTarget = false,
   onSendTaskFile,
   taskExecution,
 }: TextChatCardProps) {
@@ -1870,6 +1874,15 @@ const TextChatCard = memo(function TextChatCard({
             className="flex-none border-t border-gray-700 px-3 pt-2 text-xs text-amber-200/80"
           >
             No participating Agent is currently available.
+          </p>
+        )}
+        {taskScoped && taskRequiresExplicitTarget && (
+          <p
+            data-testid="task-replacement-needed"
+            role="status"
+            className="flex-none border-t border-gray-700 px-3 pt-2 text-xs text-amber-200/80"
+          >
+            The original Agent left. @ a connected Agent to continue this Task.
           </p>
         )}
         <div className="relative flex flex-none flex-col border-t border-gray-700 p-3">

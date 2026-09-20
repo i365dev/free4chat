@@ -979,6 +979,14 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           room: "test-room",
           muteState: false,
         },
+        // Hermes remains connected. The Room has already discarded its old
+        // terminal execution when OpenCode became the Task's current executor.
+        {
+          peerId: "agent-hermes",
+          name: "Hermes",
+          kind: "agent",
+          room: "test-room",
+        },
         {
           peerId: "agent-opencode",
           name: "OpenCode",
@@ -1412,7 +1420,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
   })
 
-  it("marks a non-terminal Task unavailable and disables its composer", () => {
+  it("keeps an orphaned Task's composer reachable only for an explicit replacement", () => {
     const taskRequest: Message = {
       peerId: "human-local",
       name: "Hannah",
@@ -1490,8 +1498,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           muteState: false,
         },
         {
-          peerId: "agent-codex",
-          name: "Codex",
+          peerId: "agent-opencode",
+          name: "OpenCode",
           kind: "agent",
           room: "test-room",
         },
@@ -1500,10 +1508,26 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     rerender(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
-    expect(screen.queryByTestId("task-unavailable")).toBeNull()
+    expect(screen.getByLabelText("Task unavailable")).toBeInTheDocument()
+    expect(screen.getByTestId("task-replacement-needed")).toHaveTextContent(
+      "@ a connected Agent to continue this Task"
+    )
     expect(
       screen.getByLabelText("Message the room or @ an Agent")
     ).toBeEnabled()
+
+    const composer = screen.getByLabelText("Message the room or @ an Agent")
+    fireEvent.change(composer, { target: { value: "@Open" } })
+    fireEvent.keyDown(composer, { key: "Enter" })
+    fireEvent.change(composer, {
+      target: { value: "@OpenCode continue this Task" },
+    })
+    fireEvent.click(screen.getByLabelText("Send message"))
+    expect(sendTextMessage).toHaveBeenCalledWith(
+      "@OpenCode continue this Task",
+      ["agent-opencode"],
+      "task-orphan"
+    )
   })
 
   it("keeps a Task available when a secondary participating Agent is connected", () => {

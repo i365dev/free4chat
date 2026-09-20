@@ -493,6 +493,59 @@ describe("#421 Task control authority (Fix C)", () => {
       "interrupt_turn_finished",
     ])
   })
+
+  it("I: an explicitly admitted replacement owns the one current projection and its exact interrupt", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    test.connectAgentSocket("agent-b")
+    const requestId = await createTask(test)
+
+    // A remains connected and has already settled an older execution. That
+    // retained terminal state must not outrank an explicitly admitted B.
+    await test.publishExecution("agent-a", requestId, { queuedCount: 0 })
+    await test.sendHuman({
+      type: "chat",
+      text: "@agent-b take over this Task",
+      targets: ["agent-b"],
+      taskRequestId: requestId,
+    })
+    await test.publishExecution("agent-b", requestId, {
+      currentTurnSequence: 88,
+      phase: "running",
+    })
+
+    // RoomSession stores only B's server-accepted current executor projection
+    // for this canonical Task — no client-side initial-target or list-order
+    // selection can be involved.
+    expect(test.executions()).toEqual([
+      expect.objectContaining({
+        agentParticipantId: "agent-b",
+        taskRequestId: requestId,
+        currentTurnSequence: 88,
+        phase: "running",
+      }),
+    ])
+    test.clearAgentFrames("agent-a")
+    test.clearAgentFrames("agent-b")
+
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 88,
+    })
+
+    expect(test.errors()).toEqual([])
+    expect(test.notices()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.agentControls("agent-b")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 88,
+      },
+    ])
+  })
 })
 
 describe("#421 Interrupt & send race (Fix D/G)", () => {
@@ -525,6 +578,45 @@ describe("#421 Interrupt & send race (Fix D/G)", () => {
         control: "interrupt",
         taskRequestId: requestId,
         turnSequence: 42,
+      },
+    ])
+  })
+
+  it("F2: a replacement executor receives both the queued instruction and exact interrupt", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    test.connectAgentSocket("agent-b")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, { queuedCount: 0 })
+    await test.sendHuman({
+      type: "chat",
+      text: "@agent-b take over this Task",
+      targets: ["agent-b"],
+      taskRequestId: requestId,
+    })
+    await test.publishExecution("agent-b", requestId, {
+      currentTurnSequence: 88,
+      phase: "running",
+    })
+    test.clearAgentFrames("agent-a")
+    test.clearAgentFrames("agent-b")
+
+    await test.sendHuman({
+      type: "task-interrupt-and-send",
+      taskRequestId: requestId,
+      turnSequence: 88,
+      text: "continue with the corrected plan",
+    })
+
+    expect(test.stored().messages.at(-1)?.taskRequestId).toBe(requestId)
+    expect(test.stored().messages.at(-1)?.targets).toEqual(["agent-b"])
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.agentControls("agent-b")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 88,
       },
     ])
   })
