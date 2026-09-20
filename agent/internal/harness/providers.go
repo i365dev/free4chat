@@ -68,7 +68,7 @@ var builtInProviders = []Provider{
 		ID:          "codex",
 		DisplayName: "Codex",
 		Command:     "npx",
-		Args:        []string{"-y", "@agentclientprotocol/codex-acp@1.6.2"},
+		Args:        []string{"-y", "@agentclientprotocol/codex-acp@1.12.0"},
 		Maturity:    types.MaturityBridge,
 		Security:    types.SecurityTrustedRoom,
 		Environment: map[string]string{"INITIAL_AGENT_MODE": "read-only"},
@@ -86,10 +86,36 @@ var builtInProviders = []Provider{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
 			},
-			// #297 recorded a bridge/app-server/policy limitation; whether the
-			// current pinned bridge emits ACP permission requests is being
-			// re-verified in #426. Until that result exists this stays PARTIAL
-			// instead of an optimistic upgrade or a permanent "unsupported".
+			// #426 re-verification against codex-acp 1.12.0 + Codex 0.154.0 in
+			// explicit read-only mode, through a REAL browser Room:
+			//
+			//   command   an out-of-workspace `touch` produced a Room approval
+			//             card carrying the exact command, cwd, and all three
+			//             native options. Selecting
+			//             `accept_execpolicy_amendment` — whose native label
+			//             exceeds the Room presentation budget and is therefore
+			//             bounded by #429 — ran the command and the same turn
+			//             continued; selecting `cancel` ran nothing and the
+			//             session stayed usable. The exact native OptionID
+			//             round-tripped untouched, and no display text was used
+			//             as identity.
+			//   file      an edit outside the writable root produced an EDIT
+			//             Room card offering allow_once / allow_for_session /
+			//             cancel. The ACP round trip was verified end-to-end:
+			//             allow edits the file, reject leaves it unchanged, and
+			//             the same native session remains usable.
+			//
+			// The previous 1.6.2 pin could not do this at all: its command
+			// request carried no presentation metadata, so the Runtime refused
+			// it before any Room request existed.
+			//
+			// It stays PARTIAL because this verification is deliberately
+			// SCOPED. openai/codex#21982 (sandbox_permissions /
+			// require_escalated surfacing), agentclientprotocol/codex-acp#310
+			// (mode/config coupling) and #401 (MCP execution mediation) all
+			// remain OPEN, and no MCP path or alternate sandbox/mode
+			// combination was exercised. Only the ordinary command and
+			// file-change paths in read-only mode are verified.
 			Approval: ApprovalPartial,
 		},
 	},

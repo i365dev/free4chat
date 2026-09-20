@@ -47,12 +47,20 @@ native policy decide whether an ACP permission request is emitted.
 
 ### Codex
 
-Current Codex ACP behavior has an upstream bridge/policy limitation. Native
-Codex can prompt under stricter policies such as `untrusted`, but the tested
-`codex-acp` modes do not currently expose that path cleanly to Free4Chat. This
-is a compatibility limitation in the upstream bridge/policy path, not a
-Free4Chat Room approval failure. No vendor-specific workaround is required by
-the Room permission model.
+Codex Room approval is **verified for the ordinary command and file-change
+paths** on `codex-acp` 1.12.0 with Codex/app-server 0.154.0 in Free4Chat's
+explicit `read-only` mode: a real browser Room showed the approval card, the
+Human's choice was returned as the exact native option id, an approved command
+ran and the same turn continued, and a rejected command or file change did not
+happen while the session stayed usable.
+
+It remains **partial**, and deliberately scoped. Upstream issues are still open
+for paths this verification did not exercise: `sandbox_permissions` /
+`require_escalated` surfacing (openai/codex#21982), bridge mode/config coupling
+(agentclientprotocol/codex-acp#310), and MCP execution mediation
+(agentclientprotocol/codex-acp#401). Nothing here generalizes to MCP calls or
+to every Codex sandbox/mode combination, and no vendor-specific workaround is
+required by the Room permission model.
 
 ### OpenCode, Hermes, and Pi
 
