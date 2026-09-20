@@ -33,8 +33,13 @@ import {
 } from "@common/sfuEgress"
 import {
   encodeTaskAttachmentWake,
+  TASK_ATTACHMENT_PENDING_HEADER,
   TASK_ATTACHMENT_WAKE_HEADER,
 } from "@common/taskAttachmentWake"
+import {
+  isTaskControlNotice,
+  taskControlNoticeMessage,
+} from "@common/taskExecution"
 import { ActionType, Message, UserInfo } from "@common/types"
 import {
   hashRoom,
@@ -108,6 +113,9 @@ const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
 // The Room bounds a canonical Task instruction at 4000 characters; the browser
 // applies the same bound before sending.
 const MAX_TASK_TEXT_LENGTH = 4000
+// #421 Fix G: how long a benign Task control outcome stays on screen. It is
+// local, transient feedback — never a sticky Room-wide banner.
+const TASK_CONTROL_NOTICE_MS = 6000
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const AGENT_IMAGE_MAX_DIMENSION = 1600
 const AGENT_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"])
@@ -553,6 +561,8 @@ interface SfuServerMessage {
     | "room-app-unicast-result"
     | "task-session-list-result"
     | "task-session-start-result"
+    | "taskExecution"
+    | "task-control-notice"
   state?: SfuRoomState
   attachment?: RoomAttachmentProjection
   participant?: Partial<SfuParticipant> & {
@@ -567,6 +577,11 @@ interface SfuServerMessage {
   requestId?: string
   expiresAt?: number
   activity?: AgentActivityProjection | null
+  /** #421 Fix C: one authoritative Task execution projection state change. */
+  execution?: TaskExecutionProjection
+  /** #421 Fix G: one benign Task control outcome, for transient local
+   * feedback only — never the Room-wide error banner. */
+  notice?: unknown
   agentParticipantId?: string
   scopeId?: string
   protocolVersion?: number
@@ -661,6 +676,14 @@ export function useSfuChatRoom(
   const [taskExecutions, setTaskExecutions] = useState<
     TaskExecutionProjection[]
   >([])
+  // #421 Fix G: transient, LOCAL feedback for a benign Task control race (for
+  // example "this turn has already finished"). It is deliberately separate
+  // from `error`: a control race must never raise the Room-wide failure
+  // banner, and it clears itself.
+  const [taskControlNotice, setTaskControlNotice] = useState("")
+  const taskControlNoticeTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null)
   const [runtimeConnectionStatus, setRuntimeConnectionStatus] = useState<
     "idle" | "preparing" | "copied"
   >("idle")
@@ -3059,6 +3082,39 @@ export function useSfuChatRoom(
           setAgentActivities(next)
           rebuildParticipants()
         }
+      } else if (message.type === "taskExecution" && message.execution) {
+        // #421 Fix C: the AUTHORITATIVE Task execution projection is a live
+        // signal, not a snapshot that only refreshes on a full Room state.
+        // Without this the Browser could render a stale "Running" or offer an
+        // interrupt for a turn the Room has already replaced, and a
+        // reconnecting Human would never see the projection the resident
+        // Runtime re-stated during reconciliation. Replacement is by the same
+        // canonical (agentParticipantId, taskRequestId) identity the Room uses.
+        const incoming = message.execution
+        setTaskExecutions((previous) => [
+          ...previous.filter(
+            (execution) =>
+              !(
+                execution.agentParticipantId === incoming.agentParticipantId &&
+                execution.taskRequestId === incoming.taskRequestId
+              )
+          ),
+          incoming,
+        ])
+      } else if (
+        message.type === "task-control-notice" &&
+        isTaskControlNotice(message.notice)
+      ) {
+        // #421 Fix G: benign control races are transient LOCAL feedback. They
+        // never go through the Room-wide error banner, and they never displace
+        // a genuine error that is already showing.
+        setTaskControlNotice(taskControlNoticeMessage(message.notice))
+        if (taskControlNoticeTimerRef.current)
+          clearTimeout(taskControlNoticeTimerRef.current)
+        taskControlNoticeTimerRef.current = setTimeout(() => {
+          taskControlNoticeTimerRef.current = null
+          setTaskControlNotice("")
+        }, TASK_CONTROL_NOTICE_MS)
       } else if (
         message.type === "trackPublished" &&
         message.participant?.track
@@ -3584,6 +3640,10 @@ export function useSfuChatRoom(
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       if (mediaReconnectTimerRef.current)
         clearTimeout(mediaReconnectTimerRef.current)
+      if (taskControlNoticeTimerRef.current) {
+        clearTimeout(taskControlNoticeTimerRef.current)
+        taskControlNoticeTimerRef.current = null
+      }
       if (sfuEgressTimerRef.current) {
         clearInterval(sfuEgressTimerRef.current)
         sfuEgressTimerRef.current = null
@@ -3948,8 +4008,18 @@ export function useSfuChatRoom(
   // #305: Human-originated task entry. This is deliberately only a thin
   // socket seam; the Room derives the sender, validates the connected Agent,
   // generates the requestId, and appends the canonical collaboration event.
+  //
+  // #421: the Start Task modal's large-brief path pins the canonical Task
+  // requestId and references the brief attachment it already staged against
+  // that exact id, so the brief is part of the canonical Task event itself.
+  // Both fields stay optional and the Room validates them exactly like any
+  // other canonical request.
   const sendCollabRequest = useCallback(
-    (targetParticipantId: string, summary: string): boolean => {
+    (
+      targetParticipantId: string,
+      summary: string,
+      context?: { requestId: string; attachmentIds: string[] }
+    ): boolean => {
       const target = targetParticipantId.trim()
       const instruction = summary.trim()
       if (!target || !instruction) return false
@@ -3958,10 +4028,76 @@ export function useSfuChatRoom(
         type: "collab-request",
         targetParticipantId: target,
         summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
+        ...(context
+          ? {
+              requestId: context.requestId,
+              attachmentIds: context.attachmentIds,
+            }
+          : {}),
       })
       return true
     },
     [sendSocketMessage]
+  )
+
+  /**
+   * #421: start ONE canonical Task whose initial brief is a large pasted
+   * document.
+   *
+   * The ordering is the whole point. The browser pins the canonical Task
+   * requestId, stages the exact brief as a Task-correlated attachment against
+   * that id, and only then creates the Task with an explicit reference to it.
+   * The brief is therefore INSIDE the canonical Task event: the Agent's first
+   * turn already has it, and no second wake, no follow-up upload race, and no
+   * duplicate Room artifact is involved.
+   *
+   * It fails CLOSED. Any failure before the Task is appended returns false and
+   * leaves the modal open with the Human's brief intact — Free4Chat never
+   * starts a Task whose context is silently missing.
+   */
+  const startTaskWithBrief = useCallback(
+    async (
+      targetParticipantId: string,
+      instruction: string,
+      brief: File
+    ): Promise<boolean> => {
+      const target = targetParticipantId.trim()
+      const summary = instruction.trim()
+      if (!target || !summary) return false
+      const session = sessionRef.current
+      if (!session) return false
+      if (websocketRef.current?.readyState !== WebSocket.OPEN) return false
+      if (!isAgentTextFile(brief)) return false
+      const taskRequestId = crypto.randomUUID()
+      const response = await fetch("/api/room/attachments", {
+        method: "POST",
+        headers: {
+          "Content-Type": agentTextMime(brief) ?? "text/markdown",
+          "X-Room-Id": roomName,
+          "X-Room-Participant-Id": session.participantId,
+          "X-Room-Participant-Token": session.participantToken,
+          "X-File-Name": encodeURIComponent(brief.name.slice(0, 256)),
+          "X-Task-Request-Id": taskRequestId,
+          // Marks this upload as PRE-TASK context: the canonical Task does not
+          // exist yet, and the marker is the only reason an unknown Task id is
+          // accepted. The Room still requires an authenticated Human and a
+          // well-formed canonical id, and the attachment is never addressed.
+          [TASK_ATTACHMENT_PENDING_HEADER]: "1",
+        },
+        body: brief,
+      })
+      if (!response.ok) return false
+      const payload = (await response.json().catch(() => null)) as {
+        attachment?: { id?: unknown }
+      } | null
+      const attachmentId = payload?.attachment?.id
+      if (typeof attachmentId !== "string" || !attachmentId) return false
+      return sendCollabRequest(target, summary, {
+        requestId: taskRequestId,
+        attachmentIds: [attachmentId],
+      })
+    },
+    [roomName, sendCollabRequest]
   )
 
   // #409: the ONE structured "interrupt the current turn and queue this
@@ -4581,6 +4717,7 @@ export function useSfuChatRoom(
     sendTaskAttachment,
     sendActionMessage,
     sendCollabRequest,
+    startTaskWithBrief,
     requestTaskSessions,
     startTaskWithSession,
     sendCollabResponse,
@@ -4609,6 +4746,7 @@ export function useSfuChatRoom(
     agentVoiceMediaAvailable,
     agentActivities,
     taskExecutions,
+    taskControlNotice,
     setAgentVoice,
     createRuntimeProviderClaim,
     connectLocalRuntime,

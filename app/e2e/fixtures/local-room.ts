@@ -110,9 +110,11 @@ export async function enterLocalRoom(
 ): Promise<Page> {
   await page.getByLabel("Nickname").fill(nickname)
   await page.getByRole("button", { name: /Go/i }).click()
-  // The room UI is connected once the self participant card renders.
+  // The Room is joined once the self participant card is mounted. On narrow
+  // screens the Stage is intentionally display-hidden until the overflow opens,
+  // so visibility is no longer a valid joined-state invariant (#430).
   try {
-    await expect(page.getByText(new RegExp(nickname)).first()).toBeVisible({
+    await expect(page.getByText(new RegExp(nickname)).first()).toBeAttached({
       // A shared local Worker + Durable Object on a loaded CI runner is slower
       // than the geometry assertions this suite is about.
       timeout: 30_000,

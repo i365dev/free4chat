@@ -825,6 +825,14 @@ type HarnessTurnInput struct {
 	MeetingTranscript *HarnessMeetingTranscript `json:"meetingTranscript,omitempty"`
 	LiveTranscript    *HarnessLiveTranscript    `json:"liveTranscript,omitempty"`
 	Session           *HarnessSessionContext    `json:"session,omitempty"`
+	// TaskRequestID is the exact canonical Task this turn belongs to, when
+	// the turn's logical scope is a Task scope. It exists so the rendered
+	// prompt can state the correlation id directly: artifacts produced for a
+	// Task must be published with `attach --task-request-id <id>` instead of
+	// falling back to an unscoped Room artifact (#421 dogfood finding E).
+	// Empty for an ordinary Room conversation turn, which is exactly what
+	// makes an unscoped `attach` a Room artifact.
+	TaskRequestID string `json:"taskRequestId,omitempty"`
 }
 
 // LifecycleIntent is the closed, local Harness-to-Runtime control result.

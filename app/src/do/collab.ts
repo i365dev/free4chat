@@ -30,6 +30,13 @@ const CAPABILITY_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/
 // UUIDs are the documented convention, not a wire requirement.
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._:-]{3,63})$/
 
+/** #421: the canonical Task request-id shape, exported so the pre-Task
+ * context-staging upload path can apply EXACTLY the same rule the canonical
+ * collaboration ingestion applies — never a second, looser one. */
+export function isCanonicalCollabRequestId(value: unknown): value is string {
+  return typeof value === "string" && REQUEST_ID_PATTERN.test(value)
+}
+
 export type CapabilityValidationResult =
   | { ok: true; capabilities: string[] }
   | { ok: false; error: "invalid_capabilities"; reason: string }
@@ -261,7 +268,7 @@ export function validateCollabEvent(
     typeof input.requestId === "string" ? input.requestId.trim() : ""
   if (!requestId && collabKind === "request")
     requestId = (options?.generateRequestId ?? (() => crypto.randomUUID()))()
-  if (!REQUEST_ID_PATTERN.test(requestId))
+  if (!isCanonicalCollabRequestId(requestId))
     return { ok: false, error: "invalid_request_id" }
 
   const targetParticipantId =

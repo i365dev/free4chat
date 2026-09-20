@@ -52,6 +52,55 @@ export interface TaskSessionPickerProps {
 
 const RECENT_LABEL = "Recent"
 
+/**
+ * #421: production dogfood showed that a real local project path such as
+ * `/private/var/folders/…/T/xyz` makes the bounded project popover awkward —
+ * the DISTINGUISHING part of the path is its tail, and it was the part pushed
+ * out of view.
+ *
+ * This is a bounded PRESENTATION-ONLY compaction of the Runtime's display
+ * label. It deliberately does not touch #420's semantics:
+ *
+ *   - the label is already presentation-only and the Runtime never resolves a
+ *     cwd from it, so nothing here becomes an identifier;
+ *   - no token, cwd, or session id is added to browser state — the same single
+ *     string is only rendered shorter;
+ *   - search still matches the FULL label, so a Human can always find a
+ *     project by any part of its path;
+ *   - the untouched label stays available as the element's `title`.
+ *
+ * The tail is what distinguishes projects, so it is preserved and only the
+ * redundant leading segments are elided.
+ */
+export function compactProjectLabel(label: string, maxLength = 44): string {
+  const trimmed = label.trim()
+  if (trimmed.length <= maxLength) return trimmed
+  const segments = trimmed.split("/").filter((segment) => segment.length > 0)
+  if (segments.length <= 1) return clampLabel(trimmed, maxLength)
+  // A home-relative path keeps its `~`: that is real, useful context and never
+  // the long part. It is reserved up front so the elided label as a whole stays
+  // inside the bound.
+  const prefix = segments[0] === "~" ? "~/" : ""
+  const budget = maxLength - prefix.length
+  const tail: string[] = []
+  for (let index = segments.length - 1; index >= 0; index -= 1) {
+    const candidate = [segments[index], ...tail]
+    if (`…/${candidate.join("/")}`.length > budget) break
+    tail.unshift(segments[index])
+  }
+  if (tail.length === 0)
+    return `${prefix}…/${clampLabel(
+      segments[segments.length - 1],
+      Math.max(1, budget - 2)
+    )}`
+  return `${prefix}…/${tail.join("/")}`
+}
+
+function clampLabel(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, Math.max(1, maxLength - 1))}…`
+}
+
 export default function TaskSessionPicker({
   status,
   sessions,
@@ -109,8 +158,14 @@ export default function TaskSessionPicker({
   return (
     <div className="mb-4">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-xs text-gray-400">
-          {selectedProject ? selectedProject.label : RECENT_LABEL}
+        <span
+          className="min-w-0 flex-1 truncate text-xs text-gray-400"
+          data-testid="task-session-project-summary"
+          title={selectedProject ? selectedProject.label : undefined}
+        >
+          {selectedProject
+            ? compactProjectLabel(selectedProject.label)
+            : RECENT_LABEL}
         </span>
         <div className="flex items-center gap-2">
           <button
@@ -138,8 +193,12 @@ export default function TaskSessionPicker({
                   queueMicrotask(() => projectSearchRef.current?.focus())
               }}
               className="max-w-[10rem] truncate rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+              title={selectedProject ? selectedProject.label : undefined}
             >
-              Project: {selectedProject ? selectedProject.label : RECENT_LABEL}{" "}
+              Project:{" "}
+              {selectedProject
+                ? compactProjectLabel(selectedProject.label)
+                : RECENT_LABEL}{" "}
               ▾
             </button>
             {projectOpen && (
@@ -201,10 +260,14 @@ export default function TaskSessionPicker({
                           : "text-gray-200 hover:bg-gray-800"
                       }`}
                     >
-                      {/* Untrusted display path: break-words keeps a long path
-                        from breaking the popover layout. */}
-                      <span className="min-w-0 flex-1 break-words">
-                        {project.label}
+                      {/* Untrusted display path, compacted for the bounded
+                        popover. The full label stays in `title`; the search
+                        field above still matches the FULL label. */}
+                      <span
+                        className="min-w-0 flex-1 truncate"
+                        title={project.label}
+                      >
+                        {compactProjectLabel(project.label)}
                       </span>
                     </button>
                   ))}
@@ -288,8 +351,11 @@ export default function TaskSessionPicker({
                 <span className="min-w-0 break-words text-xs text-white">
                   {row.title || "Untitled session"}
                 </span>
-                <span className="min-w-0 break-words text-[11px] text-gray-400">
-                  {row.projectLabel}
+                <span
+                  className="min-w-0 truncate text-[11px] text-gray-400"
+                  title={row.projectLabel}
+                >
+                  {compactProjectLabel(row.projectLabel)}
                   {relativeUpdatedAt(row.updatedAt)
                     ? ` · ${relativeUpdatedAt(row.updatedAt)}`
                     : ""}
