@@ -187,6 +187,9 @@ func BuildHarnessTurn(
 		if len(context.Participants) > 0 {
 			input.Room.Participants = context.Participants
 		}
+		// The exact Task correlation id travels with the turn so the prompt
+		// can make it directly actionable; it is never inferred later.
+		input.TaskRequestID = context.TaskRequestID
 	}
 	for _, event := range events {
 		normalized := types.HarnessEvent{
@@ -218,6 +221,9 @@ func BuildHarnessTurn(
 type TurnContextOptions struct {
 	Self         *types.RoomSelfContext
 	Participants []types.ParticipantRosterEntry
+	// TaskRequestID is the canonical Task request id of the turn's scope, or
+	// empty for the ordinary Room conversation scope.
+	TaskRequestID string
 }
 
 func firstNonEmpty(values ...string) string {

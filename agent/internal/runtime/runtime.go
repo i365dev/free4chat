@@ -1758,6 +1758,12 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	input := BuildHarnessTurn(events, &TurnContextOptions{
 		Self:         r.selfContext(),
 		Participants: r.rosterSnapshot(),
+		// #421 dogfood finding E: the exact Task id must be directly
+		// actionable in the prompt, so an artifact produced for this Task is
+		// correlated by construction instead of defaulting to a Room
+		// attachment. Empty for the Room scope, which is what keeps an
+		// unscoped `attach` a Room artifact.
+		TaskRequestID: taskRequestIDForScope(scope),
 	})
 	// A new conversation and "this turn still needs the Free4Chat host
 	// contract" are two different facts. An adopted Task (#409) continues an

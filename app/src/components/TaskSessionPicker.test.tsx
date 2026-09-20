@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { RelayTaskSession } from "@do/taskSession"
 
-import TaskSessionPicker from "./TaskSessionPicker"
+import TaskSessionPicker, { compactProjectLabel } from "./TaskSessionPicker"
 
 /**
  * #409 Task Session Continuation — the bounded session picker.
@@ -236,5 +236,69 @@ describe("TaskSessionPicker (#409)", () => {
     for (const row of screen.getAllByTestId("task-session-row"))
       expect(row).toBeDisabled()
     expect(screen.getByTestId("task-session-project-toggle")).toBeDisabled()
+  })
+})
+
+describe("#421 project display path compaction", () => {
+  it("leaves a readable label untouched", () => {
+    expect(compactProjectLabel("~/workspace/free4chat")).toBe(
+      "~/workspace/free4chat"
+    )
+    expect(compactProjectLabel("  /private/tmp  ")).toBe("/private/tmp")
+    expect(compactProjectLabel("")).toBe("")
+  })
+
+  it("keeps the distinguishing tail of a long path", () => {
+    const label =
+      "/private/var/folders/d4/h0828wz16g38w148cz_9tp1h0000gn/T/free4chat-work"
+    const compact = compactProjectLabel(label)
+    expect(compact.length).toBeLessThanOrEqual(44)
+    expect(compact).toMatch(/^…\//)
+    // The last segment — the part that actually distinguishes projects — and
+    // its immediate parent survive.
+    expect(compact.endsWith("free4chat-work")).toBe(true)
+    expect(compact).toContain("T/")
+  })
+
+  it("preserves a home marker while eliding the middle", () => {
+    const compact = compactProjectLabel(
+      "~/workspace/clients/acme/platform/services/billing-api"
+    )
+    expect(compact.startsWith("~/")).toBe(true)
+    expect(compact).toContain("billing-api")
+    expect(compact.length).toBeLessThanOrEqual(44)
+  })
+
+  it("still bounds a single absurdly long segment", () => {
+    const compact = compactProjectLabel(`/${"x".repeat(200)}`)
+    expect(compact.length).toBeLessThanOrEqual(44)
+    expect(compact.endsWith("…")).toBe(true)
+  })
+
+  it("renders the full label as a title without changing search", () => {
+    const long = `/private/var/folders/d4/${"y".repeat(60)}/free4chat-long`
+    renderPicker({
+      sessions: [
+        {
+          token: "token-long",
+          title: "Long project",
+          projectToken: "project-long",
+          projectLabel: long,
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+      projects: [{ token: "project-long", label: long }],
+    })
+
+    const row = screen.getByTestId("task-session-row")
+    expect(row).toHaveTextContent("free4chat-long")
+    expect(row).not.toHaveTextContent("private/var/folders")
+    expect(row.querySelector("[title]")?.getAttribute("title")).toBe(long)
+
+    // The full path stays searchable even though only its tail is rendered.
+    fireEvent.change(screen.getByTestId("task-session-search"), {
+      target: { value: "private/var/folders" },
+    })
+    expect(screen.getByTestId("task-session-row")).toBeInTheDocument()
   })
 })

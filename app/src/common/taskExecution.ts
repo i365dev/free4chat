@@ -46,6 +46,42 @@ export function isTaskExecutionOutcome(
   return value === "interrupted"
 }
 
+/**
+ * #421 Fix G: the closed set of BENIGN Task control outcomes.
+ *
+ * A control race is not a failure. The Room reports these as a small
+ * `task-control-notice` frame instead of an `error`, and the Browser renders
+ * them as transient LOCAL feedback next to the Task controls — never as a
+ * sticky Room-wide failure banner. Genuine failures (unknown Task, session
+ * lost, Runtime unreachable, permission failure, malformed protocol input)
+ * keep using the ordinary error path and are never mapped here.
+ */
+export const TASK_CONTROL_NOTICES = [
+  "interrupt_turn_finished",
+  "instruction_queued_turn_finished",
+] as const
+
+export type TaskControlNotice = (typeof TASK_CONTROL_NOTICES)[number]
+
+export function isTaskControlNotice(
+  value: unknown
+): value is TaskControlNotice {
+  return (
+    typeof value === "string" &&
+    (TASK_CONTROL_NOTICES as readonly string[]).includes(value)
+  )
+}
+
+/** The single human-readable product wording for one benign control outcome. */
+export function taskControlNoticeMessage(notice: TaskControlNotice): string {
+  switch (notice) {
+    case "instruction_queued_turn_finished":
+      return "Current turn already finished; instruction sent."
+    case "interrupt_turn_finished":
+      return "This turn has already finished."
+  }
+}
+
 export function isTaskExecutionAvailability(
   value: unknown
 ): value is TaskExecutionAvailability {

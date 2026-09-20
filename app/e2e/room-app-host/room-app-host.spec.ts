@@ -337,7 +337,19 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       "opening a Room must not request microphone access"
     ).toBe(0)
     await enterLocalRoom(page, "Alice")
-    await expect(page.getByTestId("room-stage")).toBeVisible()
+    // #430 phone composition intentionally keeps the ONE Stage mount
+    // display-hidden until the Human opens the overflow sheet. The host
+    // compatibility contract still needs that same Stage surface for the App
+    // lifecycle below, so reveal it through the real phone control instead of
+    // assuming Stage is permanent chrome on every viewport.
+    if (isTwoPaneRoom(page)) {
+      await expect(page.getByTestId("room-stage")).toBeVisible()
+    } else {
+      await expect(page.getByTestId("room-stage")).toBeHidden()
+      await page.getByTestId("room-mobile-overflow").click()
+      await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
+      await expect(page.getByTestId("room-stage")).toBeVisible()
+    }
     await expect(page.getByTestId("room-timeline")).toBeVisible()
     await expectNoPageOverflow(page, "joined Room")
   })

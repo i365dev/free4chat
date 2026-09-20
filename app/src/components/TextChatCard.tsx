@@ -11,9 +11,15 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
 import { LOCAL_PEER_ID } from "@common/consts"
+import { isLargeTaskPaste, taskPasteAttachment } from "@common/taskPaste"
 import { ActionType, Message } from "@common/types"
 import { strToBgColor, umamiEvent, hashRoom } from "@common/utils"
 import { MAX_COLLAB_SUMMARY_LENGTH } from "@do/collab"
+
+// #421: the threshold is owned by the shared big-paste primitive; it stays
+// re-exported here because the Task composer is its historically documented
+// home.
+export { TASK_PASTE_ATTACHMENT_THRESHOLD } from "@common/taskPaste"
 
 import CollabArtifactViewer from "./CollabArtifactViewer"
 import {
@@ -58,11 +64,6 @@ const NOOP_PREVIEW = () => undefined
  * bound it already had. Character length only: no token estimator, no LLM,
  * no language-specific heuristics.
  */
-export const TASK_PASTE_ATTACHMENT_THRESHOLD = 2000
-
-/** Stable name/type for the generated Task brief attachment. */
-const TASK_PASTE_ATTACHMENT_FILE_NAME = "task-brief.md"
-const TASK_PASTE_ATTACHMENT_MIME_TYPE = "text/markdown"
 
 interface TextChatCardProps {
   room: string
@@ -1706,16 +1707,12 @@ const TextChatCard = memo(function TextChatCard({
     // validation remains responsible for it.
     if (draftAttachment) return
     const pasted = event.clipboardData?.getData("text/plain") ?? ""
-    if (pasted.length <= TASK_PASTE_ATTACHMENT_THRESHOLD) return
+    if (!isLargeTaskPaste(pasted)) return
     // Exact content, byte for byte: no trim, no normalization, no wrapper
     // prose, no summary, no truncation. The Task attachment path already
     // wakes the Task Agent on its own, so no extra "please read the
     // attachment" message is sent either.
-    setDraftAttachment(
-      new File([pasted], TASK_PASTE_ATTACHMENT_FILE_NAME, {
-        type: TASK_PASTE_ATTACHMENT_MIME_TYPE,
-      })
-    )
+    setDraftAttachment(taskPasteAttachment(pasted))
     setDraftAttachmentError("")
     // Keep the giant body out of the textarea; the composer chip carries it.
     event.preventDefault()

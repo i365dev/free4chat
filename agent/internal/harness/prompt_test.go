@@ -60,6 +60,41 @@ func TestBootstrapPromptCarriesPublicReplyHygieneContract(t *testing.T) {
 	}
 }
 
+// TestTaskScopedTurnStatesTheExactTaskRequestIDAffordance pins the #421
+// dogfood fix E: a Task turn must name its own canonical requestId and the
+// exact correlated attach command, and a Room turn must not gain that
+// affordance (an unscoped attach stays a Room artifact).
+func TestTaskScopedTurnStatesTheExactTaskRequestIDAffordance(t *testing.T) {
+	const requestID = "req-task-42"
+	input := bootstrapPromptInput()
+	input.TaskRequestID = requestID
+	prompt := RenderUntrustedRoomTurn(input)
+	if !strings.Contains(prompt, "Current Task requestId: "+requestID) {
+		t.Fatalf("task turn must state the exact Task requestId:\n%s", prompt)
+	}
+	expectedAttach := runtimeCommand + " attach --file <path> --task-request-id " + requestID
+	if !strings.Contains(prompt, expectedAttach) {
+		t.Fatalf("task turn must state the exact correlated attach command %q:\n%s", expectedAttach, prompt)
+	}
+
+	// The affordance is per-turn, not a bootstrap-only lesson: a delta turn of
+	// the same Task must repeat the concrete id.
+	deltaInput := bootstrapPromptInput()
+	deltaInput.Session = &types.HarnessSessionContext{New: false, CurrentRoomSequence: 9}
+	deltaInput.TaskRequestID = requestID
+	delta := RenderUntrustedRoomTurn(deltaInput)
+	if !strings.Contains(delta, "Current Task requestId: "+requestID) {
+		t.Fatalf("task delta turn must repeat the exact Task requestId:\n%s", delta)
+	}
+
+	// An ordinary Room turn carries no Task id, so the unscoped attach remains
+	// the truthful Room artifact path.
+	room := RenderUntrustedRoomTurn(bootstrapPromptInput())
+	if strings.Contains(room, "Current Task requestId:") {
+		t.Fatalf("a Room turn must not claim a Task scope:\n%s", room)
+	}
+}
+
 func TestLiveViewAffordancePointsAtRuntimeDescribeCommand(t *testing.T) {
 	bootstrap := RenderUntrustedRoomTurn(bootstrapPromptInput())
 	if !strings.Contains(bootstrap, liveViewDescribeHint) {

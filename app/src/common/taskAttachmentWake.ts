@@ -29,3 +29,23 @@ export function parseTaskAttachmentWake(
   if (value === "0") return false
   return undefined
 }
+
+// #421: PRE-TASK context staging for the Start Task modal's large brief.
+//
+// A large first brief must be INSIDE the canonical Task before the Task's
+// first wake reaches the Runtime, otherwise the Agent's first turn can start
+// without it. Free4Chat therefore allows ONE explicitly marked upload of a
+// Human's own Task-correlated attachment for a Task requestId that does not
+// exist yet: the browser pins the canonical id, uploads the brief against it,
+// and only then creates the Task with the same id and an explicit
+// `attachmentIds` reference. Nothing is inferred and nothing is global.
+//
+// The marker is one exact token, absent means "an unknown Task is still a hard
+// refusal", and the upload stays bounded by the ordinary attachment store.
+export const TASK_ATTACHMENT_PENDING_HEADER = "X-Task-Attachment-Pending"
+
+export function parseTaskAttachmentPending(
+  value: string | null | undefined
+): boolean {
+  return value === "1"
+}

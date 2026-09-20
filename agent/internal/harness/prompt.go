@@ -305,6 +305,20 @@ func RenderUntrustedRoomTurn(input *types.HarnessTurnInput) string {
 	if len(followUpRules) > 0 {
 		lines = append(lines, "", strings.Join(followUpRules, "\n"))
 	}
+	// #421 dogfood finding E: the concrete Task id must be directly
+	// actionable. The generic affordance rule names the flag; this states the
+	// exact value for THIS turn, so the Harness never has to guess a "current
+	// Task" for an unscoped attach and two concurrent Tasks stay explicitly
+	// correlated. It is per-turn because the turn's scope, not the session,
+	// owns which Task the output belongs to.
+	if requestID := input.TaskRequestID; requestID != "" {
+		lines = append(lines,
+			"",
+			"Current Task requestId: "+requestID,
+			"Artifacts produced for this Task MUST be published as correlated Task artifacts: "+runtimeCommand+" attach --file <path> --task-request-id "+requestID,
+			"Omit --task-request-id only for an artifact that intentionally belongs to the Room rather than this Task.",
+		)
+	}
 	lines = append(lines, "", strings.Join(renderedEvents, "\n"))
 	if len(transcript) > 0 {
 		lines = append(lines, "", strings.Join(transcript, "\n"))
