@@ -140,7 +140,15 @@ var builtInProviders = []Provider{
 			// enabled.
 			SessionContinuation: SessionContinuationVerified,
 			// The ONE Harness whose cross-session execution is enabled (#421),
-			// and the only one with the full probe suite:
+			// and the only one with the full EXECUTION/ISOLATION probe suite.
+			// This evidence is deliberately AXIS-SCOPED: it proves already-
+			// materialized independent sessions can execute safely; it does NOT
+			// certify the pinned bridge's full session-materialization lifecycle.
+			// pi-acp@0.0.33 is known to violate Contract.LoadSession when another
+			// session is active (closeAllExcept); distribution remediation is
+			// tracked in #431 / upstream svkozak/pi-acp#131. Phase 1 preserves the
+			// existing launcher policy here rather than changing behavior inside a
+			// structural refactor.
 			//
 			//   concurrency   3/3 trials: an independent session B settled in
 			//                 1.2-2.6s while session A ran a 45-60s tool call,
