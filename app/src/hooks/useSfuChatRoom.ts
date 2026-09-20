@@ -3112,8 +3112,10 @@ export function useSfuChatRoom(
         // Without this the Browser could render a stale "Running" or offer an
         // interrupt for a turn the Room has already replaced, and a
         // reconnecting Human would never see the projection the resident
-        // Runtime re-stated during reconciliation. Replacement is by the same
-        // canonical (agentParticipantId, taskRequestId) identity the Room uses.
+        // Runtime re-stated during reconciliation. Each Agent has an
+        // independent lane inside the canonical Task, so replacement is by
+        // (agentParticipantId, taskRequestId); control selection separately
+        // requires exactly one active turn.
         const incoming = message.execution
         setTaskExecutions((previous) => [
           ...previous.filter(

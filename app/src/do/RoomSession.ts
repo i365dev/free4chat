@@ -1004,8 +1004,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     AgentActivityProjection
   >()
   // #409 transient Task execution projection, keyed by canonical
-  // (agentParticipantId, taskRequestId). In-memory only: never persisted, never
-  // a Room message/sequence, never a waiter wake, never MCP context.
+  // (agentParticipantId, taskRequestId). A canonical Task may have multiple
+  // participating Agents executing concurrently, so retain each Runtime's
+  // independent truth. Interrupt authority is selected separately and only
+  // when one active turn is unambiguous. In-memory only: never persisted,
+  // never a Room message/sequence, never a waiter wake, never MCP context.
   private readonly transientTaskExecutions = new Map<
     string,
     TaskExecutionProjection
@@ -4031,6 +4034,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (participant.kind !== "agent")
         return this.json({ error: "agent_only" }, 403)
+      // A participant whose resident socket has gone away may not resurrect
+      // a Task execution through its still-valid bearer handle. Connection
+      // loss is an authoritative execution boundary: the Room clears that
+      // participant's transient projection before a replacement can be
+      // explicitly admitted.
+      if (!participant.connected)
+        return this.json({ error: "agent_disconnected" }, 409)
       const projection = this.normalizeTaskExecution(
         room,
         participant,
@@ -4043,7 +4053,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         `task:${projection.taskRequestId}`
       )
       // Transient in-memory projection only: no Room message, no sequence, no
-      // storage write, no waiter wake, no analytics.
+      // storage write, no waiter wake, no analytics. Each admitted Agent's
+      // independent execution lane is retained; neither can overwrite the
+      // other's concurrent turn.
       this.transientTaskExecutions.set(key, projection)
       await this.broadcast({ type: "taskExecution", execution: projection })
       return this.json({ ok: true })
@@ -6887,7 +6899,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     | {
         ok: true
         requestId: string
-        canonicalAgentId: string
+        executorAgentId: string
         turnSequence: number
       }
     | { ok: false; error: string } {
@@ -6909,16 +6921,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // equal the authoritative current turn of THIS canonical Task.
     const activeTurn = this.transientTaskExecutions.get(
       agentActivityKey(
-        authorized.canonicalAgentId,
+        authorized.executorAgentId,
         `task:${authorized.requestId}`
       )
     )
     if (!activeTurn || activeTurn.currentTurnSequence !== requestedTurn)
       return { ok: false, error: "task_turn_not_active" }
+    if (activeTurn.agentParticipantId !== authorized.executorAgentId)
+      return { ok: false, error: "task_turn_not_active" }
     return {
       ok: true,
       requestId: authorized.requestId,
-      canonicalAgentId: authorized.canonicalAgentId,
+      executorAgentId: authorized.executorAgentId,
       turnSequence: requestedTurn,
     }
   }
@@ -6928,24 +6942,44 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
    * from the authoritative Task execution projection.
    *
    * Returns the current authoritative turn of the canonical Task, or null when
-   * that Task currently has no active turn. A stale/missing AgentActivity can
-   * never invent one, and a live AgentActivity can never outvote it.
+   * that Task currently has no active turn. The caller must name the Room's
+   * current executor too, so an earlier participating Agent cannot be
+   * interrupted after an explicit executor transition. A stale/missing
+   * AgentActivity can never invent one, and a live AgentActivity can never
+   * outvote it.
    */
   private authoritativeTaskTurn(
-    canonicalAgentId: string,
-    requestId: string
+    room: RoomRecord,
+    requestId: string,
+    executorAgentId: string
   ): number | null {
-    const execution = this.transientTaskExecutions.get(
-      agentActivityKey(canonicalAgentId, `task:${requestId}`)
+    const activeExecutions = this.taskExecutionsForRequest(
+      requestId,
+      room
+    ).filter((execution) => execution.currentTurnSequence !== undefined)
+    if (activeExecutions.length !== 1) return null
+    const execution = activeExecutions[0]
+    return execution.agentParticipantId === executorAgentId
+      ? execution.currentTurnSequence ?? null
+      : null
+  }
+
+  private taskExecutionsForRequest(
+    requestId: string,
+    room: RoomRecord
+  ): TaskExecutionProjection[] {
+    return [...this.transientTaskExecutions.values()].filter(
+      (execution) =>
+        execution.taskRequestId === requestId &&
+        room.participants[execution.agentParticipantId]?.connected === true
     )
-    return execution?.currentTurnSequence ?? null
   }
 
   /**
    * #421 Fix C: everything a Task control needs EXCEPT the exact turn — the
    * caller is a current authenticated Human, the canonical Task exists in the
-   * retained Room log, and its canonical Agent endpoint is currently in the
-   * Room. Turn-independent so "interrupt & send" can still queue a valid
+   * retained Room log, and its current Room-accepted executor is currently in
+   * the Room. Turn-independent so "interrupt & send" can still queue a valid
    * instruction when the turn it referenced has already settled.
    */
   private resolveInterruptTask(
@@ -6953,7 +6987,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant: RoomParticipant,
     rawTaskRequestId: unknown
   ):
-    | { ok: true; requestId: string; canonicalAgentId: string }
+    | { ok: true; requestId: string; executorAgentId: string }
     | { ok: false; error: string } {
     if (participant.kind !== "human")
       return { ok: false, error: "task_interrupt_not_human" }
@@ -6969,26 +7003,38 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       room.participants
     )
     if (resolution.ok === false) return { ok: false, error: resolution.error }
-    const canonicalAgentId = initialTaskAgentParticipantId(
+    const initialAgentId = initialTaskAgentParticipantId(
       resolution.request,
       room.participants
     )
-    if (!canonicalAgentId)
-      return { ok: false, error: "task_target_not_in_room" }
+    const executions = this.taskExecutionsForRequest(resolution.requestId, room)
+    const activeExecutions = executions.filter(
+      (execution) => execution.currentTurnSequence !== undefined
+    )
+    if (activeExecutions.length > 1)
+      return { ok: false, error: "task_execution_ambiguous" }
+    const executorAgentId =
+      activeExecutions[0]?.agentParticipantId ??
+      (executions.length === 1
+        ? executions[0].agentParticipantId
+        : initialAgentId)
+    if (!executorAgentId) return { ok: false, error: "task_target_not_in_room" }
     return {
       ok: true,
       requestId: resolution.requestId,
-      canonicalAgentId,
+      executorAgentId,
     }
   }
 
   /**
    * #409: validate one published Task execution projection fail-closed and
-   * attribute it to the canonical Agent endpoint of the canonical Task.
+   * attribute it to an Agent that is currently participating in the canonical
+   * Task.
    *
    * Execution truth belongs to the Runtime, but the Room is the authorization
-   * boundary: a secondary Agent that later participates in the same Task may
-   * never overwrite the canonical Agent's execution state.
+   * boundary: a connected replacement can publish only after a Human has
+   * explicitly admitted it to the Task. Task identity is not permanently
+   * bound to the first Agent's resident Runtime.
    */
   private normalizeTaskExecution(
     room: RoomRecord,
@@ -7004,17 +7050,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       taskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH
     )
       return null
+    const index = buildTaskProjectionIndex(room.messages, room.participants)
     const resolution = resolveTaskRequest(
-      buildTaskProjectionIndex(room.messages, room.participants),
+      index,
       taskRequestId,
       room.participants
     )
     if (resolution.ok === false) return null
-    const canonicalAgentId = initialTaskAgentParticipantId(
-      resolution.request,
-      room.participants
+    if (
+      !participant.connected ||
+      !taskAgentParticipates(index, resolution.requestId, participant.id)
     )
-    if (!canonicalAgentId || canonicalAgentId !== participant.id) return null
+      return null
 
     const queuedCount = candidate.queuedCount
     if (
@@ -7454,6 +7501,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const instruction = await this.appendHumanText(room, participant, {
         text,
         taskRequestId: task.requestId,
+        // The instruction follows the same Room-accepted executor as the
+        // interrupt. The initial Task target is provenance only once an
+        // explicitly admitted replacement owns the live projection.
+        targets: [task.executorAgentId],
       })
       if (instruction.ok === false) {
         reject(instruction.error)
@@ -7463,8 +7514,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // Step 2: only now stop the exact turn the Human was looking at — and
       // only while that exact turn is still the authoritative current turn.
       const currentTurn = this.authoritativeTaskTurn(
-        task.canonicalAgentId,
-        task.requestId
+        room,
+        task.requestId,
+        task.executorAgentId
       )
       if (currentTurn !== message.turnSequence) {
         // Benign control race. The instruction is already durable and woken;
@@ -7479,7 +7531,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return
       }
       if (
-        !this.sendAgentTaskControl(room, task.canonicalAgentId, {
+        !this.sendAgentTaskControl(room, task.executorAgentId, {
           control: "interrupt",
           taskRequestId: task.requestId,
           turnSequence: currentTurn,
@@ -7541,7 +7593,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return
       }
       if (
-        !this.sendAgentTaskControl(room, target.canonicalAgentId, {
+        !this.sendAgentTaskControl(room, target.executorAgentId, {
           control: "interrupt",
           taskRequestId: target.requestId,
           turnSequence: target.turnSequence,

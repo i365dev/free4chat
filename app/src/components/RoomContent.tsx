@@ -70,6 +70,7 @@ import {
 } from "../common/utils"
 import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
+import type { TaskExecutionProjection } from "../room/types"
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
@@ -185,6 +186,28 @@ function taskIsUnavailable(
   return (
     !isTaskTerminal(task.status) && !taskHasConnectedAgent(task, participants)
   )
+}
+
+function selectAuthoritativeTaskExecution(
+  taskRequestId: string,
+  executions: TaskExecutionProjection[]
+): { execution?: TaskExecutionProjection; ambiguous: boolean } {
+  const matching = executions.filter(
+    (execution) => execution.taskRequestId === taskRequestId
+  )
+  const active = matching.filter(
+    (execution) => execution.currentTurnSequence !== undefined
+  )
+  // A unique active turn wins over retained terminal projections. Multiple
+  // active turns remain visible as truth, but cannot authorize a singular
+  // interrupt control.
+  if (active.length === 1) return { execution: active[0], ambiguous: false }
+  if (active.length > 1) return { ambiguous: true }
+  // With no active turn, render a status only when there's one candidate.
+  // Never choose among multiple inactive lanes by array order.
+  return matching.length === 1
+    ? { execution: matching[0], ambiguous: false }
+    : { ambiguous: false }
 }
 
 function ScreenShareViewer({
@@ -650,9 +673,17 @@ export default function RoomContent({
   const activeTaskUnavailable = Boolean(
     activeTask && taskIsUnavailable(activeTask, participants)
   )
-  // #409/#421: the interrupt targets the CANONICAL Agent endpoint of the
-  // selected Task and only the exact turn that Agent's AUTHORITATIVE execution
-  // projection currently reports. A secondary participating Agent's activity
+  // A Task with no connected participant may still be deliberately handed off
+  // to another connected Agent. Keep that narrow, explicit @-selection path
+  // reachable; the Room continues to reject an unaddressed follow-up because
+  // it never infers a replacement target.
+  const activeTaskCanAdoptReplacement = Boolean(
+    activeTaskUnavailable &&
+      participants.some((participant) => participant.kind === "agent")
+  )
+  // #409/#421: the interrupt targets the Room's current accepted executor of
+  // the selected Task and only the exact turn that executor's AUTHORITATIVE
+  // execution projection currently reports. Presentation-only AgentActivity
   // must never produce this control.
   //
   // It is deliberately NOT gated on this Human having created the Task.
@@ -663,16 +694,17 @@ export default function RoomContent({
   // resolve the Task's permission request. The Room (not this control)
   // enforces that the caller is a current authenticated Human and that the
   // turn is exactly the live one.
-  // #409: the Runtime-authoritative execution projection of the canonical
-  // Agent for the selected Task. The browser renders exactly what the Room
-  // published; it never derives queueing or "interrupted" locally.
-  const activeTaskExecution = activeTask
-    ? (taskExecutions ?? []).find(
-        (execution) =>
-          execution.taskRequestId === activeTask.requestId &&
-          execution.agentParticipantId === activeTask.targetParticipantId
+  // #409: per-Agent Runtime execution remains authoritative. A unique active
+  // turn selects the executor; multiple active turns stay ambiguous and cannot
+  // expose a singular interrupt target.
+  const taskExecutionSelection = activeTask
+    ? selectAuthoritativeTaskExecution(
+        activeTask.requestId,
+        taskExecutions ?? []
       )
-    : undefined
+    : { ambiguous: false }
+  const activeTaskExecution = taskExecutionSelection.execution
+  const activeTaskExecutionAmbiguous = taskExecutionSelection.ambiguous
   const activeTaskExecutionLabel = activeTaskExecution
     ? taskExecutionLabel(activeTaskExecution)
     : undefined
@@ -2561,6 +2593,7 @@ export default function RoomContent({
               Boolean(activeTaskExecutionLabel?.label) ||
               activeTaskTurn !== undefined ||
               activeTaskInterrupting ||
+              activeTaskExecutionAmbiguous ||
               Boolean(activeTaskLocalError) ||
               Boolean(activeTaskControlNotice)) && (
               <div
@@ -2586,12 +2619,12 @@ export default function RoomContent({
                     (hibernation, reconciliation). */}
                 {(activeTaskExecutionLabel?.label ?? "") !== "" && (
                   <span>
-                    {activeTask?.targetParticipantId
+                    {activeTaskExecution?.agentParticipantId
                       ? `${
                           participants.find(
                             (candidate) =>
                               candidate.peerId ===
-                              activeTask.targetParticipantId
+                              activeTaskExecution.agentParticipantId
                           )?.name ?? "Agent"
                         } · `
                       : ""}
@@ -2599,6 +2632,16 @@ export default function RoomContent({
                     {activeTaskExecutionLabel?.detail
                       ? ` · ${activeTaskExecutionLabel.detail}`
                       : ""}
+                  </span>
+                )}
+                {activeTaskExecutionAmbiguous && (
+                  <span
+                    role="status"
+                    data-testid="task-execution-ambiguous"
+                    className="text-amber-200"
+                  >
+                    Multiple Agents are running this Task; interrupt is
+                    unavailable.
                   </span>
                 )}
                 {/* #421 Fix G: benign control outcomes are transient LOCAL
@@ -2628,8 +2671,8 @@ export default function RoomContent({
                 )}
                 {activeTask && activeTaskTurn !== undefined && (
                   // #409/#421 Fix C: shown while the AUTHORITATIVE execution
-                  // projection reports a current turn for the CANONICAL Agent
-                  // of this Task. Task.status is a retained-message
+                  // projection reports a current turn for the Room-accepted
+                  // executor of this Task. Task.status is a retained-message
                   // projection and is deliberately NOT used as a running
                   // signal, and a missing/stale AgentActivity can no longer
                   // hide the control for a Task that is genuinely running.
@@ -2663,7 +2706,11 @@ export default function RoomContent({
                 pendingFiles={activeTask ? [] : pendingFiles}
                 onSendText={wrappedSendText}
                 onSendFile={wrappedSendFile}
-                onSendTaskFile={wrappedSendTaskFile}
+                onSendTaskFile={
+                  activeTaskCanAdoptReplacement
+                    ? undefined
+                    : wrappedSendTaskFile
+                }
                 taskExecution={
                   activeTask
                     ? {
@@ -2699,7 +2746,10 @@ export default function RoomContent({
                 onReadArtifact={handleReadArtifact}
                 onCollabResult={handleCollabResult}
                 onPermissionRespond={handlePermissionResponse}
-                taskAvailable={!activeTaskUnavailable}
+                taskAvailable={
+                  !activeTaskUnavailable || activeTaskCanAdoptReplacement
+                }
+                taskRequiresExplicitTarget={activeTaskCanAdoptReplacement}
                 taskRequestId={activeTask?.requestId}
               />
             </div>

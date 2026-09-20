@@ -939,6 +939,188 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(sendActionMessage).not.toHaveBeenCalled()
   })
 
+  it("renders an explicitly handed-off Agent's authoritative execution projection", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-handoff",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-hermes",
+        summary: "Continue after executor loss",
+      },
+    }
+    const handoff: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "text",
+      sequence: 2,
+      text: "@OpenCode continue this Task",
+      taskRequestId: "task-handoff",
+      targets: ["agent-opencode", "agent-pi"],
+    }
+    const sendTaskInterrupt = vi.fn()
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest, handoff],
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        // Hermes remains connected with a retained terminal projection.
+        {
+          peerId: "agent-hermes",
+          name: "Hermes",
+          kind: "agent",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-opencode",
+          name: "OpenCode",
+          kind: "agent",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-pi",
+          name: "Pi",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-hermes",
+          taskRequestId: "task-handoff",
+          queuedCount: 0,
+          lastOutcome: "interrupted",
+        },
+        {
+          agentParticipantId: "agent-opencode",
+          taskRequestId: "task-handoff",
+          currentTurnSequence: 88,
+          phase: "running",
+          queuedCount: 0,
+        },
+        {
+          agentParticipantId: "agent-pi",
+          taskRequestId: "task-handoff",
+          queuedCount: 0,
+        },
+      ],
+      sendTaskInterrupt,
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-handoff"))
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
+      "OpenCode · Running"
+    )
+    fireEvent.click(screen.getByTestId("task-interrupt"))
+    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-handoff", 88)
+  })
+
+  it("preserves parallel execution truth and hides singular controls when two Agents are running", () => {
+    const taskRequest: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-parallel",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-a",
+        summary: "Parallel Task",
+      },
+    }
+    const admission: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "text",
+      sequence: 2,
+      text: "@A and @B work on this Task",
+      taskRequestId: "task-parallel",
+      targets: ["agent-a", "agent-b"],
+    }
+    const sendTaskInterrupt = vi.fn()
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      messages: [taskRequest, admission],
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-a",
+          name: "A",
+          kind: "agent",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-b",
+          name: "B",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      taskExecutions: [
+        {
+          agentParticipantId: "agent-a",
+          taskRequestId: "task-parallel",
+          currentTurnSequence: 10,
+          phase: "running",
+          queuedCount: 0,
+        },
+        {
+          agentParticipantId: "agent-b",
+          taskRequestId: "task-parallel",
+          currentTurnSequence: 20,
+          phase: "running",
+          queuedCount: 0,
+        },
+      ],
+      sendTaskInterrupt,
+      localParticipantId: "human-local",
+      getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-parallel"))
+
+    expect(screen.getByTestId("task-execution-ambiguous")).toHaveTextContent(
+      "Multiple Agents are running this Task"
+    )
+    expect(screen.queryByTestId("task-interrupt")).toBeNull()
+    expect(screen.queryByTestId("task-interrupt-and-send")).toBeNull()
+    expect(sendTaskInterrupt).not.toHaveBeenCalled()
+  })
+
   it("renders the Runtime execution projection and its structured controls", () => {
     const taskRequest: Message = {
       peerId: "human-local",
@@ -1340,7 +1522,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
   })
 
-  it("marks a non-terminal Task unavailable and disables its composer", () => {
+  it("keeps an orphaned Task's composer reachable only for an explicit replacement", () => {
     const taskRequest: Message = {
       peerId: "human-local",
       name: "Hannah",
@@ -1418,8 +1600,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           muteState: false,
         },
         {
-          peerId: "agent-codex",
-          name: "Codex",
+          peerId: "agent-opencode",
+          name: "OpenCode",
           kind: "agent",
           room: "test-room",
         },
@@ -1428,10 +1610,26 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     rerender(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
-    expect(screen.queryByTestId("task-unavailable")).toBeNull()
+    expect(screen.getByLabelText("Task unavailable")).toBeInTheDocument()
+    expect(screen.getByTestId("task-replacement-needed")).toHaveTextContent(
+      "@ a connected Agent to continue this Task"
+    )
     expect(
       screen.getByLabelText("Message the room or @ an Agent")
     ).toBeEnabled()
+
+    const composer = screen.getByLabelText("Message the room or @ an Agent")
+    fireEvent.change(composer, { target: { value: "@Open" } })
+    fireEvent.keyDown(composer, { key: "Enter" })
+    fireEvent.change(composer, {
+      target: { value: "@OpenCode continue this Task" },
+    })
+    fireEvent.click(screen.getByLabelText("Send message"))
+    expect(sendTextMessage).toHaveBeenCalledWith(
+      "@OpenCode continue this Task",
+      ["agent-opencode"],
+      "task-orphan"
+    )
   })
 
   it("keeps a Task available when a secondary participating Agent is connected", () => {
