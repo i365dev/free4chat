@@ -283,6 +283,27 @@ async function pinIframeIdentity(page: Page, marker: string) {
   }, marker)
 }
 
+/** The phone people-first surface must only change Stage layout, never remount. */
+async function pinStageIdentity(page: Page, marker: string) {
+  await page.evaluate((value) => {
+    const stage = document.querySelector('[data-testid="room-stage"]')
+    if (!stage) throw new Error("room-stage missing")
+    ;(window as unknown as Record<string, unknown>).__hostCompatStage = stage
+    stage.setAttribute("data-host-compat-stage-identity", value)
+  }, marker)
+}
+
+async function stageIdentityStatus(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const stage = document.querySelector('[data-testid="room-stage"]')
+    const pinned = (window as unknown as Record<string, unknown>)
+      .__hostCompatStage
+    if (!stage || !pinned) return "missing"
+    if (stage !== pinned) return "replaced"
+    return stage.getAttribute("data-host-compat-stage-identity") ?? "unmarked"
+  })
+}
+
 async function iframeIdentityStatus(page: Page): Promise<string> {
   return page.evaluate(() => {
     const frame = document.querySelector('[data-testid="room-app-iframe"]')
@@ -337,18 +358,19 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       "opening a Room must not request microphone access"
     ).toBe(0)
     await enterLocalRoom(page, "Alice")
-    // #430 phone composition intentionally keeps the ONE Stage mount
-    // display-hidden until the Human opens the overflow sheet. The host
-    // compatibility contract still needs that same Stage surface for the App
-    // lifecycle below, so reveal it through the real phone control instead of
-    // assuming Stage is permanent chrome on every viewport.
+    // #438 makes people and Stage the initial phone surface. The Stage stays
+    // one mounted element: switching to Room chat must hide it, not recreate
+    // participant/media/App state when People is opened again.
     if (isTwoPaneRoom(page)) {
       await expect(page.getByTestId("room-stage")).toBeVisible()
     } else {
-      await expect(page.getByTestId("room-stage")).toBeHidden()
-      await page.getByTestId("room-mobile-overflow").click()
       await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
       await expect(page.getByTestId("room-stage")).toBeVisible()
+      await expect(page.getByTestId("room-mobile-overflow")).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      )
+      await pinStageIdentity(page, "people-first")
     }
     await expect(page.getByTestId("room-timeline")).toBeVisible()
     await expectNoPageOverflow(page, "joined Room")
@@ -399,6 +421,33 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       .getByTestId("fixture-session")
       .textContent()
     expect(fixtureSession).toMatch(/^[a-z0-9]{6,}$/)
+  })
+
+  await test.step("phone Room chat hides and People restores the same Stage", async () => {
+    if (isTwoPaneRoom(page)) return
+
+    // This fixture Room has no Agent, so it cannot create a canonical Task.
+    // Task selection's identical "hide Stage, give interaction the viewport"
+    // contract is covered by roomMobileComposition's real Task projection.
+    await page.getByTestId("room-mobile-sheet-close").click()
+    await expect(page.getByTestId("room-mobile-sheet")).toHaveCount(0)
+    await expect(page.getByTestId("room-stage")).toBeHidden()
+    await expect(page.getByTestId("interaction-content")).toBeVisible()
+    await expect(page.getByTestId("room-mobile-overflow")).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    )
+
+    await page.getByTestId("room-mobile-overflow").click()
+    await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
+    await expect(page.getByTestId("room-stage")).toBeVisible()
+    await expect(page.getByTestId("room-mobile-overflow")).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    )
+    expect(await stageIdentityStatus(page)).toBe("people-first")
+    expect(await iframeIdentityStatus(page)).toBe("before-fullscreen")
+    await expect(appIframe(page)).toBeVisible()
   })
 
   await test.step("enter App fullscreen and keep the exit control reachable", async () => {
