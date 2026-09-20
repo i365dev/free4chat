@@ -74,14 +74,16 @@ var builtInProviders = []Provider{
 		Environment: map[string]string{"INITIAL_AGENT_MODE": "read-only"},
 		Notes:       "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
 		Capabilities: Capabilities{
-			// Source-supported (session/list asks Codex for
-			// `cli`/`vscode`/`exec`/`appServer` threads; load/resume call
-			// threadResume) but NOT runtime-verified for the exact
-			// native-CLI -> ACP continuation path.
-			SessionContinuation: SessionContinuationSourceSupported,
+			// #440 real native CLI -> pinned ACP certification: the standard
+			// session/list returned the seeded `exec` thread (25 sessions), an
+			// invalid id failed closed, session/load selected the exact thread,
+			// and two post-load prompts retained its codeword and associated
+			// fact. This is cold/cooperative adoption only, never hot takeover.
+			SessionContinuation: SessionContinuationVerified,
 			// #421 probe: concurrent cross-session progress with correct
 			// routing observed, but no isolation suite yet, and two concurrent
-			// sessions measured ~26 processes / ~820 MB. SERIAL.
+			// sessions measured ~26 processes / ~820 MB. #440 also observed a
+			// real cancel that did not settle within 10 seconds, so SERIAL.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -155,7 +157,7 @@ var builtInProviders = []Provider{
 		// omitting `cwd` returned 0 sessions (pi-acp@0.0.33 substitutes its
 		// own last session cwd), while an explicitly empty `cwd` returned the
 		// real page across 22 project directories. Without this, "Continue
-		// session" would have shown an empty picker for the only enabled
+		// session" would have shown an empty picker for this enabled
 		// Harness.
 		SessionListGlobalCwd: types.GlobalSessionListCwdEmpty,
 		Capabilities: Capabilities{

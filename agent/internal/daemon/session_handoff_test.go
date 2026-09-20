@@ -19,7 +19,7 @@ import (
  * keeps the ACP session identity inside the request/response of the operator's
  * own CLI call, and never widens what the Runtime already enforces. These tests
  * pin that the IPC surface neither echoes the session id back nor bypasses the
- * Pi-only / one-pending-adoption rules.
+ * policy-gated / one-pending-adoption rules.
  */
 
 // handoffAdapter is a Pi-named Harness exposing the optional session
@@ -185,17 +185,17 @@ func TestHandoffListDispatchReturnsBoundedDescriptors(t *testing.T) {
 
 func TestHandoffDispatchRejectsUnknownOrUnsupportedResident(t *testing.T) {
 	d, _ := startDaemon(t)
-	// #409: eligibility is the launcher's centralized product policy. Codex is
+	// #409: eligibility is the launcher's centralized product policy. Hermes is
 	// source-supported but not runtime-verified, so its policy is disabled and
 	// its resident must be rejected even though this stub could be shaped like
 	// a session-capable adapter.
-	registerHandoffResident(t, d, "codex-handoff", "codex", &stubAdapter{name: "codex"})
+	registerHandoffResident(t, d, "hermes-handoff", "hermes", &stubAdapter{name: "hermes"})
 
 	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-adopt", InstanceID: "missing", SessionID: "native-1"}); err == nil {
 		t.Fatal("an unknown instance must be rejected")
 	}
 	for _, op := range []string{"handoff-adopt", "handoff-list"} {
-		request := &IpcRequest{Op: op, InstanceID: "codex-handoff", SessionID: "native-1"}
+		request := &IpcRequest{Op: op, InstanceID: "hermes-handoff", SessionID: "native-1"}
 		if _, err := d.Dispatch(request); err == nil || !strings.Contains(err.Error(), "not supported for this Harness") {
 			t.Fatalf("%s must reject a resident whose launcher policy is disabled, got %v", op, err)
 		}
@@ -204,19 +204,19 @@ func TestHandoffDispatchRejectsUnknownOrUnsupportedResident(t *testing.T) {
 
 // TestHandoffListRejectsAPolicyDisabledHarness proves the launcher registry is
 // the ONLY gate: the very same adapter shape is admitted for pi (enabled) and
-// refused for codex (disabled), with no Harness-name branch anywhere.
+// refused for hermes (disabled), with no Harness-name branch anywhere.
 func TestHandoffListRejectsAPolicyDisabledHarness(t *testing.T) {
 	d, _ := startDaemon(t)
 	page := harness.ACPSessionPage{Sessions: []harness.ACPSessionInfo{{
 		SessionID: "native-pi-1", Cwd: "/workspace/project", Title: "Native Pi conversation",
 	}}}
 	registerHandoffResident(t, d, "policy-pi", "pi", &handoffAdapter{stubAdapter: &stubAdapter{name: "pi"}, page: page})
-	registerHandoffResident(t, d, "policy-codex", "codex", &handoffAdapter{stubAdapter: &stubAdapter{name: "codex"}, page: page})
+	registerHandoffResident(t, d, "policy-hermes", "hermes", &handoffAdapter{stubAdapter: &stubAdapter{name: "hermes"}, page: page})
 
 	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "policy-pi"}); err != nil {
 		t.Fatalf("the enabled launcher must be admitted: %v", err)
 	}
-	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "policy-codex"}); err == nil {
+	if _, err := d.Dispatch(&IpcRequest{Op: "handoff-list", InstanceID: "policy-hermes"}); err == nil {
 		t.Fatal("the disabled launcher must be refused")
 	}
 }
@@ -293,15 +293,15 @@ func TestDaemonProjectsTheLauncherTaskSessionPolicy(t *testing.T) {
 	if enabledFeatures == nil || !enabledFeatures.TaskSessionContinuation {
 		t.Fatalf("a pi resident must advertise Task Session Continuation: %+v", enabledFeatures)
 	}
-	disabled := newDaemonRuntimeForPolicy(t, "codex", false)
-	disabledFeatures := disabled.CurrentRuntimeFeatures()
-	if disabledFeatures != nil && disabledFeatures.TaskSessionContinuation {
-		t.Fatalf("a non-verified Harness must not advertise Task Session Continuation: %+v", disabledFeatures)
+	enabledCodex := newDaemonRuntimeForPolicy(t, "codex", true)
+	enabledCodexFeatures := enabledCodex.CurrentRuntimeFeatures()
+	if enabledCodexFeatures == nil || !enabledCodexFeatures.TaskSessionContinuation {
+		t.Fatalf("a verified Codex resident must advertise Task Session Continuation: %+v", enabledCodexFeatures)
 	}
 	// #421 execution reconciliation is a build-level feature: it is advertised
 	// for EVERY launcher, independently of the continuation policy above.
-	if disabledFeatures == nil || !disabledFeatures.TaskExecutionReconciliation {
-		t.Fatalf("execution reconciliation is not launcher-gated: %+v", disabledFeatures)
+	if enabledCodexFeatures == nil || !enabledCodexFeatures.TaskExecutionReconciliation {
+		t.Fatalf("execution reconciliation is not launcher-gated: %+v", enabledCodexFeatures)
 	}
 }
 

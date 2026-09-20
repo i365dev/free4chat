@@ -46,7 +46,7 @@ func TestBuiltInProvidersMatchPreviousLauncherPolicy(t *testing.T) {
 			id: "codex", command: "npx", args: []string{"-y", "@agentclientprotocol/codex-acp@1.12.0"},
 			env:      map[string]string{"INITIAL_AGENT_MODE": "read-only"},
 			maturity: types.MaturityBridge, security: types.SecurityTrustedRoom,
-			continuation: false,
+			continuation: true,
 			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeConcurrencyObserved, Concurrency: types.TaskExecutionSerial},
 		},
 		{
