@@ -1006,9 +1006,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Codex · Thinking…"
     )
-    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Running"
     )
+    expect(screen.queryByTestId("task-execution-status")).toBeNull()
     running.unmount()
 
     mockUseSfuChatRoom.mockReturnValue({
@@ -1027,7 +1028,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
-    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Running · 2 queued"
     )
     queuedBehind.unmount()
@@ -1048,7 +1049,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
-    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Queued · 1 queued"
     )
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
@@ -1071,7 +1072,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
-    expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Interrupting"
     )
     // Both interrupt controls are disabled for the exact turn already being
@@ -1112,11 +1113,86 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
       )
       fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
-      expect(screen.getByTestId("task-execution-status")).toHaveTextContent(
+      expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
         expected
       )
       view.unmount()
     }
+  })
+
+  it("keeps a Task delivery error in the affected Task when switching views", () => {
+    const taskA: Message = {
+      peerId: "human-local",
+      name: "Hannah",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      sequence: 1,
+      collab: {
+        requestId: "task-unavailable",
+        kind: "request",
+        fromParticipantId: "human-local",
+        targetParticipantId: "agent-a",
+        summary: "Unavailable Agent",
+      },
+    }
+    const taskB: Message = {
+      ...taskA,
+      sequence: 2,
+      collab: {
+        ...taskA.collab!,
+        requestId: "task-healthy",
+        targetParticipantId: "agent-b",
+        summary: "Healthy Agent",
+      },
+    }
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      localParticipantId: "human-local",
+      messages: [taskA, taskB],
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-a",
+          name: "Unavailable",
+          kind: "agent",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-b",
+          name: "Healthy",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      taskLocalError: {
+        taskRequestId: "task-unavailable",
+        message:
+          "That Agent is no longer in this Room. Choose a connected Agent.",
+      },
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-unavailable"))
+    expect(screen.getByTestId("task-local-error")).toHaveTextContent(
+      "That Agent is no longer in this Room. Choose a connected Agent."
+    )
+    expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
+      "That Agent is no longer in this Room"
+    )
+
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-healthy"))
+    expect(screen.queryByTestId("task-local-error")).toBeNull()
   })
 
   it("sends one structured interrupt & send for a text draft only", () => {

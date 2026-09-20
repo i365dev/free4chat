@@ -453,6 +453,23 @@ function userFacingRoomError(error: string | undefined): string {
   }
 }
 
+function taskLocalErrorMessage(error: string | undefined): string {
+  switch (error) {
+    case "task_target_not_in_room":
+      return "No connected Agent is available for this task. Choose one to continue."
+    case "task_target_not_agent":
+      return "Choose a connected Agent for this task."
+    case "unknown_task_request":
+      return "This task is no longer available."
+    case "task_agent_not_reachable":
+      return "This task's Agent is not reachable right now."
+    case "instruction_queued_interrupt_unavailable":
+      return "Your instruction was queued, but the current turn could not be interrupted."
+    default:
+      return "This task could not complete that action."
+  }
+}
+
 function isAgentImage(file: File): boolean {
   return AGENT_IMAGE_TYPES.has(file.type)
 }
@@ -574,6 +591,8 @@ interface SfuServerMessage {
   }
   message?: SfuMessage
   error?: string
+  /** Present only for feedback caused by one canonical Task interaction. */
+  taskRequestId?: string
   requestId?: string
   expiresAt?: number
   activity?: AgentActivityProjection | null
@@ -681,6 +700,11 @@ export function useSfuChatRoom(
   // from `error`: a control race must never raise the Room-wide failure
   // banner, and it clears itself.
   const [taskControlNotice, setTaskControlNotice] = useState("")
+  const [taskControlNoticeTaskRequestId, setTaskControlNoticeTaskRequestId] =
+    useState<string | undefined>(undefined)
+  const [taskLocalError, setTaskLocalError] = useState<
+    { taskRequestId: string; message: string } | undefined
+  >(undefined)
   const taskControlNoticeTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null)
@@ -3109,11 +3133,17 @@ export function useSfuChatRoom(
         // never go through the Room-wide error banner, and they never displace
         // a genuine error that is already showing.
         setTaskControlNotice(taskControlNoticeMessage(message.notice))
+        setTaskControlNoticeTaskRequestId(
+          typeof message.taskRequestId === "string"
+            ? message.taskRequestId
+            : undefined
+        )
         if (taskControlNoticeTimerRef.current)
           clearTimeout(taskControlNoticeTimerRef.current)
         taskControlNoticeTimerRef.current = setTimeout(() => {
           taskControlNoticeTimerRef.current = null
           setTaskControlNotice("")
+          setTaskControlNoticeTaskRequestId(undefined)
         }, TASK_CONTROL_NOTICE_MS)
       } else if (
         message.type === "trackPublished" &&
@@ -3281,7 +3311,14 @@ export function useSfuChatRoom(
         }
         pendingRuntimeProviderClaimsRef.current.clear()
         runtimeProviderClaimAttemptRef.current = null
-        setError(userFacingRoomError(message.error))
+        if (typeof message.taskRequestId === "string") {
+          setTaskLocalError({
+            taskRequestId: message.taskRequestId,
+            message: taskLocalErrorMessage(message.error),
+          })
+        } else {
+          setError(userFacingRoomError(message.error))
+        }
       } else if (
         message.type === "task-session-list-result" &&
         typeof message.requestId === "string"
@@ -4747,6 +4784,8 @@ export function useSfuChatRoom(
     agentActivities,
     taskExecutions,
     taskControlNotice,
+    taskControlNoticeTaskRequestId,
+    taskLocalError,
     setAgentVoice,
     createRuntimeProviderClaim,
     connectLocalRuntime,

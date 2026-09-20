@@ -117,13 +117,10 @@ export function buildTaskProjections(messages: Message[]): TaskProjection[] {
 }
 
 export function roomMessagesForView(messages: Message[]): Message[] {
-  const retainedRequestIds = new Set(
-    messages
-      .filter((message) => message.collab?.kind === "request")
-      .map((message) => message.collab!.requestId)
-  )
-  return messages.filter((message) => {
-    const requestId = message.taskRequestId ?? message.collab?.requestId
-    return !requestId || !retainedRequestIds.has(requestId)
-  })
+  // A Task correlation is a scope boundary, not a hint that is valid only
+  // while the originating request remains in this bounded browser ring. Once
+  // the request is evicted, treating a retained correlated message as Room
+  // text would widen its scope and leak private Task output into the Room.
+  // Unknown Task identity therefore fails closed for the Room view.
+  return messages.filter((message) => !isTaskCorrelatedMessage(message))
 }

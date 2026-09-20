@@ -275,6 +275,29 @@ describe("Task scope projection", () => {
     ).toEqual({ ok: false, error: "task_target_not_in_room" })
   })
 
+  it("allows an explicit Human handoff when every existing Task Agent is offline", () => {
+    const roster: Record<string, RoomParticipant> = {
+      ...participants(),
+      "agent-a": participant("agent-a", "agent", false),
+    }
+    const index = buildTaskProjectionIndex([request()], roster)
+    const resolution = resolveTaskRequest(index, "task-T", roster)
+    if (resolution.ok === false) throw new Error("canonical task missing")
+
+    // The canonical Task remains resolvable, but an unaddressed follow-up has
+    // no live executor and must not select agent-b arbitrarily.
+    expect(resolution.agentParticipantIds).toEqual([])
+    expect(resolution.primaryAgentParticipantId).toBeUndefined()
+    expect(
+      resolveHumanTaskTargets(resolution, roster.human, roster, undefined, 8)
+    ).toEqual({ ok: false, error: "task_target_not_in_room" })
+
+    // A Human can explicitly admit a currently connected replacement Agent.
+    expect(
+      resolveHumanTaskTargets(resolution, roster.human, roster, ["agent-b"], 8)
+    ).toEqual({ ok: true, targets: ["agent-b"] })
+  })
+
   it("lets a participating Agent extend the Task but rejects a forged sender", () => {
     const index = buildTaskProjectionIndex([request()], participants())
     const resolution = resolveTaskRequest(index, "task-T", participants())

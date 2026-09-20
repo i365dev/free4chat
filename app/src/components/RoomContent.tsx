@@ -337,11 +337,11 @@ export default function RoomContent({
     string | undefined
   >(undefined)
   const [roomAppsLauncherOpen, setRoomAppsLauncherOpen] = useState(false)
-  // Phone composition: below `md` the participant/Stage panel is a
-  // deliberately secondary surface, so exactly ONE boolean decides whether the
-  // `⋯` sheet reveals it. At `md` and above this state is irrelevant and the
-  // ordinary split layout is untouched.
+  // Phone composition keeps ONE mounted participant/Stage panel. A first
+  // ordinary mobile entry opens it so people and voice presence lead; explicit
+  // Room chat or Task selection closes it and gives interaction the viewport.
   const [mobileRoomSheetOpen, setMobileRoomSheetOpen] = useState(false)
+  const mobileSurfaceInitialized = useRef(false)
   // Core's Stage/Chat split breakpoint, also used to size the inline recent set
   // and to decide between the desktop popover and the phone-fitted launcher.
   const [isMd, setIsMd] = useState(false)
@@ -438,6 +438,8 @@ export default function RoomContent({
     agentActivities,
     taskExecutions,
     taskControlNotice,
+    taskControlNoticeTaskRequestId,
+    taskLocalError,
     roomAppsEnabled,
     sendRoomAppMessage,
     subscribeRoomAppMessages,
@@ -674,6 +676,17 @@ export default function RoomContent({
   const activeTaskExecutionLabel = activeTaskExecution
     ? taskExecutionLabel(activeTaskExecution)
     : undefined
+  const activeTaskLocalError =
+    activeTask && taskLocalError?.taskRequestId === activeTask.requestId
+      ? taskLocalError.message
+      : ""
+  const activeTaskControlNotice =
+    activeTask &&
+    taskControlNotice &&
+    (taskControlNoticeTaskRequestId === undefined ||
+      taskControlNoticeTaskRequestId === activeTask.requestId)
+      ? taskControlNotice
+      : ""
   const activeTaskInterrupting =
     activeTaskExecution?.phase === "interrupting" &&
     activeTaskExecution.currentTurnSequence !== undefined
@@ -1415,11 +1428,20 @@ export default function RoomContent({
   )
 
   useEffect(() => {
-    const check = () => setIsMd(window.innerWidth >= 768)
+    const check = () => {
+      const nextIsMd = window.innerWidth >= 768
+      setIsMd(nextIsMd)
+      if (!mobileSurfaceInitialized.current) {
+        mobileSurfaceInitialized.current = true
+        // A direct Room App is an explicit visual-entry intent. Every ordinary
+        // phone Room starts people-first instead.
+        if (!nextIsMd && !initialRoomAppId) setMobileRoomSheetOpen(true)
+      }
+    }
     check()
     window.addEventListener("resize", check)
     return () => window.removeEventListener("resize", check)
-  }, [])
+  }, [initialRoomAppId])
 
   // Phone sheet geometry. The participant/Stage panel is ONE mount — one
   // participant list, one Stage, one launcher, one resident App host — so the
@@ -1439,6 +1461,12 @@ export default function RoomContent({
   useEffect(() => {
     if (isMd) setMobileRoomSheetOpen(false)
   }, [isMd])
+
+  useEffect(() => {
+    // Selecting a Task is deliberate interaction intent. Do not leave the
+    // people-first sheet over the Task's full-height conversation.
+    if (!isMd && activeInteraction !== "room") setMobileRoomSheetOpen(false)
+  }, [activeInteraction, isMd])
 
   // Escape closes the phone sheet, exactly like its explicit close control.
   useEffect(() => {
@@ -1830,19 +1858,18 @@ export default function RoomContent({
               {mobileRoomSignal}
             </p>
           </div>
-          {/* Phone overflow: the SINGLE entry point for the secondary Room
-              surfaces. It reveals the one participant/Stage panel that already
-              exists — no control is duplicated into a second header or sheet. */}
+          {/* The one mounted participant/Stage panel is discoverable by purpose,
+              not a generic overflow glyph. */}
           <button
             type="button"
             data-testid="room-mobile-overflow"
             aria-expanded={mobileSheetVisible}
-            aria-label="More room controls"
-            title="More room controls"
+            aria-label="Show participants and Stage"
+            title="Show participants and Stage"
             onClick={() => setMobileRoomSheetOpen((open) => !open)}
-            className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-sm leading-none text-gray-300 hover:bg-gray-700 md:hidden"
+            className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 md:hidden"
           >
-            <span aria-hidden="true">⋯</span>
+            People ({participants.length})
           </button>
           <button
             type="button"
@@ -1863,11 +1890,9 @@ export default function RoomContent({
             mobileSheetVisible ? "flex" : "hidden md:flex"
           } flex-none flex-col gap-2 lg:ml-auto lg:flex-row lg:items-center lg:gap-2`}
         >
-          {/* #421: on a phone every control here is SECONDARY to supervising
-              the Agent, so the whole toolbar belongs to the `⋯` overflow rather
-              than to permanent chrome. It is the same single element either
-              way — below `md` the overflow decides whether it is displayed, and
-              at `md`+ it is always the ordinary toolbar. */}
+          {/* #421: phone controls are secondary to people and Stage. They are
+              shown only while that people-first surface is open, and remain a
+              single mounted toolbar at every breakpoint. */}
           <div
             data-testid="room-header-toolbar"
             className={`${
@@ -2042,16 +2067,19 @@ export default function RoomContent({
           {mobileSheetVisible && (
             <div className="flex flex-none items-center justify-between gap-2 border-b border-gray-800 bg-gray-950/80 px-3 py-2">
               <span className="min-w-0 truncate text-xs uppercase tracking-wide text-gray-400">
-                Participants &amp; Stage
+                People in this Room
               </span>
               <button
                 type="button"
                 data-testid="room-mobile-sheet-close"
-                onClick={() => setMobileRoomSheetOpen(false)}
-                aria-label="Close participants and Stage"
+                onClick={() => {
+                  setActiveInteraction("room")
+                  setMobileRoomSheetOpen(false)
+                }}
+                aria-label="Open Room chat"
                 className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
               >
-                Close
+                Room chat
               </button>
             </div>
           )}
@@ -2530,9 +2558,11 @@ export default function RoomContent({
             className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             {(activeTaskActivities.length > 0 ||
+              Boolean(activeTaskExecutionLabel?.label) ||
               activeTaskTurn !== undefined ||
               activeTaskInterrupting ||
-              Boolean(taskControlNotice)) && (
+              Boolean(activeTaskLocalError) ||
+              Boolean(activeTaskControlNotice)) && (
               <div
                 data-testid="task-agent-activity"
                 className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-800 bg-gray-950/40 px-3 py-1.5 text-xs text-blue-200/80"
@@ -2554,33 +2584,41 @@ export default function RoomContent({
                     the Room reports as Running must never look idle just
                     because the separate AgentActivity projection is missing
                     (hibernation, reconciliation). */}
-                {activeTaskActivities.length === 0 &&
-                  (activeTaskExecutionLabel?.label ?? "") !== "" && (
-                    <span>
-                      {activeTask?.targetParticipantId
-                        ? `${
-                            participants.find(
-                              (candidate) =>
-                                candidate.peerId ===
-                                activeTask.targetParticipantId
-                            )?.name ?? "Agent"
-                          } · `
-                        : ""}
-                      {activeTaskExecutionLabel?.label}
-                      {activeTaskExecutionLabel?.detail
-                        ? ` · ${activeTaskExecutionLabel.detail}`
-                        : ""}
-                    </span>
-                  )}
+                {(activeTaskExecutionLabel?.label ?? "") !== "" && (
+                  <span>
+                    {activeTask?.targetParticipantId
+                      ? `${
+                          participants.find(
+                            (candidate) =>
+                              candidate.peerId ===
+                              activeTask.targetParticipantId
+                          )?.name ?? "Agent"
+                        } · `
+                      : ""}
+                    {activeTaskExecutionLabel?.label}
+                    {activeTaskExecutionLabel?.detail
+                      ? ` · ${activeTaskExecutionLabel.detail}`
+                      : ""}
+                  </span>
+                )}
                 {/* #421 Fix G: benign control outcomes are transient LOCAL
                     feedback. They never become a Room-wide sticky banner. */}
-                {taskControlNotice ? (
+                {activeTaskControlNotice ? (
                   <span
                     role="status"
                     data-testid="task-control-notice"
                     className="text-gray-300"
                   >
-                    {taskControlNotice}
+                    {activeTaskControlNotice}
+                  </span>
+                ) : null}
+                {activeTaskLocalError ? (
+                  <span
+                    role="alert"
+                    data-testid="task-local-error"
+                    className="text-amber-200"
+                  >
+                    {activeTaskLocalError}
                   </span>
                 ) : null}
                 {activeTask && activeTaskInterrupting && (
@@ -2629,9 +2667,6 @@ export default function RoomContent({
                 taskExecution={
                   activeTask
                     ? {
-                        label: activeTaskExecutionLabel?.label ?? "",
-                        detail: activeTaskExecutionLabel?.detail,
-                        availability: activeTaskExecution?.availability,
                         interrupting: activeTaskInterrupting,
                         // #421 Fix C: interrupt authority is the AUTHORITATIVE
                         // execution projection's exact current turn. The

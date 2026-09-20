@@ -499,7 +499,7 @@ describe("RoomSession Task interrupt (#409)", () => {
       turnSequence: 42,
     })
 
-    expect(test.errorFrames()).toEqual(["task_target_not_in_room"])
+    expect(test.errorFrames()).toEqual(["task_agent_not_reachable"])
     expect(test.agentControls("agent-a")).toEqual([])
   })
 

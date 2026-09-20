@@ -25,7 +25,8 @@ export type TaskRequestResolution = {
   ok: true
   requestId: string
   request: CollabEvent
-  primaryAgentParticipantId: string
+  /** The existing connected endpoint for implicit Human follow-ups, if any. */
+  primaryAgentParticipantId?: string
   agentParticipantIds: string[]
 }
 
@@ -155,9 +156,6 @@ export function resolveTaskRequest(
   const agentParticipantIds = [...task.participatingAgentIds].filter((id) =>
     connectedAgent(participants, id)
   )
-  if (agentParticipantIds.length === 0)
-    return { ok: false, error: "task_target_not_in_room" }
-
   const primaryAgentParticipantId = connectedAgent(
     participants,
     task.request.targetParticipantId
@@ -205,8 +203,14 @@ export function resolveHumanTaskTargets(
   if (targets && !Array.isArray(targets))
     return { ok: false, error: targets.error }
   const validTargets = targets as string[] | undefined
-  if (!validTargets || validTargets.length === 0)
+  if (!validTargets || validTargets.length === 0) {
+    // A canonical Task may outlive its original Agent, but that never grants
+    // implicit routing to some other Agent in the Room. An explicit Human
+    // target below can deliberately admit a connected replacement instead.
+    if (!resolution.primaryAgentParticipantId)
+      return { ok: false, error: "task_target_not_in_room" }
     return { ok: true, targets: [resolution.primaryAgentParticipantId] }
+  }
 
   for (const targetId of validTargets) {
     const target = participants[targetId]

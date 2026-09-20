@@ -185,7 +185,8 @@ describe("task interaction projections (#309)", () => {
     expect(roomMessagesForView(messages)).toEqual([])
   })
 
-  it("keeps scoped messages in Room when their canonical request was evicted", () => {
+  it("never leaks a retained Task message into Room after its request is evicted", () => {
+    const task = request("evicted-request", "Evicted task")
     const orphan: Message = {
       peerId: "agent-x",
       name: "Agent",
@@ -194,8 +195,26 @@ describe("task interaction projections (#309)", () => {
       text: "orphaned task output",
       taskRequestId: "evicted-request",
     }
+    const retained = [
+      task,
+      ...Array.from(
+        { length: 99 },
+        (_, index): Message => ({
+          peerId: "human",
+          name: "Human",
+          kind: "human",
+          type: "text",
+          text: `room message ${index}`,
+        })
+      ),
+      orphan,
+    ].slice(-100)
 
+    // The canonical request has fallen out of the bounded message ring, as it
+    // can after the original Agent has left and a browser rejoins late.
+    expect(retained).not.toContain(task)
     expect(buildTaskProjections([orphan])).toEqual([])
-    expect(roomMessagesForView([orphan])).toEqual([orphan])
+    expect(roomMessagesForView(retained)).not.toContain(orphan)
+    expect(roomMessagesForView(retained)).toHaveLength(99)
   })
 })
