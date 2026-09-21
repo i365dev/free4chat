@@ -423,8 +423,9 @@ export default function Home() {
                     Multi-Agent Collaboration →
                   </Link>
                   <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Connect independently running Agents across machines without
-                    a shared workspace.
+                    Connect independently running Agents across machines, then
+                    leave and supervise focused Tasks later from another browser
+                    or phone.
                   </p>
                 </div>
               </div>

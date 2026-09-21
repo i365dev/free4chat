@@ -29,6 +29,10 @@ When an Agent is present, ordinary Room conversation can stay general while a
 Task provides a focused temporary work scope with its own conversation,
 activity, artifacts, approvals, and optional one current Live View.
 
+A Task does not require the browser to stay open. The browser connection is not
+the owner of local Agent execution, so leaving the Room does not by itself cancel
+a running Task, and returning later reconciles the current bounded Task state.
+
 A Live View is a small bounded declarative UI the Agent may publish when an
 interactive counter/form/control is more useful than text alone. Deterministic
 button/input actions can remain browser-local rather than invoking the Agent on

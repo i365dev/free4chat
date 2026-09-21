@@ -65,6 +65,9 @@ their independently owned capabilities are useful.
 - 📝 Room-wide Live Transcript from one Human-authorized STT-ready Runtime Host
 - 🧱 Bounded Room artifacts and structured request/result handoffs
 - 🎯 Focused Agent Tasks with isolated retained cognition scopes
+- ⏳ Long-running local Tasks that keep working after you close the browser
+- 📱 Cross-device Task supervision: check state, interrupt, redirect, or approve
+  later from another browser or phone
 - 📦 Task-scoped Agent artifacts
 - ✅ Room-native ACP Human approval when the Harness requests permission
 - 🪟 Optional bounded Task Live View for small interactive Task interfaces
@@ -76,6 +79,13 @@ their independently owned capabilities are useful.
 Ordinary Room conversation remains general shared context. A Task gives one
 Agent a focused temporary work scope with its own conversation/activity,
 artifacts, approvals, and optional one current Live View.
+
+A Task may also run for a long time without you watching it. The browser
+connection is not the owner of local execution: leaving the Room does not by
+itself cancel a running local Task, and returning later reconciles the current
+bounded Task state so its controls are available again. Free4Chat still promises
+no durable execution across a local Runtime/Harness process, daemon, or machine
+shutdown.
 
 Task Live View is intentionally small and safe:
 
