@@ -353,7 +353,12 @@ html {
 
 /* A restrained, presentation-only starfield keeps the participant side
    connected to the homepage's retro-space language without competing with
-   cards, controls, or shared-screen content. */
+   cards, controls, or shared-screen content.
+
+   The star field is deliberately static (#449). Animating background-position
+   across this panel repainted millions of device pixels and held a visible
+   idle Room at roughly 15-16% main-thread CPU, so the drift was removed
+   instead of being moved onto a compositor layer. */
 .room-participants-panel::before,
 .room-participants-panel::after {
   position: absolute;
@@ -381,7 +386,6 @@ html {
     );
   background-size: 132px 118px, 196px 174px, 224px 206px;
   opacity: 0.5;
-  animation: room-cosmos-stars 46s linear infinite;
 }
 
 .room-participants-panel::after {
@@ -406,21 +410,19 @@ html {
   z-index: 1;
 }
 
-@keyframes room-cosmos-stars {
-  from {
-    background-position: 0 0, 0 0, 0 0;
-  }
-  to {
-    background-position: 132px 88px, -196px 116px, 224px -124px;
-  }
-}
-
 @keyframes room-cosmos-nebula {
   from {
     transform: scale(1.08) translate3d(-1%, -1%, 0);
   }
   to {
     transform: scale(1.14) translate3d(2%, 1%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The nebula drift is the only remaining decorative Room cosmos motion. */
+  .room-participants-panel::after {
+    animation: none;
   }
 }
 
