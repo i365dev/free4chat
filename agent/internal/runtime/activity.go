@@ -20,16 +20,39 @@ func configureActivityHandler(r *ResidentRuntime) {
 	}); ok {
 		setter.SetActivityHandler(r.observeHarnessActivity)
 	}
-	r.options.Adapter.OnFailure(func(error) {
+	markFailure := func(scopes []string, _ error) {
 		// Unexpected Harness process death is the ONE boundary that means a
 		// Task's retained Harness session is gone. Room/resident transport
 		// reconnects are not session loss and must never publish it. An adopted
 		// Task additionally stops being eligible for a fresh session.
-		r.noteAdoptedScopeLoss()
-		r.noteTaskSessionLoss()
-		r.clearActivity()
-		r.failClosedResidentMediaState()
-	})
+		if scopes == nil {
+			r.noteAdoptedScopeLoss()
+			r.noteTaskSessionLoss()
+			r.clearActivity()
+			r.failClosedResidentMediaState()
+			return
+		}
+		failed := make(map[string]struct{}, len(scopes))
+		roomFailed := false
+		for _, scope := range scopes {
+			scope = normalizeScope(scope)
+			failed[scope] = struct{}{}
+			if scope == roomScope {
+				roomFailed = true
+			}
+		}
+		r.noteAdoptedScopeLossFor(failed)
+		r.noteTaskSessionLossFor(failed)
+		r.clearActivityFor(failed)
+		if roomFailed {
+			r.failClosedResidentMediaState()
+		}
+	}
+	if notifier, ok := r.options.Adapter.(types.ScopedAdapterFailureNotifier); ok {
+		notifier.OnScopedFailure(markFailure)
+	} else {
+		r.options.Adapter.OnFailure(func(err error) { markFailure(nil, err) })
+	}
 }
 
 func validActivityScope(scope string) bool {
@@ -228,6 +251,29 @@ func (r *ResidentRuntime) clearActivity() {
 	// identity it described. With concurrency there may be several, so this is
 	// a whole-map reset rather than the single marker the serial model kept.
 	r.interrupts = make(map[string]int64)
+	r.activityMu.Unlock()
+	r.turnControlMu.Unlock()
+	for _, scope := range entries {
+		r.publishActivity(scope, "", 0)
+	}
+}
+
+// clearActivityFor resets only projections owned by provider processes that
+// failed. A healthy isolated lane keeps its current turn and interrupt state.
+func (r *ResidentRuntime) clearActivityFor(failed map[string]struct{}) {
+	if len(failed) == 0 {
+		return
+	}
+	r.turnControlMu.Lock()
+	r.activityMu.Lock()
+	var entries []string
+	for scope := range failed {
+		if _, ok := r.activities[scope]; ok {
+			entries = append(entries, scope)
+			delete(r.activities, scope)
+		}
+		delete(r.interrupts, scope)
+	}
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
 	for _, scope := range entries {
