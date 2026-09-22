@@ -853,7 +853,10 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	retained, retainedOK := a.retainedSessions[scope]
 	a.mu.Unlock()
 	if retainedOK {
-		if err := a.LoadSession(scope, retained.sessionID, retained.cwd); err != nil {
+		// EnsureSessionFor already owns scopedSessionMu. Use the lock-free
+		// implementation so exact re-materialization cannot deadlock on the
+		// same non-reentrant mutex.
+		if err := a.loadSession(scope, retained.sessionID, retained.cwd); err != nil {
 			return fmt.Errorf("load retained ACP session: %w", err)
 		}
 		a.mu.Lock()

@@ -294,7 +294,15 @@ func (a *ACPAdapter) LoadSession(scope string, sessionID string, cwd string) err
 		a.scopedSessionMu.Lock()
 		defer a.scopedSessionMu.Unlock()
 	}
+	return a.loadSession(scope, sessionID, cwd)
+}
 
+// loadSession is the shared implementation for the public load primitive and
+// EnsureSessionFor's retained-session path. Callers that load a task scope
+// must already hold scopedSessionMu; keeping this helper separate avoids a
+// non-reentrant mutex deadlock while preserving serialization of scoped
+// session creation and replacement.
+func (a *ACPAdapter) loadSession(scope string, sessionID string, cwd string) error {
 	a.mu.Lock()
 	if a.stdin == nil || a.caps == nil {
 		a.mu.Unlock()

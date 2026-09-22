@@ -2216,6 +2216,40 @@ func TestIdleReapReloadsTheExactNativeSession(t *testing.T) {
 	if adapter.SessionGeneration() <= loadedGeneration {
 		t.Fatalf("exact reload must advance the process/session generation: %d -> %d", loadedGeneration, adapter.SessionGeneration())
 	}
+
+	// The scoped retained path must use the same exact load primitive while
+	// EnsureSessionFor already holds its serialization mutex. This catches a
+	// regression where the non-reentrant lock is acquired a second time.
+	if err := adapter.EnsureSessionFor("task:reap"); err != nil {
+		t.Fatalf("ensure scoped session failed: %v", err)
+	}
+	scopedBefore := adapter.SessionDiagnostics()
+	var scopedSessionID string
+	var scopedGeneration int64
+	for _, diagnostic := range scopedBefore {
+		if diagnostic.Scope == "task:reap" {
+			scopedSessionID = diagnostic.SessionID
+			scopedGeneration = diagnostic.Generation
+		}
+	}
+	if scopedSessionID == "" || scopedGeneration == 0 {
+		t.Fatalf("missing scoped session before second reap: %+v", scopedBefore)
+	}
+	if err := adapter.ReapIdle(); err != nil {
+		t.Fatalf("second reap failed: %v", err)
+	}
+	if err := adapter.EnsureSessionFor("task:reap"); err != nil {
+		t.Fatalf("scoped exact reload failed: %v", err)
+	}
+	var scopedAfter types.HarnessSessionDiagnostic
+	for _, diagnostic := range adapter.SessionDiagnostics() {
+		if diagnostic.Scope == "task:reap" {
+			scopedAfter = diagnostic
+		}
+	}
+	if scopedAfter.SessionID != scopedSessionID || scopedAfter.Generation <= scopedGeneration {
+		t.Fatalf("scoped reap replaced native identity or generation: before=%+v after=%+v", types.HarnessSessionDiagnostic{Scope: "task:reap", SessionID: scopedSessionID, Generation: scopedGeneration}, scopedAfter)
+	}
 }
 
 func TestRenderUntrustedRoomTurnInvariants(t *testing.T) {
