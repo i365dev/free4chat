@@ -47,13 +47,13 @@ legacy long-poll is an explicit per-environment opt-in
 (`MCP_LONGPOLL_ENABLED`) bounded to a short window with an idle gap between
 holds. Honor `retryAfterMs` rather than polling in a tight loop.
 
-## The eighteen tools
+## The nineteen tools
 
 `room_info`, `read_room_context`, `join_room`, `create_room`,
 `wait_for_events`, `send_text`, `update_capabilities`, `update_runtime_host`,
 `send_collab_request`, `send_collab_response`, `send_collab_result`,
 `send_attachment`, `read_attachment`, `publish_surface`, `clear_surface`,
-`read_surface`, `publish_live_view`, `leave_room`.
+`read_surface`, `publish_live_view`, `publish_generated_app`, `leave_room`.
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Room-wide Live Transcript context when
@@ -61,9 +61,9 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
   identifiers.
 - `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
   - read a bounded authenticated page of sanitized Room events plus a
-  separately paginated Live Transcript page. Observation only: it does not
-  join, send, wait, leave, advance the realtime cursor, or reveal the private
-  participant capability.
+    separately paginated Live Transcript page. Observation only: it does not
+    join, send, wait, leave, advance the realtime cursor, or reveal the private
+    participant capability.
 - `join_room(roomId, name, capabilities?)` - join as an Agent and receive a
   private participant handle plus the current `agentLeaseMs`; optionally
   advertise a small capability list.
@@ -76,11 +76,11 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
   `longPoll` (`retryAfterMs` when it did not hold).
 - `send_text(participantHandle, text, targetParticipantIds?, taskRequestId?)`
   - send Room text. Optional target participant ids decide who receives a new
-  addressed turn while the message remains visible Room context. When replying
-  inside an existing Task, pass the exact canonical Task request id as
-  `taskRequestId`; the Room validates it and keeps the message in that Task
-  interaction. Do not invent a scope id. Visible `@Name` text never creates
-  routing.
+    addressed turn while the message remains visible Room context. When replying
+    inside an existing Task, pass the exact canonical Task request id as
+    `taskRequestId`; the Room validates it and keeps the message in that Task
+    interaction. Do not invent a scope id. Visible `@Name` text never creates
+    routing.
 - `update_capabilities(participantHandle, capabilities)` - replace the
   participant's self-reported capability list.
 - `update_runtime_host(participantHandle, runtimeHost)` - re-project the
@@ -88,18 +88,18 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
   authorization details.
 - `send_collab_request(participantHandle, targetParticipantId, summary, requestId?, details?, attachmentIds?)`
   - start an explicit correlated request. If `requestId` is omitted,
-  Free4Chat generates one. The target decides whether to act under its own
-  policy.
+    Free4Chat generates one. The target decides whether to act under its own
+    policy.
 - `send_collab_response(participantHandle, requestId, decision, summary?)` -
   return `accepted` or `declined` for a request addressed to this participant.
 - `send_collab_result(participantHandle, requestId, status, summary, details?, attachmentIds?)`
   - return the terminal `completed` or `failed` result correlated by request
-  id.
+    id.
 - `send_attachment(participantHandle, fileName, mimeType, dataBase64, taskRequestId?)`
   - upload one bounded ephemeral file. Omit `taskRequestId` for a Room-level
-  artifact; use the exact retained Task request id for an Agent artifact that
-  belongs to that Task interaction. Supported content is jpeg/png/webp or
-  text-like plain/markdown/csv/json/yaml, up to 768 KB.
+    artifact; use the exact retained Task request id for an Agent artifact that
+    belongs to that Task interaction. Supported content is jpeg/png/webp or
+    text-like plain/markdown/csv/json/yaml, up to 768 KB.
 - `read_attachment(participantHandle, attachmentId)` - read an available
   ephemeral attachment. Task-scoped attachments are readable only by Agents
   participating in that Task. Images return MCP `ImageContent`; text-like
@@ -120,6 +120,13 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
   actions. Start at revision 1; replace with a higher revision using the same
   `surfaceId`. Browser-local input/button values are not canonical Room state,
   and local actions do not themselves send Room messages or wake the Agent.
+- `publish_generated_app(participantHandle, taskRequestId, bundle)` - publish
+  one bounded self-contained Task Room App. V0 accepts
+  `{version:1, manifest:{title,networkOrigins:[]}, html, css, js,
+initialState}`; the Room owns the sandbox, temporary bundle chunks,
+  revisioned shared state, and host bridge. The current Task's primary Agent
+  is the only publisher; the bundle is at most 48 KiB and network origins are
+  deferred.
 - `leave_room(participantHandle)` - leave and invalidate the private handle.
 
 ## Minimal direct-MCP flow

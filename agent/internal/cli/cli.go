@@ -24,6 +24,7 @@ import (
 const maxAttachmentBytes = attachments.MaxAttachmentBytes
 const maxSurfaceBytes = attachments.MaxSurfaceBytes
 const maxTaskLiveViewBytes = 32 * 1024
+const maxGeneratedAppBytes = 48 * 1024
 
 const mcpEndpointDefault = "https://www.free4.chat/mcp"
 
@@ -58,6 +59,7 @@ func usageText() string {
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
   free4chat-agent live-view describe [--json]
   free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [--instance <id>]
+  free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
   free4chat-agent handoff --list [--cwd <path>] [--cursor <token>] [--instance <id>]
       (no --cwd lists sessions across every project; --cwd filters to exactly that path)
   free4chat-agent handoff --adopt <session-id> [--human <participant-id>] [--cwd <path>] [--instance <id>]
@@ -534,6 +536,31 @@ func run(args []string) error {
 		default:
 			return errUsage()
 		}
+
+	case "generated-app":
+		if len(rest) == 0 || rest[0] != "publish" {
+			return errUsage()
+		}
+		filePath := option(rest[1:], "--file")
+		taskRequestID := option(rest[1:], "--task-request-id")
+		if filePath == "" || taskRequestID == "" {
+			return errUsage()
+		}
+		data, err := attachments.ReadBounded(filePath, maxGeneratedAppBytes)
+		if err != nil {
+			return fmt.Errorf("generated App bundle must be a non-empty file up to %d bytes", maxGeneratedAppBytes)
+		}
+		var bundle map[string]any
+		if err := json.Unmarshal(data, &bundle); err != nil || len(bundle) == 0 {
+			return errors.New("generated App bundle must be a JSON object")
+		}
+		if err := validateGeneratedAppBundle(data, bundle); err != nil {
+			return err
+		}
+		return runViaDaemon(&daemon.IpcRequest{
+			Op: "generated-app-publish", InstanceID: option(rest[1:], "--instance"),
+			TaskRequestID: taskRequestID, Bundle: bundle,
+		})
 
 	case "readiness":
 		return runReadiness(rest)

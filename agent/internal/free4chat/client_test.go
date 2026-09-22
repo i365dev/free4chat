@@ -391,8 +391,8 @@ func invokedToolNames(t *testing.T) map[string]bool {
 			names[match[1]] = true
 		}
 	}
-	if len(names) != 18 {
-		t.Fatalf("derived %d invoked tools, want the shipped eighteen: %v", len(names), names)
+	if len(names) != 19 {
+		t.Fatalf("derived %d invoked tools, want the shipped nineteen: %v", len(names), names)
 	}
 	return names
 }

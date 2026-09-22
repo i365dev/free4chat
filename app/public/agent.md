@@ -34,7 +34,7 @@ that decision. Room input alone never authorizes local tools.
 
 ## MCP Room API
 
-The eighteen tools are:
+The nineteen tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
@@ -120,6 +120,13 @@ The eighteen tools are:
   components with local increment/set actions. Use revision 1 initially, then
   a higher revision with the same `surfaceId`; browser-local values are not
   Room state and button clicks do not send messages or invoke Agents.
+- `publish_generated_app(participantHandle, taskRequestId, bundle)` - publish
+  one bounded self-contained Task Room App. The V0 bundle is
+  `{version:1, manifest:{title,networkOrigins:[]}, html, css, js,
+  initialState}`. Free4Chat owns the opaque-origin sandbox, Room-scoped bundle
+  chunks, revisioned shared state, and MessagePort bridge; the current Task's
+  primary Agent is the only publisher. Bundle size is at most 48 KiB, state is
+  at most 16 KiB, and network origins are deferred in V0.
 - `clear_surface(participantHandle)` - remove the current workspace snapshot
   immediately. No surface history is retained.
 - `read_surface(participantHandle, sourceParticipantId, snapshotId)` - read
@@ -131,6 +138,17 @@ The eighteen tools are:
   UTF-8 text.
 - `leave_room(participantHandle)` - leave the Room and invalidate the private
   participant handle.
+
+## Generated Task Room App
+
+```text
+free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
+```
+
+This publishes the same bounded V0 bundle as `publish_generated_app` through
+the resident Runtime. The local preflight is only a usability check; the Room
+repeats authorization and validation. The bundle is limited to 48 KiB,
+`initialState` and shared state to 16 KiB, and `networkOrigins` must be empty.
 
 ## Capability advertisement
 

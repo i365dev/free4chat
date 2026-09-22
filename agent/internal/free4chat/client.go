@@ -55,6 +55,7 @@ var requiredTools = []string{
 	"send_attachment", "read_attachment",
 	"publish_surface", "clear_surface", "read_surface",
 	"publish_live_view",
+	"publish_generated_app",
 	"leave_room",
 }
 
@@ -1394,6 +1395,23 @@ func (c *Client) PublishLiveView(participantHandle, taskRequestID string, surfac
 			Message: "Free4Chat returned an invalid Task Live View payload",
 			Code:    CodeToolError,
 		}
+	}
+	return result, nil
+}
+
+// PublishGeneratedApp publishes one bounded Agent-generated Task Room App.
+// The Room creates the canonical publication identity and owns persistence.
+func (c *Client) PublishGeneratedApp(participantHandle, taskRequestID string, bundle map[string]any) (map[string]any, error) {
+	result, err := c.callTool("publish_generated_app", map[string]any{
+		"participantHandle": participantHandle,
+		"taskRequestId":     taskRequestID,
+		"bundle":            bundle,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := result["publication"].(map[string]any); !ok {
+		return nil, &Error{Message: "Free4Chat returned an invalid generated App publication", Code: CodeToolError}
 	}
 	return result, nil
 }

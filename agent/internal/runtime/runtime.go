@@ -2209,6 +2209,20 @@ func (r *ResidentRuntime) PublishLiveView(taskRequestID string, surface map[stri
 	return client.PublishLiveView(handle, taskRequestID, surface)
 }
 
+// PublishGeneratedApp publishes a bounded generated Task Room App. The
+// runtime performs only the authoring/preflight step; the Room is canonical.
+func (r *ResidentRuntime) PublishGeneratedApp(taskRequestID string, bundle map[string]any) (map[string]any, error) {
+	handle, err := r.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	client, ok := r.options.Client.(types.GeneratedRoomAppClient)
+	if !ok {
+		return nil, errors.New("generated Task Room App is unavailable")
+	}
+	return client.PublishGeneratedApp(handle, taskRequestID, bundle)
+}
+
 // ClearSurface removes the published snapshot.
 func (r *ResidentRuntime) ClearSurface() error {
 	handle, err := r.requireHandle()

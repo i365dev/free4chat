@@ -6,6 +6,7 @@ export type {
   TaskLiveViewScalar,
   TaskLiveViewSnapshot,
 } from "../common/taskLiveView"
+import type { GeneratedRoomAppPublication } from "../common/generatedRoomApp"
 import type { TaskLiveViewSnapshot } from "../common/taskLiveView"
 
 export type AgentActivityState =
@@ -525,6 +526,9 @@ export interface RoomState {
   // #316: one current, server-validated declarative Live View per Task.
   // Local button/input state never returns to RoomState.
   taskLiveViews?: Record<string, TaskLiveViewSnapshot>
+  // #410: Room-owned metadata for bounded Agent-generated Task Room Apps.
+  // Bundle bytes and canonical state remain in separate DO storage keys.
+  generatedApps?: Record<string, GeneratedRoomAppPublication>
   // #234: bounded standalone Room attachment metadata for the Human
   // timeline, with server-resolved sender kind. Optional in the wire
   // contract so older browser clients that cached the prior state shape
@@ -603,6 +607,7 @@ export interface RoomRecord {
   lastHeldWaitEndedAt?: number
   // #316: ephemeral current Task Live View snapshots; no history.
   taskLiveViews?: Record<string, TaskLiveViewSnapshot>
+  generatedApps?: Record<string, GeneratedRoomAppPublication>
   // #286: bounded pending permission requests. Resolved/expired requests are
   // represented in the canonical message ring and removed from this index.
   permissionRequests?: Record<string, PermissionRequestRecord>

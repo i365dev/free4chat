@@ -95,7 +95,7 @@ free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [
 ```
 
 `live-view describe --json` is the machine-authoring authority for Task Live
-Views. It prints the authoring contract of the *installed* Runtime, so the
+Views. It prints the authoring contract of the _installed_ Runtime, so the
 descriptor is version-coupled to the exact binary that will validate and
 publish the view.
 
@@ -150,6 +150,19 @@ replaces the canonical snapshot. Clicking a local button or editing a local
 input does not itself send a Room message or start a new Agent turn.
 
 See [Tasks and Live Views](../guides/tasks-and-live-views).
+
+## Generated Task Room App
+
+```text
+free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
+```
+
+The bundle is a small self-contained business/UI artifact. The installed
+Runtime performs a local preflight, then the Room repeats authorization and
+validation before storing it temporarily. V0 accepts version `1` with
+`manifest.networkOrigins: []`, HTML/CSS/JavaScript, and JSON `initialState`;
+the bundle is limited to 48 KiB and shared state to 16 KiB. Network-backed
+capabilities are intentionally deferred.
 
 ## Bounded shared context
 

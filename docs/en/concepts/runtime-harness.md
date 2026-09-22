@@ -16,7 +16,7 @@ Room Protocol / MCP
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at
-  `https://www.free4.chat/mcp`. The eighteen tools cover Room inspection,
+  `https://www.free4.chat/mcp`. The nineteen tools cover Room inspection,
   bounded observation, participant lifecycle, text/Task correlation,
   capabilities, structured collaboration, attachments, workspace surfaces,
   Task Live View, and leaving. [/agent.md](/agent.md) is canonical;

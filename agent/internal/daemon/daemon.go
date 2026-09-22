@@ -333,6 +333,15 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 			return nil, err
 		}
 		return rt.PublishLiveView(request.TaskRequestID, request.Surface)
+	case "generated-app-publish":
+		if request.TaskRequestID == "" || len(request.Bundle) == 0 {
+			return nil, errors.New("generated App publish requires taskRequestId and bundle")
+		}
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		return rt.PublishGeneratedApp(request.TaskRequestID, request.Bundle)
 	case "surface-clear":
 		rt, err := d.resolveRuntime(request.InstanceID)
 		if err != nil {

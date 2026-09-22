@@ -39,6 +39,20 @@ interface RoomAppHostProps {
     appInstanceId: string,
     payload: Record<string, unknown>
   ) => "sent" | "rate_limited" | "payload_too_large" | "delivery_unavailable"
+  sharedState?: { revision: number; state: Record<string, unknown> }
+  sendGeneratedState?: (
+    appInstanceId: string,
+    expectedRevision: number,
+    state: Record<string, unknown>
+  ) => boolean
+  subscribeGeneratedState?: (
+    listener: (message: {
+      appInstanceId: string
+      revision: number
+      state: Record<string, unknown>
+      sourceParticipantId?: string
+    }) => void
+  ) => () => void
   onClose: () => void
   onReady?: (appId: string) => void
   onEngaged?: (appId: string) => void
@@ -66,6 +80,9 @@ export default function RoomAppHost({
   subscribeUnicast,
   subscribeUnicastResults,
   sendUnicast,
+  sharedState,
+  sendGeneratedState,
+  subscribeGeneratedState,
   onClose,
   onReady,
   onEngaged,
@@ -173,7 +190,19 @@ export default function RoomAppHost({
           appInstanceId,
           self,
           participants: projected,
+          ...(sharedState ? { shared: sharedState } : {}),
         })
+        return
+      }
+      if (message.type === "sendGeneratedState") {
+        if (
+          !sendGeneratedState?.(
+            appInstanceId,
+            message.expectedRevision,
+            message.state
+          )
+        )
+          post({ type: "error", appInstanceId, error: "rate_limited" })
         return
       }
       if (message.type === "milestone") {
@@ -254,6 +283,8 @@ export default function RoomAppHost({
     participants,
     post,
     self,
+    sendGeneratedState,
+    sharedState,
   ])
 
   // The bridge belongs to the mounted App instance, never to the catalog
@@ -323,6 +354,22 @@ export default function RoomAppHost({
       post({ type: "unicast_result", ...result })
     })
   }, [appInstanceId, post, subscribeUnicastResults])
+
+  useEffect(() => {
+    if (!subscribeGeneratedState) return
+    return subscribeGeneratedState((message) => {
+      if (!readyRef.current || message.appInstanceId !== appInstanceId) return
+      post({
+        type: "shared_state",
+        appInstanceId,
+        revision: message.revision,
+        state: message.state,
+        ...(message.sourceParticipantId
+          ? { sourceParticipantId: message.sourceParticipantId }
+          : {}),
+      })
+    })
+  }, [appInstanceId, post, subscribeGeneratedState])
 
   useEffect(() => {
     const next = projectRoomAppParticipants(participants)
@@ -414,7 +461,8 @@ export default function RoomAppHost({
         <iframe
           ref={iframeRef}
           title={app.label}
-          src={app.url}
+          src={app.srcDoc ? undefined : app.url}
+          srcDoc={app.srcDoc}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           allow=""
