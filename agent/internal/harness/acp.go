@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -104,6 +105,9 @@ type AdapterOptions struct {
 	// that owns the resident daemon. It is passed to the Harness as
 	// launcher-owned FREE4CHAT_AGENT_BIN policy, never through Room state.
 	RuntimeExecutable string
+	// ProviderSpec is a bounded registry launch description used only by local
+	// diagnostics (for example `npx @...@1.2.3`).
+	ProviderSpec string
 	// PermissionResponder is an optional, resident-local decision seam for
 	// ACP session/request_permission calls. A nil responder preserves the
 	// production fail-closed behavior and cancels the request immediately.
@@ -111,6 +115,10 @@ type AdapterOptions struct {
 	// ActivityHandler is an optional transient projection callback. Repeated
 	// ACP chunks are coalesced by the Runtime before any Room request.
 	ActivityHandler ACPActivityHandler
+	// DiagnosticSink receives bounded, secret-free lifecycle events for the
+	// explicit local diagnostics surface. It is never invoked with prompts,
+	// tool input, credentials, or native session ids.
+	DiagnosticSink func(event string, details map[string]string)
 }
 
 // ACPMode is the Harness-native session mode advertised by session/new.
@@ -433,6 +441,12 @@ func NewACPAdapter(launcher types.AgentLauncher, workingDir string, options Adap
 	}
 }
 
+func (a *ACPAdapter) emitDiagnostic(event string, details map[string]string) {
+	if a.options.DiagnosticSink != nil {
+		a.options.DiagnosticSink(event, details)
+	}
+}
+
 // Name identifies the adapter in status output.
 func (a *ACPAdapter) Name() string { return a.name }
 
@@ -735,6 +749,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 // session/new. Subsequent calls reuse the retained session; after unexpected
 // process death the next call spawns a fresh process.
 func (a *ACPAdapter) EnsureSession() error {
+	a.emitDiagnostic("PROVIDER_MATERIALIZE_START", nil)
 	a.mu.Lock()
 	if a.sessionID != "" && a.stdin != nil && a.proc != nil {
 		a.mu.Unlock()
@@ -757,11 +772,13 @@ func (a *ACPAdapter) EnsureSession() error {
 	command.Env = environmentSlice(environment)
 	stdinPipe, err := command.StdinPipe()
 	if err != nil {
+		a.emitDiagnostic("PROVIDER_MATERIALIZE_FAIL", map[string]string{"class": "provider_start_failed"})
 		a.mu.Unlock()
 		return fmt.Errorf("ACP stdin pipe failed: %w", err)
 	}
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {
+		a.emitDiagnostic("PROVIDER_MATERIALIZE_FAIL", map[string]string{"class": "provider_start_failed"})
 		a.mu.Unlock()
 		return fmt.Errorf("ACP stdout pipe failed: %w", err)
 	}
@@ -769,6 +786,7 @@ func (a *ACPAdapter) EnsureSession() error {
 	// diagnostics with ambient values.
 	command.Stderr = io.Discard
 	if err := command.Start(); err != nil {
+		a.emitDiagnostic("PROVIDER_MATERIALIZE_FAIL", map[string]string{"class": "provider_start_failed"})
 		a.mu.Unlock()
 		return fmt.Errorf("spawn %s failed: %w", a.launcher.Command, err)
 	}
@@ -805,6 +823,7 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.mu.Unlock()
 	initCaps, sessionID, err := a.handshakeWithRetained(retained)
 	if err != nil {
+		a.emitDiagnostic("PROVIDER_MATERIALIZE_FAIL", map[string]string{"class": "session_new_failed"})
 		_ = a.Close()
 		return err
 	}
@@ -816,6 +835,7 @@ func (a *ACPAdapter) EnsureSession() error {
 		delete(a.retainedSessions, "room")
 	}
 	a.mu.Unlock()
+	a.emitDiagnostic("PROVIDER_MATERIALIZE_OK", nil)
 	return nil
 }
 
@@ -853,12 +873,15 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	retained, retainedOK := a.retainedSessions[scope]
 	a.mu.Unlock()
 	if retainedOK {
+		a.emitDiagnostic("SESSION_LOAD_START", map[string]string{"scope": scope})
 		// EnsureSessionFor already owns scopedSessionMu. Use the lock-free
 		// implementation so exact re-materialization cannot deadlock on the
 		// same non-reentrant mutex.
 		if err := a.loadSession(scope, retained.sessionID, retained.cwd); err != nil {
+			a.emitDiagnostic("SESSION_LOAD_FAIL", map[string]string{"scope": scope, "class": "session_load_failed"})
 			return fmt.Errorf("load retained ACP session: %w", err)
 		}
+		a.emitDiagnostic("SESSION_LOAD_OK", map[string]string{"scope": scope})
 		a.mu.Lock()
 		delete(a.retainedSessions, scope)
 		a.mu.Unlock()
@@ -949,16 +972,22 @@ func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSessio
 	newParams, _ := json.Marshal(map[string]any{"cwd": a.workingDir, "mcpServers": []any{}})
 	method := "session/new"
 	params := newParams
+	event := "SESSION_NEW"
+	failureClass := "session_new_failed"
 	if retainedRoom, ok := retained["room"]; ok && retainedRoom.sessionID != "" {
 		method = "session/load"
+		event = "SESSION_LOAD"
+		failureClass = "session_load_failed"
 		params, _ = json.Marshal(map[string]any{
 			"sessionId":  retainedRoom.sessionID,
 			"cwd":        retainedRoom.cwd,
 			"mcpServers": []any{},
 		})
 	}
+	a.emitDiagnostic(event+"_START", map[string]string{"scope": "room"})
 	raw, err = a.request(method, params)
 	if err != nil {
+		a.emitDiagnostic(event+"_FAIL", map[string]string{"scope": "room", "class": failureClass})
 		return nil, "", err
 	}
 	var sessionResponse struct {
@@ -967,8 +996,10 @@ func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSessio
 	if method == "session/load" {
 		sessionResponse.SessionID = retained["room"].sessionID
 	} else if err := json.Unmarshal(raw.Result, &sessionResponse); err != nil || sessionResponse.SessionID == "" {
+		a.emitDiagnostic(event+"_FAIL", map[string]string{"scope": "room", "class": "session_new_failed"})
 		return nil, "", errors.New("ACP agent did not return a sessionId")
 	}
+	a.emitDiagnostic(event+"_OK", map[string]string{"scope": "room"})
 	caps.SessionControls = parseSessionControls(raw.Result)
 	return caps, sessionResponse.SessionID, nil
 }
@@ -1336,6 +1367,10 @@ func (a *ACPAdapter) dispatchPermission(message *acpMessage) {
 	responder := a.options.PermissionResponder
 	turnContext := turn.ctx
 	a.mu.Unlock()
+	a.emitDiagnostic("PERMISSION_REQUESTED", map[string]string{
+		"scope":   request.Scope,
+		"options": strconv.Itoa(len(request.Options)),
+	})
 
 	if responder == nil {
 		a.finishPermission(key, pending, "")
@@ -1471,9 +1506,11 @@ func (a *ACPAdapter) finishPermission(key string, pending *pendingPermission, op
 	delete(a.pendingPermissions, key)
 	a.mu.Unlock()
 	if optionID == "" {
+		a.emitDiagnostic("PERMISSION_CANCELLED", map[string]string{"scope": pending.request.Scope})
 		_ = a.writeFrame(cancelPermissionFrame(pending.id))
 		return
 	}
+	a.emitDiagnostic("PERMISSION_RESOLVED", map[string]string{"scope": pending.request.Scope})
 	_ = a.writeFrame(selectedPermissionFrame(pending.id, optionID))
 }
 
@@ -1791,6 +1828,7 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 		turn.progress = make(chan struct{}, 1)
 	}
 	a.activeTurns[sessionID] = turn
+	a.emitDiagnostic("TURN_START", map[string]string{"scope": turn.scope})
 	blocks := promptBlocks(input, caps != nil && caps.Images)
 	params, _ := json.Marshal(map[string]any{
 		"sessionId": sessionID,
@@ -1902,8 +1940,10 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 	text := a.drainChunks(sessionID)
 	a.resetPrompt(sessionID, key)
 	if response.Error != nil {
+		a.emitDiagnostic("TURN_FAIL", map[string]string{"scope": turn.scope, "class": "turn_failed"})
 		return types.HarnessTurnResult{}, fmt.Errorf("ACP session/prompt failed: %s", response.Error.Message)
 	}
+	a.emitDiagnostic("TURN_SETTLED", map[string]string{"scope": turn.scope})
 	// Strict outbound controls are extracted here, at the Harness boundary,
 	// from the aggregated reply text — never from prose heuristics. A result
 	// may carry either existing outbound targets or the closed local leave
@@ -2137,6 +2177,7 @@ func (a *ACPAdapter) CancelTurnFor(scope string) error {
 	if sessionID == "" {
 		return nil
 	}
+	a.emitDiagnostic("CANCEL_REQUESTED", map[string]string{"scope": normalizeScopeName(scope)})
 	return a.cancelAndHardStop(sessionID)
 }
 
@@ -2169,6 +2210,7 @@ func (a *ACPAdapter) cancelAndHardStop(sessionID string) error {
 		grace = defaultCancelGraceMs
 	}
 	time.Sleep(time.Duration(grace) * time.Millisecond)
+	a.emitDiagnostic("CANCEL_GRACE_EXPIRED", nil)
 	return a.closeInternalRetaining(true)
 }
 
@@ -2183,7 +2225,14 @@ func (a *ACPAdapter) ReapIdle() error {
 	if !idle {
 		return nil
 	}
-	return a.closeInternalRetaining(true)
+	a.emitDiagnostic("IDLE_REAP_START", nil)
+	err := a.closeInternalRetaining(true)
+	if err != nil {
+		a.emitDiagnostic("IDLE_REAP_FAIL", map[string]string{"class": "idle_reap_failed"})
+	} else {
+		a.emitDiagnostic("IDLE_REAP_OK", nil)
+	}
+	return err
 }
 
 // CancelTurnForSession is the exact-conversation cancel dispatch shared by the
@@ -2203,7 +2252,12 @@ func (a *ACPAdapter) CancelTurnForSession(sessionID string) error {
 	a.mu.Unlock()
 
 	a.cancelPendingPermissions(sessionID)
-	return a.writeFrame(envelope)
+	a.emitDiagnostic("ACP_CANCEL_SENT", nil)
+	err := a.writeFrame(envelope)
+	if err == nil {
+		a.emitDiagnostic("ACP_CANCEL_SETTLED", nil)
+	}
+	return err
 }
 
 // Close performs the bounded shutdown: optional graceful session/close,
@@ -2320,18 +2374,28 @@ func (a *ACPAdapter) closeInternalWithRetention(force, retain bool) error {
 		// its exit signal instead of re-Wait-ing the same Cmd. A Harness
 		// that ignores SIGTERM therefore reaches the SIGKILL fallback after
 		// the shutdown budget instead of slipping past it.
+		a.emitDiagnostic("PROCESS_GROUP_TERM", nil)
 		_ = signalHarnessProcessGroup(pid, syscall.SIGTERM)
+		quiescent := false
 		select {
 		case <-proc.exited:
+			quiescent = true
 		case <-time.After(time.Duration(shutdownTimeoutMs) * time.Millisecond):
+			a.emitDiagnostic("PROCESS_GROUP_KILL", nil)
 			_ = signalHarnessProcessGroup(pid, syscall.SIGKILL)
 			select {
 			case <-proc.exited:
+				quiescent = true
 			case <-time.After(2 * time.Second):
 				// Absolute bound: even a pathological reaper stall cannot
 				// make shutdown unbounded; the background reaper still
 				// collects the zombie.
 			}
+		}
+		if quiescent {
+			a.emitDiagnostic("PROCESS_GROUP_QUIESCENT", nil)
+		} else {
+			a.emitDiagnostic("PROCESS_GROUP_STILL_ALIVE", map[string]string{"class": "process_group_not_quiescent"})
 		}
 	}
 	return nil

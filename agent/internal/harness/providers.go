@@ -26,10 +26,11 @@ var builtInProviders = []Provider{
 			// sessions in the #409 probe: a known native id loads, discovery
 			// does not. Not eligible until that is fixed and re-verified.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// #421 probe: two independent sessions made concurrent progress
-			// with correct stream routing. The rest of the isolation suite
-			// (conversation isolation, exact cancel isolation, per-session
-			// crash isolation) was not run for this bridge, so it stays SERIAL.
+			// Two independent sessions made concurrent progress with correct
+			// stream routing in an earlier probe. The merged isolated-lane
+			// lifecycle suite has not certified Hermes at N=2 yet, so the
+			// production cap remains serial. This is an evidence gap, not an
+			// inherent provider limitation.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -52,8 +53,9 @@ var builtInProviders = []Provider{
 			// session is discoverable/replayable, but the next ACP prompt
 			// failed with -32603. Verified partial, so NOT eligible.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// #421 probe: concurrent cross-session progress with correct
-			// routing observed, but no isolation suite yet. SERIAL.
+			// Concurrent cross-session progress with correct routing was observed,
+			// but the merged isolated-lane lifecycle and approval suite has not
+			// certified N=2 yet. Keep the production cap serial until it does.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -80,10 +82,10 @@ var builtInProviders = []Provider{
 			// and two post-load prompts retained its codeword and associated
 			// fact. This is cold/cooperative adoption only, never hot takeover.
 			SessionContinuation: SessionContinuationVerified,
-			// #421 probe: concurrent cross-session progress with correct
-			// routing observed, but no isolation suite yet, and two concurrent
-			// sessions measured ~26 processes / ~820 MB. #440 also observed a
-			// real cancel that did not settle within 10 seconds, so SERIAL.
+			// Concurrent cross-session progress was observed, but the merged
+			// isolated-lane lifecycle suite has not certified N=2. The provider
+			// also has a known false-settled cancel shape and high process/RSS
+			// cost, so the production cap remains serial pending a fresh probe.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -133,10 +135,10 @@ var builtInProviders = []Provider{
 			// Source-supported (session/list delegates to the Claude Agent SDK
 			// session store) but NOT runtime-verified. Not eligible.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// #421 probe could not run: the local bridge credentials were
-			// expired, so every prompt failed to authenticate. An errored
-			// prompt is not evidence about prompt concurrency, so this stays
-			// UNVERIFIED + SERIAL.
+			// The local CLI reports logged-in API-key auth, but the pinned ACP
+			// prompt did not settle within the certification ceiling. That is an
+			// external bridge/tooling block, not evidence of serial semantics.
+			// Keep the provider serial and unverified until a clean run exists.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeUnverified,
@@ -167,16 +169,12 @@ var builtInProviders = []Provider{
 			// dogfood. This is the single place where Pi is selected as
 			// enabled.
 			SessionContinuation: SessionContinuationVerified,
-			// The ONE Harness whose cross-session execution is enabled (#421),
-			// and the only one with the full EXECUTION/ISOLATION probe suite.
-			// This evidence is deliberately AXIS-SCOPED: it proves already-
-			// materialized independent sessions can execute safely; it does NOT
-			// certify the pinned bridge's full session-materialization lifecycle.
-			// pi-acp@0.0.33 is known to violate Contract.LoadSession when another
-			// session is active (closeAllExcept); distribution remediation is
-			// tracked in #431 / upstream svkozak/pi-acp#131. Phase 1 preserves the
-			// existing launcher policy here rather than changing behavior inside a
-			// structural refactor.
+			// Pi is the only Harness currently enabled for cross-session
+			// execution. The evidence is axis-scoped: it proves N=2 under the
+			// merged isolated-process lifecycle, while N=4 remains a separate
+			// resource/certification target. pi-acp's historical closeAllExcept
+			// behavior is contained by the per-lane process boundary; it is no
+			// longer a Free4Chat shared-process architecture blocker.
 			//
 			//   concurrency   3/3 trials: an independent session B settled in
 			//                 1.2-2.6s while session A ran a 45-60s tool call,

@@ -253,6 +253,40 @@ type HarnessSessionDiagnostics interface {
 	SessionDiagnostics() []HarnessSessionDiagnostic
 }
 
+// HarnessLaneDiagnostic is a bounded local snapshot of one isolated provider
+// lane. SessionHash is an opaque local correlation value; the native ACP
+// session id itself never leaves the adapter.
+type HarnessLaneDiagnostic struct {
+	Lane              int    `json:"lane"`
+	State             string `json:"state"`
+	Scope             string `json:"scope,omitempty"`
+	SessionHash       string `json:"sessionHash,omitempty"`
+	SessionGeneration int64  `json:"sessionGeneration,omitempty"`
+	ProviderPID       int    `json:"providerPid,omitempty"`
+	ProcessGroupID    int    `json:"processGroupId,omitempty"`
+	ProviderAlive     bool   `json:"providerAlive"`
+	DescendantCount   int    `json:"descendantCount"`
+	RSSKB             int64  `json:"rssKb"`
+	TurnActive        bool   `json:"turnActive"`
+}
+
+// HarnessDiagnosticSnapshot is intentionally small and local. It is exposed
+// only through the explicit diagnostics command, never through Room state,
+// prompts, analytics, or the normal status projection.
+type HarnessDiagnosticSnapshot struct {
+	Provider     string                  `json:"provider"`
+	Capacity     int                     `json:"capacity"`
+	ActiveLanes  int                     `json:"activeLanes"`
+	Materialized int                     `json:"materializedLanes"`
+	Lanes        []HarnessLaneDiagnostic `json:"lanes"`
+}
+
+// HarnessDiagnostics is an optional local support surface. Legacy/custom
+// adapters may omit it and remain fully compatible.
+type HarnessDiagnostics interface {
+	DiagnosticsSnapshot() HarnessDiagnosticSnapshot
+}
+
 // RuntimeHostProjection is the complete, secret-free capability projection a
 // Runtime Host shares about itself (#176 Phase A). runtimeHostId is a stable
 // opaque grouping key for one local Runtime installation/root; the speech
