@@ -717,6 +717,7 @@ func (a *ACPAdapter) EnsureSession() error {
 
 	command := exec.Command(a.launcher.Command, a.launcher.Args...)
 	command.Dir = a.workingDir
+	configureHarnessProcessGroup(command)
 	environment := BuildHarnessEnvironment(a.launcher, nil, a.options.AgentEnv)
 	if a.options.RuntimeExecutable != "" {
 		// Apply after both ambient and operator/launcher layers so a stale
@@ -2138,11 +2139,11 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 		// its exit signal instead of re-Wait-ing the same Cmd. A Harness
 		// that ignores SIGTERM therefore reaches the SIGKILL fallback after
 		// the shutdown budget instead of slipping past it.
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		_ = signalHarnessProcessGroup(pid, syscall.SIGTERM)
 		select {
 		case <-proc.exited:
 		case <-time.After(time.Duration(shutdownTimeoutMs) * time.Millisecond):
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = signalHarnessProcessGroup(pid, syscall.SIGKILL)
 			select {
 			case <-proc.exited:
 			case <-time.After(2 * time.Second):
