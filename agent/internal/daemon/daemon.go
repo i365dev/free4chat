@@ -515,6 +515,10 @@ func (d *Daemon) prepareRuntime(
 	if envErr3 != nil {
 		return nil, "", "", envErr3
 	}
+	idleReapMs, envErr4 := optionalMilliseconds("FREE4CHAT_ACP_IDLE_REAP_MS")
+	if envErr4 != nil {
+		return nil, "", "", envErr4
+	}
 
 	instanceID := NewID()
 	workspace := filepath.Join(WorkspacesRoot(), instanceID)
@@ -546,6 +550,30 @@ func (d *Daemon) prepareRuntime(
 	} else {
 		hostSeed = seed
 	}
+	adapterOptions := harness.AdapterOptions{
+		TurnTimeoutMs:     turnTimeoutMs,
+		TurnIdleTimeoutMs: turnIdleTimeoutMs,
+		CancelGraceMs:     cancelGraceMs,
+		IdleReapMs:        idleReapMs,
+		// Ephemeral per-resident Harness launch material transferred from
+		// the CLI. Never returned in responses, never persisted to status,
+		// workspace, or logs; dropped with the resident.
+		AgentEnv:          request.AgentEnv,
+		RuntimeExecutable: d.runtimeExecutableCopy,
+	}
+	var agentAdapter types.HarnessAdapter
+	if laneCount := launcher.TaskExecution.Lanes(); launcher.TaskExecution.Concurrency == types.TaskExecutionCrossSession && laneCount > 1 {
+		isolated, adapterErr := harness.NewIsolatedACPAdapterWithCapacity(laneCount, func(int) *harness.ACPAdapter {
+			return harness.NewACPAdapter(launcher, workspace, adapterOptions)
+		})
+		if adapterErr != nil {
+			_ = os.RemoveAll(workspace)
+			return nil, "", "", adapterErr
+		}
+		agentAdapter = isolated
+	} else {
+		agentAdapter = harness.NewACPAdapter(launcher, workspace, adapterOptions)
+	}
 	residentRuntime := runtime.NewResidentRuntime(runtime.Options{
 		InstanceID: instanceID,
 		RoomID:     request.Room, // empty for the create-first lifecycle
@@ -558,17 +586,8 @@ func (d *Daemon) prepareRuntime(
 			runtime.DefaultLog(event, details)
 			d.hostLog.Appendf("[%s] %s %v", instanceID, event, details)
 		},
-		Client: free4chat.New(mcpURL),
-		Adapter: harness.NewACPAdapter(launcher, workspace, harness.AdapterOptions{
-			TurnTimeoutMs:     turnTimeoutMs,
-			TurnIdleTimeoutMs: turnIdleTimeoutMs,
-			CancelGraceMs:     cancelGraceMs,
-			// Ephemeral per-resident Harness launch material transferred from
-			// the CLI. Never returned in responses, never persisted to status,
-			// workspace, or logs; dropped with the resident.
-			AgentEnv:          request.AgentEnv,
-			RuntimeExecutable: d.runtimeExecutableCopy,
-		}),
+		Client:       free4chat.New(mcpURL),
+		Adapter:      agentAdapter,
 		Capabilities: request.Capabilities,
 		// #409: the ONE product-level support policy, copied from the resolved
 		// launcher registry entry. The daemon never decides per-Harness

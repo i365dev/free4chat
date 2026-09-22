@@ -863,6 +863,17 @@ type HarnessTurnResult struct {
 // AdapterFailureHandler is invoked when the Harness process dies unexpectedly.
 type AdapterFailureHandler func(error)
 
+// ScopedAdapterFailureHandler identifies the logical conversations owned by
+// a failed provider process. Isolated adapters use it so one lane failure does
+// not invalidate sessions that belong to another process.
+type ScopedAdapterFailureHandler func(scopes []string, err error)
+
+// ScopedAdapterFailureNotifier is an optional failure seam for adapters that
+// own multiple independently failing provider processes.
+type ScopedAdapterFailureNotifier interface {
+	OnScopedFailure(handler ScopedAdapterFailureHandler)
+}
+
 // ErrHarnessSessionGenerationChanged means an adapter could no longer bind a
 // turn to the ACP conversation generation the Runtime prepared it for. The
 // Runtime must rebuild the turn after observing the replacement session so a

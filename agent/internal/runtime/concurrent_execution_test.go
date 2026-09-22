@@ -277,6 +277,52 @@ func TestCrossSessionPolicyRunsTwoIndependentTasksAreTogether(t *testing.T) {
 	waitForScopeSettled(t, rt, adapter, "task:req-B", 1)
 }
 
+type scopedFailureLaneAdapter struct {
+	*laneAdapter
+	onScopedFailure types.ScopedAdapterFailureHandler
+}
+
+func (a *scopedFailureLaneAdapter) OnScopedFailure(handler types.ScopedAdapterFailureHandler) {
+	a.onScopedFailure = handler
+}
+
+func (a *scopedFailureLaneAdapter) failLane(scopes []string, err error) {
+	if a.onScopedFailure != nil {
+		a.onScopedFailure(scopes, err)
+	}
+}
+
+func TestIsolatedLaneFailureOnlyLosesOwnedTaskSession(t *testing.T) {
+	adapter := &scopedFailureLaneAdapter{laneAdapter: newLaneAdapter()}
+	rt, client := newLaneRuntime(t, adapter, crossSessionPolicy(2))
+	startScopedTurn(rt, 40, "task:req-A", "A instruction")
+	waitForRunning(t, adapter.laneAdapter, "task:req-A")
+	startScopedTurn(rt, 41, "task:req-B", "B instruction")
+	waitForRunning(t, adapter.laneAdapter, "task:req-A", "task:req-B")
+
+	adapter.failLane([]string{"task:req-A"}, errors.New("provider lane A exited"))
+	waitForExecution(t, client, "req-A", "lane A session loss", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilitySessionLost
+	})
+	if _, active := rt.activeTurnOf("task:req-A"); active {
+		t.Fatal("failed lane A retained its activity projection")
+	}
+	if _, active := rt.activeTurnOf("task:req-B"); !active {
+		t.Fatal("healthy lane B lost its activity projection")
+	}
+	if projection, ok := client.latest("req-B"); !ok || projection.CurrentTurnSequence != 41 {
+		t.Fatalf("healthy lane B was marked lost: %+v present=%v", projection, ok)
+	}
+
+	adapter.failScope("task:req-A", errors.New("lane A turn stopped"))
+	adapter.release("task:req-A")
+	adapter.release("task:req-B")
+	waitFor(t, 2*time.Second, func() bool {
+		_, active := rt.activeTurnOf("task:req-B")
+		return !active
+	}, "healthy lane B turn to settle")
+}
+
 // TestSerialPolicyKeepsThePreConcurrencyModel proves the fail-safe default:
 // an unverified Harness still runs exactly one turn at a time, and the Task
 // waiting for capacity reports the truthful QUEUED phase instead of looking
@@ -510,6 +556,30 @@ func TestTurnLaneCountIsClampedToTheProductBound(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFourBoundedLanesQueueTheFifthIndependentTask(t *testing.T) {
+	adapter := newLaneAdapter()
+	rt, _ := newLaneRuntime(t, adapter, crossSessionPolicy(4))
+	scopes := []string{"task:req-1", "task:req-2", "task:req-3", "task:req-4", "task:req-5"}
+	for index, scope := range scopes {
+		startScopedTurn(rt, int64(index+1), scope, "bounded N")
+	}
+	for _, scope := range scopes[:4] {
+		waitForRunning(t, adapter, scope)
+	}
+	if got := adapter.concurrentPeak(); got != 4 {
+		t.Fatalf("bounded N=4 did not materialize four active turns: %d", got)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return len(rt.pendingAddressedSnapshotFor(scopes[4])) == 1
+	}, "the fifth Task to remain queued")
+	for _, scope := range scopes[:4] {
+		adapter.release(scope)
+	}
+	waitForRunning(t, adapter, scopes[4])
+	adapter.release(scopes[4])
+	waitForScopeSettled(t, rt, adapter, scopes[4], 1)
 }
 
 // startScopedTurn admits one addressed instruction for a Task scope and runs

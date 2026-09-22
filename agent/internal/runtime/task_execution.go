@@ -270,6 +270,13 @@ func (r *ResidentRuntime) clearTaskExecutionOutcome(scope string) {
 // adapter failure boundary only: a Room or resident transport reconnect is NOT
 // a Harness session loss.
 func (r *ResidentRuntime) noteTaskSessionLoss() {
+	r.noteTaskSessionLossFor(nil)
+}
+
+// noteTaskSessionLossFor applies a provider-process failure to the logical
+// Task scopes owned by that process. A nil set preserves the legacy
+// single-process behavior and marks every retained Task scope lost.
+func (r *ResidentRuntime) noteTaskSessionLossFor(failed map[string]struct{}) {
 	if r.isStopped() {
 		return
 	}
@@ -278,6 +285,11 @@ func (r *ResidentRuntime) noteTaskSessionLoss() {
 	for _, scope := range r.scopeOrder {
 		if !taskExecutionScope(scope) {
 			continue
+		}
+		if failed != nil {
+			if _, ok := failed[scope]; !ok {
+				continue
+			}
 		}
 		state := r.scopedSessions[scope]
 		if state == nil {

@@ -674,9 +674,20 @@ func (r *ResidentRuntime) adoptedScopeLost(scope string) bool {
 // through the existing session-lost boundary; this is the additional fact that
 // stops the NEXT instruction from silently starting a fresh conversation.
 func (r *ResidentRuntime) noteAdoptedScopeLoss() {
+	r.noteAdoptedScopeLossFor(nil)
+}
+
+// noteAdoptedScopeLossFor marks only adopted conversations owned by a failed
+// provider process. A nil set preserves the legacy one-process behavior.
+func (r *ResidentRuntime) noteAdoptedScopeLossFor(failed map[string]struct{}) {
 	r.mu.Lock()
 	scopes := make([]string, 0, len(r.adoptedScopes))
 	for scope := range r.adoptedScopes {
+		if failed != nil {
+			if _, ok := failed[scope]; !ok {
+				continue
+			}
+		}
 		scopes = append(scopes, scope)
 		r.adoptedLostScopes[scope] = struct{}{}
 	}
