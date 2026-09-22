@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,12 +48,40 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 	if codexPath := os.Getenv("FREE4CHAT_CODEX_PATH"); codexPath != "" {
 		launcher.Environment["CODEX_PATH"] = codexPath
 	}
+	if mode := os.Getenv("FREE4CHAT_CODEX_PROBE_MODE"); mode != "" {
+		launcher.Environment["INITIAL_AGENT_MODE"] = mode
+	}
+	type permissionEvent struct {
+		lane    string
+		request ACPPermissionRequest
+	}
+	permissionRequests := make(chan permissionEvent, 32)
 	options := AdapterOptions{TurnTimeoutMs: 180_000, CancelGraceMs: 2_000, ControlTimeoutMs: 60_000}
-	newAdapter := func() *ACPAdapter {
-		return NewACPAdapter(launcher, t.TempDir(), options)
+	newAdapter := func(lane string) *ACPAdapter {
+		localOptions := options
+		// The real probe deliberately approves only the provider's own offered
+		// option so its fixed shell commands can run. This is a local test seam,
+		// not a production policy; recording lane and Scope exercises correlation.
+		localOptions.PermissionResponder = func(_ context.Context, request ACPPermissionRequest) (ACPPermissionResponse, error) {
+			select {
+			case permissionRequests <- permissionEvent{lane: lane, request: request}:
+			default:
+			}
+			for _, option := range request.Options {
+				id := strings.ToLower(option.OptionID)
+				if strings.Contains(id, "allow") || strings.Contains(id, "accept") || strings.Contains(id, "approve") {
+					return ACPPermissionResponse{OptionID: option.OptionID}, nil
+				}
+			}
+			if len(request.Options) > 0 {
+				return ACPPermissionResponse{OptionID: request.Options[0].OptionID}, nil
+			}
+			return ACPPermissionResponse{}, nil
+		}
+		return NewACPAdapter(launcher, t.TempDir(), localOptions)
 	}
 	logProcessMetrics(t, "baseline-resident", processTree(os.Getpid()))
-	adapterA, adapterB := newAdapter(), newAdapter()
+	adapterA, adapterB := newAdapter("A"), newAdapter("B")
 	t.Cleanup(func() { _ = adapterA.Close(); _ = adapterB.Close() })
 
 	startup := time.Now()
@@ -101,7 +130,7 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 	// Both lanes must be in actual provider tool work before cancellation.
 	// Try ACP session/cancel first; if it does not settle in ten seconds, the
 	// exact owning process is closed as the coarse lane cancellation boundary.
-	turnA := startCodexProbeTurn(adapterA, "Run the shell command sleep 47, wait for it to finish, then reply only TASK_A_DONE and CODEWORD_ALPHA.")
+	turnA := startCodexProbeTurn(adapterA, "Use your terminal tool now. Execute exactly `sleep 47`, wait for that command to finish, then reply only TASK_A_DONE and CODEWORD_ALPHA. Do not simulate the command.")
 	sampleOne := startProcessSampler([]int{pidA})
 	waitForProcessCommand(t, pidA, "sleep 47", 75*time.Second)
 	peakOne := sampleOne()
@@ -116,7 +145,7 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 		t.Log("same_session_serialization=PASS")
 	}
 
-	turnB := startCodexProbeTurn(adapterB, "Run the shell command sleep 39, wait for it to finish, then reply only TASK_B_DONE and CODEWORD_BETA.")
+	turnB := startCodexProbeTurn(adapterB, "Use your terminal tool now. Execute exactly `sleep 39`, wait for that command to finish, then reply only TASK_B_DONE and CODEWORD_BETA. Do not simulate the command.")
 	sampleTwo := startProcessSampler([]int{pidA, pidB})
 	waitForProcessCommand(t, pidB, "sleep 39", 75*time.Second)
 	if !adapterHasActiveTurn(adapterA) || !adapterHasActiveTurn(adapterB) {
@@ -177,6 +206,21 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 		t.Fatalf("lane B did not continue with isolated history after lane A cancel: text=%q err=%v", outcomeB.result.Text, outcomeB.err)
 	}
 	t.Logf("cancel_isolation=PASS (A turn settled; %s stopped A command; B continued)", cancelMethod)
+	permissionScopes := map[string]int{}
+	for {
+		select {
+		case event := <-permissionRequests:
+			permissionScopes[event.lane]++
+		default:
+			goto permissionDrainDone
+		}
+	}
+permissionDrainDone:
+	if permissionScopes["A"] > 0 && permissionScopes["B"] > 0 {
+		t.Logf("permission_isolation=PASS scopes=%v (each decision was returned to its originating lane)", permissionScopes)
+	} else {
+		t.Log("permission_isolation=NOT_EXERCISED (Codex did not emit a native permission request)")
+	}
 
 	// Human interrupt does not respawn immediately. The next continuation must
 	// materialize a new provider process and load A's exact retained native
@@ -193,7 +237,7 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 	// Repeat the same hard-stop -> later exact-load boundary once more. This
 	// catches implementations that preserve identity only for the first
 	// replacement process.
-	turnA2 := startCodexProbeTurn(adapterA, "Run the shell command sleep 17, wait for it to finish, then reply only TASK_A2_DONE.")
+	turnA2 := startCodexProbeTurn(adapterA, "Use your terminal tool now. Execute exactly `sleep 17`, wait for that command to finish, then reply only TASK_A2_DONE. Do not simulate the command.")
 	waitForProcessCommand(t, adapterPID(adapterA), "sleep 17", 75*time.Second)
 	idsA2 := processTreePIDs(adapterPID(adapterA))
 	if err := adapterA.CancelTurn(); err != nil {
@@ -217,15 +261,15 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 
 	// An unexpected bridge death must settle only its own turn while a second
 	// provider process finishes normally.
-	adapterC := newAdapter()
+	adapterC := newAdapter("C")
 	t.Cleanup(func() { _ = adapterC.Close() })
 	if err := adapterC.EnsureSession(); err != nil {
 		t.Fatalf("Codex crash-probe lane startup failed: %v", err)
 	}
 	pidC := adapterPID(adapterC)
-	turnC := startCodexProbeTurn(adapterC, "Run the shell command sleep 31 and then reply only TASK_C_DONE.")
+	turnC := startCodexProbeTurn(adapterC, "Use your terminal tool now. Execute exactly `sleep 31`, wait for it to finish, then reply only TASK_C_DONE. Do not simulate the command.")
 	waitForProcessCommand(t, pidC, "sleep 31", 75*time.Second)
-	turnD := startCodexProbeTurn(adapterB, "Run the shell command sleep 25 and then reply only TASK_D_DONE and CODEWORD_BETA.")
+	turnD := startCodexProbeTurn(adapterB, "Use your terminal tool now. Execute exactly `sleep 25`, wait for it to finish, then reply only TASK_D_DONE and CODEWORD_BETA. Do not simulate the command.")
 	waitForProcessCommand(t, pidB, "sleep 25", 75*time.Second)
 	idsC := processTreePIDs(pidC)
 	if err := adapterC.proc.cmd.Process.Kill(); err != nil {
@@ -273,7 +317,7 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&before)
 	for cycle := 1; cycle <= 3; cycle++ {
-		cycleA, cycleB := newAdapter(), newAdapter()
+		cycleA, cycleB := newAdapter("cycle-A"), newAdapter("cycle-B")
 		t.Cleanup(func() { _ = cycleA.Close(); _ = cycleB.Close() })
 		if err := cycleA.EnsureSession(); err != nil {
 			t.Fatalf("repeat cycle %d lane A startup: %v", cycle, err)
@@ -292,7 +336,6 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 	runtime.GC()
 	runtime.ReadMemStats(&after)
 	t.Logf("go_heap_after_cycles_delta_kb=%d", int64(after.HeapAlloc-before.HeapAlloc)/1024)
-	t.Log("permission_isolation=NOT_EXERCISED (no stable native Codex permission request in this probe)")
 }
 
 // TestCodexBoundedResourceProbe measures the lazy provider model without
