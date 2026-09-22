@@ -60,6 +60,7 @@ interface RoomAppHostProps {
   onToggleFullscreen?: () => void
   onInvite?: () => Promise<boolean>
   onUnavailable?: (appId: string) => void
+  showReadyStatus?: boolean
 }
 
 function handshakeToken(): string {
@@ -90,6 +91,7 @@ export default function RoomAppHost({
   onToggleFullscreen,
   onInvite,
   onUnavailable,
+  showReadyStatus = true,
 }: RoomAppHostProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const portRef = useRef<MessagePort | null>(null)
@@ -418,9 +420,17 @@ export default function RoomAppHost({
       <div className="flex flex-none items-center justify-between gap-2 border-b border-gray-800 px-3 py-2 text-xs text-gray-300">
         <span className="min-w-0 truncate">{app.label}</span>
         <div className="flex flex-none items-center gap-2">
-          <span aria-live="polite">
-            {failed ? "unavailable" : ready ? "ready" : "connecting…"}
-          </span>
+          {showReadyStatus ? (
+            <span aria-live="polite">
+              {failed ? "unavailable" : ready ? "ready" : "connecting…"}
+            </span>
+          ) : (
+            (failed || !ready) && (
+              <span aria-live="polite">
+                {failed ? "unavailable" : "connecting…"}
+              </span>
+            )
+          )}
           {onInvite && (
             <button
               type="button"

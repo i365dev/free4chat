@@ -1226,7 +1226,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const key of pending) this.taskLiveViewDeletedKeys.add(key)
   }
 
-  private generatedAppBundleKey(appInstanceId: string, index: number): string {
+  private generatedAppBundleKey(
+    appInstanceId: string,
+    bundleRevision: number,
+    index: number
+  ): string {
+    return `${GENERATED_APP_KEY_PREFIX}${appInstanceId}:bundle:${bundleRevision}:${index}`
+  }
+
+  private generatedAppLegacyBundleKey(
+    appInstanceId: string,
+    index: number
+  ): string {
     return `${GENERATED_APP_KEY_PREFIX}${appInstanceId}:bundle:${index}`
   }
 
@@ -1257,6 +1268,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       Number.isSafeInteger(candidate.bundleBytes) &&
       candidate.bundleBytes > 0 &&
       candidate.bundleBytes <= MAX_GENERATED_APP_BUNDLE_BYTES &&
+      (candidate.bundleRevision === undefined ||
+        (typeof candidate.bundleRevision === "number" &&
+          Number.isSafeInteger(candidate.bundleRevision) &&
+          candidate.bundleRevision >= 1)) &&
       typeof candidate.stateRevision === "number" &&
       Number.isSafeInteger(candidate.stateRevision) &&
       candidate.stateRevision >= 0 &&
@@ -1272,14 +1287,24 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   ): Record<string, GeneratedRoomAppPublication> {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {}
     const result: Record<string, GeneratedRoomAppPublication> = {}
+    const taskRequestIds = new Set<string>()
     for (const [appInstanceId, raw] of Object.entries(value)) {
       if (
         Object.keys(result).length >= MAX_GENERATED_APPS_PER_ROOM ||
         appInstanceId !== (raw as { appInstanceId?: unknown })?.appInstanceId ||
-        !this.validGeneratedAppPublication(raw)
+        !this.validGeneratedAppPublication(raw) ||
+        taskRequestIds.has((raw as GeneratedRoomAppPublication).taskRequestId)
       )
         continue
-      result[appInstanceId] = raw
+      taskRequestIds.add((raw as GeneratedRoomAppPublication).taskRequestId)
+      result[appInstanceId] = {
+        ...raw,
+        bundleRevision:
+          typeof (raw as Partial<GeneratedRoomAppPublication>)
+            .bundleRevision === "number"
+            ? (raw as GeneratedRoomAppPublication).bundleRevision
+            : 1,
+      }
     }
     return result
   }
@@ -4921,10 +4946,97 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const validation = validateGeneratedRoomAppBundle(request.bundle)
       if (validation.ok === false)
         return this.json({ error: validation.error }, 400)
+      const encodedBundle = new TextEncoder().encode(
+        JSON.stringify(validation.bundle)
+      )
       const current = Object.values(room.generatedApps ?? {}).find(
         (app) => app.taskRequestId === taskRequestId
       )
-      if (current) return this.json({ publication: current, duplicate: true })
+      if (current) {
+        const existingBundle = await this.readGeneratedAppBundleBytes(current)
+        if (!existingBundle)
+          return this.json({ error: "generated_app_unavailable" }, 503)
+        const identical =
+          existingBundle.byteLength === encodedBundle.byteLength &&
+          existingBundle.every((value, index) => value === encodedBundle[index])
+        if (identical)
+          return this.json({ publication: current, duplicate: true })
+
+        const bundleRevision = current.bundleRevision + 1
+        const chunkCount = Math.ceil(
+          encodedBundle.byteLength / GENERATED_APP_CHUNK_SIZE
+        )
+        const now = Date.now()
+        const publication: GeneratedRoomAppPublication = {
+          ...current,
+          title: validation.bundle.manifest.title,
+          bundleBytes: validation.bytes,
+          bundleRevision,
+          updatedAt: now,
+        }
+        const keys: string[] = []
+        const manifestKey = this.generatedAppManifestKey(current.appInstanceId)
+        const previousManifest = await this.ctx.storage.get(manifestKey)
+        try {
+          for (let index = 0; index < chunkCount; index += 1) {
+            const key = this.generatedAppBundleKey(
+              current.appInstanceId,
+              bundleRevision,
+              index
+            )
+            keys.push(key)
+            await this.ctx.storage.put(
+              key,
+              encodedBundle.slice(
+                index * GENERATED_APP_CHUNK_SIZE,
+                (index + 1) * GENERATED_APP_CHUNK_SIZE
+              )
+            )
+          }
+          await this.ctx.storage.put(manifestKey, {
+            appInstanceId: current.appInstanceId,
+            bundleBytes: validation.bytes,
+            chunkCount,
+            bundleRevision,
+          })
+          room.generatedApps = Object.fromEntries(
+            Object.entries(room.generatedApps ?? {}).map(([appId, app]) =>
+              appId === current.appInstanceId
+                ? [appId, publication]
+                : [appId, app]
+            )
+          )
+          participant.lastSeenAt = now
+          await this.saveRoom(room)
+        } catch (error) {
+          if (previousManifest === undefined)
+            await this.ctx.storage.delete(manifestKey)
+          else await this.ctx.storage.put(manifestKey, previousManifest)
+          await this.ctx.storage.delete(keys)
+          throw error
+        }
+        await this.scheduleNextAlarm(room)
+        await this.broadcastState(room)
+        const oldChunkCount = Math.ceil(
+          current.bundleBytes / GENERATED_APP_CHUNK_SIZE
+        )
+        await this.ctx.storage.delete(
+          Array.from({ length: oldChunkCount }, (_, index) => [
+            this.generatedAppBundleKey(
+              current.appInstanceId,
+              current.bundleRevision,
+              index
+            ),
+            this.generatedAppLegacyBundleKey(current.appInstanceId, index),
+          ]).flat()
+        )
+        return this.json({
+          publication,
+          duplicate: false,
+          updated: true,
+          expiresAt: room.expiresAt,
+        })
+      }
       if (
         Object.keys(room.generatedApps ?? {}).length >=
         MAX_GENERATED_APPS_PER_ROOM
@@ -4932,9 +5044,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "generated_app_capacity" }, 409)
 
       const appInstanceId = `generated:${crypto.randomUUID()}`
-      const encodedBundle = new TextEncoder().encode(
-        JSON.stringify(validation.bundle)
-      )
       const chunkCount = Math.ceil(
         encodedBundle.byteLength / GENERATED_APP_CHUNK_SIZE
       )
@@ -4948,6 +5057,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         taskRequestId,
         title: validation.bundle.manifest.title,
         bundleBytes: validation.bytes,
+        bundleRevision: 1,
         stateRevision: 0,
         createdAt: now,
         updatedAt: now,
@@ -4955,7 +5065,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const keys: string[] = []
       try {
         for (let index = 0; index < chunkCount; index += 1) {
-          const key = this.generatedAppBundleKey(appInstanceId, index)
+          const key = this.generatedAppBundleKey(appInstanceId, 1, index)
           keys.push(key)
           await this.ctx.storage.put(
             key,
@@ -4973,6 +5083,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           appInstanceId,
           bundleBytes: validation.bytes,
           chunkCount,
+          bundleRevision: 1,
         })
         room.generatedApps = {
           ...(room.generatedApps ?? {}),
@@ -8223,6 +8334,55 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  private async readGeneratedAppBundleBytes(
+    publication: GeneratedRoomAppPublication
+  ): Promise<Uint8Array | null> {
+    const manifest = await this.ctx.storage.get<{
+      bundleRevision?: number
+    }>(this.generatedAppManifestKey(publication.appInstanceId))
+    const chunkCount = Math.ceil(
+      publication.bundleBytes / GENERATED_APP_CHUNK_SIZE
+    )
+    const readChunks = async (revisioned: boolean) => {
+      const bytes = new Uint8Array(publication.bundleBytes)
+      let offset = 0
+      for (let index = 0; index < chunkCount; index += 1) {
+        const raw = await this.ctx.storage.get<Uint8Array>(
+          revisioned
+            ? this.generatedAppBundleKey(
+                publication.appInstanceId,
+                publication.bundleRevision,
+                index
+              )
+            : this.generatedAppLegacyBundleKey(publication.appInstanceId, index)
+        )
+        if (
+          !raw ||
+          raw.byteLength === 0 ||
+          raw.byteLength > GENERATED_APP_CHUNK_SIZE
+        )
+          return null
+        const chunk =
+          raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+        if (offset + chunk.byteLength > bytes.byteLength) return null
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      return offset === bytes.byteLength ? bytes : null
+    }
+    const revisioned = await readChunks(true)
+    if (revisioned) return revisioned
+    // Publications written before bundleRevision existed used the legacy key
+    // shape. A revisioned bundle is always authoritative when present, so a
+    // reader can observe the old or new complete bundle during an update.
+    if (
+      manifest?.bundleRevision === undefined &&
+      publication.bundleRevision === 1
+    )
+      return readChunks(false)
+    return null
+  }
+
   private async handleGeneratedAppRead(request: Request): Promise<Response> {
     const room = await this.activeRoom()
     if (!room) return this.json({ error: "room_expired" }, 410)
@@ -8246,17 +8406,48 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
     const chunks: Uint8Array[] = []
     let totalChunkBytes = 0
-    for (let index = 0; index < chunkCount; index += 1) {
-      const raw = await this.ctx.storage.get<Uint8Array>(
-        this.generatedAppBundleKey(appInstanceId, index)
-      )
+    const readChunks = async (revisioned: boolean) => {
+      const result: Uint8Array[] = []
+      let bytesRead = 0
+      for (let index = 0; index < chunkCount; index += 1) {
+        const raw = await this.ctx.storage.get<Uint8Array>(
+          revisioned
+            ? this.generatedAppBundleKey(
+                appInstanceId,
+                publication.bundleRevision,
+                index
+              )
+            : this.generatedAppLegacyBundleKey(appInstanceId, index)
+        )
+        if (!raw) return null
+        if (
+          raw.byteLength === 0 ||
+          raw.byteLength > GENERATED_APP_CHUNK_SIZE ||
+          bytesRead + raw.byteLength > publication.bundleBytes
+        )
+          return null
+        bytesRead += raw.byteLength
+        result.push(
+          raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+        )
+      }
+      return bytesRead === publication.bundleBytes ? result : null
+    }
+    let storedChunks = await readChunks(true)
+    if (
+      !storedChunks &&
+      publication.bundleRevision === 1 &&
+      (
+        await this.ctx.storage.get<{ bundleRevision?: number }>(
+          this.generatedAppManifestKey(appInstanceId)
+        )
+      )?.bundleRevision === undefined
+    )
+      storedChunks = await readChunks(false)
+    if (!storedChunks)
+      return this.json({ error: "generated_app_unavailable" }, 503)
+    for (const raw of storedChunks) {
       if (!raw) return this.json({ error: "generated_app_unavailable" }, 503)
-      if (
-        raw.byteLength === 0 ||
-        raw.byteLength > GENERATED_APP_CHUNK_SIZE ||
-        totalChunkBytes + raw.byteLength > publication.bundleBytes
-      )
-        return this.json({ error: "generated_app_unavailable" }, 503)
       totalChunkBytes += raw.byteLength
       chunks.push(
         raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)

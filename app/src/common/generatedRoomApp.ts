@@ -33,6 +33,8 @@ export interface GeneratedRoomAppPublication {
   taskRequestId: string
   title: string
   bundleBytes: number
+  /** Replaceable application bundle revision; stateRevision is separate. */
+  bundleRevision: number
   stateRevision: number
   createdAt: number
   updatedAt: number

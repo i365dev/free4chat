@@ -79,6 +79,15 @@ import type { TaskExecutionProjection } from "../room/types"
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
+function generatedBundleSizeBucket(
+  bytes: number
+): "0-4k" | "4-16k" | "16-32k" | "32-48k" {
+  if (bytes <= 4 * 1024) return "0-4k"
+  if (bytes <= 16 * 1024) return "4-16k"
+  if (bytes <= 32 * 1024) return "16-32k"
+  return "32-48k"
+}
+
 type TaskAgent = { peerId: string; name: string }
 
 /**
@@ -392,6 +401,8 @@ export default function RoomContent({
   // Host-owned coarse telemetry stays catalog-derived: any curated production
   // App reports at most one shared-session milestone per browser Room session.
   const sharedSessionTrackedAppIdsRef = useRef<Set<string>>(new Set())
+  const sharedSessionTrackedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
+  const generatedAppRevisionSeenRef = useRef<Map<string, number>>(new Map())
   // The acquisition intent is stable for this Room page, so the App-milestone
   // callbacks can read it without depending on the prop and being re-created.
   const acquisitionPageRef = useRef<string | undefined>(acquisitionPage)
@@ -620,6 +631,52 @@ export default function RoomContent({
     .filter((app) => readyRoomAppIds.includes(app.id))
     .map((app) => resolveProductionRoomAppId(app.id))
     .find((appId): appId is string => appId !== null)
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") return
+    for (const publication of Object.values(generatedApps)) {
+      const seenRevision = generatedAppRevisionSeenRef.current.get(
+        publication.appInstanceId
+      )
+      if (seenRevision === undefined) {
+        generatedAppRevisionSeenRef.current.set(
+          publication.appInstanceId,
+          publication.bundleRevision
+        )
+        trackAnalyticsEvent(
+          "RoomAppPublished",
+          withAcquisitionPage(
+            {
+              appSource: "generated",
+              phase: "first",
+              bundleSizeBucket: generatedBundleSizeBucket(
+                publication.bundleBytes
+              ),
+            },
+            acquisitionPageRef.current
+          )
+        )
+      } else if (publication.bundleRevision > seenRevision) {
+        generatedAppRevisionSeenRef.current.set(
+          publication.appInstanceId,
+          publication.bundleRevision
+        )
+        trackAnalyticsEvent(
+          "RoomAppPublished",
+          withAcquisitionPage(
+            {
+              appSource: "generated",
+              phase: "update",
+              bundleSizeBucket: generatedBundleSizeBucket(
+                publication.bundleBytes
+              ),
+            },
+            acquisitionPageRef.current
+          )
+        )
+      }
+    }
+  }, [generatedApps])
   const visibleRoomApp =
     activeRoomApp && roomAppSelf ? activeRoomApp : undefined
   // Focus mode is a Room layout state, not just a larger host. The resident
@@ -650,7 +707,11 @@ export default function RoomContent({
       setActiveRoomAppId(null)
       setActiveGeneratedAppId(publication.appInstanceId)
       setStageView("screen")
-      if (generatedAppDocuments[publication.appInstanceId]) return
+      if (
+        generatedAppDocuments[publication.appInstanceId]?.publication
+          .bundleRevision === publication.bundleRevision
+      )
+        return
       const auth = getLocalRoomAuth()
       if (!auth) return
       setGeneratedAppLoading(publication.appInstanceId)
@@ -681,6 +742,22 @@ export default function RoomContent({
     },
     [generatedAppDocuments, getLocalRoomAuth]
   )
+  useEffect(() => {
+    for (const publication of Object.values(generatedApps)) {
+      const document = generatedAppDocuments[publication.appInstanceId]
+      if (
+        document &&
+        document.publication.bundleRevision !== publication.bundleRevision &&
+        generatedAppLoading !== publication.appInstanceId
+      )
+        void openGeneratedApp(publication)
+    }
+  }, [
+    generatedAppDocuments,
+    generatedAppLoading,
+    generatedApps,
+    openGeneratedApp,
+  ])
   useEffect(
     () =>
       subscribeGeneratedAppState((message) => {
@@ -1154,6 +1231,33 @@ export default function RoomContent({
       )
     )
   }, [acquisitionPage, humanParticipantCount, sharedSessionRoomAppId])
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production" || humanParticipantCount < 2)
+      return
+    for (const publication of Object.values(generatedApps)) {
+      if (
+        !readyRoomAppIds.includes(publication.appInstanceId) ||
+        sharedSessionTrackedGeneratedAppIdsRef.current.has(
+          publication.appInstanceId
+        )
+      )
+        continue
+      sharedSessionTrackedGeneratedAppIdsRef.current.add(
+        publication.appInstanceId
+      )
+      trackAnalyticsEvent(
+        "RoomAppSharedSession",
+        withAcquisitionPage(
+          {
+            appSource: "generated",
+            participantsBucket: participantsBucket(humanParticipantCount),
+          },
+          acquisitionPage
+        )
+      )
+    }
+  }, [acquisitionPage, generatedApps, humanParticipantCount, readyRoomAppIds])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -2429,7 +2533,7 @@ export default function RoomContent({
                   }
                   return (
                     <div
-                      key={publication.appInstanceId}
+                      key={`${publication.appInstanceId}:${publication.bundleRevision}`}
                       data-testid={`generated-room-app-slot-${publication.appInstanceId}`}
                       aria-hidden={!visible}
                       inert={!visible}
@@ -2450,6 +2554,7 @@ export default function RoomContent({
                         }}
                         sendGeneratedState={sendGeneratedAppState}
                         subscribeGeneratedState={subscribeGeneratedAppState}
+                        showReadyStatus={false}
                         onReady={handleRoomAppReady}
                         subscribeUnicast={subscribeRoomAppUnicast}
                         subscribeUnicastResults={subscribeRoomAppUnicastResults}
@@ -2863,7 +2968,7 @@ export default function RoomContent({
               >
                 <div className="min-w-0">
                   <div className="text-xs font-medium text-blue-100">
-                    Generated Room App
+                    Task App
                   </div>
                   <div className="truncate text-xs text-gray-400">
                     {activeTaskGeneratedApp.title}

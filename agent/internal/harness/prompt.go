@@ -317,6 +317,7 @@ func RenderUntrustedRoomTurn(input *types.HarnessTurnInput) string {
 			"Current Task requestId: "+requestID,
 			"Artifacts produced for this Task MUST be published as correlated Task artifacts: "+runtimeCommand+" attach --file <path> --task-request-id "+requestID,
 			"Omit --task-request-id only for an artifact that intentionally belongs to the Room rather than this Task.",
+			"Task App affordance: this Task may publish one bounded collaborative Task App when that surface is useful. Inspect the exact current contract with "+runtimeCommand+" generated-app describe --json, then publish or update this exact Task with "+runtimeCommand+" generated-app publish --task-request-id "+requestID+" --file <bundle.json>. Decide autonomously whether to use it; do not publish a second App for the same Task.",
 		)
 	}
 	lines = append(lines, "", strings.Join(renderedEvents, "\n"))

@@ -154,8 +154,15 @@ See [Tasks and Live Views](../guides/tasks-and-live-views).
 ## Generated Task Room App
 
 ```text
+free4chat-agent generated-app describe --json
 free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
 ```
+
+`generated-app describe --json` is the Runtime-owned authoring contract for
+the installed binary. It is local-only and reports the exact V0 bundle fields,
+limits, bridge API, and one-Task/one-App revision semantics. Read it before
+authoring a bundle; do not assume that a copied prompt or source checkout is
+the current contract.
 
 The bundle is a small self-contained business/UI artifact. The installed
 Runtime performs a local preflight, then the Room repeats authorization and

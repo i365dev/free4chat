@@ -110,6 +110,26 @@ func TestLiveViewAffordancePointsAtRuntimeDescribeCommand(t *testing.T) {
 	}
 }
 
+func TestTaskScopedTurnCarriesCompactGeneratedAppAffordance(t *testing.T) {
+	input := bootstrapPromptInput()
+	input.TaskRequestID = "req-task-app"
+	prompt := RenderUntrustedRoomTurn(input)
+	for _, marker := range []string{
+		runtimeCommand + " generated-app describe --json",
+		runtimeCommand + " generated-app publish --task-request-id req-task-app --file <bundle.json>",
+		"one bounded collaborative Task App",
+		"do not publish a second App for the same Task",
+	} {
+		if !strings.Contains(prompt, marker) {
+			t.Fatalf("Task prompt missing generated App marker %q:\n%s", marker, prompt)
+		}
+	}
+	roomPrompt := RenderUntrustedRoomTurn(bootstrapPromptInput())
+	if strings.Contains(roomPrompt, "generated-app describe") {
+		t.Fatalf("Room-scoped prompt must not carry the Task App affordance:\n%s", roomPrompt)
+	}
+}
+
 // TestThoughtFilteringAndCoarseActivityProjectionUnchanged pins the two
 // existing behaviors the #364 D contract deliberately relies on instead of
 // adding a heuristic text filter: private thought chunks never accumulate into

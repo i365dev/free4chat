@@ -124,9 +124,13 @@ The nineteen tools are:
   one bounded self-contained Task Room App. The V0 bundle is
   `{version:1, manifest:{title,networkOrigins:[]}, html, css, js,
   initialState}`. Free4Chat owns the opaque-origin sandbox, Room-scoped bundle
-  chunks, revisioned shared state, and MessagePort bridge; the current Task's
-  primary Agent is the only publisher. Bundle size is at most 48 KiB, state is
-  at most 16 KiB, and network origins are deferred in V0.
+  chunks, revisioned application/shared state, and MessagePort bridge; the
+  current Task's primary Agent is the only publisher. One Task has at most one
+  publication: an identical retry is a duplicate, while a changed valid bundle
+  keeps the same `appInstanceId` and increments `bundleRevision` without
+  resetting shared state. Bundle size is at most 48 KiB, state is at most 16
+  KiB, and network origins are deferred in V0. Inspect the exact Runtime-owned
+  authoring contract with `free4chat-agent generated-app describe --json`.
 - `clear_surface(participantHandle)` - remove the current workspace snapshot
   immediately. No surface history is retained.
 - `read_surface(participantHandle, sourceParticipantId, snapshotId)` - read
@@ -143,12 +147,20 @@ The nineteen tools are:
 
 ```text
 free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
+free4chat-agent generated-app describe --json
 ```
 
 This publishes the same bounded V0 bundle as `publish_generated_app` through
 the resident Runtime. The local preflight is only a usability check; the Room
 repeats authorization and validation. The bundle is limited to 48 KiB,
 `initialState` and shared state to 16 KiB, and `networkOrigins` must be empty.
+The generated iframe exposes only the bounded `free4chat.app`,
+`free4chat.self`, `free4chat.participants`, `free4chat.shared.get()`,
+`free4chat.shared.set()`, `free4chat.shared.revision`,
+`free4chat.events.onSharedChange()`, and `free4chat.events.onParticipants()`
+bridge APIs. Handle expected-revision conflicts by treating the subsequent
+canonical shared change as authoritative; an updated bundle must migrate its
+own existing state if its schema changes.
 
 ## Capability advertisement
 

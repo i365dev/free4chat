@@ -4215,6 +4215,62 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     })
   })
 
+  it("keeps official Apps in the launcher and a generated Task App on the selected Task surface", () => {
+    const generatedPublication = {
+      appInstanceId: "generated:00000000-0000-4000-8000-000000000001",
+      taskRequestId: "task-live",
+      title: "Generated Checklist",
+      bundleBytes: 512,
+      bundleRevision: 1,
+      stateRevision: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      roomAppsEnabled: true,
+      participants: [
+        {
+          peerId: "local-peer",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-a",
+          name: "Agent A",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      messages: [taskRequestMessage],
+      generatedApps: {
+        [generatedPublication.appInstanceId]: generatedPublication,
+      },
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+
+    expect(screen.getByTestId("generated-room-app-card")).toHaveTextContent(
+      "Task App"
+    )
+    expect(screen.getByText("Generated Checklist")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("stage-apps-launcher"))
+    const launcher = screen.getByTestId("room-app-launcher")
+    expect(launcher).toHaveTextContent("Test App 1")
+    expect(launcher).not.toHaveTextContent("Generated Checklist")
+    fireEvent.click(screen.getByTestId("stage-view-generated-app"))
+    expect(screen.getByTestId("stage-view-generated-app")).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    )
+  })
+
   it("uses the intentional two-row mobile header layout with a truncating Room id", () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,

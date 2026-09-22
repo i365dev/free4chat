@@ -58,6 +58,7 @@ func usageText() string {
   free4chat-agent surface clear [--instance <id>]
   free4chat-agent surface read --participant <participant-id> [--instance <id>]
   free4chat-agent live-view describe [--json]
+  free4chat-agent generated-app describe [--json]
   free4chat-agent live-view publish --task-request-id <id> --file <surface.json> [--instance <id>]
   free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
   free4chat-agent handoff --list [--cwd <path>] [--cursor <token>] [--instance <id>]
@@ -538,7 +539,13 @@ func run(args []string) error {
 		}
 
 	case "generated-app":
-		if len(rest) == 0 || rest[0] != "publish" {
+		if len(rest) == 0 {
+			return errUsage()
+		}
+		if rest[0] == "describe" {
+			return runGeneratedAppDescribe(rest[1:])
+		}
+		if rest[0] != "publish" {
 			return errUsage()
 		}
 		filePath := option(rest[1:], "--file")
@@ -864,6 +871,18 @@ func runLiveViewDescribe(args []string) error {
 		}
 	}
 	return printJSONVerbatim(describeTaskLiveView())
+}
+
+// runGeneratedAppDescribe prints the Runtime-owned machine-readable Task App
+// contract. It is local-only so a Harness can discover the exact current
+// authoring shape without source browsing, network access, or Room credentials.
+func runGeneratedAppDescribe(args []string) error {
+	for _, arg := range args {
+		if arg != "--json" {
+			return errUsage()
+		}
+	}
+	return printJSONVerbatim(describeGeneratedApp())
 }
 
 // printJSONVerbatim matches printJSON but keeps placeholder brackets and rule
