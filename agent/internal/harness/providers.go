@@ -142,10 +142,11 @@ var builtInProviders = []Provider{
 			// Source-supported (session/list delegates to the Claude Agent SDK
 			// session store) but NOT runtime-verified. Not eligible.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// The local CLI reports logged-in API-key auth, but the pinned ACP
-			// prompt did not settle within the certification ceiling. That is an
-			// external bridge/tooling block, not evidence of serial semantics.
-			// Keep the provider serial and unverified until a clean run exists.
+			// Claude is intentionally deferred on this machine: usable credentials
+			// and environment are unavailable for a truthful certification run.
+			// Keep the provider serial and explicitly unverified; this is not a
+			// negative serial conclusion. Certification is deferred to later
+			// dogfood on a machine with working Claude access.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeUnverified,
