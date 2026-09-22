@@ -35,21 +35,15 @@ function makeEnv(
     // handleRoomRequest calls stub.fetch(url, init); capture the forwarded
     // Content-Type and the bounded Task wake token from the init headers.
     get: () => ({
-      fetch: (
-        _url: string | URL,
-        init?: { headers?: { get: (name: string) => string | null } }
-      ) =>
+      fetch: (_url: string | URL, init?: { headers?: HeadersInit }) =>
         Promise.resolve(
-          doFetch({
-            contentType:
-              init?.headers?.get("Content-Type") ??
-              init?.headers?.get("content-type") ??
-              null,
-            taskWake:
-              init?.headers?.get("X-Task-Attachment-Wake") ??
-              init?.headers?.get("x-task-attachment-wake") ??
-              null,
-          })
+          (() => {
+            const headers = new Headers(init?.headers)
+            return doFetch({
+              contentType: headers.get("Content-Type"),
+              taskWake: headers.get("X-Task-Attachment-Wake"),
+            })
+          })()
         ),
     }),
   }
@@ -181,6 +175,25 @@ describe("room attachment upload gate", () => {
     const env = makeEnv(() => Response.json({}))
     const response = await handleRoomRequest(request, env)
     expect(response.status).toBe(403)
+  })
+
+  it("allows an authenticated same-origin generated-app read without Origin", async () => {
+    const env = makeEnv(() =>
+      Response.json({ appInstanceId: "generated:test" })
+    )
+    const request = new Request(
+      "https://www.free4.chat/api/room/generated-app?appInstanceId=generated:test",
+      {
+        method: "GET",
+        headers: {
+          "X-Room-Id": "test-room",
+          "X-Room-Participant-Id": "human-1",
+          "X-Room-Participant-Token": "room-token",
+        },
+      }
+    )
+    const response = await handleRoomRequest(request, env)
+    expect(response.status).toBe(200)
   })
 })
 

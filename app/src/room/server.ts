@@ -66,12 +66,21 @@ export async function handleRoomRequest(
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname
   const isAgentEventSocket = pathname === AGENT_EVENT_PATH
+  // A same-origin browser GET does not send an Origin header, but the
+  // generated-app read still carries the Room capability headers below. Keep
+  // cross-origin requests origin-gated while allowing this authenticated
+  // browser path to reach the Durable Object.
+  const isSameOriginGeneratedAppRead =
+    pathname === GENERATED_APP_PATH &&
+    request.method === "GET" &&
+    request.headers.get("Origin") === null
   // The resident Runtime is a native client and normally has no browser
   // Origin. Its existing participant capability remains the authorization
   // boundary; a present Origin is still checked so another website cannot
   // use the endpoint as a cross-origin browser transport.
   if (
     !isAllowedOrigin(request.headers.get("Origin")) &&
+    !isSameOriginGeneratedAppRead &&
     !(isAgentEventSocket && request.headers.get("Origin") === null)
   )
     return json({ error: "forbidden_origin" }, 403)
