@@ -79,6 +79,7 @@ import {
   buildTargetedMessageEvent,
   buildRoomCreatedEvent,
   buildLiveViewPublishedEvent,
+  buildGeneratedRoomAppPublishedEvent,
   type RoomCreationSource,
 } from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
@@ -140,6 +141,9 @@ import {
 import { isAgentActivityTurnSequence } from "../common/agentActivity"
 import {
   GENERATED_APP_CHUNK_SIZE,
+  GENERATED_APP_STATE_MAX_BYTES_PER_WINDOW,
+  GENERATED_APP_STATE_MAX_MUTATIONS_PER_WINDOW,
+  GENERATED_APP_STATE_WINDOW_MS,
   MAX_GENERATED_APP_BUNDLE_BYTES,
   MAX_GENERATED_APPS_PER_ROOM,
   MAX_GENERATED_APP_UPDATE_BYTES,
@@ -1024,6 +1028,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private readonly clientMessageWindows = new Map<
     string,
     { windowStartedAt: number; count: number }
+  >()
+  // #456: generated shared-state writes have a narrower cost budget than
+  // ordinary WebSocket messages. The key is participant + App, and accepted
+  // count/bytes are tracked only while this RoomSession is active.
+  private readonly generatedAppStateWindows = new Map<
+    string,
+    { windowStartedAt: number; count: number; bytes: number }
   >()
   // #406: last accepted wait_for_events time per participant (see
   // MCP_WAIT_MIN_INTERVAL_MS). In-memory is sufficient: a tight poll loop is
@@ -4034,6 +4045,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return window.count > MAX_CLIENT_MESSAGES_PER_WINDOW
   }
 
+  private generatedAppStateBudgetExceeded(
+    participantId: string,
+    appInstanceId: string,
+    bytes: number,
+    now: number
+  ): boolean {
+    if (this.generatedAppStateWindows.size > MAX_CLIENT_MESSAGE_WINDOWS) {
+      for (const [key, entry] of this.generatedAppStateWindows)
+        if (now - entry.windowStartedAt >= GENERATED_APP_STATE_WINDOW_MS)
+          this.generatedAppStateWindows.delete(key)
+    }
+    const key = `${participantId}:${appInstanceId}`
+    const current = this.generatedAppStateWindows.get(key)
+    const window =
+      !current || now - current.windowStartedAt >= GENERATED_APP_STATE_WINDOW_MS
+        ? { windowStartedAt: now, count: 0, bytes: 0 }
+        : current
+    if (
+      window.count >= GENERATED_APP_STATE_MAX_MUTATIONS_PER_WINDOW ||
+      window.bytes + bytes > GENERATED_APP_STATE_MAX_BYTES_PER_WINDOW
+    )
+      return true
+    window.count += 1
+    window.bytes += bytes
+    this.generatedAppStateWindows.set(key, window)
+    return false
+  }
+
   // #228: Room-authoritative collaboration analytics are best-effort:
   // never fail or delay the Room mutation they observe.
   // The DO instance name is the room name: every room is addressed via
@@ -5017,6 +5056,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         }
         await this.scheduleNextAlarm(room)
         await this.broadcastState(room)
+        this.trackRoomAnalytics([
+          buildGeneratedRoomAppPublishedEvent({
+            roomName: this.roomAnalyticsName(),
+            participants: Object.values(room.participants),
+            phase: "update",
+            bundleBytes: publication.bundleBytes,
+          }),
+        ])
         const oldChunkCount = Math.ceil(
           current.bundleBytes / GENERATED_APP_CHUNK_SIZE
         )
@@ -5097,6 +5144,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       await this.scheduleNextAlarm(room)
       await this.broadcastState(room)
+      this.trackRoomAnalytics([
+        buildGeneratedRoomAppPublishedEvent({
+          roomName: this.roomAnalyticsName(),
+          participants: Object.values(room.participants),
+          phase: "first",
+          bundleBytes: publication.bundleBytes,
+        }),
+      ])
       return this.json({
         publication,
         duplicate: false,
@@ -7523,6 +7578,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             appInstanceId: message.appInstanceId,
             revision: publication.stateRevision,
             generatedState: currentState ?? {},
+          })
+        )
+        return
+      }
+      if (
+        this.generatedAppStateBudgetExceeded(
+          participant.id,
+          message.appInstanceId,
+          updateBytes,
+          Date.now()
+        )
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "generated-app-state-error",
+            error: "generated_app_state_rate_limited",
+            appInstanceId: message.appInstanceId,
           })
         )
         return

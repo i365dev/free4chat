@@ -93,6 +93,7 @@ type generatedAppDescriptor struct {
 	PublishCommand  string                   `json:"publishCommand"`
 	Bundle          generatedAppBundleRule   `json:"bundle"`
 	Limits          generatedAppLimits       `json:"limits"`
+	StateBudget     generatedAppStateBudget  `json:"stateBudget"`
 	Revision        generatedAppRevisionRule `json:"revision"`
 	Bridge          []string                 `json:"bridge"`
 	Rules           []string                 `json:"rules"`
@@ -123,6 +124,12 @@ type generatedAppRevisionRule struct {
 	StateRevision    string `json:"stateRevision"`
 }
 
+type generatedAppStateBudget struct {
+	WindowMs        int `json:"windowMs"`
+	MaxMutations    int `json:"maxMutations"`
+	MaxPayloadBytes int `json:"maxPayloadBytes"`
+}
+
 type generatedAppExample struct {
 	Description string         `json:"description"`
 	Bundle      map[string]any `json:"bundle"`
@@ -146,6 +153,11 @@ func describeGeneratedApp() generatedAppDescriptor {
 			MaxStateBytes:  generatedAppStateBytes,
 			MaxTitleLength: 80,
 			MaxAppsPerRoom: 4,
+		},
+		StateBudget: generatedAppStateBudget{
+			WindowMs:        10_000,
+			MaxMutations:    40,
+			MaxPayloadBytes: 65_536,
 		},
 		Revision: generatedAppRevisionRule{
 			FirstRevision:    1,

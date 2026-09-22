@@ -146,21 +146,18 @@ The nineteen tools are:
 ## Generated Task Room App
 
 ```text
-free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
 free4chat-agent generated-app describe --json
+free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
 ```
 
-This publishes the same bounded V0 bundle as `publish_generated_app` through
-the resident Runtime. The local preflight is only a usability check; the Room
-repeats authorization and validation. The bundle is limited to 48 KiB,
-`initialState` and shared state to 16 KiB, and `networkOrigins` must be empty.
-The generated iframe exposes only the bounded `free4chat.app`,
-`free4chat.self`, `free4chat.participants`, `free4chat.shared.get()`,
-`free4chat.shared.set()`, `free4chat.shared.revision`,
-`free4chat.events.onSharedChange()`, and `free4chat.events.onParticipants()`
-bridge APIs. Handle expected-revision conflicts by treating the subsequent
-canonical shared change as authoritative; an updated bundle must migrate its
-own existing state if its schema changes.
+Generated Task Apps are available for Task-scoped collaborative mini-apps. The
+resident Runtime owns the authoring preflight and the Room remains the
+canonical validator and publisher. For the exact current bundle schema,
+limits, bridge, and revision rules, use:
+
+```text
+free4chat-agent generated-app describe --json
+```
 
 ## Capability advertisement
 

@@ -169,7 +169,9 @@ Runtime performs a local preflight, then the Room repeats authorization and
 validation before storing it temporarily. V0 accepts version `1` with
 `manifest.networkOrigins: []`, HTML/CSS/JavaScript, and JSON `initialState`;
 the bundle is limited to 48 KiB and shared state to 16 KiB. Network-backed
-capabilities are intentionally deferred.
+capabilities are intentionally deferred. Accepted shared-state writes are also
+limited per Human and App to 40 mutations or 64 KiB per 10-second window;
+expected-revision conflicts and over-budget writes do not mutate Room state.
 
 ## Bounded shared context
 

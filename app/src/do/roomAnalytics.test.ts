@@ -9,6 +9,7 @@ import {
   buildCollabOutcomeEvent,
   buildCollaborationDurationEvent,
   buildLiveViewPublishedEvent,
+  buildGeneratedRoomAppPublishedEvent,
   importAnalyticsEvents,
   mixpanelImportRow,
   hashRoom as hashRoomServer,
@@ -115,6 +116,25 @@ describe("room analytics builders (#228)", () => {
       expect(serialized).not.toContain("agent-")
       expect(serialized).not.toContain("Pi")
     }
+  })
+
+  it("generated Room App publication carries only coarse source/phase/size properties", () => {
+    const event = buildGeneratedRoomAppPublishedEvent({
+      roomName: "test",
+      participants: PARTICIPANTS,
+      phase: "update",
+      bundleBytes: 12 * 1024,
+    })
+    expect(event.name).toBe("RoomAppPublished")
+    expect(event.properties).toMatchObject({
+      appSource: "generated",
+      phase: "update",
+      bundleSizeBucket: "4-16k",
+    })
+    expect(Object.keys(event.properties).sort()).toEqual(
+      [...APPROVED_ANALYTICS_PROPERTIES.RoomAppPublished].sort()
+    )
+    expect(JSON.stringify(event.properties)).not.toContain("test-")
   })
 })
 

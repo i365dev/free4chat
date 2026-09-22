@@ -62,11 +62,14 @@ function bundle(title: string, marker: string) {
 
 function harness() {
   const store = new Map<string, unknown>([["room", makeRoom()]])
+  const storagePut = vi.fn(async (key: string, value: unknown) => {
+    store.set(key, value)
+  })
   const humanSocket = { send: vi.fn() } as unknown as WebSocket
   const ctx = {
     storage: {
       get: async <T>(key: string) => store.get(key) as T | undefined,
-      put: async (key: string, value: unknown) => void store.set(key, value),
+      put: storagePut,
       delete: async (keys: string | string[]) => {
         for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key)
       },
@@ -95,6 +98,33 @@ function harness() {
       },
       message
     )
+  const sendGeneratedState = async (
+    appInstanceId: string,
+    expectedRevision: number,
+    state: Record<string, unknown>
+  ) =>
+    await (
+      session as unknown as {
+        handleClientMessage: (
+          socket: WebSocket,
+          attachment: unknown,
+          message: unknown
+        ) => Promise<void>
+      }
+    ).handleClientMessage(
+      humanSocket,
+      {
+        participantId: "human-1",
+        token: "human-token",
+        connectionNonce: "human-connection",
+      },
+      {
+        type: "generated-app-state-update",
+        appInstanceId,
+        expectedRevision,
+        state,
+      }
+    )
   const publish = async (taskRequestId: string, value: unknown) => {
     const response = await session.fetch(
       new Request("https://room/control", {
@@ -114,7 +144,15 @@ function harness() {
     }
   }
   const stored = () => store.get("room") as RoomRecord
-  return { sendHuman, publish, stored, session }
+  return {
+    sendHuman,
+    sendGeneratedState,
+    publish,
+    stored,
+    session,
+    storagePut,
+    humanSocket,
+  }
 }
 
 describe("RoomSession generated Task App publication", () => {
@@ -128,6 +166,12 @@ describe("RoomSession generated Task App publication", () => {
     const taskRequestId = test.stored().messages[0]?.collab?.requestId
     expect(taskRequestId).toBeTruthy()
     if (!taskRequestId) return
+    const analytics = vi.spyOn(
+      test.session as unknown as {
+        trackRoomAnalytics: (events: unknown[]) => void
+      },
+      "trackRoomAnalytics"
+    )
 
     const first = await test.publish(
       taskRequestId,
@@ -149,6 +193,7 @@ describe("RoomSession generated Task App publication", () => {
     expect(retry.status).toBe(200)
     expect(retry.json.duplicate).toBe(true)
     expect(retry.json.publication).toEqual(firstPublication)
+    expect(analytics).toHaveBeenCalledTimes(1)
 
     const update = await test.publish(
       taskRequestId,
@@ -167,6 +212,25 @@ describe("RoomSession generated Task App publication", () => {
     expect(test.stored().generatedApps).toEqual({
       [firstPublication.appInstanceId]: update.json.publication,
     })
+    expect(analytics).toHaveBeenCalledTimes(2)
+    expect(
+      analytics.mock.calls.map(([events]) => (events as any[])[0])
+    ).toEqual([
+      expect.objectContaining({
+        name: "RoomAppPublished",
+        properties: expect.objectContaining({
+          appSource: "generated",
+          phase: "first",
+        }),
+      }),
+      expect.objectContaining({
+        name: "RoomAppPublished",
+        properties: expect.objectContaining({
+          appSource: "generated",
+          phase: "update",
+        }),
+      }),
+    ])
 
     const read = await test.session.fetch(
       new Request(
@@ -187,5 +251,83 @@ describe("RoomSession generated Task App publication", () => {
       bundle: bundle("Updated checklist", "second"),
       state: { items: [] },
     })
+  })
+
+  it("bounds generated state writes by count, bytes, and window", async () => {
+    vi.useFakeTimers({ now: Date.now() })
+    try {
+      const test = harness()
+      await test.sendHuman({
+        type: "collab-request",
+        targetParticipantId: "agent-a",
+        summary: "Create a shared checklist",
+      })
+      const taskRequestId = test.stored().messages[0]?.collab?.requestId
+      if (!taskRequestId) throw new Error("missing task request")
+      const publication = (
+        await test.publish(taskRequestId, bundle("Checklist", "rate"))
+      ).json.publication
+
+      for (let revision = 0; revision < 40; revision += 1)
+        await test.sendGeneratedState(publication.appInstanceId, revision, {
+          items: [{ text: `item-${revision}` }],
+        })
+      const writesBeforeReject = test.storagePut.mock.calls.length
+      await test.sendGeneratedState(publication.appInstanceId, 40, {
+        items: [{ text: "rejected" }],
+      })
+      expect(
+        test.stored().generatedApps?.[publication.appInstanceId]
+      ).toMatchObject({
+        stateRevision: 40,
+      })
+      expect(test.storagePut).toHaveBeenCalledTimes(writesBeforeReject)
+      expect(test.humanSocket.send).toHaveBeenCalledWith(
+        expect.stringContaining('"generated_app_state_rate_limited"')
+      )
+
+      vi.setSystemTime(Date.now() + 10_001)
+      await test.sendGeneratedState(publication.appInstanceId, 40, {
+        items: [{ text: "after-window" }],
+      })
+      expect(
+        test.stored().generatedApps?.[publication.appInstanceId]
+      ).toMatchObject({
+        stateRevision: 41,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("rejects byte-heavy generated state before another storage write", async () => {
+    const test = harness()
+    await test.sendHuman({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Create a shared checklist",
+    })
+    const taskRequestId = test.stored().messages[0]?.collab?.requestId
+    if (!taskRequestId) throw new Error("missing task request")
+    const publication = (
+      await test.publish(taskRequestId, bundle("Checklist", "bytes"))
+    ).json.publication
+    for (let revision = 0; revision < 20; revision += 1)
+      await test.sendGeneratedState(publication.appInstanceId, revision, {
+        blob: "x".repeat(3_000),
+      })
+    const writesBeforeReject = test.storagePut.mock.calls.length
+    await test.sendGeneratedState(publication.appInstanceId, 20, {
+      blob: "y".repeat(3_000),
+    })
+    expect(
+      test.stored().generatedApps?.[publication.appInstanceId]
+    ).toMatchObject({
+      stateRevision: 20,
+    })
+    expect(test.storagePut).toHaveBeenCalledTimes(writesBeforeReject)
+    expect(test.humanSocket.send).toHaveBeenCalledWith(
+      expect.stringContaining('"generated_app_state_rate_limited"')
+    )
   })
 })

@@ -736,7 +736,7 @@ function createMcpServer(context: McpRequestContext) {
     "publish_generated_app",
     {
       description:
-        "Publish one small self-contained collaborative Task Room App. The bundle is business/UI code only: {version:1, manifest:{title,networkOrigins:[]}, html, css, js, initialState}. Free4Chat supplies the sandbox, Room-owned persistence, shared state, and realtime bridge. The Room independently validates conservative bounds and creates appInstanceId.",
+        "Publish one small self-contained collaborative Task Room App. The bundle is business/UI code only: {version:1, manifest:{title,networkOrigins:[]}, html, css, js, initialState}. Free4Chat supplies the sandbox, Room-owned persistence, shared state, and realtime bridge. One Task has at most one publication: an identical retry is a duplicate, while a changed valid bundle keeps appInstanceId and increments bundleRevision; stateRevision remains independent. The Room independently validates conservative bounds and creates appInstanceId.",
       inputSchema: {
         participantHandle: z.string().min(1),
         taskRequestId: z.string().trim().min(1).max(64),

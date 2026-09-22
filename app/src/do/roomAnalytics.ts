@@ -56,6 +56,7 @@ export interface RoomAnalyticsEvent {
     | "CollabOutcome"
     | "CollaborationDuration"
     | "LiveViewPublished"
+    | "RoomAppPublished"
   properties: Record<string, unknown>
 }
 
@@ -298,6 +299,35 @@ export function buildLiveViewPublishedEvent(args: {
   }
 }
 
+export function generatedBundleSizeBucket(
+  bytes: number
+): "0-4k" | "4-16k" | "16-32k" | "32-48k" {
+  if (bytes <= 4 * 1024) return "0-4k"
+  if (bytes <= 16 * 1024) return "4-16k"
+  if (bytes <= 32 * 1024) return "16-32k"
+  return "32-48k"
+}
+
+export function buildGeneratedRoomAppPublishedEvent(args: {
+  roomName: string
+  participants: RoomParticipant[]
+  phase: "first" | "update"
+  bundleBytes: number
+}): RoomAnalyticsEvent {
+  return {
+    name: "RoomAppPublished",
+    properties: {
+      appSource: "generated",
+      phase: args.phase,
+      bundleSizeBucket: generatedBundleSizeBucket(args.bundleBytes),
+      roomType: "unknown",
+      roomHash: hashRoom(args.roomName),
+      participantBucket: participantsBucket(args.participants.length),
+      roomComposition: roomComposition(args.participants),
+    },
+  }
+}
+
 /**
  * Advance the OPEN 2+-participant collaboration interval (#228 extension).
  * Count is the number of CURRENT canonical participants in the Room record.
@@ -415,6 +445,15 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
   ],
   LiveViewPublished: [
     "phase",
+    "roomType",
+    "roomHash",
+    "participantBucket",
+    "roomComposition",
+  ],
+  RoomAppPublished: [
+    "appSource",
+    "phase",
+    "bundleSizeBucket",
     "roomType",
     "roomHash",
     "participantBucket",

@@ -79,15 +79,6 @@ import type { TaskExecutionProjection } from "../room/types"
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
-function generatedBundleSizeBucket(
-  bytes: number
-): "0-4k" | "4-16k" | "16-32k" | "32-48k" {
-  if (bytes <= 4 * 1024) return "0-4k"
-  if (bytes <= 16 * 1024) return "4-16k"
-  if (bytes <= 32 * 1024) return "16-32k"
-  return "32-48k"
-}
-
 type TaskAgent = { peerId: string; name: string }
 
 /**
@@ -363,6 +354,16 @@ export default function RoomContent({
   const [generatedAppLoading, setGeneratedAppLoading] = useState<string | null>(
     null
   )
+  const pendingGeneratedStateRef = useRef(
+    new Map<
+      string,
+      {
+        revision: number
+        state: Record<string, unknown>
+        sourceParticipantId?: string
+      }
+    >()
+  )
   const [expandedRoomAppId, setExpandedRoomAppId] = useState<string | null>(
     null
   )
@@ -402,7 +403,6 @@ export default function RoomContent({
   // App reports at most one shared-session milestone per browser Room session.
   const sharedSessionTrackedAppIdsRef = useRef<Set<string>>(new Set())
   const sharedSessionTrackedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
-  const generatedAppRevisionSeenRef = useRef<Map<string, number>>(new Map())
   // The acquisition intent is stable for this Room page, so the App-milestone
   // callbacks can read it without depending on the prop and being re-created.
   const acquisitionPageRef = useRef<string | undefined>(acquisitionPage)
@@ -500,6 +500,8 @@ export default function RoomContent({
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
+  const generatedAppsRef = useRef(generatedApps)
+  generatedAppsRef.current = generatedApps
 
   const taskProjections = useMemo(
     () => buildTaskProjections(messages),
@@ -632,51 +634,6 @@ export default function RoomContent({
     .map((app) => resolveProductionRoomAppId(app.id))
     .find((appId): appId is string => appId !== null)
 
-  useEffect(() => {
-    if (process.env.NODE_ENV !== "production") return
-    for (const publication of Object.values(generatedApps)) {
-      const seenRevision = generatedAppRevisionSeenRef.current.get(
-        publication.appInstanceId
-      )
-      if (seenRevision === undefined) {
-        generatedAppRevisionSeenRef.current.set(
-          publication.appInstanceId,
-          publication.bundleRevision
-        )
-        trackAnalyticsEvent(
-          "RoomAppPublished",
-          withAcquisitionPage(
-            {
-              appSource: "generated",
-              phase: "first",
-              bundleSizeBucket: generatedBundleSizeBucket(
-                publication.bundleBytes
-              ),
-            },
-            acquisitionPageRef.current
-          )
-        )
-      } else if (publication.bundleRevision > seenRevision) {
-        generatedAppRevisionSeenRef.current.set(
-          publication.appInstanceId,
-          publication.bundleRevision
-        )
-        trackAnalyticsEvent(
-          "RoomAppPublished",
-          withAcquisitionPage(
-            {
-              appSource: "generated",
-              phase: "update",
-              bundleSizeBucket: generatedBundleSizeBucket(
-                publication.bundleBytes
-              ),
-            },
-            acquisitionPageRef.current
-          )
-        )
-      }
-    }
-  }, [generatedApps])
   const visibleRoomApp =
     activeRoomApp && roomAppSelf ? activeRoomApp : undefined
   // Focus mode is a Room layout state, not just a larger host. The resident
@@ -709,7 +666,9 @@ export default function RoomContent({
       setStageView("screen")
       if (
         generatedAppDocuments[publication.appInstanceId]?.publication
-          .bundleRevision === publication.bundleRevision
+          .bundleRevision === publication.bundleRevision &&
+        generatedAppDocuments[publication.appInstanceId]?.publication
+          .stateRevision >= publication.stateRevision
       )
         return
       const auth = getLocalRoomAuth()
@@ -730,10 +689,45 @@ export default function RoomContent({
         )
         if (!response.ok) throw new Error("generated_app_unavailable")
         const document = (await response.json()) as GeneratedRoomAppDocument
-        setGeneratedAppDocuments((previous) => ({
-          ...previous,
-          [publication.appInstanceId]: document,
-        }))
+        setGeneratedAppDocuments((previous) => {
+          const authoritative =
+            generatedAppsRef.current[publication.appInstanceId]
+          if (
+            authoritative &&
+            document.publication.bundleRevision < authoritative.bundleRevision
+          )
+            return previous
+          if (
+            authoritative &&
+            document.publication.bundleRevision ===
+              authoritative.bundleRevision &&
+            document.publication.stateRevision < authoritative.stateRevision
+          )
+            return previous
+          const pending = pendingGeneratedStateRef.current.get(
+            publication.appInstanceId
+          )
+          const reconciled =
+            pending && pending.revision >= document.publication.stateRevision
+              ? {
+                  ...document,
+                  publication: {
+                    ...document.publication,
+                    stateRevision: pending.revision,
+                  },
+                  state: pending.state,
+                }
+              : document
+          if (
+            pending &&
+            pending.revision <= reconciled.publication.stateRevision
+          )
+            pendingGeneratedStateRef.current.delete(publication.appInstanceId)
+          return {
+            ...previous,
+            [publication.appInstanceId]: reconciled,
+          }
+        })
       } catch {
         setActiveGeneratedAppId(null)
       } finally {
@@ -747,7 +741,8 @@ export default function RoomContent({
       const document = generatedAppDocuments[publication.appInstanceId]
       if (
         document &&
-        document.publication.bundleRevision !== publication.bundleRevision &&
+        (document.publication.bundleRevision !== publication.bundleRevision ||
+          document.publication.stateRevision < publication.stateRevision) &&
         generatedAppLoading !== publication.appInstanceId
       )
         void openGeneratedApp(publication)
@@ -763,7 +758,19 @@ export default function RoomContent({
       subscribeGeneratedAppState((message) => {
         setGeneratedAppDocuments((previous) => {
           const document = previous[message.appInstanceId]
-          if (!document) return previous
+          if (!document) {
+            const pending = pendingGeneratedStateRef.current.get(
+              message.appInstanceId
+            )
+            if (!pending || message.revision > pending.revision)
+              pendingGeneratedStateRef.current.set(
+                message.appInstanceId,
+                message
+              )
+            return previous
+          }
+          if (message.revision <= document.publication.stateRevision)
+            return previous
           return {
             ...previous,
             [message.appInstanceId]: {

@@ -8,6 +8,11 @@ export const MAX_GENERATED_APPS_PER_ROOM = 4
 export const MAX_GENERATED_APP_BUNDLE_BYTES = 48 * 1024
 export const MAX_GENERATED_APP_STATE_BYTES = 16 * 1024
 export const MAX_GENERATED_APP_UPDATE_BYTES = 4 * 1024
+// Generated state writes are more expensive than ordinary App messages because
+// every accepted update persists and broadcasts the Room snapshot.
+export const GENERATED_APP_STATE_WINDOW_MS = 10 * 1000
+export const GENERATED_APP_STATE_MAX_MUTATIONS_PER_WINDOW = 40
+export const GENERATED_APP_STATE_MAX_BYTES_PER_WINDOW = 64 * 1024
 export const GENERATED_APP_CHUNK_SIZE = 16 * 1024
 
 const MAX_TITLE_LENGTH = 80

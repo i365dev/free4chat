@@ -82,6 +82,11 @@ func TestGeneratedAppDescribeIsDeterministicAndSelfConsistent(t *testing.T) {
 		descriptor.Bundle.Version != 1 || len(descriptor.Bundle.NetworkOrigins) != 0 {
 		t.Fatalf("descriptor drifted from validator constants: %#v", descriptor)
 	}
+	if descriptor.StateBudget.WindowMs != 10_000 ||
+		descriptor.StateBudget.MaxMutations != 40 ||
+		descriptor.StateBudget.MaxPayloadBytes != 65_536 {
+		t.Fatalf("descriptor drifted from generated state budget: %#v", descriptor.StateBudget)
+	}
 	if len(descriptor.Examples) != 1 {
 		t.Fatalf("expected one minimal example, got %d", len(descriptor.Examples))
 	}

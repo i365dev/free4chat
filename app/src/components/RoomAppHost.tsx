@@ -97,6 +97,7 @@ export default function RoomAppHost({
   const portRef = useRef<MessagePort | null>(null)
   const tokenRef = useRef(handshakeToken())
   const readyRef = useRef(false)
+  const sharedStateRevisionRef = useRef<number | null>(null)
   const readyNotifiedRef = useRef(false)
   const engagedNotifiedRef = useRef(false)
   const unavailableNotifiedRef = useRef(false)
@@ -186,6 +187,7 @@ export default function RoomAppHost({
         }
         const projected = projectRoomAppParticipants(participants)
         previousParticipantsRef.current = projected
+        sharedStateRevisionRef.current = sharedState?.revision ?? null
         post({
           type: "ready",
           protocolVersion: 1,
@@ -361,6 +363,12 @@ export default function RoomAppHost({
     if (!subscribeGeneratedState) return
     return subscribeGeneratedState((message) => {
       if (!readyRef.current || message.appInstanceId !== appInstanceId) return
+      if (
+        sharedStateRevisionRef.current !== null &&
+        message.revision <= sharedStateRevisionRef.current
+      )
+        return
+      sharedStateRevisionRef.current = message.revision
       post({
         type: "shared_state",
         appInstanceId,
@@ -372,6 +380,25 @@ export default function RoomAppHost({
       })
     })
   }, [appInstanceId, post, subscribeGeneratedState])
+
+  // A state-only Room reconciliation updates the host without replacing its
+  // iframe. This covers a reconnect or an initial GET race where the resident
+  // host missed the direct generated-app-state message.
+  useEffect(() => {
+    if (!sharedState || !readyRef.current) return
+    if (
+      sharedStateRevisionRef.current !== null &&
+      sharedState.revision <= sharedStateRevisionRef.current
+    )
+      return
+    sharedStateRevisionRef.current = sharedState.revision
+    post({
+      type: "shared_state",
+      appInstanceId,
+      revision: sharedState.revision,
+      state: sharedState.state,
+    })
+  }, [appInstanceId, post, sharedState])
 
   useEffect(() => {
     const next = projectRoomAppParticipants(participants)
