@@ -316,9 +316,10 @@ type activeACPTurn struct {
 	// progress wakes the turn loop whenever this conversation observes a
 	// provider notification. It is nil unless the opt-in idle watchdog is
 	// enabled, so the default path allocates nothing and wakes no one.
-	progress chan struct{}
-	done     chan struct{}
-	doneOnce sync.Once
+	progress        chan struct{}
+	done            chan struct{}
+	doneOnce        sync.Once
+	cancelRequested bool
 }
 
 type retainedACPSession struct {
@@ -2042,8 +2043,12 @@ func (a *ACPAdapter) resetPrompt(sessionID, key string) {
 	turn := a.activeTurns[sessionID]
 	delete(a.activeTurns, sessionID)
 	turnCancel := context.CancelFunc(nil)
+	turnScope := ""
+	cancelRequested := false
 	if turn != nil {
 		turnCancel = turn.cancel
+		turnScope = turn.scope
+		cancelRequested = turn.cancelRequested
 	}
 	permissions := a.takePendingPermissionsLocked(sessionID)
 	if turn != nil {
@@ -2053,6 +2058,9 @@ func (a *ACPAdapter) resetPrompt(sessionID, key string) {
 	a.mu.Unlock()
 	if turnCancel != nil {
 		turnCancel()
+	}
+	if cancelRequested {
+		a.emitDiagnostic("ACP_TURN_SETTLED_AFTER_CANCEL", map[string]string{"scope": turnScope})
 	}
 	for _, permission := range permissions {
 		_ = a.writeFrame(cancelPermissionFrame(permission.id))
@@ -2243,6 +2251,7 @@ func (a *ACPAdapter) CancelTurnForSession(sessionID string) error {
 		a.mu.Unlock()
 		return nil
 	}
+	a.activeTurns[sessionID].cancelRequested = true
 	params, _ := json.Marshal(map[string]any{"sessionId": sessionID})
 	envelope, _ := json.Marshal(acpMessage{
 		JSONRPC: "2.0",
@@ -2255,7 +2264,7 @@ func (a *ACPAdapter) CancelTurnForSession(sessionID string) error {
 	a.emitDiagnostic("ACP_CANCEL_SENT", nil)
 	err := a.writeFrame(envelope)
 	if err == nil {
-		a.emitDiagnostic("ACP_CANCEL_SETTLED", nil)
+		a.emitDiagnostic("ACP_CANCEL_WRITE_OK", nil)
 	}
 	return err
 }

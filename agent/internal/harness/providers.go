@@ -1,6 +1,11 @@
 package harness
 
-import "github.com/i365dev/free4chat/agent/internal/types"
+import (
+	"path/filepath"
+	"strings"
+
+	"github.com/i365dev/free4chat/agent/internal/types"
+)
 
 /*
  * The ordered built-in provider registry.
@@ -26,14 +31,15 @@ var builtInProviders = []Provider{
 			// sessions in the #409 probe: a known native id loads, discovery
 			// does not. Not eligible until that is fixed and re-verified.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// Two independent sessions made concurrent progress with correct
-			// stream routing in an earlier probe. The merged isolated-lane
-			// lifecycle suite has not certified Hermes at N=2 yet, so the
-			// production cap remains serial. This is an evidence gap, not an
-			// inherent provider limitation.
+			// Real N=2 isolated-lane certification passed: independent shell
+			// turns overlapped, B survived A cancel/hard-stop, exact retained
+			// session/load after idle reap restored context, and Runtime-owned
+			// process groups cleaned up. Hermes is native/no-prompt under the
+			// current policy, so no Room permission probe is required.
 			Execution: ExecutionCapability{
-				Mode:     types.TaskExecutionSerial,
-				Evidence: types.TaskExecutionProbeConcurrencyObserved,
+				Mode:          types.TaskExecutionCrossSession,
+				MaxConcurrent: 2,
+				Evidence:      types.TaskExecutionProbeVerifiedCrossSession,
 			},
 			// #297: the ACP relay code exists, but the tested default/native
 			// policy executed directly and emitted no permission request.
@@ -53,9 +59,10 @@ var builtInProviders = []Provider{
 			// session is discoverable/replayable, but the next ACP prompt
 			// failed with -32603. Verified partial, so NOT eligible.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// Concurrent cross-session progress with correct routing was observed,
-			// but the merged isolated-lane lifecycle and approval suite has not
-			// certified N=2 yet. Keep the production cap serial until it does.
+			// N=2 overlap and cancel isolation passed. Idle reap/load returned a
+			// usable session but did not retain the seeded context, so the
+			// provider remains serial until that bridge behavior is fixed and a
+			// real permission correlation probe is completed.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -82,10 +89,10 @@ var builtInProviders = []Provider{
 			// and two post-load prompts retained its codeword and associated
 			// fact. This is cold/cooperative adoption only, never hot takeover.
 			SessionContinuation: SessionContinuationVerified,
-			// Concurrent cross-session progress was observed, but the merged
-			// isolated-lane lifecycle suite has not certified N=2. The provider
-			// also has a known false-settled cancel shape and high process/RSS
-			// cost, so the production cap remains serial pending a fresh probe.
+			// N=2 overlap and first hard-stop isolation passed, but repeated
+			// hard-stop left a descendant and exact session/load failed with the
+			// current local Codex CLI. Keep serial; this is a concrete provider
+			// gate, not an architectural serial invariant.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -170,9 +177,10 @@ var builtInProviders = []Provider{
 			// enabled.
 			SessionContinuation: SessionContinuationVerified,
 			// Pi is the only Harness currently enabled for cross-session
-			// execution. The evidence is axis-scoped: it proves N=2 under the
-			// merged isolated-process lifecycle, while N=4 remains a separate
-			// resource/certification target. pi-acp's historical closeAllExcept
+			// execution. A fresh real probe completed four overlapping tool
+			// turns with isolated stream/context routing, bounded queueing, and
+			// per-lane process ownership.
+			// pi-acp's historical closeAllExcept
 			// behavior is contained by the per-lane process boundary; it is no
 			// longer a Free4Chat shared-process architecture blocker.
 			//
@@ -192,15 +200,15 @@ var builtInProviders = []Provider{
 			//   crash         killing ONE per-session `pi` worker left the
 			//                 bridge alive and a brand-new session C working;
 			//                 only the killed conversation was lost.
-			//   cost          ~180 MB idle, ~360-425 MB with two active
-			//                 sessions.
+			//   cost          N=4 active lanes measured roughly 320-390 MB RSS
+			//                 per provider tree on the certification host.
 			//
 			// Pi is also the only Harness with SessionContinuation verified,
 			// which is exactly the workflow that makes two independent
 			// retained sessions normal for the product.
 			Execution: ExecutionCapability{
 				Mode:          types.TaskExecutionCrossSession,
-				MaxConcurrent: 2,
+				MaxConcurrent: 4,
 				Evidence:      types.TaskExecutionProbeVerifiedCrossSession,
 			},
 			// #297: tested native/default policy executed directly and emitted
@@ -228,4 +236,37 @@ func ProviderByID(id string) (Provider, error) {
 		}
 	}
 	return Provider{}, &UnknownLauncherError{ID: id}
+}
+
+// DiagnosticProviderSpec returns a bounded provider identity for the local
+// diagnostics surface. Built-in identities are registry-owned; custom
+// launchers expose only a basename. In particular, launcher arguments are
+// never serialized because they may contain credentials or private paths.
+func DiagnosticProviderSpec(launcher types.AgentLauncher, custom bool) string {
+	if !custom {
+		if launcher.ID != "" {
+			return "builtin:" + launcher.ID
+		}
+		return "builtin:unknown"
+	}
+	base := filepath.Base(strings.TrimSpace(launcher.Command))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return "custom"
+	}
+	var safe strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			safe.WriteRune(r)
+		} else {
+			safe.WriteByte('_')
+		}
+		if safe.Len() >= 64 {
+			break
+		}
+	}
+	if safe.Len() == 0 {
+		return "custom"
+	}
+	return "custom:" + safe.String()
 }

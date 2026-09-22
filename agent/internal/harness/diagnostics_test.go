@@ -3,6 +3,8 @@ package harness
 import (
 	"strings"
 	"testing"
+
+	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
 func TestDiagnosticsSnapshotUsesOpaqueSessionCorrelation(t *testing.T) {
@@ -22,6 +24,20 @@ func TestDiagnosticsSnapshotUsesOpaqueSessionCorrelation(t *testing.T) {
 	}
 	if snapshot.Lanes[0].RSSKB < 0 || snapshot.Lanes[0].DescendantCount < 0 {
 		t.Fatalf("invalid resource snapshot: %+v", snapshot.Lanes[0])
+	}
+}
+
+func TestDiagnosticProviderSpecNeverIncludesCustomArgs(t *testing.T) {
+	launcher := types.AgentLauncher{
+		Command: "/opt/tools/custom-agent",
+		Args:    []string{"--api-key", "sentinel-secret", "https://user:pass@example.invalid"},
+	}
+	spec := DiagnosticProviderSpec(launcher, true)
+	if strings.Contains(spec, "sentinel-secret") || strings.Contains(spec, "example.invalid") {
+		t.Fatalf("custom launcher args leaked into provider diagnostics: %q", spec)
+	}
+	if spec != "custom:custom-agent" {
+		t.Fatalf("unexpected bounded custom provider identity: %q", spec)
 	}
 }
 

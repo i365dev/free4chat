@@ -34,7 +34,7 @@ func TestBuiltInProvidersMatchPreviousLauncherPolicy(t *testing.T) {
 			id: "hermes", command: "hermes", args: []string{"acp"},
 			maturity: types.MaturityNative, security: types.SecurityTrustedRoom,
 			continuation: false,
-			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeConcurrencyObserved, Concurrency: types.TaskExecutionSerial},
+			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeVerifiedCrossSession, Concurrency: types.TaskExecutionCrossSession, MaxConcurrent: 2},
 		},
 		{
 			id: "opencode", command: "opencode", args: []string{"acp", "--pure"},
@@ -60,7 +60,7 @@ func TestBuiltInProvidersMatchPreviousLauncherPolicy(t *testing.T) {
 			maturity: types.MaturityBridge, security: types.SecurityTrustedRoom,
 			continuation: true,
 			globalCwd:    types.GlobalSessionListCwdEmpty,
-			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeVerifiedCrossSession, Concurrency: types.TaskExecutionCrossSession, MaxConcurrent: 2},
+			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeVerifiedCrossSession, Concurrency: types.TaskExecutionCrossSession, MaxConcurrent: 4},
 		},
 	}
 

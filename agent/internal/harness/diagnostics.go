@@ -21,6 +21,13 @@ func (a *ACPAdapter) diagnosticSnapshot(lane int) types.HarnessLaneDiagnostic {
 	proc := a.proc
 	closing := a.closing
 	active := len(a.activeTurns) > 0
+	activeScope := ""
+	for _, turn := range a.activeTurns {
+		if turn != nil && turn.scope != "" {
+			activeScope = turn.scope
+			break
+		}
+	}
 	current := make(map[string]int64, 1+len(a.sessions)+len(a.retainedSessions))
 	if a.sessionID != "" {
 		current["room"] = a.sessionGeneration
@@ -42,8 +49,21 @@ func (a *ACPAdapter) diagnosticSnapshot(lane int) types.HarnessLaneDiagnostic {
 	sort.Strings(ids)
 	var scope string
 	var generation int64
-	if len(ids) > 0 {
-		scope = ids[0]
+	if activeScope != "" {
+		scope = activeScope
+		generation = current[scope]
+	} else if len(ids) > 0 {
+		// Prefer a retained Task scope over the compatibility Room session so
+		// a lane snapshot remains useful after a Task has been materialized.
+		for _, candidate := range ids {
+			if candidate != "room" {
+				scope = candidate
+				break
+			}
+		}
+		if scope == "" {
+			scope = ids[0]
+		}
 		generation = current[scope]
 	}
 	pid := 0

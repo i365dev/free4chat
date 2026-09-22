@@ -563,7 +563,7 @@ func (d *Daemon) prepareRuntime(
 		// workspace, or logs; dropped with the resident.
 		AgentEnv:          request.AgentEnv,
 		RuntimeExecutable: d.runtimeExecutableCopy,
-		ProviderSpec:      strings.TrimSpace(launcher.Command + " " + strings.Join(launcher.Args, " ")),
+		ProviderSpec:      harness.DiagnosticProviderSpec(launcher, request.AgentCommand != ""),
 		DiagnosticSink: func(event string, details map[string]string) {
 			// The sink receives only bounded lifecycle metadata; it is never
 			// handed prompts, tool input, credentials, or native session ids.
