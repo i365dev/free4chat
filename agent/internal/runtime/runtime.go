@@ -1389,10 +1389,10 @@ func (r *ResidentRuntime) restoreStateAfterRetry() {
 
 // MaxTurnLanes is the hard product ceiling on simultaneously executing
 // Harness turns for ONE resident, regardless of what any launcher policy
-// claims. The cost probe (#421) measured one Pi session at ~360 MB and two at
-// ~425 MB of local RSS, so a small explicit bound is a product requirement,
-// not a tuning detail: this is deliberately not a worker pool.
-const MaxTurnLanes = 2
+// claims. It is a deliberately small spike ceiling, not an architectural
+// "two lanes" invariant: provider policy may select 1, 2, 3, or 4 after
+// measurement, while unlimited process spawning remains impossible.
+const MaxTurnLanes = 4
 
 // resolveTurnLanes clamps the launcher execution policy into the one bounded
 // lane count this Runtime will ever use. The fail-safe result of any missing,

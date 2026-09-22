@@ -558,6 +558,30 @@ func TestTurnLaneCountIsClampedToTheProductBound(t *testing.T) {
 	}
 }
 
+func TestFourBoundedLanesQueueTheFifthIndependentTask(t *testing.T) {
+	adapter := newLaneAdapter()
+	rt, _ := newLaneRuntime(t, adapter, crossSessionPolicy(4))
+	scopes := []string{"task:req-1", "task:req-2", "task:req-3", "task:req-4", "task:req-5"}
+	for index, scope := range scopes {
+		startScopedTurn(rt, int64(index+1), scope, "bounded N")
+	}
+	for _, scope := range scopes[:4] {
+		waitForRunning(t, adapter, scope)
+	}
+	if got := adapter.concurrentPeak(); got != 4 {
+		t.Fatalf("bounded N=4 did not materialize four active turns: %d", got)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return len(rt.pendingAddressedSnapshotFor(scopes[4])) == 1
+	}, "the fifth Task to remain queued")
+	for _, scope := range scopes[:4] {
+		adapter.release(scope)
+	}
+	waitForRunning(t, adapter, scopes[4])
+	adapter.release(scopes[4])
+	waitForScopeSettled(t, rt, adapter, scopes[4], 1)
+}
+
 // startScopedTurn admits one addressed instruction for a Task scope and runs
 // the bounded scheduler ONCE, without waiting for quiescence.
 //

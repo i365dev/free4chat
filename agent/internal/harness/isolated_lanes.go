@@ -11,7 +11,15 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
-const isolatedACPLaneCount = 2
+// DefaultIsolatedACPLaneCount is the conservative default for callers that
+// have not selected a measured provider capacity. The implementation is
+// deliberately slice-backed so N is a policy value rather than an A/B
+// invariant.
+const DefaultIsolatedACPLaneCount = 2
+
+// Kept private for the original two-lane unit fixtures; new code should pass
+// an explicit capacity through NewIsolatedACPAdapterWithCapacity.
+const isolatedACPLaneCount = DefaultIsolatedACPLaneCount
 
 // isolatedLaneAdapter is the bounded surface the lane owner needs from one
 // process-backed ACP adapter. It is kept private so this spike does not add a
@@ -23,15 +31,17 @@ type isolatedLaneAdapter interface {
 	types.ScopedTurnOwnership
 	SessionHandoff
 	SessionDiagnostics() []types.HarnessSessionDiagnostic
+	ReapIdle() error
 	SetActivityHandler(ACPActivityHandler)
 	SetPermissionResponder(ACPPermissionResponder)
 	PermissionRequestLifetime() time.Duration
 }
 
-// IsolatedACPAdapter is an opt-in, spike-only owner for exactly two ACP
-// adapters. It starts no provider processes until a scope needs a session.
-// Production provider policy deliberately continues to use one ACPAdapter
-// and serial Task execution until this lane model is approved separately.
+// IsolatedACPAdapter is an opt-in owner for a bounded set of ACP adapters. It
+// starts no provider processes until a scope needs a session.
+// The daemon selects it only for a provider policy that has earned
+// cross-session execution; serial or uncertified providers continue to use
+// one ACPAdapter.
 //
 // A scope remains pinned to its lane for its lifetime. Adopted native session
 // ids also remain pinned, so two scopes naming one native session cannot be
@@ -40,7 +50,8 @@ type IsolatedACPAdapter struct {
 	mu     sync.Mutex
 	loadMu sync.Mutex
 
-	lanes        [isolatedACPLaneCount]isolatedLaneAdapter
+	lanes        []isolatedLaneAdapter
+	capacity     int
 	scopeLane    map[string]int
 	sessionLane  map[string]int
 	sessionScope map[string]string
@@ -53,23 +64,40 @@ type IsolatedACPAdapter struct {
 	permission      ACPPermissionResponder
 }
 
-// NewIsolatedACPAdapter builds two lazy ACP process owners. The factory is
+// NewIsolatedACPAdapter builds the default number of lazy ACP process owners.
+// The factory is
 // called once per lane to create lightweight adapters; their provider
 // processes are still started only by EnsureSession/EnsureSessionFor.
 func NewIsolatedACPAdapter(factory func(lane int) *ACPAdapter) (*IsolatedACPAdapter, error) {
+	return NewIsolatedACPAdapterWithCapacity(DefaultIsolatedACPLaneCount, factory)
+}
+
+// NewIsolatedACPAdapterWithCapacity builds exactly capacity lazy ACP process
+// owners. Capacity is bounded by the caller's provider/resource policy; this
+// constructor never grows it dynamically and never starts a warm pool.
+func NewIsolatedACPAdapterWithCapacity(capacity int, factory func(lane int) *ACPAdapter) (*IsolatedACPAdapter, error) {
 	if factory == nil {
 		return nil, errors.New("isolated ACP lane factory is nil")
 	}
-	return newIsolatedACPAdapter(func(lane int) isolatedLaneAdapter {
+	return newIsolatedACPAdapterWithCapacity(capacity, func(lane int) isolatedLaneAdapter {
 		return factory(lane)
 	})
 }
 
 func newIsolatedACPAdapter(factory func(lane int) isolatedLaneAdapter) (*IsolatedACPAdapter, error) {
+	return newIsolatedACPAdapterWithCapacity(DefaultIsolatedACPLaneCount, factory)
+}
+
+func newIsolatedACPAdapterWithCapacity(capacity int, factory func(lane int) isolatedLaneAdapter) (*IsolatedACPAdapter, error) {
 	if factory == nil {
 		return nil, errors.New("isolated ACP lane factory is nil")
 	}
+	if capacity < 1 {
+		return nil, errors.New("isolated ACP lane capacity must be positive")
+	}
 	owner := &IsolatedACPAdapter{
+		lanes:        make([]isolatedLaneAdapter, capacity),
+		capacity:     capacity,
 		scopeLane:    map[string]int{"room": 0},
 		sessionLane:  make(map[string]int),
 		sessionScope: make(map[string]string),
@@ -89,8 +117,12 @@ func newIsolatedACPAdapter(factory func(lane int) isolatedLaneAdapter) (*Isolate
 }
 
 func (a *IsolatedACPAdapter) Name() string {
-	return a.lanes[0].Name() + " (2 isolated lanes)"
+	return fmt.Sprintf("%s (%d isolated lanes)", a.lanes[0].Name(), a.capacity)
 }
+
+// LaneCapacity reports the fixed bounded process-lane policy selected when
+// this owner was constructed.
+func (a *IsolatedACPAdapter) LaneCapacity() int { return a.capacity }
 
 func (a *IsolatedACPAdapter) Capabilities() *types.HarnessCapabilities {
 	return a.lanes[0].Capabilities()
@@ -266,6 +298,22 @@ func (a *IsolatedACPAdapter) Close() error {
 	return errors.Join(failures...)
 }
 
+// ReapIdle closes only materialized lanes that have no active turn. Their
+// underlying ACP adapters retain exact native-session identities, so a later
+// continuation rematerializes with session/load rather than session/new.
+func (a *IsolatedACPAdapter) ReapIdle() error {
+	a.mu.Lock()
+	lanes := append([]isolatedLaneAdapter(nil), a.lanes...)
+	a.mu.Unlock()
+	var failures []error
+	for i, lane := range lanes {
+		if err := lane.ReapIdle(); err != nil {
+			failures = append(failures, fmt.Errorf("reap ACP lane %d: %w", i, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
 func (a *IsolatedACPAdapter) adapterForScope(scope string, create bool) (isolatedLaneAdapter, error) {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
@@ -282,19 +330,19 @@ func (a *IsolatedACPAdapter) adapterForScope(scope string, create bool) (isolate
 	if !create {
 		return nil, errors.New("ACP logical scope has no isolated lane")
 	}
-	counts := [isolatedACPLaneCount]int{}
+	counts := make([]int, a.capacity)
 	for _, lane := range a.scopeLane {
 		counts[lane]++
 	}
 	chosen := a.nextLane
-	for offset := 1; offset < isolatedACPLaneCount; offset++ {
-		candidate := (a.nextLane + offset) % isolatedACPLaneCount
+	for offset := 1; offset < a.capacity; offset++ {
+		candidate := (a.nextLane + offset) % a.capacity
 		if counts[candidate] < counts[chosen] {
 			chosen = candidate
 		}
 	}
 	a.scopeLane[scope] = chosen
-	a.nextLane = (chosen + 1) % isolatedACPLaneCount
+	a.nextLane = (chosen + 1) % a.capacity
 	return a.lanes[chosen], nil
 }
 

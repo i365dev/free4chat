@@ -987,13 +987,17 @@ func TestACPStalePermissionResponderCannotResolveReusedRequest(t *testing.T) {
 }
 
 func TestACPCancelStopsInFlightPrompt(t *testing.T) {
-	adapter, _ := newTestAdapter(t, scriptLauncher("cancel", nil), AdapterOptions{
+	adapter, _ := newTestAdapter(t, scriptLauncher("cancel", map[string]string{
+		"FAKE_LOAD_CAP":           "1",
+		"FAKE_UNIQUE_SESSION_IDS": "1",
+	}), AdapterOptions{
 		TurnTimeoutMs: 5_000,
 	})
 	defer adapter.Close()
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("ensure failed: %v", err)
 	}
+	initialSession := adapter.SessionDiagnostics()[0].SessionID
 
 	type outcome struct {
 		text string
@@ -1015,6 +1019,31 @@ func TestACPCancelStopsInFlightPrompt(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("turn never settled after cancel")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		adapter.mu.Lock()
+		gone := adapter.proc == nil
+		adapter.mu.Unlock()
+		if gone {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	adapter.mu.Lock()
+	stillLive := adapter.proc != nil
+	adapter.mu.Unlock()
+	if stillLive {
+		t.Fatal("interrupt grace did not hard-stop the provider process")
+	}
+	// The Human interrupt tears down the disposable process after its grace
+	// period. A later continuation must load the same native identity.
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("exact session reload after interrupt failed: %v", err)
+	}
+	diagnostics := adapter.SessionDiagnostics()
+	if len(diagnostics) != 1 || diagnostics[0].SessionID != initialSession {
+		t.Fatalf("interrupt replaced the retained native session: before=%q after=%+v", initialSession, diagnostics)
 	}
 }
 
@@ -2152,6 +2181,40 @@ func TestACPChildDeathAfterLoadDoesNotRetainPhantomSession(t *testing.T) {
 	}
 	if adapter.SessionGeneration() <= loadedGeneration {
 		t.Fatalf("respawn must advance the generation: %d -> %d", loadedGeneration, adapter.SessionGeneration())
+	}
+}
+
+// TestIdleReapReloadsTheExactNativeSession proves the disposable-process
+// boundary: reaping removes the provider process, but the next materialized
+// process loads the same native conversation and never falls back to
+// session/new.
+func TestIdleReapReloadsTheExactNativeSession(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("session_echo", map[string]string{
+		"FAKE_LOAD_CAP":           "1",
+		"FAKE_UNIQUE_SESSION_IDS": "1",
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	if err := adapter.LoadSession("room", "native-session-reap", ""); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	loadedGeneration := adapter.SessionGeneration()
+	if err := adapter.ReapIdle(); err != nil {
+		t.Fatalf("reap failed: %v", err)
+	}
+	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); hasProc {
+		t.Fatal("idle reap left the provider process alive")
+	}
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("exact reload failed: %v", err)
+	}
+	if got := adapter.SessionDiagnostics(); len(got) != 1 || got[0].SessionID != "native-session-reap" {
+		t.Fatalf("idle reap replaced the native session: %+v", got)
+	}
+	if adapter.SessionGeneration() <= loadedGeneration {
+		t.Fatalf("exact reload must advance the process/session generation: %d -> %d", loadedGeneration, adapter.SessionGeneration())
 	}
 }
 

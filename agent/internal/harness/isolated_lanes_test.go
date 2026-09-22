@@ -33,6 +33,7 @@ func (f *fakeIsolatedLane) RunTurn(types.HarnessTurnInput, int64) (types.Harness
 func (f *fakeIsolatedLane) OnFailure(handler types.AdapterFailureHandler) { f.failure = handler }
 func (f *fakeIsolatedLane) CancelTurn() error                             { return nil }
 func (f *fakeIsolatedLane) Close() error                                  { f.closed = true; f.closeCount++; return nil }
+func (f *fakeIsolatedLane) ReapIdle() error                               { return nil }
 func (f *fakeIsolatedLane) EnsureSessionFor(scope string) error {
 	f.ensured = append(f.ensured, scope)
 	return nil
@@ -145,5 +146,43 @@ func TestIsolatedACPAdapterKeepsAdoptedNativeSessionOnOneLane(t *testing.T) {
 	}
 	if err := adapter.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIsolatedACPAdapterSupportsBoundedNWithoutChangingSessionOwnership(t *testing.T) {
+	const capacity = 4
+	lanes := make([]*fakeIsolatedLane, capacity)
+	adapter, err := newIsolatedACPAdapterWithCapacity(capacity, func(index int) isolatedLaneAdapter {
+		lanes[index] = &fakeIsolatedLane{index: index}
+		return lanes[index]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{"task:A", "task:B", "task:C", "task:D"} {
+		if err := adapter.EnsureSessionFor(scope); err != nil {
+			t.Fatalf("ensure %s: %v", scope, err)
+		}
+	}
+	seen := map[int]struct{}{}
+	for _, scope := range []string{"task:A", "task:B", "task:C", "task:D"} {
+		seen[adapter.scopeLane[scope]] = struct{}{}
+	}
+	if len(seen) != capacity {
+		t.Fatalf("four independent scopes did not occupy four bounded lanes: %+v", adapter.scopeLane)
+	}
+	if err := adapter.EnsureSessionFor("task:E"); err != nil {
+		t.Fatalf("the fifth scope should reuse a bounded lane, not spawn a fifth lane: %v", err)
+	}
+	if got := adapter.LaneCapacity(); got != capacity {
+		t.Fatalf("lane capacity changed after reuse: %d", got)
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for index, lane := range lanes {
+		if lane.closeCount != 1 {
+			t.Fatalf("lane %d closed %d times", index, lane.closeCount)
+		}
 	}
 }

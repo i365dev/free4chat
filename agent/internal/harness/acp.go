@@ -84,6 +84,11 @@ type AdapterOptions struct {
 	// default idle bound would kill legitimate long tool work.
 	TurnIdleTimeoutMs int64
 	CancelGraceMs     int64
+	// IdleReapMs keeps no unnecessary provider process warm after a turn has
+	// settled. Zero disables automatic reaping; callers can still invoke
+	// ReapIdle explicitly. A reap preserves the exact native session ids for a
+	// later session/load and never creates a fresh conversation.
+	IdleReapMs int64
 	// ControlTimeoutMs bounds every non-turn ACP control request. A control
 	// request that never answers leaves the Harness's state ambiguous — it may
 	// have applied the change and lost the reply — so a timeout tears the
@@ -304,6 +309,15 @@ type activeACPTurn struct {
 	// provider notification. It is nil unless the opt-in idle watchdog is
 	// enabled, so the default path allocates nothing and wakes no one.
 	progress chan struct{}
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+type retainedACPSession struct {
+	sessionID  string
+	cwd        string
+	scope      string
+	generation int64
 }
 
 // promptBusyError is returned when a turn targets a native session that is
@@ -386,6 +400,12 @@ type ACPAdapter struct {
 	// second turn for a conversation that is already running is refused with
 	// ErrSessionPromptBusy instead of being multiplexed onto the same stream.
 	activeTurns map[string]*activeACPTurn
+	// retainedSessions survives a deliberate lane hard-stop. It is native
+	// session identity only; the provider process is disposable. A later
+	// EnsureSession/EnsureSessionFor must load these exact ids and may never
+	// silently replace them with session/new.
+	retainedSessions map[string]retainedACPSession
+	idleReapTimer    *time.Timer
 }
 
 // NewACPAdapter creates an adapter bound to one workspace directory. It does
@@ -409,6 +429,7 @@ func NewACPAdapter(launcher types.AgentLauncher, workingDir string, options Adap
 		pendingPermissions: make(map[string]*pendingPermission),
 		sessions:           make(map[string]*acpSession),
 		activeTurns:        make(map[string]*activeACPTurn),
+		retainedSessions:   make(map[string]retainedACPSession),
 	}
 }
 
@@ -589,6 +610,11 @@ func (a *ACPAdapter) SetConfigOption(configID, value string) error {
 func (a *ACPAdapter) SessionGeneration() int64 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.sessionID == "" {
+		if retained, ok := a.retainedSessions["room"]; ok {
+			return retained.generation
+		}
+	}
 	return a.sessionGeneration
 }
 
@@ -603,6 +629,9 @@ func (a *ACPAdapter) SessionGenerationFor(scope string) int64 {
 	defer a.mu.Unlock()
 	if session := a.sessions[scope]; session != nil {
 		return session.generation
+	}
+	if retained, ok := a.retainedSessions[normalizeScopeName(scope)]; ok {
+		return retained.generation
 	}
 	return 0
 }
@@ -689,6 +718,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 	a.pendingPermissions = make(map[string]*pendingPermission)
 	turnCancels = make([]context.CancelFunc, 0, len(a.activeTurns))
 	for _, active := range a.activeTurns {
+		active.finish()
 		if active.cancel != nil {
 			turnCancels = append(turnCancels, active.cancel)
 		}
@@ -767,7 +797,13 @@ func (a *ACPAdapter) EnsureSession() error {
 		a.markProcessDead(gen, errors.New("exit"))
 	}()
 
-	initCaps, sessionID, err := a.handshake()
+	a.mu.Lock()
+	retained := make(map[string]retainedACPSession, len(a.retainedSessions))
+	for scope, session := range a.retainedSessions {
+		retained[scope] = session
+	}
+	a.mu.Unlock()
+	initCaps, sessionID, err := a.handshakeWithRetained(retained)
 	if err != nil {
 		_ = a.Close()
 		return err
@@ -776,6 +812,9 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.sessionID = sessionID
 	a.caps = initCaps
 	a.sessionGeneration++
+	if sessionID != "" {
+		delete(a.retainedSessions, "room")
+	}
 	a.mu.Unlock()
 	return nil
 }
@@ -809,6 +848,18 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	a.mu.Unlock()
 	if err := a.EnsureSession(); err != nil {
 		return err
+	}
+	a.mu.Lock()
+	retained, retainedOK := a.retainedSessions[scope]
+	a.mu.Unlock()
+	if retainedOK {
+		if err := a.LoadSession(scope, retained.sessionID, retained.cwd); err != nil {
+			return fmt.Errorf("load retained ACP session: %w", err)
+		}
+		a.mu.Lock()
+		delete(a.retainedSessions, scope)
+		a.mu.Unlock()
+		return nil
 	}
 	a.mu.Lock()
 	if session := a.sessions[scope]; session != nil && session.sessionID != "" && a.proc != nil && a.stdin != nil {
@@ -858,6 +909,10 @@ func cloneACPCapabilities(caps *ACPCapabilities) *ACPCapabilities {
 
 // handshake performs initialize + session/new synchronously.
 func (a *ACPAdapter) handshake() (*ACPCapabilities, string, error) {
+	return a.handshakeWithRetained(nil)
+}
+
+func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSession) (*ACPCapabilities, string, error) {
 	initializeParams, _ := json.Marshal(map[string]any{
 		"protocolVersion": protocolVersion,
 		"clientInfo": map[string]any{
@@ -889,14 +944,26 @@ func (a *ACPAdapter) handshake() (*ACPCapabilities, string, error) {
 	}
 
 	newParams, _ := json.Marshal(map[string]any{"cwd": a.workingDir, "mcpServers": []any{}})
-	raw, err = a.request("session/new", newParams)
+	method := "session/new"
+	params := newParams
+	if retainedRoom, ok := retained["room"]; ok && retainedRoom.sessionID != "" {
+		method = "session/load"
+		params, _ = json.Marshal(map[string]any{
+			"sessionId":  retainedRoom.sessionID,
+			"cwd":        retainedRoom.cwd,
+			"mcpServers": []any{},
+		})
+	}
+	raw, err = a.request(method, params)
 	if err != nil {
 		return nil, "", err
 	}
 	var sessionResponse struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := json.Unmarshal(raw.Result, &sessionResponse); err != nil || sessionResponse.SessionID == "" {
+	if method == "session/load" {
+		sessionResponse.SessionID = retained["room"].sessionID
+	} else if err := json.Unmarshal(raw.Result, &sessionResponse); err != nil || sessionResponse.SessionID == "" {
 		return nil, "", errors.New("ACP agent did not return a sessionId")
 	}
 	caps.SessionControls = parseSessionControls(raw.Result)
@@ -1684,6 +1751,7 @@ func (a *ACPAdapter) RunTurn(input types.HarnessTurnInput, expectedSessionGenera
 // already executing is refused with ErrSessionPromptBusy.
 func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expectedSessionGeneration int64) (types.HarnessTurnResult, error) {
 	a.mu.Lock()
+	a.cancelIdleReapLocked()
 	var sessionID string
 	var caps *ACPCapabilities
 	var generation int64
@@ -1714,6 +1782,7 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 		ctx:        turnCtx,
 		cancel:     turnCancel,
 		lastSignal: time.Now(),
+		done:       make(chan struct{}),
 	}
 	if a.options.TurnIdleTimeoutMs > 0 {
 		turn.progress = make(chan struct{}, 1)
@@ -1872,6 +1941,41 @@ func (t *activeACPTurn) noteSignal() {
 	}
 }
 
+func (t *activeACPTurn) finish() {
+	if t == nil || t.done == nil {
+		return
+	}
+	t.doneOnce.Do(func() { close(t.done) })
+}
+
+func (a *ACPAdapter) cancelIdleReapLocked() {
+	if a.idleReapTimer != nil {
+		a.idleReapTimer.Stop()
+		a.idleReapTimer = nil
+	}
+}
+
+// scheduleIdleReapLocked schedules a bounded disposable-process reap only
+// after the adapter has become idle. Callers hold a.mu. The retained native
+// session map is captured by closeInternalRetaining(true), so this cannot turn a later
+// continuation into a fresh session.
+func (a *ACPAdapter) scheduleIdleReapLocked() {
+	if a.options.IdleReapMs <= 0 || a.closing || a.proc == nil || len(a.activeTurns) != 0 {
+		return
+	}
+	a.cancelIdleReapLocked()
+	gen := a.gen
+	a.idleReapTimer = time.AfterFunc(time.Duration(a.options.IdleReapMs)*time.Millisecond, func() {
+		a.mu.Lock()
+		if a.closing || a.gen != gen || a.proc == nil || len(a.activeTurns) != 0 {
+			a.mu.Unlock()
+			return
+		}
+		a.mu.Unlock()
+		_ = a.closeInternalRetaining(true)
+	})
+}
+
 // drainChunks snapshots and resets one conversation's accumulation.
 func (a *ACPAdapter) drainChunks(sessionID string) string {
 	a.mu.Lock()
@@ -1899,6 +2003,10 @@ func (a *ACPAdapter) resetPrompt(sessionID, key string) {
 		turnCancel = turn.cancel
 	}
 	permissions := a.takePendingPermissionsLocked(sessionID)
+	if turn != nil {
+		turn.finish()
+	}
+	a.scheduleIdleReapLocked()
 	a.mu.Unlock()
 	if turnCancel != nil {
 		turnCancel()
@@ -2026,7 +2134,53 @@ func (a *ACPAdapter) CancelTurnFor(scope string) error {
 	if sessionID == "" {
 		return nil
 	}
-	return a.CancelTurnForSession(sessionID)
+	return a.cancelAndHardStop(sessionID)
+}
+
+// cancelAndHardStop is the Runtime-owned Human interrupt boundary. ACP
+// cancellation is cooperative, so its response is not treated as proof that
+// a tool descendant stopped (Codex 0.154 demonstrated the false-settled
+// shape). We always spend the bounded grace period, then close this adapter's
+// process group. In an isolated owner that is exactly one lane; the retained
+// native session id is preserved for a later exact session/load.
+func (a *ACPAdapter) cancelAndHardStop(sessionID string) error {
+	a.mu.Lock()
+	activeCount := len(a.activeTurns)
+	a.mu.Unlock()
+	// A bare ACPAdapter may still host multiple conversations in one shared
+	// provider process (legacy/test path). Killing that process would violate
+	// cancel isolation, so only an actually isolated single-turn lane escalates
+	// after the cooperative cancel. Production bounded-N uses one ACPAdapter
+	// per lane.
+	if activeCount > 1 {
+		return a.CancelTurnForSession(sessionID)
+	}
+	if err := a.CancelTurnForSession(sessionID); err != nil {
+		// The process may already be gone. Closing below still establishes the
+		// same fail-closed lane boundary and returns the transport error.
+		_ = a.closeInternalRetaining(true)
+		return err
+	}
+	grace := a.options.CancelGraceMs
+	if grace <= 0 {
+		grace = defaultCancelGraceMs
+	}
+	time.Sleep(time.Duration(grace) * time.Millisecond)
+	return a.closeInternalRetaining(true)
+}
+
+// ReapIdle releases an idle provider process while retaining every exact
+// native session identity for later materialization. It is intentionally
+// explicit so callers can choose a measured idle policy without creating a
+// scheduler or a permanent warm pool.
+func (a *ACPAdapter) ReapIdle() error {
+	a.mu.Lock()
+	idle := a.proc != nil && len(a.activeTurns) == 0 && !a.closing
+	a.mu.Unlock()
+	if !idle {
+		return nil
+	}
+	return a.closeInternalRetaining(true)
 }
 
 // CancelTurnForSession is the exact-conversation cancel dispatch shared by the
@@ -2066,6 +2220,14 @@ func (a *ACPAdapter) forceClose() {
 }
 
 func (a *ACPAdapter) closeInternal(force bool) error {
+	return a.closeInternalWithRetention(force, false)
+}
+
+func (a *ACPAdapter) closeInternalRetaining(force bool) error {
+	return a.closeInternalWithRetention(force, true)
+}
+
+func (a *ACPAdapter) closeInternalWithRetention(force, retain bool) error {
 	var turnCancels []context.CancelFunc
 	a.mu.Lock()
 	if a.closing {
@@ -2073,8 +2235,23 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 		return nil
 	}
 	a.closing = true
+	a.cancelIdleReapLocked()
 	proc := a.proc
 	writer := a.stdin
+	if force && retain {
+		if a.sessionID != "" {
+			a.retainedSessions["room"] = retainedACPSession{sessionID: a.sessionID, cwd: a.workingDir, scope: "room", generation: a.sessionGeneration}
+		}
+		for scope, session := range a.sessions {
+			if session != nil && session.sessionID != "" {
+				a.retainedSessions[scope] = retainedACPSession{sessionID: session.sessionID, cwd: a.workingDir, scope: scope, generation: session.generation}
+			}
+		}
+	} else {
+		// A normal Runtime shutdown is terminal for this adapter. Do not leave
+		// an identity that a future accidental EnsureSession could resurrect.
+		clear(a.retainedSessions)
+	}
 	closeFrames := make([][]byte, 0, 1+len(a.sessions))
 	if !force && a.caps != nil && a.caps.ClosePresent && a.sessionID != "" {
 		closeFrames = append(closeFrames, a.sessionCloseFrameLocked(a.sessionID))
@@ -2091,6 +2268,7 @@ func (a *ACPAdapter) closeInternal(force bool) error {
 	a.proc = nil
 	turnCancels = make([]context.CancelFunc, 0, len(a.activeTurns))
 	for _, active := range a.activeTurns {
+		active.finish()
 		if active.cancel != nil {
 			turnCancels = append(turnCancels, active.cancel)
 		}

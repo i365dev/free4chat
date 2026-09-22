@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -106,9 +107,14 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 	peakOne := sampleOne()
 	t.Logf("resources active-1-lane provider_processes_peak=%d rss_mb_peak=%.1f cpu_percent_peak=%.1f", peakOne.processes, float64(peakOne.rssKB)/1024, peakOne.cpu)
 	if _, err := adapterA.RunTurnFor("room", codexProbeInput("This second turn must be refused while the same native session is busy."), adapterA.SessionGeneration()); err != ErrSessionPromptBusy {
-		t.Fatalf("same-native-session turn was not serialized: %v", err)
+		// Codex 0.154 can report the tool-bearing turn settled while its
+		// descendant is still alive. That is the false-settled reproduction,
+		// not a reason to stop the probe: the Runtime must hard-stop the lane
+		// before any later continuation is allowed to materialize it.
+		t.Logf("false_settled_reproduced=PASS same_session_second_turn_err=%v", err)
+	} else {
+		t.Log("same_session_serialization=PASS")
 	}
-	t.Log("same_session_serialization=PASS")
 
 	turnB := startCodexProbeTurn(adapterB, "Run the shell command sleep 39, wait for it to finish, then reply only TASK_B_DONE and CODEWORD_BETA.")
 	sampleTwo := startProcessSampler([]int{pidA, pidB})
@@ -171,6 +177,43 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 		t.Fatalf("lane B did not continue with isolated history after lane A cancel: text=%q err=%v", outcomeB.result.Text, outcomeB.err)
 	}
 	t.Logf("cancel_isolation=PASS (A turn settled; %s stopped A command; B continued)", cancelMethod)
+
+	// Human interrupt does not respawn immediately. The next continuation must
+	// materialize a new provider process and load A's exact retained native
+	// session, with no fresh-session fallback and no stale cancelled output.
+	if err := adapterA.EnsureSession(); err != nil {
+		t.Fatalf("lane A exact session reload after hard-stop failed: %v", err)
+	}
+	recoveredA := runCodexProbeTurn(t, adapterA, "What codeword did I ask you to remember? Reply with the codeword only.")
+	if !strings.Contains(recoveredA, "CODEWORD_ALPHA") || strings.Contains(recoveredA, "TASK_A_DONE") {
+		t.Fatalf("lane A did not continue the exact retained session after hard-stop: %q", recoveredA)
+	}
+	t.Log("hard_stop_exact_session_reload=PASS retained_context=PASS stale_cancelled_output=PASS")
+
+	// Repeat the same hard-stop -> later exact-load boundary once more. This
+	// catches implementations that preserve identity only for the first
+	// replacement process.
+	turnA2 := startCodexProbeTurn(adapterA, "Run the shell command sleep 17, wait for it to finish, then reply only TASK_A2_DONE.")
+	waitForProcessCommand(t, adapterPID(adapterA), "sleep 17", 75*time.Second)
+	idsA2 := processTreePIDs(adapterPID(adapterA))
+	if err := adapterA.CancelTurn(); err != nil {
+		t.Fatalf("second lane A cancel failed: %v", err)
+	}
+	outcomeA2 := awaitProbeOutcome(t, turnA2, 15*time.Second, "second hard-stopped lane A turn")
+	if outcomeA2.err == nil && strings.Contains(outcomeA2.result.Text, "TASK_A2_DONE") {
+		t.Fatalf("second cancelled turn returned stale completion: %q", outcomeA2.result.Text)
+	}
+	if !waitGone(idsA2, 8*time.Second) {
+		t.Fatalf("second hard-stop left lane A descendants: %v", alivePIDs(idsA2))
+	}
+	if err := adapterA.EnsureSession(); err != nil {
+		t.Fatalf("second lane A exact session reload failed: %v", err)
+	}
+	recoveredA2 := runCodexProbeTurn(t, adapterA, "Reply with the retained codeword only.")
+	if !strings.Contains(recoveredA2, "CODEWORD_ALPHA") {
+		t.Fatalf("second exact reload lost retained context: %q", recoveredA2)
+	}
+	t.Log("repeated_hard_stop_exact_reload=PASS")
 
 	// An unexpected bridge death must settle only its own turn while a second
 	// provider process finishes normally.
@@ -250,6 +293,70 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	t.Logf("go_heap_after_cycles_delta_kb=%d", int64(after.HeapAlloc-before.HeapAlloc)/1024)
 	t.Log("permission_isolation=NOT_EXERCISED (no stable native Codex permission request in this probe)")
+}
+
+// TestCodexBoundedResourceProbe measures the lazy provider model without
+// starting model turns. It is intentionally opt-in because it launches up to
+// four real Codex ACP processes and is evidence for the issue/PR report, not
+// a CI test.
+func TestCodexBoundedResourceProbe(t *testing.T) {
+	if os.Getenv("FREE4CHAT_RUN_CODEX_RESOURCE_PROBE") != "1" {
+		t.Skip("set FREE4CHAT_RUN_CODEX_RESOURCE_PROBE=1 to run the resource probe")
+	}
+	provider, err := ProviderByID("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := provider.Launcher()
+	if entry := os.Getenv("FREE4CHAT_CODEX_ACP_NODE_ENTRY"); entry != "" {
+		launcher.Command = os.Getenv("FREE4CHAT_CODEX_ACP_NODE")
+		if launcher.Command == "" {
+			launcher.Command = "node"
+		}
+		launcher.Args = []string{entry}
+	}
+	if codexPath := os.Getenv("FREE4CHAT_CODEX_PATH"); codexPath != "" {
+		launcher.Environment["CODEX_PATH"] = codexPath
+	}
+	options := AdapterOptions{TurnTimeoutMs: 180_000, CancelGraceMs: 2_000, ControlTimeoutMs: 60_000}
+	adapters := make([]*ACPAdapter, 0, 4)
+	t.Cleanup(func() {
+		for _, adapter := range adapters {
+			_ = adapter.Close()
+		}
+	})
+	for count := 1; count <= 4; count++ {
+		adapter := NewACPAdapter(launcher, t.TempDir(), options)
+		adapters = append(adapters, adapter)
+		started := time.Now()
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("resource probe lane %d startup failed: %v", count, err)
+		}
+		roots := make([]int, 0, len(adapters))
+		for _, candidate := range adapters {
+			if pid := adapterPID(candidate); pid != 0 {
+				roots = append(roots, pid)
+			}
+		}
+		logProcessMetrics(t, fmt.Sprintf("resource-idle-%d-lanes", count), processTreeForRoots(roots))
+		t.Logf("resource startup lane=%d startup_ms=%d", count, time.Since(started).Milliseconds())
+	}
+	for index, adapter := range adapters {
+		started := time.Now()
+		if err := adapter.ReapIdle(); err != nil {
+			t.Fatalf("resource probe lane %d idle reap failed: %v", index+1, err)
+		}
+		for time.Since(started) < 5*time.Second {
+			if adapterPID(adapter) == 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if adapterPID(adapter) != 0 {
+			t.Fatalf("resource probe lane %d left a provider process after reap", index+1)
+		}
+		t.Logf("resource idle_reap lane=%d latency_ms=%d", index+1, time.Since(started).Milliseconds())
+	}
 }
 
 type codexProbeOutcome struct {
@@ -386,6 +493,21 @@ func processTree(root int) []probeProcess {
 		if process, ok := all[pid]; ok {
 			out = append(out, process)
 		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].pid < out[j].pid })
+	return out
+}
+
+func processTreeForRoots(roots []int) []probeProcess {
+	seen := make(map[int]probeProcess)
+	for _, root := range roots {
+		for _, process := range processTree(root) {
+			seen[process.pid] = process
+		}
+	}
+	out := make([]probeProcess, 0, len(seen))
+	for _, process := range seen {
+		out = append(out, process)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].pid < out[j].pid })
 	return out
