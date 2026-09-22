@@ -78,6 +78,7 @@ type IpcRequest struct {
 	BeforeTranscriptSequence *int64            `json:"beforeTranscriptSequence,omitempty"`
 	AfterTranscriptSequence  *int64            `json:"afterTranscriptSequence,omitempty"`
 	TranscriptLimit          int               `json:"transcriptLimit,omitempty"`
+	LogTail                  int               `json:"logTail,omitempty"`
 	// AgentEnv is a map of explicitly authorized Harness environment variable
 	// NAMES -> VALUES resolved from the CLI process at join/create time.
 	// It is ephemeral launch material: never returned in daemon responses,

@@ -379,6 +379,21 @@ func (a *diagnosticStubAdapter) SessionDiagnostics() []types.HarnessSessionDiagn
 	return append([]types.HarnessSessionDiagnostic(nil), a.diagnostics...)
 }
 
+func (*diagnosticStubAdapter) DiagnosticsSnapshot() types.HarnessDiagnosticSnapshot {
+	return types.HarnessDiagnosticSnapshot{
+		Provider:     "codex (2 isolated lanes)",
+		Capacity:     2,
+		ActiveLanes:  1,
+		Materialized: 2,
+		Lanes: []types.HarnessLaneDiagnostic{{
+			Lane: 0, State: "running", Scope: "task:opaque",
+			SessionHash: "0123456789ab", SessionGeneration: 3,
+			ProviderPID: 123, ProcessGroupID: 123, ProviderAlive: true,
+			DescendantCount: 1, RSSKB: 2048, TurnActive: true,
+		}},
+	}
+}
+
 type stubBundle struct {
 	client     *recordingClient
 	runtimeRef *runtime.ResidentRuntime
@@ -603,6 +618,38 @@ func TestDaemonStatusIPCProjectsHarnessSessionDiagnostics(t *testing.T) {
 		views[0].HarnessSessions[1].Scope != "task:T" ||
 		views[0].HarnessSessions[1].SessionID != "task-session" {
 		t.Fatalf("status IPC omitted or altered Harness session diagnostics: %s", result)
+	}
+}
+
+func TestDaemonDiagnosticsIPCProjectsBoundedLaneSnapshot(t *testing.T) {
+	d, _ := startDaemon(t)
+	rt := runtime.NewResidentRuntime(runtime.Options{
+		InstanceID: "resident-diagnostics",
+		RoomID:     "diagnostic-room",
+		Name:       "Diagnostics Agent",
+		Client:     &recordingClient{},
+		Adapter: &diagnosticStubAdapter{
+			stubAdapter: &stubAdapter{name: "codex"},
+			diagnostics: []types.HarnessSessionDiagnostic{{Scope: "task:T", SessionID: "native-secret", Generation: 2}},
+		},
+	})
+	t.Cleanup(rt.Stop)
+	d.register(&residentInstance{instanceID: "resident-diagnostics", roomID: "diagnostic-room", runtime: rt})
+
+	result, err := SendIPC(&IpcRequest{Op: "diagnostics", InstanceID: "resident-diagnostics", LogTail: 20})
+	if err != nil {
+		t.Fatalf("diagnostics IPC failed: %v", err)
+	}
+	if strings.Contains(string(result), "native-secret") {
+		t.Fatalf("diagnostics leaked native session identity: %s", result)
+	}
+	var views []map[string]any
+	if err := json.Unmarshal(result, &views); err != nil || len(views) != 1 {
+		t.Fatalf("diagnostics result shape: %v (%s)", err, result)
+	}
+	harnessView, ok := views[0]["harness"].(map[string]any)
+	if !ok || harnessView["capacity"] != float64(2) {
+		t.Fatalf("diagnostics omitted bounded harness snapshot: %s", result)
 	}
 }
 

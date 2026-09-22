@@ -1,6 +1,11 @@
 package harness
 
-import "github.com/i365dev/free4chat/agent/internal/types"
+import (
+	"path/filepath"
+	"strings"
+
+	"github.com/i365dev/free4chat/agent/internal/types"
+)
 
 /*
  * The ordered built-in provider registry.
@@ -26,13 +31,15 @@ var builtInProviders = []Provider{
 			// sessions in the #409 probe: a known native id loads, discovery
 			// does not. Not eligible until that is fixed and re-verified.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// #421 probe: two independent sessions made concurrent progress
-			// with correct stream routing. The rest of the isolation suite
-			// (conversation isolation, exact cancel isolation, per-session
-			// crash isolation) was not run for this bridge, so it stays SERIAL.
+			// Real N=2 isolated-lane certification passed: independent shell
+			// turns overlapped, B survived A cancel/hard-stop, exact retained
+			// session/load after idle reap restored context, and Runtime-owned
+			// process groups cleaned up. Hermes is native/no-prompt under the
+			// current policy, so no Room permission probe is required.
 			Execution: ExecutionCapability{
-				Mode:     types.TaskExecutionSerial,
-				Evidence: types.TaskExecutionProbeConcurrencyObserved,
+				Mode:          types.TaskExecutionCrossSession,
+				MaxConcurrent: 2,
+				Evidence:      types.TaskExecutionProbeVerifiedCrossSession,
 			},
 			// #297: the ACP relay code exists, but the tested default/native
 			// policy executed directly and emitted no permission request.
@@ -52,8 +59,10 @@ var builtInProviders = []Provider{
 			// session is discoverable/replayable, but the next ACP prompt
 			// failed with -32603. Verified partial, so NOT eligible.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// #421 probe: concurrent cross-session progress with correct
-			// routing observed, but no isolation suite yet. SERIAL.
+			// N=2 overlap and cancel isolation passed. Idle reap/load returned a
+			// usable session but did not retain the seeded context, so the
+			// provider remains serial until that bridge behavior is fixed and a
+			// real permission correlation probe is completed.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -80,10 +89,10 @@ var builtInProviders = []Provider{
 			// and two post-load prompts retained its codeword and associated
 			// fact. This is cold/cooperative adoption only, never hot takeover.
 			SessionContinuation: SessionContinuationVerified,
-			// #421 probe: concurrent cross-session progress with correct
-			// routing observed, but no isolation suite yet, and two concurrent
-			// sessions measured ~26 processes / ~820 MB. #440 also observed a
-			// real cancel that did not settle within 10 seconds, so SERIAL.
+			// N=2 overlap and first hard-stop isolation passed, but repeated
+			// hard-stop left a descendant and exact session/load failed with the
+			// current local Codex CLI. Keep serial; this is a concrete provider
+			// gate, not an architectural serial invariant.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeConcurrencyObserved,
@@ -133,10 +142,11 @@ var builtInProviders = []Provider{
 			// Source-supported (session/list delegates to the Claude Agent SDK
 			// session store) but NOT runtime-verified. Not eligible.
 			SessionContinuation: SessionContinuationSourceSupported,
-			// #421 probe could not run: the local bridge credentials were
-			// expired, so every prompt failed to authenticate. An errored
-			// prompt is not evidence about prompt concurrency, so this stays
-			// UNVERIFIED + SERIAL.
+			// Claude is intentionally deferred on this machine: usable credentials
+			// and environment are unavailable for a truthful certification run.
+			// Keep the provider serial and explicitly unverified; this is not a
+			// negative serial conclusion. Certification is deferred to later
+			// dogfood on a machine with working Claude access.
 			Execution: ExecutionCapability{
 				Mode:     types.TaskExecutionSerial,
 				Evidence: types.TaskExecutionProbeUnverified,
@@ -167,16 +177,13 @@ var builtInProviders = []Provider{
 			// dogfood. This is the single place where Pi is selected as
 			// enabled.
 			SessionContinuation: SessionContinuationVerified,
-			// The ONE Harness whose cross-session execution is enabled (#421),
-			// and the only one with the full EXECUTION/ISOLATION probe suite.
-			// This evidence is deliberately AXIS-SCOPED: it proves already-
-			// materialized independent sessions can execute safely; it does NOT
-			// certify the pinned bridge's full session-materialization lifecycle.
-			// pi-acp@0.0.33 is known to violate Contract.LoadSession when another
-			// session is active (closeAllExcept); distribution remediation is
-			// tracked in #431 / upstream svkozak/pi-acp#131. Phase 1 preserves the
-			// existing launcher policy here rather than changing behavior inside a
-			// structural refactor.
+			// Pi is the only Harness currently enabled for cross-session
+			// execution. A fresh real probe completed four overlapping tool
+			// turns with isolated stream/context routing, bounded queueing, and
+			// per-lane process ownership.
+			// pi-acp's historical closeAllExcept
+			// behavior is contained by the per-lane process boundary; it is no
+			// longer a Free4Chat shared-process architecture blocker.
 			//
 			//   concurrency   3/3 trials: an independent session B settled in
 			//                 1.2-2.6s while session A ran a 45-60s tool call,
@@ -194,15 +201,15 @@ var builtInProviders = []Provider{
 			//   crash         killing ONE per-session `pi` worker left the
 			//                 bridge alive and a brand-new session C working;
 			//                 only the killed conversation was lost.
-			//   cost          ~180 MB idle, ~360-425 MB with two active
-			//                 sessions.
+			//   cost          N=4 active lanes measured roughly 320-390 MB RSS
+			//                 per provider tree on the certification host.
 			//
 			// Pi is also the only Harness with SessionContinuation verified,
 			// which is exactly the workflow that makes two independent
 			// retained sessions normal for the product.
 			Execution: ExecutionCapability{
 				Mode:          types.TaskExecutionCrossSession,
-				MaxConcurrent: 2,
+				MaxConcurrent: 4,
 				Evidence:      types.TaskExecutionProbeVerifiedCrossSession,
 			},
 			// #297: tested native/default policy executed directly and emitted
@@ -230,4 +237,37 @@ func ProviderByID(id string) (Provider, error) {
 		}
 	}
 	return Provider{}, &UnknownLauncherError{ID: id}
+}
+
+// DiagnosticProviderSpec returns a bounded provider identity for the local
+// diagnostics surface. Built-in identities are registry-owned; custom
+// launchers expose only a basename. In particular, launcher arguments are
+// never serialized because they may contain credentials or private paths.
+func DiagnosticProviderSpec(launcher types.AgentLauncher, custom bool) string {
+	if !custom {
+		if launcher.ID != "" {
+			return "builtin:" + launcher.ID
+		}
+		return "builtin:unknown"
+	}
+	base := filepath.Base(strings.TrimSpace(launcher.Command))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return "custom"
+	}
+	var safe strings.Builder
+	for _, r := range base {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			safe.WriteRune(r)
+		} else {
+			safe.WriteByte('_')
+		}
+		if safe.Len() >= 64 {
+			break
+		}
+	}
+	if safe.Len() == 0 {
+		return "custom"
+	}
+	return "custom:" + safe.String()
 }

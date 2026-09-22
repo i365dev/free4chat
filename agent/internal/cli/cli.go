@@ -72,6 +72,7 @@ func usageText() string {
   free4chat-agent credential delete --provider doubao
   free4chat-agent speech setup --provider doubao
   free4chat-agent logs [--instance <id>] [--tail 200]
+  free4chat-agent diagnostics [--instance <id>] [--tail 200] [--json]
   free4chat-agent status
   free4chat-agent leave <instance-id>
   free4chat-agent stop`
@@ -612,6 +613,21 @@ func run(args []string) error {
 		}
 		return runLogsCommand(instance, tail)
 
+	case "diagnostics":
+		instance := option(rest, "--instance")
+		tail := 200
+		if tailRaw := option(rest, "--tail"); tailRaw != "" {
+			parsed := 0
+			for _, ch := range tailRaw {
+				if ch < '0' || ch > '9' {
+					return errUsage()
+				}
+				parsed = parsed*10 + int(ch-'0')
+			}
+			tail = parsed
+		}
+		return runDiagnosticsCommand(instance, tail, hasFlag(rest, "--json"))
+
 	case "leave":
 		if len(rest) == 0 || rest[0] == "" || strings.HasPrefix(rest[0], "--") {
 			return errUsage()
@@ -902,6 +918,62 @@ func runLogsCommand(instance string, tail int) error {
 		fmt.Println(line)
 	}
 	return nil
+}
+
+func runDiagnosticsCommand(instance string, tail int, asJSON bool) error {
+	result, err := executeDaemonRequest(&daemon.IpcRequest{
+		Op:         "diagnostics",
+		InstanceID: instance,
+		LogTail:    tail,
+	})
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return printJSONRaw(result)
+	}
+	var views []map[string]any
+	if err := json.Unmarshal(result, &views); err != nil {
+		return printJSONRaw(result)
+	}
+	if len(views) == 0 {
+		return errors.New("no resident instances; pass --instance <id> or join a Room")
+	}
+	for index, view := range views {
+		if index > 0 {
+			fmt.Println()
+		}
+		printDiagnosticView(view)
+	}
+	return nil
+}
+
+func printDiagnosticView(view map[string]any) {
+	fmt.Printf("Runtime: %v\n", view["instanceId"])
+	fmt.Printf("Provider: %v\n", view["adapter"])
+	if execution, ok := view["execution"].(map[string]any); ok {
+		fmt.Printf("Concurrency: active %v / cap %v\n", execution["activeLanes"], execution["configuredCap"])
+		fmt.Printf("Queued: %v\n", execution["queuedScopes"])
+	}
+	if harness, ok := view["harness"].(map[string]any); ok {
+		fmt.Printf("Lanes: %v materialized / %v active\n", harness["materializedLanes"], harness["activeLanes"])
+		if lanes, ok := harness["lanes"].([]any); ok {
+			for _, raw := range lanes {
+				lane, _ := raw.(map[string]any)
+				fmt.Printf("  Lane %v: state=%v scope=%v session=%v pid=%v pgid=%v descendants=%v turn=%v\n",
+					lane["lane"], lane["state"], lane["scope"], lane["sessionHash"], lane["providerPid"], lane["processGroupId"], lane["descendantCount"], lane["turnActive"])
+			}
+		}
+	}
+	if events, ok := view["recentLifecycle"].([]any); ok && len(events) > 0 {
+		fmt.Println("Recent lifecycle:")
+		for _, event := range events {
+			fmt.Printf("  %v\n", event)
+		}
+	}
+	if lastError := strings.TrimSpace(fmt.Sprint(view["lastError"])); lastError != "" && lastError != "<nil>" {
+		fmt.Printf("Recent failure: %s\n", lastError)
+	}
 }
 
 // runStatusCommand prints daemon status with a human-readable

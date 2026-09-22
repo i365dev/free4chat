@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -66,6 +67,46 @@ type Status struct {
 	// across transient retries/reconnects; a new resident lifecycle starts
 	// a new timestamp. Room participation age, not socket uptime.
 	ParticipatingSince int64 `json:"participatingSince,omitempty"`
+}
+
+// DiagnosticsSnapshot is the local support surface behind
+// `free4chat-agent diagnostics`. It intentionally stays separate from Status
+// so normal status output does not grow process or lane internals.
+func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
+	status := r.Status()
+	r.mu.Lock()
+	active := make([]string, 0, len(r.activeTurns))
+	for scope := range r.activeTurns {
+		active = append(active, scope)
+	}
+	queued := make([]string, 0, len(r.scopeOrder))
+	for _, scope := range r.scopeOrder {
+		if ref := r.sessionRefLocked(scope); ref != nil && ref.pendingAddressed != nil && len(*ref.pendingAddressed) > 0 {
+			queued = append(queued, scope)
+		}
+	}
+	turnLanes := r.turnLanes
+	policy := r.options.TaskExecution
+	r.mu.Unlock()
+
+	statusJSON, _ := json.Marshal(status)
+	view := map[string]any{}
+	_ = json.Unmarshal(statusJSON, &view)
+	// The normal status compatibility field carries opaque ACP ids for local
+	// handoff/status tooling. Diagnostics use hashed lane correlation instead;
+	// never duplicate the raw native identity into this support export.
+	delete(view, "harnessSessions")
+	view["execution"] = map[string]any{
+		"activeLanes":    len(active),
+		"configuredCap":  policy.Lanes(),
+		"runtimeCeiling": turnLanes,
+		"activeScopes":   active,
+		"queuedScopes":   queued,
+	}
+	if diagnostics, ok := r.options.Adapter.(types.HarnessDiagnostics); ok {
+		view["harness"] = diagnostics.DiagnosticsSnapshot()
+	}
+	return view
 }
 
 // Options configures one ResidentRuntime.
@@ -1582,12 +1623,21 @@ func (r *ResidentRuntime) launchTurns() {
 			// enforces one turn per conversation; the scheduler simply does
 			// not offer it work until the owner settles, so no turn is
 			// dispatched only to be refused.
+			r.log("SAME_SESSION_BUSY", map[string]string{"scopeKind": scopeKindOf(candidate.scope)})
 			continue
 		}
 		switch r.beginTurnLane(candidate.scope, candidate.target) {
 		case laneCapacityFull:
 			// Normal, not a failure: the work stays pending and the next turn
 			// settlement re-enters this function.
+			r.mu.Lock()
+			active, capacity := len(r.activeTurns), r.turnLanes
+			r.mu.Unlock()
+			r.log("LANE_CAPACITY_QUEUED", map[string]string{
+				"scopeKind": scopeKindOf(candidate.scope),
+				"active":    strconv.Itoa(active),
+				"capacity":  strconv.Itoa(capacity),
+			})
 			return
 		case laneScopeBusy:
 			// Raced with another scheduler that claimed this exact scope.

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -192,6 +193,8 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		return d.dispatchCreate(request)
 	case "status":
 		return d.statusViews(), nil
+	case "diagnostics":
+		return d.diagnosticsViews(request.InstanceID, request.LogTail), nil
 	case "daemon-info":
 		return DaemonInfo{DaemonVersion: doctor.Version}, nil
 	case "reload-speech":
@@ -560,11 +563,25 @@ func (d *Daemon) prepareRuntime(
 		// workspace, or logs; dropped with the resident.
 		AgentEnv:          request.AgentEnv,
 		RuntimeExecutable: d.runtimeExecutableCopy,
+		ProviderSpec:      harness.DiagnosticProviderSpec(launcher, request.AgentCommand != ""),
+		DiagnosticSink: func(event string, details map[string]string) {
+			// The sink receives only bounded lifecycle metadata; it is never
+			// handed prompts, tool input, credentials, or native session ids.
+			d.hostLog.Appendf("[%s] %s %v", instanceID, event, details)
+		},
 	}
 	var agentAdapter types.HarnessAdapter
 	if laneCount := launcher.TaskExecution.Lanes(); launcher.TaskExecution.Concurrency == types.TaskExecutionCrossSession && laneCount > 1 {
-		isolated, adapterErr := harness.NewIsolatedACPAdapterWithCapacity(laneCount, func(int) *harness.ACPAdapter {
-			return harness.NewACPAdapter(launcher, workspace, adapterOptions)
+		isolated, adapterErr := harness.NewIsolatedACPAdapterWithCapacity(laneCount, func(lane int) *harness.ACPAdapter {
+			localOptions := adapterOptions
+			localOptions.DiagnosticSink = func(event string, details map[string]string) {
+				if details == nil {
+					details = map[string]string{}
+				}
+				details["lane"] = strconv.Itoa(lane)
+				adapterOptions.DiagnosticSink(event, details)
+			}
+			return harness.NewACPAdapter(launcher, workspace, localOptions)
 		})
 		if adapterErr != nil {
 			_ = os.RemoveAll(workspace)
@@ -898,6 +915,46 @@ func (d *Daemon) statusViews() []map[string]any {
 			view["speech"] = map[string]bool{"stt": host.Speech.STT, "tts": host.Speech.TTS}
 		}
 		views = append(views, view)
+	}
+	return views
+}
+
+// diagnosticsViews is an explicit local support surface. It combines the
+// existing status projection, bounded host log, and adapter-owned lane
+// snapshot without exposing credentials, prompts, or arbitrary environment.
+func (d *Daemon) diagnosticsViews(instanceID string, tail int) []map[string]any {
+	if tail <= 0 || tail > 500 {
+		tail = 200
+	}
+	d.mu.Lock()
+	all := make([]*residentInstance, 0, len(d.instances))
+	for id, instance := range d.instances {
+		if instanceID == "" || instanceID == id {
+			all = append(all, instance)
+		}
+	}
+	d.mu.Unlock()
+	views := make([]map[string]any, 0, len(all))
+	for _, instance := range all {
+		view := instance.runtime.DiagnosticsSnapshot()
+		view["schema"] = 1
+		view["build"] = map[string]string{
+			"version": doctor.Version,
+			"os":      goruntime.GOOS,
+			"arch":    goruntime.GOARCH,
+		}
+		view["settings"] = map[string]string{
+			"idleReapMs":        os.Getenv("FREE4CHAT_ACP_IDLE_REAP_MS"),
+			"cancelGraceMs":     os.Getenv("FREE4CHAT_ACP_CANCEL_GRACE_MS"),
+			"turnTimeoutMs":     os.Getenv("FREE4CHAT_ACP_TURN_TIMEOUT_MS"),
+			"turnIdleTimeoutMs": os.Getenv("FREE4CHAT_ACP_TURN_IDLE_TIMEOUT_MS"),
+		}
+		tag := "[" + instance.instanceID + "]"
+		view["recentLifecycle"] = d.hostLog.Tail(tail, tag)
+		views = append(views, view)
+	}
+	if instanceID != "" && len(views) == 0 {
+		return nil
 	}
 	return views
 }
