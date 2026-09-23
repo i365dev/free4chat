@@ -19,12 +19,14 @@ const AGENT_ACTIVITY_PATH = "/api/room/agent-activity"
 // control route as activity/permissions/surfaces. It is not a second
 // transport: the Worker only authenticates and forwards the bounded body.
 const AGENT_TASK_EXECUTION_PATH = "/api/room/agent-task-execution"
+const GENERATED_APP_PATH = "/api/room/generated-app"
 const ROOM_REQUEST_PATHS = new Set([
   "/api/room/attachments",
   "/api/room/live-transcript/append",
   AGENT_EVENT_PATH,
   AGENT_ACTIVITY_PATH,
   AGENT_TASK_EXECUTION_PATH,
+  GENERATED_APP_PATH,
   "/api/room/permissions/request",
   "/api/room/runtime-provider/connect",
   "/api/room/surfaces/read",
@@ -64,12 +66,21 @@ export async function handleRoomRequest(
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname
   const isAgentEventSocket = pathname === AGENT_EVENT_PATH
+  // A same-origin browser GET does not send an Origin header, but the
+  // generated-app read still carries the Room capability headers below. Keep
+  // cross-origin requests origin-gated while allowing this authenticated
+  // browser path to reach the Durable Object.
+  const isSameOriginGeneratedAppRead =
+    pathname === GENERATED_APP_PATH &&
+    request.method === "GET" &&
+    request.headers.get("Origin") === null
   // The resident Runtime is a native client and normally has no browser
   // Origin. Its existing participant capability remains the authorization
   // boundary; a present Origin is still checked so another website cannot
   // use the endpoint as a cross-origin browser transport.
   if (
     !isAllowedOrigin(request.headers.get("Origin")) &&
+    !isSameOriginGeneratedAppRead &&
     !(isAgentEventSocket && request.headers.get("Origin") === null)
   )
     return json({ error: "forbidden_origin" }, 403)
@@ -105,6 +116,28 @@ export async function handleRoomRequest(
     const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
     const doRequest = new Request("https://room/agent-events", request)
     return stub.fetch(doRequest)
+  }
+
+  if (pathname === GENERATED_APP_PATH) {
+    if (request.method !== "GET")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    const forwarded = new URL("https://room/generated-app")
+    const appInstanceId = new URL(request.url).searchParams.get("appInstanceId")
+    if (appInstanceId)
+      forwarded.searchParams.set("appInstanceId", appInstanceId)
+    return stub.fetch(forwarded.toString(), {
+      method: "GET",
+      headers: {
+        "X-Room-Participant-Id": participantId,
+        "X-Room-Participant-Token": token,
+      },
+    })
   }
 
   // Runtime-only coarse Harness activity. This is intentionally a tiny

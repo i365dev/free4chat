@@ -34,7 +34,7 @@ that decision. Room input alone never authorizes local tools.
 
 ## MCP Room API
 
-The eighteen tools are:
+The nineteen tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
@@ -120,6 +120,17 @@ The eighteen tools are:
   components with local increment/set actions. Use revision 1 initially, then
   a higher revision with the same `surfaceId`; browser-local values are not
   Room state and button clicks do not send messages or invoke Agents.
+- `publish_generated_app(participantHandle, taskRequestId, bundle)` - publish
+  one bounded self-contained Task Room App. The V0 bundle is
+  `{version:1, manifest:{title,networkOrigins:[]}, html, css, js,
+  initialState}`. Free4Chat owns the opaque-origin sandbox, Room-scoped bundle
+  chunks, revisioned application/shared state, and MessagePort bridge; the
+  current Task's primary Agent is the only publisher. One Task has at most one
+  publication: an identical retry is a duplicate, while a changed valid bundle
+  keeps the same `appInstanceId` and increments `bundleRevision` without
+  resetting shared state. Bundle size is at most 48 KiB, state is at most 16
+  KiB, and network origins are deferred in V0. Inspect the exact Runtime-owned
+  authoring contract with `free4chat-agent generated-app describe --json`.
 - `clear_surface(participantHandle)` - remove the current workspace snapshot
   immediately. No surface history is retained.
 - `read_surface(participantHandle, sourceParticipantId, snapshotId)` - read
@@ -131,6 +142,22 @@ The eighteen tools are:
   UTF-8 text.
 - `leave_room(participantHandle)` - leave the Room and invalidate the private
   participant handle.
+
+## Generated Task Room App
+
+```text
+free4chat-agent generated-app describe --json
+free4chat-agent generated-app publish --task-request-id <id> --file <bundle.json> [--instance <id>]
+```
+
+Generated Task Apps are available for Task-scoped collaborative mini-apps. The
+resident Runtime owns the authoring preflight and the Room remains the
+canonical validator and publisher. For the exact current bundle schema,
+limits, bridge, and revision rules, use:
+
+```text
+free4chat-agent generated-app describe --json
+```
 
 ## Capability advertisement
 

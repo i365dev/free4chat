@@ -79,6 +79,7 @@ import {
   buildTargetedMessageEvent,
   buildRoomCreatedEvent,
   buildLiveViewPublishedEvent,
+  buildGeneratedRoomAppPublishedEvent,
   type RoomCreationSource,
 } from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
@@ -138,6 +139,19 @@ import {
   type TaskSessionListOutcome,
 } from "./taskSession"
 import { isAgentActivityTurnSequence } from "../common/agentActivity"
+import {
+  GENERATED_APP_CHUNK_SIZE,
+  GENERATED_APP_STATE_MAX_BYTES_PER_WINDOW,
+  GENERATED_APP_STATE_MAX_MUTATIONS_PER_WINDOW,
+  GENERATED_APP_STATE_WINDOW_MS,
+  MAX_GENERATED_APP_BUNDLE_BYTES,
+  MAX_GENERATED_APPS_PER_ROOM,
+  MAX_GENERATED_APP_UPDATE_BYTES,
+  type GeneratedRoomAppBundle,
+  type GeneratedRoomAppPublication,
+  validateGeneratedRoomAppBundle,
+  validateGeneratedRoomAppState,
+} from "../common/generatedRoomApp"
 import {
   ROOM_APP_MAX_PAYLOAD_BYTES,
   ROOM_APP_PROTOCOL_VERSION,
@@ -255,6 +269,13 @@ const MAX_TASK_LIVE_VIEWS = 16
 // never widen it into a payload.
 const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
 const TASK_LIVE_VIEW_KEY_PREFIX = "task-live-view:"
+const GENERATED_APP_KEY_PREFIX = "generated-app:"
+
+function urlSafeGeneratedAppId(value: unknown): string | null {
+  return typeof value === "string" && /^generated:[0-9a-f-]{36}$/.test(value)
+    ? value
+    : null
+}
 const MAX_PENDING_PERMISSION_REQUESTS = 32
 // The resident event stream is intentionally one bounded frame. The 2 MiB
 // cap covers the retained 100-message/8-attachment event window (including
@@ -460,6 +481,7 @@ interface StoredRoom
     | "runtimeHostProviderClaims"
     | "permissionRequests"
     | "taskLiveViews"
+    | "generatedApps"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
@@ -478,6 +500,7 @@ interface StoredRoom
   runtimeHostProviderClaims?: unknown
   permissionRequests?: unknown
   taskLiveViews?: unknown
+  generatedApps?: unknown
 }
 
 interface StoredLiveTranscript {
@@ -660,6 +683,15 @@ type ControlRequest =
       token: string
       taskRequestId: unknown
       surface: unknown
+    }
+  | {
+      // #410: the Agent supplies only a bounded business bundle. The Room
+      // creates the publication identity and owns the durable bytes/state.
+      action: "agent-publish-generated-app"
+      participantId: string
+      token: string
+      taskRequestId: unknown
+      bundle: unknown
     }
   | {
       // Internal Runtime infrastructure for PR2. This is intentionally not
@@ -977,6 +1009,15 @@ type ClientMessage =
       appInstanceId: string
       payload: Record<string, unknown>
     }
+  | {
+      // #410: generated App shared state is a Room-owned replace operation,
+      // unlike the existing peer/SFU App transport. The expected revision
+      // keeps conflicts truthful and makes refresh bootstrap deterministic.
+      type: "generated-app-state-update"
+      appInstanceId: string
+      expectedRevision: number
+      state: Record<string, unknown>
+    }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
   // A participant has at most one outstanding long-poll. A null value is a
@@ -987,6 +1028,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private readonly clientMessageWindows = new Map<
     string,
     { windowStartedAt: number; count: number }
+  >()
+  // #456: generated shared-state writes have a narrower cost budget than
+  // ordinary WebSocket messages. The key is participant + App, and accepted
+  // count/bytes are tracked only while this RoomSession is active.
+  private readonly generatedAppStateWindows = new Map<
+    string,
+    { windowStartedAt: number; count: number; bytes: number }
   >()
   // #406: last accepted wait_for_events time per participant (see
   // MCP_WAIT_MIN_INTERVAL_MS). In-memory is sufficient: a tight poll loop is
@@ -1189,6 +1237,89 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const key of pending) this.taskLiveViewDeletedKeys.add(key)
   }
 
+  private generatedAppBundleKey(
+    appInstanceId: string,
+    bundleRevision: number,
+    index: number
+  ): string {
+    return `${GENERATED_APP_KEY_PREFIX}${appInstanceId}:bundle:${bundleRevision}:${index}`
+  }
+
+  private generatedAppLegacyBundleKey(
+    appInstanceId: string,
+    index: number
+  ): string {
+    return `${GENERATED_APP_KEY_PREFIX}${appInstanceId}:bundle:${index}`
+  }
+
+  private generatedAppStateKey(appInstanceId: string): string {
+    return `${GENERATED_APP_KEY_PREFIX}${appInstanceId}:state`
+  }
+
+  private generatedAppManifestKey(appInstanceId: string): string {
+    return `${GENERATED_APP_KEY_PREFIX}${appInstanceId}:manifest`
+  }
+
+  private validGeneratedAppPublication(
+    value: unknown
+  ): value is GeneratedRoomAppPublication {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return false
+    const candidate = value as Partial<GeneratedRoomAppPublication>
+    return (
+      typeof candidate.appInstanceId === "string" &&
+      /^generated:[0-9a-f-]{36}$/.test(candidate.appInstanceId) &&
+      typeof candidate.taskRequestId === "string" &&
+      candidate.taskRequestId.length > 0 &&
+      candidate.taskRequestId.length <= MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH &&
+      typeof candidate.title === "string" &&
+      candidate.title.length > 0 &&
+      candidate.title.length <= 80 &&
+      typeof candidate.bundleBytes === "number" &&
+      Number.isSafeInteger(candidate.bundleBytes) &&
+      candidate.bundleBytes > 0 &&
+      candidate.bundleBytes <= MAX_GENERATED_APP_BUNDLE_BYTES &&
+      (candidate.bundleRevision === undefined ||
+        (typeof candidate.bundleRevision === "number" &&
+          Number.isSafeInteger(candidate.bundleRevision) &&
+          candidate.bundleRevision >= 1)) &&
+      typeof candidate.stateRevision === "number" &&
+      Number.isSafeInteger(candidate.stateRevision) &&
+      candidate.stateRevision >= 0 &&
+      typeof candidate.createdAt === "number" &&
+      Number.isFinite(candidate.createdAt) &&
+      typeof candidate.updatedAt === "number" &&
+      Number.isFinite(candidate.updatedAt)
+    )
+  }
+
+  private normalizeGeneratedApps(
+    value: unknown
+  ): Record<string, GeneratedRoomAppPublication> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+    const result: Record<string, GeneratedRoomAppPublication> = {}
+    const taskRequestIds = new Set<string>()
+    for (const [appInstanceId, raw] of Object.entries(value)) {
+      if (
+        Object.keys(result).length >= MAX_GENERATED_APPS_PER_ROOM ||
+        appInstanceId !== (raw as { appInstanceId?: unknown })?.appInstanceId ||
+        !this.validGeneratedAppPublication(raw) ||
+        taskRequestIds.has((raw as GeneratedRoomAppPublication).taskRequestId)
+      )
+        continue
+      taskRequestIds.add((raw as GeneratedRoomAppPublication).taskRequestId)
+      result[appInstanceId] = {
+        ...raw,
+        bundleRevision:
+          typeof (raw as Partial<GeneratedRoomAppPublication>)
+            .bundleRevision === "number"
+            ? (raw as GeneratedRoomAppPublication).bundleRevision
+            : 1,
+      }
+    }
+    return result
+  }
+
   private normalizeRoom(
     stored: StoredRoom,
     storedTranscript?: StoredLiveTranscript
@@ -1374,6 +1505,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           changed = true
       }
     }
+
+    const generatedApps = this.normalizeGeneratedApps(stored.generatedApps)
+    if (
+      JSON.stringify(generatedApps) !==
+      JSON.stringify(stored.generatedApps ?? {})
+    )
+      changed = true
     // #228: sanitize the persisted collaboration interval; an invalid one
     // is dropped (worst case: a replacement duration interval opens later).
     const collaborationActivity = normalizeStoredCollaborationActivity(
@@ -1561,6 +1699,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           ? { lastHeldWaitEndedAt: stored.lastHeldWaitEndedAt }
           : {}),
         taskLiveViews: {},
+        generatedApps,
         permissionRequests,
         liveTranscript: normalizedLiveProducer.liveTranscript,
         liveTranscriptSegments: normalizedLiveTranscript.liveTranscriptSegments,
@@ -1622,6 +1761,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       | "nextLiveTranscriptEpoch"
       | "nextTranscriptSequence"
       | "taskLiveViews"
+      | "generatedApps"
     >
     transcript: StoredLiveTranscript
   } {
@@ -1831,6 +1971,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ),
       messages: room.messages,
       taskLiveViews: room.taskLiveViews,
+      generatedApps: room.generatedApps,
       // #234: standalone Room attachment metadata (senderKind-resolved) so
       // the Human Browser can render Agent-authored artifacts directly.
       attachments: this.projectRoomAttachments(room),
@@ -3904,6 +4045,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return window.count > MAX_CLIENT_MESSAGES_PER_WINDOW
   }
 
+  private generatedAppStateBudgetExceeded(
+    participantId: string,
+    appInstanceId: string,
+    bytes: number,
+    now: number
+  ): boolean {
+    if (this.generatedAppStateWindows.size > MAX_CLIENT_MESSAGE_WINDOWS) {
+      for (const [key, entry] of this.generatedAppStateWindows)
+        if (now - entry.windowStartedAt >= GENERATED_APP_STATE_WINDOW_MS)
+          this.generatedAppStateWindows.delete(key)
+    }
+    const key = `${participantId}:${appInstanceId}`
+    const current = this.generatedAppStateWindows.get(key)
+    const window =
+      !current || now - current.windowStartedAt >= GENERATED_APP_STATE_WINDOW_MS
+        ? { windowStartedAt: now, count: 0, bytes: 0 }
+        : current
+    if (
+      window.count >= GENERATED_APP_STATE_MAX_MUTATIONS_PER_WINDOW ||
+      window.bytes + bytes > GENERATED_APP_STATE_MAX_BYTES_PER_WINDOW
+    )
+      return true
+    window.count += 1
+    window.bytes += bytes
+    this.generatedAppStateWindows.set(key, window)
+    return false
+  }
+
   // #228: Room-authoritative collaboration analytics are best-effort:
   // never fail or delay the Room mutation they observe.
   // The DO instance name is the room name: every room is addressed via
@@ -4782,6 +4951,212 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         }),
       ])
       return this.json({ snapshot, expiresAt: room.expiresAt })
+    }
+
+    if (request.action === "agent-publish-generated-app") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "agent")
+        return this.json({ error: "agent_only" }, 403)
+      if (
+        typeof request.taskRequestId !== "string" ||
+        !request.taskRequestId.trim()
+      )
+        return this.json({ error: "invalid_task_request" }, 400)
+      const taskRequestId = request.taskRequestId.trim()
+      const task = buildTaskProjectionIndex(
+        room.messages,
+        room.participants
+      ).tasks.get(taskRequestId)
+      if (!task) return this.json({ error: "unknown_task_request" }, 409)
+      const authorityAgentId = initialTaskAgentParticipantId(
+        task.request,
+        room.participants
+      )
+      if (authorityAgentId !== participant.id)
+        return this.json({ error: "generated_app_not_authorized" }, 403)
+
+      const validation = validateGeneratedRoomAppBundle(request.bundle)
+      if (validation.ok === false)
+        return this.json({ error: validation.error }, 400)
+      const encodedBundle = new TextEncoder().encode(
+        JSON.stringify(validation.bundle)
+      )
+      const current = Object.values(room.generatedApps ?? {}).find(
+        (app) => app.taskRequestId === taskRequestId
+      )
+      if (current) {
+        const existingBundle = await this.readGeneratedAppBundleBytes(current)
+        if (!existingBundle)
+          return this.json({ error: "generated_app_unavailable" }, 503)
+        const identical =
+          existingBundle.byteLength === encodedBundle.byteLength &&
+          existingBundle.every((value, index) => value === encodedBundle[index])
+        if (identical)
+          return this.json({ publication: current, duplicate: true })
+
+        const bundleRevision = current.bundleRevision + 1
+        const chunkCount = Math.ceil(
+          encodedBundle.byteLength / GENERATED_APP_CHUNK_SIZE
+        )
+        const now = Date.now()
+        const publication: GeneratedRoomAppPublication = {
+          ...current,
+          title: validation.bundle.manifest.title,
+          bundleBytes: validation.bytes,
+          bundleRevision,
+          updatedAt: now,
+        }
+        const keys: string[] = []
+        const manifestKey = this.generatedAppManifestKey(current.appInstanceId)
+        const previousManifest = await this.ctx.storage.get(manifestKey)
+        try {
+          for (let index = 0; index < chunkCount; index += 1) {
+            const key = this.generatedAppBundleKey(
+              current.appInstanceId,
+              bundleRevision,
+              index
+            )
+            keys.push(key)
+            await this.ctx.storage.put(
+              key,
+              encodedBundle.slice(
+                index * GENERATED_APP_CHUNK_SIZE,
+                (index + 1) * GENERATED_APP_CHUNK_SIZE
+              )
+            )
+          }
+          await this.ctx.storage.put(manifestKey, {
+            appInstanceId: current.appInstanceId,
+            bundleBytes: validation.bytes,
+            chunkCount,
+            bundleRevision,
+          })
+          room.generatedApps = Object.fromEntries(
+            Object.entries(room.generatedApps ?? {}).map(([appId, app]) =>
+              appId === current.appInstanceId
+                ? [appId, publication]
+                : [appId, app]
+            )
+          )
+          participant.lastSeenAt = now
+          await this.saveRoom(room)
+        } catch (error) {
+          if (previousManifest === undefined)
+            await this.ctx.storage.delete(manifestKey)
+          else await this.ctx.storage.put(manifestKey, previousManifest)
+          await this.ctx.storage.delete(keys)
+          throw error
+        }
+        await this.scheduleNextAlarm(room)
+        await this.broadcastState(room)
+        this.trackRoomAnalytics([
+          buildGeneratedRoomAppPublishedEvent({
+            roomName: this.roomAnalyticsName(),
+            participants: Object.values(room.participants),
+            phase: "update",
+            bundleBytes: publication.bundleBytes,
+          }),
+        ])
+        const oldChunkCount = Math.ceil(
+          current.bundleBytes / GENERATED_APP_CHUNK_SIZE
+        )
+        await this.ctx.storage.delete(
+          Array.from({ length: oldChunkCount }, (_, index) => [
+            this.generatedAppBundleKey(
+              current.appInstanceId,
+              current.bundleRevision,
+              index
+            ),
+            this.generatedAppLegacyBundleKey(current.appInstanceId, index),
+          ]).flat()
+        )
+        return this.json({
+          publication,
+          duplicate: false,
+          updated: true,
+          expiresAt: room.expiresAt,
+        })
+      }
+      if (
+        Object.keys(room.generatedApps ?? {}).length >=
+        MAX_GENERATED_APPS_PER_ROOM
+      )
+        return this.json({ error: "generated_app_capacity" }, 409)
+
+      const appInstanceId = `generated:${crypto.randomUUID()}`
+      const chunkCount = Math.ceil(
+        encodedBundle.byteLength / GENERATED_APP_CHUNK_SIZE
+      )
+      const state = validateGeneratedRoomAppState(
+        validation.bundle.initialState
+      )
+      if (state.ok === false) return this.json({ error: state.error }, 400)
+      const now = Date.now()
+      const publication: GeneratedRoomAppPublication = {
+        appInstanceId,
+        taskRequestId,
+        title: validation.bundle.manifest.title,
+        bundleBytes: validation.bytes,
+        bundleRevision: 1,
+        stateRevision: 0,
+        createdAt: now,
+        updatedAt: now,
+      }
+      const keys: string[] = []
+      try {
+        for (let index = 0; index < chunkCount; index += 1) {
+          const key = this.generatedAppBundleKey(appInstanceId, 1, index)
+          keys.push(key)
+          await this.ctx.storage.put(
+            key,
+            encodedBundle.slice(
+              index * GENERATED_APP_CHUNK_SIZE,
+              (index + 1) * GENERATED_APP_CHUNK_SIZE
+            )
+          )
+        }
+        const stateKey = this.generatedAppStateKey(appInstanceId)
+        const manifestKey = this.generatedAppManifestKey(appInstanceId)
+        keys.push(stateKey, manifestKey)
+        await this.ctx.storage.put(stateKey, state.state)
+        await this.ctx.storage.put(manifestKey, {
+          appInstanceId,
+          bundleBytes: validation.bytes,
+          chunkCount,
+          bundleRevision: 1,
+        })
+        room.generatedApps = {
+          ...(room.generatedApps ?? {}),
+          [appInstanceId]: publication,
+        }
+        participant.lastSeenAt = now
+        await this.saveRoom(room)
+      } catch (error) {
+        await this.ctx.storage.delete(keys)
+        throw error
+      }
+      await this.scheduleNextAlarm(room)
+      await this.broadcastState(room)
+      this.trackRoomAnalytics([
+        buildGeneratedRoomAppPublishedEvent({
+          roomName: this.roomAnalyticsName(),
+          participants: Object.values(room.participants),
+          phase: "first",
+          bundleBytes: publication.bundleBytes,
+        }),
+      ])
+      return this.json({
+        publication,
+        duplicate: false,
+        expiresAt: room.expiresAt,
+      })
     }
 
     if (request.action === "agent-send-text") {
@@ -7149,6 +7524,113 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.handleRoomAppUnicast(socket, attachment, room, message)
       return
     }
+    if (message.type === "generated-app-state-update") {
+      const publication = room.generatedApps?.[message.appInstanceId]
+      if (!publication) {
+        socket.send(
+          JSON.stringify({
+            type: "generated-app-state-error",
+            error: "generated_app_not_found",
+            appInstanceId: message.appInstanceId,
+          })
+        )
+        return
+      }
+      if (
+        !Number.isSafeInteger(message.expectedRevision) ||
+        message.expectedRevision < 0
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "generated-app-state-error",
+            error: "invalid_revision",
+            appInstanceId: message.appInstanceId,
+          })
+        )
+        return
+      }
+      const nextState = validateGeneratedRoomAppState(message.state)
+      const updateBytes = serializedRoomAppBytes(message)
+      if (
+        nextState.ok === false ||
+        updateBytes === null ||
+        updateBytes > MAX_GENERATED_APP_UPDATE_BYTES
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "generated-app-state-error",
+            error: "generated_app_state_invalid",
+            appInstanceId: message.appInstanceId,
+          })
+        )
+        return
+      }
+      const currentState = await this.ctx.storage.get<Record<string, unknown>>(
+        this.generatedAppStateKey(message.appInstanceId)
+      )
+      if (
+        publication.stateRevision !== message.expectedRevision ||
+        !currentState
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "generated-app-state-conflict",
+            appInstanceId: message.appInstanceId,
+            revision: publication.stateRevision,
+            generatedState: currentState ?? {},
+          })
+        )
+        return
+      }
+      if (
+        this.generatedAppStateBudgetExceeded(
+          participant.id,
+          message.appInstanceId,
+          updateBytes,
+          Date.now()
+        )
+      ) {
+        socket.send(
+          JSON.stringify({
+            type: "generated-app-state-error",
+            error: "generated_app_state_rate_limited",
+            appInstanceId: message.appInstanceId,
+          })
+        )
+        return
+      }
+      await this.ctx.storage.put(
+        this.generatedAppStateKey(message.appInstanceId),
+        nextState.state
+      )
+      const updatedPublication: GeneratedRoomAppPublication = {
+        ...publication,
+        stateRevision: publication.stateRevision + 1,
+        updatedAt: Date.now(),
+      }
+      room.generatedApps = {
+        ...(room.generatedApps ?? {}),
+        [message.appInstanceId]: updatedPublication,
+      }
+      participant.lastSeenAt = Date.now()
+      try {
+        await this.saveRoom(room)
+      } catch (error) {
+        await this.ctx.storage.put(
+          this.generatedAppStateKey(message.appInstanceId),
+          currentState
+        )
+        throw error
+      }
+      await this.broadcast({
+        type: "generated-app-state",
+        appInstanceId: message.appInstanceId,
+        revision: updatedPublication.stateRevision,
+        generatedState: nextState.state,
+        sourceParticipantId: participant.id,
+      })
+      return
+    }
     participant.lastSeenAt = Date.now()
 
     if (message.type === "resync") {
@@ -7831,6 +8313,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.handleAttachmentUpload(request)
     if (request.method === "POST" && url.pathname === "/surface")
       return this.handleSurfaceUpload(request)
+    if (request.method === "GET" && url.pathname === "/generated-app")
+      return this.handleGeneratedAppRead(request)
     if (url.pathname === "/agent-events")
       return this.handleAgentEventConnection(request)
     if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
@@ -7920,6 +8404,154 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "room_state_budget_exceeded" }, 507)
       return this.json({ error: "invalid_request" }, 400)
     }
+  }
+
+  private async readGeneratedAppBundleBytes(
+    publication: GeneratedRoomAppPublication
+  ): Promise<Uint8Array | null> {
+    const manifest = await this.ctx.storage.get<{
+      bundleRevision?: number
+    }>(this.generatedAppManifestKey(publication.appInstanceId))
+    const chunkCount = Math.ceil(
+      publication.bundleBytes / GENERATED_APP_CHUNK_SIZE
+    )
+    const readChunks = async (revisioned: boolean) => {
+      const bytes = new Uint8Array(publication.bundleBytes)
+      let offset = 0
+      for (let index = 0; index < chunkCount; index += 1) {
+        const raw = await this.ctx.storage.get<Uint8Array>(
+          revisioned
+            ? this.generatedAppBundleKey(
+                publication.appInstanceId,
+                publication.bundleRevision,
+                index
+              )
+            : this.generatedAppLegacyBundleKey(publication.appInstanceId, index)
+        )
+        if (
+          !raw ||
+          raw.byteLength === 0 ||
+          raw.byteLength > GENERATED_APP_CHUNK_SIZE
+        )
+          return null
+        const chunk =
+          raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+        if (offset + chunk.byteLength > bytes.byteLength) return null
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      return offset === bytes.byteLength ? bytes : null
+    }
+    const revisioned = await readChunks(true)
+    if (revisioned) return revisioned
+    // Publications written before bundleRevision existed used the legacy key
+    // shape. A revisioned bundle is always authoritative when present, so a
+    // reader can observe the old or new complete bundle during an update.
+    if (
+      manifest?.bundleRevision === undefined &&
+      publication.bundleRevision === 1
+    )
+      return readChunks(false)
+    return null
+  }
+
+  private async handleGeneratedAppRead(request: Request): Promise<Response> {
+    const room = await this.activeRoom()
+    if (!room) return this.json({ error: "room_expired" }, 410)
+    const participant = this.findParticipant(
+      room,
+      request.headers.get("X-Room-Participant-Id") ?? "",
+      request.headers.get("X-Room-Participant-Token") ?? ""
+    )
+    if (!participant || participant.kind !== "human")
+      return this.json({ error: "unauthorized" }, 401)
+    const appInstanceId = urlSafeGeneratedAppId(
+      new URL(request.url).searchParams.get("appInstanceId")
+    )
+    const publication = appInstanceId
+      ? room.generatedApps?.[appInstanceId]
+      : undefined
+    if (!publication)
+      return this.json({ error: "generated_app_not_found" }, 404)
+    const chunkCount = Math.ceil(
+      publication.bundleBytes / GENERATED_APP_CHUNK_SIZE
+    )
+    const chunks: Uint8Array[] = []
+    let totalChunkBytes = 0
+    const readChunks = async (revisioned: boolean) => {
+      const result: Uint8Array[] = []
+      let bytesRead = 0
+      for (let index = 0; index < chunkCount; index += 1) {
+        const raw = await this.ctx.storage.get<Uint8Array>(
+          revisioned
+            ? this.generatedAppBundleKey(
+                appInstanceId,
+                publication.bundleRevision,
+                index
+              )
+            : this.generatedAppLegacyBundleKey(appInstanceId, index)
+        )
+        if (!raw) return null
+        if (
+          raw.byteLength === 0 ||
+          raw.byteLength > GENERATED_APP_CHUNK_SIZE ||
+          bytesRead + raw.byteLength > publication.bundleBytes
+        )
+          return null
+        bytesRead += raw.byteLength
+        result.push(
+          raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+        )
+      }
+      return bytesRead === publication.bundleBytes ? result : null
+    }
+    let storedChunks = await readChunks(true)
+    if (
+      !storedChunks &&
+      publication.bundleRevision === 1 &&
+      (
+        await this.ctx.storage.get<{ bundleRevision?: number }>(
+          this.generatedAppManifestKey(appInstanceId)
+        )
+      )?.bundleRevision === undefined
+    )
+      storedChunks = await readChunks(false)
+    if (!storedChunks)
+      return this.json({ error: "generated_app_unavailable" }, 503)
+    for (const raw of storedChunks) {
+      if (!raw) return this.json({ error: "generated_app_unavailable" }, 503)
+      totalChunkBytes += raw.byteLength
+      chunks.push(
+        raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+      )
+    }
+    const bytes = new Uint8Array(publication.bundleBytes)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    if (offset !== bytes.byteLength)
+      return this.json({ error: "generated_app_unavailable" }, 503)
+    let bundle: GeneratedRoomAppBundle
+    try {
+      const parsed = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+      )
+      const validation = validateGeneratedRoomAppBundle(parsed)
+      if (validation.ok === false)
+        return this.json({ error: "generated_app_unavailable" }, 503)
+      bundle = validation.bundle
+    } catch {
+      return this.json({ error: "generated_app_unavailable" }, 503)
+    }
+    const state = await this.ctx.storage.get<Record<string, unknown>>(
+      this.generatedAppStateKey(appInstanceId)
+    )
+    const validState = validateGeneratedRoomAppState(state)
+    if (validState.ok === false)
+      return this.json({ error: "generated_app_unavailable" }, 503)
+    return this.json({ publication, bundle, state: validState.state })
   }
 
   private isAgentAttachmentMimeType(

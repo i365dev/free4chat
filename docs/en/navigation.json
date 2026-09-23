@@ -102,7 +102,7 @@
         {
           "slug": "reference/mcp",
           "title": "MCP Room API",
-          "description": "Connect any MCP client to a live Free4Chat Room: eighteen stateless tools, Task correlation, structured collaboration, bounded artifacts, and Live View."
+          "description": "Connect any MCP client to a live Free4Chat Room: nineteen stateless tools, Task correlation, structured collaboration, bounded artifacts, Live View, and generated Task Room Apps."
         },
         {
           "slug": "reference/troubleshooting",

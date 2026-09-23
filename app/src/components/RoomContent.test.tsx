@@ -4215,6 +4215,201 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     })
   })
 
+  it("keeps official Apps in the launcher and a generated Task App on the selected Task surface", () => {
+    const generatedPublication = {
+      appInstanceId: "generated:00000000-0000-4000-8000-000000000001",
+      taskRequestId: "task-live",
+      title: "Generated Checklist",
+      bundleBytes: 512,
+      bundleRevision: 1,
+      stateRevision: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      roomAppsEnabled: true,
+      participants: [
+        {
+          peerId: "local-peer",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-a",
+          name: "Agent A",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      messages: [taskRequestMessage],
+      generatedApps: {
+        [generatedPublication.appInstanceId]: generatedPublication,
+      },
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+
+    expect(screen.getByTestId("generated-room-app-card")).toHaveTextContent(
+      "Task App"
+    )
+    expect(screen.getByText("Generated Checklist")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("stage-apps-launcher"))
+    const launcher = screen.getByTestId("room-app-launcher")
+    expect(launcher).toHaveTextContent("Test App 1")
+    expect(launcher).not.toHaveTextContent("Generated Checklist")
+    fireEvent.click(screen.getByTestId("stage-view-generated-app"))
+    expect(screen.getByTestId("stage-view-generated-app")).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    )
+  })
+
+  it("reconciles generated state after a missed event and refetches state-only updates", async () => {
+    const publication = {
+      appInstanceId: "generated:00000000-0000-4000-8000-000000000002",
+      taskRequestId: "task-live",
+      title: "Checklist",
+      bundleBytes: 512,
+      bundleRevision: 1,
+      stateRevision: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const bundle = {
+      version: 1 as const,
+      manifest: { title: "Checklist", networkOrigins: [] as [] },
+      html: "<main></main>",
+      css: "main{}",
+      js: "",
+      initialState: { items: [] },
+    }
+    const documentAtRevision = (stateRevision: number, items: string[]) => ({
+      publication: { ...publication, stateRevision },
+      bundle,
+      state: { items },
+    })
+    let resolveInitial!: (response: Response) => void
+    const initialResponse = new Promise<Response>((resolve) => {
+      resolveInitial = resolve
+    })
+    const fetchGenerated = vi
+      .fn()
+      .mockReturnValueOnce(initialResponse)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify(documentAtRevision(2, ["first", "second"])),
+          { status: 200 }
+        )
+      )
+    vi.stubGlobal("fetch", fetchGenerated)
+    let generatedStateListener:
+      | ((message: {
+          appInstanceId: string
+          revision: number
+          state: Record<string, unknown>
+        }) => void)
+      | undefined
+    const subscribeGeneratedState = vi.fn(
+      (listener: typeof generatedStateListener) => {
+        generatedStateListener = listener
+        return () => undefined
+      }
+    )
+    const auth = {
+      roomId: "test-room",
+      participantId: "human-a",
+      token: "token",
+    }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      roomAppsEnabled: true,
+      getLocalRoomAuth: vi.fn(() => auth),
+      subscribeGeneratedState,
+      participants: [
+        {
+          peerId: "local-peer",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-a",
+          name: "Agent",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      messages: [taskRequestMessage],
+      generatedApps: {
+        [publication.appInstanceId]: publication,
+      },
+    })
+    const view = render(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+    fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+    fireEvent.click(screen.getByTestId("stage-view-generated-app"))
+    await waitFor(() => expect(fetchGenerated).toHaveBeenCalledTimes(1))
+
+    // The state event arrives before the initial GET. It must be retained
+    // rather than dropped and must win over the older GET response.
+    act(() => {
+      generatedStateListener?.({
+        appInstanceId: publication.appInstanceId,
+        revision: 1,
+        state: { items: ["first"] },
+      })
+    })
+    resolveInitial(
+      new Response(JSON.stringify(documentAtRevision(0, [])), { status: 200 })
+    )
+    await waitFor(() =>
+      expect(screen.getByTestId("room-app-iframe")).toBeInTheDocument()
+    )
+    const iframe = screen.getByTestId("room-app-iframe")
+    expect(fetchGenerated).toHaveBeenCalledTimes(1)
+
+    // A later Room projection with the same bundle but a higher state revision
+    // triggers a canonical GET without changing the resident iframe identity.
+    const nextPublication = { ...publication, stateRevision: 2 }
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      roomAppsEnabled: true,
+      getLocalRoomAuth: vi.fn(() => auth),
+      subscribeGeneratedState,
+      participants: [
+        {
+          peerId: "local-peer",
+          name: "Alice",
+          kind: "human",
+          room: "test-room",
+        },
+        {
+          peerId: "agent-a",
+          name: "Agent",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      messages: [taskRequestMessage],
+      generatedApps: { [publication.appInstanceId]: nextPublication },
+    })
+    view.rerender(
+      <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+    )
+    await waitFor(() => expect(fetchGenerated).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+  })
+
   it("uses the intentional two-row mobile header layout with a truncating Room id", () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,

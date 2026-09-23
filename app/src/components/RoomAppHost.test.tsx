@@ -297,6 +297,88 @@ describe("RoomAppHost", () => {
     expect(send).not.toHaveBeenCalled()
   })
 
+  it("reconciles a higher shared-state revision without replacing the iframe", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    let generatedStateListener:
+      | ((message: {
+          appInstanceId: string
+          revision: number
+          state: Record<string, unknown>
+        }) => void)
+      | undefined
+    const subscribeGeneratedState = vi.fn(
+      (listener: typeof generatedStateListener) => {
+        generatedStateListener = listener
+        return () => undefined
+      }
+    )
+    const props = {
+      app,
+      appInstanceId: "test-app:room",
+      self,
+      participants,
+      subscribe: () => () => undefined,
+      send: () => true,
+      subscribeUnicast: () => () => undefined,
+      subscribeUnicastResults: () => () => undefined,
+      sendUnicast: () => "sent" as const,
+      subscribeGeneratedState,
+      onClose: () => undefined,
+    }
+    const rendered = render(
+      <RoomAppHost
+        {...props}
+        sharedState={{ revision: 5, state: { items: ["old"] } }}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const port = lastChannel!.port1
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    act(() => {
+      port.emit({
+        type: "ready",
+        appInstanceId: "test-app:room",
+        handshakeToken: bootstrap.handshakeToken,
+      })
+    })
+    const initialPostCount = port.postMessage.mock.calls.length
+
+    act(() => {
+      rendered.rerender(
+        <RoomAppHost
+          {...props}
+          sharedState={{ revision: 6, state: { items: ["new"] } }}
+        />
+      )
+    })
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(lastChannel!.port1).toBe(port)
+    expect(port.postMessage.mock.calls.length).toBeGreaterThan(initialPostCount)
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "shared_state",
+      appInstanceId: "test-app:room",
+      revision: 6,
+      state: { items: ["new"] },
+    })
+
+    act(() => {
+      generatedStateListener?.({
+        appInstanceId: "test-app:room",
+        revision: 7,
+        state: { items: ["latest"] },
+      })
+    })
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "shared_state",
+      appInstanceId: "test-app:room",
+      revision: 7,
+      state: { items: ["latest"] },
+    })
+  })
+
   it("rejects malformed or wrong-instance messages and forwards bounded lanes", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const send = vi.fn(() => true)

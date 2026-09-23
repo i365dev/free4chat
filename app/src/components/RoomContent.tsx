@@ -24,6 +24,11 @@ import WorkspaceSnapshots from "./WorkspaceSnapshots"
 import { agentActivityLabel } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
+  generatedRoomAppSrcDoc,
+  type GeneratedRoomAppDocument,
+  type GeneratedRoomAppPublication,
+} from "../common/generatedRoomApp"
+import {
   buildRoomInviteUrl,
   currentRoomAppCatalog,
   isRoomAppAllowlisted,
@@ -340,6 +345,25 @@ export default function RoomContent({
   const [taskInterruptFailed, setTaskInterruptFailed] = useState(false)
   const [activeInteraction, setActiveInteraction] = useState("room")
   const [activeRoomAppId, setActiveRoomAppId] = useState<string | null>(null)
+  const [activeGeneratedAppId, setActiveGeneratedAppId] = useState<
+    string | null
+  >(null)
+  const [generatedAppDocuments, setGeneratedAppDocuments] = useState<
+    Record<string, GeneratedRoomAppDocument>
+  >({})
+  const [generatedAppLoading, setGeneratedAppLoading] = useState<string | null>(
+    null
+  )
+  const pendingGeneratedStateRef = useRef(
+    new Map<
+      string,
+      {
+        revision: number
+        state: Record<string, unknown>
+        sourceParticipantId?: string
+      }
+    >()
+  )
   const [expandedRoomAppId, setExpandedRoomAppId] = useState<string | null>(
     null
   )
@@ -378,6 +402,7 @@ export default function RoomContent({
   // Host-owned coarse telemetry stays catalog-derived: any curated production
   // App reports at most one shared-session milestone per browser Room session.
   const sharedSessionTrackedAppIdsRef = useRef<Set<string>>(new Set())
+  const sharedSessionTrackedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
   // The acquisition intent is stable for this Room page, so the App-milestone
   // callbacks can read it without depending on the prop and being re-created.
   const acquisitionPageRef = useRef<string | undefined>(acquisitionPage)
@@ -424,6 +449,7 @@ export default function RoomContent({
     messages,
     attachments,
     taskLiveViews,
+    generatedApps = {},
     sendTextMessage,
     sendFileMessage,
     sendTaskAttachment,
@@ -469,9 +495,13 @@ export default function RoomContent({
     sendRoomAppUnicast,
     subscribeRoomAppUnicast,
     subscribeRoomAppUnicastResults,
+    sendGeneratedAppState,
+    subscribeGeneratedAppState = () => () => undefined,
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
+  const generatedAppsRef = useRef(generatedApps)
+  generatedAppsRef.current = generatedApps
 
   const taskProjections = useMemo(
     () => buildTaskProjections(messages),
@@ -603,6 +633,7 @@ export default function RoomContent({
     .filter((app) => readyRoomAppIds.includes(app.id))
     .map((app) => resolveProductionRoomAppId(app.id))
     .find((appId): appId is string => appId !== null)
+
   const visibleRoomApp =
     activeRoomApp && roomAppSelf ? activeRoomApp : undefined
   // Focus mode is a Room layout state, not just a larger host. The resident
@@ -617,6 +648,143 @@ export default function RoomContent({
   )
   const activeTask = taskProjections.find(
     (task) => task.requestId === activeInteraction
+  )
+  const activeTaskGeneratedApp = activeTask
+    ? Object.values(generatedApps).find(
+        (publication) => publication.taskRequestId === activeTask.requestId
+      )
+    : undefined
+  const visibleGeneratedRoomApp = activeGeneratedAppId
+    ? generatedAppDocuments[activeGeneratedAppId]
+    : undefined
+  const stageAppVisible = Boolean(visibleRoomApp || visibleGeneratedRoomApp)
+
+  const openGeneratedApp = useCallback(
+    async (publication: GeneratedRoomAppPublication) => {
+      setActiveRoomAppId(null)
+      setActiveGeneratedAppId(publication.appInstanceId)
+      setStageView("screen")
+      if (
+        generatedAppDocuments[publication.appInstanceId]?.publication
+          .bundleRevision === publication.bundleRevision &&
+        generatedAppDocuments[publication.appInstanceId]?.publication
+          .stateRevision >= publication.stateRevision
+      )
+        return
+      const auth = getLocalRoomAuth()
+      if (!auth) return
+      setGeneratedAppLoading(publication.appInstanceId)
+      try {
+        const response = await fetch(
+          `/api/room/generated-app?appInstanceId=${encodeURIComponent(
+            publication.appInstanceId
+          )}`,
+          {
+            headers: {
+              "X-Room-Id": auth.roomId,
+              "X-Room-Participant-Id": auth.participantId,
+              "X-Room-Participant-Token": auth.token,
+            },
+          }
+        )
+        if (!response.ok) throw new Error("generated_app_unavailable")
+        const document = (await response.json()) as GeneratedRoomAppDocument
+        setGeneratedAppDocuments((previous) => {
+          const authoritative =
+            generatedAppsRef.current[publication.appInstanceId]
+          if (
+            authoritative &&
+            document.publication.bundleRevision < authoritative.bundleRevision
+          )
+            return previous
+          if (
+            authoritative &&
+            document.publication.bundleRevision ===
+              authoritative.bundleRevision &&
+            document.publication.stateRevision < authoritative.stateRevision
+          )
+            return previous
+          const pending = pendingGeneratedStateRef.current.get(
+            publication.appInstanceId
+          )
+          const reconciled =
+            pending && pending.revision >= document.publication.stateRevision
+              ? {
+                  ...document,
+                  publication: {
+                    ...document.publication,
+                    stateRevision: pending.revision,
+                  },
+                  state: pending.state,
+                }
+              : document
+          if (
+            pending &&
+            pending.revision <= reconciled.publication.stateRevision
+          )
+            pendingGeneratedStateRef.current.delete(publication.appInstanceId)
+          return {
+            ...previous,
+            [publication.appInstanceId]: reconciled,
+          }
+        })
+      } catch {
+        setActiveGeneratedAppId(null)
+      } finally {
+        setGeneratedAppLoading(null)
+      }
+    },
+    [generatedAppDocuments, getLocalRoomAuth]
+  )
+  useEffect(() => {
+    for (const publication of Object.values(generatedApps)) {
+      const document = generatedAppDocuments[publication.appInstanceId]
+      if (
+        document &&
+        (document.publication.bundleRevision !== publication.bundleRevision ||
+          document.publication.stateRevision < publication.stateRevision) &&
+        generatedAppLoading !== publication.appInstanceId
+      )
+        void openGeneratedApp(publication)
+    }
+  }, [
+    generatedAppDocuments,
+    generatedAppLoading,
+    generatedApps,
+    openGeneratedApp,
+  ])
+  useEffect(
+    () =>
+      subscribeGeneratedAppState((message) => {
+        setGeneratedAppDocuments((previous) => {
+          const document = previous[message.appInstanceId]
+          if (!document) {
+            const pending = pendingGeneratedStateRef.current.get(
+              message.appInstanceId
+            )
+            if (!pending || message.revision > pending.revision)
+              pendingGeneratedStateRef.current.set(
+                message.appInstanceId,
+                message
+              )
+            return previous
+          }
+          if (message.revision <= document.publication.stateRevision)
+            return previous
+          return {
+            ...previous,
+            [message.appInstanceId]: {
+              ...document,
+              publication: {
+                ...document.publication,
+                stateRevision: message.revision,
+              },
+              state: message.state,
+            },
+          }
+        })
+      }),
+    [subscribeGeneratedAppState]
   )
   const activeTaskLiveView = activeTask
     ? taskLiveViews?.[activeTask.requestId]
@@ -1014,7 +1182,7 @@ export default function RoomContent({
     // Only curated production Apps are reported; local dev fixtures and any
     // unallowlisted id stay out of analytics without a second allowlist.
     const productionAppId = resolveProductionRoomAppId(appId)
-    if (productionAppId)
+    if (productionAppId) {
       trackAnalyticsEvent(
         "RoomAppMounted",
         withAcquisitionPage(
@@ -1022,17 +1190,28 @@ export default function RoomContent({
           acquisitionPageRef.current
         )
       )
+    } else if (appId.startsWith("generated:")) {
+      trackAnalyticsEvent(
+        "RoomAppMounted",
+        withAcquisitionPage(
+          { appSource: "generated" },
+          acquisitionPageRef.current
+        )
+      )
+    }
   }, [])
 
   const handleRoomAppEngaged = useCallback((appId: string) => {
     if (process.env.NODE_ENV !== "production") return
     const productionAppId = resolveProductionRoomAppId(appId)
-    if (!productionAppId) return
+    if (!productionAppId && !appId.startsWith("generated:")) return
     trackAnalyticsEvent(
       "RoomAppEngaged",
       withAcquisitionPage(
         {
-          app: productionAppId,
+          ...(productionAppId
+            ? { app: productionAppId }
+            : { appSource: "generated" }),
           participantsBucket: participantsBucket(
             humanParticipantCountRef.current
           ),
@@ -1059,6 +1238,33 @@ export default function RoomContent({
       )
     )
   }, [acquisitionPage, humanParticipantCount, sharedSessionRoomAppId])
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production" || humanParticipantCount < 2)
+      return
+    for (const publication of Object.values(generatedApps)) {
+      if (
+        !readyRoomAppIds.includes(publication.appInstanceId) ||
+        sharedSessionTrackedGeneratedAppIdsRef.current.has(
+          publication.appInstanceId
+        )
+      )
+        continue
+      sharedSessionTrackedGeneratedAppIdsRef.current.add(
+        publication.appInstanceId
+      )
+      trackAnalyticsEvent(
+        "RoomAppSharedSession",
+        withAcquisitionPage(
+          {
+            appSource: "generated",
+            participantsBucket: participantsBucket(humanParticipantCount),
+          },
+          acquisitionPage
+        )
+      )
+    }
+  }, [acquisitionPage, generatedApps, humanParticipantCount, readyRoomAppIds])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -1514,9 +1720,9 @@ export default function RoomContent({
   useEffect(() => {
     // A Room App is a large visual surface like screen share, so it gets the
     // wide Stage rather than a conversation-sized pane.
-    setSplitRatio(activeScreenShares.length > 0 || visibleRoomApp ? 75 : 50)
+    setSplitRatio(activeScreenShares.length > 0 || stageAppVisible ? 75 : 50)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeScreenShares.length > 0, Boolean(visibleRoomApp)])
+  }, [activeScreenShares.length > 0, stageAppVisible])
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
@@ -2156,7 +2362,8 @@ export default function RoomContent({
                 independent from the conversation scope in the right pane. */}
               {(roomApps.length > 0 ||
                 activeScreenShares.length > 0 ||
-                Boolean(activeTaskLiveView)) && (
+                Boolean(activeTaskLiveView) ||
+                Boolean(activeTaskGeneratedApp)) && (
                 <div
                   role="tablist"
                   aria-label="Stage"
@@ -2225,9 +2432,9 @@ export default function RoomContent({
                         setStageView("screen")
                         setActiveRoomAppId(null)
                       }}
-                      aria-pressed={stageView === "screen" && !visibleRoomApp}
+                      aria-pressed={stageView === "screen" && !stageAppVisible}
                       className={`shrink-0 rounded px-2 py-1 text-xs ${
-                        stageView === "screen" && !visibleRoomApp
+                        stageView === "screen" && !stageAppVisible
                           ? "bg-blue-600 text-white"
                           : "text-gray-400 hover:bg-gray-800"
                       }`}
@@ -2246,15 +2453,35 @@ export default function RoomContent({
                         setActiveRoomAppId(null)
                       }}
                       aria-pressed={
-                        stageView === "live-view" && !visibleRoomApp
+                        stageView === "live-view" && !stageAppVisible
                       }
                       className={`shrink-0 rounded px-2 py-1 text-xs ${
-                        stageView === "live-view" && !visibleRoomApp
+                        stageView === "live-view" && !stageAppVisible
                           ? "bg-blue-600 text-white"
                           : "text-gray-400 hover:bg-gray-800"
                       }`}
                     >
                       Live View
+                    </button>
+                  )}
+                  {activeTaskGeneratedApp && (
+                    <button
+                      type="button"
+                      data-testid="stage-view-generated-app"
+                      onClick={() =>
+                        void openGeneratedApp(activeTaskGeneratedApp)
+                      }
+                      aria-pressed={Boolean(visibleGeneratedRoomApp)}
+                      className={`shrink-0 rounded px-2 py-1 text-xs ${
+                        visibleGeneratedRoomApp
+                          ? "bg-blue-600 text-white"
+                          : "text-gray-400 hover:bg-gray-800"
+                      }`}
+                    >
+                      {generatedAppLoading ===
+                      activeTaskGeneratedApp.appInstanceId
+                        ? "Loading App…"
+                        : "Task App"}
                     </button>
                   )}
                   {roomApps.length > 0 && (
@@ -2298,6 +2525,52 @@ export default function RoomContent({
                 slots are display:none + inert + aria-hidden, which keeps them
                 out of hit-testing, focus and the accessibility tree while they
                 keep receiving the bounded App messages. */}
+              {roomAppSelf &&
+                Object.values(generatedAppDocuments).map((document) => {
+                  const publication = document.publication
+                  const visible =
+                    activeGeneratedAppId === publication.appInstanceId
+                  const app = {
+                    id: publication.appInstanceId,
+                    label: publication.title,
+                    url: "https://room-apps.free4.chat/generated",
+                    origin: "https://room-apps.free4.chat",
+                    source: "generated" as const,
+                    srcDoc: generatedRoomAppSrcDoc(document.bundle),
+                  }
+                  return (
+                    <div
+                      key={`${publication.appInstanceId}:${publication.bundleRevision}`}
+                      data-testid={`generated-room-app-slot-${publication.appInstanceId}`}
+                      aria-hidden={!visible}
+                      inert={!visible}
+                      className={
+                        visible ? "flex min-h-0 flex-1 flex-col" : "hidden"
+                      }
+                    >
+                      <RoomAppHost
+                        app={app}
+                        appInstanceId={publication.appInstanceId}
+                        self={roomAppSelf}
+                        participants={roomAppParticipants}
+                        subscribe={subscribeRoomAppMessages}
+                        send={sendRoomAppMessage}
+                        sharedState={{
+                          revision: publication.stateRevision,
+                          state: document.state,
+                        }}
+                        sendGeneratedState={sendGeneratedAppState}
+                        subscribeGeneratedState={subscribeGeneratedAppState}
+                        showReadyStatus={false}
+                        onReady={handleRoomAppReady}
+                        subscribeUnicast={subscribeRoomAppUnicast}
+                        subscribeUnicastResults={subscribeRoomAppUnicastResults}
+                        sendUnicast={sendRoomAppUnicast}
+                        onClose={() => setActiveGeneratedAppId(null)}
+                      />
+                    </div>
+                  )
+                })}
               {roomAppSelf &&
                 residentRoomApps.map((app) => {
                   const productionAppId = resolveProductionRoomAppId(app.id)
@@ -2364,7 +2637,7 @@ export default function RoomContent({
                   />
                 </div>
               )}
-              {!visibleRoomApp &&
+              {!stageAppVisible &&
                 !isRoomAppFullscreen &&
                 (activeScreenShares.length > 0 ? (
                   <>
@@ -2695,6 +2968,30 @@ export default function RoomContent({
             )}
             {/* The conversation pane always renders the selected Room/Task
                 conversation; an active Room App lives on the Stage instead. */}
+            {activeTaskGeneratedApp && (
+              <div
+                data-testid="generated-room-app-card"
+                className="flex flex-none items-center justify-between gap-3 border-b border-gray-800 bg-blue-950/20 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-blue-100">
+                    Task App
+                  </div>
+                  <div className="truncate text-xs text-gray-400">
+                    {activeTaskGeneratedApp.title}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 rounded border border-blue-700 px-2 py-1 text-xs text-blue-100 hover:bg-blue-900/60"
+                  onClick={() => void openGeneratedApp(activeTaskGeneratedApp)}
+                >
+                  {generatedAppLoading === activeTaskGeneratedApp.appInstanceId
+                    ? "Loading…"
+                    : "Open App"}
+                </button>
+              </div>
+            )}
             <div data-testid="interaction-chat" className="min-h-0 flex-1">
               <TextChatCard
                 key={activeInteraction}

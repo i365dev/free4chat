@@ -9,20 +9,35 @@ It is not a public SDK, marketplace, or arbitrary iframe registration API.
 
 ## Bootstrap and sandbox
 
-The host renders only App definitions accepted from the Lab-owned catalog,
+The host renders curated App definitions accepted from the Lab-owned catalog,
 under the core-pinned production origin `https://room-apps.free4.chat`. Local
 development uses an explicit development origin and does not change production
-allowlisting.
+allowlisting. A Task-authorized Agent may also publish one bounded generated
+App for its Task; that App is a Room-owned `srcDoc` bundle, not a catalog entry
+or a general hosting URL.
 
 The iframe uses `sandbox="allow-scripts"` only. It receives no
 `allow-same-origin`, Room cookies/history, participant or SFU credentials,
 provider credentials, filesystem access, microphone/camera permission,
 PeerConnection, or raw DataChannel.
 
+Generated Apps use the same host and MessagePort boundary, plus a strict
+inline-only CSP (`connect-src 'none'`, `img-src data:`). V0 accepts only
+`html`, `css`, and `js` source with an empty `networkOrigins` list. The bundle
+is at most 48 KiB, initial/shared state at most 16 KiB, and one Room may hold at
+most four generated Apps. Network-backed capabilities are deliberately
+deferred until a separate authorization and proxy design exists.
+
 On iframe load, the host sends a bootstrap `postMessage` with a dedicated
 `MessagePort`, bounded `appInstanceId`, and one-time handshake token. The App
 answers `ready` on that port with the token. The host then sends only the
 bounded `self`, `participants`, and current App instance projection.
+
+Generated Apps additionally receive the current shared-state object and
+revision. `shared.set(next)` is an optimistic revisioned update through the
+authenticated Room WebSocket; the Room rejects stale revisions and broadcasts
+the committed state. The state is ephemeral Room storage and is deleted with
+the Room.
 
 ## Messages and trust boundary
 
@@ -72,6 +87,8 @@ reconnect/convergence, duplicate/stale handling, and recovery semantics.
 - combined broadcast: at most 256 KiB/sec;
 - reliable unicast: at most 10 messages/sec and 64 KiB/sec per sender;
 - resident App hosts: at most 2 per browser Room session.
+- generated bundle: at most 48 KiB per Task App, four Apps per Room;
+- generated state: at most 16 KiB per snapshot and 4 KiB per update.
 
 The host keeps only coarse in-memory transport counters. App payloads do not
 enter Room messages, history, analytics, or Durable Object storage.
@@ -103,3 +120,9 @@ The Room does not provide an App-domain database, event log, snapshot service,
 or periodic App-state backup. Apps that keep only browser replicas may restart
 empty after every active replica disappears. That is an App-level durability
 choice, not a reason to make the Room understand domain payloads.
+
+Generated Task Room Apps are the narrow exception for this spike: the Room
+stores their bounded bundle chunks and one current state snapshot so late Room
+participants can load the same Task App. This is still temporary Room state,
+not a durable application backend, and the publishing Agent must be the
+current authority for the correlated Task.

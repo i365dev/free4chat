@@ -1373,6 +1373,13 @@ type TaskLiveViewClient interface {
 	PublishLiveView(participantHandle, taskRequestID string, surface map[string]any) (map[string]any, error)
 }
 
+// GeneratedRoomAppClient is the optional Runtime transport extension for
+// #410. The Runtime keeps the participant handle private while forwarding a
+// bounded business/UI bundle to the Room authority.
+type GeneratedRoomAppClient interface {
+	PublishGeneratedApp(participantHandle, taskRequestID string, bundle map[string]any) (map[string]any, error)
+}
+
 // SendTextResult is send_text's reply.
 type SendTextResult struct {
 	Sequence int64 `json:"sequence"`

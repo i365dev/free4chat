@@ -24,6 +24,8 @@ export interface RoomAppDefinition {
   label: string
   url: string
   origin: string
+  source?: "official" | "generated"
+  srcDoc?: string
 }
 
 /** Public, read-only Worker Service Binding used by the Room authority. */
@@ -298,6 +300,10 @@ export type RoomAppHostMessage =
       appInstanceId: string
       self: RoomAppParticipantProjection
       participants: RoomAppParticipantProjection[]
+      shared?: {
+        revision: number
+        state: Record<string, unknown>
+      }
     }
   | {
       type: "participant_join" | "participant_leave"
@@ -315,6 +321,13 @@ export type RoomAppHostMessage =
       appInstanceId: string
       sourceParticipantId: string
       payload: Record<string, unknown>
+    }
+  | {
+      type: "shared_state"
+      appInstanceId: string
+      revision: number
+      state: Record<string, unknown>
+      sourceParticipantId?: string
     }
   | ({ type: "unicast_result" } & RoomAppUnicastResult)
   | {
@@ -356,6 +369,12 @@ export type RoomAppClientMessage =
       type: "milestone"
       appInstanceId: string
       milestone: "engaged"
+    }
+  | {
+      type: "sendGeneratedState"
+      appInstanceId: string
+      expectedRevision: number
+      state: Record<string, unknown>
     }
 
 export function isValidRoomAppParticipantId(value: unknown): value is string {
@@ -449,6 +468,21 @@ export function decodeRoomAppClientMessage(
     Object.keys(value).length === 3
   )
     return { type: "milestone", appInstanceId, milestone: "engaged" }
+  if (value.type === "sendGeneratedState") {
+    if (
+      typeof value.expectedRevision !== "number" ||
+      !Number.isSafeInteger(value.expectedRevision) ||
+      value.expectedRevision < 0 ||
+      !isRecord(value.state)
+    )
+      return null
+    return {
+      type: "sendGeneratedState",
+      appInstanceId,
+      expectedRevision: value.expectedRevision,
+      state: value.state,
+    }
+  }
   if (
     value.type === "ready" &&
     typeof value.handshakeToken === "string" &&
@@ -596,6 +630,16 @@ export function isRoomAppInstanceForRoom(
 
 export function validateRoomAppDefinition(app: RoomAppDefinition): boolean {
   try {
+    if (app.source === "generated")
+      return (
+        app.id.length > 0 &&
+        app.id.length <= 128 &&
+        app.label.length > 0 &&
+        app.label.length <= 80 &&
+        typeof app.srcDoc === "string" &&
+        app.srcDoc.length > 0 &&
+        app.srcDoc.length <= 64 * 1024
+      )
     const url = new URL(app.url)
     return (
       /^[a-z0-9][a-z0-9-]{0,31}$/.test(app.id) &&
@@ -611,6 +655,7 @@ export function validateRoomAppDefinition(app: RoomAppDefinition): boolean {
 }
 
 export function isRoomAppAllowlisted(app: RoomAppDefinition): boolean {
+  if (app.source === "generated") return validateRoomAppDefinition(app)
   return currentRoomAppCatalog().some(
     (candidate) =>
       candidate.id === app.id &&

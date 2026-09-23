@@ -39,6 +39,20 @@ interface RoomAppHostProps {
     appInstanceId: string,
     payload: Record<string, unknown>
   ) => "sent" | "rate_limited" | "payload_too_large" | "delivery_unavailable"
+  sharedState?: { revision: number; state: Record<string, unknown> }
+  sendGeneratedState?: (
+    appInstanceId: string,
+    expectedRevision: number,
+    state: Record<string, unknown>
+  ) => boolean
+  subscribeGeneratedState?: (
+    listener: (message: {
+      appInstanceId: string
+      revision: number
+      state: Record<string, unknown>
+      sourceParticipantId?: string
+    }) => void
+  ) => () => void
   onClose: () => void
   onReady?: (appId: string) => void
   onEngaged?: (appId: string) => void
@@ -46,6 +60,7 @@ interface RoomAppHostProps {
   onToggleFullscreen?: () => void
   onInvite?: () => Promise<boolean>
   onUnavailable?: (appId: string) => void
+  showReadyStatus?: boolean
 }
 
 function handshakeToken(): string {
@@ -66,6 +81,9 @@ export default function RoomAppHost({
   subscribeUnicast,
   subscribeUnicastResults,
   sendUnicast,
+  sharedState,
+  sendGeneratedState,
+  subscribeGeneratedState,
   onClose,
   onReady,
   onEngaged,
@@ -73,11 +91,13 @@ export default function RoomAppHost({
   onToggleFullscreen,
   onInvite,
   onUnavailable,
+  showReadyStatus = true,
 }: RoomAppHostProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const portRef = useRef<MessagePort | null>(null)
   const tokenRef = useRef(handshakeToken())
   const readyRef = useRef(false)
+  const sharedStateRevisionRef = useRef<number | null>(null)
   const readyNotifiedRef = useRef(false)
   const engagedNotifiedRef = useRef(false)
   const unavailableNotifiedRef = useRef(false)
@@ -167,13 +187,26 @@ export default function RoomAppHost({
         }
         const projected = projectRoomAppParticipants(participants)
         previousParticipantsRef.current = projected
+        sharedStateRevisionRef.current = sharedState?.revision ?? null
         post({
           type: "ready",
           protocolVersion: 1,
           appInstanceId,
           self,
           participants: projected,
+          ...(sharedState ? { shared: sharedState } : {}),
         })
+        return
+      }
+      if (message.type === "sendGeneratedState") {
+        if (
+          !sendGeneratedState?.(
+            appInstanceId,
+            message.expectedRevision,
+            message.state
+          )
+        )
+          post({ type: "error", appInstanceId, error: "rate_limited" })
         return
       }
       if (message.type === "milestone") {
@@ -254,6 +287,8 @@ export default function RoomAppHost({
     participants,
     post,
     self,
+    sendGeneratedState,
+    sharedState,
   ])
 
   // The bridge belongs to the mounted App instance, never to the catalog
@@ -325,6 +360,47 @@ export default function RoomAppHost({
   }, [appInstanceId, post, subscribeUnicastResults])
 
   useEffect(() => {
+    if (!subscribeGeneratedState) return
+    return subscribeGeneratedState((message) => {
+      if (!readyRef.current || message.appInstanceId !== appInstanceId) return
+      if (
+        sharedStateRevisionRef.current !== null &&
+        message.revision <= sharedStateRevisionRef.current
+      )
+        return
+      sharedStateRevisionRef.current = message.revision
+      post({
+        type: "shared_state",
+        appInstanceId,
+        revision: message.revision,
+        state: message.state,
+        ...(message.sourceParticipantId
+          ? { sourceParticipantId: message.sourceParticipantId }
+          : {}),
+      })
+    })
+  }, [appInstanceId, post, subscribeGeneratedState])
+
+  // A state-only Room reconciliation updates the host without replacing its
+  // iframe. This covers a reconnect or an initial GET race where the resident
+  // host missed the direct generated-app-state message.
+  useEffect(() => {
+    if (!sharedState || !readyRef.current) return
+    if (
+      sharedStateRevisionRef.current !== null &&
+      sharedState.revision <= sharedStateRevisionRef.current
+    )
+      return
+    sharedStateRevisionRef.current = sharedState.revision
+    post({
+      type: "shared_state",
+      appInstanceId,
+      revision: sharedState.revision,
+      state: sharedState.state,
+    })
+  }, [appInstanceId, post, sharedState])
+
+  useEffect(() => {
     const next = projectRoomAppParticipants(participants)
     const previous = previousParticipantsRef.current
     if (!readyRef.current) {
@@ -371,9 +447,17 @@ export default function RoomAppHost({
       <div className="flex flex-none items-center justify-between gap-2 border-b border-gray-800 px-3 py-2 text-xs text-gray-300">
         <span className="min-w-0 truncate">{app.label}</span>
         <div className="flex flex-none items-center gap-2">
-          <span aria-live="polite">
-            {failed ? "unavailable" : ready ? "ready" : "connecting…"}
-          </span>
+          {showReadyStatus ? (
+            <span aria-live="polite">
+              {failed ? "unavailable" : ready ? "ready" : "connecting…"}
+            </span>
+          ) : (
+            (failed || !ready) && (
+              <span aria-live="polite">
+                {failed ? "unavailable" : "connecting…"}
+              </span>
+            )
+          )}
           {onInvite && (
             <button
               type="button"
@@ -414,7 +498,8 @@ export default function RoomAppHost({
         <iframe
           ref={iframeRef}
           title={app.label}
-          src={app.url}
+          src={app.srcDoc ? undefined : app.url}
+          srcDoc={app.srcDoc}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
           allow=""

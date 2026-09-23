@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import { isAgentActivityTurnSequence } from "@common/agentActivity"
 import { LOCAL_PEER_ID } from "@common/consts"
+import type { GeneratedRoomAppPublication } from "@common/generatedRoomApp"
 import {
   mergeRoomAndEphemeralMessages,
   reconcileCanonicalRoomMessages,
@@ -580,6 +581,9 @@ interface SfuServerMessage {
     | "task-session-start-result"
     | "taskExecution"
     | "task-control-notice"
+    | "generated-app-state"
+    | "generated-app-state-conflict"
+    | "generated-app-state-error"
   state?: SfuRoomState
   attachment?: RoomAttachmentProjection
   participant?: Partial<SfuParticipant> & {
@@ -615,6 +619,8 @@ interface SfuServerMessage {
   projects?: unknown
   nextPageToken?: unknown
   hasMore?: unknown
+  revision?: number
+  generatedState?: Record<string, unknown>
 }
 
 const roomMessageToMessage = (
@@ -661,6 +667,9 @@ export function useSfuChatRoom(
   const [attachments, setAttachments] = useState<RoomAttachmentProjection[]>([])
   const [taskLiveViews, setTaskLiveViews] = useState<
     SfuRoomState["taskLiveViews"]
+  >({})
+  const [generatedApps, setGeneratedApps] = useState<
+    Record<string, GeneratedRoomAppPublication>
   >({})
   const [error, setError] = useState("")
   const [connectionStatus, setConnectionStatus] =
@@ -812,6 +821,16 @@ export function useSfuChatRoom(
   )
   const roomAppUnicastResultListenersRef = useRef(
     new Set<(result: RoomAppUnicastResult) => void>()
+  )
+  const generatedAppStateListenersRef = useRef(
+    new Set<
+      (message: {
+        appInstanceId: string
+        revision: number
+        state: Record<string, unknown>
+        sourceParticipantId?: string
+      }) => void
+    >()
   )
   const roomAppOutboundRateRef = useRef(roomAppRateGuard())
   const roomAppInboundRateRef = useRef(roomAppRateGuard())
@@ -2801,6 +2820,7 @@ export function useSfuChatRoom(
       attachmentsRef.current = nextAttachments
       setAttachments(nextAttachments)
       setTaskLiveViews(state.taskLiveViews ?? {})
+      setGeneratedApps(state.generatedApps ?? {})
       const agentAudioTrackCount = state.participants.reduce(
         (count, participant) =>
           count +
@@ -3078,6 +3098,24 @@ export function useSfuChatRoom(
         if (!result) return
         for (const listener of roomAppUnicastResultListenersRef.current)
           listener(result)
+      } else if (
+        (message.type === "generated-app-state" ||
+          message.type === "generated-app-state-conflict") &&
+        typeof message.appInstanceId === "string" &&
+        typeof message.revision === "number" &&
+        message.generatedState &&
+        typeof message.generatedState === "object" &&
+        !Array.isArray(message.generatedState)
+      ) {
+        for (const listener of generatedAppStateListenersRef.current)
+          listener({
+            appInstanceId: message.appInstanceId,
+            revision: message.revision,
+            state: message.generatedState,
+            ...(typeof message.sourceParticipantId === "string"
+              ? { sourceParticipantId: message.sourceParticipantId }
+              : {}),
+          })
       } else if (message.type === "agentActivity") {
         if (message.activity) {
           const next = [
@@ -4032,6 +4070,36 @@ export function useSfuChatRoom(
     []
   )
 
+  const sendGeneratedAppState = useCallback(
+    (
+      appInstanceId: string,
+      expectedRevision: number,
+      state: Record<string, unknown>
+    ): boolean =>
+      sendSocketMessage({
+        type: "generated-app-state-update",
+        appInstanceId,
+        expectedRevision,
+        state,
+      }),
+    [sendSocketMessage]
+  )
+
+  const subscribeGeneratedAppState = useCallback(
+    (
+      listener: (message: {
+        appInstanceId: string
+        revision: number
+        state: Record<string, unknown>
+        sourceParticipantId?: string
+      }) => void
+    ) => {
+      generatedAppStateListenersRef.current.add(listener)
+      return () => generatedAppStateListenersRef.current.delete(listener)
+    },
+    []
+  )
+
   const getRoomAppStats = useCallback(
     (): RoomAppTransportStats => ({ ...roomAppStatsRef.current }),
     []
@@ -4744,12 +4812,15 @@ export function useSfuChatRoom(
     messages,
     attachments,
     taskLiveViews,
+    generatedApps,
     roomAppsEnabled,
     sendRoomAppMessage,
     subscribeRoomAppMessages,
     sendRoomAppUnicast,
     subscribeRoomAppUnicast,
     subscribeRoomAppUnicastResults,
+    sendGeneratedAppState,
+    subscribeGeneratedAppState,
     getRoomAppStats,
     sendTextMessage,
     sendFileMessage,
