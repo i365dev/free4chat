@@ -1,4 +1,8 @@
 import { realtimeBaseUrl } from "../common/realtimeUrl"
+import {
+  resolveSfuAppSecret,
+  type SfuAppSecretStore,
+} from "../common/sfuAppSecret"
 import type { PendingMediaCleanup } from "../room/types"
 
 // The external Cloudflare Realtime effect boundary. This module intentionally
@@ -10,6 +14,7 @@ import type { PendingMediaCleanup } from "../room/types"
 export interface RealtimeEnv {
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
+  SFU_APP_SECRET_STORE?: SfuAppSecretStore
   /** #275: test-only override of the Cloudflare Realtime base URL; absent in
    * production (see src/common/realtimeUrl.ts). */
   SFU_RTC_BASE_URL?: string
@@ -25,11 +30,11 @@ export interface MediaCloseResult {
   confirmedMids: string[]
 }
 
-function getRealtimeCredentials(
+async function getRealtimeCredentials(
   env: RealtimeEnv
-): { appId: string; appSecret: string } | null {
+): Promise<{ appId: string; appSecret: string } | null> {
   const appId = env.SFU_APP_ID
-  const appSecret = env.SFU_APP_SECRET
+  const appSecret = await resolveSfuAppSecret(env)
   return appId && appSecret ? { appId, appSecret } : null
 }
 
@@ -66,7 +71,7 @@ export async function executeMediaCloseEffect(
 ): Promise<MediaCloseResult> {
   const exact = exactEffect(effect)
   if (exact.mids.length === 0) return { effect: exact, confirmedMids: [] }
-  const credentials = getRealtimeCredentials(env)
+  const credentials = await getRealtimeCredentials(env)
   if (!credentials) return { effect: exact, confirmedMids: [] }
   try {
     const base = realtimeBaseUrl(env)

@@ -19,9 +19,12 @@ experiment procedures.
 - Create a uniquely named temporary KV namespace if the Worker needs one.
 - Use an explicit temporary Turnstile bypass only in the temporary Worker
   configuration. Do not change production secrets or committed config.
-- Read secrets from the original repository's ignored `.dev.vars` only when
-  necessary, never print them, put them in command input or Wrangler secrets,
-  and never write them into the repository, logs, evidence, or prompts.
+- Never read plaintext deployment secrets during Agent-driven deployed
+  dogfood. Required real Worker secrets must come from pre-provisioned
+  Cloudflare Secrets Store bindings. The Agent may inspect store IDs/names,
+  secret names, and binding names, but must never retrieve or receive secret
+  values. `.dev.vars` remains supported for Human/local development outside
+  this deployed-agent workflow.
 - Keep temporary configuration outside the repository whenever possible.
 - Do not create a release, tag, production deployment, or automatic merge.
 

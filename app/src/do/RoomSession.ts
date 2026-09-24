@@ -357,8 +357,8 @@ export interface RoomSessionEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
   // RoomSession is bound within the same Worker as sfu/server.ts (see
   // wrangler.jsonc), so its runtime `env` is already the full Worker env —
-  // these three are declared here only to widen the *type*, not because any
-  // new binding/secret needs to be added. SFU_APP_ID/SFU_APP_SECRET are used
+  // these are declared here only to widen the *type*. SFU_APP_ID and the
+  // compatible SFU_APP_SECRET/SFU_APP_SECRET_STORE bindings are used
   // to actively close Cloudflare Realtime tracks on Meeting Notes
   // revocation (see realtimeMedia.ts); AGENT_MEDIA_ENABLED gates the
   // "meeting-notes-start" WS message the same way it already gates
@@ -367,6 +367,7 @@ export interface RoomSessionEnv {
   // Runtime media request would 403.
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
+  SFU_APP_SECRET_STORE?: { get(): Promise<string> }
   AGENT_MEDIA_ENABLED?: string
   ROOM_APPS_ENABLED?: string
   // #406: opt-in for the legacy HTTP wait_for_events long-poll. Absent/false

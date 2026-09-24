@@ -80,6 +80,70 @@ async function json(response: Response): Promise<Record<string, unknown>> {
   return (await response.json()) as Record<string, unknown>
 }
 
+describe("Secrets Store SFU secret fallback", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("uses the binding only for upstream auth and never projects or logs it", async () => {
+    const secret = "fake-sfu-secret-never-project-this"
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get("Authorization")).toBe(
+          `Bearer ${secret}`
+        )
+        return Response.json({ sessionId: "cf-session-1" })
+      }
+    )
+    const consoleSpies = [
+      vi.spyOn(console, "debug").mockImplementation(() => undefined),
+      vi.spyOn(console, "info").mockImplementation(() => undefined),
+      vi.spyOn(console, "log").mockImplementation(() => undefined),
+      vi.spyOn(console, "warn").mockImplementation(() => undefined),
+      vi.spyOn(console, "error").mockImplementation(() => undefined),
+    ]
+    vi.stubGlobal("fetch", fetchMock)
+
+    const response = await handleSfuRequest(
+      req("session", {
+        origin: "https://www.free4.chat",
+        body: JSON.stringify({ room: "room-1", name: "Human" }),
+      }),
+      makeEnv({
+        SFU_APP_SECRET: undefined,
+        SFU_APP_SECRET_STORE: { get: async () => secret },
+        TURNSTILE_DISABLED: "true",
+      })
+    )
+    const body = await response.text()
+
+    expect(response.status).toBe(200)
+    expect(body).not.toContain(secret)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    for (const spy of consoleSpies) expect(spy).not.toHaveBeenCalled()
+  })
+
+  it("keeps the existing not-configured response when neither source is available", async () => {
+    const response = await handleSfuRequest(
+      req("session", {
+        origin: "https://www.free4.chat",
+        body: JSON.stringify({ room: "room-1", name: "Human" }),
+      }),
+      makeEnv({
+        SFU_APP_SECRET: undefined,
+        SFU_APP_SECRET_STORE: undefined,
+        TURNSTILE_DISABLED: "true",
+      })
+    )
+
+    expect(response.status).toBe(502)
+    await expect(response.json()).resolves.toEqual({
+      error: "sfu_session_failed",
+    })
+  })
+})
+
 // #406: the browser Room transport upgrade, used to exercise the pre-auth
 // Room-probe guard.
 function wsRequest(ip: string): Request {
