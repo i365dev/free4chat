@@ -8,7 +8,7 @@ interface AudioVisualizerProps {
   size?: AudioVisualizerSize
 }
 
-const SPEAKING_THRESHOLD = 0.035
+const SPEAKING_THRESHOLD = 0.018
 const IDLE_SAMPLE_MS = 220
 const SPEAKING_SAMPLE_MS = 85
 

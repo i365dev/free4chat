@@ -15,6 +15,8 @@ describe("Home page", () => {
       name: /open a room\. bring people and agents together\./i,
     })
     expect(heroHeading).toBeInTheDocument()
+    const pageContent = heroHeading.closest("main")?.firstElementChild
+    expect(pageContent).not.toHaveClass("overflow-y-auto")
     const signalText = heroHeading.querySelector(".signal-collapse-text")
     expect(signalText).toHaveClass("signal-collapse-text", "psy-headline")
     expect(heroHeading).not.toHaveClass("psy-headline")
