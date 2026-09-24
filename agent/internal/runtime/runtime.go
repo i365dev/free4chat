@@ -1992,6 +1992,19 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	r.log("message_persisted", map[string]string{
 		"sequence": strconv.FormatInt(sent.Sequence, 10),
 	})
+	// A successfully delivered Harness reply settles the Human-originated
+	// Task even when a Harness does not issue the separate collab-result CLI
+	// command itself. The Room deduplicates an explicit Harness result that
+	// raced this canonical completion.
+	if request := humanTaskRequestFor(events, r.currentParticipantID()); request != nil {
+		if _, err := r.CollabResult(types.CollabResultArgs{
+			RequestID: request.RequestID,
+			Status:    "completed",
+			Summary:   "Agent completed the task.",
+		}); err != nil {
+			r.log("collab_result_failed", map[string]string{"reason": "task_completion"})
+		}
+	}
 	// Voice Reply is additive: speak only after the text reply is
 	// persisted; a nil/unready output keeps the turn text-only.
 	if voiceOutput := r.voiceOutput(); voiceOutput != nil {

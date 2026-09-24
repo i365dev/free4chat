@@ -1161,6 +1161,12 @@ func (c *fakeClient) snapshotCollabResponses() []types.CollabResponseArgs {
 	return append([]types.CollabResponseArgs(nil), c.collabResponses...)
 }
 
+func (c *fakeClient) snapshotCollabResults() []types.CollabResultArgs {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]types.CollabResultArgs(nil), c.collabResults...)
+}
+
 // snapshotHosts mirrors snapshotSent with the #176 Runtime Host projection
 // each join carried (nil = legacy caller).
 func (c *fakeClient) snapshotHosts() []*types.RuntimeHostProjection {

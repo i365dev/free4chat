@@ -238,6 +238,10 @@ func TestHumanTaskIsAcceptedBeforeFirstScopedHarnessTurn(t *testing.T) {
 	if !acceptedBeforeRun {
 		t.Fatal("scoped Harness turn ran without a canonical accepted response")
 	}
+	results := client.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "request-T" || results[0].Status != "completed" {
+		t.Fatalf("successful Human Task did not publish one canonical completed result: %#v", results)
+	}
 }
 
 func TestHumanTaskAcceptanceFailureDoesNotStartHarnessTurn(t *testing.T) {
