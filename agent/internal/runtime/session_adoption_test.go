@@ -72,6 +72,7 @@ type fallbackRecordingAdapter struct {
 func (a *fallbackRecordingAdapter) ApplySessionConfigFallbacksFor(scope string, selections map[string]string) error {
 	a.fallbackScopes = append(a.fallbackScopes, scope)
 	a.fallbackSelections = append(a.fallbackSelections, cloneNativeControlSelections(selections))
+	a.record("fallback:" + scope)
 	return nil
 }
 
@@ -293,14 +294,27 @@ func TestEnsureHarnessSessionPreservesExplicitProjectModelSelection(t *testing.T
 	runtime := &ResidentRuntime{options: Options{Adapter: adapter},
 		taskProjectCwds: map[string]string{scope: "/project-a"},
 		taskSessionConfig: map[string]map[string]string{
-			scope: {"model": "gpt-a"},
+			scope: {"model": "gpt-b"},
 		},
 	}
 	if err := runtime.ensureHarnessSession(scope); err != nil {
 		t.Fatalf("ensure explicit-project Task session: %v", err)
 	}
-	if len(adapter.fallbackSelections) != 1 || adapter.fallbackSelections[0]["model"] != "gpt-a" {
+	if len(adapter.fallbackSelections) != 1 || adapter.fallbackSelections[0]["model"] != "gpt-b" {
 		t.Fatalf("provider fallback did not receive the Human selection: %+v", adapter.fallbackSelections)
+	}
+	events := adapter.recorded()
+	configIndex, fallbackIndex := -1, -1
+	for index, event := range events {
+		if event == "config:"+scope+":model:gpt-b" {
+			configIndex = index
+		}
+		if event == "fallback:"+scope {
+			fallbackIndex = index
+		}
+	}
+	if configIndex < 0 || fallbackIndex <= configIndex {
+		t.Fatalf("provider fallback ran before the explicit model selection: %v", events)
 	}
 }
 

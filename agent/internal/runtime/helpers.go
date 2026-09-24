@@ -239,11 +239,11 @@ func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 	if ensureErr != nil {
 		return ensureErr
 	}
-	if err := r.applySessionConfigFallbacks(scope); err != nil {
+	if err := r.applyTaskSessionControls(scope); err != nil {
 		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
 		return errTaskHarnessControlUnavailable
 	}
-	if err := r.applyTaskSessionControls(scope); err != nil {
+	if err := r.applySessionConfigFallbacks(scope); err != nil {
 		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
 		return errTaskHarnessControlUnavailable
 	}

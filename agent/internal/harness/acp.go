@@ -504,12 +504,14 @@ func (a *ACPAdapter) SessionControlsFor(scope string) *types.HarnessSessionContr
 }
 
 // ApplySessionConfigFallbacksFor applies provider-owned compatibility rules
-// only when the Harness currently advertises the exact known-bad value. A
-// Human selection always takes priority, and replacements must be advertised
-// by the same native session before they are sent back over ACP.
+// only when the Harness currently advertises the exact known-bad value. An
+// explicit Human selection of that known-bad value is also replaced, because
+// the provider cannot execute it; other explicit values take priority.
+// Replacements must be advertised by the same native session before they are
+// sent back over ACP.
 func (a *ACPAdapter) ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) error {
 	for _, fallback := range a.launcher.SessionConfigFallbacks {
-		if _, selected := humanSelections[fallback.ConfigID]; selected {
+		if selectedValue, selected := humanSelections[fallback.ConfigID]; selected && selectedValue != fallback.CurrentValue {
 			continue
 		}
 		controls := a.SessionControlsFor(scope)
