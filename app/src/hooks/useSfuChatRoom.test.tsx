@@ -1221,6 +1221,42 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     unmount()
   })
 
+  it("starts a new Task with only the selected opaque project token", async () => {
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-start-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    const pending = result.current.startTaskWithSession(
+      "agent-pi",
+      null,
+      "  Start in this project  ",
+      "project-token-1"
+    )
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    expect(frame).toMatchObject({
+      type: "task-session-start",
+      targetParticipantId: "agent-pi",
+      projectToken: "project-token-1",
+      summary: "Start in this project",
+    })
+    expect(frame).not.toHaveProperty("sessionToken")
+
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-start-result",
+          requestId: frame.requestId,
+          ok: true,
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({ ok: true })
+    unmount()
+  })
+
   it("refuses a private session request without writing to a closed socket", async () => {
     const { result, unmount } = renderHook(() =>
       useSfuChatRoom("closed-room", "Guest", "audio")

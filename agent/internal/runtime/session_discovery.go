@@ -357,6 +357,9 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 	result.Projects = projects
 	result.NextPageToken = nextPageToken
 	result.HasMore = hasMore
+	if controlsAdapter, ok := r.options.Adapter.(types.ScopedHarnessSessionControls); ok {
+		result.Controls = controlsAdapter.SessionControlsFor("room")
+	}
 	return result
 }
 
@@ -367,8 +370,15 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 // never run for that scope first.
 func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionControl) types.ResidentSessionResult {
 	result := types.ResidentSessionResult{Kind: control.Kind, RequestID: control.RequestID}
-	if control.SessionToken == "" || control.TaskRequestID == "" {
+	if control.TaskRequestID == "" || (control.SessionToken == "") == (control.ProjectToken == "") {
 		result.Error = types.ResidentSessionErrorInvalid
+		return result
+	}
+	if control.SessionToken == "" {
+		return r.prepareNewTaskProject(control)
+	}
+	if !r.taskNativeControlSelectionAvailable(control.ModeID, control.ConfigOptions) {
+		result.Error = types.ResidentSessionErrorControlUnavailable
 		return result
 	}
 	now := time.Now().UnixMilli()
@@ -400,17 +410,92 @@ func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionContr
 	// immediately projects Session lost. Keep the exact string in the token;
 	// this check must not clean, resolve, or substitute the path.
 	if !taskSessionCwdAvailable(selection.cwd) {
-		result.Error = types.ResidentSessionErrorUnavailable
+		result.Error = types.ResidentSessionErrorProjectUnavailable
 		r.log("task_session_prepare_failed", map[string]string{"failureClass": "CWD_PATH_UNAVAILABLE"})
 		return result
 	}
-	if err := r.ArmPreparedSessionAdoption(selection.sessionID, selection.cwd, human, control.TaskRequestID); err != nil {
+	if err := r.ArmPreparedSessionAdoptionWithControls(selection.sessionID, selection.cwd, human, control.TaskRequestID, control.ModeID, control.ConfigOptions); err != nil {
 		result.Error = types.ResidentSessionErrorUnavailable
 		r.log("task_session_prepare_failed", map[string]string{"failureClass": turnFailureClassOf(err)})
 		return result
 	}
 	result.OK = true
 	return result
+}
+
+func (r *ResidentRuntime) prepareNewTaskProject(control *types.ResidentSessionControl) types.ResidentSessionResult {
+	result := types.ResidentSessionResult{Kind: control.Kind, RequestID: control.RequestID}
+	if !r.taskNativeControlSelectionAvailable(control.ModeID, control.ConfigOptions) {
+		result.Error = types.ResidentSessionErrorControlUnavailable
+		return result
+	}
+	now := time.Now().UnixMilli()
+	r.mu.Lock()
+	r.pruneTaskSessionCacheLocked(now)
+	project, found := r.taskSessionProjects[control.ProjectToken]
+	r.mu.Unlock()
+	if !found || project.expiresAt <= now || project.humanParticipantID != control.HumanParticipantID ||
+		!r.sessionHumanIsCurrent(control.HumanParticipantID) {
+		result.Error = types.ResidentSessionErrorExpired
+		return result
+	}
+	if !taskSessionCwdAvailable(project.cwd) {
+		result.Error = types.ResidentSessionErrorProjectUnavailable
+		r.log("task_project_prepare_failed", map[string]string{"failureClass": "CWD_PATH_UNAVAILABLE"})
+		return result
+	}
+	if err := r.ArmPreparedProjectTaskWithControls(project.cwd, control.HumanParticipantID, control.TaskRequestID, control.ModeID, control.ConfigOptions); err != nil {
+		result.Error = types.ResidentSessionErrorUnavailable
+		r.log("task_project_prepare_failed", map[string]string{"failureClass": turnFailureClassOf(err)})
+		return result
+	}
+	result.OK = true
+	return result
+}
+
+func (r *ResidentRuntime) taskNativeControlSelectionAvailable(modeID string, configOptions map[string]string) bool {
+	if modeID == "" && len(configOptions) == 0 {
+		return true
+	}
+	adapter, ok := r.options.Adapter.(types.ScopedHarnessSessionControls)
+	if !ok {
+		return false
+	}
+	controls := adapter.SessionControlsFor("room")
+	if controls == nil {
+		return false
+	}
+	if modeID != "" {
+		found := false
+		for _, mode := range controls.Modes {
+			if mode.ID == modeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for id, value := range configOptions {
+		found := false
+		for _, option := range controls.ConfigOptions {
+			if option.ID != id {
+				continue
+			}
+			for _, advertised := range option.Options {
+				if advertised.Value == value {
+					found = true
+					break
+				}
+			}
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func taskSessionCwdAvailable(cwd string) bool {

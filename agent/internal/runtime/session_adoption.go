@@ -48,7 +48,8 @@ var (
 	// errAdoptedSessionUnavailable means this Task adopted a native session and
 	// that conversation is no longer available. The Task must not silently
 	// continue on a fresh one.
-	errAdoptedSessionUnavailable = errors.New("the adopted session for this Task is no longer available")
+	errAdoptedSessionUnavailable     = errors.New("the adopted session for this Task is no longer available")
+	errTaskHarnessControlUnavailable = errors.New("the selected Harness-native Task control is no longer available")
 )
 
 // maxAdoptedSessionIDRunes matches the adapter's own bound on an opaque ACP
@@ -79,6 +80,11 @@ type pendingSessionAdoption struct {
 	// unchanged or rejected, never trimmed or repaired (#412).
 	sessionID string
 	cwd       string
+	// newSession marks a project-only Task preparation. No native session id
+	// exists yet; the exact cwd is bound to the Task before scoped session/new.
+	newSession    bool
+	modeID        string
+	configOptions map[string]string
 	// humanParticipantID optionally pins the adoption to one Human's Task. When
 	// empty, binding requires exactly one Human in the Room.
 	humanParticipantID string
@@ -115,6 +121,51 @@ type pendingSessionAdoption struct {
 	// whole point of the preparation is that ITS Task still loads the selected
 	// conversation when the drain finally reaches it.
 	claimed bool
+}
+
+// ArmPreparedProjectTask pins a new Task to one already-validated local
+// project. The opaque project token is resolved by the discovery layer; only
+// its exact Runtime-private cwd reaches this method.
+func (r *ResidentRuntime) ArmPreparedProjectTask(cwd, humanParticipantID, taskRequestID string) error {
+	return r.ArmPreparedProjectTaskWithControls(cwd, humanParticipantID, taskRequestID, "", nil)
+}
+
+func (r *ResidentRuntime) ArmPreparedProjectTaskWithControls(cwd, humanParticipantID, taskRequestID, modeID string, configOptions map[string]string) error {
+	if r.isStopped() {
+		return errors.New("resident runtime is stopped")
+	}
+	if _, err := r.handoffAdapter(); err != nil {
+		return err
+	}
+	if cwd == "" || !taskSessionCwdAvailable(cwd) {
+		return errors.New("Task project directory is unavailable")
+	}
+	human := strings.TrimSpace(humanParticipantID)
+	if human == "" {
+		return errors.New("human participant id is required")
+	}
+	if taskScopeForRequestID(taskRequestID) == "" {
+		return errors.New("task request id is invalid")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return errors.New("resident runtime is stopped")
+	}
+	if r.pendingAdoption != nil {
+		return errSessionAdoptionArmed
+	}
+	r.pendingAdoption = &pendingSessionAdoption{
+		cwd:                cwd,
+		newSession:         true,
+		modeID:             modeID,
+		configOptions:      cloneNativeControlSelections(configOptions),
+		humanParticipantID: human,
+		armedAfterSequence: r.admissionBoundaryLocked(),
+		taskRequestID:      taskRequestID,
+		expiresAt:          time.Now().Add(preparedAdoptionTTL).UnixMilli(),
+	}
+	return nil
 }
 
 // declinedPreparedAdoption is the local fail-closed record of one exact
@@ -232,6 +283,10 @@ func (r *ResidentRuntime) ArmSessionAdoption(sessionID, cwd, humanParticipantID 
 // pending adoption, so an incompatible pending preparation fails the prepare
 // instead of silently replacing it.
 func (r *ResidentRuntime) ArmPreparedSessionAdoption(sessionID, cwd, humanParticipantID, taskRequestID string) error {
+	return r.ArmPreparedSessionAdoptionWithControls(sessionID, cwd, humanParticipantID, taskRequestID, "", nil)
+}
+
+func (r *ResidentRuntime) ArmPreparedSessionAdoptionWithControls(sessionID, cwd, humanParticipantID, taskRequestID, modeID string, configOptions map[string]string) error {
 	if r.isStopped() {
 		return errors.New("resident runtime is stopped")
 	}
@@ -271,12 +326,25 @@ func (r *ResidentRuntime) ArmPreparedSessionAdoption(sessionID, cwd, humanPartic
 	r.pendingAdoption = &pendingSessionAdoption{
 		sessionID:          sessionID,
 		cwd:                cwd,
+		modeID:             modeID,
+		configOptions:      cloneNativeControlSelections(configOptions),
 		humanParticipantID: human,
 		armedAfterSequence: r.admissionBoundaryLocked(),
 		taskRequestID:      taskRequestID,
 		expiresAt:          now + preparedAdoptionTTL.Milliseconds(),
 	}
 	return nil
+}
+
+func cloneNativeControlSelections(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(source))
+	for id, value := range source {
+		clone[id] = value
+	}
+	return clone
 }
 
 // pendingAdoptionSnapshot reports the current armed adoption WITHOUT its
@@ -631,6 +699,21 @@ func (r *ResidentRuntime) bindSessionAdoption(scope string, adoption *pendingSes
 	// only reach this point while it is not adopted, so a lost fact here would
 	// describe a binding that no longer exists.
 	r.pendingAdoption = nil
+	if adoption.modeID != "" {
+		r.taskSessionModes[scope] = adoption.modeID
+	}
+	if len(adoption.configOptions) > 0 {
+		r.taskSessionConfig[scope] = cloneNativeControlSelections(adoption.configOptions)
+	}
+	if adoption.newSession {
+		if r.taskProjectCwds == nil {
+			r.taskProjectCwds = make(map[string]string)
+		}
+		r.taskProjectCwds[scope] = cwd
+		r.mu.Unlock()
+		r.log("task_project_bound", map[string]string{"scopeKind": "task"})
+		return r.ensureHarnessSession(scope)
+	}
 	r.adoptedScopes[scope] = struct{}{}
 	delete(r.adoptedLostScopes, scope)
 	r.mu.Unlock()
@@ -655,6 +738,10 @@ func (r *ResidentRuntime) bindSessionAdoption(scope string, adoption *pendingSes
 	if r.adoptedScopeLost(scope) {
 		r.log("session_adoption_lost_during_load", map[string]string{"scopeKind": scopeKindOf(scope)})
 		return errAdoptedSessionUnavailable
+	}
+	if err := r.applyTaskSessionControls(scope); err != nil {
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
+		return errTaskHarnessControlUnavailable
 	}
 	r.log("session_adopted", map[string]string{"scopeKind": scopeKindOf(scope)})
 	return nil

@@ -44,6 +44,8 @@ export const TASK_SESSION_ERRORS = [
   "session_control_busy",
   "session_selection_expired",
   "session_continuation_unavailable",
+  "task_project_unavailable",
+  "task_harness_control_unavailable",
   "task_session_busy",
   "task_agent_not_reachable",
   "task_session_not_pending",
@@ -77,6 +79,10 @@ export function taskSessionErrorMessage(error: TaskSessionError): string {
       return "That Agent is not reachable right now."
     case "task_session_not_pending":
       return "The session request expired. Refresh sessions and try again."
+    case "task_project_unavailable":
+      return "That local project is no longer available. Refresh projects and try again."
+    case "task_harness_control_unavailable":
+      return "That Harness control is no longer available. Refresh and choose another option."
     case "session_continuation_unavailable":
     default:
       return "Could not continue that local session. Your instruction was not sent."
@@ -179,12 +185,41 @@ export interface RelayTaskSessionProject {
   label: string
 }
 
+export interface RelayHarnessSessionMode {
+  id: string
+  name?: string
+  description?: string
+}
+
+export interface RelayHarnessSessionConfigValue {
+  value: string
+  name?: string
+  description?: string
+}
+
+export interface RelayHarnessSessionConfigOption {
+  id: string
+  name?: string
+  description?: string
+  category?: string
+  type?: string
+  currentValue?: string
+  options: RelayHarnessSessionConfigValue[]
+}
+
+export interface RelayHarnessSessionControls {
+  currentModeId?: string
+  modes: RelayHarnessSessionMode[]
+  configOptions: RelayHarnessSessionConfigOption[]
+}
+
 export interface TaskSessionListResult {
   ok: true
   sessions: RelayTaskSession[]
   projects: RelayTaskSessionProject[]
   nextPageToken?: string
   hasMore: boolean
+  controls?: RelayHarnessSessionControls
 }
 
 export type TaskSessionListOutcome =
@@ -264,6 +299,10 @@ export function validateTaskSessionListResult(
     })
   }
 
+  const controls = relayHarnessSessionControls(raw.controls)
+  if (raw.controls !== undefined && controls === null)
+    return { ok: false, error: "session_continuation_unavailable" }
+
   const nextPageToken = isValidTaskSessionToken(raw.nextPageToken)
     ? raw.nextPageToken
     : undefined
@@ -273,7 +312,107 @@ export function validateTaskSessionListResult(
     projects: relayedProjects,
     hasMore: nextPageToken !== undefined,
     ...(nextPageToken ? { nextPageToken } : {}),
+    ...(controls ? { controls } : {}),
   }
+}
+
+function relayHarnessSessionControls(
+  input: unknown
+): RelayHarnessSessionControls | null {
+  if (input === undefined) return null
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null
+  const raw = input as Record<string, unknown>
+  const modes = raw.modes ?? []
+  const configOptions = raw.configOptions ?? []
+  if (!Array.isArray(modes) || modes.length > 32) return null
+  if (!Array.isArray(configOptions) || configOptions.length > 16) return null
+  const currentModeId =
+    raw.currentModeId === undefined
+      ? undefined
+      : boundedNativeControlText(raw.currentModeId, 128)
+  if (raw.currentModeId !== undefined && !currentModeId) return null
+  const relayedModes: RelayHarnessSessionMode[] = []
+  for (const item of modes) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null
+    const mode = item as Record<string, unknown>
+    const id = boundedNativeControlText(mode.id, 128)
+    if (!id) return null
+    relayedModes.push({
+      id,
+      ...(typeof mode.name === "string"
+        ? { name: boundedTaskSessionText(mode.name, 128) }
+        : {}),
+      ...(typeof mode.description === "string"
+        ? { description: boundedTaskSessionText(mode.description, 256) }
+        : {}),
+    })
+  }
+  const relayedOptions: RelayHarnessSessionConfigOption[] = []
+  for (const item of configOptions) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null
+    const option = item as Record<string, unknown>
+    const id = boundedNativeControlText(option.id, 128)
+    const values = option.options ?? []
+    if (!id || !Array.isArray(values) || values.length > 32) return null
+    const relayedValues: RelayHarnessSessionConfigValue[] = []
+    for (const candidate of values) {
+      if (
+        !candidate ||
+        typeof candidate !== "object" ||
+        Array.isArray(candidate)
+      )
+        return null
+      const value = candidate as Record<string, unknown>
+      const nativeValue = boundedNativeControlText(value.value, 128)
+      if (!nativeValue) return null
+      relayedValues.push({
+        value: nativeValue,
+        ...(typeof value.name === "string"
+          ? { name: boundedTaskSessionText(value.name, 128) }
+          : {}),
+        ...(typeof value.description === "string"
+          ? { description: boundedTaskSessionText(value.description, 256) }
+          : {}),
+      })
+    }
+    relayedOptions.push({
+      id,
+      ...(typeof option.name === "string"
+        ? { name: boundedTaskSessionText(option.name, 128) }
+        : {}),
+      ...(typeof option.description === "string"
+        ? { description: boundedTaskSessionText(option.description, 256) }
+        : {}),
+      ...(typeof option.category === "string"
+        ? { category: boundedTaskSessionText(option.category, 64) }
+        : {}),
+      ...(typeof option.type === "string"
+        ? { type: boundedTaskSessionText(option.type, 64) }
+        : {}),
+      ...(typeof option.currentValue === "string"
+        ? { currentValue: boundedTaskSessionText(option.currentValue, 128) }
+        : {}),
+      options: relayedValues,
+    })
+  }
+  return {
+    ...(currentModeId ? { currentModeId } : {}),
+    modes: relayedModes,
+    configOptions: relayedOptions,
+  }
+}
+
+// Native ids and values are identity. Reject unsafe or oversized values
+// instead of trimming, folding, or truncating them into another provider id.
+function boundedNativeControlText(value: unknown, limit: number): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > limit)
+    return ""
+  // eslint-disable-next-line no-control-regex
+  return /[\u0000-\u001f\u007f]/.test(value) ? "" : value
+}
+
+export function isValidHarnessControlText(value: unknown): value is string {
+  return boundedNativeControlText(value, 512) !== ""
 }
 
 /**

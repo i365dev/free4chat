@@ -94,7 +94,7 @@ func TestPreparedSessionRejectsMissingProjectBeforeTaskMaterialization(t *testin
 		SessionToken:       discovered.Sessions[0].Token,
 		TaskRequestID:      "req-removed-project-task",
 	})
-	if prepared.OK || prepared.Error != types.ResidentSessionErrorUnavailable {
+	if prepared.OK || prepared.Error != types.ResidentSessionErrorProjectUnavailable {
 		t.Fatalf("missing project cwd must fail with the bounded unavailable result: %+v", prepared)
 	}
 	if adoption := fixture.rt.pendingAdoptionSnapshot(); adoption != nil {
@@ -106,6 +106,69 @@ func TestPreparedSessionRejectsMissingProjectBeforeTaskMaterialization(t *testin
 	for _, entry := range fixture.logs.snapshot() {
 		if strings.Contains(entry, missingCwd) {
 			t.Fatalf("raw project path leaked into Runtime diagnostics: %s", entry)
+		}
+	}
+}
+
+func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	projectCwd := t.TempDir()
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-project-source",
+		Cwd:       projectCwd,
+		Title:     "Project session for catalog",
+	}}
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Projects) != 1 {
+		t.Fatalf("project catalog discovery failed: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-new-project",
+		HumanParticipantID: "human-1",
+		ProjectToken:       discovered.Projects[0].Token,
+		TaskRequestID:      "req-new-project-task",
+		ModeID:             "workspace",
+	})
+	if !prepared.OK {
+		t.Fatalf("new Task project preparation failed: %+v", prepared)
+	}
+	waitForDone(t, startTurn(fixture.rt, taskRequestEvent(1, "task:req-new-project-task", "req-new-project-task", "human-1")), "project-scoped Task")
+
+	if got := fixture.adapter.count("newcwd:task:req-new-project-task:" + projectCwd); got != 1 {
+		t.Fatalf("Task session was not created with its exact selected project cwd: %v", fixture.adapter.recorded())
+	}
+	if got := fixture.adapter.count("new:task:req-new-project-task"); got != 1 {
+		t.Fatalf("new project Task must create exactly one scoped native session: %v", fixture.adapter.recorded())
+	}
+	if got := fixture.adapter.count("load:task:req-new-project-task"); got != 0 {
+		t.Fatalf("new project Task must not load a historical native session: %v", fixture.adapter.recorded())
+	}
+	fixture.rt.mu.Lock()
+	gotCwd := fixture.rt.taskProjectCwds["task:req-new-project-task"]
+	fixture.rt.mu.Unlock()
+	if gotCwd != projectCwd {
+		t.Fatalf("Runtime Task identity changed project cwd: got %q want %q", gotCwd, projectCwd)
+	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").CurrentModeID; got != "workspace" {
+		t.Fatalf("selected native mode was not applied to the Task: %q", got)
+	}
+	fixture.adapter.recordMu.Lock()
+	fixture.adapter.modes["task:req-new-project-task"] = "observe" // simulate provider re-materialization defaults
+	fixture.adapter.recordMu.Unlock()
+	if err := fixture.rt.ensureHarnessSession("task:req-new-project-task"); err != nil {
+		t.Fatalf("re-materialize Task session: %v", err)
+	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").CurrentModeID; got != "workspace" {
+		t.Fatalf("selected native mode was not restored after re-materialization: %q", got)
+	}
+	if got := fixture.adapter.count("mode:task:req-new-project-task:workspace"); got != 2 {
+		t.Fatalf("selected native mode was not applied on initial and repeated materialization: %d", got)
+	}
+	for _, entry := range fixture.logs.snapshot() {
+		if strings.Contains(entry, projectCwd) {
+			t.Fatalf("raw project cwd leaked into Runtime diagnostics: %s", entry)
 		}
 	}
 }

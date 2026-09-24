@@ -92,12 +92,14 @@ type residentEventEnvelope struct {
 	// Private resident-only Task Session Continuation control (#409).
 	// Operation is the closed "list" | "prepare" | "cancel" set; the tokens
 	// are opaque Runtime-local handles relayed unchanged.
-	Operation          string `json:"operation,omitempty"`
-	RequestID          string `json:"requestId,omitempty"`
-	ProjectToken       string `json:"projectToken,omitempty"`
-	PageToken          string `json:"pageToken,omitempty"`
-	SessionToken       string `json:"sessionToken,omitempty"`
-	HumanParticipantID string `json:"humanParticipantId,omitempty"`
+	Operation          string            `json:"operation,omitempty"`
+	RequestID          string            `json:"requestId,omitempty"`
+	ProjectToken       string            `json:"projectToken,omitempty"`
+	PageToken          string            `json:"pageToken,omitempty"`
+	SessionToken       string            `json:"sessionToken,omitempty"`
+	HumanParticipantID string            `json:"humanParticipantId,omitempty"`
+	ModeID             string            `json:"modeId,omitempty"`
+	ConfigOptions      map[string]string `json:"configOptions,omitempty"`
 }
 
 // OpenResidentEventStream opens the Runtime-owned hibernatable Room event
@@ -308,6 +310,20 @@ func parseResidentSessionControl(envelope residentEventEnvelope) (*types.Residen
 	if envelope.SessionToken != "" && kind != types.ResidentSessionControlPrepare {
 		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
 	}
+	if envelope.ProjectToken != "" && kind != types.ResidentSessionControlList && kind != types.ResidentSessionControlPrepare {
+		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+	}
+	if envelope.ModeID != "" && (kind != types.ResidentSessionControlPrepare || !validHarnessControlValue(envelope.ModeID)) {
+		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+	}
+	if len(envelope.ConfigOptions) > 16 || (len(envelope.ConfigOptions) > 0 && kind != types.ResidentSessionControlPrepare) {
+		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+	}
+	for id, value := range envelope.ConfigOptions {
+		if !validHarnessControlValue(id) || !validHarnessControlValue(value) {
+			return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
+		}
+	}
 	if envelope.TaskRequestID != "" {
 		// prepare pins the adoption to exactly this canonical Task id; cancel
 		// names the preparation it releases. Any other operation carrying one
@@ -317,7 +333,7 @@ func parseResidentSessionControl(envelope residentEventEnvelope) (*types.Residen
 			return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
 		}
 	}
-	if kind == types.ResidentSessionControlPrepare && (envelope.SessionToken == "" || envelope.TaskRequestID == "") {
+	if kind == types.ResidentSessionControlPrepare && ((envelope.SessionToken == "") == (envelope.ProjectToken == "") || envelope.TaskRequestID == "") {
 		return nil, &Error{Message: "resident event stream returned an invalid session control", Code: CodeToolError}
 	}
 	return &types.ResidentSessionControl{
@@ -326,9 +342,23 @@ func parseResidentSessionControl(envelope residentEventEnvelope) (*types.Residen
 		ProjectToken:       envelope.ProjectToken,
 		PageToken:          envelope.PageToken,
 		SessionToken:       envelope.SessionToken,
+		ModeID:             envelope.ModeID,
+		ConfigOptions:      envelope.ConfigOptions,
 		TaskRequestID:      envelope.TaskRequestID,
 		HumanParticipantID: envelope.HumanParticipantID,
 	}, nil
+}
+
+func validHarnessControlValue(value string) bool {
+	if value == "" || len([]rune(value)) > 512 {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // validResidentSessionToken bounds one opaque Runtime-issued token. The value

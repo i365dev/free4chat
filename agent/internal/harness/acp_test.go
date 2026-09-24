@@ -411,6 +411,37 @@ func TestACPRetainsAndAppliesAdvertisedSessionControls(t *testing.T) {
 	}
 }
 
+func TestScopedTaskNativeModeDoesNotAffectAnotherTask(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_POLICY_CAP": "1",
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatal(err)
+	}
+	projectA, projectB := t.TempDir(), t.TempDir()
+	if err := adapter.EnsureSessionForCwd("task:A", projectA); err != nil {
+		t.Fatalf("create Task A in its selected project: %v", err)
+	}
+	if err := adapter.EnsureSessionForCwd("task:B", projectB); err != nil {
+		t.Fatalf("create Task B in its selected project: %v", err)
+	}
+	beforeB := adapter.SessionControlsFor("task:B")
+	if beforeB == nil || beforeB.CurrentModeID != "observe" {
+		t.Fatalf("Task B should begin with its own advertised default: %+v", beforeB)
+	}
+	if err := adapter.SetModeFor("task:A", "workspace"); err != nil {
+		t.Fatalf("set Task A's advertised native mode: %v", err)
+	}
+	a, b := adapter.SessionControlsFor("task:A"), adapter.SessionControlsFor("task:B")
+	if a == nil || a.CurrentModeID != "workspace" {
+		t.Fatalf("Task A did not retain its selected native mode: %+v", a)
+	}
+	if b == nil || b.CurrentModeID != "observe" {
+		t.Fatalf("Task A's mode changed Task B: %+v", b)
+	}
+}
+
 func findCurrentConfigValue(t *testing.T, controls *ACPSessionControls, configID string) string {
 	t.Helper()
 	option, ok := findConfigOption(controls.ConfigOptions, configID)
@@ -2298,6 +2329,28 @@ func TestIdleReapPreservesLoadedSessionProjectCwd(t *testing.T) {
 		// One Runtime-default session and one initial scoped Task session are
 		// created on first materialization. The post-reap path must add none.
 		t.Fatalf("recovery created a fresh native session: %+v", news)
+	}
+}
+
+func TestScopedNewSessionUsesExactTaskProjectCwd(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("session_echo", map[string]string{
+		"FAKE_TRACE": tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+	projectCwd := t.TempDir()
+	if err := adapter.EnsureSessionForCwd("task:project-new", projectCwd); err != nil {
+		t.Fatalf("create Task session in project: %v", err)
+	}
+	news := acpTraceParams(t, tracePath, "session/new")
+	if len(news) != 2 {
+		t.Fatalf("expected Runtime session plus Task session creation, got %+v", news)
+	}
+	if got := news[1]["cwd"]; got != projectCwd {
+		t.Fatalf("session/new did not receive the exact Task project cwd: got %v want %q", got, projectCwd)
+	}
+	if err := adapter.EnsureSessionForCwd("task:project-new", t.TempDir()); err == nil {
+		t.Fatal("an active Task session must not be rebound to a different project cwd")
 	}
 }
 

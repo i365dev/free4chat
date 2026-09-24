@@ -85,6 +85,9 @@ func turnFailureClassOf(err error) string {
 		errors.Is(err, errScopedHarnessUnsupported) {
 		return turnFailureSession
 	}
+	if errors.Is(err, errTaskHarnessControlUnavailable) {
+		return "HARNESS_CONTROL_UNAVAILABLE"
+	}
 	return turnFailureOther
 }
 
@@ -95,7 +98,7 @@ func turnFailureClassOf(err error) string {
 // "runnable" would keep re-executing the same failing head of the serial queue
 // instead of letting another scope's fresh work proceed.
 func permanentTurnFailure(err error) bool {
-	return errors.Is(err, errScopedHarnessUnsupported) || errors.Is(err, errAdoptedSessionUnavailable)
+	return errors.Is(err, errScopedHarnessUnsupported) || errors.Is(err, errAdoptedSessionUnavailable) || errors.Is(err, errTaskHarnessControlUnavailable)
 }
 
 // turnRetryIndexFor reports how many autonomous retries the canonical turn

@@ -551,6 +551,24 @@ func TestResidentEventStreamDecodesPrivateSessionControl(t *testing.T) {
 		t.Fatalf("private session prepare control mismatch: %+v", prepare.SessionControl)
 	}
 
+	newProject, err := receiveResidentFrame(t, map[string]any{
+		"type":               "task-session-control",
+		"operation":          "prepare",
+		"requestId":          "req-project-0001",
+		"humanParticipantId": "human-1",
+		"projectToken":       "project-token-1",
+		"taskRequestId":      "req-project-task-0001",
+	})
+	if err != nil {
+		t.Fatalf("decode private new-project Task control: %v", err)
+	}
+	if newProject.SessionControl == nil ||
+		newProject.SessionControl.Kind != types.ResidentSessionControlPrepare ||
+		newProject.SessionControl.ProjectToken != "project-token-1" ||
+		newProject.SessionControl.SessionToken != "" {
+		t.Fatalf("private new-project Task control mismatch: %+v", newProject.SessionControl)
+	}
+
 	cancel, err := receiveResidentFrame(t, map[string]any{
 		"type":               "task-session-control",
 		"operation":          "cancel",
@@ -607,9 +625,14 @@ func TestResidentEventStreamRejectsMalformedSessionControl(t *testing.T) {
 			"type": "task-session-control", "operation": "list", "requestId": "req-1",
 			"humanParticipantId": "human-1", "pageToken": "page\t1",
 		}},
-		{name: "prepare without a session token", frame: map[string]any{
+		{name: "prepare without a session or project token", frame: map[string]any{
 			"type": "task-session-control", "operation": "prepare", "requestId": "req-1",
 			"humanParticipantId": "human-1", "taskRequestId": "req-A-0001",
+		}},
+		{name: "prepare with both session and project tokens", frame: map[string]any{
+			"type": "task-session-control", "operation": "prepare", "requestId": "req-1",
+			"humanParticipantId": "human-1", "taskRequestId": "req-A-0001",
+			"sessionToken": "session-token-1", "projectToken": "project-token-1",
 		}},
 		{name: "prepare without a task request", frame: map[string]any{
 			"type": "task-session-control", "operation": "prepare", "requestId": "req-1",

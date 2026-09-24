@@ -48,6 +48,7 @@ export interface TaskSessionPickerProps {
   onRefresh: () => void
   refreshing?: boolean
   disabled?: boolean
+  showSessions?: boolean
 }
 
 const RECENT_LABEL = "Recent"
@@ -116,6 +117,7 @@ export default function TaskSessionPicker({
   onRefresh,
   refreshing = false,
   disabled = false,
+  showSessions = true,
 }: TaskSessionPickerProps) {
   const [query, setQuery] = useState("")
   const [projectOpen, setProjectOpen] = useState(false)
@@ -283,7 +285,7 @@ export default function TaskSessionPicker({
         </div>
       </div>
 
-      {status === "loading" && (
+      {showSessions && status === "loading" && (
         <p
           data-testid="task-session-loading"
           className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-4 text-xs text-gray-400"
@@ -292,7 +294,7 @@ export default function TaskSessionPicker({
         </p>
       )}
 
-      {status === "error" && (
+      {showSessions && status === "error" && (
         <div
           data-testid="task-session-error"
           className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-4 text-xs text-rose-300"
@@ -309,7 +311,7 @@ export default function TaskSessionPicker({
         </div>
       )}
 
-      {status === "ready" && (
+      {showSessions && status === "ready" && (
         <>
           {sessions.length > 0 && (
             <input

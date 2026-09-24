@@ -27,6 +27,8 @@ const isolatedACPLaneCount = DefaultIsolatedACPLaneCount
 type isolatedLaneAdapter interface {
 	types.HarnessAdapter
 	types.ScopedHarnessAdapter
+	types.ScopedProjectHarnessAdapter
+	types.ScopedHarnessSessionControls
 	types.ScopedTurnCanceller
 	types.ScopedTurnOwnership
 	SessionHandoff
@@ -146,6 +148,38 @@ func (a *IsolatedACPAdapter) EnsureSessionFor(scope string) error {
 		return err
 	}
 	return adapter.EnsureSessionFor(scope)
+}
+
+func (a *IsolatedACPAdapter) EnsureSessionForCwd(scope, cwd string) error {
+	adapter, err := a.adapterForScope(scope, true)
+	if err != nil {
+		return err
+	}
+	return adapter.EnsureSessionForCwd(scope, cwd)
+}
+
+func (a *IsolatedACPAdapter) SessionControlsFor(scope string) *types.HarnessSessionControls {
+	adapter, err := a.adapterForScope(scope, scope == "room")
+	if err != nil {
+		return nil
+	}
+	return adapter.SessionControlsFor(scope)
+}
+
+func (a *IsolatedACPAdapter) SetModeFor(scope, modeID string) error {
+	adapter, err := a.adapterForScope(scope, false)
+	if err != nil {
+		return err
+	}
+	return adapter.SetModeFor(scope, modeID)
+}
+
+func (a *IsolatedACPAdapter) SetConfigOptionFor(scope, configID, value string) error {
+	adapter, err := a.adapterForScope(scope, false)
+	if err != nil {
+		return err
+	}
+	return adapter.SetConfigOptionFor(scope, configID, value)
 }
 
 func (a *IsolatedACPAdapter) SessionGenerationFor(scope string) int64 {

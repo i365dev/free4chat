@@ -218,10 +218,99 @@ func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 	if scope == roomScope {
 		return r.options.Adapter.EnsureSession()
 	}
-	if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
-		return adapter.EnsureSessionFor(scope)
+	r.mu.Lock()
+	projectCwd, projectSelected := r.taskProjectCwds[scope]
+	r.mu.Unlock()
+	var ensureErr error
+	if projectSelected {
+		projectAdapter, ok := r.options.Adapter.(types.ScopedProjectHarnessAdapter)
+		if !ok {
+			return errScopedHarnessUnsupported
+		}
+		ensureErr = projectAdapter.EnsureSessionForCwd(scope, projectCwd)
+	} else if adapter, ok := r.options.Adapter.(types.ScopedHarnessAdapter); ok {
+		ensureErr = adapter.EnsureSessionFor(scope)
+	} else {
+		return errScopedHarnessUnsupported
 	}
-	return errScopedHarnessUnsupported
+	if ensureErr != nil {
+		return ensureErr
+	}
+	if err := r.applyTaskSessionControls(scope); err != nil {
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
+		return errTaskHarnessControlUnavailable
+	}
+	return nil
+}
+
+func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
+	r.mu.Lock()
+	modeID := r.taskSessionModes[scope]
+	configOptions := cloneNativeControlSelections(r.taskSessionConfig[scope])
+	r.mu.Unlock()
+	if modeID == "" && len(configOptions) == 0 {
+		return nil
+	}
+	adapter, ok := r.options.Adapter.(types.ScopedHarnessSessionControls)
+	if !ok {
+		return errScopedHarnessUnsupported
+	}
+	controls := adapter.SessionControlsFor(scope)
+	if controls == nil {
+		return errors.New("Harness session controls are unavailable")
+	}
+	if modeID != "" {
+		advertised := false
+		for _, mode := range controls.Modes {
+			if mode.ID == modeID {
+				advertised = true
+				break
+			}
+		}
+		if !advertised {
+			return errors.New("selected Harness session mode is no longer advertised")
+		}
+		if controls.CurrentModeID != modeID {
+			if err := adapter.SetModeFor(scope, modeID); err != nil {
+				return err
+			}
+			controls = adapter.SessionControlsFor(scope)
+		}
+	}
+	for configID, value := range configOptions {
+		advertised := false
+		for _, option := range controls.ConfigOptions {
+			if option.ID != configID {
+				continue
+			}
+			for _, candidate := range option.Options {
+				if candidate.Value == value {
+					advertised = true
+					break
+				}
+			}
+			if advertised && option.CurrentValue == value {
+				break
+			}
+		}
+		if !advertised {
+			return errors.New("selected Harness session config value is no longer advertised")
+		}
+		current := ""
+		for _, option := range controls.ConfigOptions {
+			if option.ID == configID {
+				current = option.CurrentValue
+				break
+			}
+		}
+		if current != value {
+			if err := adapter.SetConfigOptionFor(scope, configID, value); err != nil {
+				return err
+			}
+			controls = adapter.SessionControlsFor(scope)
+		}
+	}
+	return nil
 }
 
 func (r *ResidentRuntime) harnessSessionGeneration(scope string) (int64, error) {

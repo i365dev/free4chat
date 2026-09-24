@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -480,6 +481,52 @@ func (a *ACPAdapter) SessionControls() *ACPSessionControls {
 	return cloneSessionControls(a.caps.SessionControls)
 }
 
+func (a *ACPAdapter) SessionControlsFor(scope string) *types.HarnessSessionControls {
+	scope = normalizeScopeName(scope)
+	a.mu.Lock()
+	var controls *ACPSessionControls
+	if scope == "room" {
+		if a.caps != nil {
+			controls = cloneSessionControls(a.caps.SessionControls)
+		}
+	} else if session := a.sessions[scope]; session != nil && session.caps != nil {
+		controls = cloneSessionControls(session.caps.SessionControls)
+	}
+	a.mu.Unlock()
+	return projectHarnessSessionControls(controls)
+}
+
+func projectHarnessSessionControls(source *ACPSessionControls) *types.HarnessSessionControls {
+	if source == nil {
+		return nil
+	}
+	projected := &types.HarnessSessionControls{}
+	if source.Modes != nil {
+		projected.CurrentModeID = source.Modes.CurrentModeID
+		projected.Modes = make([]types.HarnessSessionMode, 0, len(source.Modes.AvailableModes))
+		for _, mode := range source.Modes.AvailableModes {
+			projected.Modes = append(projected.Modes, types.HarnessSessionMode{
+				ID: mode.ID, Name: mode.Name, Description: mode.Description,
+			})
+		}
+	}
+	projected.ConfigOptions = make([]types.HarnessSessionConfigOption, 0, len(source.ConfigOptions))
+	for _, option := range source.ConfigOptions {
+		projectedOption := types.HarnessSessionConfigOption{
+			ID: option.ID, Name: option.Name, Description: option.Description,
+			Category: option.Category, Type: option.Type, CurrentValue: option.CurrentValue,
+			Options: make([]types.HarnessSessionConfigValue, 0, len(option.Options)),
+		}
+		for _, value := range option.Options {
+			projectedOption.Options = append(projectedOption.Options, types.HarnessSessionConfigValue{
+				Value: value.Value, Name: value.Name, Description: value.Description,
+			})
+		}
+		projected.ConfigOptions = append(projected.ConfigOptions, projectedOption)
+	}
+	return projected
+}
+
 // PendingPermissionCount reports the number of permission requests currently
 // parked for the active turn. It is intentionally local diagnostic state and
 // never enters Room/status output.
@@ -550,17 +597,34 @@ const defaultPermissionRequestLifetimeMs = 10 * 60 * 1_000
 // SetMode applies one Harness-native session mode that was advertised by the
 // current session. The adapter does not infer or translate policy semantics.
 func (a *ACPAdapter) SetMode(modeID string) error {
+	return a.SetModeFor("room", modeID)
+}
+
+func (a *ACPAdapter) SetModeFor(scope, modeID string) error {
+	scope = normalizeScopeName(scope)
 	a.mu.Lock()
-	if a.sessionID == "" || a.stdin == nil || a.caps == nil || a.caps.SessionControls == nil || a.caps.SessionControls.Modes == nil {
+	var sessionID string
+	var generation int64
+	var controls *ACPSessionControls
+	if scope == "room" {
+		sessionID, generation = a.sessionID, a.sessionGeneration
+		if a.caps != nil {
+			controls = a.caps.SessionControls
+		}
+	} else if session := a.sessions[scope]; session != nil {
+		sessionID, generation = session.sessionID, session.generation
+		if session.caps != nil {
+			controls = session.caps.SessionControls
+		}
+	}
+	if sessionID == "" || a.stdin == nil || controls == nil || controls.Modes == nil {
 		a.mu.Unlock()
 		return errors.New("ACP session mode control is unavailable")
 	}
-	if !hasMode(a.caps.SessionControls.Modes, modeID) {
+	if !hasMode(controls.Modes, modeID) {
 		a.mu.Unlock()
 		return fmt.Errorf("ACP session mode %q was not advertised", modeID)
 	}
-	sessionID := a.sessionID
-	generation := a.sessionGeneration
 	a.mu.Unlock()
 
 	params, _ := json.Marshal(map[string]any{"sessionId": sessionID, "modeId": modeID})
@@ -570,8 +634,12 @@ func (a *ACPAdapter) SetMode(modeID string) error {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.sessionID == sessionID && a.sessionGeneration == generation && a.caps != nil && a.caps.SessionControls != nil && a.caps.SessionControls.Modes != nil {
-		a.caps.SessionControls.Modes.CurrentModeID = modeID
+	if scope == "room" {
+		if a.sessionID == sessionID && a.sessionGeneration == generation && a.caps != nil && a.caps.SessionControls != nil && a.caps.SessionControls.Modes != nil {
+			a.caps.SessionControls.Modes.CurrentModeID = modeID
+		}
+	} else if session := a.sessions[scope]; session != nil && session.sessionID == sessionID && session.generation == generation && session.caps != nil && session.caps.SessionControls != nil && session.caps.SessionControls.Modes != nil {
+		session.caps.SessionControls.Modes.CurrentModeID = modeID
 	}
 	return nil
 }
@@ -580,12 +648,28 @@ func (a *ACPAdapter) SetMode(modeID string) error {
 // value must be present in the option's advertised values; this prevents the
 // generic adapter from inventing or silently broadening Harness policy.
 func (a *ACPAdapter) SetConfigOption(configID, value string) error {
+	return a.SetConfigOptionFor("room", configID, value)
+}
+
+func (a *ACPAdapter) SetConfigOptionFor(scope, configID, value string) error {
+	scope = normalizeScopeName(scope)
 	a.mu.Lock()
-	if a.sessionID == "" || a.stdin == nil || a.caps == nil || a.caps.SessionControls == nil {
+	var sessionID string
+	var generation int64
+	var sessionCaps *ACPCapabilities
+	if scope == "room" {
+		sessionID, generation, sessionCaps = a.sessionID, a.sessionGeneration, a.caps
+	} else if session := a.sessions[scope]; session != nil {
+		sessionID, generation = session.sessionID, session.generation
+		if session.caps != nil {
+			sessionCaps = session.caps
+		}
+	}
+	if sessionID == "" || a.stdin == nil || sessionCaps == nil || sessionCaps.SessionControls == nil {
 		a.mu.Unlock()
 		return errors.New("ACP session config control is unavailable")
 	}
-	option, ok := findConfigOption(a.caps.SessionControls.ConfigOptions, configID)
+	option, ok := findConfigOption(sessionCaps.SessionControls.ConfigOptions, configID)
 	if !ok {
 		a.mu.Unlock()
 		return fmt.Errorf("ACP session config option %q was not advertised", configID)
@@ -594,8 +678,6 @@ func (a *ACPAdapter) SetConfigOption(configID, value string) error {
 		a.mu.Unlock()
 		return fmt.Errorf("ACP config value %q was not advertised for %q", value, configID)
 	}
-	sessionID := a.sessionID
-	generation := a.sessionGeneration
 	a.mu.Unlock()
 
 	params, _ := json.Marshal(map[string]any{
@@ -610,14 +692,24 @@ func (a *ACPAdapter) SetConfigOption(configID, value string) error {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.sessionID != sessionID || a.sessionGeneration != generation || a.caps == nil || a.caps.SessionControls == nil {
-		return nil
+	var controls *ACPSessionControls
+	if scope == "room" {
+		if a.sessionID != sessionID || a.sessionGeneration != generation || a.caps == nil || a.caps.SessionControls == nil {
+			return nil
+		}
+		controls = a.caps.SessionControls
+	} else {
+		session := a.sessions[scope]
+		if session == nil || session.sessionID != sessionID || session.generation != generation || session.caps == nil || session.caps.SessionControls == nil {
+			return nil
+		}
+		controls = session.caps.SessionControls
 	}
-	if controls := parseSessionControls(response.Result); controls != nil && len(controls.ConfigOptions) > 0 {
-		a.caps.SessionControls.ConfigOptions = controls.ConfigOptions
-	} else if current, ok := findConfigOption(a.caps.SessionControls.ConfigOptions, configID); ok {
+	if updated := parseSessionControls(response.Result); updated != nil && len(updated.ConfigOptions) > 0 {
+		controls.ConfigOptions = updated.ConfigOptions
+	} else if current, ok := findConfigOption(controls.ConfigOptions, configID); ok {
 		current.CurrentValue = value
-		replaceConfigOption(a.caps.SessionControls.ConfigOptions, current)
+		replaceConfigOption(controls.ConfigOptions, current)
 	}
 	return nil
 }
@@ -849,6 +941,14 @@ func (a *ACPAdapter) EnsureSession() error {
 // compatibility path above; task scopes share the process but never share its
 // ACP session id or retained conversation.
 func (a *ACPAdapter) EnsureSessionFor(scope string) error {
+	return a.EnsureSessionForCwd(scope, a.workingDir)
+}
+
+// EnsureSessionForCwd creates or re-materializes one scoped native session
+// with the exact Task project cwd. The adapter's workingDir remains the
+// Runtime's private default and is used only by the compatibility method
+// EnsureSessionFor.
+func (a *ACPAdapter) EnsureSessionForCwd(scope string, cwd string) error {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
 		return errors.New("ACP logical scope is empty")
@@ -859,10 +959,20 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	if len(scope) > types.MaxLogicalScopeLength {
 		return errors.New("ACP logical scope is too long")
 	}
+	if cwd == "" || !validACPSessionPath(cwd, maxACPSessionCwdLength) {
+		return errors.New("ACP Task working directory is invalid")
+	}
+	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		return errors.New("ACP Task working directory is unavailable")
+	}
 	a.scopedSessionMu.Lock()
 	defer a.scopedSessionMu.Unlock()
 	a.mu.Lock()
 	if session := a.sessions[scope]; session != nil && session.sessionID != "" && a.proc != nil && a.stdin != nil {
+		if session.cwd != cwd {
+			a.mu.Unlock()
+			return errors.New("ACP Task session is already bound to another working directory")
+		}
 		a.mu.Unlock()
 		return nil
 	}
@@ -902,7 +1012,7 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	if base == nil {
 		return errors.New("ACP default session is unavailable")
 	}
-	newParams, _ := json.Marshal(map[string]any{"cwd": a.workingDir, "mcpServers": []any{}})
+	newParams, _ := json.Marshal(map[string]any{"cwd": cwd, "mcpServers": []any{}})
 	raw, err := a.request("session/new", newParams)
 	if err != nil {
 		return err
@@ -922,7 +1032,7 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	a.nextScopeGeneration++
 	a.sessions[scope] = &acpSession{
 		sessionID:  sessionResponse.SessionID,
-		cwd:        a.workingDir,
+		cwd:        cwd,
 		caps:       base,
 		generation: a.nextScopeGeneration,
 		scope:      scope,

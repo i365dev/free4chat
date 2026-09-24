@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { RoomSession, RoomStateBudgetExceededError } from "./RoomSession"
+import {
+  isValidHarnessControlText,
+  validateTaskSessionListResult,
+} from "./taskSession"
 import type { RoomRecord } from "../room/types"
 
 /**
@@ -19,6 +23,30 @@ import type { RoomRecord } from "../room/types"
  */
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
+
+describe("Harness-native Task controls", () => {
+  it("preserves advertised native ids and rejects control-character repair", () => {
+    const result = validateTaskSessionListResult({
+      ok: true,
+      sessions: [],
+      projects: [],
+      hasMore: false,
+      controls: {
+        currentModeId: "agent-full-access",
+        modes: [{ id: "agent-full-access", name: "Agent full access" }],
+        configOptions: [],
+      },
+    })
+    expect(result).toMatchObject({
+      ok: true,
+      controls: {
+        currentModeId: "agent-full-access",
+        modes: [{ id: "agent-full-access" }],
+      },
+    })
+    expect(isValidHarnessControlText("agent\nfull-access")).toBe(false)
+  })
+})
 
 interface FakeSocket {
   readonly tag?: string
@@ -342,6 +370,53 @@ describe("RoomSession Task Session Continuation (#409)", () => {
       "prepare-sent",
       "task-persisted",
       "task-delivered",
+    ])
+  })
+
+  it("prepares a new Task against the opaque project token before appending it", async () => {
+    const test = harness()
+    const humanSocket = test.connectHuman("human-1")
+    const agentSocket = recordDelivery(test, "agent-a")
+
+    await test.sendHuman(humanSocket, {
+      type: "task-session-start",
+      requestId: "browser-project-1",
+      targetParticipantId: "agent-a",
+      projectToken: "project-token-1",
+      summary: "Start work in this project",
+    })
+
+    const controls = test.sessionControls("agent-a")
+    expect(controls).toHaveLength(1)
+    expect(controls[0]).toMatchObject({
+      type: "task-session-control",
+      operation: "prepare",
+      humanParticipantId: "human-1",
+      projectToken: "project-token-1",
+    })
+    expect(controls[0]).not.toHaveProperty("sessionToken")
+    const taskRequestId = controls[0].taskRequestId as string
+    expect(test.stored().messages).toHaveLength(0)
+
+    await test.sendAgent(agentSocket, {
+      type: "task-session-result",
+      operation: "prepare",
+      requestId: pendingControlRequestId(agentSocket),
+      ok: true,
+    })
+
+    expect(test.stored().messages).toHaveLength(1)
+    expect(test.stored().messages[0].collab?.requestId).toBe(taskRequestId)
+    expect(test.stored().messages[0].collab?.summary).toBe(
+      "Start work in this project"
+    )
+    expect(JSON.stringify(test.stored())).not.toContain("project-token-1")
+    expect(test.humanResults(humanSocket)).toEqual([
+      {
+        type: "task-session-start-result",
+        requestId: "browser-project-1",
+        ok: true,
+      },
     ])
   })
 

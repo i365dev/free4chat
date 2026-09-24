@@ -347,7 +347,12 @@ type ResidentRuntime struct {
 	// session id lives only in pendingAdoption and is dropped once the adapter
 	// has loaded it; adoptedLostScopes is the fact that keeps an adopted Task
 	// from ever falling back to a fresh conversation.
-	pendingAdoption   *pendingSessionAdoption
+	pendingAdoption *pendingSessionAdoption
+	// taskProjectCwds retains explicit new-Task project identity above the
+	// transient provider process, keyed by the exact logical Task scope.
+	taskProjectCwds   map[string]string
+	taskSessionModes  map[string]string
+	taskSessionConfig map[string]map[string]string
 	adoptedScopes     map[string]struct{}
 	adoptedLostScopes map[string]struct{}
 	// declinedPrepared is the bounded local record of EXACT prepared
@@ -502,6 +507,9 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		taskExecutionFacts:   make(map[string]taskExecutionFacts),
 		adoptedScopes:        make(map[string]struct{}),
 		adoptedLostScopes:    make(map[string]struct{}),
+		taskProjectCwds:      make(map[string]string),
+		taskSessionModes:     make(map[string]string),
+		taskSessionConfig:    make(map[string]map[string]string),
 		taskSessionSessions:  make(map[string]taskSessionSelection),
 		taskSessionProjects:  make(map[string]taskSessionProject),
 		taskSessionPages:     make(map[string]taskSessionPage),
