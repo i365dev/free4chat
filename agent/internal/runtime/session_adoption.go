@@ -739,12 +739,12 @@ func (r *ResidentRuntime) bindSessionAdoption(scope string, adoption *pendingSes
 		r.log("session_adoption_lost_during_load", map[string]string{"scopeKind": scopeKindOf(scope)})
 		return errAdoptedSessionUnavailable
 	}
-	if err := r.applySessionConfigFallbacks(scope); err != nil {
-		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": scopeKindOf(scope)})
-		return errTaskHarnessControlUnavailable
-	}
 	if err := r.applyTaskSessionControls(scope); err != nil {
 		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
+		return errTaskHarnessControlUnavailable
+	}
+	if err := r.applySessionConfigFallbacks(scope); err != nil {
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": scopeKindOf(scope)})
 		return errTaskHarnessControlUnavailable
 	}
 	r.log("session_adopted", map[string]string{"scopeKind": scopeKindOf(scope)})
