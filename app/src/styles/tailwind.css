@@ -992,26 +992,13 @@ html {
 .room-shell--live .room-participants-grid {
   position: relative;
 }
-.room-shell--live .room-participants-grid::after {
-  position: absolute;
-  left: 1rem;
-  color: rgba(166, 215, 180, 0.58);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.6rem;
-  letter-spacing: 0.14em;
-  pointer-events: none;
-}
-.room-shell--live .room-participants-grid::after {
-  bottom: 1rem;
-  content: "◇ ENCRYPTED ROOM FREQUENCY";
-}
 .room-shell--live .room-stage-intro {
   position: relative;
   flex: none;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 0.35rem;
-  padding: 1.15rem 1rem 0.8rem;
+  padding: 0.75rem 1rem;
   color: #a4d7b4;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.6rem;
@@ -1020,15 +1007,6 @@ html {
 }
 .room-shell--live .room-stage-intro > span:last-of-type {
   color: #73ba8b;
-}
-.room-shell--live .room-stage-intro strong {
-  grid-column: 1 / -1;
-  color: #e7f4e8;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: clamp(1.35rem, 2.4vw, 1.75rem);
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1.1;
 }
 .room-shell--live .room-participants-grid:has(> :only-child) {
   align-content: center;
@@ -1046,12 +1024,6 @@ html {
 }
 .room-shell--live .room-participants-grid [data-self="true"] {
   --planet-glow: 223, 166, 100;
-}
-.room-shell--live
-  .room-participants-grid
-  [data-self="true"]
-  .participant-avatar__planet {
-  filter: grayscale(1) sepia(1) saturate(3.5) hue-rotate(335deg) brightness(0.9);
 }
 .room-shell--live .participant-card-shell--compact {
   --planet-glow: 126, 201, 161;

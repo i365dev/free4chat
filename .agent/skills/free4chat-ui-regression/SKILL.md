@@ -40,6 +40,10 @@ For Stage composition changes, include participant count as a separate axis:
 compare one participant with two or more at the same desktop viewport. The Room
 App host browser gate asserts the single- and two-person planet centers stay on
 the same vertical baseline in both desktop engines.
+Participant identity visuals must be viewer-independent: the same participant
+must render the same planet SVG for self and remote viewers. Self/remote status
+may change surrounding UI affordances such as a halo, label, or controls, but
+must not recolor or otherwise mutate the planet itself.
 Follow the repository's local browser setup in
 `.agent/skills/free4chat-local-e2e/SKILL.md`; do not weaken production origin
 checks to make a local browser test pass.

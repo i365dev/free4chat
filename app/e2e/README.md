@@ -79,8 +79,10 @@ enter fullscreen, verify the exit control is inside the viewport and receives
 the pointer, exit, hide, reopen — and asserts geometry/semantic invariants
 rather than pixels. In Chromium and WebKit desktop profiles it also joins a
 second participant and asserts the one- and two-person planet centers remain
-within 40px of the same vertical baseline. Lab Apps keep owning their own
-business-flow tests.
+within 40px of the same vertical baseline. It also compares the same
+participant's avatar SVG across independent self and remote client views while
+checking that surrounding self halo styling can differ. Lab Apps keep owning
+their own business-flow tests.
 
 What is real: catalog loader + v1 schema validation, trusted-origin allow-list,
 iframe sandbox, bootstrap handshake, MessagePort host bridge, host chrome,
