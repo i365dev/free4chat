@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -676,7 +677,7 @@ func TestResidentEventStreamSendsBoundedSessionResult(t *testing.T) {
 		// The oversized case deliberately exceeds the default 32 KiB read
 		// limit; raise it here so the frame is actually observable.
 		conn.SetReadLimit(maxResidentEventBytes + 1)
-		for index := 0; index < 2; index++ {
+		for index := 0; index < 3; index++ {
 			_, payload, readErr := conn.Read(context.Background())
 			if readErr != nil {
 				return
@@ -713,10 +714,27 @@ func TestResidentEventStreamSendsBoundedSessionResult(t *testing.T) {
 			Token:        "session-token-1",
 			Title:        "Native Pi conversation",
 			ProjectToken: "project-token-1",
-			ProjectLabel: "/private/tmp",
+			ProjectLabel: "tmp",
 			UpdatedAt:    "2026-09-19T10:00:00Z",
 		}},
-		Projects:      []types.ResidentTaskSessionProject{{Token: "project-token-1", Label: "/private/tmp"}},
+		Projects: []types.ResidentTaskSessionProject{{Token: "project-token-1", Label: "tmp"}},
+		Controls: &types.HarnessSessionControls{
+			CurrentModeID: "read-only",
+			Modes: []types.HarnessSessionMode{{
+				ID:   "read-only",
+				Name: "Ask for approval",
+			}},
+			ConfigOptions: []types.HarnessSessionConfigOption{{
+				ID:           "model",
+				Name:         "Model",
+				Type:         "select",
+				CurrentValue: "gpt-6-luna",
+				Options: []types.HarnessSessionConfigValue{
+					{Value: "gpt-6-luna", Name: "6 Luna"},
+					{Value: "gpt-5.6-sol", Name: "5.6 Sol"},
+				},
+			}},
+		},
 		NextPageToken: "page-token-1",
 		HasMore:       true,
 	}); err != nil {
@@ -737,9 +755,43 @@ func TestResidentEventStreamSendsBoundedSessionResult(t *testing.T) {
 	if _, hasCursor := frame["cursor"]; hasCursor {
 		t.Fatalf("a session result must never carry a Room cursor: %v", frame)
 	}
+	wantControls := map[string]any{
+		"currentModeId": "read-only",
+		"modes": []any{map[string]any{
+			"id":   "read-only",
+			"name": "Ask for approval",
+		}},
+		"configOptions": []any{map[string]any{
+			"id":           "model",
+			"name":         "Model",
+			"type":         "select",
+			"currentValue": "gpt-6-luna",
+			"options": []any{
+				map[string]any{"value": "gpt-6-luna", "name": "6 Luna"},
+				map[string]any{"value": "gpt-5.6-sol", "name": "5.6 Sol"},
+			},
+		}},
+	}
+	if !reflect.DeepEqual(frame["controls"], wantControls) {
+		t.Fatalf("advertised controls were not preserved in resident wire frame: got %v, want %v", frame["controls"], wantControls)
+	}
 	rows, ok := frame["sessions"].([]any)
 	if !ok || len(rows) != 1 {
 		t.Fatalf("session rows mismatch: %v", frame["sessions"])
+	}
+	if err := stream.SendSessionResult(context.Background(), types.ResidentSessionResult{
+		Kind:      types.ResidentSessionControlList,
+		RequestID: "req-list-0002",
+		OK:        true,
+	}); err != nil {
+		t.Fatalf("send session result without advertised controls: %v", err)
+	}
+	var noControlsFrame map[string]any
+	if err := json.Unmarshal([]byte(nextFrame()), &noControlsFrame); err != nil {
+		t.Fatalf("decode session result without controls: %v", err)
+	}
+	if _, hasControls := noControlsFrame["controls"]; hasControls {
+		t.Fatalf("session result without advertised controls must omit the field: %v", noControlsFrame)
 	}
 
 	// An oversized page fails closed into ONE minimal error result.
@@ -754,7 +806,7 @@ func TestResidentEventStreamSendsBoundedSessionResult(t *testing.T) {
 	}
 	if err := stream.SendSessionResult(context.Background(), types.ResidentSessionResult{
 		Kind:      types.ResidentSessionControlList,
-		RequestID: "req-list-0002",
+		RequestID: "req-list-0003",
 		OK:        true,
 		Sessions:  huge,
 	}); err != nil {
@@ -766,7 +818,7 @@ func TestResidentEventStreamSendsBoundedSessionResult(t *testing.T) {
 	}
 	if fallback["ok"] != false ||
 		fallback["error"] != string(types.ResidentSessionErrorUnavailable) ||
-		fallback["requestId"] != "req-list-0002" {
+		fallback["requestId"] != "req-list-0003" {
 		t.Fatalf("an oversized result must fail closed: %v", fallback)
 	}
 	if _, hasRows := fallback["sessions"]; hasRows {

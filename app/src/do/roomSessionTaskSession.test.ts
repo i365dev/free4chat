@@ -23,6 +23,22 @@ import type { RoomRecord } from "../room/types"
  */
 
 const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
+const ADVERTISED_CONTROLS = {
+  currentModeId: "read-only",
+  modes: [{ id: "read-only", name: "Ask for approval" }],
+  configOptions: [
+    {
+      id: "model",
+      name: "Model",
+      type: "select",
+      currentValue: "gpt-6-luna",
+      options: [
+        { value: "gpt-6-luna", name: "6 Luna" },
+        { value: "gpt-5.6-sol", name: "5.6 Sol" },
+      ],
+    },
+  ],
+} as const
 
 describe("Harness-native Task controls", () => {
   it("preserves advertised native ids and rejects control-character repair", () => {
@@ -31,17 +47,14 @@ describe("Harness-native Task controls", () => {
       sessions: [],
       projects: [],
       hasMore: false,
-      controls: {
-        currentModeId: "agent-full-access",
-        modes: [{ id: "agent-full-access", name: "Agent full access" }],
-        configOptions: [],
-      },
+      controls: ADVERTISED_CONTROLS,
     })
     expect(result).toMatchObject({
       ok: true,
       controls: {
-        currentModeId: "agent-full-access",
-        modes: [{ id: "agent-full-access" }],
+        currentModeId: "read-only",
+        modes: [{ id: "read-only", name: "Ask for approval" }],
+        configOptions: ADVERTISED_CONTROLS.configOptions,
       },
     })
     expect(isValidHarnessControlText("agent\nfull-access")).toBe(false)
@@ -609,6 +622,7 @@ describe("RoomSession Task Session Continuation (#409)", () => {
       ],
       projects: [{ token: "project-token-1", label: "~/workspace/free4chat" }],
       hasMore: false,
+      controls: ADVERTISED_CONTROLS,
     })
 
     expect(test.humanResults(requester)).toEqual([
@@ -629,6 +643,7 @@ describe("RoomSession Task Session Continuation (#409)", () => {
           { token: "project-token-1", label: "~/workspace/free4chat" },
         ],
         hasMore: false,
+        controls: ADVERTISED_CONTROLS,
       },
     ])
     // No other Human receives ANY private frame.

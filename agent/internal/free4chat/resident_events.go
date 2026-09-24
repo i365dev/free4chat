@@ -416,7 +416,7 @@ func (s *residentEventStream) Heartbeat(ctx context.Context, cursor int64) error
 // with one minimal error result instead of a truncated payload, so the Room can
 // never mistake an incomplete page for a complete one.
 func (s *residentEventStream) SendSessionResult(ctx context.Context, result types.ResidentSessionResult) error {
-	payload, err := json.Marshal(map[string]any{
+	frame := map[string]any{
 		"type":          residentSessionResultType,
 		"operation":     string(result.Kind),
 		"requestId":     result.RequestID,
@@ -426,7 +426,11 @@ func (s *residentEventStream) SendSessionResult(ctx context.Context, result type
 		"projects":      result.Projects,
 		"nextPageToken": result.NextPageToken,
 		"hasMore":       result.HasMore,
-	})
+	}
+	if result.Controls != nil {
+		frame["controls"] = result.Controls
+	}
+	payload, err := json.Marshal(frame)
 	if err != nil || len(payload) > maxResidentSessionResultBytes {
 		fallback, fallbackErr := json.Marshal(map[string]any{
 			"type":      residentSessionResultType,
