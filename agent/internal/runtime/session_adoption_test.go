@@ -45,15 +45,16 @@ type adoptionTurnInput struct {
 // test.
 type adoptionAdapter struct {
 	*fakeAdapter
-	recordMu sync.Mutex
-	events   []string
-	loads    []adoptionLoadCall
-	inputs   []adoptionTurnInput
-	sessions []harness.ACPSessionInfo
-	loadErr  error
-	listErr  error
-	modes    map[string]string
-	configs  map[string]map[string]string
+	recordMu                sync.Mutex
+	events                  []string
+	loads                   []adoptionLoadCall
+	inputs                  []adoptionTurnInput
+	sessions                []harness.ACPSessionInfo
+	loadErr                 error
+	listErr                 error
+	modes                   map[string]string
+	configs                 map[string]map[string]string
+	roomControlsUnavailable bool
 	// loadHook runs INSIDE LoadSession, after the Runtime has committed the
 	// adopted ownership for the scope and before the load reports success. It
 	// is how a test deterministically places a Harness death in the load
@@ -216,6 +217,9 @@ func (a *adoptionAdapter) EnsureSessionForCwd(scope, cwd string) error {
 func (a *adoptionAdapter) SessionControlsFor(scope string) *types.HarnessSessionControls {
 	a.recordMu.Lock()
 	defer a.recordMu.Unlock()
+	if scope == "room" && a.roomControlsUnavailable {
+		return nil
+	}
 	mode := a.modes[scope]
 	if mode == "" {
 		mode = "observe"

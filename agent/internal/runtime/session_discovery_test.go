@@ -189,6 +189,38 @@ func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
 	}
 }
 
+func TestPreparedNewTaskKeepsPickerAdvertisedControlsAcrossRoomIdleReap(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	projectCwd := t.TempDir()
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-project-source", Cwd: projectCwd, Title: "Project session",
+	}}
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Projects) != 1 || discovered.Controls == nil {
+		t.Fatalf("picker did not advertise a project and controls: %+v", discovered)
+	}
+	// A real idle reap clears the Room session's in-memory controls after the
+	// picker response. PREPARE must use the exact bounded advertisement bound
+	// to this Human's project token; the Task's own session validates again.
+	fixture.adapter.recordMu.Lock()
+	fixture.adapter.roomControlsUnavailable = true
+	fixture.adapter.recordMu.Unlock()
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind: types.ResidentSessionControlPrepare, RequestID: "req-after-idle",
+		HumanParticipantID: "human-1", ProjectToken: discovered.Projects[0].Token,
+		TaskRequestID: "task-after-idle", ModeID: "workspace",
+		ConfigOptions: map[string]string{"model": "gpt-b"},
+	})
+	if !prepared.OK {
+		t.Fatalf("picker-advertised selection was rejected after Room idle reap: %+v", prepared)
+	}
+	waitForDone(t, startTurn(fixture.rt, taskRequestEvent(1, "task:task-after-idle", "task-after-idle", "human-1")), "Task after Room idle reap")
+	if configIndex, turnIndex := fixture.adapter.eventIndex("config:task:task-after-idle:model:gpt-b"), fixture.adapter.eventIndex("run:task:task-after-idle"); configIndex < 0 || turnIndex < 0 || configIndex > turnIndex {
+		t.Fatalf("selected model was not applied before first prompt: %v", fixture.adapter.recorded())
+	}
+}
+
 func TestPreparedExistingSessionAppliesConfigWithoutChangingIdentity(t *testing.T) {
 	fixture := newDiscoveryFixture(t, "")
 	setRoster(fixture.rt, "human-1")

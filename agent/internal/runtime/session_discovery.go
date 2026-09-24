@@ -81,6 +81,7 @@ type taskSessionSelection struct {
 	cwd                string
 	humanParticipantID string
 	expiresAt          int64
+	controls           *types.HarnessSessionControls
 }
 
 // taskSessionProject is one Human-bound project handle. Label is display-only.
@@ -89,6 +90,7 @@ type taskSessionProject struct {
 	label              string
 	humanParticipantID string
 	expiresAt          int64
+	controls           *types.HarnessSessionControls
 }
 
 // taskSessionPage is one Human-bound pagination handle. It owns the exact cwd
@@ -312,23 +314,35 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 		}
 	}
 
+	// Bind the same bounded advertisement shown in this picker response to its
+	// opaque selection tokens. The provider may idle between LIST and PREPARE;
+	// Task admission still rechecks the selected values against the new scoped
+	// session before its first prompt.
+	var controls *types.HarnessSessionControls
+	if controlsAdapter, ok := r.options.Adapter.(types.ScopedHarnessSessionControls); ok {
+		controls = controlsAdapter.SessionControlsFor("room")
+	}
 	rows := make([]types.ResidentTaskSession, 0, types.MaxResidentSessionRows)
 	r.mu.Lock()
 	r.pruneTaskSessionCacheLocked(now)
 	projectIndex := make(map[string]string, len(r.taskSessionProjects))
 	for token, project := range r.taskSessionProjects {
-		projectIndex[project.cwd] = token
+		if project.humanParticipantID == human {
+			project.controls = controls
+			r.taskSessionProjects[token] = project
+			projectIndex[project.cwd] = token
+		}
 	}
 	nextPageToken := ""
 	for _, info := range pending {
 		if len(rows) >= types.MaxResidentSessionRows {
 			break
 		}
-		token, issueErr := r.issueSessionTokenLocked(info, human, now)
+		token, issueErr := r.issueSessionTokenLocked(info, human, now, controls)
 		if issueErr != nil {
 			break
 		}
-		projectToken, projectErr := r.issueProjectTokenLocked(info.Cwd, human, now, projectIndex)
+		projectToken, projectErr := r.issueProjectTokenLocked(info.Cwd, human, now, projectIndex, controls)
 		if projectErr != nil {
 			break
 		}
@@ -364,9 +378,7 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 	result.Projects = projects
 	result.NextPageToken = nextPageToken
 	result.HasMore = hasMore
-	if controlsAdapter, ok := r.options.Adapter.(types.ScopedHarnessSessionControls); ok {
-		result.Controls = controlsAdapter.SessionControlsFor("room")
-	}
+	result.Controls = controls
 	return result
 }
 
@@ -383,10 +395,6 @@ func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionContr
 	}
 	if control.SessionToken == "" {
 		return r.prepareNewTaskProject(control)
-	}
-	if !r.taskNativeControlSelectionAvailable(control.ModeID, control.ConfigOptions) {
-		result.Error = types.ResidentSessionErrorControlUnavailable
-		return result
 	}
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
@@ -411,6 +419,10 @@ func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionContr
 		result.Error = types.ResidentSessionErrorExpired
 		return result
 	}
+	if !taskNativeControlSelectionAvailable(selection.controls, control.ModeID, control.ConfigOptions) {
+		result.Error = types.ResidentSessionErrorControlUnavailable
+		return result
+	}
 	// session/list is discovery, not a lease on the local directory. Catch a
 	// removed, missing, or non-directory cwd while the Human is still in the
 	// picker flow so a known-unavailable project never becomes a Task that
@@ -432,10 +444,6 @@ func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionContr
 
 func (r *ResidentRuntime) prepareNewTaskProject(control *types.ResidentSessionControl) types.ResidentSessionResult {
 	result := types.ResidentSessionResult{Kind: control.Kind, RequestID: control.RequestID}
-	if !r.taskNativeControlSelectionAvailable(control.ModeID, control.ConfigOptions) {
-		result.Error = types.ResidentSessionErrorControlUnavailable
-		return result
-	}
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	r.pruneTaskSessionCacheLocked(now)
@@ -444,6 +452,10 @@ func (r *ResidentRuntime) prepareNewTaskProject(control *types.ResidentSessionCo
 	if !found || project.expiresAt <= now || project.humanParticipantID != control.HumanParticipantID ||
 		!r.sessionHumanIsCurrent(control.HumanParticipantID) {
 		result.Error = types.ResidentSessionErrorExpired
+		return result
+	}
+	if !taskNativeControlSelectionAvailable(project.controls, control.ModeID, control.ConfigOptions) {
+		result.Error = types.ResidentSessionErrorControlUnavailable
 		return result
 	}
 	if !taskSessionCwdAvailable(project.cwd) {
@@ -460,15 +472,10 @@ func (r *ResidentRuntime) prepareNewTaskProject(control *types.ResidentSessionCo
 	return result
 }
 
-func (r *ResidentRuntime) taskNativeControlSelectionAvailable(modeID string, configOptions map[string]string) bool {
+func taskNativeControlSelectionAvailable(controls *types.HarnessSessionControls, modeID string, configOptions map[string]string) bool {
 	if modeID == "" && len(configOptions) == 0 {
 		return true
 	}
-	adapter, ok := r.options.Adapter.(types.ScopedHarnessSessionControls)
-	if !ok {
-		return false
-	}
-	controls := adapter.SessionControlsFor("room")
 	if controls == nil {
 		return false
 	}
@@ -605,7 +612,7 @@ func sessionResultContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
 }
 
-func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, human string, now int64) (string, error) {
+func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, human string, now int64, controls *types.HarnessSessionControls) (string, error) {
 	if len(r.taskSessionSessions) >= taskSessionMaxSessionTokens {
 		return "", errors.New("session token capacity reached")
 	}
@@ -618,6 +625,7 @@ func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, h
 		cwd:                info.Cwd,
 		humanParticipantID: human,
 		expiresAt:          now + taskSessionTokenTTL.Milliseconds(),
+		controls:           controls,
 	}
 	return token, nil
 }
@@ -626,8 +634,11 @@ func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, h
 // allocating a new one only when this cwd is not already in the catalog. The
 // catalog is what makes the project selector stable across pages: a project
 // discovered on page 1 keeps the same handle on page 3.
-func (r *ResidentRuntime) issueProjectTokenLocked(cwd, human string, now int64, index map[string]string) (string, error) {
+func (r *ResidentRuntime) issueProjectTokenLocked(cwd, human string, now int64, index map[string]string, controls *types.HarnessSessionControls) (string, error) {
 	if token, found := index[cwd]; found {
+		project := r.taskSessionProjects[token]
+		project.controls = controls
+		r.taskSessionProjects[token] = project
 		return token, nil
 	}
 	if len(r.taskSessionProjects) >= taskSessionMaxProjectTokens {
@@ -644,6 +655,7 @@ func (r *ResidentRuntime) issueProjectTokenLocked(cwd, human string, now int64, 
 		label:              taskSessionProjectLabel(cwd),
 		humanParticipantID: human,
 		expiresAt:          now + taskSessionTokenTTL.Milliseconds(),
+		controls:           controls,
 	}
 	index[cwd] = token
 	r.refreshTaskSessionProjectLabelsLocked()

@@ -2344,6 +2344,9 @@ func TestIdleReapReloadsTheExactNativeSession(t *testing.T) {
 	if scopedSessionID == "" || scopedGeneration == 0 {
 		t.Fatalf("missing scoped session before second reap: %+v", scopedBefore)
 	}
+	if _, err := adapter.RunTurnFor("task:reap", turnInput("seed the scoped conversation"), scopedGeneration); err != nil {
+		t.Fatalf("scoped first prompt failed: %v", err)
+	}
 	if err := adapter.ReapIdle(); err != nil {
 		t.Fatalf("second reap failed: %v", err)
 	}
@@ -2358,6 +2361,34 @@ func TestIdleReapReloadsTheExactNativeSession(t *testing.T) {
 	}
 	if scopedAfter.SessionID != scopedSessionID || scopedAfter.Generation <= scopedGeneration {
 		t.Fatalf("scoped reap replaced native identity or generation: before=%+v after=%+v", types.HarnessSessionDiagnostic{Scope: "task:reap", SessionID: scopedSessionID, Generation: scopedGeneration}, scopedAfter)
+	}
+}
+
+func TestIdleReapDoesNotReloadUnpromptedDiscoveryRoom(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("session_echo", map[string]string{
+		"FAKE_LOAD_CAP": "1", "FAKE_UNIQUE_SESSION_IDS": "1", "FAKE_TRACE": tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("initial discovery Room: %v", err)
+	}
+	first := adapter.SessionDiagnostics()[0].SessionID
+	if err := adapter.ReapIdle(); err != nil {
+		t.Fatalf("idle reap: %v", err)
+	}
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("new discovery Room after idle reap: %v", err)
+	}
+	if got := adapter.SessionDiagnostics()[0].SessionID; got == first {
+		t.Fatal("unprompted Room was treated as a stored native conversation")
+	}
+	frames := readACPTraceFrames(t, tracePath)
+	if got := countACPMethod(frames, "session/new"); got != 2 {
+		t.Fatalf("expected two fresh discovery Rooms, got %d", got)
+	}
+	if got := countACPMethod(frames, "session/load"); got != 0 {
+		t.Fatalf("unprompted discovery Room reached session/load %d times", got)
 	}
 }
 
@@ -2403,10 +2434,11 @@ func TestIdleReapPreservesLoadedSessionProjectCwd(t *testing.T) {
 	if exactReloads != 2 { // initial adoption and post-reap materialization
 		t.Fatalf("expected initial adoption and exact post-reap reload, got %d matches in %+v", exactReloads, loads)
 	}
-	if news := acpTraceParams(t, tracePath, "session/new"); len(news) != 2 {
-		// One Runtime-default session and one initial scoped Task session are
-		// created on first materialization. The post-reap path must add none.
-		t.Fatalf("recovery created a fresh native session: %+v", news)
+	if news := acpTraceParams(t, tracePath, "session/new"); len(news) != 3 {
+		// The initial Runtime Room and Task each used session/new. The Room
+		// never ran a prompt and may be replaced after reap; the loaded Task
+		// must still use its exact native session and project cwd.
+		t.Fatalf("unexpected native session creation during recovery: %+v", news)
 	}
 }
 

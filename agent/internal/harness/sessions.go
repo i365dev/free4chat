@@ -391,6 +391,7 @@ func (a *ACPAdapter) loadSession(scope string, sessionID string, cwd string) err
 		a.sessionID = sessionID
 		a.sessionGeneration++
 		a.caps.SessionControls = controls
+		a.roomDurable = true
 		return nil
 	}
 	replacement := cloneACPCapabilities(a.caps)
@@ -402,6 +403,7 @@ func (a *ACPAdapter) loadSession(scope string, sessionID string, cwd string) err
 		caps:       replacement,
 		generation: a.nextScopeGeneration,
 		scope:      scope,
+		durable:    true,
 	}
 	return nil
 }

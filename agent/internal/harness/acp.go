@@ -352,6 +352,10 @@ type acpSession struct {
 	caps       *ACPCapabilities
 	generation int64
 	scope      string
+	// A new native conversation may not exist in provider storage until its
+	// first successful prompt. Only a loaded or completed conversation may be
+	// retained across process reap.
+	durable bool
 }
 
 // harnessProcess owns the ONE cmd.Wait() call for a child lifecycle. Both
@@ -405,6 +409,7 @@ type ACPAdapter struct {
 	// reconnect alone does not change it.
 	sessionGeneration   int64
 	sessionID           string
+	roomDurable         bool
 	caps                *ACPCapabilities
 	sessions            map[string]*acpSession
 	nextScopeGeneration int64
@@ -827,6 +832,7 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 	a.stdin = nil
 	a.sessionID = ""
 	a.caps = nil
+	a.roomDurable = false
 	a.sessions = make(map[string]*acpSession)
 	for _, call := range a.pending {
 		close(call.result)
@@ -933,6 +939,8 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.mu.Lock()
 	a.sessionID = sessionID
 	a.caps = initCaps
+	retainedRoom, hadRetainedRoom := retained["room"]
+	a.roomDurable = hadRetainedRoom && retainedRoom.sessionID != ""
 	a.sessionGeneration++
 	if sessionID != "" {
 		delete(a.retainedSessions, "room")
@@ -2087,6 +2095,19 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 		return types.HarnessTurnResult{}, err
 	}
 
+	// A provider may keep a newly created conversation only in memory until
+	// its first successful prompt. Mark it retainable before resetPrompt can
+	// schedule idle reap, so an untouched discovery Room is never reloaded as
+	// though it already existed in the provider's durable session store.
+	if response.Error == nil {
+		a.mu.Lock()
+		if turn.scope == "room" && a.sessionID == sessionID && a.sessionGeneration == generation {
+			a.roomDurable = true
+		} else if session := a.sessions[turn.scope]; session != nil && session.sessionID == sessionID && session.generation == generation {
+			session.durable = true
+		}
+		a.mu.Unlock()
+	}
 	// Snapshot the streamed reply BEFORE clearing per-turn state: late
 	// chunk notifications must not be dropped by the reset.
 	text := a.drainChunks(sessionID)
@@ -2456,11 +2477,11 @@ func (a *ACPAdapter) closeInternalWithRetention(force, retain bool) error {
 	proc := a.proc
 	writer := a.stdin
 	if force && retain {
-		if a.sessionID != "" {
+		if a.sessionID != "" && a.roomDurable {
 			a.retainedSessions["room"] = retainedACPSession{sessionID: a.sessionID, cwd: a.workingDir, scope: "room", generation: a.sessionGeneration}
 		}
 		for scope, session := range a.sessions {
-			if session != nil && session.sessionID != "" {
+			if session != nil && session.sessionID != "" && session.durable {
 				cwd := session.cwd
 				if cwd == "" {
 					cwd = a.workingDir
@@ -2484,6 +2505,7 @@ func (a *ACPAdapter) closeInternalWithRetention(force, retain bool) error {
 	}
 	a.sessionID = ""
 	a.caps = nil
+	a.roomDurable = false
 	a.sessions = make(map[string]*acpSession)
 	a.stdin = nil
 	a.proc = nil
