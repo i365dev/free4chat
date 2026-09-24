@@ -324,7 +324,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     vi.restoreAllMocks()
   })
 
-  it("shows Harness-advertised select controls in the fresh Start Task flow", async () => {
+  it("shows Harness-advertised select controls only after choosing an explicit project", async () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
@@ -379,6 +379,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
     fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
     fireEvent.click(screen.getByTestId("task-project-discover"))
+
+    await screen.findByTestId("task-session-project-toggle")
+    expect(
+      screen.queryByLabelText("Harness-native Model")
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByLabelText("Harness-native mode")
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    fireEvent.click(screen.getByTestId("task-session-project-option"))
 
     const model = await screen.findByLabelText("Harness-native Model")
     expect(within(model).getByRole("option", { name: "6 Luna" })).toHaveValue(
@@ -602,6 +612,113 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         "true"
       )
     )
+  })
+
+  it("reconciles selected Harness controls when refreshed advertisements change", async () => {
+    const controls = {
+      currentModeId: "read-only",
+      modes: [
+        { id: "read-only", name: "Read only" },
+        { id: "agent", name: "Approve for me" },
+      ],
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          type: "select" as const,
+          currentValue: "gpt-6-luna",
+          options: [
+            { value: "gpt-6-luna", name: "6 Luna" },
+            { value: "gpt-5.6-sol", name: "5.6 Sol" },
+          ],
+        },
+        {
+          id: "reasoning_effort",
+          name: "Reasoning effort",
+          type: "select" as const,
+          currentValue: "low",
+          options: [
+            { value: "low", name: "Low" },
+            { value: "medium", name: "Medium" },
+          ],
+        },
+      ],
+    }
+    const changedControls = {
+      ...controls,
+      modes: [{ id: "read-only", name: "Read only" }],
+      configOptions: [
+        {
+          ...controls.configOptions[0],
+          options: [{ value: "gpt-6-luna", name: "6 Luna" }],
+        },
+        controls.configOptions[1],
+      ],
+    }
+    let requestCount = 0
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          muteState: false,
+          taskSessionContinuation: true,
+        },
+      ],
+      requestTaskSessions: vi.fn(async () => {
+        requestCount += 1
+        return {
+          ok: true as const,
+          page: {
+            sessions: [],
+            projects: [{ token: "project-token-1", label: "free4chat" }],
+            hasMore: false,
+            controls: requestCount >= 3 ? changedControls : controls,
+          },
+        }
+      }),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
+    fireEvent.click(screen.getByTestId("task-project-discover"))
+    await screen.findByTestId("task-session-project-toggle")
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    fireEvent.click(screen.getByTestId("task-session-project-option"))
+
+    const mode = await screen.findByLabelText("Harness-native mode")
+    const model = await screen.findByLabelText("Harness-native Model")
+    const effort = await screen.findByLabelText(
+      "Harness-native Reasoning effort"
+    )
+    fireEvent.change(mode, { target: { value: "agent" } })
+    fireEvent.change(model, { target: { value: "gpt-5.6-sol" } })
+    fireEvent.change(effort, { target: { value: "medium" } })
+    expect(mode).toHaveValue("agent")
+    expect(model).toHaveValue("gpt-5.6-sol")
+    expect(effort).toHaveValue("medium")
+
+    fireEvent.click(screen.getByTestId("task-session-refresh"))
+    await waitFor(() => {
+      expect(screen.getByLabelText("Harness-native mode")).toHaveValue("")
+      expect(screen.getByLabelText("Harness-native Model")).toHaveValue("")
+      expect(
+        screen.getByLabelText("Harness-native Reasoning effort")
+      ).toHaveValue("medium")
+    })
   })
 
   it("keeps Task artifacts in their Task scope and avoids duplicate collab cards", () => {

@@ -1375,6 +1375,26 @@ export default function RoomContent({
         return
       }
       setTaskSessionControls(result.page.controls ?? null)
+      if (!options.append) {
+        const controls = result.page.controls
+        setTaskSessionModeId((selected) =>
+          selected && controls?.modes.some((mode) => mode.id === selected)
+            ? selected
+            : ""
+        )
+        setTaskSessionConfigOptions((selected) => {
+          if (!controls) return {}
+          const retained: Record<string, string> = {}
+          for (const [id, value] of Object.entries(selected)) {
+            const option = controls.configOptions.find(
+              (candidate) => candidate.id === id
+            )
+            if (option?.options.some((candidate) => candidate.value === value))
+              retained[id] = value
+          }
+          return retained
+        })
+      }
       setTaskSessions((previous) => {
         const next = options.append
           ? appendDedupedTaskSessions(previous, result.page.sessions)
@@ -3272,68 +3292,71 @@ export default function RoomContent({
                 )}
               </div>
             )}
-            {taskAgentContinuation && taskSessionControls && (
-              <fieldset className="mb-4 rounded-md border border-gray-800 p-3">
-                <legend className="px-1 text-xs text-gray-400">
-                  Harness-native session controls
-                </legend>
-                {taskSessionControls.modes.length > 0 && (
-                  <label className="mb-3 block text-xs text-gray-300">
-                    Mode
-                    <select
-                      aria-label="Harness-native mode"
-                      value={taskSessionModeId}
-                      disabled={taskStarting}
-                      onChange={(event) =>
-                        setTaskSessionModeId(event.target.value)
-                      }
-                      className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white"
-                    >
-                      <option value="">Keep current mode</option>
-                      {taskSessionControls.modes.map((mode) => (
-                        <option key={mode.id} value={mode.id}>
-                          {mode.name || mode.id}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                {taskSessionControls.configOptions
-                  .filter((option) => option.options.length > 0)
-                  .map((option) => (
-                    <label
-                      key={option.id}
-                      className="mb-2 block text-xs text-gray-300"
-                    >
-                      {option.name || option.id}
+            {taskAgentContinuation &&
+              taskSessionControls &&
+              (taskSessionMode === "continue" ||
+                taskSessionProjectToken !== null) && (
+                <fieldset className="mb-4 rounded-md border border-gray-800 p-3">
+                  <legend className="px-1 text-xs text-gray-400">
+                    Harness-native session controls
+                  </legend>
+                  {taskSessionControls.modes.length > 0 && (
+                    <label className="mb-3 block text-xs text-gray-300">
+                      Mode
                       <select
-                        aria-label={`Harness-native ${
-                          option.name || option.id
-                        }`}
-                        value={taskSessionConfigOptions[option.id] ?? ""}
+                        aria-label="Harness-native mode"
+                        value={taskSessionModeId}
                         disabled={taskStarting}
                         onChange={(event) =>
-                          setTaskSessionConfigOptions((current) => {
-                            const next = { ...current }
-                            if (event.target.value)
-                              next[option.id] = event.target.value
-                            else delete next[option.id]
-                            return next
-                          })
+                          setTaskSessionModeId(event.target.value)
                         }
                         className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white"
                       >
-                        <option value="">Keep current value</option>
-                        {option.options.map((value) => (
-                          <option key={value.value} value={value.value}>
-                            {value.name || value.value}
+                        <option value="">Keep current mode</option>
+                        {taskSessionControls.modes.map((mode) => (
+                          <option key={mode.id} value={mode.id}>
+                            {mode.name || mode.id}
                           </option>
                         ))}
                       </select>
                     </label>
-                  ))}
-              </fieldset>
-            )}
+                  )}
+                  {taskSessionControls.configOptions
+                    .filter((option) => option.options.length > 0)
+                    .map((option) => (
+                      <label
+                        key={option.id}
+                        className="mb-2 block text-xs text-gray-300"
+                      >
+                        {option.name || option.id}
+                        <select
+                          aria-label={`Harness-native ${
+                            option.name || option.id
+                          }`}
+                          value={taskSessionConfigOptions[option.id] ?? ""}
+                          disabled={taskStarting}
+                          onChange={(event) =>
+                            setTaskSessionConfigOptions((current) => {
+                              const next = { ...current }
+                              if (event.target.value)
+                                next[option.id] = event.target.value
+                              else delete next[option.id]
+                              return next
+                            })
+                          }
+                          className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white"
+                        >
+                          <option value="">Keep current value</option>
+                          {option.options.map((value) => (
+                            <option key={value.value} value={value.value}>
+                              {value.name || value.value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                </fieldset>
+              )}
             <label
               htmlFor="start-task-instruction"
               className="mb-2 block text-sm text-gray-200"
