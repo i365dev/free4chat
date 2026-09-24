@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,9 @@ func newDiscoveryFixture(t *testing.T, disposableRoot string) *discoveryFixture 
 func newDiscoveryFixtureWithPolicy(t *testing.T, disposableRoot string, policy types.TaskExecutionPolicy) *discoveryFixture {
 	t.Helper()
 	adapter := newAdoptionAdapter("pi")
+	// Prepared project selections now verify that a listed cwd is still a
+	// directory. Give the fixture's default discovered row a real local path.
+	adapter.sessions[0].Cwd = t.TempDir()
 	client := newExecutionClient()
 	logs := &logCapture{}
 	rt := NewResidentRuntime(Options{
@@ -67,6 +71,43 @@ func newDiscoveryFixtureWithPolicy(t *testing.T, disposableRoot string, policy t
 	return &discoveryFixture{adoptionFixture: &adoptionFixture{
 		rt: rt, adapter: adapter, client: client, logs: logs,
 	}}
+}
+
+func TestPreparedSessionRejectsMissingProjectBeforeTaskMaterialization(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	missingCwd := filepath.Join(t.TempDir(), "removed-project")
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-removed-project",
+		Cwd:       missingCwd,
+		Title:     "Removed project session",
+	}}
+
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Sessions) != 1 {
+		t.Fatalf("session discovery should preserve the provider row for a truthful prepare error: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-removed-project",
+		HumanParticipantID: "human-1",
+		SessionToken:       discovered.Sessions[0].Token,
+		TaskRequestID:      "req-removed-project-task",
+	})
+	if prepared.OK || prepared.Error != types.ResidentSessionErrorUnavailable {
+		t.Fatalf("missing project cwd must fail with the bounded unavailable result: %+v", prepared)
+	}
+	if adoption := fixture.rt.pendingAdoptionSnapshot(); adoption != nil {
+		t.Fatalf("known-unavailable project must not arm a Task adoption: %+v", adoption)
+	}
+	if len(fixture.adapter.loadCalls()) != 0 {
+		t.Fatalf("known-unavailable project must fail before Harness load: %+v", fixture.adapter.loadCalls())
+	}
+	for _, entry := range fixture.logs.snapshot() {
+		if strings.Contains(entry, missingCwd) {
+			t.Fatalf("raw project path leaked into Runtime diagnostics: %s", entry)
+		}
+	}
 }
 
 // listControl runs one discovery request synchronously.

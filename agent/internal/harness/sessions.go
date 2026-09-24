@@ -380,6 +380,7 @@ func (a *ACPAdapter) loadSession(scope string, sessionID string, cwd string) err
 	a.nextScopeGeneration++
 	a.sessions[scope] = &acpSession{
 		sessionID:  sessionID,
+		cwd:        cwd,
 		caps:       replacement,
 		generation: a.nextScopeGeneration,
 		scope:      scope,

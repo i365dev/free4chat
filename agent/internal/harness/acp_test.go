@@ -2252,6 +2252,55 @@ func TestIdleReapReloadsTheExactNativeSession(t *testing.T) {
 	}
 }
 
+func TestIdleReapPreservesLoadedSessionProjectCwd(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("session_echo", map[string]string{
+		"FAKE_LOAD_CAP": "1",
+		"FAKE_TRACE":    tracePath,
+	}), AdapterOptions{})
+	defer adapter.Close()
+
+	if err := adapter.EnsureSessionFor("task:project-b"); err != nil {
+		t.Fatalf("materialize task session: %v", err)
+	}
+	projectCwd := filepath.Join(t.TempDir(), "project-b")
+	if err := adapter.LoadSession("task:project-b", "native-session-project-b", projectCwd); err != nil {
+		t.Fatalf("load exact project session: %v", err)
+	}
+	if err := adapter.ReapIdle(); err != nil {
+		t.Fatalf("reap idle lane: %v", err)
+	}
+
+	adapter.mu.Lock()
+	retained := adapter.retainedSessions["task:project-b"]
+	adapter.mu.Unlock()
+	if retained.sessionID != "native-session-project-b" || retained.cwd != projectCwd {
+		t.Fatalf("reap changed native execution identity: session=%q cwd=%q; want session=%q cwd=%q", retained.sessionID, retained.cwd, "native-session-project-b", projectCwd)
+	}
+
+	if err := adapter.EnsureSessionFor("task:project-b"); err != nil {
+		t.Fatalf("reload exact project session: %v", err)
+	}
+	loads := acpTraceParams(t, tracePath, "session/load")
+	var exactReloads int
+	for _, load := range loads {
+		if load["sessionId"] == "native-session-project-b" {
+			exactReloads++
+			if load["cwd"] != projectCwd {
+				t.Fatalf("reload substituted project cwd: got %v want %q", load["cwd"], projectCwd)
+			}
+		}
+	}
+	if exactReloads != 2 { // initial adoption and post-reap materialization
+		t.Fatalf("expected initial adoption and exact post-reap reload, got %d matches in %+v", exactReloads, loads)
+	}
+	if news := acpTraceParams(t, tracePath, "session/new"); len(news) != 2 {
+		// One Runtime-default session and one initial scoped Task session are
+		// created on first materialization. The post-reap path must add none.
+		t.Fatalf("recovery created a fresh native session: %+v", news)
+	}
+}
+
 func TestRenderUntrustedRoomTurnInvariants(t *testing.T) {
 	input := turnInput("hello")
 	rendered := RenderUntrustedRoomTurn(&input)

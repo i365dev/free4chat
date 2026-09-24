@@ -394,6 +394,16 @@ func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionContr
 		result.Error = types.ResidentSessionErrorExpired
 		return result
 	}
+	// session/list is discovery, not a lease on the local directory. Catch a
+	// removed, missing, or non-directory cwd while the Human is still in the
+	// picker flow so a known-unavailable project never becomes a Task that
+	// immediately projects Session lost. Keep the exact string in the token;
+	// this check must not clean, resolve, or substitute the path.
+	if !taskSessionCwdAvailable(selection.cwd) {
+		result.Error = types.ResidentSessionErrorUnavailable
+		r.log("task_session_prepare_failed", map[string]string{"failureClass": "CWD_PATH_UNAVAILABLE"})
+		return result
+	}
 	if err := r.ArmPreparedSessionAdoption(selection.sessionID, selection.cwd, human, control.TaskRequestID); err != nil {
 		result.Error = types.ResidentSessionErrorUnavailable
 		r.log("task_session_prepare_failed", map[string]string{"failureClass": turnFailureClassOf(err)})
@@ -401,6 +411,14 @@ func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionContr
 	}
 	result.OK = true
 	return result
+}
+
+func taskSessionCwdAvailable(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	info, err := os.Stat(cwd)
+	return err == nil && info.IsDir()
 }
 
 // cancelTaskSession releases a prepared adoption whose canonical Task will now

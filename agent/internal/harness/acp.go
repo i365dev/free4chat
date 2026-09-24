@@ -342,7 +342,11 @@ func (e *promptBusyError) Error() string { return "ACP prompt is already running
 var ErrSessionPromptBusy error = &promptBusyError{}
 
 type acpSession struct {
-	sessionID  string
+	sessionID string
+	// cwd is the exact Harness-reported/selected project directory bound to
+	// this native session. It survives provider-process reap; workingDir is
+	// only the Runtime's private default workspace and is not Task identity.
+	cwd        string
 	caps       *ACPCapabilities
 	generation int64
 	scope      string
@@ -918,6 +922,7 @@ func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	a.nextScopeGeneration++
 	a.sessions[scope] = &acpSession{
 		sessionID:  sessionResponse.SessionID,
+		cwd:        a.workingDir,
 		caps:       base,
 		generation: a.nextScopeGeneration,
 		scope:      scope,
@@ -2310,7 +2315,11 @@ func (a *ACPAdapter) closeInternalWithRetention(force, retain bool) error {
 		}
 		for scope, session := range a.sessions {
 			if session != nil && session.sessionID != "" {
-				a.retainedSessions[scope] = retainedACPSession{sessionID: session.sessionID, cwd: a.workingDir, scope: scope, generation: session.generation}
+				cwd := session.cwd
+				if cwd == "" {
+					cwd = a.workingDir
+				}
+				a.retainedSessions[scope] = retainedACPSession{sessionID: session.sessionID, cwd: cwd, scope: scope, generation: session.generation}
 			}
 		}
 	} else {
