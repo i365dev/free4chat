@@ -193,6 +193,9 @@ describe("RoomContent — narrow-screen composition", () => {
       "aria-expanded",
       "true"
     )
+    expect(screen.getByTestId("room-mobile-overflow")).toHaveTextContent(
+      "Room chat →"
+    )
     expect(within(sheet).getByText("People in this Room")).toBeInTheDocument()
     expect(within(sheet).getByTestId("room-stage")).toBeInTheDocument()
 
@@ -213,6 +216,9 @@ describe("RoomContent — narrow-screen composition", () => {
     fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
     expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
     expect(classes(screen.getByTestId("room-stage"))).toContain("hidden")
+    expect(screen.getByTestId("room-mobile-overflow")).toHaveTextContent(
+      "← People & Stage"
+    )
 
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
     expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()

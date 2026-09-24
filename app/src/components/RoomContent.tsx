@@ -2110,13 +2110,22 @@ export default function RoomContent({
           <button
             type="button"
             data-testid="room-mobile-overflow"
+            data-active-surface={mobileSheetVisible ? "people" : "chat"}
             aria-expanded={mobileSheetVisible}
-            aria-label="Show participants and Stage"
-            title="Show participants and Stage"
+            aria-label={
+              mobileSheetVisible
+                ? "Open Room chat"
+                : "Return to people and Stage"
+            }
+            title={
+              mobileSheetVisible
+                ? "Open Room chat"
+                : "Return to people and Stage"
+            }
             onClick={() => setMobileRoomSheetOpen((open) => !open)}
-            className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 md:hidden"
+            className="room-mobile-surface-switch shrink-0 rounded-md border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 md:hidden"
           >
-            People ({participants.length})
+            {mobileSheetVisible ? "Room chat →" : "← People & Stage"}
           </button>
           <button
             type="button"
@@ -2365,7 +2374,20 @@ export default function RoomContent({
                 getLocalRoomAuth={getLocalRoomAuth}
               />
             </div>
-            <div className="relative flex flex-1 flex-col overflow-hidden">
+            <div className="room-stage-inner relative flex flex-1 flex-col overflow-hidden">
+              {showPeopleStage && (
+                <div className="room-stage-intro" aria-hidden="true">
+                  <span>01 / DEEP SPACE RELAY</span>
+                  <span>
+                    {String(participants.length).padStart(2, "0")} ONLINE
+                  </span>
+                  <strong>
+                    {connectionStatus === "connected"
+                      ? "THE ROOM IS LIVE"
+                      : "TUNING THE ROOM"}
+                  </strong>
+                </div>
+              )}
               {/* #98: the Stage entry is progressive disclosure, not the whole
                 catalog. Room stays permanently reachable, at most a few
                 recent/current Apps stay inline, and every promoted runtime

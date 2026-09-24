@@ -377,6 +377,11 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
           .map(Number)
       )
     ).toEqual([223, 166, 100])
+    expect(
+      await selfCard.evaluate(
+        (element) => getComputedStyle(element).borderWidth
+      )
+    ).toBe("0px")
     // #438 makes people and Stage the initial phone surface. The Stage stays
     // one mounted element: switching to Room chat must hide it, not recreate
     // participant/media/App state when People is opened again.
@@ -393,6 +398,33 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     }
     await expect(page.getByTestId("room-timeline")).toBeVisible()
     await expectNoPageOverflow(page, "joined Room")
+  })
+
+  await test.step("phone feature popovers stay above the People sheet", async () => {
+    if (isTwoPaneRoom(page)) return
+
+    for (const [trigger, dialogName, action] of [
+      ["Invite Agent", "Invite an Agent", "Copy invite prompt"],
+      ["Live Transcript", "Live Transcript", "Copy connection command"],
+    ]) {
+      await page.getByRole("button", { name: trigger }).click()
+      const dialog = page.getByRole("dialog", { name: dialogName })
+      await expect(dialog.getByRole("button", { name: action })).toBeVisible()
+      const geometry = await dialog.evaluate((element) => {
+        const box = element.getBoundingClientRect()
+        const front = document.elementFromPoint(box.left + 20, box.top + 20)
+        return {
+          top: box.top,
+          bottom: box.bottom,
+          viewportHeight: window.innerHeight,
+          uncovered: element.contains(front),
+        }
+      })
+      expect(geometry.top).toBeGreaterThanOrEqual(0)
+      expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight + 1)
+      expect(geometry.uncovered).toBe(true)
+      await page.getByRole("button", { name: trigger }).click()
+    }
   })
 
   await test.step("open the fixture Room App through the real host boundary", async () => {
@@ -461,6 +493,9 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       "aria-expanded",
       "false"
     )
+    await expect(page.getByTestId("room-mobile-overflow")).toHaveText(
+      "← People & Stage"
+    )
 
     await page.getByTestId("room-mobile-overflow").click()
     await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
@@ -468,6 +503,9 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await expect(page.getByTestId("room-mobile-overflow")).toHaveAttribute(
       "aria-expanded",
       "true"
+    )
+    await expect(page.getByTestId("room-mobile-overflow")).toHaveText(
+      "Room chat →"
     )
     expect(await stageIdentityStatus(page)).toBe("people-first")
     expect(await iframeIdentityStatus(page)).toBe("before-fullscreen")
