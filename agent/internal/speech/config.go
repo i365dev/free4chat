@@ -82,28 +82,41 @@ func LoadConfigWithStore(runtimeDir string, environ func(string) string, store c
 		}
 	}
 
-	// Doubao is the only production provider in PR2; an explicit different
-	// selection fails closed (both slots disabled).
-	selectsDoubao := func(id string) bool {
-		return id == "" || id == "doubao"
-	}
-	sttOK := selectsDoubao(sttProvider)
-	ttsOK := selectsDoubao(ttsProvider)
+	// Speech is opt-in. In particular, an installed credential in the native
+	// store must not make every ordinary Runtime join/readiness check prompt
+	// macOS Keychain access. speech setup persists explicit provider selections;
+	// environment credentials are also an explicit opt-in for automation.
+	legacyAPIKey := ""
 
 	stored := credentials.Providers["doubao"]
-	apiKey := ""
+	legacyAPIKey = stored["apiKey"]
 	voice := ""
 	if stored != nil {
-		apiKey = stored["apiKey"]
 		voice = stored["voice"]
 	}
-	if store != nil {
+	envAPIKey := strings.TrimSpace(env("DOUBAO_API_KEY"))
+	if envAPIKey != "" || legacyAPIKey != "" {
+		if sttProvider == "" {
+			sttProvider = "doubao"
+		}
+		if ttsProvider == "" {
+			ttsProvider = "doubao"
+		}
+	}
+	sttOK := sttProvider == "doubao"
+	ttsOK := ttsProvider == "doubao"
+
+	apiKey := ""
+	if envAPIKey == "" && store != nil && (sttOK || ttsOK) {
 		if fromStore, err := store.Get("doubao", "apiKey"); err == nil && strings.TrimSpace(fromStore) != "" {
 			apiKey = strings.TrimSpace(fromStore)
 		}
 	}
-	if fromEnv := strings.TrimSpace(env("DOUBAO_API_KEY")); fromEnv != "" {
-		apiKey = fromEnv
+	if apiKey == "" {
+		apiKey = legacyAPIKey
+	}
+	if envAPIKey != "" {
+		apiKey = envAPIKey
 	}
 	if fromEnv := strings.TrimSpace(env("DOUBAO_TTS_VOICE")); fromEnv != "" {
 		voice = fromEnv
@@ -114,6 +127,89 @@ func LoadConfigWithStore(runtimeDir string, environ func(string) string, store c
 	config.STTEnabled = sttOK && apiKey != ""
 	config.TTSEnabled = ttsOK && apiKey != ""
 	return config
+}
+
+// EnableProviders persists explicit speech opt-in without writing a
+// credential. Existing unrelated Runtime config is preserved.
+func EnableProviders(runtimeDir string, stt, tts bool) error {
+	if runtimeDir == "" || (!stt && !tts) {
+		return errors.New("speech provider selection is invalid")
+	}
+	path := filepath.Join(runtimeDir, "config.json")
+	document := map[string]json.RawMessage{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &document); err != nil {
+			return errors.New("Runtime config is not valid JSON; speech settings were not changed")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errors.New("Runtime config could not be read; speech settings were not changed")
+	}
+
+	speechDocument := map[string]json.RawMessage{}
+	if raw, ok := document["speech"]; ok {
+		if err := json.Unmarshal(raw, &speechDocument); err != nil || speechDocument == nil {
+			return errors.New("Runtime speech config is invalid; speech settings were not changed")
+		}
+	}
+	enableSlot := func(name string) error {
+		slot := map[string]json.RawMessage{}
+		if raw, ok := speechDocument[name]; ok {
+			if err := json.Unmarshal(raw, &slot); err != nil || slot == nil {
+				return errors.New("Runtime speech slot config is invalid; speech settings were not changed")
+			}
+		}
+		provider, _ := json.Marshal("doubao")
+		slot["provider"] = provider
+		encoded, err := json.Marshal(slot)
+		if err != nil {
+			return errors.New("Runtime speech settings could not be encoded")
+		}
+		speechDocument[name] = encoded
+		return nil
+	}
+	if stt {
+		if err := enableSlot("stt"); err != nil {
+			return err
+		}
+	}
+	if tts {
+		if err := enableSlot("tts"); err != nil {
+			return err
+		}
+	}
+	encodedSpeech, err := json.Marshal(speechDocument)
+	if err != nil {
+		return errors.New("Runtime speech settings could not be encoded")
+	}
+	document["speech"] = encodedSpeech
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return errors.New("Runtime config could not be encoded")
+	}
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return errors.New("Runtime config directory could not be created")
+	}
+	temporary, err := os.CreateTemp(runtimeDir, ".config-speech-*.tmp")
+	if err != nil {
+		return errors.New("Runtime config could not be written")
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return errors.New("Runtime config permissions could not be set")
+	}
+	if _, err := temporary.Write(append(encoded, '\n')); err != nil {
+		_ = temporary.Close()
+		return errors.New("Runtime config could not be written")
+	}
+	if err := temporary.Close(); err != nil {
+		return errors.New("Runtime config could not be closed")
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return errors.New("Runtime config could not be updated")
+	}
+	return nil
 }
 
 // ErrNotConfigured is returned by provider factories when the credential is

@@ -169,6 +169,10 @@ func TestSpeechSetupPersistsKeyInStoreAndDoesNotRewriteLegacyFile(t *testing.T) 
 	if err != nil || stored != secret {
 		t.Fatalf("keychain store did not retain the key: %v", err)
 	}
+	configured := speech.LoadConfigWithStore(dir, func(string) string { return "" }, store)
+	if !configured.STTEnabled || !configured.TTSEnabled {
+		t.Fatalf("explicit speech setup did not opt both speech slots in: %+v", configured)
+	}
 	data, err := os.ReadFile(credentialsPath)
 	if err != nil || string(data) != original {
 		t.Fatal("legacy credentials.json was unexpectedly rewritten")
@@ -218,7 +222,7 @@ func TestSpeechSetupMalformedLegacyCredentialsDoesNotBlockKeychain(t *testing.T)
 	}
 }
 
-func TestSpeechSetupDoesNotNeedWritableRuntimeDirectory(t *testing.T) {
+func TestSpeechSetupRequiresWritableRuntimeDirectoryForExplicitOptIn(t *testing.T) {
 	useMemoryStore(t)
 	parent := t.TempDir()
 	blocker := filepath.Join(parent, "blocker")
@@ -228,8 +232,8 @@ func TestSpeechSetupDoesNotNeedWritableRuntimeDirectory(t *testing.T) {
 	runtimeDir := filepath.Join(blocker, "sub")
 	stdout, stderr := setupBuffers()
 	err := speechSetup("doubao", strings.NewReader("sekrit\n"), true, runtimeDir, stdout, stderr)
-	if err != nil {
-		t.Fatalf("native credential setup should not write runtime directory: %v", err)
+	if err == nil {
+		t.Fatal("speech setup must fail when it cannot persist the explicit opt-in")
 	}
 	if strings.Contains(stdout.String()+stderr.String(), "sekrit") {
 		t.Fatal("the secret appeared in output on the failure path")
