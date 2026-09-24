@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -173,6 +175,106 @@ func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
 	}
 }
 
+func TestTaskProjectLabelsNeverExposeCwdAndDisambiguateCollisions(t *testing.T) {
+	previousHome := sessionProjectHomeDirectory
+	home := filepath.Join(t.TempDir(), "operator-home")
+	sessionProjectHomeDirectory = func() (string, error) { return home, nil }
+	t.Cleanup(func() { sessionProjectHomeDirectory = previousHome })
+
+	homeProject := filepath.Join(home, "client", "repo")
+	if err := os.MkdirAll(homeProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideProjectA := "/Volumes/work/client/repo"
+	outsideProjectB := "/private/tmp/repo"
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	fixture.adapter.sessions = []harness.ACPSessionInfo{
+		{SessionID: "native-home", Cwd: homeProject, Title: "Home project session"},
+		{SessionID: "native-volume", Cwd: outsideProjectA, Title: "Volume project session"},
+		{SessionID: "native-temp", Cwd: outsideProjectB, Title: "Temp project session"},
+	}
+
+	first := fixture.listControl("human-1", "", "")
+	if !first.OK || len(first.Sessions) != 3 || len(first.Projects) != 3 {
+		t.Fatalf("expected three project-backed session rows: %+v", first)
+	}
+	serialized, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rawPath := range []string{homeProject, outsideProjectA, outsideProjectB} {
+		if strings.Contains(string(serialized), rawPath) {
+			t.Fatalf("browser-facing session list contains raw cwd %q: %s", rawPath, serialized)
+		}
+	}
+	labels := make(map[string]string, len(first.Projects))
+	for _, project := range first.Projects {
+		if project.Label == "" || filepath.IsAbs(project.Label) || strings.ContainsAny(project.Label, `/\\`) {
+			t.Fatalf("project label is not a bounded path-free basename label: %+v", project)
+		}
+		for _, parentFragment := range []string{"client", "Volumes", "work", "private", "tmp"} {
+			if strings.Contains(project.Label, parentFragment) {
+				t.Fatalf("project label leaked parent fragment %q: %+v", parentFragment, project)
+			}
+		}
+		labels[project.Token] = project.Label
+	}
+	for _, session := range first.Sessions {
+		for _, parentFragment := range []string{"client", "Volumes", "work", "private", "tmp"} {
+			if strings.Contains(session.ProjectLabel, parentFragment) {
+				t.Fatalf("session row leaked parent fragment %q: %+v", parentFragment, session)
+			}
+		}
+	}
+	if len(map[string]bool{labels[first.Sessions[0].ProjectToken]: true, labels[first.Sessions[1].ProjectToken]: true, labels[first.Sessions[2].ProjectToken]: true}) != 3 {
+		t.Fatalf("same-basename projects did not receive distinct labels: %+v", labels)
+	}
+
+	fixture.rt.mu.Lock()
+	for token, cwd := range map[string]string{
+		first.Sessions[0].ProjectToken: homeProject,
+		first.Sessions[1].ProjectToken: outsideProjectA,
+		first.Sessions[2].ProjectToken: outsideProjectB,
+	} {
+		if got := fixture.rt.taskSessionProjects[token].cwd; got != cwd {
+			fixture.rt.mu.Unlock()
+			t.Fatalf("opaque project token lost exact private cwd: token=%q got=%q want=%q", token, got, cwd)
+		}
+	}
+	fixture.rt.mu.Unlock()
+
+	second := fixture.listControl("human-1", "", "")
+	if !second.OK {
+		t.Fatalf("repeat discovery failed: %+v", second)
+	}
+	for _, project := range second.Projects {
+		if labels[project.Token] != project.Label {
+			t.Fatalf("project label changed for stable opaque token %q: %q -> %q", project.Token, labels[project.Token], project.Label)
+		}
+	}
+
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-private-project-token",
+		HumanParticipantID: "human-1",
+		ProjectToken:       first.Sessions[0].ProjectToken,
+		TaskRequestID:      "req-private-project-task",
+	})
+	if !prepared.OK {
+		t.Fatalf("opaque project token did not resolve for preparation: %+v", prepared)
+	}
+	fixture.rt.mu.Lock()
+	var preparedCwd string
+	if fixture.rt.pendingAdoption != nil {
+		preparedCwd = fixture.rt.pendingAdoption.cwd
+	}
+	fixture.rt.mu.Unlock()
+	if preparedCwd != homeProject {
+		t.Fatalf("prepared opaque token did not retain exact cwd privately: got %q want exact selected project", preparedCwd)
+	}
+}
+
 // listControl runs one discovery request synchronously.
 func (f *discoveryFixture) listControl(human, projectToken, pageToken string) types.ResidentSessionResult {
 	return f.rt.runSessionControl(&types.ResidentSessionControl{
@@ -220,7 +322,7 @@ func TestTaskSessionProjectFilterSendsTheExactOriginalCwd(t *testing.T) {
 	}
 	var tmpToken string
 	for _, row := range recent.Sessions {
-		if row.ProjectLabel == "/private/tmp" {
+		if row.ProjectLabel == "tmp" {
 			tmpToken = row.ProjectToken
 		}
 	}
@@ -235,7 +337,7 @@ func TestTaskSessionProjectFilterSendsTheExactOriginalCwd(t *testing.T) {
 	if got := fixture.adapter.count("list:/private/tmp"); got != 1 {
 		t.Fatalf("the project filter must send the exact original cwd: %v", fixture.adapter.recorded())
 	}
-	if len(filtered.Sessions) != 1 || filtered.Sessions[0].ProjectLabel != "/private/tmp" {
+	if len(filtered.Sessions) != 1 || filtered.Sessions[0].ProjectLabel != "tmp" {
 		t.Fatalf("project filter returned the wrong rows: %+v", filtered.Sessions)
 	}
 }

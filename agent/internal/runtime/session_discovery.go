@@ -337,9 +337,17 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 			Token:        token,
 			Title:        info.Title,
 			ProjectToken: projectToken,
-			ProjectLabel: taskSessionProjectLabel(info.Cwd),
+			ProjectLabel: r.taskSessionProjects[projectToken].label,
 			UpdatedAt:    info.UpdatedAt,
 		})
+	}
+	// A later row can reveal a basename collision. Refresh this page's labels
+	// only after all tokens have been issued, so every duplicate in the page is
+	// disambiguated consistently before it crosses the Runtime boundary.
+	for index := range rows {
+		if project, found := r.taskSessionProjects[rows[index].ProjectToken]; found {
+			rows[index].ProjectLabel = project.label
+		}
 	}
 	consumed := len(rows)
 	remainder := pending[min(consumed, len(pending)):]
@@ -639,7 +647,31 @@ func (r *ResidentRuntime) issueProjectTokenLocked(cwd, human string, now int64, 
 		expiresAt:          now + taskSessionTokenTTL.Milliseconds(),
 	}
 	index[cwd] = token
+	r.refreshTaskSessionProjectLabelsLocked()
 	return token, nil
+}
+
+// refreshTaskSessionProjectLabelsLocked makes every display label a basename.
+// Duplicate basenames receive a short suffix from their opaque Runtime token;
+// no parent directory is consulted or relayed.
+func (r *ResidentRuntime) refreshTaskSessionProjectLabelsLocked() {
+	byBase := make(map[string][]string, len(r.taskSessionProjects))
+	for token, project := range r.taskSessionProjects {
+		byBase[taskSessionProjectLabel(project.cwd)] = append(byBase[taskSessionProjectLabel(project.cwd)], token)
+	}
+	for base, tokens := range byBase {
+		if len(tokens) == 1 {
+			project := r.taskSessionProjects[tokens[0]]
+			project.label = base
+			r.taskSessionProjects[tokens[0]] = project
+			continue
+		}
+		for _, token := range tokens {
+			project := r.taskSessionProjects[token]
+			project.label = taskSessionProjectLabelWithToken(base, token, tokens)
+			r.taskSessionProjects[token] = project
+		}
+	}
 }
 
 func (r *ResidentRuntime) issuePageTokenLocked(cwd *string, cursor string, pending []harness.ACPSessionInfo, human string, now int64) (string, error) {
@@ -725,22 +757,39 @@ func pathWithinRoot(root, candidate string) bool {
 	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-// taskSessionProjectLabel renders a project's human-facing display path. The
-// label is presentation ONLY: the browser never sends it back, and the Runtime
-// never resolves a cwd from it.
+// taskSessionProjectLabel returns only the final path component for display.
+// Raw cwd is retained exclusively in the private Runtime token mapping.
 func taskSessionProjectLabel(cwd string) string {
-	label := cwd
-	if home, err := sessionProjectHomeDirectory(); err == nil && home != "" {
-		cleanHome := filepath.Clean(home)
-		if pathWithinRoot(cleanHome, cwd) {
-			if cwd == cleanHome {
-				label = "~"
-			} else if relative, relErr := filepath.Rel(cleanHome, filepath.Clean(cwd)); relErr == nil {
-				label = "~" + string(filepath.Separator) + relative
+	base := filepath.Base(filepath.Clean(cwd))
+	base = strings.NewReplacer("/", "", `\`, "").Replace(base)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "Local project"
+	}
+	return boundedSessionText(base, types.MaxResidentSessionProjectLabelLength)
+}
+
+func taskSessionProjectLabelWithToken(base, token string, collisions []string) string {
+	// Runtime-issued tokens are opaque random handles. Extend the prefix only
+	// when needed to ensure labels remain distinct inside this catalog.
+	length := 4
+	for length < len(token) {
+		candidate := token[:length]
+		unique := true
+		for _, other := range collisions {
+			if other != token && strings.HasPrefix(other, candidate) {
+				unique = false
+				break
 			}
 		}
+		if unique {
+			break
+		}
+		length++
 	}
-	return boundedSessionText(label, types.MaxResidentSessionProjectLabelLength)
+	if length > len(token) {
+		length = len(token)
+	}
+	return boundedSessionText(base+" · "+token[:length], types.MaxResidentSessionProjectLabelLength)
 }
 
 // boundedSessionText bounds and control-folds display-only text. A Harness
