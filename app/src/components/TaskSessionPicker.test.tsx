@@ -114,6 +114,43 @@ describe("TaskSessionPicker (#409)", () => {
     )
   })
 
+  it("shows project discovery errors and retry when session rows are hidden", () => {
+    const onRefresh = vi.fn()
+    renderPicker({
+      status: "error",
+      sessions: [],
+      showSessions: false,
+      error: "Project discovery is unavailable. Refresh and try again.",
+      onRefresh,
+    })
+    expect(screen.getByTestId("task-session-error")).toHaveTextContent(
+      "Project discovery is unavailable."
+    )
+    expect(screen.queryByTestId("task-session-list")).toBeNull()
+    fireEvent.click(screen.getByTestId("task-session-retry"))
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the full bounded project label in tooltips to preserve collision suffixes", () => {
+    const label = `${"long-project-basename-".repeat(3)} · a1b2c3d4`
+    renderPicker({
+      projects: [{ token: "long-project", label }],
+      projectToken: "long-project",
+    })
+    expect(screen.getByTestId("task-session-project-summary")).toHaveAttribute(
+      "title",
+      label
+    )
+    expect(screen.getByTestId("task-session-project-toggle")).toHaveAttribute(
+      "title",
+      label
+    )
+
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    const option = screen.getByTestId("task-session-project-option")
+    expect(option.querySelector("span")).toHaveAttribute("title", label)
+  })
+
   it("shows an actionable error with a refresh control", () => {
     const onRefresh = vi.fn()
     renderPicker({

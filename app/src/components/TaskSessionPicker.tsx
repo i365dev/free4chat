@@ -163,11 +163,7 @@ export default function TaskSessionPicker({
         <span
           className="min-w-0 flex-1 truncate text-xs text-gray-400"
           data-testid="task-session-project-summary"
-          title={
-            selectedProject
-              ? compactProjectLabel(selectedProject.label)
-              : undefined
-          }
+          title={selectedProject?.label}
         >
           {selectedProject
             ? compactProjectLabel(selectedProject.label)
@@ -199,11 +195,7 @@ export default function TaskSessionPicker({
                   queueMicrotask(() => projectSearchRef.current?.focus())
               }}
               className="block w-full min-w-0 max-w-full truncate rounded border border-gray-700 px-2 py-1 text-left text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
-              title={
-                selectedProject
-                  ? compactProjectLabel(selectedProject.label)
-                  : undefined
-              }
+              title={selectedProject?.label}
             >
               Project:{" "}
               {selectedProject
@@ -275,7 +267,7 @@ export default function TaskSessionPicker({
                         field above still matches the FULL label. */}
                       <span
                         className="min-w-0 flex-1 truncate"
-                        title={compactProjectLabel(project.label)}
+                        title={project.label}
                       >
                         {compactProjectLabel(project.label)}
                       </span>
@@ -302,7 +294,7 @@ export default function TaskSessionPicker({
         </p>
       )}
 
-      {showSessions && status === "error" && (
+      {status === "error" && (
         <div
           data-testid="task-session-error"
           className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-4 text-xs text-rose-300"
