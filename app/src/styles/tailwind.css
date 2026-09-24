@@ -972,11 +972,71 @@ html {
 .room-shell--live .room-cosmos-glints i {
   opacity: 0.4;
 }
+.room-shell--live .room-participants-grid {
+  position: relative;
+}
+.room-shell--live .room-participants-grid::after {
+  position: absolute;
+  left: 1rem;
+  color: rgba(166, 215, 180, 0.58);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  pointer-events: none;
+}
+.room-shell--live .room-participants-grid::after {
+  bottom: 1rem;
+  content: "◇ ENCRYPTED ROOM FREQUENCY";
+}
+.room-shell--live .room-stage-intro {
+  position: absolute;
+  z-index: 1;
+  top: 1.15rem;
+  right: 1rem;
+  left: 1rem;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+  color: #a4d7b4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.14em;
+  pointer-events: none;
+}
+.room-shell--live
+  .room-stage-inner:has(> [data-testid="stage-switcher"])
+  .room-stage-intro {
+  top: 4.25rem;
+}
+.room-shell--live .room-stage-intro > span:last-of-type {
+  color: #73ba8b;
+}
+.room-shell--live .room-stage-intro strong {
+  grid-column: 1 / -1;
+  color: #e7f4e8;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: clamp(1.35rem, 2.4vw, 1.75rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+.room-shell--live .room-participants-grid:has(> :only-child) {
+  align-content: center;
+}
+.room-shell--live .room-participants-grid:has(> :only-child) > * > div {
+  width: min(68vw, 14rem) !important;
+}
 .room-shell--live .room-participants-grid > * {
   --planet-glow: 126, 201, 161;
 }
 .room-shell--live .room-participants-grid [data-self="true"] {
   --planet-glow: 223, 166, 100;
+}
+.room-shell--live
+  .room-participants-grid
+  [data-self="true"]
+  .participant-avatar__planet {
+  filter: grayscale(1) sepia(1) saturate(3.5) hue-rotate(335deg) brightness(0.9);
 }
 .room-shell--live .participant-card-shell--compact {
   --planet-glow: 126, 201, 161;
@@ -996,12 +1056,69 @@ html {
   ) !important;
   box-shadow: none;
 }
+.room-shell--live .participant-card-shell--full {
+  height: 15rem;
+  min-height: 15rem;
+  padding: 0 0.5rem 0.5rem;
+  border: 0 !important;
+  background: transparent !important;
+  overflow: visible;
+}
+.room-shell--live
+  .room-participants-grid:has(> :only-child)
+  .participant-card-shell--full {
+  height: 17rem;
+  min-height: 17rem;
+}
+.room-shell--live .participant-card-shell--full > div:first-child {
+  justify-content: flex-end;
+  gap: 0.8rem;
+}
+.room-shell--live .participant-card-shell--full p {
+  padding: 0.55rem 0.65rem 0.2rem;
+  border-left: 1px solid rgba(var(--planet-glow), 0.75);
+  background: linear-gradient(
+    90deg,
+    rgba(var(--planet-glow), 0.09),
+    transparent 85%
+  );
+  text-align: left;
+}
+.room-shell--live .participant-card-shell--full > div:last-child {
+  width: 100%;
+  min-height: 2rem;
+  justify-content: flex-start;
+  margin: 0;
+  padding: 0.15rem 0.65rem 0.45rem;
+  border-left: 1px solid rgba(var(--planet-glow), 0.75);
+  background: linear-gradient(
+    90deg,
+    rgba(var(--planet-glow), 0.09),
+    transparent 85%
+  );
+}
+.room-shell--live .participant-card-shell--full .participant-card__kind {
+  padding: 0;
+  border: 0;
+  background: transparent !important;
+  color: rgba(var(--planet-glow), 0.9) !important;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
 .room-shell--live .participant-card-shell--full:hover,
 .room-shell--live .participant-card-shell--compact > div:hover {
   border-color: rgba(153, 219, 174, 0.53) !important;
   border-left-color: rgba(var(--planet-glow), 0.95) !important;
   box-shadow: none;
   transform: none;
+}
+.room-shell--live .participant-card-shell--full:hover,
+.room-shell--live
+  .participant-card-shell--full:has(
+    .participant-audio-signal[data-speaking="true"]
+  ) {
+  border: 0 !important;
+  box-shadow: none !important;
 }
 .room-shell--live
   .participant-card-shell--full:has(
@@ -1031,6 +1148,20 @@ html {
 .room-shell--live .participant-card-shell--full .participant-avatar__planet {
   width: 118px !important;
   height: 118px !important;
+}
+.room-shell--live
+  .room-participants-grid:has(> :only-child)
+  .participant-card-shell--full
+  .participant-avatar,
+.room-shell--live
+  .room-participants-grid:has(> :only-child)
+  .participant-card-shell--full
+  .participant-avatar__planet {
+  width: 148px !important;
+  height: 148px !important;
+}
+.room-shell--live .participant-card-shell--full .participant-avatar {
+  box-shadow: none;
 }
 .room-shell--live .participant-card-shell--full p {
   color: #edf5eb;
@@ -1254,6 +1385,21 @@ html {
 }
 
 @media (max-width: 767px) {
+  .room-shell--live .room-header {
+    position: relative;
+    z-index: 40;
+  }
+  .room-shell--live .room-mobile-surface-switch {
+    border-color: rgba(125, 196, 144, 0.66) !important;
+    background: rgba(12, 52, 30, 0.8) !important;
+    color: #d4f3da !important;
+    font-weight: 600;
+  }
+  .room-shell--live .room-feature-popover {
+    max-height: calc(100dvh - 7.5rem - env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
   .room-shell--live .room-header-toolbar > button,
   .room-shell--live .room-header-toolbar > div > button {
     min-height: 34px;
