@@ -35,9 +35,10 @@ type Provider struct {
 	// Command, Args, and Environment are the launch material for the bridge.
 	// Environment holds explicit launch-time overrides (e.g. Codex read-only
 	// mode); it is never ambient process state.
-	Command     string
-	Args        []string
-	Environment map[string]string
+	Command                string
+	Args                   []string
+	Environment            map[string]string
+	SessionConfigFallbacks []types.LauncherSessionConfigFallback
 
 	// SessionListGlobalCwd declares how THIS bridge expresses "no cwd filter"
 	// on the ACP session/list wire. ACP makes `cwd` optional, but bridges
@@ -63,6 +64,7 @@ func (p Provider) Launcher() types.AgentLauncher {
 		Security:                p.Security,
 		Notes:                   p.Notes,
 		Environment:             cloneProviderEnvironment(p.Environment),
+		SessionConfigFallbacks:  append([]types.LauncherSessionConfigFallback(nil), p.SessionConfigFallbacks...),
 		TaskSessionContinuation: p.Capabilities.SessionContinuation.Enabled(),
 		SessionListGlobalCwd:    p.SessionListGlobalCwd,
 		TaskExecution:           p.Capabilities.Execution.Policy(),
@@ -73,6 +75,7 @@ func (p Provider) Launcher() types.AgentLauncher {
 func (p Provider) clone() Provider {
 	p.Args = append([]string(nil), p.Args...)
 	p.Environment = cloneProviderEnvironment(p.Environment)
+	p.SessionConfigFallbacks = append([]types.LauncherSessionConfigFallback(nil), p.SessionConfigFallbacks...)
 	return p
 }
 

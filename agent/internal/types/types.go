@@ -85,6 +85,11 @@ type AgentLauncher struct {
 	// Environment holds explicit launch-time overrides for this trusted
 	// launcher (e.g. Codex read-only mode).
 	Environment map[string]string `json:"-"`
+	// SessionConfigFallbacks contains provider-owned compatibility rules for
+	// an advertised but unusable current native value. These rules are applied
+	// only when the current value matches exactly and the replacement is also
+	// advertised by that session. They are runtime-local policy, not Room data.
+	SessionConfigFallbacks []LauncherSessionConfigFallback `json:"-"`
 	// TaskSessionContinuation is the ONE centralized product-level support
 	// policy for Task Session Continuation (#409): may a Human continue one of
 	// this Harness's existing native sessions from the Room Start Task surface?
@@ -142,6 +147,14 @@ type AgentLauncher struct {
 	// provider-specific regression. It is never a Room, UI, or Runtime
 	// redesign.
 	TaskExecution TaskExecutionPolicy `json:"taskExecution,omitempty"`
+}
+
+// LauncherSessionConfigFallback describes one exact provider compatibility
+// fallback for a selectable native session config option.
+type LauncherSessionConfigFallback struct {
+	ConfigID         string
+	CurrentValue     string
+	ReplacementValue string
 }
 
 // TaskExecutionConcurrency is the closed cross-session concurrency capability
@@ -991,6 +1004,12 @@ type ScopedHarnessSessionControls interface {
 	SessionControlsFor(scope string) *HarnessSessionControls
 	SetModeFor(scope, modeID string) error
 	SetConfigOptionFor(scope, configID, value string) error
+}
+
+// ScopedHarnessSessionDefaults applies provider-owned compatibility defaults
+// before a Task starts. Human selections are passed through and take priority.
+type ScopedHarnessSessionDefaults interface {
+	ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) error
 }
 
 // ScopedTurnCanceller is the small optional seam that keeps a remote interrupt

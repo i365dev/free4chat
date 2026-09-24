@@ -503,6 +503,42 @@ func (a *ACPAdapter) SessionControlsFor(scope string) *types.HarnessSessionContr
 	return projectHarnessSessionControls(controls)
 }
 
+// ApplySessionConfigFallbacksFor applies provider-owned compatibility rules
+// only when the Harness currently advertises the exact known-bad value. A
+// Human selection always takes priority, and replacements must be advertised
+// by the same native session before they are sent back over ACP.
+func (a *ACPAdapter) ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) error {
+	for _, fallback := range a.launcher.SessionConfigFallbacks {
+		if _, selected := humanSelections[fallback.ConfigID]; selected {
+			continue
+		}
+		controls := a.SessionControlsFor(scope)
+		if controls == nil {
+			continue
+		}
+		for _, option := range controls.ConfigOptions {
+			if option.ID != fallback.ConfigID || option.Type != "select" || option.CurrentValue != fallback.CurrentValue {
+				continue
+			}
+			advertised := false
+			for _, candidate := range option.Options {
+				if candidate.Value == fallback.ReplacementValue {
+					advertised = true
+					break
+				}
+			}
+			if !advertised {
+				return errors.New("no advertised provider-compatible session config fallback")
+			}
+			if err := a.SetConfigOptionFor(scope, fallback.ConfigID, fallback.ReplacementValue); err != nil {
+				return errors.New("failed to apply provider-compatible session config fallback")
+			}
+			break
+		}
+	}
+	return nil
+}
+
 func projectHarnessSessionControls(source *ACPSessionControls) *types.HarnessSessionControls {
 	if source == nil {
 		return nil

@@ -427,6 +427,52 @@ func TestACPRetainsAndAppliesAdvertisedSessionControls(t *testing.T) {
 	}
 }
 
+func TestACPProviderConfigFallbackRequiresExactCurrentAndAdvertisedReplacement(t *testing.T) {
+	newAdapter := func(t *testing.T, replacement string) *ACPAdapter {
+		t.Helper()
+		launcher := scriptLauncher("normal", map[string]string{"FAKE_POLICY_CAP": "1"})
+		launcher.SessionConfigFallbacks = []types.LauncherSessionConfigFallback{{
+			ConfigID: "model", CurrentValue: "gpt-a", ReplacementValue: replacement,
+		}}
+		adapter, _ := newTestAdapter(t, launcher, AdapterOptions{})
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure session: %v", err)
+		}
+		t.Cleanup(func() { _ = adapter.Close() })
+		return adapter
+	}
+
+	t.Run("advertised fallback is applied", func(t *testing.T) {
+		adapter := newAdapter(t, "gpt-b")
+		if err := adapter.ApplySessionConfigFallbacksFor("room", nil); err != nil {
+			t.Fatalf("apply fallback: %v", err)
+		}
+		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "gpt-b" {
+			t.Fatalf("fallback model = %q, want gpt-b", got)
+		}
+	})
+
+	t.Run("human selection takes priority", func(t *testing.T) {
+		adapter := newAdapter(t, "gpt-b")
+		if err := adapter.ApplySessionConfigFallbacksFor("room", map[string]string{"model": "gpt-a"}); err != nil {
+			t.Fatalf("apply fallback with human selection: %v", err)
+		}
+		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "gpt-a" {
+			t.Fatalf("human-selected model = %q, want gpt-a", got)
+		}
+	})
+
+	t.Run("unadvertised fallback fails closed", func(t *testing.T) {
+		adapter := newAdapter(t, "gpt-c")
+		if err := adapter.ApplySessionConfigFallbacksFor("room", nil); err == nil {
+			t.Fatal("unadvertised fallback was accepted")
+		}
+		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "gpt-a" {
+			t.Fatalf("failed fallback changed current model to %q", got)
+		}
+	})
+}
+
 func TestACPProjectsOnlyBoundedSelectConfigOptions(t *testing.T) {
 	controls := parseSessionControls(mustJSON(map[string]any{
 		"configOptions": []any{

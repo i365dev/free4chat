@@ -216,7 +216,10 @@ func (r *ResidentRuntime) currentParticipantID() string {
 func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 	scope = normalizeScope(scope)
 	if scope == roomScope {
-		return r.options.Adapter.EnsureSession()
+		if err := r.options.Adapter.EnsureSession(); err != nil {
+			return err
+		}
+		return r.applySessionConfigFallbacks(scope)
 	}
 	r.mu.Lock()
 	projectCwd, projectSelected := r.taskProjectCwds[scope]
@@ -236,11 +239,26 @@ func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 	if ensureErr != nil {
 		return ensureErr
 	}
+	if err := r.applySessionConfigFallbacks(scope); err != nil {
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
+		return errTaskHarnessControlUnavailable
+	}
 	if err := r.applyTaskSessionControls(scope); err != nil {
 		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
 		return errTaskHarnessControlUnavailable
 	}
 	return nil
+}
+
+func (r *ResidentRuntime) applySessionConfigFallbacks(scope string) error {
+	adapter, ok := r.options.Adapter.(types.ScopedHarnessSessionDefaults)
+	if !ok {
+		return nil
+	}
+	r.mu.Lock()
+	selections := cloneNativeControlSelections(r.taskSessionConfig[scope])
+	r.mu.Unlock()
+	return adapter.ApplySessionConfigFallbacksFor(scope, selections)
 }
 
 func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
