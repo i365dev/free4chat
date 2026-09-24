@@ -77,7 +77,10 @@ webkit-tablet-landscape 1180x820  (touch, mobile viewport)
 It exercises the **generic host contract** only — join Room, open a Room App,
 enter fullscreen, verify the exit control is inside the viewport and receives
 the pointer, exit, hide, reopen — and asserts geometry/semantic invariants
-rather than pixels. Lab Apps keep owning their own business-flow tests.
+rather than pixels. In Chromium and WebKit desktop profiles it also joins a
+second participant and asserts the one- and two-person planet centers remain
+within 40px of the same vertical baseline. Lab Apps keep owning their own
+business-flow tests.
 
 What is real: catalog loader + v1 schema validation, trusted-origin allow-list,
 iframe sandbox, bootstrap handshake, MessagePort host bridge, host chrome,

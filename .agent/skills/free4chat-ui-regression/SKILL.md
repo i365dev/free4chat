@@ -36,6 +36,10 @@ Use the configured viewport projects rather than a single desktop screenshot.
 The Room App host matrix covers Chromium desktop and WebKit desktop, phone,
 tablet portrait, tablet landscape, and 1024px tablet layouts. Add a narrower or
 shorter viewport when the reported bug depends on available vertical space.
+For Stage composition changes, include participant count as a separate axis:
+compare one participant with two or more at the same desktop viewport. The Room
+App host browser gate asserts the single- and two-person planet centers stay on
+the same vertical baseline in both desktop engines.
 Follow the repository's local browser setup in
 `.agent/skills/free4chat-local-e2e/SKILL.md`; do not weaken production origin
 checks to make a local browser test pass.
