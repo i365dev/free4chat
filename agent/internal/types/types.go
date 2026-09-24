@@ -1299,7 +1299,8 @@ type ResidentTaskSession struct {
 	// and never markdown.
 	Title string `json:"title"`
 	// ProjectToken is the Runtime-issued handle for the exact project this
-	// session belongs to. ProjectLabel is its human-facing display path.
+	// session belongs to. ProjectLabel is a path-free basename label, with an
+	// opaque suffix when needed to distinguish projects that share a basename.
 	ProjectToken string `json:"projectToken"`
 	ProjectLabel string `json:"projectLabel"`
 	// UpdatedAt is an optional RFC3339 timestamp, passed through only when the

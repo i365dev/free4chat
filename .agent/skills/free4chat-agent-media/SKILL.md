@@ -22,6 +22,10 @@ Human browsers ──WebRTC──> Cloudflare SFU <──in-process Pion── f
 
 - **The Go runtime owns all communication**: MCP join/heartbeat/grant polling,
   every `/api/sfu/*` call, and credentials. Pion is in the same binary.
+- Runtime installation and ordinary Room tests default to no STT/TTS
+  configuration, so they require no speech-provider password. Configure the
+  relevant provider only for an explicit STT, Live Transcript, Meeting Notes,
+  or Voice Reply acceptance test.
 - **ONE shared media session** serves both Meeting Notes (Human audio ingress)
   and Voice Reply (Agent audio egress); bootstrap is receive-only and the
   outbound track is armed only at voice-grant activation.

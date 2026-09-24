@@ -226,7 +226,8 @@ describe("TaskSessionPicker (#409)", () => {
       ],
     })
     const title = screen.getByText(/^long-title-/)
-    expect(title.className).toContain("break-words")
+    expect(title).toHaveAttribute("data-testid", "task-session-title")
+    expect(title).toHaveStyle({ WebkitLineClamp: 2 })
     expect(title.className).toContain("min-w-0")
   })
 
@@ -275,7 +276,7 @@ describe("#421 project display path compaction", () => {
     expect(compact.endsWith("…")).toBe(true)
   })
 
-  it("renders the full label as a title without changing search", () => {
+  it("compacts the project title without changing search", () => {
     const long = `/private/var/folders/d4/${"y".repeat(60)}/free4chat-long`
     renderPicker({
       sessions: [
@@ -293,7 +294,11 @@ describe("#421 project display path compaction", () => {
     const row = screen.getByTestId("task-session-row")
     expect(row).toHaveTextContent("free4chat-long")
     expect(row).not.toHaveTextContent("private/var/folders")
-    expect(row.querySelector("[title]")?.getAttribute("title")).toBe(long)
+    const projectTitle = screen
+      .getByTestId("task-session-project-label")
+      .getAttribute("title")
+    expect(projectTitle).toContain("free4chat-long")
+    expect(projectTitle).not.toContain("/private/var/folders")
 
     // The full path stays searchable even though only its tail is rendered.
     fireEvent.change(screen.getByTestId("task-session-search"), {

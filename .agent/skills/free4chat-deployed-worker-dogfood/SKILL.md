@@ -50,6 +50,10 @@ experiment procedures.
 - Create or join one real Room and use a real Agent participant through the
   supported MCP/Runtime path. Do not fake Task events or call Durable Object
   storage directly.
+- Install and join the Runtime without STT/TTS provider setup by default.
+  Ordinary deployed Task acceptance must not prompt for speech-provider
+  passwords. Configure speech credentials only for an explicitly requested
+  STT, Live Transcript, Meeting Notes, or Voice Reply acceptance case.
 - Submit a natural Human request. For generated Task Apps, the request must
   not name bridge APIs or prescribe `publish_generated_app`; the Agent must
   discover `generated-app describe --json` from the compact Task affordance.

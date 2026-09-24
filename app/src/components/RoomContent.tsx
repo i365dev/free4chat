@@ -3140,7 +3140,7 @@ export default function RoomContent({
         >
           <form
             onSubmit={submitTask}
-            className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-5 shadow-2xl"
+            className="max-h-[calc(100dvh-2rem)] w-full min-w-0 max-w-md overflow-y-auto overscroll-contain rounded-xl border border-gray-700 bg-gray-900 p-5 shadow-2xl"
           >
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>

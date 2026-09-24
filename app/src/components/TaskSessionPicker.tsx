@@ -159,28 +159,32 @@ export default function TaskSessionPicker({
 
   return (
     <div className="mb-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="mb-2 flex min-w-0 flex-col gap-2">
         <span
           className="min-w-0 flex-1 truncate text-xs text-gray-400"
           data-testid="task-session-project-summary"
-          title={selectedProject ? selectedProject.label : undefined}
+          title={
+            selectedProject
+              ? compactProjectLabel(selectedProject.label)
+              : undefined
+          }
         >
           {selectedProject
             ? compactProjectLabel(selectedProject.label)
             : RECENT_LABEL}
         </span>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
             data-testid="task-session-refresh"
             onClick={onRefresh}
             disabled={disabled || refreshing}
             aria-label="Refresh sessions"
-            className="rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+            className="shrink-0 rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
           >
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>
-          <div className="relative">
+          <div className="relative min-w-0 flex-1">
             <button
               type="button"
               data-testid="task-session-project-toggle"
@@ -194,8 +198,12 @@ export default function TaskSessionPicker({
                 if (next)
                   queueMicrotask(() => projectSearchRef.current?.focus())
               }}
-              className="max-w-[10rem] truncate rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
-              title={selectedProject ? selectedProject.label : undefined}
+              className="block w-full min-w-0 max-w-full truncate rounded border border-gray-700 px-2 py-1 text-left text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+              title={
+                selectedProject
+                  ? compactProjectLabel(selectedProject.label)
+                  : undefined
+              }
             >
               Project:{" "}
               {selectedProject
@@ -209,7 +217,7 @@ export default function TaskSessionPicker({
                 role="listbox"
                 aria-label="Session projects"
                 onKeyDown={handleProjectKeyDown}
-                className="absolute right-0 z-10 mt-1 w-60 rounded-lg border border-gray-700 bg-gray-950 p-2 shadow-2xl"
+                className="absolute right-0 z-10 mt-1 w-60 max-w-full rounded-lg border border-gray-700 bg-gray-950 p-2 shadow-2xl"
               >
                 <input
                   ref={projectSearchRef}
@@ -267,7 +275,7 @@ export default function TaskSessionPicker({
                         field above still matches the FULL label. */}
                       <span
                         className="min-w-0 flex-1 truncate"
-                        title={project.label}
+                        title={compactProjectLabel(project.label)}
                       >
                         {compactProjectLabel(project.label)}
                       </span>
@@ -350,12 +358,24 @@ export default function TaskSessionPicker({
                     : "hover:bg-gray-800"
                 } disabled:opacity-50`}
               >
-                <span className="min-w-0 break-words text-xs text-white">
+                <span
+                  className="min-w-0 text-xs text-white"
+                  data-testid="task-session-title"
+                  title={row.title || "Untitled session"}
+                  style={{
+                    display: "-webkit-box",
+                    WebkitBoxOrient: "vertical",
+                    WebkitLineClamp: 2,
+                    overflow: "hidden",
+                    overflowWrap: "anywhere",
+                  }}
+                >
                   {row.title || "Untitled session"}
                 </span>
                 <span
                   className="min-w-0 truncate text-[11px] text-gray-400"
-                  title={row.projectLabel}
+                  data-testid="task-session-project-label"
+                  title={compactProjectLabel(row.projectLabel)}
                 >
                   {compactProjectLabel(row.projectLabel)}
                   {relativeUpdatedAt(row.updatedAt)

@@ -34,6 +34,15 @@ Three hard rules (each one cost a debugging cycle):
    `free4chat-agent daemon` process (Go resident daemon under `agent/`) and
    join again; the old env keeps otherwise.
 
+## Runtime installation defaults
+
+Install and join the Go Runtime without STT or TTS configured. Ordinary Room,
+Task, and Harness tests do not need speech-provider credentials and must not
+prompt for a password to enable them. Enable STT or TTS explicitly only when
+the acceptance case exercises Live Transcript, Meeting Notes compatibility,
+or Voice Reply; provision the corresponding credentials at that point and keep
+them out of command output and test evidence.
+
 ## Turnstile switches (local bypass)
 
 | Layer               | Mechanism                                                                                                                         |
