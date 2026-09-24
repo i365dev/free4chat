@@ -147,7 +147,8 @@ type ACPConfigOptionValue struct {
 }
 
 // ACPConfigOption is a sanitized native ACP session config option. Only
-// options that are mode/policy-shaped are retained by parseSessionControls.
+// bounded select options with finite advertised values are retained by
+// parseSessionControls.
 type ACPConfigOption struct {
 	ID           string                 `json:"id"`
 	Name         string                 `json:"name,omitempty"`
@@ -673,6 +674,10 @@ func (a *ACPAdapter) SetConfigOptionFor(scope, configID, value string) error {
 	if !ok {
 		a.mu.Unlock()
 		return fmt.Errorf("ACP session config option %q was not advertised", configID)
+	}
+	if option.Type != "select" {
+		a.mu.Unlock()
+		return fmt.Errorf("ACP session config option %q is not a selectable control", configID)
 	}
 	if !hasConfigValue(option, value) {
 		a.mu.Unlock()
@@ -1222,27 +1227,50 @@ func parseSessionControls(raw []byte) *ACPSessionControls {
 			controls.Modes = modes
 		}
 	}
+	seenConfigIDs := make(map[string]struct{}, len(wire.ConfigOptions))
 	for _, option := range wire.ConfigOptions {
-		if !isPolicyConfigOption(option.ID, option.Category) || option.ID == "" {
+		if len(controls.ConfigOptions) >= maxACPSessionConfigOptions {
+			break
+		}
+		if !validACPControlIdentity(option.ID, maxACPSessionConfigIDLength) ||
+			!strings.EqualFold(strings.TrimSpace(option.Type), "select") ||
+			len(option.Options) == 0 || len(option.Options) > maxACPSessionConfigValues {
 			continue
 		}
-		projected := ACPConfigOption{
-			ID:           option.ID,
-			Name:         boundedACPText(option.Name),
-			Description:  boundedACPText(option.Description),
-			Category:     option.Category,
-			Type:         option.Type,
-			CurrentValue: option.CurrentValue,
+		if _, duplicate := seenConfigIDs[option.ID]; duplicate {
+			continue
 		}
+		values := make([]ACPConfigOptionValue, 0, len(option.Options))
+		seenValues := make(map[string]struct{}, len(option.Options))
+		valid := true
 		for _, value := range option.Options {
-			if value.Value == "" {
-				continue
+			if !validACPControlIdentity(value.Value, maxACPSessionConfigValueLength) {
+				valid = false
+				break
 			}
-			projected.Options = append(projected.Options, ACPConfigOptionValue{
+			if _, duplicate := seenValues[value.Value]; duplicate {
+				valid = false
+				break
+			}
+			seenValues[value.Value] = struct{}{}
+			values = append(values, ACPConfigOptionValue{
 				Value:       value.Value,
 				Name:        boundedACPText(value.Name),
 				Description: boundedACPText(value.Description),
 			})
+		}
+		if !valid || (option.CurrentValue != "" && !validACPControlIdentity(option.CurrentValue, maxACPSessionConfigValueLength)) {
+			continue
+		}
+		seenConfigIDs[option.ID] = struct{}{}
+		projected := ACPConfigOption{
+			ID:           option.ID,
+			Name:         boundedACPText(option.Name),
+			Description:  boundedACPText(option.Description),
+			Category:     boundedACPText(option.Category),
+			Type:         "select",
+			CurrentValue: option.CurrentValue,
+			Options:      values,
 		}
 		controls.ConfigOptions = append(controls.ConfigOptions, projected)
 	}
@@ -1252,11 +1280,18 @@ func parseSessionControls(raw []byte) *ACPSessionControls {
 	return controls
 }
 
-func isPolicyConfigOption(id, category string) bool {
-	id = strings.ToLower(strings.TrimSpace(id))
-	category = strings.ToLower(strings.TrimSpace(category))
-	return id == "mode" || id == "permission" || id == "policy" ||
-		strings.Contains(category, "mode") || strings.Contains(category, "permission") || strings.Contains(category, "policy")
+const (
+	maxACPSessionConfigOptions     = 16
+	maxACPSessionConfigValues      = 32
+	maxACPSessionConfigIDLength    = 128
+	maxACPSessionConfigValueLength = 128
+)
+
+func validACPControlIdentity(value string, limit int) bool {
+	if value == "" || len([]rune(value)) > limit {
+		return false
+	}
+	return !hasACPControlRunes(value)
 }
 
 func boundedACPText(value string) string {

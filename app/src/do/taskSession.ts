@@ -352,19 +352,32 @@ function relayHarnessSessionControls(
     if (!item || typeof item !== "object" || Array.isArray(item)) return null
     const option = item as Record<string, unknown>
     const id = boundedNativeControlText(option.id, 128)
+    if (option.type !== "select") continue
     const values = option.options ?? []
-    if (!id || !Array.isArray(values) || values.length > 32) return null
+    if (
+      !id ||
+      !Array.isArray(values) ||
+      values.length === 0 ||
+      values.length > 32
+    )
+      continue
     const relayedValues: RelayHarnessSessionConfigValue[] = []
+    let validValues = true
     for (const candidate of values) {
       if (
         !candidate ||
         typeof candidate !== "object" ||
         Array.isArray(candidate)
-      )
-        return null
+      ) {
+        validValues = false
+        break
+      }
       const value = candidate as Record<string, unknown>
       const nativeValue = boundedNativeControlText(value.value, 128)
-      if (!nativeValue) return null
+      if (!nativeValue) {
+        validValues = false
+        break
+      }
       relayedValues.push({
         value: nativeValue,
         ...(typeof value.name === "string"
@@ -375,6 +388,7 @@ function relayHarnessSessionControls(
           : {}),
       })
     }
+    if (!validValues) continue
     relayedOptions.push({
       id,
       ...(typeof option.name === "string"
@@ -386,9 +400,7 @@ function relayHarnessSessionControls(
       ...(typeof option.category === "string"
         ? { category: boundedTaskSessionText(option.category, 64) }
         : {}),
-      ...(typeof option.type === "string"
-        ? { type: boundedTaskSessionText(option.type, 64) }
-        : {}),
+      type: "select",
       ...(typeof option.currentValue === "string"
         ? { currentValue: boundedTaskSessionText(option.currentValue, 128) }
         : {}),

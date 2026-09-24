@@ -132,6 +132,7 @@ func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
 		ProjectToken:       discovered.Projects[0].Token,
 		TaskRequestID:      "req-new-project-task",
 		ModeID:             "workspace",
+		ConfigOptions:      map[string]string{"model": "gpt-b"},
 	})
 	if !prepared.OK {
 		t.Fatalf("new Task project preparation failed: %+v", prepared)
@@ -147,6 +148,9 @@ func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
 	if got := fixture.adapter.count("load:task:req-new-project-task"); got != 0 {
 		t.Fatalf("new project Task must not load a historical native session: %v", fixture.adapter.recorded())
 	}
+	if configIndex, turnIndex := fixture.adapter.eventIndex("config:task:req-new-project-task:model:gpt-b"), fixture.adapter.eventIndex("run:task:req-new-project-task"); configIndex < 0 || turnIndex < 0 || configIndex > turnIndex {
+		t.Fatalf("selected Harness config must be applied before the first Task prompt: %v", fixture.adapter.recorded())
+	}
 	fixture.rt.mu.Lock()
 	gotCwd := fixture.rt.taskProjectCwds["task:req-new-project-task"]
 	fixture.rt.mu.Unlock()
@@ -156,8 +160,12 @@ func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
 	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").CurrentModeID; got != "workspace" {
 		t.Fatalf("selected native mode was not applied to the Task: %q", got)
 	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").ConfigOptions[0].CurrentValue; got != "gpt-b" {
+		t.Fatalf("selected native config was not applied to the Task: %q", got)
+	}
 	fixture.adapter.recordMu.Lock()
 	fixture.adapter.modes["task:req-new-project-task"] = "observe" // simulate provider re-materialization defaults
+	fixture.adapter.configs["task:req-new-project-task"] = map[string]string{"model": "gpt-a"}
 	fixture.adapter.recordMu.Unlock()
 	if err := fixture.rt.ensureHarnessSession("task:req-new-project-task"); err != nil {
 		t.Fatalf("re-materialize Task session: %v", err)
@@ -165,13 +173,80 @@ func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
 	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").CurrentModeID; got != "workspace" {
 		t.Fatalf("selected native mode was not restored after re-materialization: %q", got)
 	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").ConfigOptions[0].CurrentValue; got != "gpt-b" {
+		t.Fatalf("selected native config was not restored after re-materialization: %q", got)
+	}
 	if got := fixture.adapter.count("mode:task:req-new-project-task:workspace"); got != 2 {
 		t.Fatalf("selected native mode was not applied on initial and repeated materialization: %d", got)
+	}
+	if got := fixture.adapter.count("config:task:req-new-project-task:model:gpt-b"); got != 2 {
+		t.Fatalf("selected native config was not applied on initial and repeated materialization: %d", got)
 	}
 	for _, entry := range fixture.logs.snapshot() {
 		if strings.Contains(entry, projectCwd) {
 			t.Fatalf("raw project cwd leaked into Runtime diagnostics: %s", entry)
 		}
+	}
+}
+
+func TestPreparedExistingSessionAppliesConfigWithoutChangingIdentity(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	cwd := t.TempDir()
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-existing-session", Cwd: cwd, Title: "Existing project session",
+	}}
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Sessions) != 1 {
+		t.Fatalf("historical session discovery failed: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-existing-config",
+		HumanParticipantID: "human-1",
+		SessionToken:       discovered.Sessions[0].Token,
+		TaskRequestID:      "req-existing-config-task",
+		ConfigOptions:      map[string]string{"model": "gpt-b"},
+	})
+	if !prepared.OK {
+		t.Fatalf("existing session preparation failed: %+v", prepared)
+	}
+	waitForDone(t, startTurn(fixture.rt, taskRequestEvent(1, "task:req-existing-config-task", "req-existing-config-task", "human-1")), "existing Task session")
+	loads := fixture.adapter.loadCalls()
+	if len(loads) != 1 || loads[0].sessionID != "native-existing-session" || loads[0].cwd != cwd {
+		t.Fatalf("the Task did not load the exact selected identity and cwd: %+v", loads)
+	}
+	if fixture.adapter.count("new:task:req-existing-config-task") != 0 {
+		t.Fatalf("config selection replaced the existing session with a new one: %v", fixture.adapter.recorded())
+	}
+	if configIndex, turnIndex := fixture.adapter.eventIndex("config:task:req-existing-config-task:model:gpt-b"), fixture.adapter.eventIndex("run:task:req-existing-config-task"); configIndex < 0 || turnIndex < 0 || configIndex > turnIndex {
+		t.Fatalf("selected config must be applied after exact load and before first prompt: %v", fixture.adapter.recorded())
+	}
+}
+
+func TestPreparedTaskRejectsUnadvertisedNativeConfigBeforeAdoption(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Projects) != 1 {
+		t.Fatalf("project catalog discovery failed: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-unadvertised-config",
+		HumanParticipantID: "human-1",
+		ProjectToken:       discovered.Projects[0].Token,
+		TaskRequestID:      "req-unadvertised-config-task",
+		ConfigOptions:      map[string]string{"model": "gpt-unadvertised"},
+	})
+	if prepared.OK || prepared.Error != types.ResidentSessionErrorControlUnavailable {
+		t.Fatalf("unadvertised native config must fail with the bounded control error: %+v", prepared)
+	}
+	if fixture.rt.pendingAdoptionSnapshot() != nil {
+		t.Fatal("unadvertised config must not arm a Task session")
+	}
+	if fixture.adapter.count("new:task:req-unadvertised-config-task") != 0 {
+		t.Fatalf("unadvertised config must fail before scoped session creation: %v", fixture.adapter.recorded())
 	}
 }
 
@@ -358,6 +433,9 @@ func TestTaskSessionResultCarriesNoRealIdentity(t *testing.T) {
 	if result.OK != true || len(result.Sessions) != 1 {
 		t.Fatalf("discovery failed: %+v", result)
 	}
+	if result.Controls == nil || len(result.Controls.ConfigOptions) != 1 || result.Controls.ConfigOptions[0].ID != "model" {
+		t.Fatalf("bounded Harness controls were not projected with the session list: %+v", result.Controls)
+	}
 	row := result.Sessions[0]
 	if row.Token == "" || row.ProjectToken == "" {
 		t.Fatalf("a row must carry opaque tokens: %+v", row)
@@ -366,7 +444,7 @@ func TestTaskSessionResultCarriesNoRealIdentity(t *testing.T) {
 		t.Fatal("a token must never be the real ACP session id")
 	}
 	encoded := renderSessionResult(result)
-	for _, forbidden := range []string{"native-secret-id"} {
+	for _, forbidden := range []string{"native-secret-id", "/home/me/private-project"} {
 		if strings.Contains(encoded, forbidden) {
 			t.Fatalf("the browser-facing result leaked %q: %s", forbidden, encoded)
 		}

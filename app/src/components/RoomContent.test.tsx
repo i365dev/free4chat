@@ -324,6 +324,79 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     vi.restoreAllMocks()
   })
 
+  it("shows Harness-advertised select controls in the fresh Start Task flow", async () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          muteState: false,
+          taskSessionContinuation: true,
+        },
+      ],
+      requestTaskSessions: vi.fn(async () => ({
+        ok: true,
+        page: {
+          sessions: [],
+          projects: [{ token: "project-token-1", label: "free4chat" }],
+          hasMore: false,
+          controls: {
+            currentModeId: "read-only",
+            modes: [
+              { id: "read-only", name: "Ask for approval" },
+              { id: "agent-full-access", name: "Full access" },
+            ],
+            configOptions: [
+              {
+                id: "model",
+                name: "Model",
+                type: "select",
+                currentValue: "gpt-6-luna",
+                options: [
+                  { value: "gpt-6-luna", name: "6 Luna" },
+                  { value: "gpt-5.6-sol", name: "5.6 Sol" },
+                ],
+              },
+            ],
+          },
+        },
+      })),
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
+    fireEvent.click(screen.getByTestId("task-project-discover"))
+
+    const model = await screen.findByLabelText("Harness-native Model")
+    expect(within(model).getByRole("option", { name: "6 Luna" })).toHaveValue(
+      "gpt-6-luna"
+    )
+    expect(within(model).getByRole("option", { name: "5.6 Sol" })).toHaveValue(
+      "gpt-5.6-sol"
+    )
+    fireEvent.change(model, { target: { value: "gpt-5.6-sol" } })
+    expect(model).toHaveValue("gpt-5.6-sol")
+    expect(screen.getByLabelText("Harness-native mode")).toHaveValue("")
+    expect(
+      within(screen.getByLabelText("Harness-native mode")).getByRole("option", {
+        name: "Full access",
+      })
+    ).toHaveValue("agent-full-access")
+  })
+
   it("removes the widget as soon as verification succeeds, and the connected room UI carries no Turnstile residue", async () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,

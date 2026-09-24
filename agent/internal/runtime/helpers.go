@@ -280,7 +280,7 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 	for configID, value := range configOptions {
 		advertised := false
 		for _, option := range controls.ConfigOptions {
-			if option.ID != configID {
+			if option.ID != configID || option.Type != "select" {
 				continue
 			}
 			for _, candidate := range option.Options {
@@ -298,7 +298,7 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 		}
 		current := ""
 		for _, option := range controls.ConfigOptions {
-			if option.ID == configID {
+			if option.ID == configID && option.Type == "select" {
 				current = option.CurrentValue
 				break
 			}

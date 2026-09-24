@@ -53,6 +53,7 @@ type adoptionAdapter struct {
 	loadErr  error
 	listErr  error
 	modes    map[string]string
+	configs  map[string]map[string]string
 	// loadHook runs INSIDE LoadSession, after the Runtime has committed the
 	// adopted ownership for the scope and before the load reports success. It
 	// is how a test deterministically places a Harness death in the load
@@ -64,6 +65,7 @@ func newAdoptionAdapter(name string) *adoptionAdapter {
 	return &adoptionAdapter{
 		fakeAdapter: &fakeAdapter{name: name},
 		modes:       make(map[string]string),
+		configs:     make(map[string]map[string]string),
 		sessions: []harness.ACPSessionInfo{{
 			SessionID: "native-pi-1",
 			Cwd:       "/workspace",
@@ -218,9 +220,17 @@ func (a *adoptionAdapter) SessionControlsFor(scope string) *types.HarnessSession
 	if mode == "" {
 		mode = "observe"
 	}
+	modelValue := a.configs[scope]["model"]
+	if modelValue == "" {
+		modelValue = "gpt-a"
+	}
 	return &types.HarnessSessionControls{
 		CurrentModeID: mode,
 		Modes:         []types.HarnessSessionMode{{ID: "observe"}, {ID: "workspace"}},
+		ConfigOptions: []types.HarnessSessionConfigOption{{
+			ID: "model", Name: "Model", Type: "select", CurrentValue: modelValue,
+			Options: []types.HarnessSessionConfigValue{{Value: "gpt-a"}, {Value: "gpt-b"}},
+		}},
 	}
 }
 
@@ -232,7 +242,19 @@ func (a *adoptionAdapter) SetModeFor(scope, modeID string) error {
 	return nil
 }
 
-func (a *adoptionAdapter) SetConfigOptionFor(string, string, string) error { return nil }
+func (a *adoptionAdapter) SetConfigOptionFor(scope, configID, value string) error {
+	if configID != "model" || (value != "gpt-a" && value != "gpt-b") {
+		return errors.New("unadvertised native config selection")
+	}
+	a.recordMu.Lock()
+	if a.configs[scope] == nil {
+		a.configs[scope] = make(map[string]string)
+	}
+	a.configs[scope][configID] = value
+	a.recordMu.Unlock()
+	a.record("config:" + scope + ":" + configID + ":" + value)
+	return nil
+}
 
 func (a *adoptionAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expectedGeneration int64) (types.HarnessTurnResult, error) {
 	a.record("run:" + scope)

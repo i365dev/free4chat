@@ -258,7 +258,6 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 		result.Error = types.ResidentSessionErrorExpired
 		return result
 	}
-
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	r.pruneTaskSessionCacheLocked(now)
@@ -488,7 +487,7 @@ func (r *ResidentRuntime) taskNativeControlSelectionAvailable(modeID string, con
 	for id, value := range configOptions {
 		found := false
 		for _, option := range controls.ConfigOptions {
-			if option.ID != id {
+			if option.ID != id || option.Type != "select" {
 				continue
 			}
 			for _, advertised := range option.Options {

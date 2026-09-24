@@ -403,11 +403,63 @@ func TestACPRetainsAndAppliesAdvertisedSessionControls(t *testing.T) {
 	if current := findCurrentConfigValue(t, adapter.SessionControls(), "mode"); current != "observe" {
 		t.Fatalf("config option was not updated: %q", current)
 	}
+	model, ok := findConfigOption(adapter.SessionControls().ConfigOptions, "model")
+	if !ok || !hasConfigValue(model, "gpt-b") {
+		t.Fatalf("Harness model selector was not retained: %+v", model)
+	}
+	if err := adapter.SetConfigOption("model", "gpt-b"); err != nil {
+		t.Fatalf("advertised model config option was rejected: %v", err)
+	}
+	if current := findCurrentConfigValue(t, adapter.SessionControls(), "model"); current != "gpt-b" {
+		t.Fatalf("native model selector did not retain the selected value: %q", current)
+	}
+	if err := adapter.SetConfigOption("model", "gpt-c"); err == nil {
+		t.Fatal("unadvertised model was accepted")
+	}
+	if err := adapter.SetConfigOption("reasoning_effort", "high"); err != nil {
+		t.Fatalf("advertised reasoning effort selector was rejected: %v", err)
+	}
 	if err := adapter.SetMode("unadvertised"); err == nil {
 		t.Fatal("unadvertised mode was accepted")
 	}
 	if err := adapter.SetConfigOption("mode", "unadvertised"); err == nil {
 		t.Fatal("unadvertised config value was accepted")
+	}
+}
+
+func TestACPProjectsOnlyBoundedSelectConfigOptions(t *testing.T) {
+	controls := parseSessionControls(mustJSON(map[string]any{
+		"configOptions": []any{
+			map[string]any{
+				"id": "model", "name": "Model", "type": "select", "category": "model",
+				"currentValue": "gpt-a",
+				"options": []any{
+					map[string]any{"value": "gpt-a", "name": "A"},
+					map[string]any{"value": "gpt-b", "name": "B"},
+				},
+			},
+			map[string]any{
+				"id": "reasoning_effort", "name": "Reasoning effort", "type": "select",
+				"options": []any{
+					map[string]any{"value": "low"},
+					map[string]any{"value": "medium"},
+					map[string]any{"value": "high"},
+				},
+			},
+			map[string]any{"id": "freeform", "type": "string", "options": []any{map[string]any{"value": "anything"}}},
+			map[string]any{"id": "empty", "type": "select", "options": []any{}},
+			map[string]any{"id": "too-long", "type": "select", "options": []any{map[string]any{"value": strings.Repeat("x", maxACPSessionConfigValueLength+1)}}},
+		},
+	}))
+	if controls == nil || len(controls.ConfigOptions) != 2 {
+		t.Fatalf("only the two bounded select options should survive: %+v", controls)
+	}
+	model, ok := findConfigOption(controls.ConfigOptions, "model")
+	if !ok || model.Type != "select" || model.CurrentValue != "gpt-a" || len(model.Options) != 2 || model.Options[1].Value != "gpt-b" {
+		t.Fatalf("model selector metadata was not preserved exactly: %+v", model)
+	}
+	if _, ok := findConfigOption(controls.ConfigOptions, "reasoning_effort"); !ok {
+		t.Fatal("reasoning_effort select option was filtered")
 	}
 }
 
@@ -440,6 +492,32 @@ func TestScopedTaskNativeModeDoesNotAffectAnotherTask(t *testing.T) {
 	if b == nil || b.CurrentModeID != "observe" {
 		t.Fatalf("Task A's mode changed Task B: %+v", b)
 	}
+	if err := adapter.SetConfigOptionFor("task:A", "model", "gpt-b"); err != nil {
+		t.Fatalf("set Task A's native model: %v", err)
+	}
+	a, b = adapter.SessionControlsFor("task:A"), adapter.SessionControlsFor("task:B")
+	if current := findCurrentConfigValue(t, sessionControlsForTest(t, a), "model"); current != "gpt-b" {
+		t.Fatalf("Task A did not retain its selected model: %q", current)
+	}
+	if current := findCurrentConfigValue(t, sessionControlsForTest(t, b), "model"); current != "gpt-a" {
+		t.Fatalf("Task A's model changed Task B: %q", current)
+	}
+}
+
+func sessionControlsForTest(t *testing.T, controls *types.HarnessSessionControls) *ACPSessionControls {
+	t.Helper()
+	if controls == nil {
+		t.Fatal("Harness controls are unavailable")
+	}
+	converted := &ACPSessionControls{}
+	for _, option := range controls.ConfigOptions {
+		projected := ACPConfigOption{ID: option.ID, CurrentValue: option.CurrentValue}
+		for _, value := range option.Options {
+			projected.Options = append(projected.Options, ACPConfigOptionValue{Value: value.Value})
+		}
+		converted.ConfigOptions = append(converted.ConfigOptions, projected)
+	}
+	return converted
 }
 
 func findCurrentConfigValue(t *testing.T, controls *ACPSessionControls, configID string) string {
