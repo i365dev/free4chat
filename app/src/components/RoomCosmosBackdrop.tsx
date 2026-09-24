@@ -6,28 +6,17 @@ import { useEffect, useRef } from "react"
  */
 export default function RoomCosmosBackdrop() {
   const skyRef = useRef<HTMLDivElement>(null)
-  const glintsRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const sky = skyRef.current
     const stage = sky?.parentElement
-    const glints = glintsRef.current
-    if (!sky || !stage || !glints) return
-
-    const updateVisibility = () => {
-      glints.dataset.visible = String(document.visibilityState !== "hidden")
-    }
-    document.addEventListener("visibilitychange", updateVisibility)
-    updateVisibility()
+    if (!sky || !stage) return
 
     const canParallax =
       typeof window.matchMedia === "function" &&
       window.matchMedia("(pointer: fine)").matches &&
       !window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    if (!canParallax) {
-      return () =>
-        document.removeEventListener("visibilitychange", updateVisibility)
-    }
+    if (!canParallax) return
 
     let lastMove = 0
     const onPointerMove = (event: PointerEvent) => {
@@ -59,7 +48,6 @@ export default function RoomCosmosBackdrop() {
     stage.addEventListener("pointermove", onPointerMove, { passive: true })
     stage.addEventListener("pointerleave", resetParallax)
     return () => {
-      document.removeEventListener("visibilitychange", updateVisibility)
       stage.removeEventListener("pointermove", onPointerMove)
       stage.removeEventListener("pointerleave", resetParallax)
     }
@@ -68,7 +56,7 @@ export default function RoomCosmosBackdrop() {
   return (
     <>
       <div ref={skyRef} className="room-cosmos-sky" aria-hidden="true" />
-      <div ref={glintsRef} className="room-cosmos-glints" aria-hidden="true">
+      <div className="room-cosmos-glints" aria-hidden="true">
         {Array.from({ length: 6 }, (_, index) => (
           <i key={index} />
         ))}

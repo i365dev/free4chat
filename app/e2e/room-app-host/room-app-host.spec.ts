@@ -363,6 +363,20 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       "people"
     )
     await expect(roomStage(page).locator(".room-cosmos-sky")).toHaveCount(1)
+    // The full participant card has an extra layout wrapper around UserCard.
+    // Keep the self tint attached to UserCard's data-self marker through it.
+    const selfCard = page
+      .getByTestId("room-stage-participants")
+      .locator('[data-self="true"] .participant-card-shell--full')
+    await expect(selfCard).toHaveCount(1)
+    expect(
+      await selfCard.evaluate((element) =>
+        getComputedStyle(element)
+          .getPropertyValue("--planet-glow")
+          .split(",")
+          .map(Number)
+      )
+    ).toEqual([223, 166, 100])
     // #438 makes people and Stage the initial phone surface. The Stage stays
     // one mounted element: switching to Room chat must hide it, not recreate
     // participant/media/App state when People is opened again.
