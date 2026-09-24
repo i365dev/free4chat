@@ -25,11 +25,12 @@ to catch regressions in the real product surface before review or deployment.
 
 Run the existing browser suite for each changed surface from `app/`:
 
-| Surface | Check |
-| --- | --- |
-| Homepage visual layout or scrolling | `yarn e2e:homepage` plus the manual scroll check below |
-| Room participant/Stage, overlays, or Room App layout | `yarn e2e:room-app-host` |
-| Room join, messaging, or participant interaction flow | `yarn e2e:room` |
+| Surface                                               | Check                                                                      |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- |
+| Homepage width or scrolling                           | `yarn e2e:homepage-ui` (real-route browser gate; runs in CI)               |
+| Homepage signal-collapse animation                    | `yarn e2e:homepage` (Chromium + WebKit; optional animation-specific check) |
+| Room participant/Stage, overlays, or Room App layout  | `yarn e2e:room-app-host`                                                   |
+| Room join, messaging, or participant interaction flow | `yarn e2e:room`                                                            |
 
 Use the configured viewport projects rather than a single desktop screenshot.
 The Room App host matrix covers Chromium desktop and WebKit desktop, phone,
@@ -41,11 +42,14 @@ checks to make a local browser test pass.
 
 ## Check geometry and interaction in the browser
 
-- **Scroll:** On the homepage, start at the top before each trial; wheel from
-  the header, the hero/content, and the lower page. Confirm the document moves
-  from each position and reaches both top and bottom. Identify nested
-  `overflow-y` containers and remove competing scroll owners when they are not
-  intentional.
+- **Scroll:** `yarn e2e:homepage-ui` loads the production homepage at
+  390×844, 768×1024, 1024×768, and 1440×900. It asserts
+  `documentElement.scrollWidth <= window.innerWidth` and that wheel input over the
+  top intro, hero, and lower page moves `window.scrollY`. Header.tsx emits
+  metadata only, so the test uses the visible top intro as the top-page target.
+  For other homepage layout changes, also inspect reaching both top and bottom
+  and identify nested `overflow-y` containers; remove competing scroll owners
+  when they are not intentional.
 - **Overlap:** Compare bounding boxes for headings, cards, tabs, dialogs, and
   fixed browser-safe regions. Assert visible controls are not clipped or
   covered by a higher stacking context.
@@ -61,9 +65,11 @@ checks to make a local browser test pass.
   reduced-motion behavior for changed controls/effects.
 
 Add browser assertions for the discovered geometry or hit-testing contract so
-the same regression is caught in CI. Keep unit tests for component behavior;
-they do not replace browser checks for CSS stacking, scroll ownership, or
-pointer targeting.
+the same regression is caught in CI. Homepage width and document-scroll
+contracts belong in `homepage-ui-regression.spec.ts`, which is wired to the
+selective `homepage-ui-compat` CI workflow. Keep unit tests for component
+behavior; they do not replace browser checks for CSS stacking, scroll
+ownership, or pointer targeting.
 
 ## Keep long-running Room costs bounded
 

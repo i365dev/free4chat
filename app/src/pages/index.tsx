@@ -69,7 +69,7 @@ export default function Home() {
   }
 
   return (
-    <div>
+    <div className="overflow-x-clip">
       <Header></Header>
       <main className="flex min-h-screen flex-col">
         <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col px-4 py-12">
