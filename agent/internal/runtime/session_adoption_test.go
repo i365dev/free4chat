@@ -63,6 +63,18 @@ type adoptionAdapter struct {
 	loadHook func()
 }
 
+type fallbackRecordingAdapter struct {
+	*adoptionAdapter
+	fallbackScopes     []string
+	fallbackSelections []map[string]string
+}
+
+func (a *fallbackRecordingAdapter) ApplySessionConfigFallbacksFor(scope string, selections map[string]string) error {
+	a.fallbackScopes = append(a.fallbackScopes, scope)
+	a.fallbackSelections = append(a.fallbackSelections, cloneNativeControlSelections(selections))
+	return nil
+}
+
 func newAdoptionAdapter(name string) *adoptionAdapter {
 	return &adoptionAdapter{
 		fakeAdapter: &fakeAdapter{name: name},
@@ -258,6 +270,54 @@ func TestApplyTaskSessionControlsReturnsErrorWhenSessionDisappearsAfterModeSet(t
 	err := runtime.applyTaskSessionControls("task:controls-race")
 	if err == nil || !strings.Contains(err.Error(), "became unavailable") {
 		t.Fatalf("expected bounded controls-unavailable error, got %v", err)
+	}
+}
+
+func TestEnsureHarnessSessionAppliesProviderFallbackOnOrdinaryRoomTask(t *testing.T) {
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: newAdoptionAdapter("codex")}
+	runtime := &ResidentRuntime{options: Options{Adapter: adapter}}
+	if err := runtime.ensureHarnessSession(roomScope); err != nil {
+		t.Fatalf("ensure ordinary Room Task session: %v", err)
+	}
+	if len(adapter.fallbackScopes) != 1 || adapter.fallbackScopes[0] != roomScope {
+		t.Fatalf("provider fallback was not applied to the ordinary Task session: %v", adapter.fallbackScopes)
+	}
+	if got := adapter.fallbackSelections[0]; len(got) != 0 {
+		t.Fatalf("unexpected Human selection supplied for ordinary Task: %+v", got)
+	}
+}
+
+func TestEnsureHarnessSessionPreservesExplicitProjectModelSelection(t *testing.T) {
+	const scope = "task:explicit-model-selection"
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: newAdoptionAdapter("codex")}
+	runtime := &ResidentRuntime{options: Options{Adapter: adapter},
+		taskProjectCwds: map[string]string{scope: "/project-a"},
+		taskSessionConfig: map[string]map[string]string{
+			scope: {"model": "gpt-a"},
+		},
+	}
+	if err := runtime.ensureHarnessSession(scope); err != nil {
+		t.Fatalf("ensure explicit-project Task session: %v", err)
+	}
+	if len(adapter.fallbackSelections) != 1 || adapter.fallbackSelections[0]["model"] != "gpt-a" {
+		t.Fatalf("provider fallback did not receive the Human selection: %+v", adapter.fallbackSelections)
+	}
+}
+
+func TestEnsureHarnessSessionAppliesProviderFallbackToUnconfiguredProjectTask(t *testing.T) {
+	const scope = "task:default-project-model"
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: newAdoptionAdapter("codex")}
+	runtime := &ResidentRuntime{options: Options{Adapter: adapter},
+		taskProjectCwds: map[string]string{scope: "/project-a"},
+	}
+	if err := runtime.ensureHarnessSession(scope); err != nil {
+		t.Fatalf("ensure unconfigured explicit-project Task session: %v", err)
+	}
+	if len(adapter.fallbackScopes) != 1 || adapter.fallbackScopes[0] != scope {
+		t.Fatalf("provider fallback was not applied to the project Task: %v", adapter.fallbackScopes)
+	}
+	if got := adapter.fallbackSelections[0]; len(got) != 0 {
+		t.Fatalf("unexpected Human model selection for unconfigured project Task: %+v", got)
 	}
 }
 

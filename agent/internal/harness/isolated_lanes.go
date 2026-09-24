@@ -29,6 +29,7 @@ type isolatedLaneAdapter interface {
 	types.ScopedHarnessAdapter
 	types.ScopedProjectHarnessAdapter
 	types.ScopedHarnessSessionControls
+	types.ScopedHarnessSessionDefaults
 	types.ScopedTurnCanceller
 	types.ScopedTurnOwnership
 	SessionHandoff
@@ -180,6 +181,14 @@ func (a *IsolatedACPAdapter) SetConfigOptionFor(scope, configID, value string) e
 		return err
 	}
 	return adapter.SetConfigOptionFor(scope, configID, value)
+}
+
+func (a *IsolatedACPAdapter) ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) error {
+	adapter, err := a.adapterForScope(scope, false)
+	if err != nil {
+		return err
+	}
+	return adapter.ApplySessionConfigFallbacksFor(scope, humanSelections)
 }
 
 func (a *IsolatedACPAdapter) SessionGenerationFor(scope string) int64 {

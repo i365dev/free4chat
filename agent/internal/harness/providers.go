@@ -81,7 +81,12 @@ var builtInProviders = []Provider{
 		Maturity:    types.MaturityBridge,
 		Security:    types.SecurityTrustedRoom,
 		Environment: map[string]string{"INITIAL_AGENT_MODE": "read-only"},
-		Notes:       "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
+		SessionConfigFallbacks: []types.LauncherSessionConfigFallback{{
+			ConfigID:         "model",
+			CurrentValue:     "gpt-6-luna",
+			ReplacementValue: "gpt-5.6-sol",
+		}},
+		Notes: "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
 		Capabilities: Capabilities{
 			// #440 real native CLI -> pinned ACP certification: the standard
 			// session/list returned the seeded `exec` thread (25 sessions), an

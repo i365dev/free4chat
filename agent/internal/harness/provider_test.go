@@ -150,3 +150,24 @@ func TestProviderRegistryReturnsIndependentCopies(t *testing.T) {
 		t.Fatalf("unknown provider must keep the launcher error type, got %T", err)
 	}
 }
+
+func TestCodexAdvertisesDefaultModelCompatibilityFallback(t *testing.T) {
+	provider, err := ProviderByID("codex")
+	if err != nil {
+		t.Fatalf("codex provider: %v", err)
+	}
+	want := []types.LauncherSessionConfigFallback{{
+		ConfigID: "model", CurrentValue: "gpt-6-luna", ReplacementValue: "gpt-5.6-sol",
+	}}
+	if !reflect.DeepEqual(provider.SessionConfigFallbacks, want) {
+		t.Fatalf("Codex compatibility fallback = %+v, want %+v", provider.SessionConfigFallbacks, want)
+	}
+	provider.SessionConfigFallbacks[0].ReplacementValue = "mutated"
+	again, err := ProviderByID("codex")
+	if err != nil {
+		t.Fatalf("codex provider copy: %v", err)
+	}
+	if again.SessionConfigFallbacks[0].ReplacementValue != "gpt-5.6-sol" {
+		t.Fatal("provider fallback mutation leaked into the registry")
+	}
+}
