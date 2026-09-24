@@ -184,6 +184,22 @@ async function expectReceivesPointer(
 
 const roomStage = (page: Page) => page.getByTestId("room-stage")
 const roomContent = (page: Page) => page.locator(".room-content")
+const roomStagePlanets = (page: Page) =>
+  page
+    .getByTestId("room-stage-participants")
+    .locator(".participant-avatar__planet")
+
+async function meanPlanetCenterY(page: Page, expectedCount: number) {
+  const planets = roomStagePlanets(page)
+  await expect(planets).toHaveCount(expectedCount)
+  const centers = await planets.evaluateAll((elements) =>
+    elements.map((element) => {
+      const box = element.getBoundingClientRect()
+      return box.top + box.height / 2
+    })
+  )
+  return centers.reduce((sum, center) => sum + center, 0) / centers.length
+}
 
 /**
  * The real-iPad regression was structural, not geometric: fullscreen kept the
@@ -329,6 +345,7 @@ async function expectNoPageOverflow(page: Page, what: string) {
 
 test("Room App host contract survives open, fullscreen, exit, hide and reopen", async ({
   page,
+  browser,
 }, testInfo) => {
   const profile = testInfo.project.name
   const roomSlug = `compat-${profile}-${Date.now().toString(36)}`
@@ -413,6 +430,31 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       expect(target.height).toBeGreaterThanOrEqual(44)
       expect(target.zIndex).toBe("3")
       expect(target.receivesPointer).toBe(true)
+    }
+    if (profile === "chromium-desktop" || profile === "webkit-desktop") {
+      await test.step("desktop single and two-person planets share a baseline", async () => {
+        const singlePlanetCenterY = await meanPlanetCenterY(page, 1)
+        const secondContext = await browser.newContext({
+          viewport: page.viewportSize()!,
+        })
+        const secondPage = await secondContext.newPage()
+        let twoPeoplePlanetCenterY = Number.NaN
+        try {
+          await installFixtureRoomApp(secondPage)
+          await installExternalRuntimeStubs(secondPage)
+          await installMediaShim(secondPage)
+          await openLocalRoom(secondPage, roomSlug)
+          await enterLocalRoom(secondPage, "Bob")
+          twoPeoplePlanetCenterY = await meanPlanetCenterY(page, 2)
+        } finally {
+          await secondContext.close()
+        }
+        await expect(roomStagePlanets(page)).toHaveCount(1)
+        expect(
+          Math.abs(singlePlanetCenterY - twoPeoplePlanetCenterY),
+          `one-person and two-person planet centers should share a vertical baseline (single ${singlePlanetCenterY}px, two-person ${twoPeoplePlanetCenterY}px)`
+        ).toBeLessThan(40)
+      })
     }
     // #438 makes people and Stage the initial phone surface. The Stage stays
     // one mounted element: switching to Room chat must hide it, not recreate

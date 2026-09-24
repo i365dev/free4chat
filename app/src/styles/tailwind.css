@@ -1033,6 +1033,11 @@ html {
 .room-shell--live .room-participants-grid:has(> :only-child) {
   align-content: center;
 }
+@media (min-width: 768px) and (min-height: 600px) {
+  .room-shell--live .room-participants-grid:has(> :only-child) {
+    align-content: flex-start;
+  }
+}
 .room-shell--live .room-participants-grid:has(> :only-child) > * > div {
   width: min(68vw, 14rem) !important;
 }
