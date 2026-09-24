@@ -36,6 +36,65 @@ func TestLoadConfigPrefersEnvironmentThenNativeStoreThenLegacyFile(t *testing.T)
 	}
 }
 
+func TestLoadConfigKeepsSpeechOffAndSkipsNativeStoreByDefault(t *testing.T) {
+	store := &countingStore{value: "stored-key"}
+	config := LoadConfigWithStore(t.TempDir(), func(string) string { return "" }, store)
+	if config.APIKey != "" || config.STTEnabled || config.TTSEnabled {
+		t.Fatalf("speech must remain disabled without explicit opt-in: %+v", config)
+	}
+	if store.getCalls != 0 {
+		t.Fatalf("ordinary Runtime setup read the native credential store %d times", store.getCalls)
+	}
+}
+
+func TestLoadConfigReadsNativeStoreOnlyForSelectedSpeechSlot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"other":"kept","speech":{"stt":{"provider":"doubao"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &countingStore{value: "stored-key"}
+	config := LoadConfigWithStore(dir, func(string) string { return "" }, store)
+	if config.APIKey != "stored-key" || !config.STTEnabled || config.TTSEnabled {
+		t.Fatalf("explicit STT selection was not applied: %+v", config)
+	}
+	if store.getCalls != 1 {
+		t.Fatalf("explicit speech opt-in should read native storage once, got %d", store.getCalls)
+	}
+}
+
+func TestEnableProvidersPreservesOtherRuntimeConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"existing":{"value":1},"speech":{"tts":{"provider":"none","voice":"voice"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnableProviders(dir, true, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["existing"].(map[string]any)["value"] != float64(1) {
+		t.Fatalf("unrelated Runtime config was lost: %s", data)
+	}
+	speechDoc := got["speech"].(map[string]any)
+	if speechDoc["stt"].(map[string]any)["provider"] != "doubao" {
+		t.Fatalf("selected STT provider was not stored: %s", data)
+	}
+	if tts := speechDoc["tts"].(map[string]any); tts["provider"] != "none" || tts["voice"] != "voice" {
+		t.Fatalf("unselected TTS config changed: %s", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("Runtime config permissions changed: info=%v err=%v", info, err)
+	}
+}
+
 func TestLoadConfigTreatsUnavailableStoreAsSoftFailure(t *testing.T) {
 	config := LoadConfigWithStore(t.TempDir(), func(string) string { return "" }, unavailableTestStore{})
 	if config.STTEnabled || config.TTSEnabled || config.APIKey != "" {
@@ -83,6 +142,21 @@ func TestDeleteLegacyAPIKeyPreservesOtherCredentialFields(t *testing.T) {
 }
 
 type unavailableTestStore struct{}
+
+type countingStore struct {
+	value    string
+	getCalls int
+}
+
+func (s *countingStore) Get(string, string) (string, error) {
+	s.getCalls++
+	if s.value == "" {
+		return "", credentials.ErrNotFound
+	}
+	return s.value, nil
+}
+func (*countingStore) Set(string, string, string) error { return nil }
+func (*countingStore) Delete(string, string) error      { return nil }
 
 func (unavailableTestStore) Get(string, string) (string, error) {
 	return "", credentials.ErrUnavailable

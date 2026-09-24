@@ -947,6 +947,52 @@ type ScopedHarnessAdapter interface {
 	RunTurnFor(scope string, input HarnessTurnInput, expectedSessionGeneration int64) (HarnessTurnResult, error)
 }
 
+// ScopedProjectHarnessAdapter is the optional provider-neutral seam for a
+// Task that starts a new native session in an explicitly selected local
+// project. The cwd remains Runtime-private and is never a Room capability.
+type ScopedProjectHarnessAdapter interface {
+	EnsureSessionForCwd(scope, cwd string) error
+}
+
+// HarnessSessionControls contains the exact native controls a Harness
+// advertised for one session. Free4Chat stores provider ids and labels without
+// translating them into universal permission tiers.
+type HarnessSessionControls struct {
+	CurrentModeID string                       `json:"currentModeId,omitempty"`
+	Modes         []HarnessSessionMode         `json:"modes,omitempty"`
+	ConfigOptions []HarnessSessionConfigOption `json:"configOptions,omitempty"`
+}
+
+type HarnessSessionMode struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type HarnessSessionConfigOption struct {
+	ID           string                      `json:"id"`
+	Name         string                      `json:"name,omitempty"`
+	Description  string                      `json:"description,omitempty"`
+	Category     string                      `json:"category,omitempty"`
+	Type         string                      `json:"type,omitempty"`
+	CurrentValue string                      `json:"currentValue,omitempty"`
+	Options      []HarnessSessionConfigValue `json:"options,omitempty"`
+}
+
+type HarnessSessionConfigValue struct {
+	Value       string `json:"value"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// ScopedHarnessSessionControls is the #427 provider-neutral seam for
+// inspecting and changing exact Task/native-session controls.
+type ScopedHarnessSessionControls interface {
+	SessionControlsFor(scope string) *HarnessSessionControls
+	SetModeFor(scope, modeID string) error
+	SetConfigOptionFor(scope, configID, value string) error
+}
+
 // ScopedTurnCanceller is the small optional seam that keeps a remote interrupt
 // exact once more than one conversation may execute at a time: the Runtime
 // names the ONE scope whose turn it proved it owns, and the adapter cancels
@@ -1216,13 +1262,18 @@ const MaxResidentSessionProjectLabelLength = 256
 type ResidentSessionControl struct {
 	Kind      ResidentSessionControlKind
 	RequestID string
-	// ProjectToken/PageToken are list-only and mutually usable: a project
-	// filter selects an exact cwd locally, a page token continues a previous
-	// page.
+	// ProjectToken selects an exact Runtime-local cwd for list filtering, or
+	// prepares a new Task session in that project when paired with TaskRequestID.
+	// PageToken continues a previous list page.
 	ProjectToken string
 	PageToken    string
 	// SessionToken is prepare-only: the exact selection to adopt.
 	SessionToken string
+	// ModeID and ConfigOptions are exact Harness-native selections for the
+	// Task's prepared session. They are validated against advertised controls
+	// by the Harness adapter, never translated into a Free4Chat tier.
+	ModeID        string
+	ConfigOptions map[string]string
 	// TaskRequestID is prepare-only: the canonical Task this adoption may
 	// bind to, and the ONLY one it can ever bind to.
 	TaskRequestID string
@@ -1248,7 +1299,8 @@ type ResidentTaskSession struct {
 	// and never markdown.
 	Title string `json:"title"`
 	// ProjectToken is the Runtime-issued handle for the exact project this
-	// session belongs to. ProjectLabel is its human-facing display path.
+	// session belongs to. ProjectLabel is a path-free basename label, with an
+	// opaque suffix when needed to distinguish projects that share a basename.
 	ProjectToken string `json:"projectToken"`
 	ProjectLabel string `json:"projectLabel"`
 	// UpdatedAt is an optional RFC3339 timestamp, passed through only when the
@@ -1285,6 +1337,12 @@ const (
 	// ResidentSessionErrorUnavailable means discovery or preparation could not
 	// be completed (Harness gone, list/load failed, adoption already armed).
 	ResidentSessionErrorUnavailable ResidentSessionErrorCode = "session_continuation_unavailable"
+	// ResidentSessionErrorProjectUnavailable means a new Task's explicitly
+	// selected local project no longer exists or cannot be used.
+	ResidentSessionErrorProjectUnavailable ResidentSessionErrorCode = "task_project_unavailable"
+	// ResidentSessionErrorControlUnavailable means a selected native control
+	// is absent from the Harness's current advertisement.
+	ResidentSessionErrorControlUnavailable ResidentSessionErrorCode = "task_harness_control_unavailable"
 )
 
 // ResidentSessionResult is the Runtime's bounded answer to one
@@ -1303,6 +1361,7 @@ type ResidentSessionResult struct {
 	Projects      []ResidentTaskSessionProject `json:"projects,omitempty"`
 	NextPageToken string                       `json:"nextPageToken,omitempty"`
 	HasMore       bool                         `json:"hasMore,omitempty"`
+	Controls      *HarnessSessionControls      `json:"controls,omitempty"`
 }
 
 // CollabRequestArgs are the arguments for send_collab_request.

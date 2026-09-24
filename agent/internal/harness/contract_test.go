@@ -74,7 +74,13 @@ func (f *fakeSemanticHarness) Close() error                          { return ni
 func (f *fakeSemanticHarness) RunTurn(types.HarnessTurnInput, int64) (types.HarnessTurnResult, error) {
 	return types.HarnessTurnResult{Text: "ok"}, nil
 }
-func (f *fakeSemanticHarness) EnsureSessionFor(string) error { return nil }
+func (f *fakeSemanticHarness) EnsureSessionFor(string) error            { return nil }
+func (f *fakeSemanticHarness) EnsureSessionForCwd(string, string) error { return nil }
+func (f *fakeSemanticHarness) SessionControlsFor(string) *types.HarnessSessionControls {
+	return nil
+}
+func (f *fakeSemanticHarness) SetModeFor(string, string) error                 { return nil }
+func (f *fakeSemanticHarness) SetConfigOptionFor(string, string, string) error { return nil }
 func (f *fakeSemanticHarness) SessionGenerationFor(string) int64 {
 	return 1
 }

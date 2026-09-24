@@ -164,7 +164,7 @@ describe("RoomSession media effect lifecycle", () => {
     const cleanup = (session as any).attemptCleanupNow(
       initial.pendingMediaCleanup
     )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
 
     const interleaved = room()
     replaceRoom({

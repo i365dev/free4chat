@@ -98,3 +98,77 @@ func TestACPListSessionsReflectsProviderChangesWithoutRestart(t *testing.T) {
 		t.Fatalf("a removed session must disappear from discovery: %v", got)
 	}
 }
+
+func TestACPListSessionsRematerializesAfterIdleReap(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "acp-trace.log")
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", map[string]string{
+		"FAKE_LOAD_CAP": "1",
+		"FAKE_LIST_CAP": "1",
+		"FAKE_TRACE":    tracePath,
+	}), AdapterOptions{IdleReapMs: 1})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	if err := adapter.LoadSession("room", "native-session-after-reap", ""); err != nil {
+		t.Fatalf("load native room session: %v", err)
+	}
+	loadedGeneration := adapter.SessionGeneration()
+	if err := adapter.ReapIdle(); err != nil {
+		t.Fatalf("reap provider: %v", err)
+	}
+	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); hasProc {
+		t.Fatal("idle reap left the provider process alive")
+	}
+
+	page, err := adapter.ListSessions(ACPSessionListOptions{})
+	if err != nil {
+		t.Fatalf("list sessions after idle reap: %v", err)
+	}
+	if len(page.Sessions) != 2 {
+		t.Fatalf("post-reap session discovery mismatch: %+v", page.Sessions)
+	}
+	if got := adapter.SessionDiagnostics(); len(got) != 1 || got[0].SessionID != "native-session-after-reap" {
+		t.Fatalf("session discovery replaced the retained native conversation: %+v", got)
+	}
+	if adapter.SessionGeneration() <= loadedGeneration {
+		t.Fatalf("post-reap discovery did not rematerialize the retained provider session: %d -> %d", loadedGeneration, adapter.SessionGeneration())
+	}
+
+	methods := make(map[string]int)
+	for _, frame := range readACPTraceFrames(t, tracePath) {
+		methods[frame.Method]++
+	}
+	if methods["initialize"] != 2 || methods["session/new"] != 1 || methods["session/load"] != 2 || methods["session/list"] != 1 {
+		t.Fatalf("session discovery after reap must reload the exact Room session before listing: %v", methods)
+	}
+}
+
+func TestIdleReapCallbackRespectsAnActiveDiscoveryHold(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", nil), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+
+	adapter.mu.Lock()
+	adapter.idleReapHolds++
+	gen := adapter.gen
+	adapter.mu.Unlock()
+	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen); err != nil {
+		t.Fatalf("guarded idle reap: %v", err)
+	}
+	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); !hasProc {
+		t.Fatal("idle reap closed the provider while session discovery held it")
+	}
+
+	adapter.mu.Lock()
+	adapter.idleReapHolds--
+	adapter.mu.Unlock()
+	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen); err != nil {
+		t.Fatalf("idle reap after discovery hold ended: %v", err)
+	}
+	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); hasProc {
+		t.Fatal("idle reap did not close the provider after the discovery hold ended")
+	}
+}

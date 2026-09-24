@@ -6,6 +6,10 @@ import {
 import { isAllowedOrigin } from "../common/origin"
 import { realtimeBaseUrl } from "../common/realtimeUrl"
 import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
+import {
+  resolveSfuAppSecret,
+  type SfuAppSecretStore,
+} from "../common/sfuAppSecret"
 import { TURNSTILE_ACTION } from "../common/turnstile"
 import { compensateUnacceptedAgentMedia } from "../do/mediaEffects"
 import { resolveAgentPurposePermission } from "../do/meetingNotesAuth"
@@ -31,6 +35,7 @@ export interface SfuEnv {
   ROOM_PROBE_RATE_LIMITER?: AdmissionRateLimiter
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
+  SFU_APP_SECRET_STORE?: SfuAppSecretStore
   /** #275: test-only override of the Cloudflare Realtime base URL. Absent
    * (production and ordinary local dev) means the real
    * `https://rtc.live.cloudflare.com/v1/apps/{appId}` endpoint is used,
@@ -120,11 +125,11 @@ function originAllowed(request: Request, route: string): boolean {
   return isAllowedOrigin(origin)
 }
 
-function getAppCredentials(
+async function getAppCredentials(
   env: SfuEnv
-): { appId: string; appSecret: string } | null {
+): Promise<{ appId: string; appSecret: string } | null> {
   const appId = env.SFU_APP_ID
-  const appSecret = env.SFU_APP_SECRET
+  const appSecret = await resolveSfuAppSecret(env)
   return appId && appSecret ? { appId, appSecret } : null
 }
 
@@ -276,7 +281,7 @@ async function realtimeRequest(
   path: string,
   init: RequestInit = {}
 ): Promise<Response> {
-  const credentials = getAppCredentials(env)
+  const credentials = await getAppCredentials(env)
   if (!credentials) return json({ error: "sfu_not_configured" }, 503)
   const headers = new Headers(init.headers)
   headers.set("Authorization", `Bearer ${credentials.appSecret}`)

@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +47,9 @@ func newDiscoveryFixture(t *testing.T, disposableRoot string) *discoveryFixture 
 func newDiscoveryFixtureWithPolicy(t *testing.T, disposableRoot string, policy types.TaskExecutionPolicy) *discoveryFixture {
 	t.Helper()
 	adapter := newAdoptionAdapter("pi")
+	// Prepared project selections now verify that a listed cwd is still a
+	// directory. Give the fixture's default discovered row a real local path.
+	adapter.sessions[0].Cwd = t.TempDir()
 	client := newExecutionClient()
 	logs := &logCapture{}
 	rt := NewResidentRuntime(Options{
@@ -67,6 +73,313 @@ func newDiscoveryFixtureWithPolicy(t *testing.T, disposableRoot string, policy t
 	return &discoveryFixture{adoptionFixture: &adoptionFixture{
 		rt: rt, adapter: adapter, client: client, logs: logs,
 	}}
+}
+
+func TestPreparedSessionRejectsMissingProjectBeforeTaskMaterialization(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	missingCwd := filepath.Join(t.TempDir(), "removed-project")
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-removed-project",
+		Cwd:       missingCwd,
+		Title:     "Removed project session",
+	}}
+
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Sessions) != 1 {
+		t.Fatalf("session discovery should preserve the provider row for a truthful prepare error: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-removed-project",
+		HumanParticipantID: "human-1",
+		SessionToken:       discovered.Sessions[0].Token,
+		TaskRequestID:      "req-removed-project-task",
+	})
+	if prepared.OK || prepared.Error != types.ResidentSessionErrorProjectUnavailable {
+		t.Fatalf("missing project cwd must fail with the bounded unavailable result: %+v", prepared)
+	}
+	if adoption := fixture.rt.pendingAdoptionSnapshot(); adoption != nil {
+		t.Fatalf("known-unavailable project must not arm a Task adoption: %+v", adoption)
+	}
+	if len(fixture.adapter.loadCalls()) != 0 {
+		t.Fatalf("known-unavailable project must fail before Harness load: %+v", fixture.adapter.loadCalls())
+	}
+	for _, entry := range fixture.logs.snapshot() {
+		if strings.Contains(entry, missingCwd) {
+			t.Fatalf("raw project path leaked into Runtime diagnostics: %s", entry)
+		}
+	}
+}
+
+func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	projectCwd := t.TempDir()
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-project-source",
+		Cwd:       projectCwd,
+		Title:     "Project session for catalog",
+	}}
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Projects) != 1 {
+		t.Fatalf("project catalog discovery failed: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-new-project",
+		HumanParticipantID: "human-1",
+		ProjectToken:       discovered.Projects[0].Token,
+		TaskRequestID:      "req-new-project-task",
+		ModeID:             "workspace",
+		ConfigOptions:      map[string]string{"model": "gpt-b"},
+	})
+	if !prepared.OK {
+		t.Fatalf("new Task project preparation failed: %+v", prepared)
+	}
+	waitForDone(t, startTurn(fixture.rt, taskRequestEvent(1, "task:req-new-project-task", "req-new-project-task", "human-1")), "project-scoped Task")
+
+	if got := fixture.adapter.count("newcwd:task:req-new-project-task:" + projectCwd); got != 1 {
+		t.Fatalf("Task session was not created with its exact selected project cwd: %v", fixture.adapter.recorded())
+	}
+	if got := fixture.adapter.count("new:task:req-new-project-task"); got != 1 {
+		t.Fatalf("new project Task must create exactly one scoped native session: %v", fixture.adapter.recorded())
+	}
+	if got := fixture.adapter.count("load:task:req-new-project-task"); got != 0 {
+		t.Fatalf("new project Task must not load a historical native session: %v", fixture.adapter.recorded())
+	}
+	if configIndex, turnIndex := fixture.adapter.eventIndex("config:task:req-new-project-task:model:gpt-b"), fixture.adapter.eventIndex("run:task:req-new-project-task"); configIndex < 0 || turnIndex < 0 || configIndex > turnIndex {
+		t.Fatalf("selected Harness config must be applied before the first Task prompt: %v", fixture.adapter.recorded())
+	}
+	fixture.rt.mu.Lock()
+	gotCwd := fixture.rt.taskProjectCwds["task:req-new-project-task"]
+	fixture.rt.mu.Unlock()
+	if gotCwd != projectCwd {
+		t.Fatalf("Runtime Task identity changed project cwd: got %q want %q", gotCwd, projectCwd)
+	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").CurrentModeID; got != "workspace" {
+		t.Fatalf("selected native mode was not applied to the Task: %q", got)
+	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").ConfigOptions[0].CurrentValue; got != "gpt-b" {
+		t.Fatalf("selected native config was not applied to the Task: %q", got)
+	}
+	fixture.adapter.recordMu.Lock()
+	fixture.adapter.modes["task:req-new-project-task"] = "observe" // simulate provider re-materialization defaults
+	fixture.adapter.configs["task:req-new-project-task"] = map[string]string{"model": "gpt-a"}
+	fixture.adapter.recordMu.Unlock()
+	if err := fixture.rt.ensureHarnessSession("task:req-new-project-task"); err != nil {
+		t.Fatalf("re-materialize Task session: %v", err)
+	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").CurrentModeID; got != "workspace" {
+		t.Fatalf("selected native mode was not restored after re-materialization: %q", got)
+	}
+	if got := fixture.adapter.SessionControlsFor("task:req-new-project-task").ConfigOptions[0].CurrentValue; got != "gpt-b" {
+		t.Fatalf("selected native config was not restored after re-materialization: %q", got)
+	}
+	if got := fixture.adapter.count("mode:task:req-new-project-task:workspace"); got != 2 {
+		t.Fatalf("selected native mode was not applied on initial and repeated materialization: %d", got)
+	}
+	if got := fixture.adapter.count("config:task:req-new-project-task:model:gpt-b"); got != 2 {
+		t.Fatalf("selected native config was not applied on initial and repeated materialization: %d", got)
+	}
+	for _, entry := range fixture.logs.snapshot() {
+		if strings.Contains(entry, projectCwd) {
+			t.Fatalf("raw project cwd leaked into Runtime diagnostics: %s", entry)
+		}
+	}
+}
+
+func TestPreparedNewTaskKeepsPickerAdvertisedControlsAcrossRoomIdleReap(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	projectCwd := t.TempDir()
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-project-source", Cwd: projectCwd, Title: "Project session",
+	}}
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Projects) != 1 || discovered.Controls == nil {
+		t.Fatalf("picker did not advertise a project and controls: %+v", discovered)
+	}
+	// A real idle reap clears the Room session's in-memory controls after the
+	// picker response. PREPARE must use the exact bounded advertisement bound
+	// to this Human's project token; the Task's own session validates again.
+	fixture.adapter.recordMu.Lock()
+	fixture.adapter.roomControlsUnavailable = true
+	fixture.adapter.recordMu.Unlock()
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind: types.ResidentSessionControlPrepare, RequestID: "req-after-idle",
+		HumanParticipantID: "human-1", ProjectToken: discovered.Projects[0].Token,
+		TaskRequestID: "task-after-idle", ModeID: "workspace",
+		ConfigOptions: map[string]string{"model": "gpt-b"},
+	})
+	if !prepared.OK {
+		t.Fatalf("picker-advertised selection was rejected after Room idle reap: %+v", prepared)
+	}
+	waitForDone(t, startTurn(fixture.rt, taskRequestEvent(1, "task:task-after-idle", "task-after-idle", "human-1")), "Task after Room idle reap")
+	if configIndex, turnIndex := fixture.adapter.eventIndex("config:task:task-after-idle:model:gpt-b"), fixture.adapter.eventIndex("run:task:task-after-idle"); configIndex < 0 || turnIndex < 0 || configIndex > turnIndex {
+		t.Fatalf("selected model was not applied before first prompt: %v", fixture.adapter.recorded())
+	}
+}
+
+func TestPreparedExistingSessionAppliesConfigWithoutChangingIdentity(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	cwd := t.TempDir()
+	fixture.adapter.sessions = []harness.ACPSessionInfo{{
+		SessionID: "native-existing-session", Cwd: cwd, Title: "Existing project session",
+	}}
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Sessions) != 1 {
+		t.Fatalf("historical session discovery failed: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-existing-config",
+		HumanParticipantID: "human-1",
+		SessionToken:       discovered.Sessions[0].Token,
+		TaskRequestID:      "req-existing-config-task",
+		ConfigOptions:      map[string]string{"model": "gpt-b"},
+	})
+	if !prepared.OK {
+		t.Fatalf("existing session preparation failed: %+v", prepared)
+	}
+	waitForDone(t, startTurn(fixture.rt, taskRequestEvent(1, "task:req-existing-config-task", "req-existing-config-task", "human-1")), "existing Task session")
+	loads := fixture.adapter.loadCalls()
+	if len(loads) != 1 || loads[0].sessionID != "native-existing-session" || loads[0].cwd != cwd {
+		t.Fatalf("the Task did not load the exact selected identity and cwd: %+v", loads)
+	}
+	if fixture.adapter.count("new:task:req-existing-config-task") != 0 {
+		t.Fatalf("config selection replaced the existing session with a new one: %v", fixture.adapter.recorded())
+	}
+	if configIndex, turnIndex := fixture.adapter.eventIndex("config:task:req-existing-config-task:model:gpt-b"), fixture.adapter.eventIndex("run:task:req-existing-config-task"); configIndex < 0 || turnIndex < 0 || configIndex > turnIndex {
+		t.Fatalf("selected config must be applied after exact load and before first prompt: %v", fixture.adapter.recorded())
+	}
+}
+
+func TestPreparedTaskRejectsUnadvertisedNativeConfigBeforeAdoption(t *testing.T) {
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	discovered := fixture.listControl("human-1", "", "")
+	if !discovered.OK || len(discovered.Projects) != 1 {
+		t.Fatalf("project catalog discovery failed: %+v", discovered)
+	}
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-unadvertised-config",
+		HumanParticipantID: "human-1",
+		ProjectToken:       discovered.Projects[0].Token,
+		TaskRequestID:      "req-unadvertised-config-task",
+		ConfigOptions:      map[string]string{"model": "gpt-unadvertised"},
+	})
+	if prepared.OK || prepared.Error != types.ResidentSessionErrorControlUnavailable {
+		t.Fatalf("unadvertised native config must fail with the bounded control error: %+v", prepared)
+	}
+	if fixture.rt.pendingAdoptionSnapshot() != nil {
+		t.Fatal("unadvertised config must not arm a Task session")
+	}
+	if fixture.adapter.count("new:task:req-unadvertised-config-task") != 0 {
+		t.Fatalf("unadvertised config must fail before scoped session creation: %v", fixture.adapter.recorded())
+	}
+}
+
+func TestTaskProjectLabelsNeverExposeCwdAndDisambiguateCollisions(t *testing.T) {
+	previousHome := sessionProjectHomeDirectory
+	home := filepath.Join(t.TempDir(), "operator-home")
+	sessionProjectHomeDirectory = func() (string, error) { return home, nil }
+	t.Cleanup(func() { sessionProjectHomeDirectory = previousHome })
+
+	homeProject := filepath.Join(home, "client", "repo")
+	if err := os.MkdirAll(homeProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideProjectA := "/Volumes/work/client/repo"
+	outsideProjectB := "/private/tmp/repo"
+	fixture := newDiscoveryFixture(t, "")
+	setRoster(fixture.rt, "human-1")
+	fixture.adapter.sessions = []harness.ACPSessionInfo{
+		{SessionID: "native-home", Cwd: homeProject, Title: "Home project session"},
+		{SessionID: "native-volume", Cwd: outsideProjectA, Title: "Volume project session"},
+		{SessionID: "native-temp", Cwd: outsideProjectB, Title: "Temp project session"},
+	}
+
+	first := fixture.listControl("human-1", "", "")
+	if !first.OK || len(first.Sessions) != 3 || len(first.Projects) != 3 {
+		t.Fatalf("expected three project-backed session rows: %+v", first)
+	}
+	serialized, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rawPath := range []string{homeProject, outsideProjectA, outsideProjectB} {
+		if strings.Contains(string(serialized), rawPath) {
+			t.Fatalf("browser-facing session list contains raw cwd %q: %s", rawPath, serialized)
+		}
+	}
+	labels := make(map[string]string, len(first.Projects))
+	for _, project := range first.Projects {
+		if project.Label == "" || filepath.IsAbs(project.Label) || strings.ContainsAny(project.Label, `/\\`) {
+			t.Fatalf("project label is not a bounded path-free basename label: %+v", project)
+		}
+		for _, parentFragment := range []string{"client", "Volumes", "work", "private", "tmp"} {
+			if strings.Contains(project.Label, parentFragment) {
+				t.Fatalf("project label leaked parent fragment %q: %+v", parentFragment, project)
+			}
+		}
+		labels[project.Token] = project.Label
+	}
+	for _, session := range first.Sessions {
+		for _, parentFragment := range []string{"client", "Volumes", "work", "private", "tmp"} {
+			if strings.Contains(session.ProjectLabel, parentFragment) {
+				t.Fatalf("session row leaked parent fragment %q: %+v", parentFragment, session)
+			}
+		}
+	}
+	if len(map[string]bool{labels[first.Sessions[0].ProjectToken]: true, labels[first.Sessions[1].ProjectToken]: true, labels[first.Sessions[2].ProjectToken]: true}) != 3 {
+		t.Fatalf("same-basename projects did not receive distinct labels: %+v", labels)
+	}
+
+	fixture.rt.mu.Lock()
+	for token, cwd := range map[string]string{
+		first.Sessions[0].ProjectToken: homeProject,
+		first.Sessions[1].ProjectToken: outsideProjectA,
+		first.Sessions[2].ProjectToken: outsideProjectB,
+	} {
+		if got := fixture.rt.taskSessionProjects[token].cwd; got != cwd {
+			fixture.rt.mu.Unlock()
+			t.Fatalf("opaque project token lost exact private cwd: token=%q got=%q want=%q", token, got, cwd)
+		}
+	}
+	fixture.rt.mu.Unlock()
+
+	second := fixture.listControl("human-1", "", "")
+	if !second.OK {
+		t.Fatalf("repeat discovery failed: %+v", second)
+	}
+	for _, project := range second.Projects {
+		if labels[project.Token] != project.Label {
+			t.Fatalf("project label changed for stable opaque token %q: %q -> %q", project.Token, labels[project.Token], project.Label)
+		}
+	}
+
+	prepared := fixture.rt.runSessionControl(&types.ResidentSessionControl{
+		Kind:               types.ResidentSessionControlPrepare,
+		RequestID:          "req-private-project-token",
+		HumanParticipantID: "human-1",
+		ProjectToken:       first.Sessions[0].ProjectToken,
+		TaskRequestID:      "req-private-project-task",
+	})
+	if !prepared.OK {
+		t.Fatalf("opaque project token did not resolve for preparation: %+v", prepared)
+	}
+	fixture.rt.mu.Lock()
+	var preparedCwd string
+	if fixture.rt.pendingAdoption != nil {
+		preparedCwd = fixture.rt.pendingAdoption.cwd
+	}
+	fixture.rt.mu.Unlock()
+	if preparedCwd != homeProject {
+		t.Fatalf("prepared opaque token did not retain exact cwd privately: got %q want exact selected project", preparedCwd)
+	}
 }
 
 // listControl runs one discovery request synchronously.
@@ -116,7 +429,7 @@ func TestTaskSessionProjectFilterSendsTheExactOriginalCwd(t *testing.T) {
 	}
 	var tmpToken string
 	for _, row := range recent.Sessions {
-		if row.ProjectLabel == "/private/tmp" {
+		if row.ProjectLabel == "tmp" {
 			tmpToken = row.ProjectToken
 		}
 	}
@@ -131,7 +444,7 @@ func TestTaskSessionProjectFilterSendsTheExactOriginalCwd(t *testing.T) {
 	if got := fixture.adapter.count("list:/private/tmp"); got != 1 {
 		t.Fatalf("the project filter must send the exact original cwd: %v", fixture.adapter.recorded())
 	}
-	if len(filtered.Sessions) != 1 || filtered.Sessions[0].ProjectLabel != "/private/tmp" {
+	if len(filtered.Sessions) != 1 || filtered.Sessions[0].ProjectLabel != "tmp" {
 		t.Fatalf("project filter returned the wrong rows: %+v", filtered.Sessions)
 	}
 }
@@ -152,6 +465,9 @@ func TestTaskSessionResultCarriesNoRealIdentity(t *testing.T) {
 	if result.OK != true || len(result.Sessions) != 1 {
 		t.Fatalf("discovery failed: %+v", result)
 	}
+	if result.Controls == nil || len(result.Controls.ConfigOptions) != 1 || result.Controls.ConfigOptions[0].ID != "model" {
+		t.Fatalf("bounded Harness controls were not projected with the session list: %+v", result.Controls)
+	}
 	row := result.Sessions[0]
 	if row.Token == "" || row.ProjectToken == "" {
 		t.Fatalf("a row must carry opaque tokens: %+v", row)
@@ -160,7 +476,7 @@ func TestTaskSessionResultCarriesNoRealIdentity(t *testing.T) {
 		t.Fatal("a token must never be the real ACP session id")
 	}
 	encoded := renderSessionResult(result)
-	for _, forbidden := range []string{"native-secret-id"} {
+	for _, forbidden := range []string{"native-secret-id", "/home/me/private-project"} {
 		if strings.Contains(encoded, forbidden) {
 			t.Fatalf("the browser-facing result leaked %q: %s", forbidden, encoded)
 		}

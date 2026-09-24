@@ -132,6 +132,7 @@ import {
   hasOutstandingTaskSessionRequest,
   isTaskSessionError,
   isValidTaskSessionToken,
+  isValidHarnessControlText,
   sanitizeRuntimeFeatures,
   validateTaskSessionListResult,
   TASK_SESSION_PENDING_TTL_MS,
@@ -356,8 +357,8 @@ export interface RoomSessionEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
   // RoomSession is bound within the same Worker as sfu/server.ts (see
   // wrangler.jsonc), so its runtime `env` is already the full Worker env —
-  // these three are declared here only to widen the *type*, not because any
-  // new binding/secret needs to be added. SFU_APP_ID/SFU_APP_SECRET are used
+  // these are declared here only to widen the *type*. SFU_APP_ID and the
+  // compatible SFU_APP_SECRET/SFU_APP_SECRET_STORE bindings are used
   // to actively close Cloudflare Realtime tracks on Meeting Notes
   // revocation (see realtimeMedia.ts); AGENT_MEDIA_ENABLED gates the
   // "meeting-notes-start" WS message the same way it already gates
@@ -366,6 +367,7 @@ export interface RoomSessionEnv {
   // Runtime media request would 403.
   SFU_APP_ID?: string
   SFU_APP_SECRET?: string
+  SFU_APP_SECRET_STORE?: { get(): Promise<string> }
   AGENT_MEDIA_ENABLED?: string
   ROOM_APPS_ENABLED?: string
   // #406: opt-in for the legacy HTTP wait_for_events long-poll. Absent/false
@@ -955,7 +957,10 @@ type ClientMessage =
       type: "task-session-start"
       requestId: string
       targetParticipantId: string
-      sessionToken: string
+      sessionToken?: string
+      projectToken?: string
+      modeId?: string
+      configOptions?: Record<string, string>
       summary: string
     }
   | {
@@ -2948,6 +2953,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       pageToken?: string
       sessionToken?: string
       taskRequestId?: string
+      modeId?: string
+      configOptions?: Record<string, string>
     }
   ): AgentSessionFrameOutcome {
     const pending: PendingSessionControl = {
@@ -2969,6 +2976,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       ...(control.projectToken ? { projectToken: control.projectToken } : {}),
       ...(control.pageToken ? { pageToken: control.pageToken } : {}),
       ...(control.sessionToken ? { sessionToken: control.sessionToken } : {}),
+      ...(control.modeId ? { modeId: control.modeId } : {}),
+      ...(control.configOptions
+        ? { configOptions: control.configOptions }
+        : {}),
       ...(control.taskRequestId
         ? { taskRequestId: control.taskRequestId }
         : {}),
@@ -3118,6 +3129,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ok: true,
         sessions: outcome.sessions,
         projects: outcome.projects,
+        ...(outcome.controls ? { controls: outcome.controls } : {}),
         hasMore: outcome.hasMore,
         ...(outcome.nextPageToken
           ? { nextPageToken: outcome.nextPageToken }
@@ -3291,9 +3303,36 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("session_continuation_unsupported")
       return
     }
-    if (!isValidTaskSessionToken(message.sessionToken)) {
+    const sessionProvided = message.sessionToken !== undefined
+    const projectProvided = message.projectToken !== undefined
+    if (
+      sessionProvided === projectProvided ||
+      (sessionProvided && !isValidTaskSessionToken(message.sessionToken)) ||
+      (projectProvided && !isValidTaskSessionToken(message.projectToken))
+    ) {
       reject("invalid_session_control")
       return
+    }
+    const modeId = message.modeId
+    if (modeId !== undefined && !isValidHarnessControlText(modeId)) {
+      reject("invalid_session_control")
+      return
+    }
+    const configOptions = message.configOptions
+    if (configOptions !== undefined) {
+      if (
+        !configOptions ||
+        typeof configOptions !== "object" ||
+        Array.isArray(configOptions) ||
+        Object.keys(configOptions).length > 16 ||
+        Object.entries(configOptions).some(
+          ([id, value]) =>
+            !isValidHarnessControlText(id) || !isValidHarnessControlText(value)
+        )
+      ) {
+        reject("invalid_session_control")
+        return
+      }
     }
     // The instruction is bounded by the SAME canonical collaboration rule the
     // ordinary Start Task path uses: this creates a normal Task, so it must
@@ -3334,7 +3373,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       browserRequestId: requestId,
       humanParticipantId: participant.id,
       humanConnectionNonce: attachment.connectionNonce,
-      sessionToken: message.sessionToken,
+      ...(sessionProvided ? { sessionToken: message.sessionToken } : {}),
+      ...(projectProvided ? { projectToken: message.projectToken } : {}),
+      ...(modeId ? { modeId } : {}),
+      ...(configOptions ? { configOptions } : {}),
       taskRequestId,
     })
     if (outcome === "delivered") return

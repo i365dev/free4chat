@@ -48,6 +48,9 @@ func runCredentialProvision(args []string) error {
 	if err := provisionCredential(provider, key, defaultCredentialStore()); err != nil {
 		return err
 	}
+	if err := speech.EnableProviders(daemon.RuntimeDirectory(), purpose == "" || purpose == "speech.stt", purpose == "" || purpose == "speech.tts"); err != nil {
+		return err
+	}
 	refreshResidentSpeech()
 	fmt.Printf("credential configured: %s\n", provider)
 	return nil
@@ -117,6 +120,9 @@ func speechSetup(provider string, stdin io.Reader, interactive bool, runtimeDir 
 		return err
 	}
 	if err := provisionCredential(provider, key, defaultCredentialStore()); err != nil {
+		return err
+	}
+	if err := speech.EnableProviders(runtimeDir, true, true); err != nil {
 		return err
 	}
 	refreshResidentSpeech()

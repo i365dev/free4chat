@@ -67,6 +67,8 @@ type SessionHandoff interface {
 type Contract interface {
 	types.HarnessAdapter
 	types.ScopedHarnessAdapter
+	types.ScopedProjectHarnessAdapter
+	types.ScopedHarnessSessionControls
 	types.ScopedTurnCanceller
 	types.ScopedTurnOwnership
 	SessionHandoff

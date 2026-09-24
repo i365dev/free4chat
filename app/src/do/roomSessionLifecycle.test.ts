@@ -66,6 +66,7 @@ function lifecycleHarness() {
     ["future-unknown-key", "must be removed"],
   ])
   const order: string[] = []
+  const waitUntilPromises: Promise<unknown>[] = []
   const socket = {
     send: vi.fn(),
     close: vi.fn(),
@@ -96,7 +97,9 @@ function lifecycleHarness() {
       },
     },
     getWebSockets: () => [socket],
-    waitUntil: (promise: Promise<unknown>) => void promise,
+    waitUntil: (promise: Promise<unknown>) => {
+      waitUntilPromises.push(promise)
+    },
   }
   const session = new RoomSession(
     ctx as never,
@@ -106,7 +109,7 @@ function lifecycleHarness() {
       SFU_APP_SECRET: "app-secret",
     } as never
   )
-  return { session, room, store, order, socket }
+  return { session, room, store, order, socket, waitUntilPromises }
 }
 
 class TestAgentEventSocket {
@@ -201,7 +204,8 @@ describe("RoomSession expiry cleanup", () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it("notifies expiry recipients before external media cleanup", async () => {
-    const { session, room, store, order, socket } = lifecycleHarness()
+    const { session, room, store, order, socket, waitUntilPromises } =
+      lifecycleHarness()
     const closeFetch = vi.fn(async () => {
       expect(store.size).toBe(0)
       order.push("mediaClose")
@@ -234,11 +238,11 @@ describe("RoomSession expiry cleanup", () => {
     expect(order.indexOf("deleteAll")).toBeGreaterThan(
       order.indexOf("deleteAlarm")
     )
-    expect(order.indexOf("mediaClose")).toBeGreaterThan(
-      order.indexOf("deleteAll")
-    )
     expect(order.indexOf("waiter")).toBeGreaterThan(order.indexOf("deleteAll"))
-    expect(order.indexOf("waiter")).toBeLessThan(order.indexOf("mediaClose"))
+    expect(waitUntilPromises).toHaveLength(1)
+    expect(order).not.toContain("mediaClose")
+    await Promise.all(waitUntilPromises)
+    expect(order.indexOf("mediaClose")).toBeGreaterThan(order.indexOf("waiter"))
     expect(closeFetch).toHaveBeenCalledOnce()
     expect(JSON.parse(await waiterResponse!.text())).toMatchObject({
       expired: true,

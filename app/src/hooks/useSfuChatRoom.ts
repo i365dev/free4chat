@@ -53,6 +53,7 @@ import {
   validateTaskSessionListResult,
   MAX_TASK_SESSION_TOKEN_LENGTH,
   type TaskSessionError,
+  type RelayHarnessSessionControls,
 } from "@do/taskSession"
 
 import type {
@@ -400,6 +401,7 @@ export interface TaskSessionPage {
   projects: TaskSessionProjectRow[]
   nextPageToken?: string
   hasMore: boolean
+  controls?: RelayHarnessSessionControls
 }
 
 export interface TaskSessionRow {
@@ -617,6 +619,7 @@ interface SfuServerMessage {
   // cursor, because none ever leaves the Runtime.
   sessions?: unknown
   projects?: unknown
+  controls?: unknown
   nextPageToken?: unknown
   hasMore?: unknown
   revision?: number
@@ -3377,6 +3380,7 @@ export function useSfuChatRoom(
           error: message.error,
           sessions: message.sessions,
           projects: message.projects,
+          controls: message.controls,
           nextPageToken: message.nextPageToken,
         })
         if (validated.ok === true) {
@@ -3386,6 +3390,7 @@ export function useSfuChatRoom(
               sessions: validated.sessions,
               projects: validated.projects,
               hasMore: validated.hasMore,
+              ...(validated.controls ? { controls: validated.controls } : {}),
               ...(validated.nextPageToken
                 ? { nextPageToken: validated.nextPageToken }
                 : {}),
@@ -4327,17 +4332,23 @@ export function useSfuChatRoom(
   const startTaskWithSession = useCallback(
     (
       targetParticipantId: string,
-      sessionToken: string,
-      summary: string
+      sessionToken: string | null,
+      summary: string,
+      projectToken?: string,
+      modeId?: string,
+      configOptions?: Record<string, string>
     ): Promise<TaskSessionStartResult> => {
       const target = targetParticipantId.trim()
       const instruction = summary.trim()
-      if (
-        !target ||
-        !instruction ||
-        !sessionToken ||
-        sessionToken.length > MAX_TASK_SESSION_TOKEN_LENGTH
-      )
+      const selectionValid =
+        (sessionToken !== null &&
+          sessionToken.length > 0 &&
+          sessionToken.length <= MAX_TASK_SESSION_TOKEN_LENGTH &&
+          !projectToken) ||
+        (sessionToken === null &&
+          !!projectToken &&
+          projectToken.length <= MAX_TASK_SESSION_TOKEN_LENGTH)
+      if (!target || !instruction || !selectionValid)
         return Promise.resolve({ ok: false, error: "invalid_session_control" })
       if (websocketRef.current?.readyState !== WebSocket.OPEN)
         return Promise.resolve({
@@ -4361,7 +4372,10 @@ export function useSfuChatRoom(
           type: "task-session-start",
           requestId,
           targetParticipantId: target,
-          sessionToken,
+          ...(sessionToken ? { sessionToken } : {}),
+          ...(projectToken ? { projectToken } : {}),
+          ...(modeId ? { modeId } : {}),
+          ...(configOptions ? { configOptions } : {}),
           summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
         })
         if (sent) return

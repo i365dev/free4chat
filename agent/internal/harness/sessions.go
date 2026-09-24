@@ -134,6 +134,24 @@ func (a *ACPAdapter) ListSessions(options ACPSessionListOptions) (ACPSessionPage
 		return ACPSessionPage{}, errors.New("ACP session/list cursor is invalid")
 	}
 
+	// Session discovery is also the next user interaction after an idle reap.
+	// Hold the idle reaper while we re-materialize and query the provider, then
+	// let EnsureSession load the retained Room conversation rather than replace
+	// it with a new one.
+	a.mu.Lock()
+	a.idleReapHolds++
+	a.cancelIdleReapLocked()
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.idleReapHolds--
+		a.scheduleIdleReapLocked()
+		a.mu.Unlock()
+	}()
+	if err := a.EnsureSession(); err != nil {
+		return ACPSessionPage{}, err
+	}
+
 	a.mu.Lock()
 	connected := a.stdin != nil && a.caps != nil
 	advertised := connected && a.caps.ListPresent
@@ -373,6 +391,7 @@ func (a *ACPAdapter) loadSession(scope string, sessionID string, cwd string) err
 		a.sessionID = sessionID
 		a.sessionGeneration++
 		a.caps.SessionControls = controls
+		a.roomDurable = true
 		return nil
 	}
 	replacement := cloneACPCapabilities(a.caps)
@@ -380,9 +399,11 @@ func (a *ACPAdapter) loadSession(scope string, sessionID string, cwd string) err
 	a.nextScopeGeneration++
 	a.sessions[scope] = &acpSession{
 		sessionID:  sessionID,
+		cwd:        cwd,
 		caps:       replacement,
 		generation: a.nextScopeGeneration,
 		scope:      scope,
+		durable:    true,
 	}
 	return nil
 }

@@ -407,7 +407,10 @@ describe("Start Task with an existing local session (#409)", () => {
     expect(startTaskWithSession).toHaveBeenCalledWith(
       "agent-pi",
       "token-1",
-      "Continue this work"
+      "Continue this work",
+      undefined,
+      undefined,
+      {}
     )
     resolveStart({ ok: true })
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())

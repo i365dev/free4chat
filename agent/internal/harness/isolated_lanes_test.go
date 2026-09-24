@@ -38,7 +38,15 @@ func (f *fakeIsolatedLane) EnsureSessionFor(scope string) error {
 	f.ensured = append(f.ensured, scope)
 	return nil
 }
-func (f *fakeIsolatedLane) SessionGenerationFor(string) int64 { return 1 }
+func (f *fakeIsolatedLane) EnsureSessionForCwd(scope, _ string) error {
+	return f.EnsureSessionFor(scope)
+}
+func (f *fakeIsolatedLane) SessionControlsFor(string) *types.HarnessSessionControls {
+	return nil
+}
+func (f *fakeIsolatedLane) SetModeFor(string, string) error                 { return nil }
+func (f *fakeIsolatedLane) SetConfigOptionFor(string, string, string) error { return nil }
+func (f *fakeIsolatedLane) SessionGenerationFor(string) int64               { return 1 }
 func (f *fakeIsolatedLane) RunTurnFor(scope string, _ types.HarnessTurnInput, _ int64) (types.HarnessTurnResult, error) {
 	return types.HarnessTurnResult{Text: scope}, nil
 }

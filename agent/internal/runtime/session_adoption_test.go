@@ -45,13 +45,17 @@ type adoptionTurnInput struct {
 // test.
 type adoptionAdapter struct {
 	*fakeAdapter
-	recordMu sync.Mutex
-	events   []string
-	loads    []adoptionLoadCall
-	inputs   []adoptionTurnInput
-	sessions []harness.ACPSessionInfo
-	loadErr  error
-	listErr  error
+	recordMu                   sync.Mutex
+	events                     []string
+	loads                      []adoptionLoadCall
+	inputs                     []adoptionTurnInput
+	sessions                   []harness.ACPSessionInfo
+	loadErr                    error
+	listErr                    error
+	modes                      map[string]string
+	configs                    map[string]map[string]string
+	roomControlsUnavailable    bool
+	controlsDisappearOnModeSet bool
 	// loadHook runs INSIDE LoadSession, after the Runtime has committed the
 	// adopted ownership for the scope and before the load reports success. It
 	// is how a test deterministically places a Harness death in the load
@@ -62,6 +66,8 @@ type adoptionAdapter struct {
 func newAdoptionAdapter(name string) *adoptionAdapter {
 	return &adoptionAdapter{
 		fakeAdapter: &fakeAdapter{name: name},
+		modes:       make(map[string]string),
+		configs:     make(map[string]map[string]string),
 		sessions: []harness.ACPSessionInfo{{
 			SessionID: "native-pi-1",
 			Cwd:       "/workspace",
@@ -194,6 +200,78 @@ func (a *adoptionAdapter) EnsureSessionFor(scope string) error {
 	if a.fakeAdapter.scopedGenerationSnapshot(scope) != before {
 		a.record("new:" + scope)
 	}
+	return nil
+}
+
+func (a *adoptionAdapter) EnsureSessionForCwd(scope, cwd string) error {
+	a.record("newcwd:" + scope + ":" + cwd)
+	before := a.fakeAdapter.scopedGenerationSnapshot(scope)
+	if err := a.fakeAdapter.EnsureSessionFor(scope); err != nil {
+		return err
+	}
+	if a.fakeAdapter.scopedGenerationSnapshot(scope) != before {
+		a.record("new:" + scope)
+	}
+	return nil
+}
+
+func (a *adoptionAdapter) SessionControlsFor(scope string) *types.HarnessSessionControls {
+	a.recordMu.Lock()
+	defer a.recordMu.Unlock()
+	if scope == "room" && a.roomControlsUnavailable || a.controlsDisappearOnModeSet && a.modes[scope] != "" {
+		return nil
+	}
+	mode := a.modes[scope]
+	if mode == "" {
+		mode = "observe"
+	}
+	modelValue := a.configs[scope]["model"]
+	if modelValue == "" {
+		modelValue = "gpt-a"
+	}
+	return &types.HarnessSessionControls{
+		CurrentModeID: mode,
+		Modes:         []types.HarnessSessionMode{{ID: "observe"}, {ID: "workspace"}},
+		ConfigOptions: []types.HarnessSessionConfigOption{{
+			ID: "model", Name: "Model", Type: "select", CurrentValue: modelValue,
+			Options: []types.HarnessSessionConfigValue{{Value: "gpt-a"}, {Value: "gpt-b"}},
+		}},
+	}
+}
+
+func (a *adoptionAdapter) SetModeFor(scope, modeID string) error {
+	a.recordMu.Lock()
+	a.modes[scope] = modeID
+	a.recordMu.Unlock()
+	a.record("mode:" + scope + ":" + modeID)
+	return nil
+}
+
+func TestApplyTaskSessionControlsReturnsErrorWhenSessionDisappearsAfterModeSet(t *testing.T) {
+	adapter := newAdoptionAdapter("codex")
+	adapter.controlsDisappearOnModeSet = true
+	runtime := &ResidentRuntime{
+		options:          Options{Adapter: adapter},
+		taskSessionModes: map[string]string{"task:controls-race": "workspace"},
+	}
+
+	err := runtime.applyTaskSessionControls("task:controls-race")
+	if err == nil || !strings.Contains(err.Error(), "became unavailable") {
+		t.Fatalf("expected bounded controls-unavailable error, got %v", err)
+	}
+}
+
+func (a *adoptionAdapter) SetConfigOptionFor(scope, configID, value string) error {
+	if configID != "model" || (value != "gpt-a" && value != "gpt-b") {
+		return errors.New("unadvertised native config selection")
+	}
+	a.recordMu.Lock()
+	if a.configs[scope] == nil {
+		a.configs[scope] = make(map[string]string)
+	}
+	a.configs[scope][configID] = value
+	a.recordMu.Unlock()
+	a.record("config:" + scope + ":" + configID + ":" + value)
 	return nil
 }
 

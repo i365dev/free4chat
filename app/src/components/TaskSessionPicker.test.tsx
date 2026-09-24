@@ -114,6 +114,43 @@ describe("TaskSessionPicker (#409)", () => {
     )
   })
 
+  it("shows project discovery errors and retry when session rows are hidden", () => {
+    const onRefresh = vi.fn()
+    renderPicker({
+      status: "error",
+      sessions: [],
+      showSessions: false,
+      error: "Project discovery is unavailable. Refresh and try again.",
+      onRefresh,
+    })
+    expect(screen.getByTestId("task-session-error")).toHaveTextContent(
+      "Project discovery is unavailable."
+    )
+    expect(screen.queryByTestId("task-session-list")).toBeNull()
+    fireEvent.click(screen.getByTestId("task-session-retry"))
+    expect(onRefresh).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the full bounded project label in tooltips to preserve collision suffixes", () => {
+    const label = `${"long-project-basename-".repeat(3)} · a1b2c3d4`
+    renderPicker({
+      projects: [{ token: "long-project", label }],
+      projectToken: "long-project",
+    })
+    expect(screen.getByTestId("task-session-project-summary")).toHaveAttribute(
+      "title",
+      label
+    )
+    expect(screen.getByTestId("task-session-project-toggle")).toHaveAttribute(
+      "title",
+      label
+    )
+
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    const option = screen.getByTestId("task-session-project-option")
+    expect(option.querySelector("span")).toHaveAttribute("title", label)
+  })
+
   it("shows an actionable error with a refresh control", () => {
     const onRefresh = vi.fn()
     renderPicker({
@@ -226,7 +263,8 @@ describe("TaskSessionPicker (#409)", () => {
       ],
     })
     const title = screen.getByText(/^long-title-/)
-    expect(title.className).toContain("break-words")
+    expect(title).toHaveAttribute("data-testid", "task-session-title")
+    expect(title).toHaveStyle({ WebkitLineClamp: 2 })
     expect(title.className).toContain("min-w-0")
   })
 
@@ -275,7 +313,7 @@ describe("#421 project display path compaction", () => {
     expect(compact.endsWith("…")).toBe(true)
   })
 
-  it("renders the full label as a title without changing search", () => {
+  it("compacts the project title without changing search", () => {
     const long = `/private/var/folders/d4/${"y".repeat(60)}/free4chat-long`
     renderPicker({
       sessions: [
@@ -293,7 +331,11 @@ describe("#421 project display path compaction", () => {
     const row = screen.getByTestId("task-session-row")
     expect(row).toHaveTextContent("free4chat-long")
     expect(row).not.toHaveTextContent("private/var/folders")
-    expect(row.querySelector("[title]")?.getAttribute("title")).toBe(long)
+    const projectTitle = screen
+      .getByTestId("task-session-project-label")
+      .getAttribute("title")
+    expect(projectTitle).toContain("free4chat-long")
+    expect(projectTitle).not.toContain("/private/var/folders")
 
     // The full path stays searchable even though only its tail is rendered.
     fireEvent.change(screen.getByTestId("task-session-search"), {

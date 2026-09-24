@@ -213,6 +213,43 @@ describe("validateTaskSessionListResult (#409)", () => {
     ])
   })
 
+  it("keeps bounded Harness select controls and filters unbounded options", () => {
+    const outcome = validateTaskSessionListResult({
+      ok: true,
+      sessions: [],
+      projects: [],
+      controls: {
+        modes: [{ id: "read-only", name: "Ask for approval" }],
+        configOptions: [
+          {
+            id: "model",
+            name: "Model",
+            type: "select",
+            currentValue: "gpt-a",
+            options: [{ value: "gpt-a" }, { value: "gpt-b" }],
+          },
+          {
+            id: "arbitrary-prompt",
+            type: "string",
+            options: [{ value: "freeform" }],
+          },
+          { id: "empty-select", type: "select", options: [] },
+        ],
+      },
+    })
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok !== true) return
+    expect(outcome.controls?.configOptions).toEqual([
+      {
+        id: "model",
+        name: "Model",
+        type: "select",
+        currentValue: "gpt-a",
+        options: [{ value: "gpt-a" }, { value: "gpt-b" }],
+      },
+    ])
+  })
+
   it("drops an unparseable updatedAt rather than rendering Invalid Date", () => {
     const outcome = validateTaskSessionListResult({
       ok: true,

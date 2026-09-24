@@ -67,6 +67,7 @@ type agent struct {
 	pending          []byte // id of a held prompt waiting for cancellation
 	pendingSessionID string
 	nextSessionID    int
+	configValues     map[string]map[string]string
 	// held maps a native session id to the prompt id parked for it in
 	// hold_all mode. Unlike `pending`, it holds MANY conversations at once,
 	// which is what lets tests exercise real cross-session concurrency.
@@ -162,7 +163,7 @@ func main() {
 			break
 		}
 	}
-	a := &agent{mode: mode, held: make(map[string][]byte)}
+	a := &agent{mode: mode, held: make(map[string][]byte), configValues: make(map[string]map[string]string)}
 	// A FIRST-life stuck process must also survive stdin EOF (the adapter
 	// closes the pipe before escalating): only SIGKILL may end it, which is
 	// exactly what the adapter's bounded escalation tests verify.
@@ -345,6 +346,7 @@ func main() {
 			if os.Getenv("FAKE_UNIQUE_SESSION_IDS") == "1" {
 				sessionID = fmt.Sprintf("session-%d-%d", os.Getpid(), a.nextSessionID)
 			}
+			a.configValues[sessionID] = map[string]string{"mode": "observe", "model": "gpt-a", "reasoning_effort": "medium"}
 			response := map[string]any{"sessionId": sessionID}
 			if os.Getenv("FAKE_POLICY_CAP") == "1" {
 				response["modes"] = map[string]any{
@@ -354,14 +356,7 @@ func main() {
 						map[string]any{"id": "workspace", "name": "Workspace", "description": "workspace writes"},
 					},
 				}
-				response["configOptions"] = []any{map[string]any{
-					"id": "mode", "name": "Mode", "category": "mode", "type": "select",
-					"currentValue": "observe",
-					"options": []any{
-						map[string]any{"value": "observe", "name": "Observe"},
-						map[string]any{"value": "workspace", "name": "Workspace"},
-					},
-				}}
+				response["configOptions"] = fakeConfigOptions(a.configValues[sessionID])
 			}
 			reply(message.ID, response)
 
@@ -392,14 +387,11 @@ func main() {
 				Value     string `json:"value"`
 			}
 			_ = json.Unmarshal(message.Params, &params)
-			configOptions := []any{map[string]any{
-				"id": params.ConfigID, "name": "Mode", "category": "mode", "type": "select",
-				"currentValue": params.Value,
-				"options": []any{
-					map[string]any{"value": "observe", "name": "Observe"},
-					map[string]any{"value": "workspace", "name": "Workspace"},
-				},
-			}}
+			if a.configValues[params.SessionID] == nil {
+				a.configValues[params.SessionID] = map[string]string{"mode": "observe", "model": "gpt-a", "reasoning_effort": "medium"}
+			}
+			a.configValues[params.SessionID][params.ConfigID] = params.Value
+			configOptions := fakeConfigOptions(a.configValues[params.SessionID])
 			notify("session/update", map[string]any{
 				"sessionId": params.SessionID,
 				"update":    map[string]any{"sessionUpdate": "config_option_update", "configOptions": configOptions},
@@ -712,6 +704,26 @@ func main() {
 		// Survive EOF (pipe closed by the adapter) and every signal except
 		// SIGKILL: this models a Harness that ignores TERM during teardown.
 		select {}
+	}
+}
+
+func fakeConfigOptions(current map[string]string) []any {
+	return []any{
+		map[string]any{
+			"id": "mode", "name": "Mode", "category": "mode", "type": "select",
+			"currentValue": current["mode"],
+			"options":      []any{map[string]any{"value": "observe", "name": "Observe"}, map[string]any{"value": "workspace", "name": "Workspace"}},
+		},
+		map[string]any{
+			"id": "model", "name": "Model", "category": "model", "type": "select",
+			"currentValue": current["model"],
+			"options":      []any{map[string]any{"value": "gpt-a", "name": "A"}, map[string]any{"value": "gpt-b", "name": "B"}},
+		},
+		map[string]any{
+			"id": "reasoning_effort", "name": "Reasoning effort", "category": "thought_level", "type": "select",
+			"currentValue": current["reasoning_effort"],
+			"options":      []any{map[string]any{"value": "low"}, map[string]any{"value": "medium"}, map[string]any{"value": "high"}},
+		},
 	}
 }
 

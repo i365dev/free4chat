@@ -81,6 +81,7 @@ type taskSessionSelection struct {
 	cwd                string
 	humanParticipantID string
 	expiresAt          int64
+	controls           *types.HarnessSessionControls
 }
 
 // taskSessionProject is one Human-bound project handle. Label is display-only.
@@ -89,6 +90,7 @@ type taskSessionProject struct {
 	label              string
 	humanParticipantID string
 	expiresAt          int64
+	controls           *types.HarnessSessionControls
 }
 
 // taskSessionPage is one Human-bound pagination handle. It owns the exact cwd
@@ -258,7 +260,6 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 		result.Error = types.ResidentSessionErrorExpired
 		return result
 	}
-
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
 	r.pruneTaskSessionCacheLocked(now)
@@ -313,23 +314,35 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 		}
 	}
 
+	// Bind the same bounded advertisement shown in this picker response to its
+	// opaque selection tokens. The provider may idle between LIST and PREPARE;
+	// Task admission still rechecks the selected values against the new scoped
+	// session before its first prompt.
+	var controls *types.HarnessSessionControls
+	if controlsAdapter, ok := r.options.Adapter.(types.ScopedHarnessSessionControls); ok {
+		controls = controlsAdapter.SessionControlsFor("room")
+	}
 	rows := make([]types.ResidentTaskSession, 0, types.MaxResidentSessionRows)
 	r.mu.Lock()
 	r.pruneTaskSessionCacheLocked(now)
 	projectIndex := make(map[string]string, len(r.taskSessionProjects))
 	for token, project := range r.taskSessionProjects {
-		projectIndex[project.cwd] = token
+		if project.humanParticipantID == human {
+			project.controls = controls
+			r.taskSessionProjects[token] = project
+			projectIndex[project.cwd] = token
+		}
 	}
 	nextPageToken := ""
 	for _, info := range pending {
 		if len(rows) >= types.MaxResidentSessionRows {
 			break
 		}
-		token, issueErr := r.issueSessionTokenLocked(info, human, now)
+		token, issueErr := r.issueSessionTokenLocked(info, human, now, controls)
 		if issueErr != nil {
 			break
 		}
-		projectToken, projectErr := r.issueProjectTokenLocked(info.Cwd, human, now, projectIndex)
+		projectToken, projectErr := r.issueProjectTokenLocked(info.Cwd, human, now, projectIndex, controls)
 		if projectErr != nil {
 			break
 		}
@@ -337,9 +350,17 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 			Token:        token,
 			Title:        info.Title,
 			ProjectToken: projectToken,
-			ProjectLabel: taskSessionProjectLabel(info.Cwd),
+			ProjectLabel: r.taskSessionProjects[projectToken].label,
 			UpdatedAt:    info.UpdatedAt,
 		})
+	}
+	// A later row can reveal a basename collision. Refresh this page's labels
+	// only after all tokens have been issued, so every duplicate in the page is
+	// disambiguated consistently before it crosses the Runtime boundary.
+	for index := range rows {
+		if project, found := r.taskSessionProjects[rows[index].ProjectToken]; found {
+			rows[index].ProjectLabel = project.label
+		}
 	}
 	consumed := len(rows)
 	remainder := pending[min(consumed, len(pending)):]
@@ -357,6 +378,7 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 	result.Projects = projects
 	result.NextPageToken = nextPageToken
 	result.HasMore = hasMore
+	result.Controls = controls
 	return result
 }
 
@@ -367,9 +389,12 @@ func (r *ResidentRuntime) listTaskSessions(control *types.ResidentSessionControl
 // never run for that scope first.
 func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionControl) types.ResidentSessionResult {
 	result := types.ResidentSessionResult{Kind: control.Kind, RequestID: control.RequestID}
-	if control.SessionToken == "" || control.TaskRequestID == "" {
+	if control.TaskRequestID == "" || (control.SessionToken == "") == (control.ProjectToken == "") {
 		result.Error = types.ResidentSessionErrorInvalid
 		return result
+	}
+	if control.SessionToken == "" {
+		return r.prepareNewTaskProject(control)
 	}
 	now := time.Now().UnixMilli()
 	r.mu.Lock()
@@ -394,13 +419,105 @@ func (r *ResidentRuntime) prepareTaskSession(control *types.ResidentSessionContr
 		result.Error = types.ResidentSessionErrorExpired
 		return result
 	}
-	if err := r.ArmPreparedSessionAdoption(selection.sessionID, selection.cwd, human, control.TaskRequestID); err != nil {
+	if !taskNativeControlSelectionAvailable(selection.controls, control.ModeID, control.ConfigOptions) {
+		result.Error = types.ResidentSessionErrorControlUnavailable
+		return result
+	}
+	// session/list is discovery, not a lease on the local directory. Catch a
+	// removed, missing, or non-directory cwd while the Human is still in the
+	// picker flow so a known-unavailable project never becomes a Task that
+	// immediately projects Session lost. Keep the exact string in the token;
+	// this check must not clean, resolve, or substitute the path.
+	if !taskSessionCwdAvailable(selection.cwd) {
+		result.Error = types.ResidentSessionErrorProjectUnavailable
+		r.log("task_session_prepare_failed", map[string]string{"failureClass": "CWD_PATH_UNAVAILABLE"})
+		return result
+	}
+	if err := r.ArmPreparedSessionAdoptionWithControls(selection.sessionID, selection.cwd, human, control.TaskRequestID, control.ModeID, control.ConfigOptions); err != nil {
 		result.Error = types.ResidentSessionErrorUnavailable
 		r.log("task_session_prepare_failed", map[string]string{"failureClass": turnFailureClassOf(err)})
 		return result
 	}
 	result.OK = true
 	return result
+}
+
+func (r *ResidentRuntime) prepareNewTaskProject(control *types.ResidentSessionControl) types.ResidentSessionResult {
+	result := types.ResidentSessionResult{Kind: control.Kind, RequestID: control.RequestID}
+	now := time.Now().UnixMilli()
+	r.mu.Lock()
+	r.pruneTaskSessionCacheLocked(now)
+	project, found := r.taskSessionProjects[control.ProjectToken]
+	r.mu.Unlock()
+	if !found || project.expiresAt <= now || project.humanParticipantID != control.HumanParticipantID ||
+		!r.sessionHumanIsCurrent(control.HumanParticipantID) {
+		result.Error = types.ResidentSessionErrorExpired
+		return result
+	}
+	if !taskNativeControlSelectionAvailable(project.controls, control.ModeID, control.ConfigOptions) {
+		result.Error = types.ResidentSessionErrorControlUnavailable
+		return result
+	}
+	if !taskSessionCwdAvailable(project.cwd) {
+		result.Error = types.ResidentSessionErrorProjectUnavailable
+		r.log("task_project_prepare_failed", map[string]string{"failureClass": "CWD_PATH_UNAVAILABLE"})
+		return result
+	}
+	if err := r.ArmPreparedProjectTaskWithControls(project.cwd, control.HumanParticipantID, control.TaskRequestID, control.ModeID, control.ConfigOptions); err != nil {
+		result.Error = types.ResidentSessionErrorUnavailable
+		r.log("task_project_prepare_failed", map[string]string{"failureClass": turnFailureClassOf(err)})
+		return result
+	}
+	result.OK = true
+	return result
+}
+
+func taskNativeControlSelectionAvailable(controls *types.HarnessSessionControls, modeID string, configOptions map[string]string) bool {
+	if modeID == "" && len(configOptions) == 0 {
+		return true
+	}
+	if controls == nil {
+		return false
+	}
+	if modeID != "" {
+		found := false
+		for _, mode := range controls.Modes {
+			if mode.ID == modeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for id, value := range configOptions {
+		found := false
+		for _, option := range controls.ConfigOptions {
+			if option.ID != id || option.Type != "select" {
+				continue
+			}
+			for _, advertised := range option.Options {
+				if advertised.Value == value {
+					found = true
+					break
+				}
+			}
+			break
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func taskSessionCwdAvailable(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	info, err := os.Stat(cwd)
+	return err == nil && info.IsDir()
 }
 
 // cancelTaskSession releases a prepared adoption whose canonical Task will now
@@ -495,7 +612,7 @@ func sessionResultContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
 }
 
-func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, human string, now int64) (string, error) {
+func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, human string, now int64, controls *types.HarnessSessionControls) (string, error) {
 	if len(r.taskSessionSessions) >= taskSessionMaxSessionTokens {
 		return "", errors.New("session token capacity reached")
 	}
@@ -508,6 +625,7 @@ func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, h
 		cwd:                info.Cwd,
 		humanParticipantID: human,
 		expiresAt:          now + taskSessionTokenTTL.Milliseconds(),
+		controls:           controls,
 	}
 	return token, nil
 }
@@ -516,8 +634,11 @@ func (r *ResidentRuntime) issueSessionTokenLocked(info harness.ACPSessionInfo, h
 // allocating a new one only when this cwd is not already in the catalog. The
 // catalog is what makes the project selector stable across pages: a project
 // discovered on page 1 keeps the same handle on page 3.
-func (r *ResidentRuntime) issueProjectTokenLocked(cwd, human string, now int64, index map[string]string) (string, error) {
+func (r *ResidentRuntime) issueProjectTokenLocked(cwd, human string, now int64, index map[string]string, controls *types.HarnessSessionControls) (string, error) {
 	if token, found := index[cwd]; found {
+		project := r.taskSessionProjects[token]
+		project.controls = controls
+		r.taskSessionProjects[token] = project
 		return token, nil
 	}
 	if len(r.taskSessionProjects) >= taskSessionMaxProjectTokens {
@@ -534,9 +655,34 @@ func (r *ResidentRuntime) issueProjectTokenLocked(cwd, human string, now int64, 
 		label:              taskSessionProjectLabel(cwd),
 		humanParticipantID: human,
 		expiresAt:          now + taskSessionTokenTTL.Milliseconds(),
+		controls:           controls,
 	}
 	index[cwd] = token
+	r.refreshTaskSessionProjectLabelsLocked()
 	return token, nil
+}
+
+// refreshTaskSessionProjectLabelsLocked makes every display label a basename.
+// Duplicate basenames receive a short suffix from their opaque Runtime token;
+// no parent directory is consulted or relayed.
+func (r *ResidentRuntime) refreshTaskSessionProjectLabelsLocked() {
+	byBase := make(map[string][]string, len(r.taskSessionProjects))
+	for token, project := range r.taskSessionProjects {
+		byBase[taskSessionProjectLabel(project.cwd)] = append(byBase[taskSessionProjectLabel(project.cwd)], token)
+	}
+	for base, tokens := range byBase {
+		if len(tokens) == 1 {
+			project := r.taskSessionProjects[tokens[0]]
+			project.label = base
+			r.taskSessionProjects[tokens[0]] = project
+			continue
+		}
+		for _, token := range tokens {
+			project := r.taskSessionProjects[token]
+			project.label = taskSessionProjectLabelWithToken(base, token, tokens)
+			r.taskSessionProjects[token] = project
+		}
+	}
 }
 
 func (r *ResidentRuntime) issuePageTokenLocked(cwd *string, cursor string, pending []harness.ACPSessionInfo, human string, now int64) (string, error) {
@@ -622,22 +768,39 @@ func pathWithinRoot(root, candidate string) bool {
 	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-// taskSessionProjectLabel renders a project's human-facing display path. The
-// label is presentation ONLY: the browser never sends it back, and the Runtime
-// never resolves a cwd from it.
+// taskSessionProjectLabel returns only the final path component for display.
+// Raw cwd is retained exclusively in the private Runtime token mapping.
 func taskSessionProjectLabel(cwd string) string {
-	label := cwd
-	if home, err := sessionProjectHomeDirectory(); err == nil && home != "" {
-		cleanHome := filepath.Clean(home)
-		if pathWithinRoot(cleanHome, cwd) {
-			if cwd == cleanHome {
-				label = "~"
-			} else if relative, relErr := filepath.Rel(cleanHome, filepath.Clean(cwd)); relErr == nil {
-				label = "~" + string(filepath.Separator) + relative
+	base := filepath.Base(filepath.Clean(cwd))
+	base = strings.NewReplacer("/", "", `\`, "").Replace(base)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "Local project"
+	}
+	return boundedSessionText(base, types.MaxResidentSessionProjectLabelLength)
+}
+
+func taskSessionProjectLabelWithToken(base, token string, collisions []string) string {
+	// Runtime-issued tokens are opaque random handles. Extend the prefix only
+	// when needed to ensure labels remain distinct inside this catalog.
+	length := 4
+	for length < len(token) {
+		candidate := token[:length]
+		unique := true
+		for _, other := range collisions {
+			if other != token && strings.HasPrefix(other, candidate) {
+				unique = false
+				break
 			}
 		}
+		if unique {
+			break
+		}
+		length++
 	}
-	return boundedSessionText(label, types.MaxResidentSessionProjectLabelLength)
+	if length > len(token) {
+		length = len(token)
+	}
+	return boundedSessionText(base+" · "+token[:length], types.MaxResidentSessionProjectLabelLength)
 }
 
 // boundedSessionText bounds and control-folds display-only text. A Harness

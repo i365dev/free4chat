@@ -19,9 +19,12 @@ experiment procedures.
 - Create a uniquely named temporary KV namespace if the Worker needs one.
 - Use an explicit temporary Turnstile bypass only in the temporary Worker
   configuration. Do not change production secrets or committed config.
-- Read secrets from the original repository's ignored `.dev.vars` only when
-  necessary, never print them, put them in command input or Wrangler secrets,
-  and never write them into the repository, logs, evidence, or prompts.
+- Never read plaintext deployment secrets during Agent-driven deployed
+  dogfood. Required real Worker secrets must come from pre-provisioned
+  Cloudflare Secrets Store bindings. The Agent may inspect store IDs/names,
+  secret names, and binding names, but must never retrieve or receive secret
+  values. `.dev.vars` remains supported for Human/local development outside
+  this deployed-agent workflow.
 - Keep temporary configuration outside the repository whenever possible.
 - Do not create a release, tag, production deployment, or automatic merge.
 
@@ -47,6 +50,10 @@ experiment procedures.
 - Create or join one real Room and use a real Agent participant through the
   supported MCP/Runtime path. Do not fake Task events or call Durable Object
   storage directly.
+- Install and join the Runtime without STT/TTS provider setup by default.
+  Ordinary deployed Task acceptance must not prompt for speech-provider
+  passwords. Configure speech credentials only for an explicitly requested
+  STT, Live Transcript, Meeting Notes, or Voice Reply acceptance case.
 - Submit a natural Human request. For generated Task Apps, the request must
   not name bridge APIs or prescribe `publish_generated_app`; the Agent must
   discover `generated-app describe --json` from the compact Task affordance.

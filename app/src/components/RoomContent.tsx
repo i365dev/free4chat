@@ -9,6 +9,7 @@ import {
   taskSessionErrorMessage,
   type RelayTaskSession,
   type RelayTaskSessionProject,
+  type RelayHarnessSessionControls,
 } from "@do/taskSession"
 
 import AgentInviteControl from "./AgentInviteControl"
@@ -332,6 +333,12 @@ export default function RoomContent({
   const [taskSessionSelection, setTaskSessionSelection] =
     useState<RelayTaskSession | null>(null)
   const [taskSessionError, setTaskSessionError] = useState("")
+  const [taskSessionControls, setTaskSessionControls] =
+    useState<RelayHarnessSessionControls | null>(null)
+  const [taskSessionModeId, setTaskSessionModeId] = useState("")
+  const [taskSessionConfigOptions, setTaskSessionConfigOptions] = useState<
+    Record<string, string>
+  >({})
   // A start is in flight: the modal must not close optimistically, because a
   // failed preparation creates NO Task at all.
   const [taskStarting, setTaskStarting] = useState(false)
@@ -1294,6 +1301,9 @@ export default function RoomContent({
     setTaskSessionProjectToken(null)
     setTaskSessionSelection(null)
     setTaskSessionError("")
+    setTaskSessionControls(null)
+    setTaskSessionModeId("")
+    setTaskSessionConfigOptions({})
     setTaskStarting(false)
   }, [])
 
@@ -1363,6 +1373,27 @@ export default function RoomContent({
         setTaskSessionStatus("error")
         setTaskSessionError(taskSessionErrorMessage(result.error))
         return
+      }
+      setTaskSessionControls(result.page.controls ?? null)
+      if (!options.append) {
+        const controls = result.page.controls
+        setTaskSessionModeId((selected) =>
+          selected && controls?.modes.some((mode) => mode.id === selected)
+            ? selected
+            : ""
+        )
+        setTaskSessionConfigOptions((selected) => {
+          if (!controls) return {}
+          const retained: Record<string, string> = {}
+          for (const [id, value] of Object.entries(selected)) {
+            const option = controls.configOptions.find(
+              (candidate) => candidate.id === id
+            )
+            if (option?.options.some((candidate) => candidate.value === value))
+              retained[id] = value
+          }
+          return retained
+        })
       }
       setTaskSessions((previous) => {
         const next = options.append
@@ -1500,6 +1531,12 @@ export default function RoomContent({
         : ""
       if (taskSessionMode === "new" || !taskAgentContinuation) {
         if (taskBrief) {
+          if (taskSessionProjectToken) {
+            setTaskError(
+              "Remove the task brief before starting in a selected project."
+            )
+            return
+          }
           setTaskError("")
           setTaskStarting(true)
           const started = await startTaskWithBrief(
@@ -1517,6 +1554,26 @@ export default function RoomContent({
             return
           }
           pendingLocalTaskSummaries.current.push(briefSummary)
+          closeTaskComposer()
+          return
+        }
+        if (taskSessionProjectToken) {
+          setTaskError("")
+          setTaskStarting(true)
+          const result = await startTaskWithSession(
+            taskAgent.peerId,
+            null,
+            taskInstruction,
+            taskSessionProjectToken,
+            taskSessionModeId || undefined,
+            taskSessionConfigOptions
+          )
+          setTaskStarting(false)
+          if (result.ok === false) {
+            setTaskError(taskSessionErrorMessage(result.error))
+            return
+          }
+          pendingLocalTaskSummaries.current.push(taskInstruction.trim())
           closeTaskComposer()
           return
         }
@@ -1540,7 +1597,10 @@ export default function RoomContent({
       const result = await startTaskWithSession(
         taskAgent.peerId,
         selection.token,
-        taskBrief ? briefSummary : taskInstruction
+        taskBrief ? briefSummary : taskInstruction,
+        undefined,
+        taskSessionModeId || undefined,
+        taskSessionConfigOptions
       )
       setTaskStarting(false)
       if (result.ok === false) {
@@ -1568,8 +1628,11 @@ export default function RoomContent({
       taskAgentContinuation,
       taskBrief,
       taskInstruction,
+      taskSessionProjectToken,
       taskSessionMode,
       taskSessionSelection,
+      taskSessionModeId,
+      taskSessionConfigOptions,
       taskStarting,
     ]
   )
@@ -3097,7 +3160,7 @@ export default function RoomContent({
         >
           <form
             onSubmit={submitTask}
-            className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-5 shadow-2xl"
+            className="max-h-[calc(100dvh-2rem)] w-full min-w-0 max-w-md overflow-y-auto overscroll-contain rounded-xl border border-gray-700 bg-gray-900 p-5 shadow-2xl"
           >
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
@@ -3186,6 +3249,114 @@ export default function RoomContent({
                 )}
               </fieldset>
             )}
+            {taskAgentContinuation && taskSessionMode === "new" && (
+              <div className="mb-4">
+                <button
+                  type="button"
+                  data-testid="task-project-discover"
+                  disabled={
+                    taskStarting ||
+                    !taskAgent ||
+                    taskSessionStatus === "loading"
+                  }
+                  onClick={() => {
+                    if (taskAgent)
+                      void loadTaskSessions(taskAgent.peerId, { append: false })
+                  }}
+                  className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+                >
+                  {taskSessionStatus === "idle"
+                    ? "Choose a local project"
+                    : "Refresh local projects"}
+                </button>
+                {taskSessionStatus !== "idle" && (
+                  <div className="mt-2">
+                    <TaskSessionPicker
+                      status={taskSessionStatus}
+                      sessions={taskSessions}
+                      projects={taskSessionProjects}
+                      hasMore={taskSessionHasMore}
+                      loadingMore={taskSessionLoadingMore}
+                      error={taskSessionError}
+                      selectedToken={null}
+                      projectToken={taskSessionProjectToken}
+                      onSelect={() => undefined}
+                      onProjectChange={handleTaskSessionProjectChange}
+                      onLoadMore={handleTaskSessionLoadMore}
+                      onRefresh={handleTaskSessionRefresh}
+                      refreshing={taskSessionStatus === "loading"}
+                      disabled={taskStarting}
+                      showSessions={false}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+            {taskAgentContinuation &&
+              taskSessionControls &&
+              (taskSessionMode === "continue" ||
+                taskSessionProjectToken !== null) && (
+                <fieldset className="mb-4 rounded-md border border-gray-800 p-3">
+                  <legend className="px-1 text-xs text-gray-400">
+                    Harness-native session controls
+                  </legend>
+                  {taskSessionControls.modes.length > 0 && (
+                    <label className="mb-3 block text-xs text-gray-300">
+                      Mode
+                      <select
+                        aria-label="Harness-native mode"
+                        value={taskSessionModeId}
+                        disabled={taskStarting}
+                        onChange={(event) =>
+                          setTaskSessionModeId(event.target.value)
+                        }
+                        className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white"
+                      >
+                        <option value="">Keep current mode</option>
+                        {taskSessionControls.modes.map((mode) => (
+                          <option key={mode.id} value={mode.id}>
+                            {mode.name || mode.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {taskSessionControls.configOptions
+                    .filter((option) => option.options.length > 0)
+                    .map((option) => (
+                      <label
+                        key={option.id}
+                        className="mb-2 block text-xs text-gray-300"
+                      >
+                        {option.name || option.id}
+                        <select
+                          aria-label={`Harness-native ${
+                            option.name || option.id
+                          }`}
+                          value={taskSessionConfigOptions[option.id] ?? ""}
+                          disabled={taskStarting}
+                          onChange={(event) =>
+                            setTaskSessionConfigOptions((current) => {
+                              const next = { ...current }
+                              if (event.target.value)
+                                next[option.id] = event.target.value
+                              else delete next[option.id]
+                              return next
+                            })
+                          }
+                          className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white"
+                        >
+                          <option value="">Keep current value</option>
+                          {option.options.map((value) => (
+                            <option key={value.value} value={value.value}>
+                              {value.name || value.value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                </fieldset>
+              )}
             <label
               htmlFor="start-task-instruction"
               className="mb-2 block text-sm text-gray-200"
