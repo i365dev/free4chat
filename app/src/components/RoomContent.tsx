@@ -2381,11 +2381,6 @@ export default function RoomContent({
                   <span>
                     {String(participants.length).padStart(2, "0")} ONLINE
                   </span>
-                  <strong>
-                    {connectionStatus === "connected"
-                      ? "THE ROOM IS LIVE"
-                      : "TUNING THE ROOM"}
-                  </strong>
                 </div>
               )}
               {/* #98: the Stage entry is progressive disclosure, not the whole

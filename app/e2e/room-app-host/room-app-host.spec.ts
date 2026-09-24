@@ -401,6 +401,13 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     ).toBe("0px")
     const stageIntro = page.locator(".room-stage-intro")
     const stageGrid = page.getByTestId("room-stage-participants")
+    await expect(stageIntro.locator("strong")).toHaveCount(0)
+    expect((await stageIntro.boundingBox())?.height).toBeLessThanOrEqual(40)
+    expect(
+      await stageGrid.evaluate(
+        (grid) => getComputedStyle(grid, "::after").content
+      )
+    ).toBe("none")
     const stageSpacing = await stageIntro.evaluate((intro) => {
       const introBox = intro.getBoundingClientRect()
       const gridBox = intro
@@ -446,6 +453,49 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
           await openLocalRoom(secondPage, roomSlug)
           await enterLocalRoom(secondPage, "Bob")
           twoPeoplePlanetCenterY = await meanPlanetCenterY(page, 2)
+
+          const aliceSelfPlanet = page
+            .getByTestId("room-stage-participants")
+            .locator('[data-self="true"] .participant-avatar__planet')
+          const aliceRemoteCard = secondPage
+            .locator('[data-testid="room-stage-participants"] > div')
+            .filter({ hasText: "Alice" })
+          const aliceRemotePlanet = aliceRemoteCard.locator(
+            ".participant-avatar__planet"
+          )
+          await expect(aliceSelfPlanet).toHaveCount(1)
+          await expect(aliceRemotePlanet).toHaveCount(1)
+          const [selfSvg, remoteSvg] = await Promise.all([
+            aliceSelfPlanet.locator("svg").evaluate((svg) => svg.outerHTML),
+            aliceRemotePlanet.locator("svg").evaluate((svg) => svg.outerHTML),
+          ])
+          expect(remoteSvg).toBe(selfSvg)
+          const [selfPlanetFilter, remotePlanetFilter] = await Promise.all([
+            aliceSelfPlanet.evaluate(
+              (planet) => getComputedStyle(planet).filter
+            ),
+            aliceRemotePlanet.evaluate(
+              (planet) => getComputedStyle(planet).filter
+            ),
+          ])
+          expect(selfPlanetFilter).toBe("none")
+          expect(remotePlanetFilter).toBe("none")
+
+          const aliceSelfShell = page
+            .getByTestId("room-stage-participants")
+            .locator('[data-self="true"] .participant-card-shell--full')
+          const aliceRemoteShell = aliceRemoteCard.locator(
+            ".participant-card-shell--full"
+          )
+          const [selfHalo, remoteHalo] = await Promise.all([
+            aliceSelfShell.evaluate((shell) =>
+              getComputedStyle(shell).getPropertyValue("--planet-glow").trim()
+            ),
+            aliceRemoteShell.evaluate((shell) =>
+              getComputedStyle(shell).getPropertyValue("--planet-glow").trim()
+            ),
+          ])
+          expect(selfHalo).not.toBe(remoteHalo)
         } finally {
           await secondContext.close()
         }
