@@ -73,7 +73,7 @@ export default function Home() {
       <Header></Header>
       <main className="flex min-h-screen flex-col">
         <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col overflow-y-auto px-4 py-12">
-          <div className="slogan mx-auto my-auto w-full max-w-5xl text-center">
+          <div className="slogan home-cosmic-hero mx-auto my-auto w-full max-w-5xl text-center">
             <p className="font-mono text-xs tracking-widest text-emerald-500">
               FREE4CHAT://RELAY — LINK READY
               <span className="cursor-blink" />

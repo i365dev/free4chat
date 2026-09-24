@@ -1,13 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
-import {
-  FIXTURE_ROOM_APP_EXTRA_IDS,
-  FIXTURE_ROOM_APP_EXTRA_LABELS,
-  FIXTURE_ROOM_APP_ID,
-  FIXTURE_ROOM_APP_ORIGIN,
-  FIXTURE_ROOM_APP_PATHS,
-  fixtureRoomAppCatalogJson,
-} from "../fixtures/room-app-fixture"
 import { FIXTURE_ROOM_APP_DOCUMENT } from "../fixtures/fixture-room-app-document"
 import {
   enterLocalRoom,
@@ -16,6 +8,14 @@ import {
   microphoneRequestCount,
   openLocalRoom,
 } from "../fixtures/local-room"
+import {
+  FIXTURE_ROOM_APP_EXTRA_IDS,
+  FIXTURE_ROOM_APP_EXTRA_LABELS,
+  FIXTURE_ROOM_APP_ID,
+  FIXTURE_ROOM_APP_ORIGIN,
+  FIXTURE_ROOM_APP_PATHS,
+  fixtureRoomAppCatalogJson,
+} from "../fixtures/room-app-fixture"
 
 /**
  * Core Room App host compatibility gate (#398).
@@ -358,6 +358,25 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
       "opening a Room must not request microphone access"
     ).toBe(0)
     await enterLocalRoom(page, "Alice")
+    await expect(roomStage(page)).toHaveAttribute(
+      "data-stage-surface",
+      "people"
+    )
+    await expect(roomStage(page).locator(".room-cosmos-sky")).toHaveCount(1)
+    // The full participant card has an extra layout wrapper around UserCard.
+    // Keep the self tint attached to UserCard's data-self marker through it.
+    const selfCard = page
+      .getByTestId("room-stage-participants")
+      .locator('[data-self="true"] .participant-card-shell--full')
+    await expect(selfCard).toHaveCount(1)
+    expect(
+      await selfCard.evaluate((element) =>
+        getComputedStyle(element)
+          .getPropertyValue("--planet-glow")
+          .split(",")
+          .map(Number)
+      )
+    ).toEqual([223, 166, 100])
     // #438 makes people and Stage the initial phone surface. The Stage stays
     // one mounted element: switching to Room chat must hide it, not recreate
     // participant/media/App state when People is opened again.
@@ -382,6 +401,11 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await expect(launcherEntry(page)).toBeVisible()
     await expect(stageAppButton(page)).toHaveCount(0)
     await openRoomAppFromLauncher(page)
+    await expect(roomStage(page)).toHaveAttribute(
+      "data-stage-surface",
+      "content"
+    )
+    await expect(roomStage(page).locator(".room-cosmos-sky")).toHaveCount(0)
     // The opened App is now both the current Stage App and an inline shortcut.
     await expect(stageAppButton(page)).toBeVisible()
     await expect(appIframe(page)).toBeVisible()
@@ -525,6 +549,11 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await expect(page.getByTestId("room-stage")).toBeVisible()
     await expect(page.getByTestId("room-timeline")).toBeVisible()
     await expect(page.getByTestId("room-stage-participants")).toBeVisible()
+    await expect(roomStage(page)).toHaveAttribute(
+      "data-stage-surface",
+      "people"
+    )
+    await expect(roomStage(page).locator(".room-cosmos-sky")).toHaveCount(1)
     await expectNoPageOverflow(page, "App hidden")
   })
 

@@ -75,7 +75,7 @@ html {
 }
 
 .signal-collapse-text.psy-headline {
-  background-image: linear-gradient(to right, #6ee7b7, #e879f9, #67e8f9);
+  background-image: linear-gradient(to right, #e8b47b, #a4dfbc 48%, #77cbd5);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -84,7 +84,7 @@ html {
 
 .signal-collapse-text--idle.psy-headline,
 .signal-collapse-text--resolved.psy-headline {
-  animation: psy-hue 14s linear infinite;
+  animation: none;
 }
 
 /* While JS is replacing glyphs, keep the surface deliberately simple:
@@ -100,8 +100,8 @@ html {
   filter: none;
   opacity: 1;
   -webkit-text-fill-color: #a7f3d0;
-  text-shadow: -0.035em 0 rgba(34, 211, 238, 0.42),
-    0.035em 0 rgba(217, 70, 239, 0.28), 0 0 14px rgba(52, 211, 153, 0.24);
+  text-shadow: -0.035em 0 rgba(102, 210, 220, 0.36),
+    0.035em 0 rgba(232, 180, 123, 0.27), 0 0 14px rgba(52, 211, 153, 0.2);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -179,15 +179,6 @@ html {
   .home-join-cta:hover .home-join-cta__arrow,
   .home-join-cta:focus-visible .home-join-cta__arrow {
     transform: none;
-  }
-}
-
-@keyframes psy-hue {
-  from {
-    filter: hue-rotate(0deg) drop-shadow(0 0 10px rgba(52, 211, 153, 0.3));
-  }
-  to {
-    filter: hue-rotate(360deg) drop-shadow(0 0 10px rgba(52, 211, 153, 0.3));
   }
 }
 
@@ -347,99 +338,184 @@ html {
 .room-participants-panel {
   position: relative;
   isolation: isolate;
-  border-bottom-color: rgba(16, 185, 129, 0.3) !important;
-  box-shadow: 0 5px 0 rgba(2, 8, 6, 0.94), 0 10px 20px rgba(0, 0, 0, 0.24);
+  --planet-glow: 107, 196, 255;
+  border-bottom-color: rgba(113, 173, 210, 0.19) !important;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
+  background-color: #02050c;
+  background-image: radial-gradient(
+      ellipse at 22% 23%,
+      rgba(206, 93, 35, 0.16),
+      transparent 35%
+    ),
+    radial-gradient(
+      ellipse at 77% 25%,
+      rgba(39, 156, 210, 0.14),
+      transparent 35%
+    ),
+    radial-gradient(
+      ellipse at 75% 86%,
+      rgba(102, 69, 169, 0.12),
+      transparent 54%
+    );
 }
 
-/* A restrained, presentation-only starfield keeps the participant side
-   connected to the homepage's retro-space language without competing with
-   cards, controls, or shared-screen content.
-
-   The star field is deliberately static (#449). Animating background-position
-   across this panel repainted millions of device pixels and held a visible
-   idle Room at roughly 15-16% main-thread CPU, so the drift was removed
-   instead of being moved onto a compositor layer. */
 .room-participants-panel::before,
 .room-participants-panel::after {
   position: absolute;
   z-index: 0;
-  inset: -12%;
+  inset: 0;
   content: "";
   pointer-events: none;
 }
 
 .room-participants-panel::before {
-  background-image: radial-gradient(
-      circle at 12% 18%,
-      rgba(167, 243, 208, 0.38) 0 1px,
-      transparent 1.6px
+  background: radial-gradient(
+      ellipse at 24% 23%,
+      rgba(255, 151, 59, 0.11),
+      transparent 23%
     ),
     radial-gradient(
-      circle at 68% 32%,
-      rgba(103, 232, 249, 0.28) 0 1px,
-      transparent 1.8px
+      ellipse at 78% 26%,
+      rgba(75, 204, 252, 0.12),
+      transparent 27%
     ),
-    radial-gradient(
-      circle at 38% 78%,
-      rgba(167, 139, 250, 0.24) 0 1px,
-      transparent 1.7px
+    linear-gradient(
+      115deg,
+      transparent 19%,
+      rgba(117, 113, 189, 0.025) 44%,
+      transparent 70%
     );
-  background-size: 132px 118px, 196px 174px, 224px 206px;
-  opacity: 0.5;
 }
 
 .room-participants-panel::after {
   background: radial-gradient(
-      ellipse at 18% 24%,
-      rgba(16, 185, 129, 0.13),
-      transparent 38%
-    ),
-    radial-gradient(
-      ellipse at 78% 72%,
-      rgba(124, 58, 237, 0.1),
-      transparent 42%
-    );
-  filter: blur(20px);
-  opacity: 0.62;
-  transform: scale(1.08);
-  animation: room-cosmos-nebula 38s ease-in-out infinite alternate;
+    ellipse at 50% 35%,
+    transparent 28%,
+    rgba(0, 2, 9, 0.42) 100%
+  );
 }
 
-.room-participants-panel > * {
+.room-cosmos-sky,
+.room-cosmos-glints {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.room-cosmos-sky {
+  inset: -2%;
+  background: url("/cosmic-stars.svg") center / cover no-repeat;
+  opacity: 0.95;
+  transition: transform 180ms ease-out;
+}
+
+.room-cosmos-glints {
+  inset: 0;
+}
+
+.room-cosmos-glints i {
+  position: absolute;
+  display: block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #f3faff;
+  box-shadow: 0 0 7px 2px rgba(170, 224, 255, 0.48);
+}
+
+.room-cosmos-glints i::before,
+.room-cosmos-glints i::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.room-cosmos-glints i::before {
+  width: 27px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(220, 242, 255, 0.78),
+    transparent
+  );
+}
+
+.room-cosmos-glints i::after {
+  width: 1px;
+  height: 27px;
+  background: linear-gradient(
+    transparent,
+    rgba(220, 242, 255, 0.78),
+    transparent
+  );
+}
+
+.room-cosmos-glints i:nth-child(1) {
+  left: 12%;
+  top: 21%;
+}
+.room-cosmos-glints i:nth-child(2) {
+  left: 71%;
+  top: 12%;
+}
+.room-cosmos-glints i:nth-child(3) {
+  left: 88%;
+  top: 41%;
+}
+.room-cosmos-glints i:nth-child(4) {
+  left: 24%;
+  top: 69%;
+}
+.room-cosmos-glints i:nth-child(5) {
+  left: 55%;
+  top: 56%;
+}
+.room-cosmos-glints i:nth-child(6) {
+  left: 79%;
+  top: 82%;
+}
+
+.room-cosmos-glints i:nth-child(n + 4) {
+  opacity: 0.45;
+}
+
+.room-participants-panel > :not(.room-cosmos-sky):not(.room-cosmos-glints) {
   position: relative;
   z-index: 1;
 }
 
-@keyframes room-cosmos-nebula {
-  from {
-    transform: scale(1.08) translate3d(-1%, -1%, 0);
-  }
-  to {
-    transform: scale(1.14) translate3d(2%, 1%, 0);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* The nebula drift is the only remaining decorative Room cosmos motion. */
-  .room-participants-panel::after {
-    animation: none;
-  }
-}
-
 @media (min-width: 768px) {
   .room-participants-panel {
-    border-right-color: rgba(16, 185, 129, 0.3) !important;
-    box-shadow: 5px 0 0 rgba(2, 8, 6, 0.94), 10px 0 20px rgba(0, 0, 0, 0.24);
+    border-right-color: rgba(113, 173, 210, 0.19) !important;
+    box-shadow: 5px 0 24px rgba(0, 0, 0, 0.32);
   }
 }
 
 .room-participants-grid {
-  background-image: radial-gradient(
-    circle at 8% 18%,
-    rgba(103, 232, 249, 0.1) 0 1px,
-    transparent 1.5px
-  );
-  background-size: 92px 86px;
+  background-image: none;
+}
+
+.room-participants-grid > :nth-child(4n + 1) {
+  --planet-glow: 107, 196, 255;
+}
+.room-participants-grid > :nth-child(4n + 2) {
+  --planet-glow: 178, 137, 255;
+}
+.room-participants-grid > :nth-child(4n + 3) {
+  --planet-glow: 255, 170, 109;
+}
+.room-participants-grid > :nth-child(4n + 4) {
+  --planet-glow: 123, 222, 191;
+}
+
+@media (min-width: 768px) and (min-height: 600px) {
+  .room-participants-grid:not(:has(> :nth-child(5))) {
+    padding-top: clamp(6rem, 15vh, 10rem);
+    column-gap: clamp(2rem, 5vw, 6rem);
+  }
 }
 
 .room-participant-strip {
@@ -478,11 +554,15 @@ html {
 .participant-card-shell--full,
 .participant-card-shell--compact > div {
   position: relative;
-  border-color: color-mix(in srgb, #67e8f9 26%, #334155) !important;
-  background: linear-gradient(145deg, rgba(8, 47, 73, 0.32), transparent 42%),
-    rgba(6, 14, 30, 0.88) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 12px 28px rgba(0, 0, 0, 0.18);
+  border-color: rgba(169, 201, 236, 0.26) !important;
+  background: linear-gradient(
+      145deg,
+      rgba(var(--planet-glow), 0.12),
+      transparent 42%
+    ),
+    rgba(3, 10, 22, 0.78) !important;
+  box-shadow: inset 0 1px 0 rgba(241, 249, 255, 0.1),
+    0 18px 40px rgba(0, 0, 0, 0.32), 0 0 32px rgba(var(--planet-glow), 0.06);
   transition: border-color 160ms ease, box-shadow 160ms ease,
     transform 160ms ease;
 }
@@ -493,8 +573,10 @@ html {
 }
 
 .participant-card-shell--full {
-  height: 12.5rem;
-  min-height: 12.5rem;
+  height: 14rem;
+  min-height: 14rem;
+  overflow: visible !important;
+  border-radius: 1rem;
 }
 
 .room-shell .participant-card__capability {
@@ -503,31 +585,125 @@ html {
 
 .participant-card-shell--full:hover,
 .participant-card-shell--compact > div:hover {
-  border-color: rgba(103, 232, 249, 0.7) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 22px rgba(103, 232, 249, 0.1);
-  transform: translateY(-1px);
+  border-color: rgba(218, 238, 255, 0.64) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 20px 44px rgba(0, 0, 0, 0.38), 0 0 32px rgba(var(--planet-glow), 0.16);
+  transform: translateY(-2px);
+}
+
+.participant-card-shell--full:has(
+    .participant-audio-signal[data-speaking="true"]
+  ) {
+  z-index: 2;
+  border-color: rgba(var(--planet-glow), 0.62) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 18px 40px rgba(0, 0, 0, 0.34), 0 0 38px rgba(var(--planet-glow), 0.22);
 }
 
 .participant-card__avatar {
   position: relative;
+  isolation: isolate;
   display: grid;
   place-items: center;
-  padding: 0.18rem;
-  border: 1px solid rgba(103, 232, 249, 0.28);
+  padding: 0;
+  border: 0;
   border-radius: 50%;
-  background: rgba(2, 8, 20, 0.72);
-  box-shadow: 0 0 14px rgba(103, 232, 249, 0.12);
+  background: transparent;
+}
+
+.participant-card__avatar::before,
+.participant-card__avatar::after {
+  position: absolute;
+  z-index: 0;
+  content: "";
+  pointer-events: none;
+}
+
+.participant-card__avatar::before {
+  inset: -27px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(var(--planet-glow), 0.26),
+    transparent 68%
+  );
+}
+
+.participant-card__avatar::after {
+  inset: -13px;
+  border: 1px solid rgba(var(--planet-glow), 0.43);
+  border-left-color: transparent;
+  border-bottom-color: rgba(var(--planet-glow), 0.12);
+  border-radius: 50%;
+  transform: rotate(-25deg) scaleY(0.61);
+}
+
+.participant-card-shell--compact .participant-card__avatar::before {
+  inset: -14px;
+  opacity: 0.45;
+}
+
+.participant-card-shell--compact .participant-card__avatar::after {
+  inset: -5px;
+  opacity: 0.5;
 }
 
 .participant-avatar {
   position: relative;
+  z-index: 1;
   flex: 0 0 auto;
   display: block;
   width: 56px;
   height: 56px;
   isolation: isolate;
   overflow: visible;
+}
+
+.participant-card-shell--full .participant-avatar,
+.participant-card-shell--full .participant-avatar__planet {
+  width: 104px !important;
+  height: 104px !important;
+}
+
+.participant-card-shell--full .participant-avatar {
+  border-radius: 50%;
+  box-shadow: 0 0 19px 5px rgba(var(--planet-glow), 0.18);
+}
+
+.participant-card-shell--full p {
+  color: #edf7ff;
+  font-size: 0.875rem;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.62);
+}
+
+.participant-avatar::before,
+.participant-avatar::after {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid rgba(var(--planet-glow, 103, 232, 249), 0.88);
+  border-radius: 50%;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.88);
+}
+
+.participant-audio-signal[data-speaking="true"] + .participant-avatar::before {
+  animation: room-radio-pulse 1.9s ease-out infinite;
+}
+
+.participant-audio-signal[data-speaking="true"] + .participant-avatar::after {
+  animation: room-radio-pulse 1.9s ease-out -0.95s infinite;
+}
+@keyframes room-radio-pulse {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.84);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.15);
+  }
 }
 
 .participant-avatar--compact {
@@ -544,7 +720,6 @@ html {
   display: block;
   width: 100%;
   height: 100%;
-  filter: saturate(1.08) drop-shadow(0 0 7px rgba(103, 232, 249, 0.2));
 }
 
 .participant-avatar__planet {
@@ -560,23 +735,11 @@ html {
   height: 36px !important;
 }
 
-.participant-audio-orbit {
+.participant-audio-signal {
   position: absolute;
-  top: 50%;
-  left: 50%;
   z-index: 0;
-  display: block;
-  width: 5.1rem;
-  height: 5.1rem;
-  max-width: none;
-  transform: translate(-50%, -50%);
+  inset: 0;
   pointer-events: none;
-  overflow: visible;
-}
-
-.participant-audio-orbit--compact {
-  width: 3.25rem;
-  height: 3.25rem;
 }
 
 .participant-card__kind,
@@ -689,7 +852,423 @@ html {
 }
 
 .room-chat-panel {
-  background: rgba(1, 6, 5, 0.72);
+  background: radial-gradient(
+      ellipse at 94% 0,
+      rgba(26, 78, 103, 0.08),
+      transparent 38%
+    ),
+    #03090d;
+}
+
+/* Shared Free4Chat console language. Room splits, Stage ownership, and App
+   iframe sizing stay unchanged; the short-screen Task dialog can scroll. */
+.home-cosmic-hero {
+  position: relative;
+  isolation: isolate;
+}
+.home-cosmic-hero::before {
+  position: absolute;
+  z-index: -1;
+  inset: -4rem -5vw;
+  background: radial-gradient(
+      ellipse at 25% 25%,
+      rgba(202, 128, 62, 0.13),
+      transparent 35%
+    ),
+    radial-gradient(
+      ellipse at 75% 23%,
+      rgba(56, 152, 154, 0.11),
+      transparent 37%
+    ),
+    url("/cosmic-stars.svg") center top / cover no-repeat;
+  mask-image: linear-gradient(transparent, #000 14%, #000 58%, transparent 86%);
+  opacity: 0.46;
+  content: "";
+  pointer-events: none;
+}
+.home-cosmic-hero .psy-headline {
+  text-shadow: 0 0 28px rgba(121, 211, 147, 0.12);
+}
+.home-cosmic-hero .home-join-cta {
+  box-shadow: 0 0 26px rgba(53, 176, 95, 0.13);
+}
+
+.room-shell--live {
+  background: #030a08 !important;
+  color: #eaf5ea;
+}
+.room-shell--live::before {
+  background: none;
+}
+.room-shell--live .room-header {
+  border-bottom-color: rgba(98, 172, 125, 0.37) !important;
+  background: #06110d;
+  box-shadow: 0 1px 0 rgba(123, 194, 145, 0.1);
+}
+.room-shell--live .room-header h1 {
+  color: #c3f0d2;
+  text-shadow: none;
+}
+.room-shell--live .room-header-toolbar > button,
+.room-shell--live .room-header-toolbar > div > button,
+.room-shell--live .room-header .room-header-leave {
+  border-radius: 2px !important;
+  border-color: rgba(109, 189, 136, 0.44) !important;
+  background: rgba(7, 39, 24, 0.68) !important;
+  color: #c8efd3 !important;
+  box-shadow: none;
+}
+.room-shell--live .room-header .room-header-leave {
+  border-color: rgba(215, 116, 115, 0.55) !important;
+  color: #f0b0ac !important;
+}
+.room-shell--live .room-panel {
+  border-color: rgba(99, 160, 119, 0.32) !important;
+}
+.room-shell--live .room-participants-panel[data-stage-surface="people"] {
+  background: radial-gradient(
+      ellipse at 27% 40%,
+      rgba(147, 75, 37, 0.18),
+      transparent 33%
+    ),
+    radial-gradient(
+      ellipse at 73% 41%,
+      rgba(35, 127, 145, 0.15),
+      transparent 34%
+    ),
+    radial-gradient(ellipse at 50% 96%, rgba(29, 91, 52, 0.1), transparent 53%),
+    #030808;
+}
+.room-shell--live
+  .room-participants-panel[data-stage-surface="people"]::before {
+  background: linear-gradient(rgba(85, 158, 111, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(85, 158, 111, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(transparent 30%, #000);
+}
+.room-shell--live .room-participants-panel[data-stage-surface="people"]::after {
+  background: repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.09) 0,
+      rgba(0, 0, 0, 0.09) 1px,
+      transparent 1px,
+      transparent 4px
+    ),
+    radial-gradient(ellipse at center, transparent 41%, rgba(0, 6, 4, 0.46));
+}
+.room-shell--live .room-participants-panel[data-stage-surface="content"] {
+  background: #050d0a;
+  box-shadow: none;
+}
+.room-shell--live
+  .room-participants-panel[data-stage-surface="content"]::before,
+.room-shell--live
+  .room-participants-panel[data-stage-surface="content"]::after {
+  display: none;
+}
+.room-shell--live .room-cosmos-sky {
+  opacity: 0.55;
+}
+.room-shell--live .room-cosmos-glints i {
+  opacity: 0.4;
+}
+.room-shell--live .room-participants-grid > * {
+  --planet-glow: 126, 201, 161;
+}
+.room-shell--live .room-participants-grid [data-self="true"] {
+  --planet-glow: 223, 166, 100;
+}
+.room-shell--live .participant-card-shell--compact {
+  --planet-glow: 126, 201, 161;
+}
+.room-shell--live .participant-card-shell--compact[data-self="true"] {
+  --planet-glow: 223, 166, 100;
+}
+.room-shell--live .participant-card-shell--full,
+.room-shell--live .participant-card-shell--compact > div {
+  border-radius: 3px !important;
+  border-color: rgba(130, 188, 144, 0.26) !important;
+  border-left-color: rgba(var(--planet-glow), 0.7) !important;
+  background: linear-gradient(
+    90deg,
+    rgba(4, 22, 15, 0.82),
+    rgba(4, 22, 15, 0.37)
+  ) !important;
+  box-shadow: none;
+}
+.room-shell--live .participant-card-shell--full:hover,
+.room-shell--live .participant-card-shell--compact > div:hover {
+  border-color: rgba(153, 219, 174, 0.53) !important;
+  border-left-color: rgba(var(--planet-glow), 0.95) !important;
+  box-shadow: none;
+  transform: none;
+}
+.room-shell--live
+  .participant-card-shell--full:has(
+    .participant-audio-signal[data-speaking="true"]
+  ) {
+  border-color: rgba(var(--planet-glow), 0.6) !important;
+  box-shadow: 0 0 23px rgba(var(--planet-glow), 0.09);
+}
+.room-shell--live
+  .participant-audio-signal[data-speaking="true"]
+  + .participant-avatar::after {
+  animation: none;
+}
+.room-shell--live
+  .room-participants-grid:has(> :nth-child(5))
+  .participant-avatar::before {
+  animation: none;
+}
+.room-shell--live .participant-card__avatar::after {
+  border-color: rgba(var(--planet-glow), 0.22);
+  border-left-color: transparent;
+}
+.room-shell--live .participant-card__avatar::before {
+  opacity: 0.65;
+}
+.room-shell--live .participant-card-shell--full .participant-avatar,
+.room-shell--live .participant-card-shell--full .participant-avatar__planet {
+  width: 118px !important;
+  height: 118px !important;
+}
+.room-shell--live .participant-card-shell--full p {
+  color: #edf5eb;
+}
+.room-shell--live .participant-card__kind {
+  border-radius: 2px;
+  border-color: rgba(128, 188, 146, 0.34);
+  background: rgba(5, 36, 21, 0.6) !important;
+  color: #a9d2b3 !important;
+}
+.room-shell--live .participant-card__self-action,
+.room-shell--live .participant-card__voice-button,
+.room-shell--live .participant-card__task-button--compact {
+  border-radius: 2px !important;
+  border-color: rgba(134, 196, 150, 0.55) !important;
+  background: #0a2116 !important;
+  color: #d1efcf !important;
+  box-shadow: none;
+}
+.room-shell--live .room-participant-strip {
+  border-top-color: rgba(116, 181, 135, 0.31) !important;
+  background: #06110d;
+}
+.room-shell--live .room-reactions button {
+  border-radius: 2px;
+}
+.room-shell--live .room-chat-panel {
+  background: linear-gradient(155deg, rgba(13, 32, 24, 0.58), transparent 48%),
+    #06100d;
+}
+.room-shell--live [data-testid="interaction-tablist"] {
+  border-bottom-color: rgba(99, 160, 119, 0.3);
+  background: rgba(4, 21, 14, 0.8);
+}
+.room-shell--live [data-testid="interaction-tablist"] button[role="tab"] {
+  border-radius: 0;
+  background: transparent;
+  color: #90bfa1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.room-shell--live
+  [data-testid="interaction-tablist"]
+  button[role="tab"][aria-selected="true"] {
+  box-shadow: inset 0 -2px #86dba7;
+  color: #e1f7e4;
+}
+.room-shell--live
+  .room-chat-panel--task
+  [data-testid="interaction-tablist"]
+  button[role="tab"][aria-selected="true"] {
+  box-shadow: inset 0 -2px #e4b477;
+  color: #f4d6aa;
+}
+.room-shell--live [data-testid="task-agent-activity"] {
+  border-bottom-color: rgba(123, 182, 137, 0.28);
+  background: rgba(13, 40, 25, 0.57);
+  color: #b9daba;
+}
+.room-shell--live [data-testid="generated-room-app-card"] {
+  border-bottom-color: rgba(139, 180, 131, 0.32);
+  background: rgba(21, 47, 30, 0.53);
+}
+.room-shell--live
+  [data-testid="generated-room-app-card"]
+  > div
+  > div:first-child {
+  color: #e5c18f;
+}
+.room-shell--live [data-testid="generated-room-app-card"] button {
+  border-color: rgba(147, 204, 148, 0.58);
+  border-radius: 2px;
+  color: #d5f0d1;
+}
+.room-shell--live [data-testid="room-timeline"] {
+  background: transparent;
+}
+.room-shell--live .room-message-bubble {
+  border: 1px solid rgba(117, 167, 135, 0.27);
+  border-radius: 3px;
+  background: rgba(11, 37, 23, 0.65);
+  color: #e8f2e8;
+}
+.room-shell--live .room-message-bubble--self {
+  border-color: rgba(218, 170, 105, 0.42);
+  background: rgba(68, 45, 19, 0.68);
+  color: #f6e8d1;
+}
+.room-shell--live .room-chat-composer {
+  border-top-color: rgba(109, 169, 126, 0.29);
+  background: rgba(4, 18, 12, 0.7);
+}
+.room-shell--live [data-testid="interaction-chat"] textarea {
+  border: 1px solid rgba(121, 177, 130, 0.42);
+  border-radius: 2px;
+  background: #030b07;
+  color: #e9f4e8;
+}
+.room-shell--live [data-testid="interaction-chat"] textarea:focus {
+  border-color: #8addaa;
+}
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="Send message"] {
+  border: 1px solid #9be0ad;
+  border-radius: 2px;
+  background: #80cfa0;
+  color: #06110d;
+}
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="Send message"]
+  svg {
+  color: #06110d;
+}
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="More actions"],
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="Attach a file to this task"] {
+  border: 1px solid rgba(122, 178, 137, 0.48);
+  border-radius: 2px;
+  background: #0c2718;
+  color: #c0e3c3;
+}
+.room-shell--live [data-testid="room-app-host"] {
+  background: #050b09;
+}
+.room-shell--live [data-testid="room-app-host"] > div:first-child {
+  border-bottom-color: rgba(111, 171, 131, 0.36);
+  background: #081910;
+  color: #cce9d1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.room-shell--live [data-testid="room-app-host"] > div:first-child button {
+  border-radius: 2px;
+}
+.room-shell--live [data-testid="room-app-iframe"] {
+  background: #050b09;
+}
+.room-shell--live .room-task-live-view {
+  background: #06100d;
+  color: #e8f3e8;
+}
+.room-shell--live .room-task-live-view button {
+  border-color: rgba(137, 195, 149, 0.63);
+  border-radius: 2px;
+  background: #1c6b3e;
+}
+.room-shell--live .room-task-live-view input {
+  border-color: rgba(125, 178, 137, 0.46);
+  border-radius: 2px;
+  background: #06130b;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) {
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 3px !important;
+  border-color: rgba(142, 196, 153, 0.56) !important;
+  background: #07150e !important;
+  color: #e9f4e9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.65);
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) h2 {
+  color: #f2ddb6;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) textarea,
+:is(.room-task-dialog, .room-task-dialog-host > form) input,
+:is(.room-task-dialog, .room-task-dialog-host > form) select {
+  border-color: rgba(132, 186, 144, 0.5);
+  border-radius: 2px;
+  background: #020a06;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) textarea:focus,
+:is(.room-task-dialog, .room-task-dialog-host > form) input:focus,
+:is(.room-task-dialog, .room-task-dialog-host > form) select:focus {
+  border-color: #9de1ae;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  button[role="radio"][aria-checked="true"] {
+  border-color: #e0b976;
+  border-radius: 2px;
+  background: rgba(96, 66, 28, 0.34);
+  color: #fae2be;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  button[role="radio"][aria-checked="false"] {
+  border-radius: 2px;
+  border-color: rgba(123, 179, 136, 0.42);
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) button[type="submit"] {
+  border-radius: 2px;
+  background: #75c996;
+  color: #07190d;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  button[type="submit"]:hover:not(:disabled) {
+  background: #99e0ae;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) [role="listbox"] {
+  border-color: rgba(118, 174, 134, 0.47);
+  border-radius: 2px;
+  background: #06120b;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  [role="option"][aria-selected="true"] {
+  background: rgba(98, 165, 112, 0.18);
+  color: #e7f2e3;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) [role="option"]:hover {
+  background: rgba(97, 151, 103, 0.18);
+}
+
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  [data-testid="task-project-discover"],
+:is(.room-task-dialog, .room-task-dialog-host > form) fieldset:has(legend) {
+  border-color: rgba(123, 179, 136, 0.42);
+}
+
+@media (max-width: 767px) {
+  .room-shell--live .room-header-toolbar > button,
+  .room-shell--live .room-header-toolbar > div > button {
+    min-height: 34px;
+  }
+  .room-shell--live [data-testid="room-mobile-sheet"] {
+    background: #05100b;
+  }
+  .room-shell--live [data-testid="room-mobile-sheet"] > div:first-child {
+    border-color: rgba(104, 176, 127, 0.38);
+    background: #07180f;
+  }
+  .home-cosmic-hero::before {
+    inset: -2rem -1rem;
+    opacity: 0.25;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -699,8 +1278,9 @@ html {
     transition-duration: 0.01ms !important;
   }
 
-  .room-participants-panel::before,
-  .room-participants-panel::after {
+  .participant-avatar::before,
+  .participant-avatar::after {
     animation: none !important;
+    content: none;
   }
 }

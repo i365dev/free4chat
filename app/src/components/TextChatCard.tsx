@@ -1081,8 +1081,8 @@ const TimelineMessageRow = memo(
             <div
               className={
                 isSelf
-                  ? "ml-auto w-fit max-w-[88%] rounded-2xl rounded-br-md bg-blue-600 px-4 py-2.5 text-white"
-                  : "w-fit max-w-full rounded-2xl rounded-tl-md border border-white/10 bg-gray-800/80 px-4 py-2.5 text-gray-100"
+                  ? "room-message-bubble room-message-bubble--self ml-auto w-fit max-w-[88%] rounded-2xl rounded-br-md bg-blue-600 px-4 py-2.5 text-white"
+                  : "room-message-bubble w-fit max-w-full rounded-2xl rounded-tl-md border border-white/10 bg-gray-800/80 px-4 py-2.5 text-gray-100"
               }
             >
               {recipientCues.length > 0 && (
@@ -1844,7 +1844,7 @@ const TextChatCard = memo(function TextChatCard({
       }
       .markdown-body hr { border-color: #374151; margin: 0.75rem 0; }
     `}</style>
-      <div className="flex h-full flex-col overflow-hidden">
+      <div className="room-conversation flex h-full flex-col overflow-hidden">
         <RoomTimeline
           messages={messages}
           attachments={attachments}
@@ -1885,7 +1885,7 @@ const TextChatCard = memo(function TextChatCard({
             The original Agent left. @ a connected Agent to continue this Task.
           </p>
         )}
-        <div className="relative flex flex-none flex-col border-t border-gray-700 p-3">
+        <div className="room-chat-composer relative flex flex-none flex-col border-t border-gray-700 p-3">
           {draftAttachment && (
             <div
               data-testid="composer-attachment"

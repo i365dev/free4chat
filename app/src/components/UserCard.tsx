@@ -136,12 +136,19 @@ function UserCard(user: UserCardProps) {
   if (user.compact) {
     return (
       <div
+        data-self={isSelf ? "true" : undefined}
+        data-kind={user.kind}
         className={`participant-card-shell participant-card-shell--compact ${
           user.className ?? ""
         }`}
       >
         <div className="flex w-full min-w-0 flex-col items-center rounded-xl border border-gray-700 px-2 py-2">
           <div className="participant-card__avatar relative">
+            <AudioVisualizer
+              audio={user.audioStream}
+              muteState={user.muteState}
+              size="compact"
+            />
             <ParticipantAvatar name={user.name} size="compact" />
             {user.muteState && (
               <span className="absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5">
@@ -289,7 +296,11 @@ function UserCard(user: UserCardProps) {
   }
 
   return (
-    <div className={user.className}>
+    <div
+      className={user.className}
+      data-self={isSelf ? "true" : undefined}
+      data-kind={user.kind}
+    >
       <div className="participant-card-shell participant-card-shell--full flex h-[200px] min-h-[200px] w-full flex-col items-center justify-between overflow-hidden rounded-xl border border-gray-700 px-3 py-3">
         <div className="flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-2">
           <div className="participant-card__avatar relative">

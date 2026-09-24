@@ -2878,6 +2878,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       // participants.
       expect(screen.queryByTestId("room-app-iframe")).toBeNull()
       expect(screen.getByTestId("room-stage-participants")).toBeInTheDocument()
+      expect(screen.getByTestId("room-stage")).toHaveAttribute(
+        "data-stage-surface",
+        "people"
+      )
+      expect(document.querySelector(".room-cosmos-sky")).not.toBeNull()
       expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
         "aria-selected",
         "true"
@@ -2896,6 +2901,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       // A Room App is a large visual surface, like screen share.
       expect(stage).toHaveStyle({ width: "75%" })
       expect(screen.queryByTestId("room-stage-participants")).toBeNull()
+      expect(stage).toHaveAttribute("data-stage-surface", "content")
+      expect(document.querySelector(".room-cosmos-sky")).toBeNull()
 
       // Room conversation remains selected and rendered beside the App.
       expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
@@ -3218,6 +3225,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(screen.getByTestId("room-app-iframe")).toBeInTheDocument()
       // The participant grid is gone, but Room voice and its control are not.
       expect(screen.queryByTestId("room-stage-participants")).toBeNull()
+      expect(screen.getByTestId("room-stage")).toHaveAttribute(
+        "data-stage-surface",
+        "content"
+      )
+      expect(document.querySelector(".room-cosmos-sky")).toBeNull()
       const control = screen.getByTestId("room-mic-control")
       expect(control).toBeVisible()
       expect(control).toBeEnabled()
@@ -3234,6 +3246,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       })
 
       expect(screen.queryByTestId("room-stage-participants")).toBeNull()
+      expect(screen.getByTestId("room-stage")).toHaveAttribute(
+        "data-stage-surface",
+        "content"
+      )
+      expect(document.querySelector(".room-cosmos-sky")).toBeNull()
       const control = screen.getByTestId("room-mic-control")
       expect(control).toBeVisible()
       expect(control).toHaveTextContent("Muted")
@@ -3596,6 +3613,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       fireEvent.click(screen.getByTestId("stage-view-live-view"))
       expect(slotHidden("test-app-1")).toBe(true)
       expect(screen.getByTestId("task-live-view")).toBeInTheDocument()
+      expect(screen.getByTestId("room-stage")).toHaveAttribute(
+        "data-stage-surface",
+        "content"
+      )
+      expect(document.querySelector(".room-cosmos-sky")).toBeNull()
 
       openAppInLauncher(screen, "test-app-1")
       expect(slotHidden("test-app-1")).toBe(false)
@@ -4374,6 +4396,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     await waitFor(() =>
       expect(screen.getByTestId("room-app-iframe")).toBeInTheDocument()
     )
+    expect(screen.getByTestId("room-stage")).toHaveAttribute(
+      "data-stage-surface",
+      "content"
+    )
+    expect(document.querySelector(".room-cosmos-sky")).toBeNull()
     const iframe = screen.getByTestId("room-app-iframe")
     expect(fetchGenerated).toHaveBeenCalledTimes(1)
 
