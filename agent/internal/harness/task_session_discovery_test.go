@@ -143,3 +143,32 @@ func TestACPListSessionsRematerializesAfterIdleReap(t *testing.T) {
 		t.Fatalf("session discovery after reap must reload the exact Room session before listing: %v", methods)
 	}
 }
+
+func TestIdleReapCallbackRespectsAnActiveDiscoveryHold(t *testing.T) {
+	adapter, _ := newTestAdapter(t, scriptLauncher("normal", nil), AdapterOptions{})
+	defer adapter.Close()
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+
+	adapter.mu.Lock()
+	adapter.idleReapHolds++
+	gen := adapter.gen
+	adapter.mu.Unlock()
+	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen); err != nil {
+		t.Fatalf("guarded idle reap: %v", err)
+	}
+	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); !hasProc {
+		t.Fatal("idle reap closed the provider while session discovery held it")
+	}
+
+	adapter.mu.Lock()
+	adapter.idleReapHolds--
+	adapter.mu.Unlock()
+	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen); err != nil {
+		t.Fatalf("idle reap after discovery hold ended: %v", err)
+	}
+	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); hasProc {
+		t.Fatal("idle reap did not close the provider after the discovery hold ended")
+	}
+}

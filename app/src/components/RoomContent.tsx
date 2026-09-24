@@ -3275,14 +3275,14 @@ export default function RoomContent({
                       status={taskSessionStatus}
                       sessions={taskSessions}
                       projects={taskSessionProjects}
-                      hasMore={false}
-                      loadingMore={false}
+                      hasMore={taskSessionHasMore}
+                      loadingMore={taskSessionLoadingMore}
                       error={taskSessionError}
                       selectedToken={null}
                       projectToken={taskSessionProjectToken}
                       onSelect={() => undefined}
                       onProjectChange={handleTaskSessionProjectChange}
-                      onLoadMore={() => undefined}
+                      onLoadMore={handleTaskSessionLoadMore}
                       onRefresh={handleTaskSessionRefresh}
                       refreshing={taskSessionStatus === "loading"}
                       disabled={taskStarting}

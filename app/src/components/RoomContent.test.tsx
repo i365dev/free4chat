@@ -407,6 +407,72 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     ).toHaveValue("agent-full-access")
   })
 
+  it("lets a project first discovered on page two be selected for a new Task", async () => {
+    const requestTaskSessions = vi.fn(
+      async (_peerId: string, options?: { pageToken?: string }) => ({
+        ok: true as const,
+        page: options?.pageToken
+          ? {
+              sessions: [],
+              projects: [
+                { token: "page-two-project", label: "second-project" },
+              ],
+              hasMore: false,
+            }
+          : {
+              sessions: [],
+              projects: [{ token: "page-one-project", label: "first-project" }],
+              hasMore: true,
+              nextPageToken: "page-two",
+            },
+      })
+    )
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          muteState: false,
+          taskSessionContinuation: true,
+        },
+      ],
+      requestTaskSessions,
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
+    fireEvent.click(screen.getByTestId("task-project-discover"))
+    await screen.findByTestId("task-session-project-toggle")
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    expect(screen.getAllByTestId("task-session-project-option")).toHaveLength(1)
+    expect(screen.queryByText("second-project")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("task-session-load-more"))
+    })
+    await waitFor(() => expect(requestTaskSessions).toHaveBeenCalledTimes(2))
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    const options = screen.getAllByTestId("task-session-project-option")
+    expect(options).toHaveLength(2)
+    fireEvent.click(options[1])
+    expect(
+      screen.getByTestId("task-session-project-summary")
+    ).toHaveTextContent("second-project")
+  })
+
   it("removes the widget as soon as verification succeeds, and the connected room UI carries no Turnstile residue", async () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,

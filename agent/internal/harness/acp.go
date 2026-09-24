@@ -2182,13 +2182,7 @@ func (a *ACPAdapter) scheduleIdleReapLocked() {
 	a.cancelIdleReapLocked()
 	gen := a.gen
 	a.idleReapTimer = time.AfterFunc(time.Duration(a.options.IdleReapMs)*time.Millisecond, func() {
-		a.mu.Lock()
-		if a.closing || a.gen != gen || a.proc == nil || len(a.activeTurns) != 0 {
-			a.mu.Unlock()
-			return
-		}
-		a.mu.Unlock()
-		_ = a.closeInternalRetaining(true)
+		_ = a.closeInternalWithRetentionGuarded(true, true, &gen)
 	})
 }
 
@@ -2466,9 +2460,20 @@ func (a *ACPAdapter) closeInternalRetaining(force bool) error {
 }
 
 func (a *ACPAdapter) closeInternalWithRetention(force, retain bool) error {
+	return a.closeInternalWithRetentionGuarded(force, retain, nil)
+}
+
+// closeInternalWithRetentionGuarded commits an idle reap under the same lock
+// that protects discovery holds. A nil expectedIdleGen requests an ordinary
+// close; otherwise the callback must still own the current idle generation.
+func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expectedIdleGen *int64) error {
 	var turnCancels []context.CancelFunc
 	a.mu.Lock()
 	if a.closing {
+		a.mu.Unlock()
+		return nil
+	}
+	if expectedIdleGen != nil && (a.gen != *expectedIdleGen || a.proc == nil || len(a.activeTurns) != 0 || a.idleReapHolds != 0) {
 		a.mu.Unlock()
 		return nil
 	}

@@ -395,20 +395,20 @@ export default function TaskSessionPicker({
               </p>
             )}
           </div>
-          {hasMore && (
-            <div className="mt-2 flex justify-center">
-              <button
-                type="button"
-                data-testid="task-session-load-more"
-                onClick={onLoadMore}
-                disabled={disabled || loadingMore}
-                className="rounded-md border border-gray-700 px-3 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
-              >
-                {loadingMore ? "Loading…" : "Load more"}
-              </button>
-            </div>
-          )}
         </>
+      )}
+      {hasMore && (!showSessions || status === "ready") && (
+        <div className="mt-2 flex justify-center">
+          <button
+            type="button"
+            data-testid="task-session-load-more"
+            onClick={onLoadMore}
+            disabled={disabled || loadingMore}
+            className="rounded-md border border-gray-700 px-3 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
       )}
     </div>
   )

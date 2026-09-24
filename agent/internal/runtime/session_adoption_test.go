@@ -45,16 +45,17 @@ type adoptionTurnInput struct {
 // test.
 type adoptionAdapter struct {
 	*fakeAdapter
-	recordMu                sync.Mutex
-	events                  []string
-	loads                   []adoptionLoadCall
-	inputs                  []adoptionTurnInput
-	sessions                []harness.ACPSessionInfo
-	loadErr                 error
-	listErr                 error
-	modes                   map[string]string
-	configs                 map[string]map[string]string
-	roomControlsUnavailable bool
+	recordMu                   sync.Mutex
+	events                     []string
+	loads                      []adoptionLoadCall
+	inputs                     []adoptionTurnInput
+	sessions                   []harness.ACPSessionInfo
+	loadErr                    error
+	listErr                    error
+	modes                      map[string]string
+	configs                    map[string]map[string]string
+	roomControlsUnavailable    bool
+	controlsDisappearOnModeSet bool
 	// loadHook runs INSIDE LoadSession, after the Runtime has committed the
 	// adopted ownership for the scope and before the load reports success. It
 	// is how a test deterministically places a Harness death in the load
@@ -217,7 +218,7 @@ func (a *adoptionAdapter) EnsureSessionForCwd(scope, cwd string) error {
 func (a *adoptionAdapter) SessionControlsFor(scope string) *types.HarnessSessionControls {
 	a.recordMu.Lock()
 	defer a.recordMu.Unlock()
-	if scope == "room" && a.roomControlsUnavailable {
+	if scope == "room" && a.roomControlsUnavailable || a.controlsDisappearOnModeSet && a.modes[scope] != "" {
 		return nil
 	}
 	mode := a.modes[scope]
@@ -244,6 +245,20 @@ func (a *adoptionAdapter) SetModeFor(scope, modeID string) error {
 	a.recordMu.Unlock()
 	a.record("mode:" + scope + ":" + modeID)
 	return nil
+}
+
+func TestApplyTaskSessionControlsReturnsErrorWhenSessionDisappearsAfterModeSet(t *testing.T) {
+	adapter := newAdoptionAdapter("codex")
+	adapter.controlsDisappearOnModeSet = true
+	runtime := &ResidentRuntime{
+		options:          Options{Adapter: adapter},
+		taskSessionModes: map[string]string{"task:controls-race": "workspace"},
+	}
+
+	err := runtime.applyTaskSessionControls("task:controls-race")
+	if err == nil || !strings.Contains(err.Error(), "became unavailable") {
+		t.Fatalf("expected bounded controls-unavailable error, got %v", err)
+	}
 }
 
 func (a *adoptionAdapter) SetConfigOptionFor(scope, configID, value string) error {

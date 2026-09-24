@@ -275,6 +275,9 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 				return err
 			}
 			controls = adapter.SessionControlsFor(scope)
+			if controls == nil {
+				return errors.New("Harness session controls became unavailable")
+			}
 		}
 	}
 	for configID, value := range configOptions {
@@ -308,6 +311,9 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 				return err
 			}
 			controls = adapter.SessionControlsFor(scope)
+			if controls == nil {
+				return errors.New("Harness session controls became unavailable")
+			}
 		}
 	}
 	return nil
