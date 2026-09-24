@@ -1,0 +1,69 @@
+name: Homepage UI Compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cf-sfu
+    paths:
+      - "app/src/pages/index.tsx"
+      - "app/src/components/DiscoveryFooter.tsx"
+      - "app/src/styles/**"
+      - "app/e2e/homepage-ui*"
+      - "app/package.json"
+      - "app/yarn.lock"
+      - ".agent/skills/free4chat-ui-regression/**"
+      - ".github/workflows/homepage-ui-compat.yml"
+  pull_request:
+    paths:
+      - "app/src/pages/index.tsx"
+      - "app/src/components/DiscoveryFooter.tsx"
+      - "app/src/styles/**"
+      - "app/e2e/homepage-ui*"
+      - "app/package.json"
+      - "app/yarn.lock"
+      - ".agent/skills/free4chat-ui-regression/**"
+      - ".github/workflows/homepage-ui-compat.yml"
+
+concurrency:
+  group: homepage-ui-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  homepage-ui-compat:
+    name: Homepage scroll and width regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/.nvmrc
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+        working-directory: app
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: app
+
+      - name: Homepage browser regression
+        run: yarn e2e:homepage-ui
+        working-directory: app
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: homepage-ui-compat-artifacts
+          path: |
+            app/test-results
+            app/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore

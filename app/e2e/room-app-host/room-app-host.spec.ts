@@ -382,6 +382,38 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
         (element) => getComputedStyle(element).borderWidth
       )
     ).toBe("0px")
+    const stageIntro = page.locator(".room-stage-intro")
+    const stageGrid = page.getByTestId("room-stage-participants")
+    const stageSpacing = await stageIntro.evaluate((intro) => {
+      const introBox = intro.getBoundingClientRect()
+      const gridBox = intro
+        .closest(".room-stage-inner")!
+        .querySelector("[data-testid='room-stage-participants']")!
+        .getBoundingClientRect()
+      return { introBottom: introBox.bottom, gridTop: gridBox.top }
+    })
+    expect(stageSpacing.introBottom).toBeLessThanOrEqual(stageSpacing.gridTop)
+    const selfActions = selfCard.locator(".participant-card__self-action")
+    await expect(selfActions.first()).toBeVisible()
+    for (const action of await selfActions.all()) {
+      const target = await action.evaluate((button) => {
+        const box = button.getBoundingClientRect()
+        const hit = document.elementFromPoint(
+          box.left + box.width / 2,
+          box.top + box.height / 2
+        )
+        return {
+          width: box.width,
+          height: box.height,
+          zIndex: getComputedStyle(button).zIndex,
+          receivesPointer: hit === button || button.contains(hit),
+        }
+      })
+      expect(target.width).toBeGreaterThanOrEqual(44)
+      expect(target.height).toBeGreaterThanOrEqual(44)
+      expect(target.zIndex).toBe("3")
+      expect(target.receivesPointer).toBe(true)
+    }
     // #438 makes people and Stage the initial phone surface. The Stage stays
     // one mounted element: switching to Room chat must hide it, not recreate
     // participant/media/App state when People is opened again.

@@ -24,6 +24,22 @@ yarn e2e:homepage
 --config=e2e/playwright.config.ts`. This is an optional manual regression
 path; it is intentionally not wired into CI.
 
+## Homepage width and scroll compatibility gate
+
+`yarn e2e:homepage-ui` builds and serves the production app, then checks the
+real homepage at 390×844, 768×1024, 1024×768, and 1440×900 in Chromium. It
+asserts there is no horizontal document overflow and that wheel input over
+the visible top intro, hero, and lower page moves the document scroll position.
+The top intro is used because the homepage `Header` component emits metadata
+only. This lightweight geometry gate runs in CI through
+`.github/workflows/homepage-ui-compat.yml`; the signal-collapse animation check
+above remains a separate optional Chromium + WebKit run.
+
+```bash
+npx playwright install chromium   # one-time
+yarn e2e:homepage-ui
+```
+
 ## Why it exists
 
 Previous fixes relied on unit/PWAs + class assertions. This suite pins the

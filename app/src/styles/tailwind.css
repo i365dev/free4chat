@@ -846,6 +846,23 @@ html {
   color: #d9f99d;
 }
 
+.room-shell--live .participant-card-shell--full .participant-card__self-action {
+  z-index: 3;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50% !important;
+  background: rgba(2, 10, 7, 0.96) !important;
+  touch-action: manipulation;
+}
+
+.room-shell--live
+  .participant-card-shell--full
+  .participant-card__self-action
+  svg {
+  width: 1rem;
+  height: 1rem;
+}
+
 .participant-card__self-action svg {
   width: 0.82rem;
   height: 0.82rem;
@@ -989,24 +1006,17 @@ html {
   content: "◇ ENCRYPTED ROOM FREQUENCY";
 }
 .room-shell--live .room-stage-intro {
-  position: absolute;
-  z-index: 1;
-  top: 1.15rem;
-  right: 1rem;
-  left: 1rem;
+  position: relative;
+  flex: none;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 0.35rem;
+  padding: 1.15rem 1rem 0.8rem;
   color: #a4d7b4;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.6rem;
   letter-spacing: 0.14em;
   pointer-events: none;
-}
-.room-shell--live
-  .room-stage-inner:has(> [data-testid="stage-switcher"])
-  .room-stage-intro {
-  top: 4.25rem;
 }
 .room-shell--live .room-stage-intro > span:last-of-type {
   color: #73ba8b;
@@ -1126,11 +1136,6 @@ html {
   ) {
   border-color: rgba(var(--planet-glow), 0.6) !important;
   box-shadow: 0 0 23px rgba(var(--planet-glow), 0.09);
-}
-.room-shell--live
-  .participant-audio-signal[data-speaking="true"]
-  + .participant-avatar::after {
-  animation: none;
 }
 .room-shell--live
   .room-participants-grid:has(> :nth-child(5))

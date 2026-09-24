@@ -38,8 +38,13 @@ describe("AudioVisualizer", () => {
         return {
           fftSize: 256,
           getByteTimeDomainData: (samples: Uint8Array) => {
-            samples.fill(128)
-            if (amplitude > 0) samples[0] = 128 + amplitude
+            for (let index = 0; index < samples.length; index += 1) {
+              samples[index] =
+                128 +
+                Math.round(
+                  amplitude * Math.sin((index / samples.length) * Math.PI * 2)
+                )
+            }
           },
           disconnect: () => undefined,
         } as unknown as AnalyserNode
@@ -78,7 +83,9 @@ describe("AudioVisualizer", () => {
       const signal = container.querySelector(".participant-audio-signal")
       expect(signal).toHaveAttribute("data-speaking", "false")
 
-      amplitude = 110
+      // A quiet but steady voice waveform clears the lower RMS gate without
+      // needing a near-clipping sample.
+      amplitude = 4
       act(() => vi.advanceTimersByTime(440))
       expect(signal).toHaveAttribute("data-speaking", "true")
 

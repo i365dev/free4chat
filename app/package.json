@@ -18,6 +18,7 @@
     "docs:check": "node scripts/generate-docs-assets.mjs --check",
     "prepare": "husky",
     "e2e:homepage": "playwright test e2e/signal-collapse.spec.ts --config=e2e/playwright.config.ts",
+    "e2e:homepage-ui": "playwright test e2e/homepage-ui-regression.spec.ts --config=e2e/homepage-ui.playwright.config.ts",
     "e2e:room": "playwright test e2e/room/room.spec.ts --config=e2e/room/playwright.config.ts",
     "e2e:room-app-host": "playwright test e2e/room-app-host/room-app-host.spec.ts --config=e2e/room-app-host/playwright.config.ts"
   },
