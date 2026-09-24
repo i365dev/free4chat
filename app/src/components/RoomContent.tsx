@@ -16,6 +16,7 @@ import { LiveTranscriptControl, LiveTranscriptSegments } from "./LiveTranscript"
 import RoomAppHost from "./RoomAppHost"
 import RoomAppLauncher from "./RoomAppLauncher"
 import RoomAudioSinks from "./RoomAudioSinks"
+import RoomCosmosBackdrop from "./RoomCosmosBackdrop"
 import TaskLiveView from "./TaskLiveView"
 import TaskSessionPicker from "./TaskSessionPicker"
 import TextChatCard from "./TextChatCard"
@@ -1693,6 +1694,14 @@ export default function RoomContent({
   const mobileSheetVisible =
     mobileRoomSheetOpen && !isMd && !isRoomAppFullscreen
   const stagePanelVisible = mobileSheetVisible || isRoomAppFullscreen
+  // Decorative sky belongs to the participant scene only. Screen share,
+  // resident Room Apps, generated Task Apps and Task Live View keep their own
+  // unchanged Stage geometry and avoid an idle background compositor layer.
+  const showPeopleStage =
+    !isRoomAppFullscreen &&
+    !stageAppVisible &&
+    activeScreenShares.length === 0 &&
+    !showTaskLiveView
 
   // A viewport that crosses to `md` while the phone sheet is open must land on
   // the ordinary desktop split; phone-only overlay state never leaks into it.
@@ -2052,7 +2061,7 @@ export default function RoomContent({
 
   return (
     <main
-      className="room-shell flex h-screen flex-col overflow-hidden bg-gray-900 text-white"
+      className="room-shell room-shell--live flex h-screen flex-col overflow-hidden bg-gray-900 text-white"
       data-room-app-focus={isRoomAppFullscreen ? "true" : undefined}
     >
       {connectionStatus === "reconnecting" && (
@@ -2330,6 +2339,7 @@ export default function RoomContent({
               the host's right-side chrome ("Exit fullscreen") with it. */}
           <div
             data-testid="room-stage"
+            data-stage-surface={showPeopleStage ? "people" : "content"}
             className={`room-panel room-participants-panel ${
               stagePanelVisible ? "flex" : "hidden md:flex"
             } flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r`}
@@ -2341,6 +2351,7 @@ export default function RoomContent({
                 : undefined
             }
           >
+            {showPeopleStage && <RoomCosmosBackdrop />}
             {/* #111: Agent workspace snapshots — observation only, available in
               every room type; Human screen share is untouched below. */}
             <div
@@ -2786,6 +2797,8 @@ export default function RoomContent({
 
         <div
           className={`room-panel room-chat-panel ${
+            activeTask ? "room-chat-panel--task " : ""
+          }${
             isRoomAppFullscreen
               ? "hidden"
               : "flex flex-1 flex-col overflow-hidden"
@@ -3055,7 +3068,7 @@ export default function RoomContent({
       </div>
       {taskAgent && (
         <div
-          className={`fixed inset-0 z-40 bg-black/60 px-4 ${
+          className={`room-task-dialog-host fixed inset-0 z-40 bg-black/60 px-4 ${
             isRoomAppFullscreen ? "hidden" : "flex items-center justify-center"
           }`}
           hidden={isRoomAppFullscreen}

@@ -8,30 +8,61 @@ interface AudioVisualizerProps {
   size?: AudioVisualizerSize
 }
 
-const ORBIT_POINTS = 48
-const TWO_PI = Math.PI * 2
+const SPEAKING_THRESHOLD = 0.035
+const IDLE_SAMPLE_MS = 220
+const SPEAKING_SAMPLE_MS = 85
+
+let sharedAudioContext: AudioContext | null = null
+let sharedAudioContextUsers = 0
+
+function acquireAudioContext():
+  | { context: AudioContext; release: () => void }
+  | undefined {
+  if (
+    typeof window === "undefined" ||
+    typeof window.AudioContext === "undefined"
+  )
+    return undefined
+
+  if (!sharedAudioContext || sharedAudioContext.state === "closed") {
+    sharedAudioContext = new window.AudioContext()
+  }
+  const context = sharedAudioContext
+  sharedAudioContextUsers += 1
+  let released = false
+
+  return {
+    context,
+    release: () => {
+      if (released) return
+      released = true
+      sharedAudioContextUsers = Math.max(0, sharedAudioContextUsers - 1)
+      if (sharedAudioContextUsers === 0 && sharedAudioContext === context) {
+        sharedAudioContext = null
+        void context.close().catch(() => undefined)
+      }
+    },
+  }
+}
 
 /**
- * Draws a small, presentation-only audio orbit around a participant avatar.
- *
- * The analyser and animation loop stay entirely inside this component. The
- * parent card therefore does not re-render at audio-frame frequency, and no
- * room or media state is changed by the visualizer.
+ * Detects speech locally and emits two CSS radio pulses around a participant's
+ * planet. One shared AudioContext serves the Room; silent streams are sampled
+ * sparsely, while active voices get a short, low-rate sample cadence. No audio
+ * or speaking state is sent to the Room or stored.
  */
 export default function AudioVisualizer({
   audio,
   muteState,
   size = "full",
 }: AudioVisualizerProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const signalRef = useRef<HTMLSpanElement>(null)
   const hasAudioTrack = Boolean(audio && audio.getAudioTracks().length > 0)
-  const canUseAudioContext =
-    typeof window !== "undefined" && typeof window.AudioContext !== "undefined"
 
   useEffect(() => {
-    const canvas = canvasRef.current
+    const signal = signalRef.current
     if (
-      !canvas ||
+      !signal ||
       !audio ||
       audio.getAudioTracks().length === 0 ||
       muteState ||
@@ -41,7 +72,9 @@ export default function AudioVisualizer({
       return
     }
 
-    const context = new window.AudioContext()
+    const lease = acquireAudioContext()
+    if (!lease) return
+    const { context } = lease
     const analyser = context.createAnalyser()
     analyser.fftSize = 256
 
@@ -50,134 +83,103 @@ export default function AudioVisualizer({
       source = context.createMediaStreamSource(audio)
       source.connect(analyser)
     } catch {
-      void context.close().catch(() => undefined)
-      return
-    }
-
-    const rect = canvas.getBoundingClientRect()
-    const cssSize = Math.max(1, rect.width || (size === "compact" ? 52 : 82))
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-    canvas.width = Math.round(cssSize * pixelRatio)
-    canvas.height = Math.round(cssSize * pixelRatio)
-
-    const context2d = canvas.getContext("2d")
-    if (!context2d) {
-      source.disconnect()
       analyser.disconnect()
-      void context.close().catch(() => undefined)
+      lease.release()
       return
     }
-    context2d.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
 
     const samples = new Uint8Array(analyser.fftSize)
-    const pointEnvelope = new Float32Array(ORBIT_POINTS)
-    const pointCoordinates = new Float32Array(ORBIT_POINTS * 2)
-    const center = cssSize / 2
-    const baseRadius = size === "compact" ? cssSize * 0.34 : cssSize * 0.43
-    const maxDeformation = size === "compact" ? 3 : 9
-    let smoothedLevel = 0
-    let animationFrame = 0
+    let timer: number | undefined
+    let speaking = false
+    let aboveThresholdSamples = 0
+    let belowThresholdSamples = 0
+    let disposed = false
 
-    const draw = () => {
+    const setSpeaking = (next: boolean) => {
+      speaking = next
+      signal.dataset.speaking = String(next)
+    }
+
+    const sample = () => {
+      if (disposed) return
+      if (document.visibilityState === "hidden") {
+        setSpeaking(false)
+        timer = window.setTimeout(sample, 1000)
+        return
+      }
+
       analyser.getByteTimeDomainData(samples)
-
-      let squareTotal = 0
-      for (const sample of samples) {
-        const centeredSample = (sample - 128) / 128
-        squareTotal += centeredSample * centeredSample
+      let squares = 0
+      for (const value of samples) {
+        const centered = (value - 128) / 128
+        squares += centered * centered
       }
-      const rms = Math.sqrt(squareTotal / samples.length)
-      const targetLevel = Math.min(1, Math.max(0, (rms - 0.015) / 0.22))
-      const smoothing = targetLevel > smoothedLevel ? 0.28 : 0.12
-      smoothedLevel += (targetLevel - smoothedLevel) * smoothing
+      const rms = Math.sqrt(squares / samples.length)
 
-      context2d.clearRect(0, 0, cssSize, cssSize)
-      const quiet = smoothedLevel < 0.02
-
-      for (let point = 0; point < ORBIT_POINTS; point += 1) {
-        const angle = (point / ORBIT_POINTS) * TWO_PI - Math.PI / 2
-        const sampleIndex = Math.floor((point / ORBIT_POINTS) * samples.length)
-        const centeredSample = (samples[sampleIndex] - 128) / 128
-        const targetEnvelope = quiet
-          ? 0
-          : Math.min(1, Math.abs(centeredSample) * 4.2)
-        const envelope = pointEnvelope[point]
-        const envelopeSmoothing = targetEnvelope > envelope ? 0.22 : 0.1
-        pointEnvelope[point] += (targetEnvelope - envelope) * envelopeSmoothing
-
-        const staticContour =
-          Math.sin(angle * 3) * 0.35 + Math.sin(angle * 5 + 0.7) * 0.18
-        const deformation = quiet
-          ? staticContour
-          : pointEnvelope[point] * maxDeformation + smoothedLevel * 2.1
-        const radius = baseRadius + deformation
-        const x = center + Math.cos(angle) * radius
-        const y = center + Math.sin(angle) * radius
-        pointCoordinates[point * 2] = x
-        pointCoordinates[point * 2 + 1] = y
+      if (rms >= SPEAKING_THRESHOLD) {
+        aboveThresholdSamples += 1
+        belowThresholdSamples = 0
+        if (!speaking && aboveThresholdSamples >= 2) setSpeaking(true)
+      } else {
+        belowThresholdSamples += 1
+        aboveThresholdSamples = 0
+        if (speaking && belowThresholdSamples >= 3) setSpeaking(false)
       }
 
-      const firstX = pointCoordinates[0]
-      const firstY = pointCoordinates[1]
-      const secondX = pointCoordinates[2]
-      const secondY = pointCoordinates[3]
-      context2d.beginPath()
-      context2d.moveTo((firstX + secondX) / 2, (firstY + secondY) / 2)
-      for (let point = 1; point <= ORBIT_POINTS; point += 1) {
-        const currentIndex = (point % ORBIT_POINTS) * 2
-        const nextIndex = ((point + 1) % ORBIT_POINTS) * 2
-        const currentX = pointCoordinates[currentIndex]
-        const currentY = pointCoordinates[currentIndex + 1]
-        const nextMidX = (currentX + pointCoordinates[nextIndex]) / 2
-        const nextMidY = (currentY + pointCoordinates[nextIndex + 1]) / 2
-        context2d.quadraticCurveTo(currentX, currentY, nextMidX, nextMidY)
-      }
-      context2d.closePath()
-
-      const gradient = context2d.createLinearGradient(0, 0, cssSize, cssSize)
-      const opacity = 0.14 + smoothedLevel * 0.66
-      gradient.addColorStop(0, `rgba(103, 232, 249, ${opacity})`)
-      gradient.addColorStop(0.58, `rgba(129, 140, 248, ${opacity * 0.82})`)
-      gradient.addColorStop(1, `rgba(192, 132, 252, ${opacity * 0.7})`)
-
-      context2d.lineWidth = size === "compact" ? 0.9 : 1.25
-      context2d.lineJoin = "round"
-      context2d.lineCap = "round"
-      context2d.strokeStyle = gradient
-      context2d.shadowColor = `rgba(103, 232, 249, ${
-        0.12 + smoothedLevel * 0.35
-      })`
-      context2d.shadowBlur = size === "compact" ? 3 : 4 + smoothedLevel * 9
-      context2d.stroke()
-      context2d.shadowBlur = 0
-
-      animationFrame = requestAnimationFrame(draw)
+      timer = window.setTimeout(
+        sample,
+        speaking ? SPEAKING_SAMPLE_MS : IDLE_SAMPLE_MS
+      )
     }
 
-    const resume = () => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        setSpeaking(false)
+        if (timer !== undefined) window.clearTimeout(timer)
+        void context.suspend().catch(() => undefined)
+        timer = window.setTimeout(sample, 1000)
+        return
+      }
+
+      if (timer !== undefined) window.clearTimeout(timer)
       void context.resume().catch(() => undefined)
+      timer = window.setTimeout(sample, 0)
     }
-    window.addEventListener("pointerdown", resume)
-    window.addEventListener("keydown", resume)
+
+    // A browser may defer Web Audio until the next user gesture. Keep the
+    // original retry path so voice presence starts after joining a Room.
+    const resumeAfterGesture = () => {
+      if (document.visibilityState !== "hidden")
+        void context.resume().catch(() => undefined)
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+    window.addEventListener("pointerdown", resumeAfterGesture)
+    window.addEventListener("keydown", resumeAfterGesture)
+    signal.dataset.speaking = "false"
     void context.resume().catch(() => undefined)
-    draw()
+    sample()
 
     return () => {
-      cancelAnimationFrame(animationFrame)
-      window.removeEventListener("pointerdown", resume)
-      window.removeEventListener("keydown", resume)
+      disposed = true
+      if (timer !== undefined) window.clearTimeout(timer)
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+      window.removeEventListener("pointerdown", resumeAfterGesture)
+      window.removeEventListener("keydown", resumeAfterGesture)
+      setSpeaking(false)
       source.disconnect()
       analyser.disconnect()
-      void context.close().catch(() => undefined)
+      lease.release()
     }
-  }, [audio, muteState, size])
+  }, [audio, muteState])
 
-  if (!hasAudioTrack || muteState || !canUseAudioContext) return null
+  if (!hasAudioTrack || muteState) return null
 
   return (
-    <canvas
-      ref={canvasRef}
-      className={`participant-audio-orbit participant-audio-orbit--${size}`}
+    <span
+      ref={signalRef}
+      className={`participant-audio-signal participant-audio-signal--${size}`}
+      data-speaking="false"
       aria-hidden="true"
     />
   )

@@ -75,7 +75,7 @@ html {
 }
 
 .signal-collapse-text.psy-headline {
-  background-image: linear-gradient(to right, #6ee7b7, #e879f9, #67e8f9);
+  background-image: linear-gradient(to right, #e8b47b, #a4dfbc 48%, #77cbd5);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -84,7 +84,7 @@ html {
 
 .signal-collapse-text--idle.psy-headline,
 .signal-collapse-text--resolved.psy-headline {
-  animation: psy-hue 14s linear infinite;
+  animation: none;
 }
 
 /* While JS is replacing glyphs, keep the surface deliberately simple:
@@ -100,8 +100,8 @@ html {
   filter: none;
   opacity: 1;
   -webkit-text-fill-color: #a7f3d0;
-  text-shadow: -0.035em 0 rgba(34, 211, 238, 0.42),
-    0.035em 0 rgba(217, 70, 239, 0.28), 0 0 14px rgba(52, 211, 153, 0.24);
+  text-shadow: -0.035em 0 rgba(102, 210, 220, 0.36),
+    0.035em 0 rgba(232, 180, 123, 0.27), 0 0 14px rgba(52, 211, 153, 0.2);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -179,15 +179,6 @@ html {
   .home-join-cta:hover .home-join-cta__arrow,
   .home-join-cta:focus-visible .home-join-cta__arrow {
     transform: none;
-  }
-}
-
-@keyframes psy-hue {
-  from {
-    filter: hue-rotate(0deg) drop-shadow(0 0 10px rgba(52, 211, 153, 0.3));
-  }
-  to {
-    filter: hue-rotate(360deg) drop-shadow(0 0 10px rgba(52, 211, 153, 0.3));
   }
 }
 
@@ -347,99 +338,208 @@ html {
 .room-participants-panel {
   position: relative;
   isolation: isolate;
-  border-bottom-color: rgba(16, 185, 129, 0.3) !important;
-  box-shadow: 0 5px 0 rgba(2, 8, 6, 0.94), 0 10px 20px rgba(0, 0, 0, 0.24);
+  --planet-glow: 107, 196, 255;
+  border-bottom-color: rgba(113, 173, 210, 0.19) !important;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
+  background-color: #02050c;
+  background-image: radial-gradient(
+      ellipse at 22% 23%,
+      rgba(206, 93, 35, 0.16),
+      transparent 35%
+    ),
+    radial-gradient(
+      ellipse at 77% 25%,
+      rgba(39, 156, 210, 0.14),
+      transparent 35%
+    ),
+    radial-gradient(
+      ellipse at 75% 86%,
+      rgba(102, 69, 169, 0.12),
+      transparent 54%
+    );
 }
 
-/* A restrained, presentation-only starfield keeps the participant side
-   connected to the homepage's retro-space language without competing with
-   cards, controls, or shared-screen content.
-
-   The star field is deliberately static (#449). Animating background-position
-   across this panel repainted millions of device pixels and held a visible
-   idle Room at roughly 15-16% main-thread CPU, so the drift was removed
-   instead of being moved onto a compositor layer. */
 .room-participants-panel::before,
 .room-participants-panel::after {
   position: absolute;
   z-index: 0;
-  inset: -12%;
+  inset: 0;
   content: "";
   pointer-events: none;
 }
 
 .room-participants-panel::before {
-  background-image: radial-gradient(
-      circle at 12% 18%,
-      rgba(167, 243, 208, 0.38) 0 1px,
-      transparent 1.6px
+  background: radial-gradient(
+      ellipse at 24% 23%,
+      rgba(255, 151, 59, 0.11),
+      transparent 23%
     ),
     radial-gradient(
-      circle at 68% 32%,
-      rgba(103, 232, 249, 0.28) 0 1px,
-      transparent 1.8px
+      ellipse at 78% 26%,
+      rgba(75, 204, 252, 0.12),
+      transparent 27%
     ),
-    radial-gradient(
-      circle at 38% 78%,
-      rgba(167, 139, 250, 0.24) 0 1px,
-      transparent 1.7px
+    linear-gradient(
+      115deg,
+      transparent 19%,
+      rgba(117, 113, 189, 0.025) 44%,
+      transparent 70%
     );
-  background-size: 132px 118px, 196px 174px, 224px 206px;
-  opacity: 0.5;
 }
 
 .room-participants-panel::after {
   background: radial-gradient(
-      ellipse at 18% 24%,
-      rgba(16, 185, 129, 0.13),
-      transparent 38%
-    ),
-    radial-gradient(
-      ellipse at 78% 72%,
-      rgba(124, 58, 237, 0.1),
-      transparent 42%
-    );
-  filter: blur(20px);
-  opacity: 0.62;
-  transform: scale(1.08);
-  animation: room-cosmos-nebula 38s ease-in-out infinite alternate;
+    ellipse at 50% 35%,
+    transparent 28%,
+    rgba(0, 2, 9, 0.42) 100%
+  );
 }
 
-.room-participants-panel > * {
+.room-cosmos-sky,
+.room-cosmos-glints {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.room-cosmos-sky {
+  inset: -2%;
+  background: url("/cosmic-stars.svg") center / cover no-repeat;
+  opacity: 0.95;
+  transition: transform 180ms ease-out;
+}
+
+.room-cosmos-glints {
+  inset: 0;
+}
+
+.room-cosmos-glints i {
+  position: absolute;
+  display: block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #f3faff;
+  box-shadow: 0 0 7px 2px rgba(170, 224, 255, 0.48);
+  animation: room-star-breathe 8s ease-in-out infinite;
+}
+
+.room-cosmos-glints i::before,
+.room-cosmos-glints i::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.room-cosmos-glints i::before {
+  width: 27px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(220, 242, 255, 0.78),
+    transparent
+  );
+}
+
+.room-cosmos-glints i::after {
+  width: 1px;
+  height: 27px;
+  background: linear-gradient(
+    transparent,
+    rgba(220, 242, 255, 0.78),
+    transparent
+  );
+}
+
+.room-cosmos-glints i:nth-child(1) {
+  left: 12%;
+  top: 21%;
+  animation-delay: -2s;
+}
+.room-cosmos-glints i:nth-child(2) {
+  left: 71%;
+  top: 12%;
+  animation-delay: -5s;
+}
+.room-cosmos-glints i:nth-child(3) {
+  left: 88%;
+  top: 41%;
+  animation-delay: -1s;
+}
+.room-cosmos-glints i:nth-child(4) {
+  left: 24%;
+  top: 69%;
+  animation-delay: -6s;
+}
+.room-cosmos-glints i:nth-child(5) {
+  left: 55%;
+  top: 56%;
+  animation-delay: -3s;
+}
+.room-cosmos-glints i:nth-child(6) {
+  left: 79%;
+  top: 82%;
+  animation-delay: -7s;
+}
+
+.room-cosmos-glints i:nth-child(n + 4) {
+  animation: none;
+  opacity: 0.45;
+}
+
+.room-cosmos-glints[data-visible="false"] i {
+  animation-play-state: paused;
+}
+
+@keyframes room-star-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.7);
+  }
+  45% {
+    opacity: 0.88;
+    transform: scale(1.14);
+  }
+}
+
+.room-participants-panel > :not(.room-cosmos-sky):not(.room-cosmos-glints) {
   position: relative;
   z-index: 1;
 }
 
-@keyframes room-cosmos-nebula {
-  from {
-    transform: scale(1.08) translate3d(-1%, -1%, 0);
-  }
-  to {
-    transform: scale(1.14) translate3d(2%, 1%, 0);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* The nebula drift is the only remaining decorative Room cosmos motion. */
-  .room-participants-panel::after {
-    animation: none;
-  }
-}
-
 @media (min-width: 768px) {
   .room-participants-panel {
-    border-right-color: rgba(16, 185, 129, 0.3) !important;
-    box-shadow: 5px 0 0 rgba(2, 8, 6, 0.94), 10px 0 20px rgba(0, 0, 0, 0.24);
+    border-right-color: rgba(113, 173, 210, 0.19) !important;
+    box-shadow: 5px 0 24px rgba(0, 0, 0, 0.32);
   }
 }
 
 .room-participants-grid {
-  background-image: radial-gradient(
-    circle at 8% 18%,
-    rgba(103, 232, 249, 0.1) 0 1px,
-    transparent 1.5px
-  );
-  background-size: 92px 86px;
+  background-image: none;
+}
+
+.room-participants-grid > :nth-child(4n + 1) {
+  --planet-glow: 107, 196, 255;
+}
+.room-participants-grid > :nth-child(4n + 2) {
+  --planet-glow: 178, 137, 255;
+}
+.room-participants-grid > :nth-child(4n + 3) {
+  --planet-glow: 255, 170, 109;
+}
+.room-participants-grid > :nth-child(4n + 4) {
+  --planet-glow: 123, 222, 191;
+}
+
+@media (min-width: 768px) and (min-height: 600px) {
+  .room-participants-grid:not(:has(> :nth-child(5))) {
+    padding-top: clamp(6rem, 15vh, 10rem);
+    column-gap: clamp(2rem, 5vw, 6rem);
+  }
 }
 
 .room-participant-strip {
@@ -478,11 +578,15 @@ html {
 .participant-card-shell--full,
 .participant-card-shell--compact > div {
   position: relative;
-  border-color: color-mix(in srgb, #67e8f9 26%, #334155) !important;
-  background: linear-gradient(145deg, rgba(8, 47, 73, 0.32), transparent 42%),
-    rgba(6, 14, 30, 0.88) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 12px 28px rgba(0, 0, 0, 0.18);
+  border-color: rgba(169, 201, 236, 0.26) !important;
+  background: linear-gradient(
+      145deg,
+      rgba(var(--planet-glow), 0.12),
+      transparent 42%
+    ),
+    rgba(3, 10, 22, 0.78) !important;
+  box-shadow: inset 0 1px 0 rgba(241, 249, 255, 0.1),
+    0 18px 40px rgba(0, 0, 0, 0.32), 0 0 32px rgba(var(--planet-glow), 0.06);
   transition: border-color 160ms ease, box-shadow 160ms ease,
     transform 160ms ease;
 }
@@ -493,8 +597,10 @@ html {
 }
 
 .participant-card-shell--full {
-  height: 12.5rem;
-  min-height: 12.5rem;
+  height: 14rem;
+  min-height: 14rem;
+  overflow: visible !important;
+  border-radius: 1rem;
 }
 
 .room-shell .participant-card__capability {
@@ -503,31 +609,134 @@ html {
 
 .participant-card-shell--full:hover,
 .participant-card-shell--compact > div:hover {
-  border-color: rgba(103, 232, 249, 0.7) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 0 22px rgba(103, 232, 249, 0.1);
-  transform: translateY(-1px);
+  border-color: rgba(218, 238, 255, 0.64) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    0 20px 44px rgba(0, 0, 0, 0.38), 0 0 32px rgba(var(--planet-glow), 0.16);
+  transform: translateY(-2px);
+}
+
+.participant-card-shell--full:has(
+    .participant-audio-signal[data-speaking="true"]
+  ),
+.cosmic-prototype-speaking .participant-card-shell--full {
+  z-index: 2;
+  border-color: rgba(var(--planet-glow), 0.62) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 18px 40px rgba(0, 0, 0, 0.34), 0 0 38px rgba(var(--planet-glow), 0.22);
 }
 
 .participant-card__avatar {
   position: relative;
+  isolation: isolate;
   display: grid;
   place-items: center;
-  padding: 0.18rem;
-  border: 1px solid rgba(103, 232, 249, 0.28);
+  padding: 0;
+  border: 0;
   border-radius: 50%;
-  background: rgba(2, 8, 20, 0.72);
-  box-shadow: 0 0 14px rgba(103, 232, 249, 0.12);
+  background: transparent;
+}
+
+.participant-card__avatar::before,
+.participant-card__avatar::after {
+  position: absolute;
+  z-index: 0;
+  content: "";
+  pointer-events: none;
+}
+
+.participant-card__avatar::before {
+  inset: -27px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(var(--planet-glow), 0.26),
+    transparent 68%
+  );
+}
+
+.participant-card__avatar::after {
+  inset: -13px;
+  border: 1px solid rgba(var(--planet-glow), 0.43);
+  border-left-color: transparent;
+  border-bottom-color: rgba(var(--planet-glow), 0.12);
+  border-radius: 50%;
+  transform: rotate(-25deg) scaleY(0.61);
+}
+
+.participant-card-shell--compact .participant-card__avatar::before {
+  inset: -14px;
+  opacity: 0.45;
+}
+
+.participant-card-shell--compact .participant-card__avatar::after {
+  inset: -5px;
+  opacity: 0.5;
 }
 
 .participant-avatar {
   position: relative;
+  z-index: 1;
   flex: 0 0 auto;
   display: block;
   width: 56px;
   height: 56px;
   isolation: isolate;
   overflow: visible;
+}
+
+.participant-card-shell--full .participant-avatar,
+.participant-card-shell--full .participant-avatar__planet {
+  width: 104px !important;
+  height: 104px !important;
+}
+
+.participant-card-shell--full .participant-avatar {
+  border-radius: 50%;
+  box-shadow: 0 0 19px 5px rgba(var(--planet-glow), 0.18);
+}
+
+.participant-card-shell--full p {
+  color: #edf7ff;
+  font-size: 0.875rem;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.62);
+}
+
+.participant-avatar::before,
+.participant-avatar::after {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid rgba(var(--planet-glow, 103, 232, 249), 0.88);
+  border-radius: 50%;
+  content: "";
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.88);
+}
+
+.participant-audio-signal[data-speaking="true"] + .participant-avatar::before {
+  animation: room-radio-pulse 1.9s ease-out infinite;
+}
+
+.cosmic-prototype-speaking .participant-avatar::before {
+  animation: room-radio-pulse 1.9s ease-out infinite;
+}
+
+.participant-audio-signal[data-speaking="true"] + .participant-avatar::after {
+  animation: room-radio-pulse 1.9s ease-out -0.95s infinite;
+}
+
+.cosmic-prototype-speaking .participant-avatar::after {
+  animation: room-radio-pulse 1.9s ease-out -0.95s infinite;
+}
+@keyframes room-radio-pulse {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.84);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.15);
+  }
 }
 
 .participant-avatar--compact {
@@ -544,7 +753,6 @@ html {
   display: block;
   width: 100%;
   height: 100%;
-  filter: saturate(1.08) drop-shadow(0 0 7px rgba(103, 232, 249, 0.2));
 }
 
 .participant-avatar__planet {
@@ -560,23 +768,11 @@ html {
   height: 36px !important;
 }
 
-.participant-audio-orbit {
+.participant-audio-signal {
   position: absolute;
-  top: 50%;
-  left: 50%;
   z-index: 0;
-  display: block;
-  width: 5.1rem;
-  height: 5.1rem;
-  max-width: none;
-  transform: translate(-50%, -50%);
+  inset: 0;
   pointer-events: none;
-  overflow: visible;
-}
-
-.participant-audio-orbit--compact {
-  width: 3.25rem;
-  height: 3.25rem;
 }
 
 .participant-card__kind,
@@ -689,7 +885,1353 @@ html {
 }
 
 .room-chat-panel {
-  background: rgba(1, 6, 5, 0.72);
+  background: radial-gradient(
+      ellipse at 94% 0,
+      rgba(26, 78, 103, 0.08),
+      transparent 38%
+    ),
+    #03090d;
+}
+
+/* Cosmic Room study: a quiet space scene held inside Free4Chat's terminal UI. */
+.cosmic-v3 {
+  --console-green: #a7e9c5;
+  --console-muted: #648b79;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #020806 !important;
+}
+
+.cosmic-v3-header {
+  z-index: 3;
+  display: flex;
+  height: 76px;
+  flex: none;
+  align-items: center;
+  gap: 22px;
+  border-bottom: 1px solid rgba(78, 158, 120, 0.3);
+  background: #06110d;
+  padding: 0 30px;
+}
+
+.cosmic-v3-brand {
+  width: 57px;
+  height: 45px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(107, 207, 151, 0.52);
+  color: #c2f8d9;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.12em;
+  white-space: nowrap;
+}
+.cosmic-v3-brand span {
+  color: #e5bd73;
+}
+.cosmic-v3-brand em {
+  margin-left: 5px;
+  color: #70cba2;
+  font-size: 14px;
+  font-style: normal;
+}
+.cosmic-v3-eyebrow {
+  display: block;
+  color: #69a48b;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.17em;
+}
+.cosmic-v3-room-heading h1 {
+  margin-top: 4px;
+  color: #c2efd3;
+  font-size: clamp(16px, 1.7vw, 23px);
+  font-weight: 500;
+  letter-spacing: 0.015em;
+}
+.cosmic-v3-header-right {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-left: auto;
+}
+.cosmic-v3-header-status,
+.cosmic-v3-header-right button {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  white-space: nowrap;
+}
+.cosmic-v3-header-status {
+  color: #93c9aa;
+}
+.cosmic-v3-header-status i,
+.cosmic-v3-chat-live i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #69d59b;
+  box-shadow: 0 0 7px #69d59b;
+  vertical-align: middle;
+}
+.cosmic-v3-header-right button {
+  min-height: 35px;
+  border: 1px solid rgba(103, 190, 139, 0.45);
+  background: rgba(17, 55, 37, 0.44);
+  padding: 0 13px;
+  color: #c4f1d5;
+}
+.cosmic-v3-header-right button:hover,
+.cosmic-v3-header-right button:focus-visible {
+  border-color: #8beab1;
+  outline: none;
+}
+
+.cosmic-v3-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.cosmic-v3-stage {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  width: 68%;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid rgba(81, 155, 119, 0.3);
+  background: radial-gradient(
+      ellipse at 27% 46%,
+      rgba(148, 72, 32, 0.24),
+      transparent 31%
+    ),
+    radial-gradient(
+      ellipse at 73% 44%,
+      rgba(26, 113, 146, 0.2),
+      transparent 33%
+    ),
+    radial-gradient(ellipse at 53% 90%, rgba(11, 62, 44, 0.14), transparent 46%),
+    #030808;
+}
+.cosmic-v3-stage::before,
+.cosmic-v3-stage::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+.cosmic-v3-stage::before {
+  inset: 13px;
+  border: 1px solid rgba(126, 188, 146, 0.13);
+  clip-path: polygon(
+    0 0,
+    32px 0,
+    32px 1px,
+    calc(100% - 32px) 1px,
+    calc(100% - 32px) 0,
+    100% 0,
+    100% 32px,
+    calc(100% - 1px) 32px,
+    calc(100% - 1px) calc(100% - 32px),
+    100% calc(100% - 32px),
+    100% 100%,
+    0 100%
+  );
+}
+.cosmic-v3-stage::after {
+  inset: 0;
+  background: linear-gradient(
+      180deg,
+      rgba(2, 10, 8, 0.58),
+      transparent 24%,
+      transparent 70%,
+      rgba(2, 10, 8, 0.75)
+    ),
+    radial-gradient(ellipse at center, transparent 45%, rgba(1, 6, 5, 0.45));
+}
+.cosmic-v3 .room-cosmos-sky {
+  opacity: 0.52;
+}
+.cosmic-v3 .room-cosmos-glints i {
+  animation: none;
+  opacity: 0.45;
+}
+.cosmic-v3-stage-grid {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  background-image: linear-gradient(
+      rgba(82, 180, 122, 0.035) 1px,
+      transparent 1px
+    ),
+    linear-gradient(90deg, rgba(82, 180, 122, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(transparent 34%, #000 100%);
+  pointer-events: none;
+}
+.cosmic-v3-stage-hud,
+.cosmic-v3-scene,
+.cosmic-v3-stage-footer {
+  position: relative;
+  z-index: 2;
+}
+.cosmic-v3-stage-hud {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 34px 42px 0;
+}
+.cosmic-v3-stage-hud h2 {
+  margin-top: 9px;
+  color: #e9f5e9;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: clamp(24px, 2.2vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 1;
+}
+.cosmic-v3-stage-hud h2 span {
+  color: #91d9b5;
+}
+.cosmic-v3-stage-count {
+  padding-top: 3px;
+  color: #a8d6b8;
+  font-size: 10px;
+  letter-spacing: 0.13em;
+  white-space: nowrap;
+}
+.cosmic-v3-stage-count span {
+  margin-right: 5px;
+  color: #62c994;
+  font-size: 8px;
+}
+
+.cosmic-v3-scene {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: center;
+  justify-items: center;
+  gap: 0;
+  padding: 20px 8% 10px;
+}
+.cosmic-v3-station {
+  --station-color: 225, 164, 94;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: min(100%, 300px);
+  min-height: 415px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #e5f3e8;
+}
+.cosmic-v3-station--cyan {
+  --station-color: 101, 205, 219;
+}
+.cosmic-v3-station--violet {
+  --station-color: 175, 153, 237;
+}
+.cosmic-v3-station--mint {
+  --station-color: 117, 220, 169;
+}
+.cosmic-v3-station--rose {
+  --station-color: 235, 147, 169;
+}
+.cosmic-v3-station--blue {
+  --station-color: 136, 178, 241;
+}
+.cosmic-v3-orbit {
+  position: absolute;
+  top: 8px;
+  width: 320px;
+  height: 270px;
+  border: 1px solid rgba(var(--station-color), 0.15);
+  border-radius: 50%;
+  transform: rotate(-17deg) scaleY(0.67);
+  pointer-events: none;
+}
+.cosmic-v3-orbit::before,
+.cosmic-v3-orbit::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+}
+.cosmic-v3-orbit::before {
+  top: 19px;
+  right: 22px;
+  width: 5px;
+  height: 5px;
+  background: rgba(var(--station-color), 0.7);
+}
+.cosmic-v3-orbit::after {
+  bottom: 28px;
+  left: 16px;
+  width: 3px;
+  height: 3px;
+  background: rgba(var(--station-color), 0.4);
+}
+.cosmic-v3-planet-wrap {
+  position: relative;
+  display: grid;
+  width: 237px;
+  height: 237px;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(var(--station-color), 0.24),
+    rgba(var(--station-color), 0.06) 52%,
+    transparent 70%
+  );
+}
+.cosmic-v3-planet-wrap::before {
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  box-shadow: 0 0 42px 10px rgba(var(--station-color), 0.14);
+  content: "";
+  pointer-events: none;
+}
+.cosmic-v3 .cosmic-v3-planet-wrap .participant-avatar,
+.cosmic-v3 .cosmic-v3-planet-wrap .participant-avatar__planet {
+  width: 184px !important;
+  height: 184px !important;
+}
+.cosmic-v3 .cosmic-v3-planet-wrap .participant-avatar {
+  box-shadow: none;
+}
+.cosmic-v3 .cosmic-v3-planet-wrap .participant-avatar::before,
+.cosmic-v3 .cosmic-v3-planet-wrap .participant-avatar::after {
+  content: none;
+}
+.cosmic-v3 .cosmic-v3-station--amber .participant-avatar__planet {
+  filter: hue-rotate(155deg) saturate(1.2);
+}
+.cosmic-v3 .cosmic-v3-station--cyan .participant-avatar__planet {
+  filter: hue-rotate(300deg) saturate(0.9);
+}
+.cosmic-v3-transmission {
+  position: absolute;
+  inset: -3px;
+  border: 1px solid rgba(var(--station-color), 0.75);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+.cosmic-v3-station--speaking .cosmic-v3-transmission {
+  animation: cosmic-v3-radio 2.4s ease-out infinite;
+}
+.cosmic-v3-station--speaking .cosmic-v3-planet-wrap::before {
+  box-shadow: 0 0 60px 18px rgba(var(--station-color), 0.24);
+}
+@keyframes cosmic-v3-radio {
+  0% {
+    opacity: 0.7;
+    transform: scale(0.75);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+.cosmic-v3-station-label {
+  position: relative;
+  display: flex;
+  width: 255px;
+  min-height: 111px;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-top: 2px;
+  border-left: 1px solid rgba(var(--station-color), 0.65);
+  background: linear-gradient(
+    90deg,
+    rgba(3, 18, 15, 0.84),
+    rgba(3, 18, 15, 0.45) 72%,
+    transparent
+  );
+  padding: 12px 15px 10px;
+}
+.cosmic-v3-station-index {
+  color: rgba(var(--station-color), 0.9);
+  font-size: 10px;
+  letter-spacing: 0.13em;
+}
+.cosmic-v3-station-label strong {
+  display: block;
+  overflow: hidden;
+  max-width: 100%;
+  margin-top: 5px;
+  color: #f4f7ef;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cosmic-v3-station-frequency {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  color: #92bfa5;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.cosmic-v3-live-dot,
+.cosmic-v3-idle-dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #74d797;
+}
+.cosmic-v3-live-dot {
+  background: #f3bd78;
+  box-shadow: 0 0 7px #f3bd78;
+}
+.cosmic-v3-station-freq-value {
+  margin-left: auto;
+  color: #5d8b74;
+}
+.cosmic-v3-mic {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  border: 1px solid rgba(131, 196, 151, 0.42);
+  background: rgba(6, 31, 20, 0.82);
+  padding: 0 10px;
+  color: #b5dfc2;
+  font-size: 10px;
+  letter-spacing: 0.07em;
+}
+.cosmic-v3-mic svg {
+  width: 13px;
+  height: 13px;
+}
+.cosmic-v3-mic:hover,
+.cosmic-v3-mic:focus-visible {
+  border-color: #8ce0ac;
+  outline: none;
+}
+.cosmic-v3-station--speaking .cosmic-v3-mic {
+  border-color: rgba(243, 189, 120, 0.65);
+  color: #f3cf9c;
+}
+.cosmic-v3-connection {
+  position: absolute;
+  z-index: 0;
+  top: 34%;
+  left: 28%;
+  width: 44%;
+  height: 44px;
+  opacity: 0.28;
+  pointer-events: none;
+}
+.cosmic-v3-connection--active {
+  opacity: 0.75;
+}
+.cosmic-v3-connection-line {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-top: 1px dashed rgba(124, 210, 168, 0.5);
+  border-radius: 50%;
+  transform: rotate(-3deg);
+}
+.cosmic-v3-connection-label {
+  display: block;
+  width: fit-content;
+  margin: -23px auto 0;
+  background: #06120f;
+  padding: 2px 7px;
+  color: #83b99b;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+.cosmic-v3-stage-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid rgba(87, 154, 114, 0.17);
+  padding: 17px 32px;
+  color: #648c79;
+  font-size: 9px;
+  letter-spacing: 0.11em;
+}
+.cosmic-v3-stage-footer b {
+  color: #a9d2ac;
+  font-size: 13px;
+  font-weight: 400;
+}
+.cosmic-v3-scene--compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-content: center;
+  gap: 8px 0;
+  padding: 0 6%;
+}
+.cosmic-v3-scene:not(.cosmic-v3-scene--compact)
+  .cosmic-v3-station:nth-of-type(2) {
+  transform: translateY(32px);
+}
+.cosmic-v3-station--compact {
+  min-height: 246px;
+}
+.cosmic-v3-station--compact .cosmic-v3-orbit {
+  top: -7px;
+  width: 185px;
+  height: 155px;
+}
+.cosmic-v3-station--compact .cosmic-v3-planet-wrap {
+  width: 125px;
+  height: 125px;
+}
+.cosmic-v3 .cosmic-v3-station--compact .participant-avatar,
+.cosmic-v3 .cosmic-v3-station--compact .participant-avatar__planet {
+  width: 92px !important;
+  height: 92px !important;
+}
+.cosmic-v3-station--compact .cosmic-v3-station-label {
+  width: min(95%, 190px);
+  min-height: 96px;
+  padding: 9px 10px;
+}
+.cosmic-v3-station--compact .cosmic-v3-station-label strong {
+  font-size: 16px;
+}
+.cosmic-v3-station--compact .cosmic-v3-station-freq-value {
+  display: none;
+}
+.cosmic-v3-station--compact .cosmic-v3-mic {
+  min-height: 27px;
+  margin-top: 6px;
+}
+
+.cosmic-v3-chat {
+  display: flex;
+  width: 32%;
+  min-width: 330px;
+  flex-direction: column;
+  background: linear-gradient(155deg, rgba(13, 32, 24, 0.68), transparent 48%),
+    #06100d;
+}
+.cosmic-v3-chat-head {
+  display: flex;
+  min-height: 105px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid rgba(95, 157, 119, 0.2);
+  padding: 24px 25px;
+}
+.cosmic-v3-chat-head h2 {
+  margin-top: 9px;
+  color: #e6f3e6;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+.cosmic-v3-chat-live {
+  color: #a5dbb4;
+  font-size: 10px;
+  letter-spacing: 0.11em;
+}
+.cosmic-v3-chat-toolbar {
+  display: flex;
+  min-height: 45px;
+  align-items: stretch;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(95, 157, 119, 0.2);
+  padding: 0 25px;
+  color: #5f8e73;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+}
+.cosmic-v3-chat-toolbar > span {
+  display: flex;
+  align-items: center;
+}
+.cosmic-v3-chat-tab {
+  border-bottom: 2px solid #86dba7;
+  color: #c4efce;
+}
+.cosmic-v3-chat-feed {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 28px 25px 14px;
+}
+.cosmic-v3-log-date {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #53826a;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+.cosmic-v3-log-date::before,
+.cosmic-v3-log-date::after {
+  height: 1px;
+  flex: 1;
+  background: rgba(100, 167, 122, 0.17);
+  content: "";
+}
+.cosmic-v3-log-system {
+  margin: 26px 0 32px;
+  border-left: 1px solid rgba(93, 168, 119, 0.46);
+  padding-left: 11px;
+  color: #86aa90;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.cosmic-v3-message {
+  margin-bottom: 27px;
+}
+.cosmic-v3-message-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #a9d8be;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+}
+.cosmic-v3-message-meta time {
+  margin-left: auto;
+  color: #60846d;
+  font-weight: 400;
+}
+.cosmic-v3-avatar-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.cosmic-v3-avatar-dot--cyan {
+  background: #82cdd9;
+  box-shadow: 0 0 7px rgba(130, 205, 217, 0.7);
+}
+.cosmic-v3-avatar-dot--amber {
+  background: #e5ad71;
+  box-shadow: 0 0 7px rgba(229, 173, 113, 0.7);
+}
+.cosmic-v3-message p {
+  margin: 10px 0 0 14px;
+  color: #e0e9dc;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.cosmic-v3-message--self {
+  border-left: 1px solid rgba(229, 173, 113, 0.23);
+  margin-left: 13px;
+  padding-left: 12px;
+}
+.cosmic-v3-message--self .cosmic-v3-message-meta {
+  color: #ebc393;
+}
+.cosmic-v3-voice-log {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  border: 1px solid rgba(85, 150, 111, 0.24);
+  background: rgba(11, 39, 25, 0.32);
+  padding: 0 10px;
+  color: #8ab99a;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+.cosmic-v3-voice-log--active {
+  border-color: rgba(233, 182, 115, 0.5);
+  color: #eac498;
+}
+.cosmic-v3-voice-log > span:last-child {
+  margin-left: auto;
+  color: #5e956f;
+}
+.cosmic-v3-voice-bars {
+  color: #a9d7b2;
+  font-size: 16px;
+  letter-spacing: -0.2em;
+}
+.cosmic-v3-composer {
+  display: grid;
+  grid-template-columns: 1fr 45px;
+  border-top: 1px solid rgba(95, 157, 119, 0.22);
+  padding: 18px 20px 13px;
+}
+.cosmic-v3-composer input {
+  min-width: 0;
+  height: 46px;
+  border: 1px solid rgba(120, 174, 132, 0.38);
+  border-right: 0;
+  border-radius: 0;
+  outline: none;
+  background: rgba(1, 9, 6, 0.88);
+  padding: 0 13px;
+  color: #ebf9e8;
+  font-size: 12px;
+}
+.cosmic-v3-composer input::placeholder {
+  color: #688d75;
+}
+.cosmic-v3-composer input:focus {
+  border-color: #9ae2af;
+}
+.cosmic-v3-composer button {
+  border: 1px solid #8bd1a0;
+  background: #85d3a0;
+  color: #07160b;
+  font-size: 22px;
+}
+.cosmic-v3-composer p {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  color: #547b61;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+.cosmic-v3-composer p span {
+  margin: 0 4px;
+}
+.cosmic-v3-mobile-switch,
+.cosmic-v3-mobile-people {
+  display: none;
+}
+.cosmic-v3-task-overlay {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 5, 3, 0.8);
+  padding: 16px;
+}
+
+@media (max-width: 1000px) {
+  .cosmic-v3-stage {
+    width: 62%;
+  }
+  .cosmic-v3-chat {
+    width: 38%;
+  }
+  .cosmic-v3-scene {
+    padding-left: 2%;
+    padding-right: 2%;
+  }
+  .cosmic-v3-station {
+    width: 100%;
+  }
+  .cosmic-v3-orbit {
+    width: 245px;
+  }
+  .cosmic-v3-station-label {
+    width: 205px;
+  }
+  .cosmic-v3-station--compact .cosmic-v3-orbit {
+    width: 150px;
+  }
+}
+@media (max-width: 720px) {
+  .cosmic-v3-header {
+    height: 64px;
+    gap: 12px;
+    padding: 0 15px;
+  }
+  .cosmic-v3-brand {
+    width: 42px;
+    height: 38px;
+    font-size: 14px;
+  }
+  .cosmic-v3-room-heading h1 {
+    font-size: 15px;
+  }
+  .cosmic-v3-header-right {
+    gap: 0;
+  }
+  .cosmic-v3-header-status {
+    display: none;
+  }
+  .cosmic-v3-room-heading {
+    min-width: 0;
+    flex: 1;
+  }
+  .cosmic-v3-room-heading h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cosmic-v3-header-right button {
+    min-height: 33px;
+    padding: 0 7px;
+    font-size: 9px;
+  }
+  .cosmic-v3-header-right button:last-child {
+    display: none;
+  }
+  .cosmic-v3-body {
+    position: relative;
+  }
+  .cosmic-v3-stage,
+  .cosmic-v3-chat {
+    width: 100%;
+    min-width: 0;
+  }
+  .cosmic-v3-stage {
+    position: absolute;
+    z-index: 3;
+    inset: 0;
+    display: none;
+    border-right: 0;
+  }
+  .cosmic-v3-stage--open {
+    display: flex;
+  }
+  .cosmic-v3-stage--open + .cosmic-v3-chat {
+    display: none;
+  }
+  .cosmic-v3-stage-hud {
+    padding: 25px 22px 0;
+  }
+  .cosmic-v3-stage-hud h2 {
+    font-size: 23px;
+  }
+  .cosmic-v3-stage-count {
+    font-size: 9px;
+  }
+  .cosmic-v3-scene {
+    padding: 5px 1%;
+  }
+  .cosmic-v3-station {
+    min-height: 290px;
+  }
+  .cosmic-v3-orbit {
+    top: 5px;
+    width: 165px;
+    height: 160px;
+  }
+  .cosmic-v3-planet-wrap {
+    width: 145px;
+    height: 145px;
+  }
+  .cosmic-v3 .cosmic-v3-planet-wrap .participant-avatar,
+  .cosmic-v3 .cosmic-v3-planet-wrap .participant-avatar__planet {
+    width: 104px !important;
+    height: 104px !important;
+  }
+  .cosmic-v3-station-label {
+    width: min(95%, 175px);
+    min-height: 106px;
+    padding: 10px;
+  }
+  .cosmic-v3-station-label strong {
+    font-size: 15px;
+  }
+  .cosmic-v3-station-freq-value {
+    display: none;
+  }
+  .cosmic-v3-connection {
+    display: none;
+  }
+  .cosmic-v3-scene--compact {
+    gap: 0;
+  }
+  .cosmic-v3-station--compact {
+    min-height: 194px;
+  }
+  .cosmic-v3-station--compact .cosmic-v3-orbit {
+    width: 115px;
+    height: 107px;
+  }
+  .cosmic-v3-station--compact .cosmic-v3-planet-wrap {
+    width: 94px;
+    height: 94px;
+  }
+  .cosmic-v3 .cosmic-v3-station--compact .participant-avatar,
+  .cosmic-v3 .cosmic-v3-station--compact .participant-avatar__planet {
+    width: 68px !important;
+    height: 68px !important;
+  }
+  .cosmic-v3-station--compact .cosmic-v3-station-label {
+    width: 96%;
+    min-height: 82px;
+    padding: 7px;
+  }
+  .cosmic-v3-station--compact .cosmic-v3-station-index,
+  .cosmic-v3-station--compact .cosmic-v3-station-frequency {
+    font-size: 7px;
+  }
+  .cosmic-v3-station--compact .cosmic-v3-station-label strong {
+    font-size: 12px;
+  }
+  .cosmic-v3-station--compact .cosmic-v3-mic {
+    min-height: 22px;
+    padding: 0 5px;
+    font-size: 8px;
+  }
+  .cosmic-v3-stage-footer {
+    padding: 12px 18px 64px;
+    font-size: 8px;
+  }
+  .cosmic-v3-stage-footer span:last-child {
+    display: none;
+  }
+  .cosmic-v3-mobile-switch {
+    position: absolute;
+    z-index: 4;
+    right: 18px;
+    bottom: 18px;
+    display: block;
+    border: 1px solid #8fdfa5;
+    background: #0b2a19;
+    padding: 10px 12px;
+    color: #dcfbe1;
+    font-size: 11px;
+  }
+  .cosmic-v3-mobile-people {
+    display: block;
+    border: 1px solid rgba(124, 195, 143, 0.4);
+    padding: 7px;
+    color: #c1e5c8;
+    font-size: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cosmic-v3-station--speaking .cosmic-v3-transmission {
+    animation: none;
+    opacity: 0.35;
+  }
+}
+.cosmic-v3[data-visible="false"] .cosmic-v3-transmission {
+  animation-play-state: paused;
+}
+
+/* Shared Free4Chat console language. Room splits, Stage ownership, and App
+   iframe sizing stay unchanged; the short-screen Task dialog can scroll. */
+.home-cosmic-hero {
+  position: relative;
+  isolation: isolate;
+}
+.home-cosmic-hero::before {
+  position: absolute;
+  z-index: -1;
+  inset: -4rem -5vw;
+  background: radial-gradient(
+      ellipse at 25% 25%,
+      rgba(202, 128, 62, 0.13),
+      transparent 35%
+    ),
+    radial-gradient(
+      ellipse at 75% 23%,
+      rgba(56, 152, 154, 0.11),
+      transparent 37%
+    ),
+    url("/cosmic-stars.svg") center top / cover no-repeat;
+  mask-image: linear-gradient(transparent, #000 14%, #000 58%, transparent 86%);
+  opacity: 0.46;
+  content: "";
+  pointer-events: none;
+}
+.home-cosmic-hero .psy-headline {
+  text-shadow: 0 0 28px rgba(121, 211, 147, 0.12);
+}
+.home-cosmic-hero .home-join-cta {
+  box-shadow: 0 0 26px rgba(53, 176, 95, 0.13);
+}
+
+.room-shell--live {
+  background: #030a08 !important;
+  color: #eaf5ea;
+}
+.room-shell--live::before {
+  background: none;
+}
+.room-shell--live .room-header {
+  border-bottom-color: rgba(98, 172, 125, 0.37) !important;
+  background: #06110d;
+  box-shadow: 0 1px 0 rgba(123, 194, 145, 0.1);
+}
+.room-shell--live .room-header h1 {
+  color: #c3f0d2;
+  text-shadow: none;
+}
+.room-shell--live .room-header-toolbar > button,
+.room-shell--live .room-header-toolbar > div > button,
+.room-shell--live .room-header .room-header-leave {
+  border-radius: 2px !important;
+  border-color: rgba(109, 189, 136, 0.44) !important;
+  background: rgba(7, 39, 24, 0.68) !important;
+  color: #c8efd3 !important;
+  box-shadow: none;
+}
+.room-shell--live .room-header .room-header-leave {
+  border-color: rgba(215, 116, 115, 0.55) !important;
+  color: #f0b0ac !important;
+}
+.room-shell--live .room-panel {
+  border-color: rgba(99, 160, 119, 0.32) !important;
+}
+.room-shell--live .room-participants-panel[data-stage-surface="people"] {
+  background: radial-gradient(
+      ellipse at 27% 40%,
+      rgba(147, 75, 37, 0.18),
+      transparent 33%
+    ),
+    radial-gradient(
+      ellipse at 73% 41%,
+      rgba(35, 127, 145, 0.15),
+      transparent 34%
+    ),
+    radial-gradient(ellipse at 50% 96%, rgba(29, 91, 52, 0.1), transparent 53%),
+    #030808;
+}
+.room-shell--live
+  .room-participants-panel[data-stage-surface="people"]::before {
+  background: linear-gradient(rgba(85, 158, 111, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(85, 158, 111, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(transparent 30%, #000);
+}
+.room-shell--live .room-participants-panel[data-stage-surface="people"]::after {
+  background: repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.09) 0,
+      rgba(0, 0, 0, 0.09) 1px,
+      transparent 1px,
+      transparent 4px
+    ),
+    radial-gradient(ellipse at center, transparent 41%, rgba(0, 6, 4, 0.46));
+}
+.room-shell--live .room-participants-panel[data-stage-surface="content"] {
+  background: #050d0a;
+  box-shadow: none;
+}
+.room-shell--live
+  .room-participants-panel[data-stage-surface="content"]::before,
+.room-shell--live
+  .room-participants-panel[data-stage-surface="content"]::after {
+  display: none;
+}
+.room-shell--live .room-cosmos-sky {
+  opacity: 0.55;
+}
+.room-shell--live .room-cosmos-glints i {
+  animation: none;
+  opacity: 0.4;
+}
+.room-shell--live .room-participants-grid > * {
+  --planet-glow: 126, 201, 161;
+}
+.room-shell--live .room-participants-grid > [data-self="true"] {
+  --planet-glow: 223, 166, 100;
+}
+.room-shell--live .participant-card-shell--compact {
+  --planet-glow: 126, 201, 161;
+}
+.room-shell--live .participant-card-shell--compact[data-self="true"] {
+  --planet-glow: 223, 166, 100;
+}
+.room-shell--live .participant-card-shell--full,
+.room-shell--live .participant-card-shell--compact > div {
+  border-radius: 3px !important;
+  border-color: rgba(130, 188, 144, 0.26) !important;
+  border-left-color: rgba(var(--planet-glow), 0.7) !important;
+  background: linear-gradient(
+    90deg,
+    rgba(4, 22, 15, 0.82),
+    rgba(4, 22, 15, 0.37)
+  ) !important;
+  box-shadow: none;
+}
+.room-shell--live .participant-card-shell--full:hover,
+.room-shell--live .participant-card-shell--compact > div:hover {
+  border-color: rgba(153, 219, 174, 0.53) !important;
+  border-left-color: rgba(var(--planet-glow), 0.95) !important;
+  box-shadow: none;
+  transform: none;
+}
+.room-shell--live
+  .participant-card-shell--full:has(
+    .participant-audio-signal[data-speaking="true"]
+  ) {
+  border-color: rgba(var(--planet-glow), 0.6) !important;
+  box-shadow: 0 0 23px rgba(var(--planet-glow), 0.09);
+}
+.room-shell--live
+  .participant-audio-signal[data-speaking="true"]
+  + .participant-avatar::after {
+  animation: none;
+}
+.room-shell--live
+  .room-participants-grid:has(> :nth-child(5))
+  .participant-avatar::before {
+  animation: none;
+}
+.room-shell--live .participant-card__avatar::after {
+  border-color: rgba(var(--planet-glow), 0.22);
+  border-left-color: transparent;
+}
+.room-shell--live .participant-card__avatar::before {
+  opacity: 0.65;
+}
+.room-shell--live .participant-card-shell--full .participant-avatar,
+.room-shell--live .participant-card-shell--full .participant-avatar__planet {
+  width: 118px !important;
+  height: 118px !important;
+}
+.room-shell--live .participant-card-shell--full p {
+  color: #edf5eb;
+}
+.room-shell--live .participant-card__kind {
+  border-radius: 2px;
+  border-color: rgba(128, 188, 146, 0.34);
+  background: rgba(5, 36, 21, 0.6) !important;
+  color: #a9d2b3 !important;
+}
+.room-shell--live .participant-card__self-action,
+.room-shell--live .participant-card__voice-button,
+.room-shell--live .participant-card__task-button--compact {
+  border-radius: 2px !important;
+  border-color: rgba(134, 196, 150, 0.55) !important;
+  background: #0a2116 !important;
+  color: #d1efcf !important;
+  box-shadow: none;
+}
+.room-shell--live .room-participant-strip {
+  border-top-color: rgba(116, 181, 135, 0.31) !important;
+  background: #06110d;
+}
+.room-shell--live .room-reactions button {
+  border-radius: 2px;
+}
+.room-shell--live .room-chat-panel {
+  background: linear-gradient(155deg, rgba(13, 32, 24, 0.58), transparent 48%),
+    #06100d;
+}
+.room-shell--live [data-testid="interaction-tablist"] {
+  border-bottom-color: rgba(99, 160, 119, 0.3);
+  background: rgba(4, 21, 14, 0.8);
+}
+.room-shell--live [data-testid="interaction-tablist"] button[role="tab"] {
+  border-radius: 0;
+  background: transparent;
+  color: #90bfa1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.room-shell--live
+  [data-testid="interaction-tablist"]
+  button[role="tab"][aria-selected="true"] {
+  box-shadow: inset 0 -2px #86dba7;
+  color: #e1f7e4;
+}
+.room-shell--live
+  .room-chat-panel--task
+  [data-testid="interaction-tablist"]
+  button[role="tab"][aria-selected="true"] {
+  box-shadow: inset 0 -2px #e4b477;
+  color: #f4d6aa;
+}
+.room-shell--live [data-testid="task-agent-activity"] {
+  border-bottom-color: rgba(123, 182, 137, 0.28);
+  background: rgba(13, 40, 25, 0.57);
+  color: #b9daba;
+}
+.room-shell--live [data-testid="generated-room-app-card"] {
+  border-bottom-color: rgba(139, 180, 131, 0.32);
+  background: rgba(21, 47, 30, 0.53);
+}
+.room-shell--live
+  [data-testid="generated-room-app-card"]
+  > div
+  > div:first-child {
+  color: #e5c18f;
+}
+.room-shell--live [data-testid="generated-room-app-card"] button {
+  border-color: rgba(147, 204, 148, 0.58);
+  border-radius: 2px;
+  color: #d5f0d1;
+}
+.room-shell--live [data-testid="room-timeline"] {
+  background: transparent;
+}
+.room-shell--live .room-message-bubble {
+  border: 1px solid rgba(117, 167, 135, 0.27);
+  border-radius: 3px;
+  background: rgba(11, 37, 23, 0.65);
+  color: #e8f2e8;
+}
+.room-shell--live .room-message-bubble--self {
+  border-color: rgba(218, 170, 105, 0.42);
+  background: rgba(68, 45, 19, 0.68);
+  color: #f6e8d1;
+}
+.room-shell--live .room-chat-composer {
+  border-top-color: rgba(109, 169, 126, 0.29);
+  background: rgba(4, 18, 12, 0.7);
+}
+.room-shell--live [data-testid="interaction-chat"] textarea {
+  border: 1px solid rgba(121, 177, 130, 0.42);
+  border-radius: 2px;
+  background: #030b07;
+  color: #e9f4e8;
+}
+.room-shell--live [data-testid="interaction-chat"] textarea:focus {
+  border-color: #8addaa;
+}
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="Send message"] {
+  border: 1px solid #9be0ad;
+  border-radius: 2px;
+  background: #80cfa0;
+  color: #06110d;
+}
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="Send message"]
+  svg {
+  color: #06110d;
+}
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="More actions"],
+.room-shell--live
+  [data-testid="interaction-chat"]
+  button[aria-label="Attach a file to this task"] {
+  border: 1px solid rgba(122, 178, 137, 0.48);
+  border-radius: 2px;
+  background: #0c2718;
+  color: #c0e3c3;
+}
+.room-shell--live [data-testid="room-app-host"] {
+  background: #050b09;
+}
+.room-shell--live [data-testid="room-app-host"] > div:first-child {
+  border-bottom-color: rgba(111, 171, 131, 0.36);
+  background: #081910;
+  color: #cce9d1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.room-shell--live [data-testid="room-app-host"] > div:first-child button {
+  border-radius: 2px;
+}
+.room-shell--live [data-testid="room-app-iframe"] {
+  background: #050b09;
+}
+.room-shell--live .room-task-live-view {
+  background: #06100d;
+  color: #e8f3e8;
+}
+.room-shell--live .room-task-live-view button {
+  border-color: rgba(137, 195, 149, 0.63);
+  border-radius: 2px;
+  background: #1c6b3e;
+}
+.room-shell--live .room-task-live-view input {
+  border-color: rgba(125, 178, 137, 0.46);
+  border-radius: 2px;
+  background: #06130b;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) {
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 3px !important;
+  border-color: rgba(142, 196, 153, 0.56) !important;
+  background: #07150e !important;
+  color: #e9f4e9;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.65);
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) h2 {
+  color: #f2ddb6;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) textarea,
+:is(.room-task-dialog, .room-task-dialog-host > form) input,
+:is(.room-task-dialog, .room-task-dialog-host > form) select {
+  border-color: rgba(132, 186, 144, 0.5);
+  border-radius: 2px;
+  background: #020a06;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) textarea:focus,
+:is(.room-task-dialog, .room-task-dialog-host > form) input:focus,
+:is(.room-task-dialog, .room-task-dialog-host > form) select:focus {
+  border-color: #9de1ae;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  button[role="radio"][aria-checked="true"] {
+  border-color: #e0b976;
+  border-radius: 2px;
+  background: rgba(96, 66, 28, 0.34);
+  color: #fae2be;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  button[role="radio"][aria-checked="false"] {
+  border-radius: 2px;
+  border-color: rgba(123, 179, 136, 0.42);
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) button[type="submit"] {
+  border-radius: 2px;
+  background: #75c996;
+  color: #07190d;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  button[type="submit"]:hover:not(:disabled) {
+  background: #99e0ae;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) [role="listbox"] {
+  border-color: rgba(118, 174, 134, 0.47);
+  border-radius: 2px;
+  background: #06120b;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  [role="option"][aria-selected="true"] {
+  background: rgba(98, 165, 112, 0.18);
+  color: #e7f2e3;
+}
+:is(.room-task-dialog, .room-task-dialog-host > form) [role="option"]:hover {
+  background: rgba(97, 151, 103, 0.18);
+}
+
+:is(.room-task-dialog, .room-task-dialog-host > form)
+  [data-testid="task-project-discover"],
+:is(.room-task-dialog, .room-task-dialog-host > form) fieldset:has(legend) {
+  border-color: rgba(123, 179, 136, 0.42);
+}
+
+@media (max-width: 767px) {
+  .room-shell--live .room-header-toolbar > button,
+  .room-shell--live .room-header-toolbar > div > button {
+    min-height: 34px;
+  }
+  .room-shell--live [data-testid="room-mobile-sheet"] {
+    background: #05100b;
+  }
+  .room-shell--live [data-testid="room-mobile-sheet"] > div:first-child {
+    border-color: rgba(104, 176, 127, 0.38);
+    background: #07180f;
+  }
+  .home-cosmic-hero::before {
+    inset: -2rem -1rem;
+    opacity: 0.25;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -699,8 +2241,13 @@ html {
     transition-duration: 0.01ms !important;
   }
 
-  .room-participants-panel::before,
-  .room-participants-panel::after {
+  .room-cosmos-glints i {
     animation: none !important;
+  }
+
+  .participant-avatar::before,
+  .participant-avatar::after {
+    animation: none !important;
+    content: none;
   }
 }

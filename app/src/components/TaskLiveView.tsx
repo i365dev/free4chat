@@ -163,7 +163,7 @@ export default function TaskLiveView({
     <section
       aria-label="Task Live View"
       data-testid="task-live-view"
-      className="flex min-h-0 flex-1 flex-col overflow-auto bg-gray-950 p-4 text-gray-100"
+      className="room-task-live-view flex min-h-0 flex-1 flex-col overflow-auto bg-gray-950 p-4 text-gray-100"
     >
       {renderComponent(
         validation.snapshot.root,
