@@ -421,6 +421,7 @@ type ACPAdapter struct {
 	// silently replace them with session/new.
 	retainedSessions map[string]retainedACPSession
 	idleReapTimer    *time.Timer
+	idleReapHolds    int
 }
 
 // NewACPAdapter creates an adapter bound to one workspace directory. It does
@@ -2154,7 +2155,7 @@ func (a *ACPAdapter) cancelIdleReapLocked() {
 // session map is captured by closeInternalRetaining(true), so this cannot turn a later
 // continuation into a fresh session.
 func (a *ACPAdapter) scheduleIdleReapLocked() {
-	if a.options.IdleReapMs <= 0 || a.closing || a.proc == nil || len(a.activeTurns) != 0 {
+	if a.options.IdleReapMs <= 0 || a.closing || a.proc == nil || len(a.activeTurns) != 0 || a.idleReapHolds != 0 {
 		return
 	}
 	a.cancelIdleReapLocked()
