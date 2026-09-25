@@ -183,10 +183,18 @@ function harness() {
       frames()
         .filter((frame) => frame.type === "task-control-notice")
         .map((frame) => frame.notice),
+    agentFrames: (participantId: string) =>
+      (agentSockets.get(participantId)?.sent ?? []).map((payload) =>
+        JSON.parse(payload)
+      ),
     agentControls: (participantId: string) =>
       (agentSockets.get(participantId)?.sent ?? [])
         .map((payload) => JSON.parse(payload))
         .filter((frame) => frame.type === "task-control"),
+    agentResyncs: (participantId: string) =>
+      (agentSockets.get(participantId)?.sent ?? [])
+        .map((payload) => JSON.parse(payload))
+        .filter((frame) => frame.type === "task-execution-resync"),
     clearAgentFrames: (participantId: string) => {
       const socket = agentSockets.get(participantId)
       if (socket) socket.sent.length = 0
@@ -613,6 +621,345 @@ describe("#421 Task control authority (Fix C)", () => {
     ])
     expect(test.agentControls("agent-a")).toEqual([])
     expect(test.agentControls("agent-b")).toEqual([])
+  })
+})
+
+/**
+ * #480 — the real-Room G4 failure.
+ *
+ * A Human stayed in the Room with a browser WebSocket that never reconnected,
+ * so the browser kept rendering the Running projection it had already received.
+ * The Durable Object, however, is hibernatable: it can be evicted while both the
+ * Human socket and the resident Agent socket stay open, and it comes back with
+ * its MEMORY-ONLY `transientTaskExecutions` map empty.
+ *
+ * The pre-fix Room treated "no authoritative execution entry" as "that turn is
+ * not active", answered `interrupt_turn_finished`, and never wrote a
+ * `task-control` frame — so the Runtime was never asked, Task A never entered
+ * Interrupting, and the long turn simply ran to completion.
+ *
+ * The pre-fix shape is deterministic and was captured on the unfixed source:
+ *
+ *   Room accepts task-interrupt(A, 42)
+ *   -> resident socket receives NOTHING (no task-execution-resync, no control)
+ *   -> Human socket receives {"type":"task-control-notice",
+ *      "notice":"interrupt_turn_finished"}
+ *
+ * which is exactly the real-Room G4 observation (no Interrupting, no
+ * Interrupted, no "Interrupt unavailable", Task A completing normally, Task B
+ * unaffected). It is also the expected state after ~10s of Durable Object
+ * inactivity: the resident's own lease heartbeat is only a 15s backoff hint, so
+ * a 300s Task leaves the Room hibernated and the Human's click is the event that
+ * wakes it.
+ *
+ * These regressions are deterministic: the hibernation is explicit, and the
+ * Runtime's answer is driven by the test instead of by a real browser.
+ */
+describe("#480 hibernated Room: the first exact Task control still reaches the resident", () => {
+  it("B: memory-only execution lost, Human socket kept, NO explicit resync -> exact interrupt N lands", async () => {
+    const test = harness()
+    const agentSocket = test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    await test.publishActivity(
+      "agent-a",
+      `task:${requestId}`,
+      "using_tools",
+      42
+    )
+    expect(test.executions()).toHaveLength(1)
+    test.clearAgentFrames("agent-a")
+
+    // The Durable Object hibernates. The resident socket survives, the local
+    // Harness keeps working, and the browser keeps its own cached Running
+    // projection for turn 42 — which is exactly why the Human can still click.
+    test.simulateHibernation()
+    expect(test.executions()).toEqual([])
+    expect(test.activities()).toEqual([])
+
+    // No `resync`, no reconnect, no explicit reconciliation: the Human's first
+    // real Task control is the interrupt itself.
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+
+    // The Room cannot verify the exact turn from memory, so it asks the ONE
+    // resident that owns the Task to re-state its authoritative execution
+    // instead of guessing, and it does not invent a control yet.
+    expect(test.agentResyncs("agent-a")).toEqual([
+      { type: "task-execution-resync" },
+    ])
+    expect(test.agentControls("agent-a")).toEqual([])
+
+    // The Runtime answers with the SAME authoritative projection.
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+
+    // Only now, with current == the requested turn, is the exact control sent.
+    expect(test.errors()).toEqual([])
+    expect(test.notices()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 42,
+      },
+    ])
+    // The reconciliation frame is a one-shot request, not a poll.
+    expect(test.agentResyncs("agent-a")).toHaveLength(1)
+    expect(agentSocket.sent).toHaveLength(2)
+  })
+
+  it("C: recovery finds a successor turn instead -> the held N never cancels N+1", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    test.clearAgentFrames("agent-a")
+    test.simulateHibernation()
+
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+    expect(test.agentResyncs("agent-a")).toHaveLength(1)
+    expect(test.agentControls("agent-a")).toEqual([])
+
+    // The Task genuinely moved on while the Room had no truth: the authority is
+    // now turn 43.
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 43,
+      phase: "running",
+    })
+
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.errors()).toEqual([])
+    expect(test.notices()).toEqual(["interrupt_turn_finished"])
+
+    // The successor is still fully controllable by its OWN exact turn, so the
+    // held stale click did not consume or poison it.
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 43,
+    })
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 43,
+      },
+    ])
+    // The one-shot reconciliation is never repeated for the fresh click: the
+    // Room now HAS the authoritative turn.
+    expect(test.agentResyncs("agent-a")).toHaveLength(1)
+  })
+
+  it("D: Task B is untouched by Task A's recovery", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    test.connectAgentSocket("agent-b")
+    const requestId = await createTask(test)
+    const otherRequestId = await createTask(test, "agent-b")
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 10,
+      phase: "running",
+    })
+    await test.publishExecution("agent-b", otherRequestId, {
+      currentTurnSequence: 20,
+      phase: "running",
+    })
+    test.clearAgentFrames("agent-a")
+    test.clearAgentFrames("agent-b")
+    test.simulateHibernation()
+
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 10,
+    })
+
+    // Only the clicked Task's own executor is asked.
+    expect(test.agentResyncs("agent-a")).toHaveLength(1)
+    expect(test.agentResyncs("agent-b")).toEqual([])
+    expect(test.agentControls("agent-b")).toEqual([])
+
+    // Both residents re-state; only A receives a control.
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 10,
+      phase: "running",
+    })
+    await test.publishExecution("agent-b", otherRequestId, {
+      currentTurnSequence: 20,
+      phase: "running",
+    })
+
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 10,
+      },
+    ])
+    expect(test.agentControls("agent-b")).toEqual([])
+    expect(test.errors()).toEqual([])
+    expect(test.notices()).toEqual([])
+  })
+
+  it("E: recovery answers with a settled Task -> benign no-op, never a later turn", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    test.clearAgentFrames("agent-a")
+    test.simulateHibernation()
+
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+    expect(test.agentResyncs("agent-a")).toHaveLength(1)
+
+    // The Task finished while the Room was asleep: the resident truthfully
+    // reports no current turn and no queued work.
+    await test.publishExecution("agent-a", requestId, { queuedCount: 0 })
+
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.errors()).toEqual([])
+    expect(test.notices()).toEqual(["interrupt_turn_finished"])
+
+    // A LATER turn of the same Task is never hit by the settled click.
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 77,
+      phase: "running",
+    })
+    expect(test.agentControls("agent-a")).toEqual([])
+  })
+
+  it("F: an unanswered hold expires with a truthful outcome and can never fire later", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    test.clearAgentFrames("agent-a")
+    test.simulateHibernation()
+
+    const clock = vi.spyOn(Date, "now")
+    const startedAt = Date.now()
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+    expect(test.agentResyncs("agent-a")).toHaveLength(1)
+    expect(test.errors()).toEqual([])
+
+    // The resident never answers. The bounded wait is swept by the next Human
+    // event, and the Human is told the truth instead of being left guessing.
+    clock.mockReturnValue(startedAt + 60 * 1000)
+    await test.sendHuman({ type: "resync" })
+    clock.mockRestore()
+
+    expect(test.errors()).toEqual(["task_agent_not_reachable"])
+    expect(test.notices()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([])
+
+    // An answer that arrives after the window cannot resurrect the expired
+    // click: the Human was already told it did not happen.
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    expect(test.agentControls("agent-a")).toEqual([])
+  })
+})
+
+describe("#480 hibernated Room: interrupt & send", () => {
+  it("keeps the instruction durable and still stops the exact turn it names", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    test.clearAgentFrames("agent-a")
+    test.simulateHibernation()
+
+    await test.sendHuman({
+      type: "task-interrupt-and-send",
+      taskRequestId: requestId,
+      turnSequence: 42,
+      text: "stop and do this instead",
+    })
+
+    // The instruction is durable immediately and exactly once — it is never a
+    // gate on the interrupt, and never lost to the reconciliation.
+    expect(instructions(test)).toEqual(["stop and do this instead"])
+    expect(test.agentResyncs("agent-a")).toHaveLength(1)
+    expect(test.agentControls("agent-a")).toEqual([])
+
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 42,
+      },
+    ])
+    expect(test.errors()).toEqual([])
+    expect(test.notices()).toEqual([])
+  })
+
+  it("a settled recovery keeps the queued instruction and reports the benign outcome", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    test.clearAgentFrames("agent-a")
+    test.simulateHibernation()
+
+    await test.sendHuman({
+      type: "task-interrupt-and-send",
+      taskRequestId: requestId,
+      turnSequence: 42,
+      text: "the replacement must survive",
+    })
+    await test.publishExecution("agent-a", requestId, { queuedCount: 0 })
+
+    expect(instructions(test)).toEqual(["the replacement must survive"])
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.errors()).toEqual([])
+    expect(test.notices()).toEqual(["instruction_queued_turn_finished"])
   })
 })
 
