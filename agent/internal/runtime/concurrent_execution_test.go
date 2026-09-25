@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1027,5 +1028,68 @@ func TestScopeSettlementWaitsForAcknowledgementNotJustHarnessIdle(t *testing.T) 
 	waitForScopeSettled(t, rt, adapter, "task:req-A", 1)
 	if got := rt.pendingAddressedSnapshotFor("task:req-A"); len(got) != 0 {
 		t.Fatalf("the settled scope still held unacknowledged triggers: %v", got)
+	}
+}
+
+// TestResidentEventArrivalsRefillFreeLanes proves the production resident
+// stream path schedules later frames into every available lane without the
+// test manually invoking launchTurns. It also pins bounded queueing at the
+// advertised Hermes/Pi capacities.
+func TestResidentEventArrivalsRefillFreeLanes(t *testing.T) {
+	for _, lanes := range []int{2, 4} {
+		t.Run(strconv.Itoa(lanes)+"_lanes", func(t *testing.T) {
+			adapter := newLaneAdapter()
+			client := newExecutionClient()
+			rt, _ := newLaneRuntimeWithClient(t, adapter, crossSessionPolicy(lanes), client, nil)
+			stream := newResidentTestStream()
+			if !rt.setResidentStream(stream) {
+				t.Fatal("could not install resident event stream")
+			}
+			loopDone := make(chan error, 1)
+			go func() { loopDone <- rt.consumeResidentEventStream(stream) }()
+
+			activeScopes := make([]string, 0, lanes)
+			for index := 1; index <= lanes; index++ {
+				requestID := "req-" + strconv.Itoa(index)
+				scope := "task:" + requestID
+				stream.results <- types.WaitResult{
+					Events: []types.RoomEvent{taskRequestEvent(int64(index), scope, requestID, "human-1")},
+					Cursor: int64(index),
+				}
+				waitForRunning(t, adapter, scope)
+				activeScopes = append(activeScopes, scope)
+			}
+
+			queuedID := "req-" + strconv.Itoa(lanes+1)
+			queuedScope := "task:" + queuedID
+			stream.results <- types.WaitResult{
+				Events: []types.RoomEvent{taskRequestEvent(int64(lanes+1), queuedScope, queuedID, "human-1")},
+				Cursor: int64(lanes + 1),
+			}
+			waitForExecution(t, client, queuedID, "bounded queued Task", func(p types.TaskExecutionProjection) bool {
+				return p.Phase == types.TaskExecutionPhaseQueued
+			})
+			if adapter.isRunning(queuedScope) {
+				t.Fatal("work beyond the lane limit started before a lane was free")
+			}
+
+			for _, scope := range activeScopes {
+				adapter.release(scope)
+			}
+			waitForRunning(t, adapter, queuedScope)
+			adapter.release(queuedScope)
+			for _, scope := range append(activeScopes, queuedScope) {
+				waitForScopeSettled(t, rt, adapter, scope, 1)
+			}
+			if peak := adapter.concurrentPeak(); peak != lanes {
+				t.Fatalf("resident frames used %d lanes; expected %d", peak, lanes)
+			}
+			_ = stream.Close()
+			select {
+			case <-loopDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("resident scheduler did not stop after stream close")
+			}
+		})
 	}
 }

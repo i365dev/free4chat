@@ -266,7 +266,9 @@ type ResidentRuntime struct {
 	// turnRetryDelay overrides the delay before retry attempt N (0-based).
 	// Nil uses the shared reconnect back-off; tests override it to drive the
 	// policy deterministically without wall-clock waits.
-	turnRetryDelay func(attempt int) time.Duration
+	turnRetryDelay  func(attempt int) time.Duration
+	turnRetryMu     sync.Mutex
+	turnRetryActive bool
 	// Transcript delivery keeps a per-ACP-session success marker plus a
 	// baseline captured at session/new. The baseline deliberately leaves old
 	// shared context pullable instead of dumping it into a new conversation.
@@ -1092,8 +1094,12 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			return heartbeatErr
 		case <-retrySignals:
 			if r.shouldRetryHumanTaskAcceptance() && !r.isStopped() {
-				r.drainTurnsWithRetryClock()
+				r.mu.Lock()
+				r.drainGeneration++
+				r.mu.Unlock()
+				r.launchTurns()
 			}
+			r.kickResidentTurnRetryClock()
 		case err := <-readErrors:
 			select {
 			case heartbeatErr := <-heartbeatErrors:
@@ -1106,9 +1112,17 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 			return err
 		case <-envelopeReady:
 			if !r.isStopped() {
-				// The reader has already ingested and acknowledged delivery of
-				// this envelope; the loop only runs the serial turn drain.
-				r.drainTurnsWithRetryClock()
+				// The resident envelope is a fresh admission pass, matching the
+				// legacy drain's generation fence without blocking this consumer.
+				r.mu.Lock()
+				r.drainGeneration++
+				r.mu.Unlock()
+				// The reader has already ingested this envelope. Launch what fits
+				// and return to receiving scheduler wakes: waiting for all active
+				// turns here would leave newly accepted work queued even when a
+				// bounded lane is free. Each turn settlement refills lanes too.
+				r.launchTurns()
+				r.kickResidentTurnRetryClock()
 			}
 		}
 	}
@@ -1736,6 +1750,7 @@ func (r *ResidentRuntime) afterTurnSettled() {
 		return
 	}
 	r.launchTurns()
+	r.kickResidentTurnRetryClock()
 	r.mu.Lock()
 	r.turnIdleCond.Broadcast()
 	r.mu.Unlock()

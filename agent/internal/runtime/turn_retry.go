@@ -404,3 +404,47 @@ func (r *ResidentRuntime) runTurnRetryClock() {
 		}
 	}
 }
+
+// kickResidentTurnRetryClock keeps the existing bounded retry clock off the
+// resident stream consumer. There is at most one retry-clock goroutine per
+// Runtime, so while it waits for a due retry or a running lane to settle, the
+// reader/scheduler can still admit later Room frames into other bounded lanes.
+func (r *ResidentRuntime) kickResidentTurnRetryClock() {
+	r.residentMu.Lock()
+	hasResidentStream := r.resident != nil
+	r.residentMu.Unlock()
+	if !hasResidentStream || r.isStopped() {
+		return
+	}
+	r.turnRetryMu.Lock()
+	if r.turnRetryActive {
+		r.turnRetryMu.Unlock()
+		return
+	}
+	r.turnRetryActive = true
+	r.turnRetryMu.Unlock()
+
+	r.loopWG.Add(1)
+	go func() {
+		defer r.loopWG.Done()
+		for {
+			r.runTurnRetryClock()
+			r.turnRetryMu.Lock()
+			r.mu.Lock()
+			pending := false
+			for _, state := range r.turnRetries {
+				if state != nil && state.plan != nil {
+					pending = true
+					break
+				}
+			}
+			r.mu.Unlock()
+			if !pending || r.isStopped() {
+				r.turnRetryActive = false
+				r.turnRetryMu.Unlock()
+				return
+			}
+			r.turnRetryMu.Unlock()
+		}
+	}()
+}
