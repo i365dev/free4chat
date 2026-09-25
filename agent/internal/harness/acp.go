@@ -335,6 +335,11 @@ type retainedACPSession struct {
 	cwd        string
 	scope      string
 	generation int64
+	// loadable records whether the Harness advertised session/load when this
+	// identity was retained. It is what lets a release report "a later ensure
+	// materializes THAT conversation" honestly after the provider process has
+	// been reaped and its negotiated capabilities are gone (#473).
+	loadable bool
 }
 
 // promptBusyError is returned when a turn targets a native session that is
@@ -1000,6 +1005,160 @@ func (a *ACPAdapter) EnsureSession() error {
 // ACP session id or retained conversation.
 func (a *ACPAdapter) EnsureSessionFor(scope string) error {
 	return a.EnsureSessionForCwd(scope, a.workingDir)
+}
+
+// ReleaseSessionFor gives back the live conversation bound to one logical
+// scope while preserving its exact native identity for a later
+// re-materialization (#473). It is the per-scope form of the retention rule
+// ReapIdle applies to every scoped session: the provider process and its
+// in-memory conversations are disposable, the native session id is not.
+//
+// keepIdentity selects whether the exact identity is remembered. Dropping it
+// (keepIdentity=false) is how the Runtime forgets a conversation for good: no
+// stale identity may survive to be resurrected later by an ensure the Runtime
+// no longer expects to continue anything.
+//
+// An identity is only retained when it can actually be materialized again: the
+// conversation must be durable AND the Harness must advertise session/load.
+// The seam's promise is "a later ensure materializes THAT conversation", so a
+// conversation that could only be replaced must report retained=false instead
+// of claiming an exactness the provider cannot deliver.
+//
+// The Room compatibility conversation is never released here: the Runtime has
+// no logical-scope reclamation for it.
+func (a *ACPAdapter) ReleaseSessionFor(scope string, keepIdentity bool) (bool, error) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return false, errors.New("ACP logical scope is empty")
+	}
+	if scope == "room" {
+		return false, errors.New("ACP Room conversation is not a releasable scope")
+	}
+	if len(scope) > types.MaxLogicalScopeLength {
+		return false, errors.New("ACP logical scope is too long")
+	}
+	a.scopedSessionMu.Lock()
+	defer a.scopedSessionMu.Unlock()
+	a.mu.Lock()
+	session := a.sessions[scope]
+	if session == nil || session.sessionID == "" {
+		// No live conversation — a provider process reap may have moved this
+		// scope's exact identity into the retained table. That identity is what
+		// the Runtime is asking about, so report it truthfully: only an identity
+		// the Harness can actually load again counts as retained, and anything
+		// else is dropped here so no stale identity can be resurrected later.
+		existing, held := a.retainedSessions[scope]
+		if keepIdentity && held && existing.sessionID != "" && existing.loadable {
+			a.mu.Unlock()
+			return true, nil
+		}
+		delete(a.retainedSessions, scope)
+		a.mu.Unlock()
+		if held {
+			a.emitDiagnostic("SCOPE_RELEASE", map[string]string{
+				"scope":    scope,
+				"retained": "false",
+				"outcome":  "forgotten",
+			})
+		}
+		return false, nil
+	}
+	if a.activeTurns[session.sessionID] != nil {
+		// The conversation is still executing. Releasing it would drop the
+		// mapping a running prompt is bound to, so the Runtime's reclaim must
+		// skip this scope instead.
+		a.mu.Unlock()
+		return false, errors.New("ACP prompt is already running for this session")
+	}
+	loadable := a.caps != nil && a.caps.LoadSessionPresent
+	retained := keepIdentity && session.durable && loadable
+	evicted := ""
+	if retained {
+		evicted = a.retainSessionLocked(retainedACPSession{
+			sessionID:  session.sessionID,
+			cwd:        a.sessionCwdLocked(session),
+			scope:      scope,
+			generation: session.generation,
+			loadable:   loadable,
+		})
+	} else {
+		// Nothing exact survives, so no stale identity may either.
+		delete(a.retainedSessions, scope)
+	}
+	delete(a.sessions, scope)
+	generation := session.generation
+	a.mu.Unlock()
+	if evicted != "" {
+		a.emitDiagnostic("SESSION_RETAIN_EVICT", map[string]string{"reason": "bound"})
+	}
+	a.emitDiagnostic("SCOPE_RELEASE", map[string]string{
+		"scope":      scope,
+		"retained":   strconv.FormatBool(retained),
+		"generation": strconv.FormatInt(generation, 10),
+	})
+	return retained, nil
+}
+
+// sessionCwdLocked resolves one live session's exact project cwd. Callers must
+// hold a.mu.
+func (a *ACPAdapter) sessionCwdLocked(session *acpSession) string {
+	if session.cwd != "" {
+		return session.cwd
+	}
+	return a.workingDir
+}
+
+// retainSessionLocked remembers one exact native session identity for a later
+// re-materialization, and returns the scope it had to evict ("" when nothing
+// was evicted) so the caller can report it outside this lock. Callers must hold
+// a.mu.
+//
+// The Task-scope part of the retained table is a bounded ceiling, not a policy:
+// the Runtime's own released-scope window (MaxReleasedTaskScopes) plus its live
+// scopes can never exceed MaxRetainedNativeSessions, so in normal operation the
+// Runtime forgets an identity before this eviction can trigger. It exists so
+// that no future caller can turn the table into unbounded state; when it does
+// trigger, the oldest retained Task identity is dropped and reported, so a
+// later ensure creates a new conversation instead of pretending to continue
+// one that is gone.
+//
+// The Room compatibility identity is deliberately outside that ceiling: it is
+// not a Task scope, and evicting it would silently replace the one conversation
+// the Runtime always expects to keep.
+func (a *ACPAdapter) retainSessionLocked(session retainedACPSession) (evicted string) {
+	if a.retainedSessions == nil {
+		a.retainedSessions = make(map[string]retainedACPSession)
+	}
+	if _, replacing := a.retainedSessions[session.scope]; !replacing && session.scope != "room" {
+		if a.retainedTaskSessionCountLocked() >= types.MaxRetainedNativeSessions {
+			for scope := range a.retainedSessions {
+				if scope == "room" {
+					continue
+				}
+				if evicted == "" || scope < evicted {
+					evicted = scope
+				}
+			}
+			if evicted != "" {
+				delete(a.retainedSessions, evicted)
+			}
+		}
+	}
+	a.retainedSessions[session.scope] = session
+	return evicted
+}
+
+// retainedTaskSessionCountLocked counts retained Task identities, excluding
+// the Room compatibility conversation. Callers must hold a.mu.
+func (a *ACPAdapter) retainedTaskSessionCountLocked() int {
+	count := 0
+	for scope, session := range a.retainedSessions {
+		if scope == "room" || session.sessionID == "" {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // EnsureSessionForCwd creates or re-materializes one scoped native session
@@ -2525,17 +2684,23 @@ func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expec
 	a.cancelIdleReapLocked()
 	proc := a.proc
 	writer := a.stdin
+	evictedRetentions := 0
 	if force && retain {
+		loadable := a.caps != nil && a.caps.LoadSessionPresent
 		if a.sessionID != "" && a.roomDurable {
-			a.retainedSessions["room"] = retainedACPSession{sessionID: a.sessionID, cwd: a.workingDir, scope: "room", generation: a.sessionGeneration}
+			a.retainSessionLocked(retainedACPSession{sessionID: a.sessionID, cwd: a.workingDir, scope: "room", generation: a.sessionGeneration, loadable: loadable})
 		}
 		for scope, session := range a.sessions {
 			if session != nil && session.sessionID != "" && session.durable {
-				cwd := session.cwd
-				if cwd == "" {
-					cwd = a.workingDir
+				if a.retainSessionLocked(retainedACPSession{
+					sessionID:  session.sessionID,
+					cwd:        a.sessionCwdLocked(session),
+					scope:      scope,
+					generation: session.generation,
+					loadable:   loadable,
+				}) != "" {
+					evictedRetentions++
 				}
-				a.retainedSessions[scope] = retainedACPSession{sessionID: session.sessionID, cwd: cwd, scope: scope, generation: session.generation}
 			}
 		}
 	} else {
@@ -2572,6 +2737,12 @@ func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expec
 	a.pending = make(map[string]*pendingCall)
 	a.pendingPermissions = make(map[string]*pendingPermission)
 	a.mu.Unlock()
+	for index := 0; index < evictedRetentions; index++ {
+		// The retained-identity ceiling dropped an identity while reaping. It is
+		// unreachable while the Runtime's own released-scope window is the only
+		// other source of retained identities; report it rather than hide it.
+		a.emitDiagnostic("SESSION_RETAIN_EVICT", map[string]string{"reason": "bound"})
+	}
 	for _, cancel := range turnCancels {
 		cancel()
 	}

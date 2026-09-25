@@ -152,7 +152,7 @@ func TestPreparedNewTaskUsesExactSelectedProjectCwd(t *testing.T) {
 		t.Fatalf("selected Harness config must be applied before the first Task prompt: %v", fixture.adapter.recorded())
 	}
 	fixture.rt.mu.Lock()
-	gotCwd := fixture.rt.taskProjectCwds["task:req-new-project-task"]
+	gotCwd, _ := fixture.rt.taskProjectCwdLocked("task:req-new-project-task")
 	fixture.rt.mu.Unlock()
 	if gotCwd != projectCwd {
 		t.Fatalf("Runtime Task identity changed project cwd: got %q want %q", gotCwd, projectCwd)

@@ -119,6 +119,13 @@ func TestStatusProjectsOptionalHarnessSessionDiagnostics(t *testing.T) {
 	}
 }
 
+// liveScopeCount reports how many logical scopes the resident currently holds.
+func (f *adoptionFixture) liveScopeCount() int {
+	f.rt.mu.Lock()
+	defer f.rt.mu.Unlock()
+	return len(f.rt.scopeOrder)
+}
+
 func TestLogicalScopesReuseIsolatedHarnessSessions(t *testing.T) {
 	adapter := &fakeAdapter{name: "pi"}
 	rt := newScopedRuntimeFixture(t, adapter)

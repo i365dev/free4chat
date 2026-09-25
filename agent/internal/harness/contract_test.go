@@ -57,9 +57,12 @@ func TestLegacyAndNilAdaptersAreNotTheFullContract(t *testing.T) {
  * cancel routing are contract properties, not ACP fixture details.
  */
 type fakeSemanticHarness struct {
-	loaded    string
-	cancelled string
-	owner     string
+	loaded          string
+	cancelled       string
+	owner           string
+	released        string
+	keepIdentity    bool
+	retainOnRelease bool
 }
 
 func (f *fakeSemanticHarness) Name() string { return "fake" }
@@ -93,6 +96,14 @@ func (f *fakeSemanticHarness) CancelTurnFor(scope string) error {
 }
 func (f *fakeSemanticHarness) TurnOwnerFor(string) (string, bool) {
 	return f.owner, f.owner != ""
+}
+func (f *fakeSemanticHarness) ReleaseSessionFor(scope string, keepIdentity bool) (bool, error) {
+	f.released = scope
+	f.keepIdentity = keepIdentity
+	if !keepIdentity {
+		return false, nil
+	}
+	return f.retainOnRelease, nil
 }
 func (f *fakeSemanticHarness) ListSessions(ACPSessionListOptions) (ACPSessionPage, error) {
 	return ACPSessionPage{}, nil
@@ -129,5 +140,27 @@ func TestSemanticContractIsExercisableWithoutACP(t *testing.T) {
 	owner, busy := contract.TurnOwnerFor("task:A")
 	if owner != "task:A" || !busy {
 		t.Fatalf("ownership: got %q/%v", owner, busy)
+	}
+
+	// Giving a scope back reports whether its exact native identity survived
+	// the release, so a later ensure can never silently substitute another
+	// conversation for it (#473).
+	fake.retainOnRelease = true
+	retained, err := contract.ReleaseSessionFor("task:A", true)
+	if err != nil || !retained {
+		t.Fatalf("release: got retained=%v err=%v", retained, err)
+	}
+	if fake.released != "task:A" || !fake.keepIdentity {
+		t.Fatalf("release must carry the exact scope and intent, got %q/%v", fake.released, fake.keepIdentity)
+	}
+	fake.retainOnRelease = false
+	if retained, err := contract.ReleaseSessionFor("task:A", true); err != nil || retained {
+		t.Fatalf("a dropped conversation must report retained=false: %v/%v", retained, err)
+	}
+	// Forgetting is explicit: the adapter must not keep an identity the Runtime
+	// has stopped accounting for.
+	fake.retainOnRelease = true
+	if retained, err := contract.ReleaseSessionFor("task:A", false); err != nil || retained {
+		t.Fatalf("a forgotten conversation must report retained=false: %v/%v", retained, err)
 	}
 }

@@ -869,6 +869,26 @@ type fakeAdapter struct {
 	scopedTurnDetails map[string][]string
 	scopedSessionNews map[string][]bool
 	scopedRunHook     func(string)
+	// nextScopedGeneration hands every created or re-materialized scoped
+	// conversation a fresh monotonic ACP generation, so a replaced or retained
+	// conversation can never be mistaken for the generation it replaced.
+	nextScopedGeneration int64
+	// releasedScopes records every scope the Runtime gave back, in order.
+	releasedScopes []string
+	// retainedScopes models a provider whose native conversation identity
+	// survives a release (the Pi session/load path). releaseRetains selects
+	// that behavior; without it a release drops the conversation, which is what
+	// a provider with no loadable native session does.
+	retainedScopes []string
+	releaseRetains bool
+	releaseErr     error
+	// materializedScopes records every scope whose EXACT conversation was
+	// materialized again after a retained release, instead of being created.
+	materializedScopes []string
+	// forgottenScopes records every release that dropped a retained identity
+	// (keepIdentity=false), which is how the Runtime forgets a conversation for
+	// good when its bounded released-scope window moves on.
+	forgottenScopes []string
 }
 
 // adapterRunTurnHook lets individual tests observe the exact enriched turn
@@ -903,10 +923,117 @@ func (a *fakeAdapter) EnsureSessionFor(scope string) error {
 	if a.scopedGenerations == nil {
 		a.scopedGenerations = make(map[string]int64)
 	}
+	if a.consumeRetainedScopeLocked(scope) {
+		// The exact conversation survived a release: materializing it again is
+		// session/load, never session/new. The ACP generation still advances,
+		// exactly like the real adapter's retained path.
+		a.nextScopedGeneration++
+		a.scopedGenerations[scope] = a.nextScopedGeneration
+		a.materializedScopes = append(a.materializedScopes, scope)
+		return nil
+	}
 	if a.scopedGenerations[scope] == 0 {
-		a.scopedGenerations[scope] = int64(len(a.scopedGenerations) + 1)
+		a.nextScopedGeneration++
+		a.scopedGenerations[scope] = a.nextScopedGeneration
 	}
 	return nil
+}
+
+// consumeRetainedScopeLocked reports whether this scope's conversation is
+// waiting to be materialized again. Callers must hold a.mu.
+func (a *fakeAdapter) consumeRetainedScopeLocked(scope string) bool {
+	retained := a.hasRetainedScopeLocked(scope)
+	if retained {
+		a.dropRetainedScopeLocked(scope)
+	}
+	return retained
+}
+
+// hasRetainedScopeLocked reports whether this scope's exact conversation
+// identity is waiting to be materialized again. Callers must hold a.mu.
+func (a *fakeAdapter) hasRetainedScopeLocked(scope string) bool {
+	for _, retained := range a.retainedScopes {
+		if retained == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// ReleaseSessionFor models the adapter's per-scope release (#473): the live
+// conversation is given back, and its exact identity is kept only when this
+// double models a provider that can materialize it again. keepIdentity=false
+// additionally drops an identity the double already retains, which is how the
+// Runtime forgets a conversation for good.
+func (a *fakeAdapter) ReleaseSessionFor(scope string, keepIdentity bool) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.releaseErr != nil {
+		return false, a.releaseErr
+	}
+	a.releasedScopes = append(a.releasedScopes, scope)
+	if !keepIdentity {
+		a.forgottenScopes = append(a.forgottenScopes, scope)
+		delete(a.scopedGenerations, scope)
+		a.dropRetainedScopeLocked(scope)
+		return false, nil
+	}
+	if a.scopedGenerations[scope] == 0 {
+		// Nothing live to give back; an identity retained earlier is the
+		// answer the Runtime is asking for.
+		return a.hasRetainedScopeLocked(scope), nil
+	}
+	delete(a.scopedGenerations, scope)
+	if !a.releaseRetains {
+		a.dropRetainedScopeLocked(scope)
+		return false, nil
+	}
+	a.retainedScopes = append(a.retainedScopes, scope)
+	return true, nil
+}
+
+// dropRetainedScopeLocked forgets one remembered identity. Callers must hold
+// a.mu.
+func (a *fakeAdapter) dropRetainedScopeLocked(scope string) {
+	for index, retained := range a.retainedScopes {
+		if retained != scope {
+			continue
+		}
+		a.retainedScopes = append(a.retainedScopes[:index], a.retainedScopes[index+1:]...)
+		return
+	}
+}
+
+func (a *fakeAdapter) releasedSnapshot() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.releasedScopes...)
+}
+
+func (a *fakeAdapter) retainedSnapshot() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.retainedScopes...)
+}
+
+// hasRetainedScope reports whether this scope's exact conversation identity is
+// waiting to be materialized again after a release.
+func (a *fakeAdapter) hasRetainedScope(scope string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.hasRetainedScopeLocked(scope)
+}
+
+func (a *fakeAdapter) forgottenSnapshot() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.forgottenScopes...)
+}
+
+func (a *fakeAdapter) materializedSnapshot() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.materializedScopes...)
 }
 
 func (a *fakeAdapter) SessionGenerationFor(scope string) int64 {

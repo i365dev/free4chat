@@ -33,6 +33,10 @@ type logicalSessionRef struct {
 	liveTranscriptDeliveredThrough *int64
 	liveTranscriptDeliveryFloor    *int64
 	sourceCursors                  *map[string]int64
+	// rematerializing marks a scope that was seeded from the released-scope
+	// ledger, so its next session edge is the adapter materializing the SAME
+	// retained conversation again rather than a replacement conversation.
+	rematerializing *bool
 }
 
 func normalizeScope(scope string) string {
@@ -95,6 +99,7 @@ func (r *ResidentRuntime) sessionRefLocked(scope string) *logicalSessionRef {
 		liveTranscriptDeliveredThrough: &state.liveTranscriptDeliveredThrough,
 		liveTranscriptDeliveryFloor:    &state.liveTranscriptDeliveryFloor,
 		sourceCursors:                  &state.sourceCursors,
+		rematerializing:                &state.rematerializing,
 	}
 }
 
@@ -116,6 +121,12 @@ func (r *ResidentRuntime) ensureSessionRefLocked(scope string) (*logicalSessionR
 		r.scopedSessions = make(map[string]*logicalSessionState)
 	}
 	state := newLogicalSessionState()
+	// A scope whose conversation the Runtime gave back but can still materialize
+	// exactly resumes that SAME conversation: its delivery knowledge and
+	// session-generation markers are restored, so the next turn is neither
+	// reported as a new conversation nor fed transcripts the conversation
+	// already consumed (#473).
+	r.adoptReleasedConversationLocked(scope, state)
 	r.scopedSessions[scope] = state
 	r.scopeOrder = append(r.scopeOrder, scope)
 	return &logicalSessionRef{
@@ -130,6 +141,7 @@ func (r *ResidentRuntime) ensureSessionRefLocked(scope string) (*logicalSessionR
 		liveTranscriptDeliveredThrough: &state.liveTranscriptDeliveredThrough,
 		liveTranscriptDeliveryFloor:    &state.liveTranscriptDeliveryFloor,
 		sourceCursors:                  &state.sourceCursors,
+		rematerializing:                &state.rematerializing,
 	}, true
 }
 
@@ -227,7 +239,7 @@ func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 		return r.applySessionConfigFallbacks(scope)
 	}
 	r.mu.Lock()
-	projectCwd, projectSelected := r.taskProjectCwds[scope]
+	projectCwd, projectSelected := r.taskProjectCwdLocked(scope)
 	r.mu.Unlock()
 	var ensureErr error
 	if projectSelected {
@@ -261,15 +273,14 @@ func (r *ResidentRuntime) applySessionConfigFallbacks(scope string) error {
 		return nil
 	}
 	r.mu.Lock()
-	selections := cloneNativeControlSelections(r.taskSessionConfig[scope])
+	_, selections := r.taskSessionControlsLocked(scope)
 	r.mu.Unlock()
 	return adapter.ApplySessionConfigFallbacksFor(scope, selections)
 }
 
 func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 	r.mu.Lock()
-	modeID := r.taskSessionModes[scope]
-	configOptions := cloneNativeControlSelections(r.taskSessionConfig[scope])
+	modeID, configOptions := r.taskSessionControlsLocked(scope)
 	r.mu.Unlock()
 	if modeID == "" && len(configOptions) == 0 {
 		return nil
@@ -655,6 +666,23 @@ func (r *ResidentRuntime) observeHarnessSessionFor(scope string, generation, tar
 	}
 	if *ref.observedHarnessGeneration == generation {
 		return *ref.bootstrappedHarnessGeneration != generation
+	}
+	if ref.rematerializing != nil && *ref.rematerializing {
+		// The Runtime gave this scope's exact conversation back and the adapter
+		// has now materialized THAT SAME conversation again: a new ACP session
+		// object (new generation) over retained conversation memory (#473).
+		// Nothing about the conversation restarts, so the Harness is neither
+		// told this is a new session nor sent the bootstrap again, no delivery
+		// knowledge is reset, and already-consumed transcript segments are not
+		// re-injected. Only a conversation whose first Free4Chat turn never
+		// happened still reports a session edge, so its bootstrap is delivered.
+		consumed := *ref.bootstrappedHarnessGeneration == *ref.observedHarnessGeneration
+		*ref.observedHarnessGeneration = generation
+		if consumed {
+			*ref.bootstrappedHarnessGeneration = generation
+		}
+		*ref.rematerializing = false
+		return !consumed
 	}
 	*ref.observedHarnessGeneration = generation
 	if target > 0 {

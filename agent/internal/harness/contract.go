@@ -39,6 +39,13 @@ import "github.com/i365dev/free4chat/agent/internal/types"
  *	  - reports the scope currently executing on the same native
  *	    conversation, without ever exposing a native session id.
  *
+ *	ReleaseSessionFor(scope)
+ *	  - gives back exactly that scope's live conversation;
+ *	  - reports whether the exact native identity survived the release, so a
+ *	    later ensure either materializes that same conversation or a truly new
+ *	    one — never an unstated substitution;
+ *	  - refuses while that conversation is executing a turn.
+ *
  *	ListSessions(options)
  *	  - bounded ACP session discovery only; the provider's wire spelling of
  *	    "no cwd filter" is a provider quirk normalized below this seam.
@@ -69,6 +76,7 @@ type Contract interface {
 	types.ScopedHarnessAdapter
 	types.ScopedProjectHarnessAdapter
 	types.ScopedHarnessSessionControls
+	types.ScopedHarnessReleaser
 	types.ScopedTurnCanceller
 	types.ScopedTurnOwnership
 	SessionHandoff
