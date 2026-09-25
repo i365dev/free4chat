@@ -419,6 +419,13 @@ export default function RoomContent({
   // App reports at most one shared-session milestone per browser Room session.
   const sharedSessionTrackedAppIdsRef = useRef<Set<string>>(new Set())
   const sharedSessionTrackedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
+  // #479 review: a generated App's bundle-revision update remounts its resident
+  // host, which resets the host's own ready/engaged latches. These session-level
+  // sets keyed by appInstanceId keep the generated milestones at one per App per
+  // browser Room session. Curated Apps are untouched: their host latches already
+  // survive, because a curated host is never remounted by a revision change.
+  const mountedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
+  const engagedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
   // The acquisition intent is stable for this Room page, so the App-milestone
   // callbacks can read it without depending on the prop and being re-created.
   const acquisitionPageRef = useRef<string | undefined>(acquisitionPage)
@@ -729,25 +736,32 @@ export default function RoomContent({
       : undefined
   const stageAppVisible = Boolean(visibleRoomApp || visibleGeneratedRoomApp)
 
-  const openGeneratedApp = useCallback(
-    async (publication: GeneratedRoomAppPublication) => {
-      // The generated Task App takes the Stage from any curated selection.
-      // Focus mode is deliberately NOT reset here: this callback also runs on
-      // a state/bundle reconciliation, and a remote or refreshed update must
-      // never drop the local Human out of fullscreen.
-      setExpandedRoomAppId(null)
-      setActiveRoomAppId(null)
-      setActiveGeneratedAppId(publication.appInstanceId)
-      setStageView("screen")
+  /**
+   * Canonical document load/reconcile for ONE generated Task App.
+   *
+   * Deliberately STAGE-NEUTRAL: it never selects, hides, or focuses an App, so
+   * the background reconciliation path (a bundle/state revision change, or a
+   * missed state event) can never steal the Stage from whatever owns it —
+   * curated App, Screen, Live View, or another generated App — and can never
+   * disturb focus mode.
+   *
+   * The outcome is reported so the EXPLICIT open path can decide what a
+   * failure means for the selection it just made. A background reconcile
+   * ignores it entirely.
+   */
+  const loadGeneratedAppDocument = useCallback(
+    async (
+      publication: GeneratedRoomAppPublication
+    ): Promise<"loaded" | "unchanged" | "unavailable" | "unauthorized"> => {
       if (
         generatedAppDocuments[publication.appInstanceId]?.publication
           .bundleRevision === publication.bundleRevision &&
         generatedAppDocuments[publication.appInstanceId]?.publication
           .stateRevision >= publication.stateRevision
       )
-        return
+        return "unchanged"
       const auth = getLocalRoomAuth()
-      if (!auth) return
+      if (!auth) return "unauthorized"
       setGeneratedAppLoading(publication.appInstanceId)
       try {
         const response = await fetch(
@@ -803,14 +817,39 @@ export default function RoomContent({
             [publication.appInstanceId]: reconciled,
           }
         })
+        return "loaded"
       } catch {
-        setActiveGeneratedAppId(null)
+        return "unavailable"
       } finally {
         setGeneratedAppLoading(null)
       }
     },
     [generatedAppDocuments, getLocalRoomAuth]
   )
+
+  /**
+   * Explicit Human navigation: this generated Task App takes the Stage from
+   * any competing surface. Focus mode is deliberately NOT reset here — the
+   * Human may be re-opening the App they are already focused on.
+   */
+  const openGeneratedApp = useCallback(
+    async (publication: GeneratedRoomAppPublication) => {
+      setExpandedRoomAppId(null)
+      setActiveRoomAppId(null)
+      setActiveGeneratedAppId(publication.appInstanceId)
+      setStageView("screen")
+      const result = await loadGeneratedAppDocument(publication)
+      if (result !== "unavailable") return
+      // The App this transition selected cannot be shown. Release it, but
+      // never a different App that has since become the owner.
+      setActiveGeneratedAppId((current) =>
+        current === publication.appInstanceId ? null : current
+      )
+    },
+    [loadGeneratedAppDocument]
+  )
+  // Background reconciliation: keeps a RESIDENT generated App's document in
+  // step with Room truth without touching the Stage owner or focus mode.
   useEffect(() => {
     for (const publication of Object.values(generatedApps)) {
       const document = generatedAppDocuments[publication.appInstanceId]
@@ -820,13 +859,13 @@ export default function RoomContent({
           document.publication.stateRevision < publication.stateRevision) &&
         generatedAppLoading !== publication.appInstanceId
       )
-        void openGeneratedApp(publication)
+        void loadGeneratedAppDocument(publication)
     }
   }, [
     generatedAppDocuments,
     generatedAppLoading,
     generatedApps,
-    openGeneratedApp,
+    loadGeneratedAppDocument,
   ])
   useEffect(
     () =>
@@ -1321,6 +1360,8 @@ export default function RoomContent({
 
   const handleRoomAppReady = useCallback(
     (appId: string) => {
+      // Readiness is per resident host, and shared-session tracking needs every
+      // ready App — including a generated host that just remounted.
       setReadyRoomAppIds((previous) =>
         previous.includes(appId) ? previous : [...previous, appId]
       )
@@ -1336,15 +1377,23 @@ export default function RoomContent({
             acquisitionPageRef.current
           )
         )
-      } else if (appId.startsWith("generated:")) {
-        trackRoomScopedEvent(
-          "RoomAppMounted",
-          withAcquisitionPage(
-            { appSource: "generated" },
-            acquisitionPageRef.current
-          )
-        )
+        return
       }
+      if (!appId.startsWith("generated:")) return
+      // #479 review: a bundle-revision update intentionally remounts the
+      // generated host (its slot key carries the revision), which resets the
+      // host's own ready latch. The milestone belongs to the generated App per
+      // browser Room session, not per bundle revision, so the session-level
+      // latch lives here. Curated Apps keep their existing semantics.
+      if (mountedGeneratedAppIdsRef.current.has(appId)) return
+      mountedGeneratedAppIdsRef.current.add(appId)
+      trackRoomScopedEvent(
+        "RoomAppMounted",
+        withAcquisitionPage(
+          { appSource: "generated" },
+          acquisitionPageRef.current
+        )
+      )
     },
     [trackRoomScopedEvent]
   )
@@ -1353,7 +1402,13 @@ export default function RoomContent({
     (appId: string) => {
       if (process.env.NODE_ENV !== "production") return
       const productionAppId = resolveProductionRoomAppId(appId)
-      if (!productionAppId && !appId.startsWith("generated:")) return
+      if (!productionAppId) {
+        if (!appId.startsWith("generated:")) return
+        // Same remount hole as Mounted above: one engagement milestone per
+        // generated App per browser Room session.
+        if (engagedGeneratedAppIdsRef.current.has(appId)) return
+        engagedGeneratedAppIdsRef.current.add(appId)
+      }
       trackRoomScopedEvent(
         "RoomAppEngaged",
         withAcquisitionPage(

@@ -4288,7 +4288,55 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
        * One Room holding BOTH a curated Room App and a generated Task App —
        * exactly the production shape that painted two Stage hosts at once.
        */
-      function renderBothAppRoom(overrides: Record<string, unknown> = {}) {
+      /** What the canonical generated-app GET currently answers with. */
+      let generatedDocumentResponse: Record<string, unknown> = generatedDocument
+      let generatedFetchCount = 0
+
+      function installGeneratedFetch() {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (input: RequestInfo | URL) => {
+            if (!String(input).includes("generated-app"))
+              return new Response(
+                JSON.stringify(TEST_ROOM_APP_CATALOG_RESPONSE),
+                {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                }
+              )
+            generatedFetchCount += 1
+            const requested =
+              new URL(String(input), "https://room.local").searchParams.get(
+                "appInstanceId"
+              ) ?? ""
+            const response = generatedDocumentResponse as {
+              publication: Record<string, unknown>
+            }
+            return new Response(
+              JSON.stringify({
+                ...response,
+                publication: {
+                  ...response.publication,
+                  appInstanceId: requested,
+                },
+              }),
+              { status: 200 }
+            )
+          })
+        )
+      }
+
+      /**
+       * The hook return for one Room holding a curated App plus the generated
+       * Task App(s). Reusable across rerenders, so a canonical revision bump
+       * can be delivered without churning the subscription identities.
+       */
+      function bothAppHookReturn(
+        overrides: Record<string, unknown> = {},
+        publications: Record<string, unknown> = {
+          [GENERATED_APP_ID]: generatedPublication,
+        }
+      ) {
         generatedStateListeners = []
         const subscribeGeneratedAppState = vi.fn(
           (
@@ -4298,24 +4346,53 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
             return () => undefined
           }
         )
-        vi.stubGlobal(
-          "fetch",
-          vi.fn(async (input: RequestInfo | URL) =>
-            String(input).includes("generated-app")
-              ? new Response(JSON.stringify(generatedDocument), { status: 200 })
-              : new Response(JSON.stringify(TEST_ROOM_APP_CATALOG_RESPONSE), {
-                  status: 200,
-                  headers: { "content-type": "application/json" },
-                })
-          )
-        )
-        return renderAppRoom({
+        return {
+          ...baseHookReturn,
+          connectionStatus: "connected",
+          roomAppsEnabled: true,
+          participants: [localParticipant],
           getLocalRoomAuth: vi.fn(() => roomAuth),
           subscribeGeneratedAppState,
           messages: [taskRequestMessage],
-          generatedApps: { [GENERATED_APP_ID]: generatedPublication },
+          generatedApps: publications,
           ...overrides,
-        })
+        }
+      }
+
+      function renderBothAppRoom(
+        overrides: Record<string, unknown> = {},
+        publications?: Record<string, unknown>
+      ) {
+        generatedFetchCount = 0
+        generatedDocumentResponse = generatedDocument
+        const hookReturn = bothAppHookReturn(overrides, publications)
+        mockUseSfuChatRoom.mockReturnValue(hookReturn)
+        installGeneratedFetch()
+        return render(
+          <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+        )
+      }
+
+      /**
+       * Rerender the SAME Room with an advanced canonical publication — a
+       * bundle or state revision change the client learns from RoomState.
+       */
+      function rerenderWithPublication(
+        view: ReturnType<typeof render>,
+        publicationOverride: Record<string, unknown>,
+        overrides: Record<string, unknown> = {},
+        publications?: Record<string, unknown>
+      ) {
+        const next = publications ?? {
+          [GENERATED_APP_ID]: {
+            ...generatedPublication,
+            ...publicationOverride,
+          },
+        }
+        mockUseSfuChatRoom.mockReturnValue(bothAppHookReturn(overrides, next))
+        view.rerender(
+          <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+        )
       }
 
       const generatedSlot = () =>
@@ -4739,6 +4816,249 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
             ([event]) => event === "RoomAppSharedSession"
           )?.[1]
         ).toEqual({ appSource: "generated", participantsBucket: "2-3" })
+      })
+
+      it("never lets a background generated refresh take the Stage from another surface", async () => {
+        const view = renderBothAppRoom({
+          participants: [localParticipant, remoteScreenShare],
+        })
+        await openGeneratedStage()
+        loadGeneratedApp()
+
+        // Curated App owns the Stage; the generated host is resident + hidden.
+        await selectCuratedApp()
+        expect(
+          visibleStageAppSlots().map((element) => element.dataset.testid)
+        ).toEqual(["room-app-slot-test-app-1"])
+
+        // A canonical state revision advances in the background (this client
+        // missed the state event and reconciles from the canonical GET).
+        generatedDocumentResponse = {
+          ...generatedDocument,
+          publication: { ...generatedPublication, stateRevision: 1 },
+          state: { count: 1 },
+        }
+        rerenderWithPublication(
+          view,
+          { stateRevision: 1 },
+          { participants: [localParticipant, remoteScreenShare] }
+        )
+        await waitFor(() => expect(generatedFetchCount).toBe(2))
+
+        // Stage ownership is untouched by reconciliation.
+        expect(
+          visibleStageAppSlots().map((element) => element.dataset.testid)
+        ).toEqual(["room-app-slot-test-app-1"])
+        expect(generatedSlotHidden()).toBe(true)
+
+        // Screen owns the Stage.
+        fireEvent.click(screen.getByTestId("stage-view-screen"))
+        expect(visibleStageAppSlots()).toHaveLength(0)
+        generatedDocumentResponse = {
+          ...generatedDocument,
+          publication: { ...generatedPublication, stateRevision: 2 },
+          state: { count: 2 },
+        }
+        rerenderWithPublication(
+          view,
+          { stateRevision: 2 },
+          { participants: [localParticipant, remoteScreenShare] }
+        )
+        await waitFor(() => expect(generatedFetchCount).toBe(3))
+        expect(visibleStageAppSlots()).toHaveLength(0)
+        expect(screen.getByTestId("stage-view-screen")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+        view.unmount()
+      })
+
+      it("never lets a background generated refresh take the Stage from a Task Live View", async () => {
+        const view = renderBothAppRoom({
+          taskLiveViews: { "task-live": taskLiveViewSnapshot },
+        })
+        await openGeneratedStage()
+        loadGeneratedApp()
+
+        fireEvent.click(await screen.findByTestId("stage-view-live-view"))
+        expect(visibleStageAppSlots()).toHaveLength(0)
+
+        generatedDocumentResponse = {
+          ...generatedDocument,
+          publication: { ...generatedPublication, stateRevision: 1 },
+          state: { count: 1 },
+        }
+        rerenderWithPublication(
+          view,
+          { stateRevision: 1 },
+          { taskLiveViews: { "task-live": taskLiveViewSnapshot } }
+        )
+        await waitFor(() => expect(generatedFetchCount).toBe(2))
+
+        expect(visibleStageAppSlots()).toHaveLength(0)
+        expect(generatedSlotHidden()).toBe(true)
+        expect(screen.getByTestId("stage-view-live-view")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+        view.unmount()
+      })
+
+      it("never lets one generated App's refresh steal the Stage from another", async () => {
+        const otherAppId = "generated:00000000-0000-4000-8000-0000000000b2"
+        const otherPublication = {
+          ...generatedPublication,
+          appInstanceId: otherAppId,
+          taskRequestId: "task-2",
+          title: "Second Task App",
+        }
+        const publications = {
+          [GENERATED_APP_ID]: generatedPublication,
+          [otherAppId]: otherPublication,
+        }
+        const bothTasks = [
+          taskRequestMessage,
+          {
+            ...taskRequestMessage,
+            sequence: 2,
+            collab: { ...taskRequestMessage.collab!, requestId: "task-2" },
+          },
+        ]
+
+        const view = renderBothAppRoom({ messages: bothTasks }, publications)
+        await openGeneratedStage()
+        loadGeneratedApp()
+
+        // The second generated App takes the Stage and goes fullscreen.
+        fireEvent.click(screen.getByTestId("interaction-tab-task-task-2"))
+        fireEvent.click(await screen.findByTestId("stage-view-generated-app"))
+        await waitFor(() =>
+          expect(
+            screen.getByTestId(`generated-room-app-slot-${otherAppId}`)
+          ).toBeInTheDocument()
+        )
+        const otherSlot = () =>
+          screen.getByTestId(`generated-room-app-slot-${otherAppId}`)
+        fireEvent.click(
+          within(otherSlot()).getByRole("button", { name: "Fullscreen" })
+        )
+        const roomShell = document.querySelector(".room-shell")!
+        expect(roomShell).toHaveAttribute("data-room-app-focus", "true")
+        expect(generatedSlotHidden()).toBe(true)
+
+        // The FIRST App's canonical revision advances while the SECOND owns
+        // the Stage and focus mode.
+        generatedDocumentResponse = {
+          ...generatedDocument,
+          publication: { ...generatedPublication, stateRevision: 1 },
+          state: { count: 1 },
+        }
+        rerenderWithPublication(
+          view,
+          {},
+          { messages: bothTasks },
+          {
+            [GENERATED_APP_ID]: { ...generatedPublication, stateRevision: 1 },
+            [otherAppId]: otherPublication,
+          }
+        )
+        await waitFor(() => expect(generatedFetchCount).toBe(3))
+
+        // Owner and focus mode are unchanged.
+        expect(roomShell).toHaveAttribute("data-room-app-focus", "true")
+        expect(generatedSlotHidden()).toBe(true)
+        expect(
+          within(otherSlot())
+            .getByTestId("room-app-host")
+            .getAttribute("data-layout")
+        ).toBe("fullscreen")
+        expect(
+          visibleStageAppSlots().map((element) => element.dataset.testid)
+        ).toEqual([`generated-room-app-slot-${otherAppId}`])
+        view.unmount()
+      })
+
+      it("keeps generated RoomAppMounted at one per appInstanceId across a bundle-revision remount", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        const view = renderBothAppRoom()
+        await openGeneratedStage()
+        loadGeneratedApp()
+
+        const mounted = () =>
+          analyticsSpy.mock.calls.filter(
+            ([event]) => event === "RoomAppMounted"
+          )
+        expect(mounted()).toHaveLength(1)
+        expect(mounted()[0][1]).toEqual({ appSource: "generated" })
+        const firstIframe = generatedIframe()
+
+        // An Agent publishes a new bundle revision: the resident host is
+        // intentionally remounted, which resets its own ready latch.
+        generatedDocumentResponse = {
+          publication: { ...generatedPublication, bundleRevision: 2 },
+          bundle: { ...generatedBundle, html: "<main>v2</main>" },
+          state: { count: 0 },
+        }
+        rerenderWithPublication(view, { bundleRevision: 2 })
+        await waitFor(() =>
+          expect(
+            screen.getByTestId(`generated-room-app-slot-${GENERATED_APP_ID}`)
+          ).toBeInTheDocument()
+        )
+        expect(generatedIframe()).not.toBe(firstIframe)
+        loadGeneratedApp()
+
+        expect(mounted()).toHaveLength(1)
+        view.unmount()
+      })
+
+      it("keeps generated RoomAppEngaged at one per appInstanceId across a bundle-revision remount", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        const view = renderBothAppRoom()
+        await openGeneratedStage()
+        loadGeneratedApp()
+
+        const engaged = () =>
+          analyticsSpy.mock.calls.filter(
+            ([event]) => event === "RoomAppEngaged"
+          )
+        emitGeneratedState(1, { count: 1 }, "human-local")
+        expect(engaged()).toHaveLength(1)
+
+        // Bundle revision 2 remounts the resident host, clearing its local
+        // engagement latch; the session-level latch must still hold.
+        generatedDocumentResponse = {
+          publication: {
+            ...generatedPublication,
+            bundleRevision: 2,
+            stateRevision: 2,
+          },
+          bundle: { ...generatedBundle, html: "<main>v2</main>" },
+          state: { count: 2 },
+        }
+        rerenderWithPublication(view, {
+          bundleRevision: 2,
+          stateRevision: 2,
+        })
+        await waitFor(() =>
+          expect(
+            screen.getByTestId(`generated-room-app-slot-${GENERATED_APP_ID}`)
+          ).toBeInTheDocument()
+        )
+        loadGeneratedApp()
+        expect(engaged()).toHaveLength(1)
+
+        emitGeneratedState(3, { count: 3 }, "human-local")
+        expect(engaged()).toHaveLength(1)
+
+        // Another Human's change still never counts.
+        emitGeneratedState(4, { count: 4 }, "human-b")
+        expect(engaged()).toHaveLength(1)
+        view.unmount()
       })
     })
     describe("#134 acquisitionPage on Host-owned events", () => {
