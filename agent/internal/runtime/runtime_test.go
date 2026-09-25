@@ -839,8 +839,9 @@ type fakeAdapter struct {
 	turnTargets [][]string
 	// turnResults scripts complete Harness results for lifecycle tests. When
 	// absent, the legacy reply-N/turnTargets behavior stays unchanged.
-	turnResults []types.HarnessTurnResult
-	turnWait    <-chan struct{}
+	turnResults       []types.HarnessTurnResult
+	scopedTurnResults []types.HarnessTurnResult
+	turnWait          <-chan struct{}
 	// scopedTurnWait, when non-nil, blocks the NEXT scoped Harness turn. It is
 	// the scoped equivalent of turnWait and is how a test holds one Task's turn
 	// open while later Tasks are admitted behind it.
@@ -1004,6 +1005,12 @@ func (a *fakeAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, exp
 		err := a.turnErr
 		a.mu.Unlock()
 		return types.HarnessTurnResult{}, err
+	}
+	if len(a.scopedTurnResults) > 0 {
+		result := a.scopedTurnResults[0]
+		a.scopedTurnResults = a.scopedTurnResults[1:]
+		a.mu.Unlock()
+		return result, nil
 	}
 	a.mu.Unlock()
 	return types.HarnessTurnResult{Text: "reply-" + scope}, nil

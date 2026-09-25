@@ -1975,6 +1975,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// any SendText attempt. Confirmed leave hands cleanup to the daemon after
 	// this turn unwinds; rejected/failed intents use fixed truthful text.
 	if r.handleLifecycleIntent(input, result) {
+		r.settleHumanTask(events, "failed", "Agent left before completing the task.")
 		// A lifecycle intent ends this scope's work for this pass, exactly as a
 		// failed turn does: the resident is leaving, so re-launching its head
 		// turn would contradict the intent it just acted on.
@@ -1984,16 +1985,19 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 
 	text := strings.TrimSpace(result.Text)
 	if text == "" {
+		r.settleHumanTask(events, "completed", "Agent completed the task.")
 		return
 	}
 	handle, err := r.requireHandle()
 	if err != nil {
 		r.failTurn(scope, target, "harness", turnFailureSend, started, err, false)
+		r.settleHumanTask(events, "failed", "Agent task failed before completion.")
 		return
 	}
 	sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
 	if err != nil {
 		r.failTurn(scope, target, "send", turnFailureSend, started, err, false)
+		r.settleHumanTask(events, "failed", "Agent task failed before completion.")
 		return
 	}
 	r.mu.Lock()
@@ -2011,15 +2015,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// Task even when a Harness does not issue the separate collab-result CLI
 	// command itself. The Room deduplicates an explicit Harness result that
 	// raced this canonical completion.
-	if request := humanTaskRequestFor(events, r.currentParticipantID()); request != nil {
-		if _, err := r.CollabResult(types.CollabResultArgs{
-			RequestID: request.RequestID,
-			Status:    "completed",
-			Summary:   "Agent completed the task.",
-		}); err != nil {
-			r.log("collab_result_failed", map[string]string{"reason": "task_completion"})
-		}
-	}
+	r.settleHumanTask(events, "completed", "Agent completed the task.")
 	// Voice Reply is additive: speak only after the text reply is
 	// persisted; a nil/unready output keeps the turn text-only.
 	if voiceOutput := r.voiceOutput(); voiceOutput != nil {
@@ -2320,6 +2316,12 @@ func (r *ResidentRuntime) cleanupAfterRoomExpiry() {
 // stream, best-effort cancel any running Harness turn, release the room lease,
 // close the ACP process, and close the client.
 func (r *ResidentRuntime) Stop() {
+	if !r.isStopped() {
+		r.mu.Lock()
+		scopes := append([]string{roomScope}, r.scopeOrder...)
+		r.mu.Unlock()
+		r.failPendingHumanTasks(scopes, "Agent stopped before the task completed.")
+	}
 	r.beginStop("")
 	r.releaseResources()
 	r.loopWG.Wait()

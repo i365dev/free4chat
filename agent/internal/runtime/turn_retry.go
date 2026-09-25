@@ -148,6 +148,9 @@ func (r *ResidentRuntime) failTurn(
 	})
 	if retryable {
 		r.scheduleTurnRetry(scope, target, failureClass, elapsedMs)
+		if r.turnRecoveryClosed(scope, target) {
+			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+		}
 		return
 	}
 	// A permanent, non-retryable Harness failure is deterministic: no retry
@@ -157,6 +160,7 @@ func (r *ResidentRuntime) failTurn(
 	r.mu.Lock()
 	r.closeTurnRecoveryLocked(scope, target)
 	r.mu.Unlock()
+	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 }
 
 // scheduleTurnRetry records one failed Harness turn for the canonical target

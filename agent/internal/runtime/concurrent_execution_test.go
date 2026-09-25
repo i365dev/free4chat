@@ -1093,3 +1093,65 @@ func TestResidentEventArrivalsRefillFreeLanes(t *testing.T) {
 		})
 	}
 }
+
+func TestExactHumanTaskInterruptSettlesOnlyTargetTask(t *testing.T) {
+	adapter := newLaneAdapter()
+	client := newExecutionClient()
+	rt, _ := newLaneRuntimeWithClient(t, adapter, crossSessionPolicy(2), client, nil)
+
+	doneA := startTurn(rt, taskRequestEvent(1, "task:req-A", "req-A", "human-1"))
+	waitForRunning(t, adapter, "task:req-A")
+	doneB := startTurn(rt, taskRequestEvent(2, "task:req-B", "req-B", "human-1"))
+	waitForRunning(t, adapter, "task:req-A", "task:req-B")
+	waitForExecution(t, client, "req-A", "running Task A", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 1 && p.Phase == types.TaskExecutionPhaseRunning
+	})
+	waitForExecution(t, client, "req-B", "running Task B", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 2 && p.Phase == types.TaskExecutionPhaseRunning
+	})
+
+	rt.applyResidentTaskControl(interruptControl("req-A", 1))
+	waitForExecution(t, client, "req-A", "interrupting Task A", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 1 && p.Phase == types.TaskExecutionPhaseInterrupting
+	})
+	adapter.release("task:req-A")
+	waitForScopeSettled(t, rt, adapter, "task:req-A", 1)
+	interrupted := waitForExecution(t, client, "req-A", "interrupted Task A", func(p types.TaskExecutionProjection) bool {
+		return p.LastOutcome == types.TaskExecutionOutcomeInterrupted
+	})
+	if interrupted.CurrentTurnSequence != 0 || adapter.isRunning("task:req-A") {
+		t.Fatalf("Task A retained active execution after interrupt: %+v", interrupted)
+	}
+	if !adapter.isRunning("task:req-B") {
+		t.Fatal("interrupting Task A stopped Task B")
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-A" || results[0].Status != "failed" {
+		t.Fatalf("only interrupted Task A should have a failed terminal result: %+v", results)
+	}
+
+	adapter.release("task:req-B")
+	waitForDone(t, doneA, "Task A drain to finish after Task B")
+	waitForDone(t, doneB, "Task B successful settlement")
+	results = client.fakeClient.snapshotCollabResults()
+	if len(results) != 2 || results[1].RequestID != "req-B" || results[1].Status != "completed" {
+		t.Fatalf("Task B should settle independently as completed: %+v", results)
+	}
+}
+
+func TestGracefulRuntimeStopSettlesOwnedWorkingTask(t *testing.T) {
+	adapter := newLaneAdapter()
+	client := newExecutionClient()
+	rt, _ := newLaneRuntimeWithClient(t, adapter, crossSessionPolicy(2), client, nil)
+	_ = startTurn(rt, taskRequestEvent(1, "task:req-stop", "req-stop", "human-1"))
+	waitForRunning(t, adapter, "task:req-stop")
+
+	rt.Stop()
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-stop" || results[0].Status != "failed" {
+		t.Fatalf("Runtime stop left its accepted Task without a terminal failure: %+v", results)
+	}
+	if !rt.isStopped() || rt.activeTurnCount() != 0 {
+		t.Fatalf("Runtime stop left phantom active ownership: stopped=%v active=%d", rt.isStopped(), rt.activeTurnCount())
+	}
+}

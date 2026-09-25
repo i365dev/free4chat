@@ -600,3 +600,87 @@ func TestTaskExecutionRealTurnSettlementIsTruthful(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptySuccessfulHumanTaskPublishesCompletedLifecycle(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{
+		name:              "pi",
+		scopedTurnResults: []types.HarnessTurnResult{{Text: ""}},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "empty-task-result",
+		RoomID:     "room-empty-task-result",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-empty", "req-empty", "human-1")), "empty successful Task turn")
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-empty" || results[0].Status != "completed" {
+		t.Fatalf("an empty but successful final turn must settle its Human Task: %+v", results)
+	}
+}
+
+func TestFinalHarnessFailureSettlesHumanTaskAsFailed(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "failed-task-result",
+		RoomID:     "room-failed-task-result",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+	rt.acceptEvent(taskRequestEvent(1, "task:req-failed", "req-failed", "human-1"))
+	rt.failTurn("task:req-failed", 1, "harness", turnFailureOther, time.Now(), errors.New("final Harness failure"), false)
+
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-failed" || results[0].Status != "failed" {
+		t.Fatalf("a final Harness failure must settle its Human Task: %+v", results)
+	}
+}
+
+func TestExecutorLossSettlesCurrentHumanTaskAsFailed(t *testing.T) {
+	client := newExecutionClient()
+	gate := make(chan struct{})
+	adapter := &fakeAdapter{name: "pi", scopedTurnWait: gate}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "executor-loss-task",
+		RoomID:     "room-executor-loss-task",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	done := startTurn(rt, taskRequestEvent(1, "task:req-lost", "req-lost", "human-1"))
+	waitForActiveScope(t, rt, "task:req-lost")
+	adapter.fireFailure(errors.New("provider process exited"))
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-lost" || results[0].Status != "failed" {
+		t.Fatalf("executor loss left its active Task without a terminal result: %+v", results)
+	}
+	close(gate)
+	waitForDone(t, done, "executor loss turn cleanup")
+}
