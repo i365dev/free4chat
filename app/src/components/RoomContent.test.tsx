@@ -4223,6 +4223,524 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       )
     })
 
+    describe("#475 generated Task App Stage parity", () => {
+      /** The canonical Room generation id the hook projects in RoomState. */
+      const STAGE_ANALYTICS_ROOM_ID = "3f7c1c2e-9a4b-4d5e-8f01-2b6c7d8e9f10"
+      const GENERATED_APP_ID = "generated:00000000-0000-4000-8000-0000000000a1"
+      const generatedPublication = {
+        appInstanceId: GENERATED_APP_ID,
+        taskRequestId: "task-live",
+        title: "Shared Counter",
+        bundleBytes: 512,
+        bundleRevision: 1,
+        stateRevision: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      }
+      const generatedBundle = {
+        version: 1 as const,
+        manifest: { title: "Shared Counter", networkOrigins: [] as [] },
+        html: "<main>count</main>",
+        css: "main{}",
+        js: "",
+        initialState: { count: 0 },
+      }
+      const generatedDocument = {
+        publication: generatedPublication,
+        bundle: generatedBundle,
+        state: { count: 0 },
+      }
+      const roomAuth = {
+        roomId: "test-room",
+        participantId: "human-local",
+        token: "token",
+      }
+
+      /** Every generated-state listener, so both RoomContent and the host see it. */
+      let generatedStateListeners: Array<
+        (message: {
+          appInstanceId: string
+          revision: number
+          state: Record<string, unknown>
+          sourceParticipantId?: string
+        }) => void
+      > = []
+
+      function emitGeneratedState(
+        revision: number,
+        state: Record<string, unknown>,
+        sourceParticipantId?: string
+      ) {
+        act(() => {
+          for (const listener of generatedStateListeners)
+            listener({
+              appInstanceId: GENERATED_APP_ID,
+              revision,
+              state,
+              ...(sourceParticipantId === undefined
+                ? {}
+                : { sourceParticipantId }),
+            })
+        })
+      }
+
+      /**
+       * One Room holding BOTH a curated Room App and a generated Task App —
+       * exactly the production shape that painted two Stage hosts at once.
+       */
+      function renderBothAppRoom(overrides: Record<string, unknown> = {}) {
+        generatedStateListeners = []
+        const subscribeGeneratedAppState = vi.fn(
+          (
+            listener: (typeof generatedStateListeners)[number]
+          ): (() => void) => {
+            generatedStateListeners.push(listener)
+            return () => undefined
+          }
+        )
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async (input: RequestInfo | URL) =>
+            String(input).includes("generated-app")
+              ? new Response(JSON.stringify(generatedDocument), { status: 200 })
+              : new Response(JSON.stringify(TEST_ROOM_APP_CATALOG_RESPONSE), {
+                  status: 200,
+                  headers: { "content-type": "application/json" },
+                })
+          )
+        )
+        return renderAppRoom({
+          getLocalRoomAuth: vi.fn(() => roomAuth),
+          subscribeGeneratedAppState,
+          messages: [taskRequestMessage],
+          generatedApps: { [GENERATED_APP_ID]: generatedPublication },
+          ...overrides,
+        })
+      }
+
+      const generatedSlot = () =>
+        screen.getByTestId(`generated-room-app-slot-${GENERATED_APP_ID}`)
+      const generatedSlotHidden = () =>
+        generatedSlot().className.includes("hidden")
+      const generatedIframe = () =>
+        within(generatedSlot()).getByTestId(
+          "room-app-iframe"
+        ) as HTMLIFrameElement
+      const generatedHost = () =>
+        within(generatedSlot()).getByTestId("room-app-host")
+
+      /** Opens the generated Task App through the real product path. */
+      async function openGeneratedStage() {
+        // The catalog loads asynchronously in production mode before the Stage
+        // switcher exists at all.
+        await screen.findByTestId("stage-apps-launcher")
+        fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+        fireEvent.click(await screen.findByTestId("stage-view-generated-app"))
+        await waitFor(() =>
+          expect(
+            screen.getByTestId(`generated-room-app-slot-${GENERATED_APP_ID}`)
+          ).toBeInTheDocument()
+        )
+      }
+
+      /**
+       * Loads the generated host's iframe and answers its bootstrap with the
+       * generated app instance id (a curated `roomAppInstanceId` would be a
+       * different identity and would never make this host ready).
+       */
+      function loadGeneratedApp() {
+        const frameWindow = loadAppIframe(generatedIframe())
+        const port = channels.at(-1)!.port1
+        const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+        act(() => {
+          port.emit({
+            type: "ready",
+            appInstanceId: GENERATED_APP_ID,
+            handshakeToken: bootstrap.handshakeToken,
+          })
+        })
+        return { frameWindow, port }
+      }
+
+      /** Selects the curated App through the real Stage strip/launcher path. */
+      async function selectCuratedApp(appId = "test-app-1") {
+        await screen.findByTestId("stage-apps-launcher")
+        openAppInLauncher(screen, appId)
+        await waitFor(() => expect(slotHidden(appId)).toBe(false))
+      }
+
+      /**
+       * DOM layout truth: every Stage App slot that is NOT display:none and
+       * NOT inert. Vertical stacking means this is > 1.
+       */
+      function visibleStageAppSlots(): HTMLElement[] {
+        return screen
+          .queryAllByTestId(/^(room-app-slot-|generated-room-app-slot-)/)
+          .filter(
+            (element) =>
+              !element.className.includes("hidden") &&
+              element.getAttribute("aria-hidden") !== "true" &&
+              element.getAttribute("inert") !== "true"
+          )
+      }
+
+      it("keeps exactly ONE Stage App visible across curated, generated, screen and live view", async () => {
+        renderBothAppRoom()
+
+        // Curated App owns the Stage.
+        await selectCuratedApp()
+        expect(
+          visibleStageAppSlots().map((element) => element.dataset.testid)
+        ).toEqual(["room-app-slot-test-app-1"])
+
+        // Generated Task App takes it; the curated host stays resident but hidden.
+        await openGeneratedStage()
+        expect(generatedSlotHidden()).toBe(false)
+        expect(slotHidden("test-app-1")).toBe(true)
+        expect(
+          visibleStageAppSlots().map((element) => element.dataset.testid)
+        ).toEqual([`generated-room-app-slot-${GENERATED_APP_ID}`])
+        // Resident, never destroyed.
+        expect(slotIframe("test-app-1")).toBeInTheDocument()
+
+        // Back to curated: the generated resident host hides; the curated one
+        // is shown again without a new iframe.
+        const curatedIframe = slotIframe("test-app-1")
+        await selectCuratedApp()
+        expect(generatedSlotHidden()).toBe(true)
+        expect(
+          visibleStageAppSlots().map((element) => element.dataset.testid)
+        ).toEqual(["room-app-slot-test-app-1"])
+        expect(slotIframe("test-app-1")).toBe(curatedIframe)
+
+        // Generated again.
+        await openGeneratedStage()
+        expect(generatedSlotHidden()).toBe(false)
+        expect(slotHidden("test-app-1")).toBe(true)
+        expect(visibleStageAppSlots()).toHaveLength(1)
+      })
+
+      it("hides the generated host when Screen becomes the Stage surface", async () => {
+        renderBothAppRoom({
+          participants: [localParticipant, remoteScreenShare],
+        })
+        await openGeneratedStage()
+        expect(generatedSlotHidden()).toBe(false)
+
+        fireEvent.click(screen.getByTestId("stage-view-screen"))
+
+        expect(generatedSlotHidden()).toBe(true)
+        expect(visibleStageAppSlots()).toHaveLength(0)
+        expect(screen.getByTestId("stage-view-screen")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      })
+
+      it("hides the generated host when the Task Live View becomes the Stage surface", async () => {
+        renderBothAppRoom({
+          taskLiveViews: { "task-live": taskLiveViewSnapshot },
+        })
+        await openGeneratedStage()
+        expect(generatedSlotHidden()).toBe(false)
+
+        fireEvent.click(await screen.findByTestId("stage-view-live-view"))
+
+        expect(generatedSlotHidden()).toBe(true)
+        expect(visibleStageAppSlots()).toHaveLength(0)
+        expect(screen.getByTestId("stage-view-live-view")).toHaveAttribute(
+          "aria-pressed",
+          "true"
+        )
+      })
+
+      it("keeps the resident curated iframe and MessagePort across generated navigation", async () => {
+        renderBothAppRoom()
+        await selectCuratedApp()
+        const iframe = slotIframe("test-app-1")
+        completeHandshake(
+          loadAppIframe(iframe),
+          "test-app-1",
+          channels[0].port1
+        )
+        const port = channels[0].port1
+
+        await openGeneratedStage()
+        await selectCuratedApp()
+
+        expect(slotIframe("test-app-1")).toBe(iframe)
+        expect(channels[0].port1).toBe(port)
+        expect(port.close).not.toHaveBeenCalled()
+        // The curated host is still reachable and still bound to its bridge.
+        expect(slotHost("test-app-1")).toBeInTheDocument()
+      })
+
+      it("keeps the resident generated iframe across curated navigation", async () => {
+        renderBothAppRoom()
+        await openGeneratedStage()
+        const iframe = generatedIframe()
+        const { port } = loadGeneratedApp()
+
+        await selectCuratedApp()
+        expect(generatedIframe()).toBe(iframe)
+        expect(port.close).not.toHaveBeenCalled()
+      })
+
+      it("gives a generated Task App working fullscreen with the shared Room focus contract", async () => {
+        const view = renderBothAppRoom()
+        await openGeneratedStage()
+        const iframe = generatedIframe()
+        loadGeneratedApp()
+        const roomShell = document.querySelector(".room-shell")!
+        const roomHeader = screen
+          .getByTestId("room-header-identity")
+          .closest("header")
+        const chatPanel = screen
+          .getByTestId("interaction-chat")
+          .closest(".room-chat-panel")
+        expect(generatedHost()).toHaveAttribute("data-layout", "stage")
+
+        fireEvent.click(
+          within(generatedSlot()).getByRole("button", { name: "Fullscreen" })
+        )
+
+        // Room-level focus mode, identical to a fullscreen curated App.
+        expect(roomShell).toHaveAttribute("data-room-app-focus", "true")
+        expect(generatedHost()).toHaveAttribute("data-layout", "fullscreen")
+        expect(generatedHost()).toHaveClass("room-app-host--fullscreen")
+        expect(roomHeader).not.toBeVisible()
+        expect(roomHeader).toHaveAttribute("inert")
+        expect(screen.getByTestId("stage-switcher")).not.toBeVisible()
+        expect(screen.getByTestId("stage-switcher")).toHaveAttribute("inert")
+        expect(screen.getByTestId("room-stage")).toHaveStyle({
+          width: "100%",
+        })
+        expect(chatPanel).not.toBeVisible()
+        expect(chatPanel).toHaveAttribute("inert")
+        expect(
+          screen.getByTestId("room-mic-control-fullscreen")
+        ).toBeInTheDocument()
+        // Focus mode never replaces the resident host.
+        expect(generatedIframe()).toBe(iframe)
+
+        // Exit fullscreen restores the ordinary split with the same host.
+        fireEvent.click(
+          within(generatedSlot()).getByRole("button", {
+            name: "Exit fullscreen",
+          })
+        )
+        expect(roomShell).not.toHaveAttribute("data-room-app-focus")
+        expect(generatedHost()).toHaveAttribute("data-layout", "stage")
+        expect(generatedIframe()).toBe(iframe)
+        expect(screen.getByTestId("stage-switcher")).not.toHaveAttribute(
+          "hidden"
+        )
+        view.unmount()
+      })
+
+      it("exits generated fullscreen with Escape", async () => {
+        renderBothAppRoom()
+        await openGeneratedStage()
+        const roomShell = document.querySelector(".room-shell")!
+
+        fireEvent.click(
+          within(generatedSlot()).getByRole("button", { name: "Fullscreen" })
+        )
+        expect(roomShell).toHaveAttribute("data-room-app-focus", "true")
+
+        act(() => {
+          fireEvent.keyDown(window, { key: "Escape" })
+        })
+        expect(roomShell).not.toHaveAttribute("data-room-app-focus")
+        expect(generatedSlotHidden()).toBe(false)
+      })
+
+      it("exits generated fullscreen safely when another Stage surface is selected", async () => {
+        renderBothAppRoom()
+        await openGeneratedStage()
+        const roomShell = document.querySelector(".room-shell")!
+        fireEvent.click(
+          within(generatedSlot()).getByRole("button", { name: "Fullscreen" })
+        )
+        expect(roomShell).toHaveAttribute("data-room-app-focus", "true")
+
+        await selectCuratedApp()
+
+        expect(roomShell).not.toHaveAttribute("data-room-app-focus")
+        expect(slotHidden("test-app-1")).toBe(false)
+        expect(generatedSlotHidden()).toBe(true)
+        expect(
+          visibleStageAppSlots().map((element) => element.dataset.testid)
+        ).toEqual(["room-app-slot-test-app-1"])
+      })
+
+      it("exits generated fullscreen when its own host is closed", async () => {
+        renderBothAppRoom()
+        await openGeneratedStage()
+        const roomShell = document.querySelector(".room-shell")!
+        fireEvent.click(
+          within(generatedSlot()).getByRole("button", { name: "Fullscreen" })
+        )
+        expect(roomShell).toHaveAttribute("data-room-app-focus", "true")
+
+        fireEvent.click(
+          within(generatedSlot()).getByRole("button", { name: "Close" })
+        )
+
+        expect(roomShell).not.toHaveAttribute("data-room-app-focus")
+        expect(generatedSlotHidden()).toBe(true)
+      })
+
+      it("reports generated engagement only for this browser's accepted App interaction", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        renderBothAppRoom({
+          analyticsRoomId: STAGE_ANALYTICS_ROOM_ID,
+        })
+        await openGeneratedStage()
+        loadGeneratedApp()
+
+        const engaged = () =>
+          analyticsSpy.mock.calls.filter(
+            ([event]) => event === "RoomAppEngaged"
+          )
+        // A mount, a ready handshake and hydration are not engagement.
+        expect(engaged()).toHaveLength(0)
+
+        // Another Human's accepted change is not THIS browser's engagement.
+        emitGeneratedState(1, { count: 1 }, "human-b")
+        expect(engaged()).toHaveLength(0)
+
+        // A revision-less reconciliation carries no source at all.
+        emitGeneratedState(2, { count: 2 })
+        expect(engaged()).toHaveLength(0)
+
+        // This Human's own accepted mutation is the engagement boundary.
+        emitGeneratedState(3, { count: 3 }, "human-local")
+        expect(engaged()).toHaveLength(1)
+        expect(engaged()[0][1]).toEqual({
+          appSource: "generated",
+          participantsBucket: "1",
+          analyticsRoomId: STAGE_ANALYTICS_ROOM_ID,
+        })
+
+        // Further local interactions never re-report for this resident App.
+        emitGeneratedState(4, { count: 4 }, "human-local")
+        emitGeneratedState(5, { count: 5 }, "human-local")
+        expect(engaged()).toHaveLength(1)
+
+        // No instance id, Task id, Room name, state payload, revision, or
+        // participant id ever reaches analytics.
+        const serialized = JSON.stringify(engaged())
+        expect(serialized).not.toContain(GENERATED_APP_ID)
+        expect(serialized).not.toContain("task-live")
+        expect(serialized).not.toContain("test-room")
+        expect(serialized).not.toContain("count")
+        expect(serialized).not.toContain("human-local")
+        expect(serialized).not.toContain("human-b")
+        expect(Object.keys(engaged()[0][1]).sort()).toEqual([
+          "analyticsRoomId",
+          "appSource",
+          "participantsBucket",
+        ])
+      })
+
+      it("keeps the curated engagement milestone and the generated family distinct", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        renderBothAppRoom()
+
+        // Curated App: the existing `milestone: engaged` bridge still works.
+        await selectCuratedApp()
+        const curatedIframe = slotIframe("test-app-1")
+        completeHandshake(
+          loadAppIframe(curatedIframe),
+          "test-app-1",
+          channels[0].port1
+        )
+        act(() => {
+          channels[0].port1.emit({
+            type: "milestone",
+            appInstanceId: roomAppInstanceId("test-room", "test-app-1"),
+            milestone: "engaged",
+          })
+        })
+        const engagedCalls = analyticsSpy.mock.calls.filter(
+          ([event]) => event === "RoomAppEngaged"
+        )
+        expect(engagedCalls).toHaveLength(1)
+        expect(engagedCalls[0][1]).toMatchObject({ app: "test-app-1" })
+
+        // The generated App reports through the SAME event family, never a
+        // parallel taxonomy.
+        await openGeneratedStage()
+        loadGeneratedApp()
+        emitGeneratedState(1, { count: 1 }, "human-local")
+
+        const all = analyticsSpy.mock.calls.filter(
+          ([event]) => event === "RoomAppEngaged"
+        )
+        expect(all).toHaveLength(2)
+        expect(all[1][1]).toMatchObject({ appSource: "generated" })
+        const names = new Set(analyticsSpy.mock.calls.map(([event]) => event))
+        for (const forbidden of [
+          "GeneratedAppEngaged",
+          "TaskAppClicked",
+          "GeneratedStateChanged",
+        ])
+          expect(names.has(forbidden)).toBe(false)
+      })
+
+      it("keeps the generated shared-session milestone unchanged", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+        analyticsSpy.mockClear()
+        const remoteHuman = {
+          peerId: "human-b",
+          name: "Bob",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        }
+        const view = renderBothAppRoom()
+        await openGeneratedStage()
+        loadGeneratedApp()
+        expect(
+          analyticsSpy.mock.calls.filter(
+            ([event]) => event === "RoomAppSharedSession"
+          )
+        ).toHaveLength(0)
+
+        mockUseSfuChatRoom.mockReturnValue({
+          ...baseHookReturn,
+          connectionStatus: "connected",
+          roomAppsEnabled: true,
+          getLocalRoomAuth: vi.fn(() => roomAuth),
+          subscribeGeneratedState: vi.fn(() => () => undefined),
+          participants: [localParticipant, remoteHuman],
+          messages: [taskRequestMessage],
+          generatedApps: { [GENERATED_APP_ID]: generatedPublication },
+        })
+        view.rerender(
+          <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+        )
+
+        await waitFor(() =>
+          expect(
+            analyticsSpy.mock.calls.filter(
+              ([event]) => event === "RoomAppSharedSession"
+            )
+          ).toHaveLength(1)
+        )
+        expect(
+          analyticsSpy.mock.calls.find(
+            ([event]) => event === "RoomAppSharedSession"
+          )?.[1]
+        ).toEqual({ appSource: "generated", participantsBucket: "2-3" })
+      })
+    })
     describe("#134 acquisitionPage on Host-owned events", () => {
       /** Render the same Room with the acquisition context the Room page resolved. */
       function renderAcquiredRoom(
@@ -4751,7 +5269,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           state: Record<string, unknown>
         }) => void)
       | undefined
-    const subscribeGeneratedState = vi.fn(
+    const subscribeGeneratedAppState = vi.fn(
       (listener: typeof generatedStateListener) => {
         generatedStateListener = listener
         return () => undefined
@@ -4767,7 +5285,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       connectionStatus: "connected",
       roomAppsEnabled: true,
       getLocalRoomAuth: vi.fn(() => auth),
-      subscribeGeneratedState,
+      subscribeGeneratedAppState,
       participants: [
         {
           peerId: "local-peer",
@@ -4825,7 +5343,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       connectionStatus: "connected",
       roomAppsEnabled: true,
       getLocalRoomAuth: vi.fn(() => auth),
-      subscribeGeneratedState,
+      subscribeGeneratedAppState,
       participants: [
         {
           peerId: "local-peer",

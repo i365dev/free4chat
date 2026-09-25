@@ -297,6 +297,171 @@ describe("RoomAppHost", () => {
     expect(send).not.toHaveBeenCalled()
   })
 
+  it("counts only THIS Human's accepted generated-state update as engagement", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    let generatedStateListener:
+      | ((message: {
+          appInstanceId: string
+          revision: number
+          state: Record<string, unknown>
+          sourceParticipantId?: string
+        }) => void)
+      | undefined
+    const subscribeGeneratedState = vi.fn(
+      (listener: typeof generatedStateListener) => {
+        generatedStateListener = listener
+        return () => undefined
+      }
+    )
+    const onEngaged = vi.fn()
+    render(
+      <RoomAppHost
+        app={app}
+        appInstanceId="test-app:room"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={() => true}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={() => "sent" as const}
+        subscribeGeneratedState={subscribeGeneratedState}
+        onReady={() => undefined}
+        onEngaged={onEngaged}
+        onClose={() => undefined}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const port = lastChannel!.port1
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+
+    // Mount, bootstrap, hydration and another Human's change are NOT this
+    // browser's engagement.
+    act(() => {
+      port.emit({
+        type: "ready",
+        appInstanceId: "test-app:room",
+        handshakeToken: bootstrap.handshakeToken,
+      })
+    })
+    expect(onEngaged).not.toHaveBeenCalled()
+
+    act(() => {
+      generatedStateListener?.({
+        appInstanceId: "test-app:room",
+        revision: 1,
+        state: { count: 1 },
+        sourceParticipantId: "human-b",
+      })
+    })
+    expect(onEngaged).not.toHaveBeenCalled()
+
+    // A revision-less reconciliation (initial GET / reconnect) carries no
+    // source participant at all and must stay silent.
+    act(() => {
+      generatedStateListener?.({
+        appInstanceId: "test-app:room",
+        revision: 2,
+        state: { count: 2 },
+      })
+    })
+    expect(onEngaged).not.toHaveBeenCalled()
+
+    // This Human's own update reached the Room authority, was persisted, and
+    // was broadcast back with this participant as its source.
+    act(() => {
+      generatedStateListener?.({
+        appInstanceId: "test-app:room",
+        revision: 3,
+        state: { count: 3 },
+        sourceParticipantId: "human-a",
+      })
+    })
+    expect(onEngaged).toHaveBeenCalledTimes(1)
+    expect(onEngaged).toHaveBeenCalledWith("test-app")
+
+    // Further local interactions never re-report for this resident App.
+    act(() => {
+      generatedStateListener?.({
+        appInstanceId: "test-app:room",
+        revision: 4,
+        state: { count: 4 },
+        sourceParticipantId: "human-a",
+      })
+      generatedStateListener?.({
+        appInstanceId: "test-app:room",
+        revision: 5,
+        state: { count: 5 },
+        sourceParticipantId: "human-a",
+      })
+    })
+    expect(onEngaged).toHaveBeenCalledTimes(1)
+  })
+
+  it("never counts another App instance's update, and never replaces its iframe", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    let generatedStateListener:
+      | ((message: {
+          appInstanceId: string
+          revision: number
+          state: Record<string, unknown>
+          sourceParticipantId?: string
+        }) => void)
+      | undefined
+    const subscribeGeneratedState = vi.fn(
+      (listener: typeof generatedStateListener) => {
+        generatedStateListener = listener
+        return () => undefined
+      }
+    )
+    const onEngaged = vi.fn()
+    render(
+      <RoomAppHost
+        app={app}
+        appInstanceId="test-app:room"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={() => true}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={() => "sent" as const}
+        subscribeGeneratedState={subscribeGeneratedState}
+        onReady={() => undefined}
+        onEngaged={onEngaged}
+        onClose={() => undefined}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const port = lastChannel!.port1
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    act(() => {
+      port.emit({
+        type: "ready",
+        appInstanceId: "test-app:room",
+        handshakeToken: bootstrap.handshakeToken,
+      })
+    })
+
+    act(() => {
+      generatedStateListener?.({
+        appInstanceId: "other-app:room",
+        revision: 9,
+        state: { count: 9 },
+        sourceParticipantId: "human-a",
+      })
+    })
+    expect(onEngaged).not.toHaveBeenCalled()
+    expect(screen.getByTestId("room-app-iframe")).toBe(iframe)
+    expect(lastChannel!.port1).toBe(port)
+  })
+
   it("reconciles a higher shared-state revision without replacing the iframe", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     let generatedStateListener:
