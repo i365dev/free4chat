@@ -377,6 +377,12 @@ export default function RoomContent({
   const [expandedRoomAppId, setExpandedRoomAppId] = useState<string | null>(
     null
   )
+  // Focus mode for a generated Task App. It is the same Room layout state as
+  // `expandedRoomAppId`, kept separately because the two selections are keyed
+  // by different identity domains (curated App id vs generated app instance).
+  const [expandedGeneratedAppId, setExpandedGeneratedAppId] = useState<
+    string | null
+  >(null)
   // Browser-local resident App sessions, bounded by the curated catalog size.
   const [launchedRoomAppIds, setLaunchedRoomAppIds] = useState<string[]>([])
   const [readyRoomAppIds, setReadyRoomAppIds] = useState<string[]>([])
@@ -413,6 +419,13 @@ export default function RoomContent({
   // App reports at most one shared-session milestone per browser Room session.
   const sharedSessionTrackedAppIdsRef = useRef<Set<string>>(new Set())
   const sharedSessionTrackedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
+  // #479 review: a generated App's bundle-revision update remounts its resident
+  // host, which resets the host's own ready/engaged latches. These session-level
+  // sets keyed by appInstanceId keep the generated milestones at one per App per
+  // browser Room session. Curated Apps are untouched: their host latches already
+  // survive, because a curated host is never remounted by a revision change.
+  const mountedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
+  const engagedGeneratedAppIdsRef = useRef<Set<string>>(new Set())
   // The acquisition intent is stable for this Room page, so the App-milestone
   // callbacks can read it without depending on the prop and being re-created.
   const acquisitionPageRef = useRef<string | undefined>(acquisitionPage)
@@ -671,18 +684,44 @@ export default function RoomContent({
     .map((app) => resolveProductionRoomAppId(app.id))
     .find((appId): appId is string => appId !== null)
 
+  // ONE Stage owner. `activeRoomAppId` and `activeGeneratedAppId` are the two
+  // independent selections the Stage switcher drives, and every transition
+  // below goes through a helper that clears the competing one in the SAME
+  // update. This derived owner is the render-time guarantee on top of that:
+  // even if a future caller ever set both, exactly one surface can be visible,
+  // so a curated Room App and a generated Task App can never paint at once.
+  // Curated wins a theoretical tie so the catalog-backed surface stays on top.
+  const stageOwner: { kind: "curated" | "generated"; id: string } | null =
+    activeRoomAppId
+      ? { kind: "curated", id: activeRoomAppId }
+      : activeGeneratedAppId
+      ? { kind: "generated", id: activeGeneratedAppId }
+      : null
+
   const visibleRoomApp =
-    activeRoomApp && roomAppSelf ? activeRoomApp : undefined
+    stageOwner?.kind === "curated" && activeRoomApp && roomAppSelf
+      ? activeRoomApp
+      : undefined
   // Focus mode is a Room layout state, not just a larger host. The resident
   // host remains in its Stage subtree; all surrounding Room UI is made inert
   // and removed from layout so nested stacking contexts cannot paint over or
-  // intercept input from the fixed host.
-  const isRoomAppFullscreen = Boolean(
+  // intercept input from the fixed host. Curated Room Apps and generated Task
+  // Apps share this ONE state: focus mode is a Stage App layout contract, not
+  // a curated-only feature.
+  const isCuratedAppFullscreen = Boolean(
     roomAppSelf &&
       expandedRoomAppId &&
       expandedRoomAppId === activeRoomAppId &&
       residentRoomApps.some((app) => app.id === expandedRoomAppId)
   )
+  const isGeneratedAppFullscreen = Boolean(
+    roomAppSelf &&
+      expandedGeneratedAppId &&
+      expandedGeneratedAppId === activeGeneratedAppId &&
+      generatedAppDocuments[expandedGeneratedAppId] !== undefined
+  )
+  const isStageAppFullscreen =
+    isCuratedAppFullscreen || isGeneratedAppFullscreen
   const activeTask = taskProjections.find(
     (task) => task.requestId === activeInteraction
   )
@@ -691,25 +730,38 @@ export default function RoomContent({
         (publication) => publication.taskRequestId === activeTask.requestId
       )
     : undefined
-  const visibleGeneratedRoomApp = activeGeneratedAppId
-    ? generatedAppDocuments[activeGeneratedAppId]
-    : undefined
+  const visibleGeneratedRoomApp =
+    stageOwner?.kind === "generated" && roomAppSelf
+      ? generatedAppDocuments[stageOwner.id]
+      : undefined
   const stageAppVisible = Boolean(visibleRoomApp || visibleGeneratedRoomApp)
 
-  const openGeneratedApp = useCallback(
-    async (publication: GeneratedRoomAppPublication) => {
-      setActiveRoomAppId(null)
-      setActiveGeneratedAppId(publication.appInstanceId)
-      setStageView("screen")
+  /**
+   * Canonical document load/reconcile for ONE generated Task App.
+   *
+   * Deliberately STAGE-NEUTRAL: it never selects, hides, or focuses an App, so
+   * the background reconciliation path (a bundle/state revision change, or a
+   * missed state event) can never steal the Stage from whatever owns it —
+   * curated App, Screen, Live View, or another generated App — and can never
+   * disturb focus mode.
+   *
+   * The outcome is reported so the EXPLICIT open path can decide what a
+   * failure means for the selection it just made. A background reconcile
+   * ignores it entirely.
+   */
+  const loadGeneratedAppDocument = useCallback(
+    async (
+      publication: GeneratedRoomAppPublication
+    ): Promise<"loaded" | "unchanged" | "unavailable" | "unauthorized"> => {
       if (
         generatedAppDocuments[publication.appInstanceId]?.publication
           .bundleRevision === publication.bundleRevision &&
         generatedAppDocuments[publication.appInstanceId]?.publication
           .stateRevision >= publication.stateRevision
       )
-        return
+        return "unchanged"
       const auth = getLocalRoomAuth()
-      if (!auth) return
+      if (!auth) return "unauthorized"
       setGeneratedAppLoading(publication.appInstanceId)
       try {
         const response = await fetch(
@@ -765,14 +817,39 @@ export default function RoomContent({
             [publication.appInstanceId]: reconciled,
           }
         })
+        return "loaded"
       } catch {
-        setActiveGeneratedAppId(null)
+        return "unavailable"
       } finally {
         setGeneratedAppLoading(null)
       }
     },
     [generatedAppDocuments, getLocalRoomAuth]
   )
+
+  /**
+   * Explicit Human navigation: this generated Task App takes the Stage from
+   * any competing surface. Focus mode is deliberately NOT reset here — the
+   * Human may be re-opening the App they are already focused on.
+   */
+  const openGeneratedApp = useCallback(
+    async (publication: GeneratedRoomAppPublication) => {
+      setExpandedRoomAppId(null)
+      setActiveRoomAppId(null)
+      setActiveGeneratedAppId(publication.appInstanceId)
+      setStageView("screen")
+      const result = await loadGeneratedAppDocument(publication)
+      if (result !== "unavailable") return
+      // The App this transition selected cannot be shown. Release it, but
+      // never a different App that has since become the owner.
+      setActiveGeneratedAppId((current) =>
+        current === publication.appInstanceId ? null : current
+      )
+    },
+    [loadGeneratedAppDocument]
+  )
+  // Background reconciliation: keeps a RESIDENT generated App's document in
+  // step with Room truth without touching the Stage owner or focus mode.
   useEffect(() => {
     for (const publication of Object.values(generatedApps)) {
       const document = generatedAppDocuments[publication.appInstanceId]
@@ -782,13 +859,13 @@ export default function RoomContent({
           document.publication.stateRevision < publication.stateRevision) &&
         generatedAppLoading !== publication.appInstanceId
       )
-        void openGeneratedApp(publication)
+        void loadGeneratedAppDocument(publication)
     }
   }, [
     generatedAppDocuments,
     generatedAppLoading,
     generatedApps,
-    openGeneratedApp,
+    loadGeneratedAppDocument,
   ])
   useEffect(
     () =>
@@ -1060,20 +1137,32 @@ export default function RoomContent({
   ])
 
   useEffect(() => {
-    if (!expandedRoomAppId) return
+    if (!expandedRoomAppId && !expandedGeneratedAppId) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
       event.preventDefault()
       setExpandedRoomAppId(null)
+      setExpandedGeneratedAppId(null)
     }
     window.addEventListener("keydown", onKeyDown, true)
     return () => window.removeEventListener("keydown", onKeyDown, true)
-  }, [expandedRoomAppId])
+  }, [expandedGeneratedAppId, expandedRoomAppId])
 
   useEffect(() => {
     if (expandedRoomAppId && expandedRoomAppId !== activeRoomAppId)
       setExpandedRoomAppId(null)
   }, [activeRoomAppId, expandedRoomAppId])
+
+  // The same safety net for a generated Task App: focus mode belongs to the
+  // CURRENT Stage App, so selecting another surface exits it instead of
+  // leaving the Room inert with an invisible owner.
+  useEffect(() => {
+    if (
+      expandedGeneratedAppId &&
+      expandedGeneratedAppId !== activeGeneratedAppId
+    )
+      setExpandedGeneratedAppId(null)
+  }, [activeGeneratedAppId, expandedGeneratedAppId])
 
   const launchRoomApp = useCallback((appId: string) => {
     setLaunchedRoomAppIds((previous) =>
@@ -1156,31 +1245,87 @@ export default function RoomContent({
     roomName,
   ])
 
+  /**
+   * Stage transitions. Exactly ONE visual surface owns the Stage, so every
+   * transition clears the competing Stage App selection (and any focus mode
+   * that belonged to it) in the SAME update. Resident hosts are never
+   * unmounted by navigation — only their visibility changes.
+   */
+  const clearStageApp = useCallback(() => {
+    setExpandedRoomAppId(null)
+    setExpandedGeneratedAppId(null)
+    setActiveRoomAppId(null)
+    setActiveGeneratedAppId(null)
+  }, [])
+
   const selectRoomApp = useCallback((appId: string) => {
     // Exactly the inline strip's behavior: hide fullscreen, launch (or reuse)
     // the resident host, and make it the current Stage App. The launcher's job
     // ends at selection — it never owns App lifecycle.
     setExpandedRoomAppId(null)
+    setExpandedGeneratedAppId(null)
     setRoomAppsLauncherOpen(false)
     setLaunchedRoomAppIds((previous) =>
       previous.includes(appId)
         ? previous
         : [...previous, appId].slice(-ROOM_APP_MAX_INSTANCES)
     )
+    // The curated selection is the Stage owner; the generated Task App stays
+    // resident but must not paint beside it.
+    setActiveGeneratedAppId(null)
     setActiveRoomAppId(appId)
+  }, [])
+
+  const activateScreen = useCallback(() => {
+    setRoomAppsLauncherOpen(false)
+    setExpandedRoomAppId(null)
+    setExpandedGeneratedAppId(null)
+    setStageView("screen")
+    setActiveRoomAppId(null)
+    setActiveGeneratedAppId(null)
+  }, [])
+
+  const activateLiveView = useCallback(() => {
+    setRoomAppsLauncherOpen(false)
+    setExpandedRoomAppId(null)
+    setExpandedGeneratedAppId(null)
+    setStageView("live-view")
+    setActiveRoomAppId(null)
+    setActiveGeneratedAppId(null)
   }, [])
 
   const toggleRoomAppFullscreen = useCallback(
     (appId: string) => {
       if (activeRoomAppId !== appId) return
+      setExpandedGeneratedAppId(null)
       setExpandedRoomAppId((current) => (current === appId ? null : appId))
     },
     [activeRoomAppId]
   )
 
+  const toggleGeneratedAppFullscreen = useCallback(
+    (appInstanceId: string) => {
+      if (activeGeneratedAppId !== appInstanceId) return
+      setExpandedRoomAppId(null)
+      setExpandedGeneratedAppId((current) =>
+        current === appInstanceId ? null : appInstanceId
+      )
+    },
+    [activeGeneratedAppId]
+  )
+
   const hideRoomApp = useCallback((appId: string) => {
     setActiveRoomAppId((current) => (current === appId ? null : current))
     setExpandedRoomAppId((current) => (current === appId ? null : current))
+  }, [])
+
+  const hideGeneratedApp = useCallback((appInstanceId: string) => {
+    setActiveGeneratedAppId((current) =>
+      current === appInstanceId ? null : current
+    )
+    setExpandedGeneratedAppId((current) =>
+      current === appInstanceId ? null : current
+    )
   }, [])
 
   useEffect(() => {
@@ -1201,6 +1346,8 @@ export default function RoomContent({
     if (!curatedRoomApps.some((app) => app.id === initialRoomAppId)) return
     initialRoomAppLaunchAttemptedRef.current = true
     launchRoomApp(initialRoomAppId)
+    // The deep-linked App owns the Stage, exactly like an explicit selection.
+    setActiveGeneratedAppId(null)
     setActiveRoomAppId(initialRoomAppId)
   }, [
     curatedRoomApps,
@@ -1213,6 +1360,8 @@ export default function RoomContent({
 
   const handleRoomAppReady = useCallback(
     (appId: string) => {
+      // Readiness is per resident host, and shared-session tracking needs every
+      // ready App — including a generated host that just remounted.
       setReadyRoomAppIds((previous) =>
         previous.includes(appId) ? previous : [...previous, appId]
       )
@@ -1228,15 +1377,23 @@ export default function RoomContent({
             acquisitionPageRef.current
           )
         )
-      } else if (appId.startsWith("generated:")) {
-        trackRoomScopedEvent(
-          "RoomAppMounted",
-          withAcquisitionPage(
-            { appSource: "generated" },
-            acquisitionPageRef.current
-          )
-        )
+        return
       }
+      if (!appId.startsWith("generated:")) return
+      // #479 review: a bundle-revision update intentionally remounts the
+      // generated host (its slot key carries the revision), which resets the
+      // host's own ready latch. The milestone belongs to the generated App per
+      // browser Room session, not per bundle revision, so the session-level
+      // latch lives here. Curated Apps keep their existing semantics.
+      if (mountedGeneratedAppIdsRef.current.has(appId)) return
+      mountedGeneratedAppIdsRef.current.add(appId)
+      trackRoomScopedEvent(
+        "RoomAppMounted",
+        withAcquisitionPage(
+          { appSource: "generated" },
+          acquisitionPageRef.current
+        )
+      )
     },
     [trackRoomScopedEvent]
   )
@@ -1245,7 +1402,13 @@ export default function RoomContent({
     (appId: string) => {
       if (process.env.NODE_ENV !== "production") return
       const productionAppId = resolveProductionRoomAppId(appId)
-      if (!productionAppId && !appId.startsWith("generated:")) return
+      if (!productionAppId) {
+        if (!appId.startsWith("generated:")) return
+        // Same remount hole as Mounted above: one engagement milestone per
+        // generated App per browser Room session.
+        if (engagedGeneratedAppIdsRef.current.has(appId)) return
+        engagedGeneratedAppIdsRef.current.add(appId)
+      }
       trackRoomScopedEvent(
         "RoomAppEngaged",
         withAcquisitionPage(
@@ -1803,13 +1966,13 @@ export default function RoomContent({
   // hides and inerts every surrounding surface, so it keeps the whole content
   // region instead of being trapped behind a closed sheet.
   const mobileSheetVisible =
-    mobileRoomSheetOpen && !isMd && !isRoomAppFullscreen
-  const stagePanelVisible = mobileSheetVisible || isRoomAppFullscreen
+    mobileRoomSheetOpen && !isMd && !isStageAppFullscreen
+  const stagePanelVisible = mobileSheetVisible || isStageAppFullscreen
   // Decorative sky belongs to the participant scene only. Screen share,
   // resident Room Apps, generated Task Apps and Task Live View keep their own
   // unchanged Stage geometry and avoid an idle background compositor layer.
   const showPeopleStage =
-    !isRoomAppFullscreen &&
+    !isStageAppFullscreen &&
     !stageAppVisible &&
     activeScreenShares.length === 0 &&
     !showTaskLiveView
@@ -2189,7 +2352,7 @@ export default function RoomContent({
   return (
     <main
       className="room-shell room-shell--live flex h-screen flex-col overflow-hidden bg-gray-900 text-white"
-      data-room-app-focus={isRoomAppFullscreen ? "true" : undefined}
+      data-room-app-focus={isStageAppFullscreen ? "true" : undefined}
     >
       {connectionStatus === "reconnecting" && (
         <div
@@ -2205,13 +2368,13 @@ export default function RoomContent({
 
       <header
         className={`room-header ${
-          isRoomAppFullscreen
+          isStageAppFullscreen
             ? "hidden"
             : "flex flex-none flex-col gap-2 border-b border-gray-800 px-4 py-3 lg:flex-row lg:items-center"
         }`}
-        hidden={isRoomAppFullscreen}
-        aria-hidden={isRoomAppFullscreen}
-        inert={isRoomAppFullscreen}
+        hidden={isStageAppFullscreen}
+        aria-hidden={isStageAppFullscreen}
+        inert={isStageAppFullscreen}
       >
         <div
           data-testid="room-header-identity"
@@ -2353,14 +2516,14 @@ export default function RoomContent({
       {error !== "" && (
         <div
           className={`${
-            isRoomAppFullscreen
+            isStageAppFullscreen
               ? "hidden"
               : "flex flex-none items-center gap-4 bg-gray-900 px-4 py-2 text-white"
           }`}
-          hidden={isRoomAppFullscreen}
+          hidden={isStageAppFullscreen}
           role="alert"
-          aria-hidden={isRoomAppFullscreen}
-          inert={isRoomAppFullscreen}
+          aria-hidden={isStageAppFullscreen}
+          inert={isStageAppFullscreen}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -2380,22 +2543,22 @@ export default function RoomContent({
         </div>
       )}
       <div
-        className={isRoomAppFullscreen ? "hidden" : undefined}
-        hidden={isRoomAppFullscreen}
-        aria-hidden={isRoomAppFullscreen}
-        inert={isRoomAppFullscreen}
+        className={isStageAppFullscreen ? "hidden" : undefined}
+        hidden={isStageAppFullscreen}
+        aria-hidden={isStageAppFullscreen}
+        inert={isStageAppFullscreen}
       >
         <LiveTranscriptSegments segments={liveTranscriptSegments} />
       </div>
       {screenShareWarning !== "" && (
         <div
           className={`mx-4 mt-1 flex-none items-center gap-4 rounded border border-amber-700/50 bg-amber-900/40 px-4 py-2 text-amber-200 ${
-            isRoomAppFullscreen ? "hidden" : "flex"
+            isStageAppFullscreen ? "hidden" : "flex"
           }`}
-          hidden={isRoomAppFullscreen}
+          hidden={isStageAppFullscreen}
           role="alert"
-          aria-hidden={isRoomAppFullscreen}
-          inert={isRoomAppFullscreen}
+          aria-hidden={isStageAppFullscreen}
+          inert={isStageAppFullscreen}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -2481,7 +2644,7 @@ export default function RoomContent({
               stagePanelVisible ? "flex" : "hidden md:flex"
             } flex-1 flex-col overflow-hidden border-b border-gray-800 md:flex-none md:border-b-0 md:border-r`}
             style={
-              isRoomAppFullscreen
+              isStageAppFullscreen
                 ? { width: "100%" }
                 : isMd
                 ? { width: `${splitRatio}%` }
@@ -2492,10 +2655,10 @@ export default function RoomContent({
             {/* #111: Agent workspace snapshots — observation only, available in
               every room type; Human screen share is untouched below. */}
             <div
-              className={isRoomAppFullscreen ? "hidden" : undefined}
-              hidden={isRoomAppFullscreen}
-              aria-hidden={isRoomAppFullscreen}
-              inert={isRoomAppFullscreen}
+              className={isStageAppFullscreen ? "hidden" : undefined}
+              hidden={isStageAppFullscreen}
+              aria-hidden={isStageAppFullscreen}
+              inert={isStageAppFullscreen}
             >
               <WorkspaceSnapshots
                 participants={participants}
@@ -2525,11 +2688,11 @@ export default function RoomContent({
                   aria-label="Stage"
                   data-testid="stage-switcher"
                   className={`scrollbar-thin z-10 flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/80 p-2 ${
-                    isRoomAppFullscreen ? "hidden" : "flex"
+                    isStageAppFullscreen ? "hidden" : "flex"
                   }`}
-                  hidden={isRoomAppFullscreen}
-                  aria-hidden={isRoomAppFullscreen}
-                  inert={isRoomAppFullscreen}
+                  hidden={isStageAppFullscreen}
+                  aria-hidden={isStageAppFullscreen}
+                  inert={isStageAppFullscreen}
                 >
                   {inlineRoomApps.map((app) => {
                     const selected = activeRoomAppId === app.id
@@ -2545,8 +2708,7 @@ export default function RoomContent({
                           if (selected) {
                             // Hide, do not destroy: the resident host keeps its
                             // iframe, MessagePort and App-local state.
-                            setExpandedRoomAppId(null)
-                            setActiveRoomAppId(null)
+                            clearStageApp()
                             return
                           }
                           selectRoomApp(app.id)
@@ -2582,12 +2744,7 @@ export default function RoomContent({
                     <button
                       type="button"
                       data-testid="stage-view-screen"
-                      onClick={() => {
-                        setRoomAppsLauncherOpen(false)
-                        setExpandedRoomAppId(null)
-                        setStageView("screen")
-                        setActiveRoomAppId(null)
-                      }}
+                      onClick={activateScreen}
                       aria-pressed={stageView === "screen" && !stageAppVisible}
                       className={`shrink-0 rounded px-2 py-1 text-xs ${
                         stageView === "screen" && !stageAppVisible
@@ -2602,12 +2759,7 @@ export default function RoomContent({
                     <button
                       type="button"
                       data-testid="stage-view-live-view"
-                      onClick={() => {
-                        setRoomAppsLauncherOpen(false)
-                        setExpandedRoomAppId(null)
-                        setStageView("live-view")
-                        setActiveRoomAppId(null)
-                      }}
+                      onClick={activateLiveView}
                       aria-pressed={
                         stageView === "live-view" && !stageAppVisible
                       }
@@ -2684,8 +2836,17 @@ export default function RoomContent({
               {roomAppSelf &&
                 Object.values(generatedAppDocuments).map((document) => {
                   const publication = document.publication
-                  const visible =
-                    activeGeneratedAppId === publication.appInstanceId
+                  // Stage ownership, not the raw selection: the generated Task
+                  // App is visible only while it owns the Stage, so a curated
+                  // selection hides it instead of stacking beside it.
+                  const isActive =
+                    stageOwner?.kind === "generated" &&
+                    stageOwner.id === publication.appInstanceId
+                  const isFullscreen =
+                    isActive &&
+                    expandedGeneratedAppId === publication.appInstanceId
+                  const reconnectBlocked =
+                    isFullscreen && connectionStatus === "reconnecting"
                   const app = {
                     id: publication.appInstanceId,
                     label: publication.title,
@@ -2698,10 +2859,10 @@ export default function RoomContent({
                     <div
                       key={`${publication.appInstanceId}:${publication.bundleRevision}`}
                       data-testid={`generated-room-app-slot-${publication.appInstanceId}`}
-                      aria-hidden={!visible}
-                      inert={!visible}
+                      aria-hidden={!isActive || reconnectBlocked}
+                      inert={!isActive || reconnectBlocked}
                       className={
-                        visible ? "flex min-h-0 flex-1 flex-col" : "hidden"
+                        isActive ? "flex min-h-0 flex-1 flex-col" : "hidden"
                       }
                     >
                       <RoomAppHost
@@ -2719,10 +2880,19 @@ export default function RoomContent({
                         subscribeGeneratedState={subscribeGeneratedAppState}
                         showReadyStatus={false}
                         onReady={handleRoomAppReady}
+                        onEngaged={handleRoomAppEngaged}
                         subscribeUnicast={subscribeRoomAppUnicast}
                         subscribeUnicastResults={subscribeRoomAppUnicastResults}
                         sendUnicast={sendRoomAppUnicast}
-                        onClose={() => setActiveGeneratedAppId(null)}
+                        isFullscreen={isFullscreen}
+                        onToggleFullscreen={() =>
+                          toggleGeneratedAppFullscreen(
+                            publication.appInstanceId
+                          )
+                        }
+                        onClose={() =>
+                          hideGeneratedApp(publication.appInstanceId)
+                        }
                       />
                     </div>
                   )
@@ -2777,7 +2947,7 @@ export default function RoomContent({
                 stays reachable without closing the App or reloading. It is
                 chrome outside the iframe, owned by RoomContent, and reuses the
                 same state as the header control. */}
-              {isRoomAppFullscreen && roomAppSelf && (
+              {isStageAppFullscreen && roomAppSelf && (
                 <div
                   className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-start p-2"
                   style={{
@@ -2794,7 +2964,7 @@ export default function RoomContent({
                 </div>
               )}
               {!stageAppVisible &&
-                !isRoomAppFullscreen &&
+                !isStageAppFullscreen &&
                 (activeScreenShares.length > 0 ? (
                   <>
                     <div
@@ -2913,7 +3083,7 @@ export default function RoomContent({
                   </div>
                 ))}
 
-              {!isRoomAppFullscreen &&
+              {!isStageAppFullscreen &&
                 floatingReactions.map((r) => (
                   <div
                     key={r.id}
@@ -2929,11 +3099,11 @@ export default function RoomContent({
 
         <div
           className={`w-1 cursor-col-resize bg-gray-800 transition-colors hover:bg-blue-500/50 active:bg-blue-500 ${
-            isRoomAppFullscreen ? "hidden" : "hidden md:block"
+            isStageAppFullscreen ? "hidden" : "hidden md:block"
           }`}
-          hidden={isRoomAppFullscreen}
-          aria-hidden={isRoomAppFullscreen}
-          inert={isRoomAppFullscreen}
+          hidden={isStageAppFullscreen}
+          aria-hidden={isStageAppFullscreen}
+          inert={isStageAppFullscreen}
           onMouseDown={(e) => {
             isDragging.current = true
             e.preventDefault()
@@ -2944,16 +3114,16 @@ export default function RoomContent({
           className={`room-panel room-chat-panel ${
             activeTask ? "room-chat-panel--task " : ""
           }${
-            isRoomAppFullscreen
+            isStageAppFullscreen
               ? "hidden"
               : "flex flex-1 flex-col overflow-hidden"
           }`}
-          hidden={isRoomAppFullscreen}
+          hidden={isStageAppFullscreen}
           // The phone sheet covers this pane, so it gets the same
           // "covered means inert" contract the fullscreen guard already uses:
           // focus can never Tab into a hidden composer behind the sheet.
-          aria-hidden={isRoomAppFullscreen || mobileSheetVisible}
-          inert={isRoomAppFullscreen || mobileSheetVisible}
+          aria-hidden={isStageAppFullscreen || mobileSheetVisible}
+          inert={isStageAppFullscreen || mobileSheetVisible}
         >
           <div
             role="tablist"
@@ -3214,14 +3384,14 @@ export default function RoomContent({
       {taskAgent && (
         <div
           className={`room-task-dialog-host fixed inset-0 z-40 bg-black/60 px-4 ${
-            isRoomAppFullscreen ? "hidden" : "flex items-center justify-center"
+            isStageAppFullscreen ? "hidden" : "flex items-center justify-center"
           }`}
-          hidden={isRoomAppFullscreen}
+          hidden={isStageAppFullscreen}
           role="dialog"
           aria-modal="true"
           aria-labelledby="start-task-title"
-          aria-hidden={isRoomAppFullscreen}
-          inert={isRoomAppFullscreen}
+          aria-hidden={isStageAppFullscreen}
+          inert={isStageAppFullscreen}
         >
           <form
             onSubmit={submitTask}

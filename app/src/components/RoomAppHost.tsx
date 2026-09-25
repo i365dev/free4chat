@@ -363,6 +363,27 @@ export default function RoomAppHost({
     if (!subscribeGeneratedState) return
     return subscribeGeneratedState((message) => {
       if (!readyRef.current || message.appInstanceId !== appInstanceId) return
+      // Engagement for a generated Task App. The strongest available truth
+      // boundary is the Room's own accepted transition: this frame is the
+      // authoritative `generated-app-state` broadcast, and
+      // `sourceParticipantId` names the Human whose mutation the Room
+      // validated and persisted. Only THIS browser's own accepted interaction
+      // is engagement — a mount, a ready handshake, an initial GET/hydration,
+      // a passive remote update, or another Human's change all carry a
+      // different (or absent) source and can never count.
+      //
+      // The rejection path (`generated-app-state-conflict`) never carries a
+      // source participant, so a refused mutation can never be mistaken for
+      // an accepted one. Dedup is the same per-resident-App latch the curated
+      // `milestone` path uses, so one resident App reports at most once.
+      if (
+        !engagedNotifiedRef.current &&
+        message.sourceParticipantId !== undefined &&
+        message.sourceParticipantId === self.participantId
+      ) {
+        engagedNotifiedRef.current = true
+        onEngaged?.(app.id)
+      }
       if (
         sharedStateRevisionRef.current !== null &&
         message.revision <= sharedStateRevisionRef.current
@@ -379,7 +400,14 @@ export default function RoomAppHost({
           : {}),
       })
     })
-  }, [appInstanceId, post, subscribeGeneratedState])
+  }, [
+    app.id,
+    appInstanceId,
+    onEngaged,
+    post,
+    self.participantId,
+    subscribeGeneratedState,
+  ])
 
   // A state-only Room reconciliation updates the host without replacing its
   // iframe. This covers a reconnect or an initial GET race where the resident
