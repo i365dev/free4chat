@@ -188,7 +188,6 @@ import {
   isTaskExecutionOutcome,
   isTaskExecutionPhase,
   MAX_TASK_EXECUTION_QUEUED_COUNT,
-  type TaskControlNotice,
 } from "../common/taskExecution"
 import {
   validateTaskLiveViewDraft,
@@ -274,17 +273,15 @@ const MAX_TASK_LIVE_VIEWS = 16
 // bound matches the Runtime's private resident control bound; the browser can
 // never widen it into a payload.
 const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
-// #480: how long ONE exact Task control may wait for the owning resident to
-// re-state its authoritative execution after the Room's memory-only projection
-// was lost to hibernation. It is not a poll: the wait is resolved by the
-// resident's own next `agent-task-execution` publish, which the single
-// `task-execution-resync` frame asks for, and a hold that was never answered is
-// swept on the next Room event (human message or control request).
-const TASK_INTERRUPT_RECONCILE_MS = 5 * 1000
-// #480: at most this many exact Task controls may be held at once. A hold is one
-// tiny transient record (one Task id, one turn, one Human socket) — never a
-// durable queue, never retained Task execution history.
-const MAX_PENDING_TASK_INTERRUPTS = 8
+// #480: explicit product bound for the hibernation-durable Task control
+// authority one resident socket attachment may carry. Only CURRENT active turns
+// are stored (never history), and this product's provider lane capacity is at
+// most 4 concurrent turns per Agent, so this is a deliberate small bound rather
+// than a consequence of the platform's per-attachment byte cap. An attachment
+// that would exceed it drops its oldest entry: a Task whose turn can no longer
+// be verified fails closed exactly like the pre-#480 state (the Runtime stays
+// the final exact-turn authority), and the newest turns always survive.
+export const MAX_ATTACHMENT_ACTIVE_TASK_TURNS = 8
 const TASK_LIVE_VIEW_KEY_PREFIX = "task-live-view:"
 const GENERATED_APP_KEY_PREFIX = "generated-app:"
 
@@ -444,63 +441,6 @@ interface PendingSessionControl {
 }
 
 /**
- * #480: the outcome of one exact Task interrupt authorization.
- *
- * `reconcile` is present ONLY when the exact turn could not be verified because
- * this Room has no authoritative execution truth at all for that Task — the
- * post-hibernation state — and its current executor can answer a bounded
- * reconciliation. It is never present for a genuine stale click against known
- * execution truth.
- */
-type InterruptTargetResolution =
-  | {
-      ok: true
-      requestId: string
-      executorAgentId: string
-      turnSequence: number
-    }
-  | {
-      ok: false
-      error: string
-      reconcile?: { requestId: string; executorAgentId: string }
-    }
-
-/**
- * #480: one exact Task control that the Room has ACCEPTED but cannot yet
- * authorize, because a hibernated Room woke up without its memory-only
- * `transientTaskExecutions` projection for a Task that is still running locally.
- *
- * The Human's requested turn is preserved verbatim; it is never repaired,
- * widened to the Task scope, or replaced with the Room's guess. The hold is
- * resolved only by the owning resident's OWN authoritative re-statement:
- *
- *   re-stated current turn == turnSequence  -> dispatch this exact control
- *   re-stated current turn != turnSequence  -> benign no-op, never N+1
- *   no answer within TASK_INTERRUPT_RECONCILE_MS -> truthful "unavailable"
- *
- * In-memory only, bounded by MAX_PENDING_TASK_INTERRUPTS, and dropped as soon
- * as it is resolved or swept: this is a recovery window, not Task state.
- */
-interface PendingTaskInterrupt {
-  /** The resolved canonical executor whose resident is asked to re-state. */
-  agentParticipantId: string
-  taskRequestId: string
-  /** The exact canonical turn the Human named. Never inferred. */
-  turnSequence: number
-  /** The Human that sent the control, re-authorized when truth arrives. */
-  humanParticipantId: string
-  /** The Human socket that sent the control, for the truthful outcome frame. */
-  socket: WebSocket
-  expiresAt: number
-  /** What that Human's original command reports if nothing ever answers. */
-  expiredError: string
-  /** The benign "that turn already finished" notice for this command family. */
-  turnFinishedNotice: TaskControlNotice
-  /** The #346 analytics control this hold reports once it actually dispatches. */
-  dispatchedControl: TaskControl
-}
-
-/**
  * #409: bounds one browser-supplied session-request correlation id without
  * repairing it. The value is echoed back verbatim or refused.
  */
@@ -528,6 +468,33 @@ interface AgentEventSocketAttachment {
   connectionNonce: string
   cursor: number
   pendingSessionControl?: PendingSessionControl
+  /**
+   * #480: the CURRENT active Task turns of this resident socket.
+   *
+   * A Durable Object is hibernatable, so its in-memory Task execution
+   * projections can be evicted while the resident socket, the local Harness, and
+   * a long-running Task all survive. Without a hibernation-durable copy of the
+   * exact-turn authority, the first real Human Task control after such an
+   * eviction had nothing to verify a turn against (`task_turn_not_active`) and
+   * never reached the Runtime at all.
+   *
+   * The socket ATTACHMENT is the correct persistence boundary for that: it is
+   * hibernation-durable, it belongs to exactly this socket, and writing it is
+   * not a Durable Object storage write. Only turns that are active RIGHT NOW are
+   * recorded here — a projection with no current turn removes its entry — so
+   * this is bounded control authority, never Task execution history.
+   */
+  activeTaskTurns?: AgentEventActiveTaskTurn[]
+}
+
+/**
+ * #480: one currently active Task turn of one resident socket. Bounded by
+ * MAX_ATTACHMENT_ACTIVE_TASK_TURNS; it carries no participant capability, no
+ * Harness identity, and no Task content.
+ */
+interface AgentEventActiveTaskTurn {
+  taskRequestId: string
+  turnSequence: number
 }
 
 interface StoredParticipant extends RoomParticipant {
@@ -1143,16 +1110,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private readonly transientTaskExecutions = new Map<
     string,
     TaskExecutionProjection
-  >()
-  // #480 exact Task controls accepted while the Room has no authoritative
-  // execution entry for their Task — the state a hibernated Durable Object wakes
-  // up in. Keyed by canonical Task, because a hold is one Human command's
-  // bounded recovery window rather than per-Agent execution state; it is
-  // resolved by the asked resident's own next authoritative publish.
-  // Memory-only and bounded: see PendingTaskInterrupt.
-  private readonly pendingTaskInterrupts = new Map<
-    string,
-    PendingTaskInterrupt
   >()
   private taskLiveViewsCache: Map<string, TaskLiveViewSnapshot> | null = null
   private taskLiveViewsLoad: {
@@ -3010,259 +2967,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private requestTaskExecutionReconciliation(room: RoomRecord): number {
     let sent = 0
     for (const participant of Object.values(room.participants)) {
-      sent += this.requestTaskExecutionReconciliationFor(room, participant.id)
-    }
-    return sent
-  }
-
-  /**
-   * #480: the same ONE fire-and-forget reconciliation frame, addressed to the
-   * single resident that owns one Task. A Human's exact Task control that the
-   * Room cannot authorize must not fan out to unrelated residents: only the
-   * canonical executor's own authoritative re-statement can resolve it.
-   *
-   * Returns the number of frames actually written, so a caller can distinguish
-   * "the resident was asked" from "there is no current resident socket to ask".
-   */
-  private requestTaskExecutionReconciliationFor(
-    room: RoomRecord,
-    participantId: string
-  ): number {
-    const participant = room.participants[participantId]
-    if (!participant || !agentSupportsTaskExecutionReconciliation(participant))
-      return 0
-    let sent = 0
-    for (const socket of this.ctx.getWebSockets(
-      this.agentEventSocketTag(participant.id)
-    )) {
-      const attachment = this.deserializeAgentEventAttachment(socket)
-      if (
-        !attachment ||
-        attachment.participantId !== participant.id ||
-        participant.connectionNonce !== attachment.connectionNonce
-      )
-        continue
-      try {
-        socket.send(JSON.stringify({ type: "task-execution-resync" }))
-        sent += 1
-      } catch {
-        // A socket that fails mid-send simply does not reconcile; the next
-        // connect or explicit resync tries again. Nothing is persisted and
-        // nothing is retried in a loop.
+      if (!agentSupportsTaskExecutionReconciliation(participant)) continue
+      for (const socket of this.ctx.getWebSockets(
+        this.agentEventSocketTag(participant.id)
+      )) {
+        const attachment = this.deserializeAgentEventAttachment(socket)
+        if (
+          !attachment ||
+          attachment.participantId !== participant.id ||
+          participant.connectionNonce !== attachment.connectionNonce
+        )
+          continue
+        try {
+          socket.send(JSON.stringify({ type: "task-execution-resync" }))
+          sent += 1
+        } catch {
+          // A socket that fails mid-send simply does not reconcile; the next
+          // connect or explicit resync tries again. Nothing is persisted and
+          // nothing is retried in a loop.
+        }
       }
     }
     return sent
-  }
-
-  /**
-   * #480: true only when this Room has NO authoritative execution projection at
-   * all for (executor, Task) — the state a hibernated Durable Object wakes up in
-   * — as opposed to a projection that reports a DIFFERENT (or already finished)
-   * turn. The two are not the same fact and must never share an outcome: the
-   * second is a genuine stale click and stays a benign no-op, while the first is
-   * recoverable by asking the owning resident once.
-   *
-   * It also requires the resident to advertise execution reconciliation, so a
-   * Runtime that can never answer is never held.
-   */
-  private hasNoTaskExecutionTruth(
-    room: RoomRecord,
-    requestId: string,
-    executorAgentId: string
-  ): boolean {
-    const executor = room.participants[executorAgentId]
-    if (!executor || !agentSupportsTaskExecutionReconciliation(executor))
-      return false
-    return !this.transientTaskExecutions.has(
-      agentActivityKey(executorAgentId, `task:${requestId}`)
-    )
-  }
-
-  /**
-   * #480: hold ONE exact Task control until the owning resident re-states its
-   * authoritative execution, then dispatch it only if that re-statement still
-   * names the exact turn this Human asked for.
-   *
-   * This is the post-hibernation recovery boundary. The Room's execution
-   * projections are memory-only by design, so after an eviction it cannot
-   * verify — and must therefore never GUESS — the current turn of a Task that is
-   * still running locally. It asks the one resident that owns the Task, exactly
-   * like the explicit `resync` path already does, and keeps the Human's original
-   * turn verbatim in the meantime.
-   *
-   * Returns false when there is no current bound resident socket to ask, in
-   * which case nothing is held and the caller reports its own truthful outcome.
-   */
-  private holdTaskInterruptForReconciliation(
-    room: RoomRecord,
-    participant: RoomParticipant,
-    socket: WebSocket,
-    target: { requestId: string; executorAgentId: string },
-    turnSequence: number,
-    expiredError: string,
-    turnFinishedNotice: TaskControlNotice,
-    dispatchedControl: TaskControl
-  ): boolean {
-    const key = `task:${target.requestId}`
-    const now = Date.now()
-    // An unanswered hold is dropped — and truthfully reported — on the next
-    // Room event instead of being retried in a loop.
-    this.sweepPendingTaskInterrupts(now)
-    // A hold is bounded: the oldest one is dropped rather than letting a Room
-    // accumulate controls it can no longer resolve.
-    if (!this.pendingTaskInterrupts.has(key)) {
-      while (this.pendingTaskInterrupts.size >= MAX_PENDING_TASK_INTERRUPTS) {
-        const oldest = this.pendingTaskInterrupts.keys().next().value
-        if (oldest === undefined) break
-        this.expirePendingTaskInterrupt(oldest)
-      }
-    }
-    // Record BEFORE asking: the resident's answer is an independent Room
-    // request and must never be able to arrive before the hold it resolves.
-    this.pendingTaskInterrupts.set(key, {
-      agentParticipantId: target.executorAgentId,
-      taskRequestId: target.requestId,
-      turnSequence,
-      humanParticipantId: participant.id,
-      socket,
-      expiresAt: now + TASK_INTERRUPT_RECONCILE_MS,
-      expiredError,
-      turnFinishedNotice,
-      dispatchedControl,
-    })
-    if (
-      this.requestTaskExecutionReconciliationFor(
-        room,
-        target.executorAgentId
-      ) === 0
-    ) {
-      this.pendingTaskInterrupts.delete(key)
-      return false
-    }
-    return true
-  }
-
-  /**
-   * #480: resolve one held exact Task control against the authoritative
-   * execution projection that just arrived.
-   *
-   * It deliberately RE-RUNS the ordinary exact-turn authorization rather than
-   * comparing one projection by hand, so every invariant of the direct path is
-   * preserved identically after recovery: the Task and its executor are
-   * re-resolved from the durable Room log, the requested turn must equal the
-   * authoritative current turn of that Task, and a Task with two active Agent
-   * turns still fails closed as ambiguous.
-   *
-   *   authorization now succeeds -> exact interrupt reaches the resident
-   *   still no execution truth  -> keep waiting (bounded by the hold window)
-   *   authoritative turn != N   -> benign no-op; N+1 is never cancelled
-   */
-  private resolvePendingTaskInterrupt(
-    taskRequestId: string,
-    room: RoomRecord
-  ): void {
-    const key = `task:${taskRequestId}`
-    const pending = this.pendingTaskInterrupts.get(key)
-    if (!pending) return
-    const human = room.participants[pending.humanParticipantId]
-    const target: InterruptTargetResolution = human
-      ? this.resolveInterruptTarget(
-          room,
-          human,
-          pending.taskRequestId,
-          pending.turnSequence
-        )
-      : { ok: false, error: "task_interrupt_not_human" }
-    if (target.ok === true) {
-      this.pendingTaskInterrupts.delete(key)
-      if (
-        !this.sendAgentTaskControl(room, target.executorAgentId, {
-          control: "interrupt",
-          taskRequestId: target.requestId,
-          turnSequence: target.turnSequence,
-        })
-      ) {
-        // The exact control was authorized by the resident's own re-statement,
-        // but the private frame did not land: truthful partial success, exactly
-        // like the direct-dispatch path.
-        this.sendHumanSocketFrame(pending.socket, {
-          type: "error",
-          error: pending.expiredError,
-          taskRequestId: pending.taskRequestId,
-        })
-        return
-      }
-      // #346: the same accepted-interrupt success boundary a direct dispatch
-      // uses; the Runtime still decides locally whether it owns that turn.
-      this.trackTaskControl(room, pending.dispatchedControl)
-      return
-    }
-    // This Task still has no authoritative execution truth, so the bounded wait
-    // continues and the very same check runs again on the next re-statement.
-    if (target.reconcile) return
-    // Another Agent's publish for this Task must not conclude anything while
-    // the resident that was actually ASKED has not re-stated yet: only its own
-    // answer can finish the recovery.
-    if (
-      !this.transientTaskExecutions.has(
-        agentActivityKey(
-          pending.agentParticipantId,
-          `task:${pending.taskRequestId}`
-        )
-      )
-    )
-      return
-    this.pendingTaskInterrupts.delete(key)
-    if (target.error === "task_turn_not_active") {
-      // The authoritative current turn is NOT the one the Human named, or the
-      // Task has no current turn at all. A stale click therefore stays a benign
-      // no-op and can never cancel a successor turn.
-      this.sendHumanSocketFrame(pending.socket, {
-        type: "task-control-notice",
-        notice: pending.turnFinishedNotice,
-        taskRequestId: pending.taskRequestId,
-      })
-      return
-    }
-    this.sendHumanSocketFrame(pending.socket, {
-      type: "error",
-      error: target.error,
-      taskRequestId: pending.taskRequestId,
-    })
-  }
-
-  /**
-   * #480: drop holds that were never answered. Deliberately EVENT-driven: the
-   * sweep runs on the next Room event (a Human message or any control request,
-   * including the resident's own lease heartbeat), so the wait needs no timer,
-   * no alarm, and can never become a poll.
-   */
-  private sweepPendingTaskInterrupts(now: number): void {
-    for (const [key, pending] of [...this.pendingTaskInterrupts]) {
-      if (pending.expiresAt > now) continue
-      this.expirePendingTaskInterrupt(key)
-    }
-  }
-
-  private expirePendingTaskInterrupt(key: string): void {
-    const pending = this.pendingTaskInterrupts.get(key)
-    if (!pending) return
-    this.pendingTaskInterrupts.delete(key)
-    this.sendHumanSocketFrame(pending.socket, {
-      type: "error",
-      error: pending.expiredError,
-      taskRequestId: pending.taskRequestId,
-    })
-  }
-
-  /** One bounded Human-facing frame that must never throw on a closed socket. */
-  private sendHumanSocketFrame(socket: WebSocket, frame: unknown): void {
-    try {
-      socket.send(JSON.stringify(frame))
-    } catch {
-      // A Human socket that closed mid-recovery has nobody left to inform; the
-      // hold is already dropped, so nothing is retained.
-    }
   }
 
   /**
@@ -3994,6 +3720,32 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           delete (attachment as { pendingSessionControl?: unknown })
             .pendingSessionControl
       }
+      // #480: the hibernation-durable active Task turns are validated with the
+      // same fail-closed rule. A malformed, oversized, or non-exact-turn record
+      // is dropped rather than trusted: an attachment can never invent control
+      // authority for a Task, and the explicit product bound is enforced on
+      // READ as well as on write.
+      if (attachment.activeTaskTurns !== undefined) {
+        const turns = attachment.activeTaskTurns
+        if (
+          !Array.isArray(turns) ||
+          turns.length > MAX_ATTACHMENT_ACTIVE_TASK_TURNS ||
+          turns.some(
+            (turn: unknown) =>
+              !turn ||
+              typeof turn !== "object" ||
+              typeof (turn as AgentEventActiveTaskTurn).taskRequestId !==
+                "string" ||
+              (turn as AgentEventActiveTaskTurn).taskRequestId.length === 0 ||
+              (turn as AgentEventActiveTaskTurn).taskRequestId.length >
+                MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH ||
+              !isAgentActivityTurnSequence(
+                (turn as AgentEventActiveTaskTurn).turnSequence
+              )
+          )
+        )
+          delete (attachment as { activeTaskTurns?: unknown }).activeTaskTurns
+      }
       return attachment as AgentEventSocketAttachment
     } catch {
       return null
@@ -4576,11 +4328,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private async handleControl(request: ControlRequest): Promise<Response> {
-    // #480: an exact Task control held for authoritative reconciliation is
-    // dropped here if it was never answered. This is the resident's own next
-    // control request — including its lease heartbeat — so the bounded wait
-    // needs no timer and can never become a poll.
-    this.sweepPendingTaskInterrupts(Date.now())
     if (request.action === "room-info") {
       const room = await this.activeRoom()
       return this.json({
@@ -4656,11 +4403,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // independent execution lane is retained; neither can overwrite the
       // other's concurrent turn.
       this.transientTaskExecutions.set(key, projection)
-      // #480: this authoritative re-statement is what resolves an exact Task
-      // control the Room had to hold because it had no execution truth for that
-      // Task (a hibernated Durable Object). It dispatches only when the ordinary
-      // exact-turn authorization succeeds against the restored truth.
-      this.resolvePendingTaskInterrupt(projection.taskRequestId, room)
+      // #480: mirror the same authoritative projection into this resident
+      // socket's hibernation attachment, so control authority for the exact
+      // current turn survives a Durable Object eviction. Bounded, current-turn
+      // only, and written only here — the explicit `resync` path stays the
+      // Browser's UI reconciliation trigger and is not involved in control.
+      this.recordAttachmentActiveTaskTurn(room, participant.id, projection)
       await this.broadcast({ type: "taskExecution", execution: projection })
       return this.json({ ok: true })
     }
@@ -7765,7 +7513,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant: RoomParticipant,
     rawTaskRequestId: unknown,
     requestedTurn: unknown
-  ): InterruptTargetResolution {
+  ):
+    | {
+        ok: true
+        requestId: string
+        executorAgentId: string
+        turnSequence: number
+      }
+    | { ok: false; error: string } {
     const authorized = this.resolveInterruptTask(
       room,
       participant,
@@ -7782,33 +7537,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // (production: `task_turn_not_active` on a Task the Room itself showed as
     // Running). Exact turn matching is NOT weakened: the requested turn must
     // equal the authoritative current turn of THIS canonical Task.
-    const activeTurn = this.transientTaskExecutions.get(
-      agentActivityKey(
-        authorized.executorAgentId,
-        `task:${authorized.requestId}`
-      )
+    //
+    // #480: after a hibernation the authoritative turn is recovered from the
+    // resident socket's own hibernation-durable attachment (see
+    // taskExecutionFor), so a Human who never left the Room can still control
+    // the exact turn the browser is showing. It is still exact: the requested
+    // turn must equal the recovered current turn, and a stale attachment can
+    // only ever name its own turn — never a successor.
+    const activeTurn = this.taskExecutionFor(
+      room,
+      authorized.executorAgentId,
+      authorized.requestId
     )
     if (!activeTurn || activeTurn.currentTurnSequence !== requestedTurn)
-      return {
-        ok: false,
-        error: "task_turn_not_active",
-        // #480: "this Task's authoritative turn is not N" and "this Room has no
-        // authoritative execution truth for this Task at all" are different
-        // facts with different outcomes. The first stays a benign no-op; the
-        // second asks the owning resident once instead of guessing.
-        ...(this.hasNoTaskExecutionTruth(
-          room,
-          authorized.requestId,
-          authorized.executorAgentId
-        )
-          ? {
-              reconcile: {
-                requestId: authorized.requestId,
-                executorAgentId: authorized.executorAgentId,
-              },
-            }
-          : {}),
-      }
+      return { ok: false, error: "task_turn_not_active" }
     if (activeTurn.agentParticipantId !== authorized.executorAgentId)
       return { ok: false, error: "task_turn_not_active" }
     return {
@@ -7850,11 +7592,150 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     requestId: string,
     room: RoomRecord
   ): TaskExecutionProjection[] {
-    return [...this.transientTaskExecutions.values()].filter(
-      (execution) =>
-        execution.taskRequestId === requestId &&
-        room.participants[execution.agentParticipantId]?.connected === true
+    const executions: TaskExecutionProjection[] = []
+    for (const participant of Object.values(room.participants)) {
+      if (participant.kind !== "agent" || !participant.connected) continue
+      const execution = this.taskExecutionFor(room, participant.id, requestId)
+      if (execution) executions.push(execution)
+    }
+    return executions
+  }
+
+  /**
+   * #480: the authoritative execution truth of exactly ONE (Agent, Task) lane.
+   *
+   * This instance's in-memory projection wins whenever it exists: it is the
+   * newest fact the Room has observed, so a retained terminal entry always
+   * outranks a stale attachment entry for the same lane. The resident socket
+   * ATTACHMENT is the fallback, which is what lets a restarted Durable Object
+   * recover control authority instead of guessing a current turn or degrading
+   * to a scope-only cancel.
+   *
+   * Callers pass an executor that is already a current connected participant;
+   * the attachment path additionally requires the exact participantId and the
+   * CURRENT connectionNonce binding, so a replaced socket's authority is dead.
+   */
+  private taskExecutionFor(
+    room: RoomRecord,
+    agentParticipantId: string,
+    requestId: string
+  ): TaskExecutionProjection | undefined {
+    return (
+      this.transientTaskExecutions.get(
+        agentActivityKey(agentParticipantId, `task:${requestId}`)
+      ) ?? this.attachmentTaskExecution(room, agentParticipantId, requestId)
     )
+  }
+
+  /**
+   * #480: the hibernation-durable last-known ACTIVE turn of one (Agent, Task)
+   * lane, read only from a resident socket that is bound to this exact
+   * participant and its current connection nonce. A turn that is absent from
+   * every current attachment is simply unknown: no turn is ever inferred.
+   *
+   * This is deliberately NOT gated on a Runtime capability: the attachment is
+   * written only from that same participant's own authenticated execution
+   * publishes, so it carries exactly the authority the in-memory projection
+   * carries for a Runtime that publishes exact turns without advertising the
+   * (unrelated) reconciliation request.
+   */
+  private attachmentTaskExecution(
+    room: RoomRecord,
+    agentParticipantId: string,
+    requestId: string
+  ): TaskExecutionProjection | undefined {
+    const participant = room.participants[agentParticipantId]
+    if (!participant || participant.kind !== "agent" || !participant.connected)
+      return undefined
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(agentParticipantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        !attachment ||
+        attachment.participantId !== agentParticipantId ||
+        participant.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      const turn = attachment.activeTaskTurns?.find(
+        (entry) => entry.taskRequestId === requestId
+      )
+      if (!turn) continue
+      return {
+        agentParticipantId,
+        taskRequestId: requestId,
+        currentTurnSequence: turn.turnSequence,
+        phase: "running",
+        queuedCount: 0,
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * #480: mirror ONE authoritative execution projection into the resident
+   * socket's hibernation attachment. This is the ONLY writer, and it runs only
+   * inside the already authenticated `agent-task-execution` event — no timer, no
+   * alarm, no poll, and no Durable Object storage write.
+   *
+   * It records the current turn of that Task, or REMOVES the entry when the
+   * authoritative projection reports no current turn, so the attachment can
+   * never accumulate Task history. Only a socket bound to the same participant
+   * AND the current connection nonce is ever written.
+   */
+  private recordAttachmentActiveTaskTurn(
+    room: RoomRecord,
+    participantId: string,
+    projection: TaskExecutionProjection
+  ): void {
+    const participant = room.participants[participantId]
+    if (!participant || participant.kind !== "agent") return
+    const currentTurn = projection.currentTurnSequence
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(participantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        !attachment ||
+        attachment.participantId !== participantId ||
+        participant.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      const stored = attachment.activeTaskTurns ?? []
+      const others = stored.filter(
+        (entry) => entry.taskRequestId !== projection.taskRequestId
+      )
+      const next: AgentEventActiveTaskTurn[] =
+        currentTurn === undefined
+          ? others
+          : [
+              // The explicit product bound drops the OLDEST entry, so the
+              // newest active turns are the ones that always survive.
+              ...others.slice(-(MAX_ATTACHMENT_ACTIVE_TASK_TURNS - 1)),
+              {
+                taskRequestId: projection.taskRequestId,
+                turnSequence: currentTurn,
+              },
+            ]
+      const unchanged =
+        next.length === stored.length &&
+        next.every(
+          (entry, index) =>
+            entry.taskRequestId === stored[index]?.taskRequestId &&
+            entry.turnSequence === stored[index]?.turnSequence
+        )
+      if (unchanged) continue
+      try {
+        socket.serializeAttachment({
+          ...attachment,
+          activeTaskTurns: next,
+        } satisfies AgentEventSocketAttachment)
+      } catch {
+        // A socket that cannot record the turn keeps its previous last-known
+        // authority: the Room's in-memory truth is unaffected, and the Runtime
+        // remains the final exact-turn authority either way.
+      }
+    }
   }
 
   /**
@@ -8139,10 +8020,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     participant.lastSeenAt = Date.now()
-    // #480: a held exact Task control that was never answered is dropped — and
-    // truthfully reported to its Human — on the next Human event, so the
-    // bounded recovery wait needs no timer.
-    this.sweepPendingTaskInterrupts(participant.lastSeenAt)
 
     if (message.type === "resync") {
       // #421: an explicit Human resync is an on-demand reconciliation, never a
@@ -8512,31 +8389,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         task.executorAgentId
       )
       if (currentTurn !== message.turnSequence) {
-        // #480: a hibernated Room has no execution truth at all, which is NOT
-        // the same fact as "that turn already finished". The instruction above
-        // is already durable either way; only the interrupt is held, and the
-        // same exact-turn rule decides whether it is ever dispatched.
-        if (
-          this.hasNoTaskExecutionTruth(
-            room,
-            task.requestId,
-            task.executorAgentId
-          ) &&
-          this.holdTaskInterruptForReconciliation(
-            room,
-            participant,
-            socket,
-            {
-              requestId: task.requestId,
-              executorAgentId: task.executorAgentId,
-            },
-            message.turnSequence,
-            "instruction_queued_interrupt_unavailable",
-            "instruction_queued_turn_finished",
-            "interrupt-send"
-          )
-        )
-          return
         // Benign control race. The instruction is already durable and woken;
         // nothing was cancelled, and in particular no LATER turn can be hit.
         socket.send(
@@ -8596,33 +8448,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         message.turnSequence
       )
       if (target.ok === false) {
-        // #480: a hibernated Room has no execution truth at all for a Task that
-        // is still running locally. Ask the ONE resident that owns it to
-        // re-state its authoritative execution — exactly like the explicit
-        // `resync` path does — and hold this Human's exact turn until it
-        // answers. The turn is never guessed, never widened to the Task scope,
-        // and a stale click still can never cancel a successor turn: the hold
-        // dispatches only when the resident itself reports current == N.
-        if (
-          target.reconcile &&
-          this.holdTaskInterruptForReconciliation(
-            room,
-            participant,
-            socket,
-            target.reconcile,
-            message.turnSequence,
-            "task_agent_not_reachable",
-            "interrupt_turn_finished",
-            "interrupt"
-          )
-        )
-          return
-        if (target.reconcile) {
-          // The executor advertises reconciliation but has no current bound
-          // resident socket, so the exact turn can never be verified.
-          reject("task_agent_not_reachable")
-          return
-        }
         // #421 Fix G: a stale exact turn is a benign control race, not an
         // operation failure — the standalone interrupt has no instruction to
         // preserve, so it becomes a bounded human-readable outcome. Every
