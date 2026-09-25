@@ -600,3 +600,155 @@ func TestTaskExecutionRealTurnSettlementIsTruthful(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptySuccessfulHumanTaskPublishesCompletedLifecycle(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{
+		name:              "pi",
+		scopedTurnResults: []types.HarnessTurnResult{{Text: ""}},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "empty-task-result",
+		RoomID:     "room-empty-task-result",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-empty", "req-empty", "human-1")), "empty successful Task turn")
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-empty" || results[0].Status != "completed" {
+		t.Fatalf("an empty but successful final turn must settle its Human Task: %+v", results)
+	}
+}
+
+func TestFinalHarnessFailureSettlesHumanTaskAsFailed(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "failed-task-result",
+		RoomID:     "room-failed-task-result",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+	rt.acceptEvent(taskRequestEvent(1, "task:req-failed", "req-failed", "human-1"))
+	rt.failTurn("task:req-failed", 1, "harness", turnFailureOther, time.Now(), errors.New("final Harness failure"), false)
+
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-failed" || results[0].Status != "failed" {
+		t.Fatalf("a final Harness failure must settle its Human Task: %+v", results)
+	}
+}
+
+func TestTerminalTaskFailureCannotBeReopenedBySameScopeTrigger(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "terminal-task-failure",
+		RoomID:     "room-terminal-task-failure",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	rt.acceptEvent(taskRequestEvent(1, "task:req-shared", "req-terminal", "human-1"))
+	rt.failTurn("task:req-shared", 1, "harness", turnFailureOther, time.Now(), errors.New("permanent Harness failure"), false)
+	if pending := rt.pendingAddressedSnapshotFor("task:req-shared"); len(pending) != 0 {
+		t.Fatalf("terminal Task failure remained reopenable: %v", pending)
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-terminal" || results[0].Status != "failed" {
+		t.Fatalf("terminal failure did not publish exactly one failed result: %+v", results)
+	}
+
+	// A later request in the same Task scope is new work. It must not replay the
+	// already-failed canonical trigger or issue a contradictory completion for
+	// req-terminal.
+	waitForDone(t, startTurn(rt, taskRequestEvent(2, "task:req-shared", "req-new", "human-1")), "new Task trigger after terminal failure")
+	results = client.fakeClient.snapshotCollabResults()
+	if len(results) != 2 || results[0].RequestID != "req-terminal" || results[0].Status != "failed" ||
+		results[1].RequestID != "req-new" || results[1].Status != "completed" {
+		t.Fatalf("later same-scope work contradicted the terminal Task outcome: %+v", results)
+	}
+}
+
+func TestHarnessReplySendFailurePublishesOneTaskSettlement(t *testing.T) {
+	client := newExecutionClient()
+	client.fakeClient.sendFailuresRemaining = 1
+	adapter := &fakeAdapter{
+		name:              "pi",
+		scopedTurnResults: []types.HarnessTurnResult{{Text: "completed work"}},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "send-failure-single-settlement",
+		RoomID:     "room-send-failure-single-settlement",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-send-failure", "req-send-failure", "human-1")), "failed Task reply delivery")
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-send-failure" || results[0].Status != "failed" {
+		t.Fatalf("the RunTurn-success/SendText-failure path must publish exactly one terminal result: %+v", results)
+	}
+}
+
+func TestExecutorLossSettlesCurrentHumanTaskAsFailed(t *testing.T) {
+	client := newExecutionClient()
+	gate := make(chan struct{})
+	adapter := &fakeAdapter{name: "pi", scopedTurnWait: gate}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "executor-loss-task",
+		RoomID:     "room-executor-loss-task",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	done := startTurn(rt, taskRequestEvent(1, "task:req-lost", "req-lost", "human-1"))
+	waitForActiveScope(t, rt, "task:req-lost")
+	adapter.fireFailure(errors.New("provider process exited"))
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-lost" || results[0].Status != "failed" {
+		t.Fatalf("executor loss left its active Task without a terminal result: %+v", results)
+	}
+	close(gate)
+	waitForDone(t, done, "executor loss turn cleanup")
+}

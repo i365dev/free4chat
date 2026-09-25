@@ -165,6 +165,78 @@ func TestFailedHarnessTurnRetriesAutonomouslyWithoutNewRoomEvent(t *testing.T) {
 	}
 }
 
+func TestUnrelatedRoomEnvelopeDoesNotBypassScheduledRetryDelay(t *testing.T) {
+	client, stream := newResidentTurnRetryClient(t)
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("transient ACP failure")}
+	log := &turnLogRecorder{}
+	rt := newTurnRetryRuntime(t, adapter, client, log.log)
+	rt.turnRetryDelay = func(int) time.Duration { return 700 * time.Millisecond }
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer rt.Stop()
+
+	stream.results <- addressedEnvelope(roomEvent(1, true))
+	waitFor(t, 3*time.Second, func() bool {
+		return adapter.sessionsInt() == 1 && log.count("retry_scheduled") == 1
+	}, "first attempt to arm its bounded retry")
+
+	// An unrelated Room event advances the global drain generation so other
+	// scopes can run, but it must leave this failed canonical head parked until
+	// the retry plan reaches dueAt.
+	stream.results <- addressedEnvelope(roomEvent(2, false))
+	waitFor(t, 2*time.Second, func() bool { return rt.currentCursor() >= 2 }, "unrelated envelope to be ingested")
+	time.Sleep(100 * time.Millisecond)
+	if got := adapter.sessionsInt(); got != 1 {
+		t.Fatalf("unrelated Room traffic bypassed retry back-off: Harness ran %d times before dueAt", got)
+	}
+
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	waitFor(t, 3*time.Second, func() bool {
+		return len(rt.pendingAddressedSnapshot()) == 0 && adapter.sessionsInt() == 2 && len(client.snapshotSent()) == 1
+	}, "the due retry to deliver the canonical turn")
+}
+
+func TestEarlierRetryPlanWakesSleepingResidentRetryClock(t *testing.T) {
+	adapter := &fakeAdapter{name: "pi"}
+	rt := newTurnRetryRuntime(t, adapter, &fakeClient{}, silentLog)
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
+	rt.acceptEvent(scopedEvent(1, "task:req-A", "A instruction"))
+	rt.acceptEvent(scopedEvent(2, "task:req-B", "B instruction"))
+
+	rt.turnRetryDelay = func(int) time.Duration { return 900 * time.Millisecond }
+	rt.scheduleTurnRetry("task:req-A", 1, turnFailureOther, 0)
+	clockDone := make(chan struct{})
+	go func() {
+		rt.runTurnRetryClock()
+		close(clockDone)
+	}()
+	// Give the single clock time to begin waiting for Task A's later retry.
+	time.Sleep(50 * time.Millisecond)
+	rt.turnRetryDelay = func(int) time.Duration { return 100 * time.Millisecond }
+	rt.scheduleTurnRetry("task:req-B", 2, turnFailureOther, 0)
+
+	waitFor(t, 600*time.Millisecond, func() bool {
+		runs, _ := adapter.scopedRunSnapshot()
+		return len(runs) > 0
+	}, "earlier Task B retry to preempt the sleeping clock")
+	runs, _ := adapter.scopedRunSnapshot()
+	if runs[0] != "task:req-B" {
+		t.Fatalf("retry clock did not wake for the earlier plan: %v", runs)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		return len(rt.pendingAddressedSnapshotFor("task:req-A")) == 0 &&
+			len(rt.pendingAddressedSnapshotFor("task:req-B")) == 0
+	}, "both due retry plans to settle")
+	select {
+	case <-clockDone:
+	case <-time.After(time.Second):
+		t.Fatal("retry clock did not stop after all plans were consumed")
+	}
+}
+
 // TestRepeatedHarnessFailureExhaustsBoundedRetryAndStops pins the bounded
 // budget: a persistently failing Harness must end in a truthful local state
 // instead of spinning forever.
@@ -661,8 +733,12 @@ func TestTaskScopeRetryPreservesScopeAndCorrelation(t *testing.T) {
 	if got := adapter.sessionsInt(); got != 0 {
 		t.Fatalf("task retry fell back to the Room conversation: %d room turns", got)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:request-T"); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("failed task turn was acknowledged: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:request-T"); len(got) != 0 {
+		t.Fatalf("terminally failed task trigger remained replayable: %v", got)
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "request-T" || results[0].Status != "failed" {
+		t.Fatalf("bounded retry exhaustion must publish one terminal failure: %+v", results)
 	}
 	responses := client.snapshotCollabResponses()
 	if len(responses) == 0 {

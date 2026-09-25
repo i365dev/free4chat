@@ -12,6 +12,7 @@ const lifecycleLeaveFailureText = "I couldn't leave the Room; I'm still connecte
 func (r *ResidentRuntime) handleLifecycleIntent(
 	input *types.HarnessTurnInput,
 	result types.HarnessTurnResult,
+	roomEvents []types.RoomEvent,
 ) bool {
 	if result.LifecycleIntent == types.LifecycleIntentNone {
 		return false
@@ -22,6 +23,7 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	if result.LifecycleIntent != types.LifecycleIntentLeave ||
 		len(result.TargetParticipantIDs) != 0 || !hasAddressedHuman(input) {
 		r.log("lifecycle_leave_failed", nil)
+		r.settleHumanTask(roomEvents, "failed", "Agent left before completing the task.")
 		r.publishLifecycleLeaveFailure()
 		return true
 	}
@@ -30,13 +32,30 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	handle, err := r.requireHandle()
 	if err != nil {
 		r.log("lifecycle_leave_failed", nil)
+		r.settleHumanTask(roomEvents, "failed", "Agent left before completing the task.")
 		r.publishLifecycleLeaveFailure()
 		return true
 	}
+	scopes, ownsShutdown := r.fenceAdmissionsForShutdown()
+	if !ownsShutdown {
+		return true
+	}
+	// `leave_room` invalidates the participant capability on success. Settle
+	// the completed Task and fail other captured Tasks before that call, while
+	// credentials and pending contexts are still valid.
+	if request := humanTaskRequestFor(roomEvents, r.currentParticipantID()); request != nil &&
+		!r.settleHumanTask(roomEvents, "completed", "Agent completed the task before leaving the Room.") {
+		r.reopenAdmissionsAfterFailedLeave()
+		r.log("lifecycle_leave_failed", nil)
+		r.publishLifecycleLeaveFailure()
+		return true
+	}
+	r.failPendingHumanTasks(scopes, "Agent stopped before the task completed.")
 	// This is the authoritative successful-leave boundary. Normal Stop keeps
 	// its best-effort LeaveRoom semantics for operator shutdown, but a Harness
 	// lifecycle claim is accepted only after this call confirms success.
 	if err := r.options.Client.LeaveRoom(handle); err != nil {
+		r.reopenAdmissionsAfterFailedLeave()
 		r.log("lifecycle_leave_failed", nil)
 		r.publishLifecycleLeaveFailure()
 		return true
@@ -67,6 +86,17 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 		go r.Stop()
 	}
 	return true
+}
+
+// reopenAdmissionsAfterFailedLeave restores a recoverable Runtime when the
+// explicit LeaveRoom request was rejected. Any Tasks already settled while the
+// terminal attempt was in flight remain terminal; future requests can proceed.
+func (r *ResidentRuntime) reopenAdmissionsAfterFailedLeave() {
+	r.mu.Lock()
+	if !r.stopped {
+		r.admissionsClosed = false
+	}
+	r.mu.Unlock()
 }
 
 // hasAddressedHuman is the hard structural gate for the one lifecycle action:

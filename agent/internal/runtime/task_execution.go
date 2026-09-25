@@ -265,6 +265,49 @@ func (r *ResidentRuntime) clearTaskExecutionOutcome(scope string) {
 	r.taskExecutionMu.Unlock()
 }
 
+// settleHumanTask publishes the canonical terminal result for one accepted
+// Human Task. The Task request remains the lifecycle source of truth; the
+// transient execution projection only describes the current turn.
+func (r *ResidentRuntime) settleHumanTask(events []types.RoomEvent, status, summary string) bool {
+	request := humanTaskRequestFor(events, r.currentParticipantID())
+	if request == nil {
+		return false
+	}
+	if _, err := r.CollabResult(types.CollabResultArgs{
+		RequestID: request.RequestID,
+		Status:    status,
+		Summary:   summary,
+	}); err != nil {
+		r.log("collab_result_failed", map[string]string{"reason": "task_" + status})
+		return false
+	}
+	return true
+}
+
+// failPendingHumanTasks settles only the exact canonical Task requests still
+// pending in the named scopes. It is used at executor loss and graceful
+// Runtime shutdown, so a dead owner cannot leave an accepted Task looking live.
+func (r *ResidentRuntime) failPendingHumanTasks(scopes []string, summary string) {
+	for _, scope := range scopes {
+		r.mu.Lock()
+		ref := r.sessionRefLocked(scope)
+		var targets []int64
+		if ref != nil && ref.pendingAddressed != nil {
+			targets = append(targets, (*ref.pendingAddressed)...)
+		}
+		r.mu.Unlock()
+		for _, target := range targets {
+			events, err := r.pendingContextFor(scope, target)
+			if err == nil && r.settleHumanTask(events, "failed", summary) {
+				// Once a terminal failure has been published, this canonical
+				// trigger must not be re-opened and later completed by a future
+				// addressed event in the same Task.
+				r.ackPendingFor(scope, target)
+			}
+		}
+	}
+}
+
 // noteTaskSessionLoss publishes the truthful availability of every Task whose
 // retained Harness session just died unexpectedly. It is called from the
 // adapter failure boundary only: a Room or resident transport reconnect is NOT
@@ -308,6 +351,7 @@ func (r *ResidentRuntime) noteTaskSessionLossFor(failed map[string]struct{}) {
 	}
 	r.mu.Unlock()
 
+	r.failPendingHumanTasks(scopes, "Agent executor stopped before the task completed.")
 	for _, scope := range scopes {
 		r.markTaskSessionLost(scope)
 	}
@@ -388,6 +432,7 @@ func (r *ResidentRuntime) consumeTurnInterrupted(scope string, turnSequence int6
 // tail text is not an Agent reply the Human asked for. Only bounded,
 // content-free diagnostics are logged.
 func (r *ResidentRuntime) settleInterruptedTurn(scope string, target, through, generation int64, turnErr error) {
+	events, _ := r.pendingContextFor(scope, target)
 	if through <= 0 {
 		through = target
 	}
@@ -403,6 +448,7 @@ func (r *ResidentRuntime) settleInterruptedTurn(scope string, target, through, g
 	// trigger; this covers the idempotent case where it had nothing left to
 	// remove, so the interrupted outcome is always published.
 	r.publishTaskExecution(scope)
+	r.settleHumanTask(events, "failed", "Agent task was interrupted.")
 	reason := "cancelled"
 	if turnErr != nil {
 		// The cancelled turn may also have surfaced a real transport/Harness

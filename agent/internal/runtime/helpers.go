@@ -160,21 +160,26 @@ func scopeForRoomEvent(event types.RoomEvent) string {
 	return roomScope
 }
 
-// humanTaskRequestFor returns the Human-originated Task request that admitted
-// this Runtime's first scoped turn. Agent-originated collaboration requests
-// keep their explicit accepted/declined semantics and are deliberately
-// excluded here.
+// humanTaskRequestFor returns the newest addressed Human-originated Task
+// request in this turn's bounded context. Older requests may remain as
+// conversational context after a terminal failure, but must never receive a
+// later turn's terminal result. Agent-originated requests are excluded.
 func humanTaskRequestFor(events []types.RoomEvent, participantID string) *types.WireCollabEvent {
+	var newest *types.WireCollabEvent
+	var newestSequence int64
 	for _, event := range events {
 		if !event.Addressed || event.Participant.Kind != types.KindHuman || event.Collab == nil ||
 			event.Collab.Kind != types.CollabRequest || event.Collab.TargetParticipantID != participantID ||
 			taskRequestIDForScope(scopeForRoomEvent(event)) == "" {
 			continue
 		}
-		request := *event.Collab
-		return &request
+		if newest == nil || event.Sequence >= newestSequence {
+			request := *event.Collab
+			newest = &request
+			newestSequence = event.Sequence
+		}
 	}
-	return nil
+	return newest
 }
 
 func containsSequence(items []int64, sequence int64) bool {
@@ -363,6 +368,12 @@ func (r *ResidentRuntime) isStopped() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stopped
+}
+
+func (r *ResidentRuntime) isShuttingDown() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stopped || r.admissionsClosed
 }
 
 func (r *ResidentRuntime) setState(state State) {

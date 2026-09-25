@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1028,4 +1029,233 @@ func TestScopeSettlementWaitsForAcknowledgementNotJustHarnessIdle(t *testing.T) 
 	if got := rt.pendingAddressedSnapshotFor("task:req-A"); len(got) != 0 {
 		t.Fatalf("the settled scope still held unacknowledged triggers: %v", got)
 	}
+}
+
+// TestResidentEventArrivalsRefillFreeLanes proves the production resident
+// stream path schedules later frames into every available lane without the
+// test manually invoking launchTurns. It also pins bounded queueing at the
+// advertised Hermes/Pi capacities.
+func TestResidentEventArrivalsRefillFreeLanes(t *testing.T) {
+	for _, lanes := range []int{2, 4} {
+		t.Run(strconv.Itoa(lanes)+"_lanes", func(t *testing.T) {
+			adapter := newLaneAdapter()
+			client := newExecutionClient()
+			rt, _ := newLaneRuntimeWithClient(t, adapter, crossSessionPolicy(lanes), client, nil)
+			stream := newResidentTestStream()
+			if !rt.setResidentStream(stream) {
+				t.Fatal("could not install resident event stream")
+			}
+			loopDone := make(chan error, 1)
+			go func() { loopDone <- rt.consumeResidentEventStream(stream) }()
+
+			activeScopes := make([]string, 0, lanes)
+			for index := 1; index <= lanes; index++ {
+				requestID := "req-" + strconv.Itoa(index)
+				scope := "task:" + requestID
+				stream.results <- types.WaitResult{
+					Events: []types.RoomEvent{taskRequestEvent(int64(index), scope, requestID, "human-1")},
+					Cursor: int64(index),
+				}
+				waitForRunning(t, adapter, scope)
+				activeScopes = append(activeScopes, scope)
+			}
+
+			queuedID := "req-" + strconv.Itoa(lanes+1)
+			queuedScope := "task:" + queuedID
+			stream.results <- types.WaitResult{
+				Events: []types.RoomEvent{taskRequestEvent(int64(lanes+1), queuedScope, queuedID, "human-1")},
+				Cursor: int64(lanes + 1),
+			}
+			waitForExecution(t, client, queuedID, "bounded queued Task", func(p types.TaskExecutionProjection) bool {
+				return p.Phase == types.TaskExecutionPhaseQueued
+			})
+			if adapter.isRunning(queuedScope) {
+				t.Fatal("work beyond the lane limit started before a lane was free")
+			}
+
+			for _, scope := range activeScopes {
+				adapter.release(scope)
+			}
+			waitForRunning(t, adapter, queuedScope)
+			adapter.release(queuedScope)
+			for _, scope := range append(activeScopes, queuedScope) {
+				waitForScopeSettled(t, rt, adapter, scope, 1)
+			}
+			if peak := adapter.concurrentPeak(); peak != lanes {
+				t.Fatalf("resident frames used %d lanes; expected %d", peak, lanes)
+			}
+			_ = stream.Close()
+			select {
+			case <-loopDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("resident scheduler did not stop after stream close")
+			}
+		})
+	}
+}
+
+func TestExactHumanTaskInterruptSettlesOnlyTargetTask(t *testing.T) {
+	adapter := newLaneAdapter()
+	client := newExecutionClient()
+	rt, _ := newLaneRuntimeWithClient(t, adapter, crossSessionPolicy(2), client, nil)
+
+	doneA := startTurn(rt, taskRequestEvent(1, "task:req-A", "req-A", "human-1"))
+	waitForRunning(t, adapter, "task:req-A")
+	doneB := startTurn(rt, taskRequestEvent(2, "task:req-B", "req-B", "human-1"))
+	waitForRunning(t, adapter, "task:req-A", "task:req-B")
+	waitForExecution(t, client, "req-A", "running Task A", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 1 && p.Phase == types.TaskExecutionPhaseRunning
+	})
+	waitForExecution(t, client, "req-B", "running Task B", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 2 && p.Phase == types.TaskExecutionPhaseRunning
+	})
+
+	rt.applyResidentTaskControl(interruptControl("req-A", 1))
+	waitForExecution(t, client, "req-A", "interrupting Task A", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 1 && p.Phase == types.TaskExecutionPhaseInterrupting
+	})
+	adapter.release("task:req-A")
+	waitForScopeSettled(t, rt, adapter, "task:req-A", 1)
+	interrupted := waitForExecution(t, client, "req-A", "interrupted Task A", func(p types.TaskExecutionProjection) bool {
+		return p.LastOutcome == types.TaskExecutionOutcomeInterrupted
+	})
+	if interrupted.CurrentTurnSequence != 0 || adapter.isRunning("task:req-A") {
+		t.Fatalf("Task A retained active execution after interrupt: %+v", interrupted)
+	}
+	if !adapter.isRunning("task:req-B") {
+		t.Fatal("interrupting Task A stopped Task B")
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-A" || results[0].Status != "failed" {
+		t.Fatalf("only interrupted Task A should have a failed terminal result: %+v", results)
+	}
+
+	adapter.release("task:req-B")
+	waitForDone(t, doneA, "Task A drain to finish after Task B")
+	waitForDone(t, doneB, "Task B successful settlement")
+	results = client.fakeClient.snapshotCollabResults()
+	if len(results) != 2 || results[1].RequestID != "req-B" || results[1].Status != "completed" {
+		t.Fatalf("Task B should settle independently as completed: %+v", results)
+	}
+}
+
+func TestGracefulRuntimeStopSettlesOwnedWorkingTask(t *testing.T) {
+	adapter := newLaneAdapter()
+	client := newExecutionClient()
+	rt, _ := newLaneRuntimeWithClient(t, adapter, crossSessionPolicy(2), client, nil)
+	_ = startTurn(rt, taskRequestEvent(1, "task:req-stop", "req-stop", "human-1"))
+	waitForRunning(t, adapter, "task:req-stop")
+
+	rt.Stop()
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-stop" || results[0].Status != "failed" {
+		t.Fatalf("Runtime stop left its accepted Task without a terminal failure: %+v", results)
+	}
+	if !rt.isStopped() || rt.activeTurnCount() != 0 {
+		t.Fatalf("Runtime stop left phantom active ownership: stopped=%v active=%d", rt.isStopped(), rt.activeTurnCount())
+	}
+}
+
+func TestStopFencesNewTaskAdmissionsBeforeSettlingCapturedTasks(t *testing.T) {
+	rt, _, client := newExecutionRuntime(t)
+	stream := newResidentTestStream()
+	if !rt.setResidentStream(stream) {
+		t.Fatal("could not install resident stream for shutdown race test")
+	}
+	enteredSettlement := make(chan struct{})
+	continueStop := make(chan struct{})
+	client.fakeClient.collabResultHook = func(args types.CollabResultArgs) {
+		if args.RequestID == "req-before-stop" {
+			close(enteredSettlement)
+			<-continueStop
+		}
+	}
+	rt.acceptEvent(taskRequestEvent(1, "task:req-before-stop", "req-before-stop", "human-1"))
+
+	stopDone := make(chan struct{})
+	go func() {
+		rt.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-enteredSettlement:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not begin settling its captured Task")
+	}
+
+	// This models a resident envelope arriving while a Room result call is
+	// blocked. The shutdown fence has already won the admission lock, so the
+	// new request receives an immediate terminal result and is never queued.
+	frame := addressedEnvelope(taskRequestEvent(2, "task:req-after-stop", "req-after-stop", "human-1"))
+	if outcome, _ := rt.applyResidentFrame(stream, frame, nil); outcome != residentFrameApplied {
+		t.Fatalf("resident frame was not applied during the shutdown window: %v", outcome)
+	}
+	if pending := rt.pendingAddressedSnapshotFor("task:req-after-stop"); len(pending) != 0 {
+		t.Fatalf("Task arriving during shutdown entered the pending queue: %v", pending)
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 2 || results[0].RequestID != "req-before-stop" || results[0].Status != "failed" ||
+		results[1].RequestID != "req-after-stop" || results[1].Status != "failed" {
+		t.Fatalf("shutdown must settle captured and post-fence Tasks without admitting new work: %+v", results)
+	}
+
+	close(continueStop)
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not finish after Task settlement")
+	}
+}
+
+func TestStopPreventsActiveHarnessTurnPublishingAfterFailureSettlement(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	adapter.holdTurn = make(chan struct{})
+	adapter.turnFinished = make(chan struct{}, 1)
+	enteredSettlement := make(chan struct{})
+	continueStop := make(chan struct{})
+	client.fakeClient.collabResultHook = func(args types.CollabResultArgs) {
+		if args.RequestID == "req-stop-active" {
+			close(enteredSettlement)
+			<-continueStop
+		}
+	}
+	turnDone := startTurn(rt, taskRequestEvent(1, "task:req-stop-active", "req-stop-active", "human-1"))
+	waitForActiveScope(t, rt, "task:req-stop-active")
+
+	stopDone := make(chan struct{})
+	go func() {
+		rt.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-enteredSettlement:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not publish its captured Task failure")
+	}
+
+	// Let the active Harness return while shutdown is blocked in Room I/O. Its
+	// terminal publication must wait behind Stop's settlement ownership.
+	adapter.releaseTurn()
+	close(adapter.holdTurn)
+	select {
+	case <-adapter.turnFinished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active Harness did not return during the shutdown window")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if sent := client.fakeClient.snapshotSent(); len(sent) != 0 {
+		t.Fatalf("an active Harness reply escaped after Stop settled failure: %v", sent)
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-stop-active" || results[0].Status != "failed" {
+		t.Fatalf("shutdown and active turn published contradictory outcomes: %+v", results)
+	}
+
+	close(continueStop)
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not finish after active turn returned")
+	}
+	waitForDone(t, turnDone, "active Harness turn to observe shutdown fence")
 }

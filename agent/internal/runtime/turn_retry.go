@@ -148,6 +148,9 @@ func (r *ResidentRuntime) failTurn(
 	})
 	if retryable {
 		r.scheduleTurnRetry(scope, target, failureClass, elapsedMs)
+		if r.turnRecoveryClosed(scope, target) {
+			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+		}
 		return
 	}
 	// A permanent, non-retryable Harness failure is deterministic: no retry
@@ -157,6 +160,29 @@ func (r *ResidentRuntime) failTurn(
 	r.mu.Lock()
 	r.closeTurnRecoveryLocked(scope, target)
 	r.mu.Unlock()
+	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+}
+
+// recordDeliveredTurnFailure records a Room-side failure after the Harness has
+// successfully consumed and acknowledged its canonical turn. runTurn owns the
+// one terminal CollabResult in this case; this helper records diagnostics only
+// and must not try to settle other pending requests in the same scope.
+func (r *ResidentRuntime) recordDeliveredTurnFailure(
+	scope, lastErrorSource, failureClass string,
+	started time.Time,
+	err error,
+) {
+	r.mu.Lock()
+	r.lastError = err.Error()
+	r.lastErrorSource = lastErrorSource
+	r.state = StateReconnecting
+	r.mu.Unlock()
+	r.log("turn_failed", map[string]string{
+		"scopeKind":    scopeKindOf(scope),
+		"failureClass": failureClass,
+		"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+		"retryAttempt": "0",
+	})
 }
 
 // scheduleTurnRetry records one failed Harness turn for the canonical target
@@ -210,6 +236,7 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 		dueAt:        time.Now().Add(delay),
 	}
 	r.mu.Unlock()
+	r.wakeTurnRetryClock()
 	r.log("retry_scheduled", map[string]string{
 		"scopeKind":    scopeKind,
 		"failureClass": failureClass,
@@ -217,6 +244,19 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 		"retryAttempt": strconv.Itoa(attempt),
 		"retryDelayMs": strconv.FormatInt(delay.Milliseconds(), 10),
 	})
+}
+
+// wakeTurnRetryClock asks the one active resident retry loop to recompute its
+// earliest due plan after a new retry is armed. The buffered signal coalesces
+// concurrent scope failures and never blocks a Harness turn.
+func (r *ResidentRuntime) wakeTurnRetryClock() {
+	if r.turnRetryWake == nil {
+		return
+	}
+	select {
+	case r.turnRetryWake <- struct{}{}:
+	default:
+	}
 }
 
 // nextTurnRetry reports the next bounded retry this Runtime owes. It returns
@@ -243,6 +283,20 @@ func (r *ResidentRuntime) nextTurnRetry() (plan turnRetryPlan, wait time.Duratio
 	plan = *earliest.plan
 	earliest.plan = nil
 	return plan, 0, true
+}
+
+// scopeHasScheduledTurnRetryLocked keeps a failed canonical head parked until
+// its own bounded retry clock consumes the plan. A new envelope advances the
+// global drain generation so independent scopes can use newly free lanes, but
+// it must not bypass this scope's dueAt back-off. Callers must hold r.mu.
+func (r *ResidentRuntime) scopeHasScheduledTurnRetryLocked(scope string) bool {
+	scope = normalizeScope(scope)
+	for key, state := range r.turnRetries {
+		if key.scope == scope && state != nil && state.plan != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // clearTurnRetry drops the retry budget for a canonical turn that has just
@@ -352,18 +406,13 @@ func (r *ResidentRuntime) reopenTurnRecoveryLocked(scope string) {
 	}
 }
 
-// drainTurnsWithRetryClock is the event-loop entry point. It runs the bounded
-// turn drain to quiescence and then rides the autonomous retry clock, so a
-// pending addressed turn never needs an unrelated future Room event before it
-// is retried. It adds no goroutine and no scheduler: the wait is the existing
-// stop-aware sleep on the one event-loop goroutine that already owns the drain.
-//
-// Blocking here is deliberate and matches the pre-#421 contract. The resident
-// frame READER is a separate goroutine that has already ingested every frame —
-// including a private Task interrupt — so a long Harness turn can never delay
-// an interrupt or a Room event. Only turn SCHEDULING waits.
+// drainTurnsWithRetryClock is the legacy blocking long-poll entry point. It
+// drains to quiescence and then rides the bounded retry clock, so a pending
+// addressed turn does not need another Room event before retry. The resident
+// stream path instead uses kickResidentTurnRetryClock, which keeps that clock
+// on one bounded goroutine while the stream reader continues ingesting frames.
 func (r *ResidentRuntime) drainTurnsWithRetryClock() {
-	r.drainTurns()
+	r.drainTurnsWithRetryGate(true)
 	r.runTurnRetryClock()
 }
 
@@ -377,7 +426,17 @@ func (r *ResidentRuntime) runTurnRetryClock() {
 			return
 		}
 		if wait > 0 {
-			if !r.sleep(wait) {
+			timer := time.NewTimer(wait)
+			select {
+			case <-r.stopCh:
+				timer.Stop()
+				return
+			case <-r.turnRetryWake:
+				timer.Stop()
+				continue
+			case <-timer.C:
+			}
+			if r.isStopped() {
 				return
 			}
 			continue
@@ -398,9 +457,53 @@ func (r *ResidentRuntime) runTurnRetryClock() {
 		// The retried turn is now dispatched (or deferred behind a busy lane);
 		// its own settlement re-enters both the scheduler and this clock, so
 		// this loop never spins on a plan it already consumed.
-		r.drainTurns()
+		r.drainTurnsWithRetryGate(true)
 		if r.isStopped() {
 			return
 		}
 	}
+}
+
+// kickResidentTurnRetryClock keeps the existing bounded retry clock off the
+// resident stream consumer. There is at most one retry-clock goroutine per
+// Runtime, so while it waits for a due retry or a running lane to settle, the
+// reader/scheduler can still admit later Room frames into other bounded lanes.
+func (r *ResidentRuntime) kickResidentTurnRetryClock() {
+	r.residentMu.Lock()
+	hasResidentStream := r.resident != nil
+	r.residentMu.Unlock()
+	if !hasResidentStream || r.isStopped() {
+		return
+	}
+	r.turnRetryMu.Lock()
+	if r.turnRetryActive {
+		r.turnRetryMu.Unlock()
+		return
+	}
+	r.turnRetryActive = true
+	r.turnRetryMu.Unlock()
+
+	r.loopWG.Add(1)
+	go func() {
+		defer r.loopWG.Done()
+		for {
+			r.runTurnRetryClock()
+			r.turnRetryMu.Lock()
+			r.mu.Lock()
+			pending := false
+			for _, state := range r.turnRetries {
+				if state != nil && state.plan != nil {
+					pending = true
+					break
+				}
+			}
+			r.mu.Unlock()
+			if !pending || r.isStopped() {
+				r.turnRetryActive = false
+				r.turnRetryMu.Unlock()
+				return
+			}
+			r.turnRetryMu.Unlock()
+		}
+	}()
 }
