@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTranscriptStoreBoundedAndPersisted(t *testing.T) {
@@ -61,4 +62,65 @@ func TestTranscriptStoreReadyFailureNeverGateTextTurns(t *testing.T) {
 		t.Fatal("in-memory memory must survive persistence failure")
 	}
 	store.Dispose()
+}
+
+func TestTranscriptStoreDisposeDrainsSaturatedWriterQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".meeting-notes", "transcript.jsonl")
+	store := NewTranscriptStore(path)
+	if err := store.Ready(); err != nil {
+		t.Fatalf("ready: %v", err)
+	}
+	alice := AudioSource{ParticipantID: "h1", ParticipantName: "Alice", TrackName: "mic"}
+	store.Record(alice, "initial")
+
+	// Hold the writer in a deterministic test task, then fill every queue slot.
+	// This recreates the pressure condition without relying on filesystem speed.
+	gate := make(chan struct{})
+	started := make(chan struct{})
+	store.writeQ <- func() {
+		close(started)
+		<-gate
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer did not reach pressure gate")
+	}
+	for i := 0; i < cap(store.writeQ); i++ {
+		store.writeQ <- func() {}
+	}
+
+	disposed := make(chan struct{})
+	go func() {
+		store.Dispose()
+		close(disposed)
+	}()
+	// Dispose must wait for a queue slot and for its final remove operation.
+	select {
+	case <-disposed:
+		t.Fatal("Dispose returned while the writer queue was blocked")
+	default:
+	}
+	close(gate)
+	select {
+	case <-disposed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Dispose did not finish after the writer queue drained")
+	}
+
+	// This barrier is accepted only after Dispose returned. FIFO completion
+	// proves that no previously accepted write remains capable of recreating
+	// the file; later Record calls are ignored because the store is disposed.
+	store.Record(alice, "must not recreate")
+	barrier := make(chan struct{})
+	store.writeQ <- func() { close(barrier) }
+	select {
+	case <-barrier:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer did not pass the post-dispose barrier")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("transcript file reappeared after Dispose: %v", err)
+	}
+	store.Dispose() // idempotent
 }

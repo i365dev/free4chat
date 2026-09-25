@@ -40,6 +40,7 @@ type TranscriptStore struct {
 	segments     []TranscriptSegment
 	nextSequence int64
 	disposed     bool
+	disposeDone  chan struct{}
 	writeQ       chan func()
 }
 
@@ -93,8 +94,10 @@ func (t *TranscriptStore) Record(source AudioSource, text string) {
 		t.segments = t.segments[1:]
 	}
 	contents := t.renderLocked()
-	t.mu.Unlock()
+	// Enqueue while holding mu so Dispose cannot overtake this write after
+	// Record has accepted the updated in-memory state.
 	t.scheduleWrite(contents)
+	t.mu.Unlock()
 }
 
 // Snapshot copies the bounded in-memory segments.
@@ -120,22 +123,26 @@ func (t *TranscriptStore) Flush() {
 func (t *TranscriptStore) Dispose() {
 	t.mu.Lock()
 	if t.disposed {
+		done := t.disposeDone
 		t.mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		return
 	}
-	t.disposed = true
-	t.mu.Unlock()
 	done := make(chan struct{})
-	select {
-	case t.writeQ <- func() {
-		_ = os.Remove(t.path)
-		close(done)
-	}:
-		<-done
-	default:
+	// Record makes its enqueue/drop decision under mu. Holding the same lock
+	// here fences out delayed Records, while the blocking send puts removal
+	// after every write already accepted by the bounded queue. The writer does
+	// not need mu, so it can drain a full queue and make room for this barrier.
+	t.disposed = true
+	t.disposeDone = done
+	t.writeQ <- func() {
 		_ = os.Remove(t.path)
 		close(done)
 	}
+	t.mu.Unlock()
+	<-done
 }
 
 func (t *TranscriptStore) renderLocked() string {
