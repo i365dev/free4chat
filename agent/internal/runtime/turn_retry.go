@@ -236,6 +236,7 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 		dueAt:        time.Now().Add(delay),
 	}
 	r.mu.Unlock()
+	r.wakeTurnRetryClock()
 	r.log("retry_scheduled", map[string]string{
 		"scopeKind":    scopeKind,
 		"failureClass": failureClass,
@@ -243,6 +244,19 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 		"retryAttempt": strconv.Itoa(attempt),
 		"retryDelayMs": strconv.FormatInt(delay.Milliseconds(), 10),
 	})
+}
+
+// wakeTurnRetryClock asks the one active resident retry loop to recompute its
+// earliest due plan after a new retry is armed. The buffered signal coalesces
+// concurrent scope failures and never blocks a Harness turn.
+func (r *ResidentRuntime) wakeTurnRetryClock() {
+	if r.turnRetryWake == nil {
+		return
+	}
+	select {
+	case r.turnRetryWake <- struct{}{}:
+	default:
+	}
 }
 
 // nextTurnRetry reports the next bounded retry this Runtime owes. It returns
@@ -412,7 +426,17 @@ func (r *ResidentRuntime) runTurnRetryClock() {
 			return
 		}
 		if wait > 0 {
-			if !r.sleep(wait) {
+			timer := time.NewTimer(wait)
+			select {
+			case <-r.stopCh:
+				timer.Stop()
+				return
+			case <-r.turnRetryWake:
+				timer.Stop()
+				continue
+			case <-timer.C:
+			}
+			if r.isStopped() {
 				return
 			}
 			continue
@@ -433,7 +457,7 @@ func (r *ResidentRuntime) runTurnRetryClock() {
 		// The retried turn is now dispatched (or deferred behind a busy lane);
 		// its own settlement re-enters both the scheduler and this clock, so
 		// this loop never spins on a plan it already consumed.
-		r.drainTurns()
+		r.drainTurnsWithRetryGate(true)
 		if r.isStopped() {
 			return
 		}

@@ -655,6 +655,45 @@ func TestFinalHarnessFailureSettlesHumanTaskAsFailed(t *testing.T) {
 	}
 }
 
+func TestTerminalTaskFailureCannotBeReopenedBySameScopeTrigger(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{name: "pi"}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "terminal-task-failure",
+		RoomID:     "room-terminal-task-failure",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	rt.acceptEvent(taskRequestEvent(1, "task:req-shared", "req-terminal", "human-1"))
+	rt.failTurn("task:req-shared", 1, "harness", turnFailureOther, time.Now(), errors.New("permanent Harness failure"), false)
+	if pending := rt.pendingAddressedSnapshotFor("task:req-shared"); len(pending) != 0 {
+		t.Fatalf("terminal Task failure remained reopenable: %v", pending)
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-terminal" || results[0].Status != "failed" {
+		t.Fatalf("terminal failure did not publish exactly one failed result: %+v", results)
+	}
+
+	// A later request in the same Task scope is new work. It must not replay the
+	// already-failed canonical trigger or issue a contradictory completion for
+	// req-terminal.
+	waitForDone(t, startTurn(rt, taskRequestEvent(2, "task:req-shared", "req-new", "human-1")), "new Task trigger after terminal failure")
+	results = client.fakeClient.snapshotCollabResults()
+	if len(results) != 2 || results[0].RequestID != "req-terminal" || results[0].Status != "failed" ||
+		results[1].RequestID != "req-new" || results[1].Status != "completed" {
+		t.Fatalf("later same-scope work contradicted the terminal Task outcome: %+v", results)
+	}
+}
+
 func TestHarnessReplySendFailurePublishesOneTaskSettlement(t *testing.T) {
 	client := newExecutionClient()
 	client.fakeClient.sendFailuresRemaining = 1

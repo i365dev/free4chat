@@ -268,10 +268,10 @@ func (r *ResidentRuntime) clearTaskExecutionOutcome(scope string) {
 // settleHumanTask publishes the canonical terminal result for one accepted
 // Human Task. The Task request remains the lifecycle source of truth; the
 // transient execution projection only describes the current turn.
-func (r *ResidentRuntime) settleHumanTask(events []types.RoomEvent, status, summary string) {
+func (r *ResidentRuntime) settleHumanTask(events []types.RoomEvent, status, summary string) bool {
 	request := humanTaskRequestFor(events, r.currentParticipantID())
 	if request == nil {
-		return
+		return false
 	}
 	if _, err := r.CollabResult(types.CollabResultArgs{
 		RequestID: request.RequestID,
@@ -279,7 +279,9 @@ func (r *ResidentRuntime) settleHumanTask(events []types.RoomEvent, status, summ
 		Summary:   summary,
 	}); err != nil {
 		r.log("collab_result_failed", map[string]string{"reason": "task_" + status})
+		return false
 	}
+	return true
 }
 
 // failPendingHumanTasks settles only the exact canonical Task requests still
@@ -296,8 +298,11 @@ func (r *ResidentRuntime) failPendingHumanTasks(scopes []string, summary string)
 		r.mu.Unlock()
 		for _, target := range targets {
 			events, err := r.pendingContextFor(scope, target)
-			if err == nil {
-				r.settleHumanTask(events, "failed", summary)
+			if err == nil && r.settleHumanTask(events, "failed", summary) {
+				// Once a terminal failure has been published, this canonical
+				// trigger must not be re-opened and later completed by a future
+				// addressed event in the same Task.
+				r.ackPendingFor(scope, target)
 			}
 		}
 	}

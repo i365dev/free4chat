@@ -140,6 +140,7 @@ type fakeClient struct {
 	contextOptions        []types.RoomContextReadOptions
 	collabResults         []types.CollabResultArgs
 	collabResultHook      func(types.CollabResultArgs)
+	leaveHook             func()
 	collabResponses       []types.CollabResponseArgs
 	collabResponseHook    func(types.CollabResponseArgs)
 	collabResponseErrors  []error
@@ -816,13 +817,17 @@ func (*fakeClient) ReadSurface(string, string, string) (types.SurfaceReadResult,
 
 func (c *fakeClient) LeaveRoom(string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.leaveCalls++
-	if c.leaveErr != nil {
-		return c.leaveErr
+	err := c.leaveErr
+	if err == nil {
+		c.leftRoom = true
 	}
-	c.leftRoom = true
-	return nil
+	hook := c.leaveHook
+	c.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return err
 }
 
 func (c *fakeClient) Close() error {
@@ -1255,6 +1260,18 @@ func TestUnaddressedReplyKeepsNoTargets(t *testing.T) {
 
 func TestHumanAddressedLifecycleLeaveIsConfirmedBeforeDaemonCleanup(t *testing.T) {
 	client := &fakeClient{}
+	var orderMu sync.Mutex
+	var order string
+	client.collabResultHook = func(types.CollabResultArgs) {
+		orderMu.Lock()
+		order += "collab-result,"
+		orderMu.Unlock()
+	}
+	client.leaveHook = func() {
+		orderMu.Lock()
+		order += "leave-room,"
+		orderMu.Unlock()
+	}
 	task := taskRequestEvent(1, "task:req-self-leave", "req-self-leave", "human-1")
 	adapter := &fakeAdapter{name: "pi", scopedTurnResults: []types.HarnessTurnResult{{
 		Text:            "I left the Room and will not return.",
@@ -1291,6 +1308,12 @@ func TestHumanAddressedLifecycleLeaveIsConfirmedBeforeDaemonCleanup(t *testing.T
 	}
 	if results := client.snapshotCollabResults(); len(results) != 1 || results[0].RequestID != "req-self-leave" || results[0].Status != "completed" {
 		t.Fatalf("a successful Task leave must settle its canonical Task before clearing credentials: %+v", results)
+	}
+	orderMu.Lock()
+	gotOrder := order
+	orderMu.Unlock()
+	if gotOrder != "collab-result,leave-room," {
+		t.Fatalf("Task terminal result must be accepted before leave invalidates credentials: %q", gotOrder)
 	}
 	runs, _ := adapter.scopedRunSnapshot()
 	if len(runs) != 1 || !adapter.closeConfirmed() {

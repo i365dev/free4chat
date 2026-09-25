@@ -196,9 +196,13 @@ type Options struct {
 // MCP long-poll remains available to direct callers and compatibility test
 // clients, but is not the transport used by the built-in resident Runtime.
 type ResidentRuntime struct {
-	options           Options
-	log               LogFunc
-	mu                sync.Mutex
+	options Options
+	log     LogFunc
+	mu      sync.Mutex
+	// taskSettlementMu serializes terminal Room effects of a completed Harness
+	// turn with shutdown settlement. It is acquired only after Harness returns,
+	// so Stop can still cancel a running turn promptly.
+	taskSettlementMu  sync.Mutex
 	participantHandle string // secret bearer capability
 	participantID     string
 	cursor            int64
@@ -272,6 +276,7 @@ type ResidentRuntime struct {
 	turnRetryDelay  func(attempt int) time.Duration
 	turnRetryMu     sync.Mutex
 	turnRetryActive bool
+	turnRetryWake   chan struct{}
 	// Transcript delivery keeps a per-ACP-session success marker plus a
 	// baseline captured at session/new. The baseline deliberately leaves old
 	// shared context pullable instead of dumping it into a new conversation.
@@ -509,6 +514,7 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		interrupts:           make(map[string]int64),
 		turnLanes:            resolveTurnLanes(options.TaskExecution, options.TurnLaneOverride),
 		turnRetries:          make(map[canonicalTurnKey]*turnRetryState),
+		turnRetryWake:        make(chan struct{}, 1),
 		taskExecutionFacts:   make(map[string]taskExecutionFacts),
 		adoptedScopes:        make(map[string]struct{}),
 		adoptedLostScopes:    make(map[string]struct{}),
@@ -1938,6 +1944,13 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	result, err := r.runHarnessTurn(scope, *input, generation)
 	interrupted := r.consumeTurnInterrupted(scope, target)
 	r.finishActivity(scope, target)
+	r.taskSettlementMu.Lock()
+	defer r.taskSettlementMu.Unlock()
+	if r.isShuttingDown() {
+		// Stop owns the terminal result for the still-pending Task and has
+		// fenced all Room output from this active turn.
+		return
+	}
 	if errors.Is(err, harness.ErrSessionPromptBusy) {
 		// Another logical scope is executing the ONE turn this native
 		// conversation may run. This is a deferral, not a Harness failure: the
@@ -2351,6 +2364,7 @@ func (r *ResidentRuntime) cleanupAfterRoomExpiry() {
 // stream, best-effort cancel any running Harness turn, release the room lease,
 // close the ACP process, and close the client.
 func (r *ResidentRuntime) Stop() {
+	r.taskSettlementMu.Lock()
 	scopes, ownsShutdown := r.fenceAdmissionsForShutdown()
 	if ownsShutdown {
 		r.failPendingHumanTasks(scopes, "Agent stopped before the task completed.")
@@ -2360,6 +2374,7 @@ func (r *ResidentRuntime) Stop() {
 		// work. Do not clear those contexts before its Room calls finish.
 		<-r.stopCh
 	}
+	r.taskSettlementMu.Unlock()
 	r.releaseResources()
 	r.loopWG.Wait()
 }

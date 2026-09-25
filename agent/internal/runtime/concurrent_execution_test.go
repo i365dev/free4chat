@@ -1206,3 +1206,56 @@ func TestStopFencesNewTaskAdmissionsBeforeSettlingCapturedTasks(t *testing.T) {
 		t.Fatal("Stop did not finish after Task settlement")
 	}
 }
+
+func TestStopPreventsActiveHarnessTurnPublishingAfterFailureSettlement(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	adapter.holdTurn = make(chan struct{})
+	adapter.turnFinished = make(chan struct{}, 1)
+	enteredSettlement := make(chan struct{})
+	continueStop := make(chan struct{})
+	client.fakeClient.collabResultHook = func(args types.CollabResultArgs) {
+		if args.RequestID == "req-stop-active" {
+			close(enteredSettlement)
+			<-continueStop
+		}
+	}
+	turnDone := startTurn(rt, taskRequestEvent(1, "task:req-stop-active", "req-stop-active", "human-1"))
+	waitForActiveScope(t, rt, "task:req-stop-active")
+
+	stopDone := make(chan struct{})
+	go func() {
+		rt.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-enteredSettlement:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not publish its captured Task failure")
+	}
+
+	// Let the active Harness return while shutdown is blocked in Room I/O. Its
+	// terminal publication must wait behind Stop's settlement ownership.
+	adapter.releaseTurn()
+	close(adapter.holdTurn)
+	select {
+	case <-adapter.turnFinished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active Harness did not return during the shutdown window")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if sent := client.fakeClient.snapshotSent(); len(sent) != 0 {
+		t.Fatalf("an active Harness reply escaped after Stop settled failure: %v", sent)
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-stop-active" || results[0].Status != "failed" {
+		t.Fatalf("shutdown and active turn published contradictory outcomes: %+v", results)
+	}
+
+	close(continueStop)
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not finish after active turn returned")
+	}
+	waitForDone(t, turnDone, "active Harness turn to observe shutdown fence")
+}
