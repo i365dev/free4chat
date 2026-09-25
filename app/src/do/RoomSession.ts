@@ -273,6 +273,11 @@ const MAX_TASK_LIVE_VIEWS = 16
 // bound matches the Runtime's private resident control bound; the browser can
 // never widen it into a payload.
 const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
+// Bounded hibernation-durable control authority per resident socket. Only
+// current active turns are stored, so this covers the product's lane capacity
+// (<= 4 concurrent turns per Agent) with margin; the oldest entry is dropped
+// when it is exceeded, so the newest turns always survive.
+export const MAX_ATTACHMENT_ACTIVE_TASK_TURNS = 8
 const TASK_LIVE_VIEW_KEY_PREFIX = "task-live-view:"
 const GENERATED_APP_KEY_PREFIX = "generated-app:"
 
@@ -459,6 +464,16 @@ interface AgentEventSocketAttachment {
   connectionNonce: string
   cursor: number
   pendingSessionControl?: PendingSessionControl
+  /**
+   * #480: this socket's exact active Task turns, so control authority survives
+   * a Durable Object eviction. Current turns only, bounded, exact-turn bound.
+   */
+  activeTaskTurns?: AgentEventActiveTaskTurn[]
+}
+
+interface AgentEventActiveTaskTurn {
+  taskRequestId: string
+  turnSequence: number
 }
 
 interface StoredParticipant extends RoomParticipant {
@@ -3684,6 +3699,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           delete (attachment as { pendingSessionControl?: unknown })
             .pendingSessionControl
       }
+      // Reject malformed or oversized socket authority.
+      if (attachment.activeTaskTurns !== undefined) {
+        const turns = attachment.activeTaskTurns
+        if (
+          !Array.isArray(turns) ||
+          turns.length > MAX_ATTACHMENT_ACTIVE_TASK_TURNS ||
+          turns.some(
+            (turn: unknown) =>
+              !turn ||
+              typeof turn !== "object" ||
+              typeof (turn as AgentEventActiveTaskTurn).taskRequestId !==
+                "string" ||
+              (turn as AgentEventActiveTaskTurn).taskRequestId.length === 0 ||
+              (turn as AgentEventActiveTaskTurn).taskRequestId.length >
+                MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH ||
+              !isAgentActivityTurnSequence(
+                (turn as AgentEventActiveTaskTurn).turnSequence
+              )
+          )
+        )
+          delete (attachment as { activeTaskTurns?: unknown }).activeTaskTurns
+      }
       return attachment as AgentEventSocketAttachment
     } catch {
       return null
@@ -4341,6 +4378,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // independent execution lane is retained; neither can overwrite the
       // other's concurrent turn.
       this.transientTaskExecutions.set(key, projection)
+      // Mirror the accepted active turn into the resident attachment.
+      this.recordAttachmentActiveTaskTurn(room, participant.id, projection)
       await this.broadcast({ type: "taskExecution", execution: projection })
       return this.json({ ok: true })
     }
@@ -7469,11 +7508,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // (production: `task_turn_not_active` on a Task the Room itself showed as
     // Running). Exact turn matching is NOT weakened: the requested turn must
     // equal the authoritative current turn of THIS canonical Task.
-    const activeTurn = this.transientTaskExecutions.get(
-      agentActivityKey(
-        authorized.executorAgentId,
-        `task:${authorized.requestId}`
-      )
+    // Falls back to the resident socket's hibernation attachment when this
+    // instance's in-memory projection was evicted. The requested turn must
+    // still equal the recovered current turn exactly.
+    const activeTurn = this.taskExecutionFor(
+      room,
+      authorized.executorAgentId,
+      authorized.requestId
     )
     if (!activeTurn || activeTurn.currentTurnSequence !== requestedTurn)
       return { ok: false, error: "task_turn_not_active" }
@@ -7518,11 +7559,127 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     requestId: string,
     room: RoomRecord
   ): TaskExecutionProjection[] {
-    return [...this.transientTaskExecutions.values()].filter(
-      (execution) =>
-        execution.taskRequestId === requestId &&
-        room.participants[execution.agentParticipantId]?.connected === true
+    const executions: TaskExecutionProjection[] = []
+    for (const participant of Object.values(room.participants)) {
+      if (participant.kind !== "agent" || !participant.connected) continue
+      const execution = this.taskExecutionFor(room, participant.id, requestId)
+      if (execution) executions.push(execution)
+    }
+    return executions
+  }
+
+  /**
+   * The authoritative current truth of one (Agent, Task) lane — this instance's
+   * in-memory projection when it has one, else the resident socket's
+   * hibernation attachment. In-memory truth is newer, so a settled entry always
+   * outranks a stale attachment entry.
+   */
+  private taskExecutionFor(
+    room: RoomRecord,
+    agentParticipantId: string,
+    requestId: string
+  ): TaskExecutionProjection | undefined {
+    return (
+      this.transientTaskExecutions.get(
+        agentActivityKey(agentParticipantId, `task:${requestId}`)
+      ) ?? this.attachmentTaskExecution(room, agentParticipantId, requestId)
     )
+  }
+
+  /**
+   * The durable fallback, read only from a socket bound to this exact
+   * participant and its current connection nonce, so a replaced socket's
+   * authority is dead. An absent turn is unknown, never inferred.
+   */
+  private attachmentTaskExecution(
+    room: RoomRecord,
+    agentParticipantId: string,
+    requestId: string
+  ): TaskExecutionProjection | undefined {
+    const participant = room.participants[agentParticipantId]
+    if (!participant || participant.kind !== "agent" || !participant.connected)
+      return undefined
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(agentParticipantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        !attachment ||
+        attachment.participantId !== agentParticipantId ||
+        participant.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      const turn = attachment.activeTaskTurns?.find(
+        (entry) => entry.taskRequestId === requestId
+      )
+      if (!turn) continue
+      return {
+        agentParticipantId,
+        taskRequestId: requestId,
+        currentTurnSequence: turn.turnSequence,
+        phase: "running",
+        queuedCount: 0,
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * The single writer, called only from the authenticated
+   * `agent-task-execution` event — no timer, alarm, poll, or storage write.
+   * Records the current turn, or removes the entry when the projection has
+   * none, so no Task history accumulates.
+   */
+  private recordAttachmentActiveTaskTurn(
+    room: RoomRecord,
+    participantId: string,
+    projection: TaskExecutionProjection
+  ): void {
+    const participant = room.participants[participantId]
+    if (!participant || participant.kind !== "agent") return
+    const currentTurn = projection.currentTurnSequence
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(participantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        !attachment ||
+        attachment.participantId !== participantId ||
+        participant.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      const stored = attachment.activeTaskTurns ?? []
+      const others = stored.filter(
+        (entry) => entry.taskRequestId !== projection.taskRequestId
+      )
+      const next: AgentEventActiveTaskTurn[] =
+        currentTurn === undefined
+          ? others
+          : [
+              // Oldest entry drops first: the newest turns survive.
+              ...others.slice(-(MAX_ATTACHMENT_ACTIVE_TASK_TURNS - 1)),
+              {
+                taskRequestId: projection.taskRequestId,
+                turnSequence: currentTurn,
+              },
+            ]
+      const unchanged =
+        next.length === stored.length &&
+        next.every(
+          (entry, index) =>
+            entry.taskRequestId === stored[index]?.taskRequestId &&
+            entry.turnSequence === stored[index]?.turnSequence
+        )
+      if (unchanged) continue
+      try {
+        socket.serializeAttachment({
+          ...attachment,
+          activeTaskTurns: next,
+        } satisfies AgentEventSocketAttachment)
+      } catch {
+        // Keep the previous authority; the Runtime is still the final judge.
+      }
+    }
   }
 
   /**
