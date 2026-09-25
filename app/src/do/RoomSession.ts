@@ -72,7 +72,10 @@ import {
   buildCollabOutcomeEvent,
   buildCollabRequestedEvent,
   importAnalyticsEvents,
+  isAnalyticsRoomId,
+  permissionControlValue,
   type RoomAnalyticsEvent,
+  type TaskControl,
   transitionCollaborationActivity,
   normalizeStoredCollaborationActivity,
   buildCollaborationDurationEvent,
@@ -80,6 +83,7 @@ import {
   buildRoomCreatedEvent,
   buildLiveViewPublishedEvent,
   buildGeneratedRoomAppPublishedEvent,
+  buildTaskControlUsedEvent,
   type RoomCreationSource,
 } from "./roomAnalytics"
 import { computeExpiresAt, NO_EXPIRY } from "./roomExpiry"
@@ -484,6 +488,7 @@ interface StoredRoom
     | "permissionRequests"
     | "taskLiveViews"
     | "generatedApps"
+    | "analyticsRoomId"
   > {
   participants: Record<string, StoredParticipant>
   messages: Array<Omit<RoomMessage, "sequence"> & { sequence?: number }>
@@ -503,6 +508,10 @@ interface StoredRoom
   permissionRequests?: unknown
   taskLiveViews?: unknown
   generatedApps?: unknown
+  // #346: absent on every Room persisted before this field existed. The
+  // loader backfills it once and persists the healed record (see
+  // normalizeRoom), so it is unknown here rather than trusted.
+  analyticsRoomId?: unknown
 }
 
 interface StoredLiveTranscript {
@@ -1517,6 +1526,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       JSON.stringify(stored.generatedApps ?? {})
     )
       changed = true
+    // #346: ONE analytics correlation id per canonical Room generation.
+    // Rooms persisted before this field existed are backfilled exactly once
+    // here, and `changed` makes loadRoom persist the healed record, so the id
+    // is stable across every later load, eviction, and restart. A value that
+    // is not a UUID is replaced rather than trusted: it is a host-owned
+    // correlation key that only this code may ever write.
+    const analyticsRoomId = isAnalyticsRoomId(stored.analyticsRoomId)
+      ? stored.analyticsRoomId
+      : crypto.randomUUID()
+    if (analyticsRoomId !== stored.analyticsRoomId) changed = true
     // #228: sanitize the persisted collaboration interval; an invalid one
     // is dropped (worst case: a replacement duration interval opens later).
     const collaborationActivity = normalizeStoredCollaborationActivity(
@@ -1691,6 +1710,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       room: {
         createdAt: stored.createdAt,
         expiresAt: stored.expiresAt,
+        analyticsRoomId,
         participants,
         runtimeHosts,
         collaborationActivity,
@@ -1945,6 +1965,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     return {
       createdAt: room.createdAt,
       expiresAt: room.expiresAt,
+      // #346: the SAME id this generation's own analytics events carry, so a
+      // connected browser can correlate its Room-scoped events without ever
+      // seeing the Room name or inventing an id of its own.
+      analyticsRoomId: room.analyticsRoomId,
       participants: Object.values(room.participants)
         .filter((participant) => participant.connected)
         .map(({ token: _token, connectionNonce: _nonce, ...participant }) => {
@@ -3578,6 +3602,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // requestId the Runtime already pinned — the SAME canonical
     // collaboration ingestion every ordinary Start Task uses.
     let appended = false
+    // #346: the continuation counts only when THIS call actually created the
+    // canonical Task. record.taskRequestId is freshly minted per preparation,
+    // so a deduplicated replay can never inflate the supervision metric.
+    let continuationCreatedTask = false
     try {
       const ingest = await this.ingestCollabWorkRequest(room, sender, {
         requestId: record.taskRequestId,
@@ -3585,6 +3613,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         summary: record.summary,
       })
       appended = ingest.status !== "rejected"
+      continuationCreatedTask = ingest.status === "recorded"
     } catch {
       // A controlled append refusal (for example the primary Room record
       // exceeding its state budget) is still an append failure: no Task
@@ -3614,6 +3643,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       pending.browserRequestId,
       true
     )
+    // #346: canonical success boundary — the session-continued Task is
+    // durably created and the Human was told so. A failed preparation or a
+    // rejected append returned above and emits nothing.
+    if (continuationCreatedTask) this.trackTaskControl(room, "session-continue")
   }
 
   private deserializeAgentEventAttachment(
@@ -4147,6 +4180,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  // #346: ONE TaskControlUsed per ACCEPTED canonical supervision control.
+  // Every caller reaches this only after the Room already performed the
+  // canonical action, so impressions, disabled controls, rejected or
+  // unauthorized attempts, malformed requests, and failed deliveries emit
+  // nothing. Best-effort exactly like every other Room analytics emit: it can
+  // never fail, delay, or alter the Room mutation it observes.
+  private trackTaskControl(room: RoomRecord, control: TaskControl): void {
+    this.trackRoomAnalytics([
+      buildTaskControlUsedEvent({
+        roomName: this.roomAnalyticsName(),
+        analyticsRoomId: room.analyticsRoomId,
+        participants: Object.values(room.participants),
+        control,
+      }),
+    ])
+  }
+
   // #234: one TargetedMessage per canonical accepted TEXT message that
   // carries explicit Room targets. Structured collab action messages never
   // reach this helper (CollabRequested/Outcome remain authoritative for the
@@ -4162,11 +4212,33 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.trackRoomAnalytics([
       buildTargetedMessageEvent({
         roomName: this.roomAnalyticsName(),
+        analyticsRoomId: room.analyticsRoomId,
         participants: Object.values(room.participants),
         senderParticipantId: message.peerId,
         targetParticipantIds: message.targets,
       }),
     ])
+  }
+
+  // #346: the canonical request message's own createdAt, if it is still
+  // inside the bounded Room message ring. This is the ONLY duration source:
+  // no analytics-specific Task timing state is persisted (and Room history
+  // is never enlarged for telemetry). A Task whose request has already been
+  // evicted reports no duration rather than a reconstructed one.
+  private retainedCollabRequestCreatedAt(
+    room: RoomRecord,
+    requestId: string
+  ): number | undefined {
+    for (const message of room.messages) {
+      if (message.actionType !== COLLAB_ACTION_TYPE) continue
+      const collab = message.collab
+      if (collab?.kind !== "request" || collab.requestId !== requestId) continue
+      return typeof message.createdAt === "number" &&
+        Number.isFinite(message.createdAt)
+        ? message.createdAt
+        : undefined
+    }
+    return undefined
   }
 
   // #228: advance the OPEN 2+-participant collaboration interval after any
@@ -4186,6 +4258,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!summary) return undefined
     return buildCollaborationDurationEvent({
       roomName: this.roomAnalyticsName(),
+      analyticsRoomId: room.analyticsRoomId,
       durationMs: summary.durationMs,
       collaborationMode: summary.collaborationMode,
       participantBucket: summary.participantBucket,
@@ -4505,6 +4578,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room = {
           createdAt: now,
           expiresAt: NO_EXPIRY,
+          // #346: minted with the generation and persisted by the saveRoom
+          // below, so RoomCreated and every later Room-scoped event refer to
+          // the exact persisted generation. Never a temporary placeholder.
+          analyticsRoomId: crypto.randomUUID(),
           participants: {},
           messages: [],
           liveTranscript: NO_LIVE_TRANSCRIPT,
@@ -4699,6 +4776,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           events.push(
             buildRoomCreatedEvent({
               roomName: this.roomAnalyticsName(),
+              analyticsRoomId: room.analyticsRoomId,
               creatorKind: participant.kind,
               creationSource:
                 request.creationSource ??
@@ -4710,6 +4788,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         events.push(
           buildAgentJoinedEvent({
             roomName: this.roomAnalyticsName(),
+            analyticsRoomId: room.analyticsRoomId,
             participants: Object.values(room.participants),
           })
         )
@@ -4730,6 +4809,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         this.trackRoomAnalytics([
           buildRoomCreatedEvent({
             roomName: this.roomAnalyticsName(),
+            analyticsRoomId: room.analyticsRoomId,
             creatorKind: participant.kind,
             creationSource:
               request.creationSource ??
@@ -4769,6 +4849,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const room: RoomRecord = {
         createdAt: now,
         expiresAt: NO_EXPIRY,
+        // #346: see the register-materialization site. The create-only gate
+        // above guarantees this is a fresh generation, so exactly one
+        // analyticsRoomId is minted and persisted for it.
+        analyticsRoomId: crypto.randomUUID(),
         participants: {},
         messages: [],
         liveTranscript: NO_LIVE_TRANSCRIPT,
@@ -4811,11 +4895,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       const events: RoomAnalyticsEvent[] = [
         buildRoomCreatedEvent({
           roomName: this.roomAnalyticsName(),
+          analyticsRoomId: room.analyticsRoomId,
           creatorKind: participant.kind,
           creationSource: request.creationSource ?? "mcp",
         }),
         buildAgentJoinedEvent({
           roomName: this.roomAnalyticsName(),
+          analyticsRoomId: room.analyticsRoomId,
           participants: Object.values(room.participants),
         }),
       ]
@@ -4988,6 +5074,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.trackRoomAnalytics([
         buildLiveViewPublishedEvent({
           roomName: this.roomAnalyticsName(),
+          analyticsRoomId: room.analyticsRoomId,
           participants: Object.values(room.participants),
           phase: publicationPhase,
         }),
@@ -5101,6 +5188,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         this.trackRoomAnalytics([
           buildGeneratedRoomAppPublishedEvent({
             roomName: this.roomAnalyticsName(),
+            analyticsRoomId: room.analyticsRoomId,
             participants: Object.values(room.participants),
             phase: "update",
             bundleBytes: publication.bundleBytes,
@@ -5189,6 +5277,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.trackRoomAnalytics([
         buildGeneratedRoomAppPublishedEvent({
           roomName: this.roomAnalyticsName(),
+          analyticsRoomId: room.analyticsRoomId,
           participants: Object.values(room.participants),
           phase: "first",
           bundleBytes: publication.bundleBytes,
@@ -6708,6 +6797,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.scheduleNextAlarm(room)
     await this.broadcast({ type: "message", message })
     this.resolveAgentWaiters(room)
+    // #346: the accepted canonical resolution is the success boundary, but
+    // ONLY a Task-correlated permission is Task supervision. An ordinary Room
+    // conversation permission carries no taskRequestId and must never enter
+    // TaskControlUsed — otherwise the supervision metric would be diluted by
+    // unrelated conversation approvals.
+    //
+    // For a genuinely Task-scoped request the control value comes from the
+    // SELECTED option's protocol-level `kind` (ACP allow_once/allow_always/
+    // reject_once/reject_always) when the Room holds it, and degenerates to a
+    // single coarse `permission-response` otherwise — display names and
+    // opaque optionIds are never interpreted. Unknown/expired/invalid
+    // requests and non-Human callers returned above and emit nothing.
+    if (record.taskRequestId !== undefined) {
+      this.trackTaskControl(
+        room,
+        permissionControlValue(
+          record.event.options.find(
+            (option) => option.optionId === selectedOptionId
+          )?.kind
+        )
+      )
+    }
     return { ok: true }
   }
 
@@ -6812,19 +6923,40 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // exactly one CollabOutcome with ORIGINAL requester/target topology
     // (the registry reverses direction on outcome envelopes); accepted
     // never emits; "duplicate" replays never reach this emit.
+    //
+    // #346 product-value depth. Every added property is derived from THIS
+    // exact canonical request id, so concurrent Tasks can never contaminate
+    // one another:
+    //   - durationBucket: from the RETAINED canonical request message's own
+    //     createdAt to this canonical terminal message's createdAt. No Task
+    //     timing database exists or is introduced; once the request has
+    //     fallen outside the bounded message ring the property is omitted.
+    //   - hasLiveView / hasGeneratedApp: Task-correlated canonical Room
+    //     state, both keyed by the same taskRequestId.
     if (
       event.kind === "declined" ||
       event.kind === "completed" ||
       event.kind === "failed"
     ) {
+      const requestCreatedAt = this.retainedCollabRequestCreatedAt(
+        room,
+        event.requestId
+      )
       this.trackRoomAnalytics([
         buildCollabOutcomeEvent({
           roomName: this.roomAnalyticsName(),
+          analyticsRoomId: room.analyticsRoomId,
           participants: Object.values(room.participants),
           kind: event.kind,
           fromParticipantId: event.fromParticipantId,
           targetParticipantId: event.targetParticipantId,
           attachmentIds: event.attachmentIds,
+          ...(requestCreatedAt === undefined ? {} : { requestCreatedAt }),
+          completedAt: roomMessage.createdAt,
+          hasLiveView: room.taskLiveViews?.[event.requestId] !== undefined,
+          hasGeneratedApp: Object.values(room.generatedApps ?? {}).some(
+            (publication) => publication.taskRequestId === event.requestId
+          ),
         }),
       ])
     }
@@ -6939,6 +7071,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.trackRoomAnalytics([
       buildCollabRequestedEvent({
         roomName: this.roomAnalyticsName(),
+        analyticsRoomId: room.analyticsRoomId,
         participants: Object.values(room.participants),
         fromParticipantId: validated.event.fromParticipantId,
         targetParticipantId: validated.event.targetParticipantId,
@@ -8066,6 +8199,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         reject("instruction_queued_interrupt_unavailable")
         return
       }
+      // #346: the canonical interrupt-and-send actually landed on the
+      // authoritative current turn. The redirected instruction text is
+      // deliberately NOT part of the event.
+      this.trackTaskControl(room, "interrupt-send")
       return
     }
 
@@ -8129,6 +8266,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // No acknowledgement frame is sent: the interrupt is edge-triggered and
       // the Runtime decides locally whether it owns a matching live turn. The
       // Task itself remains open and usable either way.
+      //
+      // #346: the accepted canonical interrupt is the success boundary — the
+      // authorization checks above already rejected unknown Tasks, wrong
+      // turns, non-Human callers, and unreachable Agents.
+      this.trackTaskControl(room, "interrupt")
       return
     }
 

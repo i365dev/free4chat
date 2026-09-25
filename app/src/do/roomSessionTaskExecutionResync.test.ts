@@ -80,6 +80,7 @@ function agent(
 function room(features: Record<string, boolean>): RoomRecord {
   return {
     createdAt: 1,
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: FAR_FUTURE,
     participants: {
       "human-1": human("human-1", "human-1-token"),

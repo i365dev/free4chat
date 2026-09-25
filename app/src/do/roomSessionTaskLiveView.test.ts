@@ -8,6 +8,7 @@ const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 function makeRoom(): RoomRecord {
   return {
     createdAt: 1,
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: FAR_FUTURE,
     participants: {
       human: {

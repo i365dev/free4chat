@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from "react"
 
-import { trackAnalyticsEvent } from "@common/utils"
+import { trackAnalyticsEvent, withAnalyticsRoomId } from "@common/utils"
 
 interface AgentInviteControlProps {
   roomType: string
+  /**
+   * #346: the canonical Room generation's analytics correlation id, exactly
+   * as projected by RoomState. Absent until the server has projected
+   * authoritative Room state; this control never invents one.
+   */
+  analyticsRoomId?: string
   /** The ACTUAL invite prompt (buildAgentInvitePrompt output) — the single
    * source of truth rendered read-only in the feature popover. */
   invitePrompt: string
@@ -24,6 +30,7 @@ interface AgentInviteControlProps {
  */
 export default function AgentInviteControl({
   roomType,
+  analyticsRoomId,
   invitePrompt,
   open,
   onOpenChange,
@@ -64,10 +71,10 @@ export default function AgentInviteControl({
       .then(() => {
         // #236 follow-up: emit ONLY after the prompt actually reached the
         // clipboard — one event per successful write, never on open/view.
-        trackAnalyticsEvent("AgentInviteCopied", {
-          surface: "room",
-          roomType,
-        })
+        trackAnalyticsEvent(
+          "AgentInviteCopied",
+          withAnalyticsRoomId({ surface: "room", roomType }, analyticsRoomId)
+        )
         setCopied(true)
       })
       .catch(() => {

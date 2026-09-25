@@ -40,6 +40,7 @@ function participant(id: string, kind: "human" | "agent") {
 function roomFixture(): RoomRecord {
   return {
     createdAt: Date.now(),
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: Date.now() + 60 * 60 * 1000,
     participants: {
       human: participant("human", "human"),

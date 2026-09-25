@@ -173,6 +173,7 @@ const taskLiveViewSnapshot = {
 function lateJoinRoom(): RoomRecord {
   return {
     createdAt: 1,
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: LATE_JOIN_EXPIRY,
     participants: {
       "human-a": {
@@ -4435,13 +4436,20 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           participantBucket: "2-3",
           activationDelaySeconds: 30,
           acquisitionPage: "typing-race",
+          // #346 same-browser repeat-use direction. This browser remembers no
+          // prior Rooms, so the truthful answer is "no prior use".
+          returningBrowser: false,
+          priorRoomCountBucket: "0",
         })
         // Existing RoomActivated properties are untouched; only the bounded
-        // acquisition intent is added.
+        // acquisition intent and the coarse browser-local repeat-use
+        // direction are added.
         expect(Object.keys(trackedEvent("RoomActivated")).sort()).toEqual([
           "acquisitionPage",
           "activationDelaySeconds",
           "participantBucket",
+          "priorRoomCountBucket",
+          "returningBrowser",
           "roomType",
         ])
       })
@@ -4483,13 +4491,162 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           roomType: "audio",
           participantBucket: "2-3",
           activationDelaySeconds: 30,
+          returningBrowser: false,
+          priorRoomCountBucket: "0",
         })
         expect(Object.keys(trackedEvent("RoomActivated")).sort()).toEqual([
           "activationDelaySeconds",
           "participantBucket",
+          "priorRoomCountBucket",
+          "returningBrowser",
           "roomType",
         ])
       })
+    })
+  })
+
+  describe("#346 Room-scoped browser analytics correlation", () => {
+    const ROOM_ID = "3f7c1c2e-9a4b-4d5e-8f01-2b6c7d8e9f10"
+    const localParticipant = {
+      peerId: "local-peer",
+      name: "Alice",
+      kind: "human",
+      room: "test-room",
+      muteState: false,
+    }
+
+    /** The recorded payload of one analytics event, key-for-key exact. */
+    function trackedEvent(eventName: string, index = -1) {
+      const calls = vi
+        .mocked(trackAnalyticsEvent)
+        .mock.calls.filter(([name]) => name === eventName)
+      const call = index < 0 ? calls.at(index) : calls[index]
+      expect(call, `${eventName} must be tracked`).toBeDefined()
+      return call?.[1] as Record<string, unknown>
+    }
+
+    it("carries the canonical Room generation id on every Room-scoped event", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+      analyticsSpy.mockClear()
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValue(TEST_ROOM_APP_CATALOG)
+      const remoteHuman = {
+        peerId: "human-b",
+        name: "Bob",
+        kind: "human",
+        room: "test-room",
+        muteState: false,
+      }
+      vi.useFakeTimers()
+      let view: ReturnType<typeof render> | undefined
+      try {
+        mockUseSfuChatRoom.mockReturnValue({
+          ...baseHookReturn,
+          connectionStatus: "connected",
+          roomAppsEnabled: true,
+          analyticsRoomId: ROOM_ID,
+          participants: [localParticipant, remoteHuman],
+        })
+        view = render(
+          <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+        )
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(30_000)
+        })
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+        catalogLoader.mockRestore()
+      }
+
+      // RoomActivated: the canonical id rides alongside the existing
+      // properties and the coarse browser-local repeat-use direction.
+      expect(trackedEvent("RoomActivated")).toEqual({
+        roomType: "audio",
+        participantBucket: "2-3",
+        activationDelaySeconds: 30,
+        returningBrowser: false,
+        priorRoomCountBucket: "0",
+        analyticsRoomId: ROOM_ID,
+      })
+
+      // AgentInviteCopied is Room-scoped too, and gets the SAME id. It is
+      // rendered in its own real-timer mount so the idle 30s activation
+      // window cannot interfere with the clipboard interaction.
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.assign(navigator, { clipboard: { writeText } })
+      const inviteView = render(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+      fireEvent.click(screen.getByRole("button", { name: "Invite Agent" }))
+      fireEvent.click(
+        screen.getByRole("button", { name: "Copy invite prompt" })
+      )
+      await waitFor(() =>
+        expect(trackedEvent("AgentInviteCopied")).toEqual({
+          surface: "room",
+          roomType: "audio",
+          analyticsRoomId: ROOM_ID,
+        })
+      )
+      inviteView.unmount()
+    })
+
+    it("never fabricates a correlation id before authoritative Room state exists", async () => {
+      vi.stubEnv("NODE_ENV", "production")
+      const analyticsSpy = vi.mocked(trackAnalyticsEvent)
+      analyticsSpy.mockClear()
+      const catalogLoader = vi
+        .spyOn(roomAppModule, "loadProductionRoomAppCatalog")
+        .mockResolvedValue(TEST_ROOM_APP_CATALOG)
+      const remoteHuman = {
+        peerId: "human-b",
+        name: "Bob",
+        kind: "human",
+        room: "test-room",
+        muteState: false,
+      }
+      vi.useFakeTimers()
+      let view: ReturnType<typeof render> | undefined
+      try {
+        // No analyticsRoomId: the server has not projected Room state yet.
+        mockUseSfuChatRoom.mockReturnValue({
+          ...baseHookReturn,
+          connectionStatus: "connected",
+          roomAppsEnabled: true,
+          participants: [localParticipant, remoteHuman],
+        })
+        view = render(
+          <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+        )
+        await act(async () => {
+          await Promise.resolve()
+          await Promise.resolve()
+        })
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(30_000)
+        })
+      } finally {
+        view?.unmount()
+        vi.useRealTimers()
+        catalogLoader.mockRestore()
+      }
+
+      const payload = trackedEvent("RoomActivated")
+      expect(payload).not.toHaveProperty("analyticsRoomId")
+      expect(Object.keys(payload).sort()).toEqual([
+        "activationDelaySeconds",
+        "participantBucket",
+        "priorRoomCountBucket",
+        "returningBrowser",
+        "roomType",
+      ])
     })
   })
 

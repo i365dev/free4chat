@@ -53,6 +53,7 @@ import {
   ROOM_APP_INLINE_SHORTCUTS_MOBILE,
   writeRecentRoomAppIds,
 } from "../common/roomAppRecents"
+import { browserRepeatUse } from "../common/roomHistory"
 import { taskExecutionLabel } from "../common/taskExecution"
 import {
   isLargeTaskPaste,
@@ -74,6 +75,7 @@ import {
   trackAnalyticsEvent,
   hashRoom,
   participantsBucket,
+  withAnalyticsRoomId,
 } from "../common/utils"
 import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
@@ -456,6 +458,7 @@ export default function RoomContent({
     getLocalRoomAuth,
     messages,
     attachments,
+    analyticsRoomId,
     taskLiveViews,
     generatedApps = {},
     sendTextMessage,
@@ -510,6 +513,32 @@ export default function RoomContent({
   })
   const generatedAppsRef = useRef(generatedApps)
   generatedAppsRef.current = generatedApps
+  // #346: the canonical Room generation id is stable for this Room page, so
+  // the memoized App/live-view callbacks can read it without depending on the
+  // value and being re-created. It stays undefined until the server has
+  // projected authoritative Room state, and the browser never mints one.
+  const analyticsRoomIdRef = useRef<string | undefined>(analyticsRoomId)
+  analyticsRoomIdRef.current = analyticsRoomId
+  // Every browser event that observes a concrete Room goes through here, so
+  // the canonical `analyticsRoomId` is attached in exactly one place. Before
+  // the Room has projected its state the call keeps its original shape — an
+  // event that cannot be Room-correlated is never given an empty or invented
+  // correlation property.
+  const trackRoomScopedEvent = useCallback(
+    (eventName: string, properties?: Record<string, unknown>): void => {
+      const id = analyticsRoomIdRef.current
+      if (id) {
+        trackAnalyticsEvent(
+          eventName,
+          withAnalyticsRoomId(properties ?? {}, id)
+        )
+        return
+      }
+      if (properties) trackAnalyticsEvent(eventName, properties)
+      else trackAnalyticsEvent(eventName)
+    },
+    []
+  )
 
   const taskProjections = useMemo(
     () => buildTaskProjections(messages),
@@ -802,18 +831,18 @@ export default function RoomContent({
       const key = `${taskRequestId}:${surfaceId}`
       if (observedLiveViewKeys.current.has(key)) return
       observedLiveViewKeys.current.add(key)
-      trackAnalyticsEvent("LiveViewVisible")
+      trackRoomScopedEvent("LiveViewVisible")
     },
-    []
+    [trackRoomScopedEvent]
   )
   const handleLiveViewInteracted = useCallback(
     (taskRequestId: string, surfaceId: string) => {
       const key = `${taskRequestId}:${surfaceId}`
       if (interactedLiveViewKeys.current.has(key)) return
       interactedLiveViewKeys.current.add(key)
-      trackAnalyticsEvent("LiveViewInteracted")
+      trackRoomScopedEvent("LiveViewInteracted")
     },
-    []
+    [trackRoomScopedEvent]
   )
   const interactionMessages = activeTask
     ? activeTask.messages
@@ -1182,52 +1211,58 @@ export default function RoomContent({
     roomAppsEnabled,
   ])
 
-  const handleRoomAppReady = useCallback((appId: string) => {
-    setReadyRoomAppIds((previous) =>
-      previous.includes(appId) ? previous : [...previous, appId]
-    )
-    if (process.env.NODE_ENV !== "production") return
-    // Only curated production Apps are reported; local dev fixtures and any
-    // unallowlisted id stay out of analytics without a second allowlist.
-    const productionAppId = resolveProductionRoomAppId(appId)
-    if (productionAppId) {
-      trackAnalyticsEvent(
-        "RoomAppMounted",
-        withAcquisitionPage(
-          { app: productionAppId },
-          acquisitionPageRef.current
-        )
+  const handleRoomAppReady = useCallback(
+    (appId: string) => {
+      setReadyRoomAppIds((previous) =>
+        previous.includes(appId) ? previous : [...previous, appId]
       )
-    } else if (appId.startsWith("generated:")) {
-      trackAnalyticsEvent(
-        "RoomAppMounted",
-        withAcquisitionPage(
-          { appSource: "generated" },
-          acquisitionPageRef.current
+      if (process.env.NODE_ENV !== "production") return
+      // Only curated production Apps are reported; local dev fixtures and any
+      // unallowlisted id stay out of analytics without a second allowlist.
+      const productionAppId = resolveProductionRoomAppId(appId)
+      if (productionAppId) {
+        trackRoomScopedEvent(
+          "RoomAppMounted",
+          withAcquisitionPage(
+            { app: productionAppId },
+            acquisitionPageRef.current
+          )
         )
-      )
-    }
-  }, [])
+      } else if (appId.startsWith("generated:")) {
+        trackRoomScopedEvent(
+          "RoomAppMounted",
+          withAcquisitionPage(
+            { appSource: "generated" },
+            acquisitionPageRef.current
+          )
+        )
+      }
+    },
+    [trackRoomScopedEvent]
+  )
 
-  const handleRoomAppEngaged = useCallback((appId: string) => {
-    if (process.env.NODE_ENV !== "production") return
-    const productionAppId = resolveProductionRoomAppId(appId)
-    if (!productionAppId && !appId.startsWith("generated:")) return
-    trackAnalyticsEvent(
-      "RoomAppEngaged",
-      withAcquisitionPage(
-        {
-          ...(productionAppId
-            ? { app: productionAppId }
-            : { appSource: "generated" }),
-          participantsBucket: participantsBucket(
-            humanParticipantCountRef.current
-          ),
-        },
-        acquisitionPageRef.current
+  const handleRoomAppEngaged = useCallback(
+    (appId: string) => {
+      if (process.env.NODE_ENV !== "production") return
+      const productionAppId = resolveProductionRoomAppId(appId)
+      if (!productionAppId && !appId.startsWith("generated:")) return
+      trackRoomScopedEvent(
+        "RoomAppEngaged",
+        withAcquisitionPage(
+          {
+            ...(productionAppId
+              ? { app: productionAppId }
+              : { appSource: "generated" }),
+            participantsBucket: participantsBucket(
+              humanParticipantCountRef.current
+            ),
+          },
+          acquisitionPageRef.current
+        )
       )
-    )
-  }, [])
+    },
+    [trackRoomScopedEvent]
+  )
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") return
@@ -1235,7 +1270,7 @@ export default function RoomContent({
     if (sharedSessionTrackedAppIdsRef.current.has(sharedSessionRoomAppId))
       return
     sharedSessionTrackedAppIdsRef.current.add(sharedSessionRoomAppId)
-    trackAnalyticsEvent(
+    trackRoomScopedEvent(
       "RoomAppSharedSession",
       withAcquisitionPage(
         {
@@ -1245,7 +1280,13 @@ export default function RoomContent({
         acquisitionPage
       )
     )
-  }, [acquisitionPage, humanParticipantCount, sharedSessionRoomAppId])
+  }, [
+    acquisitionPage,
+    analyticsRoomId,
+    humanParticipantCount,
+    sharedSessionRoomAppId,
+    trackRoomScopedEvent,
+  ])
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "production" || humanParticipantCount < 2)
@@ -1261,7 +1302,7 @@ export default function RoomContent({
       sharedSessionTrackedGeneratedAppIdsRef.current.add(
         publication.appInstanceId
       )
-      trackAnalyticsEvent(
+      trackRoomScopedEvent(
         "RoomAppSharedSession",
         withAcquisitionPage(
           {
@@ -1272,7 +1313,14 @@ export default function RoomContent({
         )
       )
     }
-  }, [acquisitionPage, generatedApps, humanParticipantCount, readyRoomAppIds])
+  }, [
+    acquisitionPage,
+    analyticsRoomId,
+    generatedApps,
+    humanParticipantCount,
+    readyRoomAppIds,
+    trackRoomScopedEvent,
+  ])
 
   const screenshareAllowed = resolvedRoomType === "screenshare"
 
@@ -1839,13 +1887,23 @@ export default function RoomContent({
 
     const timeout = window.setTimeout(() => {
       activatedRoomRef.current = true
-      trackAnalyticsEvent(
+      // #346 same-browser repeat-use direction: the Rooms this browser
+      // remembered BEFORE this page load wrote its own entry, reduced to a
+      // boolean plus a coarse bucket. Same-name reuse still counts — a
+      // returning visitor is never scored as new — while this launch's own
+      // entry never can. It is directional evidence about this one browser,
+      // never account / cross-device / D7-D30 retention, and no Room name
+      // leaves it.
+      const repeatUse = browserRepeatUse()
+      trackRoomScopedEvent(
         "RoomActivated",
         withAcquisitionPage(
           {
             roomType: resolvedRoomType,
             participantBucket: participantsBucket(participants.length),
             activationDelaySeconds: 30,
+            returningBrowser: repeatUse.returningBrowser,
+            priorRoomCountBucket: repeatUse.priorRoomCountBucket,
           },
           acquisitionPage
         )
@@ -1853,7 +1911,13 @@ export default function RoomContent({
     }, 30_000)
 
     return () => window.clearTimeout(timeout)
-  }, [acquisitionPage, connectionStatus, participants.length, resolvedRoomType])
+  }, [
+    acquisitionPage,
+    connectionStatus,
+    participants.length,
+    resolvedRoomType,
+    trackRoomScopedEvent,
+  ])
 
   // Human + Agent collaboration analytics: derived from canonical Room state
   // (the connected roster and persisted collaboration envelopes), never from
@@ -2244,6 +2308,7 @@ export default function RoomContent({
             </button>
             <AgentInviteControl
               roomType={resolvedRoomType}
+              analyticsRoomId={analyticsRoomId}
               invitePrompt={buildAgentInvitePrompt(roomName)}
               open={agentInviteOpen}
               onOpenChange={setAgentInviteOpen}

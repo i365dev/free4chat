@@ -195,10 +195,15 @@ function humanParticipant(
   }
 }
 
+// #346: Room-authoritative generation correlation id, exactly as the
+// server projects it in RoomState.
+const TEST_ANALYTICS_ROOM_ID = "3f7c1c2e-9a4b-4d5e-8f01-2b6c7d8e9f10"
+
 function roomState(participants: SfuRoomState["participants"]): SfuRoomState {
   return {
     createdAt: 0,
     expiresAt: Date.now() + 60 * 60 * 1000,
+    analyticsRoomId: TEST_ANALYTICS_ROOM_ID,
     participants,
     messages: [],
     meetingNotes: { active: false },

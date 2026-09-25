@@ -139,6 +139,12 @@ describe("RoomCreated Room-authoritative analytics (#234)", () => {
     expect(created[0].properties.creationSource).toBe("browser")
     expect(created[0].properties.roomHash).toBeTruthy()
     expect(created[0].properties.roomHash).not.toContain("test-room")
+    // #346: dual-write — the historical roomHash stays untouched and the
+    // canonical generation id rides with it. Identity equality with the
+    // persisted record is pinned in roomSessionAnalyticsRoomId.test.ts.
+    expect(created[0].properties.analyticsRoomId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    )
     expect(created[0].properties.distinct_id).toBe("server:free4chat")
     // Privacy: no participant ids/names or raw room name.
     const serialized = JSON.stringify(created[0])
