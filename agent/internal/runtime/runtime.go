@@ -47,6 +47,24 @@ type logicalSessionState struct {
 	liveTranscriptDeliveredThrough int64
 	liveTranscriptDeliveryFloor    int64
 	sourceCursors                  map[string]int64
+	// admittedSequence is the canonical Room sequence of this scope's FIRST
+	// delivered trigger — the Task's collaboration request. It is what dates a
+	// Task's identity record for bounded retention (#473).
+	admittedSequence int64
+	// rematerializing marks a scope whose state was seeded from the released
+	// Task ledger (#473): the adapter still holds this Task's exact native
+	// conversation, so the next session edge for the scope materializes THAT
+	// conversation instead of replacing it. It is consumed by the first
+	// observed session generation.
+	rematerializing bool
+	// terminal records that this Task scope's canonical collaboration reached
+	// a terminal lifecycle state (declined|completed|failed), exactly the set
+	// the Room itself projects as Completed/Failed. It is observed from the
+	// canonical collaboration envelope — either published by this Runtime or
+	// received from the Room — and it is NEVER inferred from idle time, turn
+	// count, or a scope's mere existence. It is the only local fact that makes
+	// a scope eligible for reclamation (#473); see scope_reclaim.go.
+	terminal bool
 }
 
 // Status is the side-effect-free status projection returned over IPC.
@@ -290,9 +308,15 @@ type ResidentRuntime struct {
 	// its invariants stay structurally unchanged.
 	scopedSessions map[string]*logicalSessionState
 	scopeOrder     []string
-	advertisedCaps []string
-	roster         []types.ParticipantRosterEntry
-	resolvedRoomID string
+	// releasedTaskScopes is the bounded Runtime-side memory of Task scopes
+	// whose exact conversation was given back but can still be materialized,
+	// in release order. It is what keeps a resumed conversation truthful after
+	// reclamation (#473); see scope_reclaim.go.
+	releasedTaskScopes map[string]releasedTaskScope
+	releasedTaskOrder  []string
+	advertisedCaps     []string
+	roster             []types.ParticipantRosterEntry
+	resolvedRoomID     string
 	// participatingSince is set once on the lifecycle's first successful
 	// adoptJoin and preserved across transient retries/reconnects (#228).
 	participatingSince int64
@@ -352,19 +376,16 @@ type ResidentRuntime struct {
 	// applied to a successor turn. Keying by scope is what keeps an interrupt
 	// on Task A from ever being consumed by Task B (#421).
 	interrupts map[string]int64
-	// session handoff (#409 V1, Pi only): ONE locally armed adoption plus the
-	// bounded set of Task scopes that already adopted a native session. The ACP
+	// session handoff (#409 V1, Pi only): ONE locally armed adoption. The ACP
 	// session id lives only in pendingAdoption and is dropped once the adapter
-	// has loaded it; adoptedLostScopes is the fact that keeps an adopted Task
-	// from ever falling back to a fresh conversation.
+	// has loaded it.
 	pendingAdoption *pendingSessionAdoption
-	// taskProjectCwds retains explicit new-Task project identity above the
-	// transient provider process, keyed by the exact logical Task scope.
-	taskProjectCwds   map[string]string
-	taskSessionModes  map[string]string
-	taskSessionConfig map[string]map[string]string
-	adoptedScopes     map[string]struct{}
-	adoptedLostScopes map[string]struct{}
+	// taskIdentities is the bounded retention of Task IDENTITY: the selected
+	// project, the Human's native session controls, and the adopted-native-
+	// conversation binding that must never change silently. Records are pruned
+	// exactly when the Room can no longer deliver a trigger for that Task (see
+	// task_identity.go), so this is never a lifetime map.
+	taskIdentities map[string]*taskIdentity
 	// declinedPrepared is the bounded local record of EXACT prepared
 	// requestIds whose adoption expired before their Task arrived. See
 	// session_adoption.go.
@@ -516,11 +537,8 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		turnRetries:          make(map[canonicalTurnKey]*turnRetryState),
 		turnRetryWake:        make(chan struct{}, 1),
 		taskExecutionFacts:   make(map[string]taskExecutionFacts),
-		adoptedScopes:        make(map[string]struct{}),
-		adoptedLostScopes:    make(map[string]struct{}),
-		taskProjectCwds:      make(map[string]string),
-		taskSessionModes:     make(map[string]string),
-		taskSessionConfig:    make(map[string]map[string]string),
+		taskIdentities:       make(map[string]*taskIdentity),
+		releasedTaskScopes:   make(map[string]releasedTaskScope),
 		taskSessionSessions:  make(map[string]taskSessionSelection),
 		taskSessionProjects:  make(map[string]taskSessionProject),
 		taskSessionPages:     make(map[string]taskSessionPage),
@@ -782,6 +800,9 @@ func (r *ResidentRuntime) join() error {
 		r.mu.Unlock()
 	}
 	r.adoptJoin(joined)
+	// A reconnect is a cheap, natural boundary for the same bounded identity
+	// retention sweep (#473).
+	r.pruneUnreachableTaskIdentities()
 	return nil
 }
 
@@ -810,6 +831,7 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.closedTurnRecovery = nil
 		r.scopedSessions = nil
 		r.scopeOrder = nil
+		r.clearReleasedConversationsLocked()
 	}
 	if r.unresolvedTurnFailureLocked() {
 		// A transport join/rejoin is not an explicit recovery boundary: a
@@ -1376,19 +1398,54 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	claimed := false
 	ref, admitted := r.ensureSessionRefLocked(scope)
 	if !admitted {
+		// #473: a full resident gives back ONE terminal, idle Task scope
+		// before it refuses new work. This is the only path that leaves r.mu:
+		// reclamation asks the adapter to release that scope's conversation.
+		// The admission is then retried under the lock exactly once, so a
+		// resident with nothing reclaimable keeps its existing fail-closed
+		// rejection. Only a scope that did not exist could reach this branch,
+		// so the retried ref can never have been reclaimed in between.
 		r.mu.Unlock()
-		r.log("logical_scope_rejected", map[string]string{"reason": "capacity"})
-		r.reportTaskScopeCapacityFailure(event)
-		return
+		// Bounded identity retention (#473): a Task the Room can no longer
+		// trigger must not keep identity memory alive. The read is gated by a
+		// sweep threshold, so it only happens while the resident is holding more
+		// identities than one live plus one released window.
+		r.pruneUnreachableTaskIdentities()
+		if r.reclaimTerminalTaskScope() {
+			r.mu.Lock()
+			ref, admitted = r.ensureSessionRefLocked(scope)
+			r.mu.Unlock()
+		}
+		if !admitted {
+			r.log("logical_scope_rejected", map[string]string{"reason": "capacity"})
+			r.reportTaskScopeCapacityFailure(event)
+			return
+		}
+		r.mu.Lock()
 	}
 	r.eventBuffer.Add(event)
 	if newScope {
+		// The Task's first delivered trigger is its canonical collaboration
+		// request; that sequence is what bounds this Task's identity record.
+		state := r.scopedSessions[scope]
+		if state != nil && state.admittedSequence == 0 {
+			state.admittedSequence = event.Sequence
+		}
+	}
+	if newScope && (ref.rematerializing == nil || !*ref.rematerializing) {
 		// A task scope starts at its first task-correlated trigger. Earlier
 		// private Room conversation remains pull-only and is not copied into a
-		// new Harness conversation implicitly.
+		// new Harness conversation implicitly. A scope resuming a released but
+		// still-materializable conversation keeps the delivery knowledge that
+		// conversation already had (#473).
 		*ref.deliveredThrough = event.Sequence - 1
 		*ref.roomDeliveryFloor = event.Sequence - 1
 	}
+	// A terminal collaboration envelope for THIS scope is the canonical Task
+	// lifecycle edge, whether it originated here or from the Room (a Human
+	// closing a Task this Agent opened). It is recorded on the scope the event
+	// already routed to, so it can never mark another Task terminal (#473).
+	r.observeTaskScopeTerminalLocked(scope, event)
 	if event.Addressed && !containsSequence(*ref.pendingAddressed, event.Sequence) {
 		// Do not use BoundedPush here. An addressed trigger remains unacknowledged
 		// until RunTurn succeeds, so front eviction would silently lose a failed
@@ -2242,7 +2299,16 @@ func (r *ResidentRuntime) CollabResponse(args types.CollabResponseArgs) (types.S
 	if err != nil {
 		return types.SendTextResult{}, err
 	}
-	return r.options.Client.SendCollabResponse(handle, args)
+	sent, err := r.options.Client.SendCollabResponse(handle, args)
+	if err != nil {
+		return sent, err
+	}
+	// A canonical decline ends this Task's lifecycle (the Room projects it as
+	// Failed). An acceptance opens work and is deliberately NOT terminal.
+	if args.Decision == "declined" {
+		r.noteTaskScopeTerminal(args.RequestID)
+	}
+	return sent, nil
 }
 
 // CollabResult publishes the structured outcome of accepted work.
@@ -2251,7 +2317,15 @@ func (r *ResidentRuntime) CollabResult(args types.CollabResultArgs) (types.SendT
 	if err != nil {
 		return types.SendTextResult{}, err
 	}
-	return r.options.Client.SendCollabResult(handle, args)
+	sent, err := r.options.Client.SendCollabResult(handle, args)
+	if err != nil {
+		return sent, err
+	}
+	// The canonical terminal result is what makes a Task scope eligible for
+	// reclamation. A result for a Task this Runtime never admitted (a capacity
+	// or shutdown refusal) marks nothing.
+	r.noteTaskScopeTerminal(args.RequestID)
+	return sent, nil
 }
 
 // UploadAttachment stores an artifact in the room's ephemeral store; the

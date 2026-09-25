@@ -204,25 +204,52 @@ func (a *adoptionAdapter) LoadSession(scope string, sessionID string, cwd string
 }
 
 // EnsureSessionFor records a genuinely new scoped session only when one is
-// actually created.
+// actually created. Materializing a conversation whose exact identity survived
+// a release (#473) is recorded separately: it is the same native conversation,
+// so it is never a "new" one.
+//
+// A genuinely new conversation starts at the provider's defaults: the recorded
+// native controls of a conversation that no longer exists must not survive as
+// though the new session had been configured with them.
 func (a *adoptionAdapter) EnsureSessionFor(scope string) error {
+	retained := a.fakeAdapter.hasRetainedScope(scope)
 	before := a.fakeAdapter.scopedGenerationSnapshot(scope)
 	if err := a.fakeAdapter.EnsureSessionFor(scope); err != nil {
 		return err
 	}
+	if retained {
+		a.record("materialize:" + scope)
+		return nil
+	}
 	if a.fakeAdapter.scopedGenerationSnapshot(scope) != before {
+		a.forgetRecordedControls(scope)
 		a.record("new:" + scope)
 	}
 	return nil
 }
 
+// forgetRecordedControls models a fresh native session: the provider's defaults
+// replace whatever the previous conversation had been set to.
+func (a *adoptionAdapter) forgetRecordedControls(scope string) {
+	a.recordMu.Lock()
+	delete(a.modes, scope)
+	delete(a.configs, scope)
+	a.recordMu.Unlock()
+}
+
 func (a *adoptionAdapter) EnsureSessionForCwd(scope, cwd string) error {
 	a.record("newcwd:" + scope + ":" + cwd)
+	retained := a.fakeAdapter.hasRetainedScope(scope)
 	before := a.fakeAdapter.scopedGenerationSnapshot(scope)
 	if err := a.fakeAdapter.EnsureSessionFor(scope); err != nil {
 		return err
 	}
+	if retained {
+		a.record("materialize:" + scope)
+		return nil
+	}
 	if a.fakeAdapter.scopedGenerationSnapshot(scope) != before {
+		a.forgetRecordedControls(scope)
 		a.record("new:" + scope)
 	}
 	return nil
@@ -264,8 +291,10 @@ func TestApplyTaskSessionControlsReturnsErrorWhenSessionDisappearsAfterModeSet(t
 	adapter := newAdoptionAdapter("codex")
 	adapter.controlsDisappearOnModeSet = true
 	runtime := &ResidentRuntime{
-		options:          Options{Adapter: adapter},
-		taskSessionModes: map[string]string{"task:controls-race": "workspace"},
+		options: Options{Adapter: adapter},
+		taskIdentities: map[string]*taskIdentity{
+			"task:controls-race": {modeID: "workspace"},
+		},
 	}
 
 	err := runtime.applyTaskSessionControls("task:controls-race")
@@ -292,9 +321,8 @@ func TestEnsureHarnessSessionPreservesExplicitProjectModelSelection(t *testing.T
 	const scope = "task:explicit-model-selection"
 	adapter := &fallbackRecordingAdapter{adoptionAdapter: newAdoptionAdapter("codex")}
 	runtime := &ResidentRuntime{options: Options{Adapter: adapter},
-		taskProjectCwds: map[string]string{scope: "/project-a"},
-		taskSessionConfig: map[string]map[string]string{
-			scope: {"model": "gpt-b"},
+		taskIdentities: map[string]*taskIdentity{
+			scope: {projectCwd: "/project-a", configOptions: map[string]string{"model": "gpt-b"}},
 		},
 	}
 	if err := runtime.ensureHarnessSession(scope); err != nil {
@@ -322,7 +350,7 @@ func TestEnsureHarnessSessionAppliesProviderFallbackToUnconfiguredProjectTask(t 
 	const scope = "task:default-project-model"
 	adapter := &fallbackRecordingAdapter{adoptionAdapter: newAdoptionAdapter("codex")}
 	runtime := &ResidentRuntime{options: Options{Adapter: adapter},
-		taskProjectCwds: map[string]string{scope: "/project-a"},
+		taskIdentities: map[string]*taskIdentity{scope: {projectCwd: "/project-a"}},
 	}
 	if err := runtime.ensureHarnessSession(scope); err != nil {
 		t.Fatalf("ensure unconfigured explicit-project Task session: %v", err)
@@ -865,9 +893,11 @@ func drainNow(rt *ResidentRuntime) chan struct{} {
 func adoptedLostSnapshot(rt *ResidentRuntime) []string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	out := make([]string, 0, len(rt.adoptedLostScopes))
-	for scope := range rt.adoptedLostScopes {
-		out = append(out, scope)
+	out := make([]string, 0, len(rt.taskIdentities))
+	for scope, identity := range rt.taskIdentities {
+		if identity != nil && identity.adopted && identity.adoptedLost {
+			out = append(out, scope)
+		}
 	}
 	return out
 }

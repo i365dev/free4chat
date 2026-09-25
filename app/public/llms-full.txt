@@ -633,6 +633,24 @@ This is a cognition/lifecycle boundary, not a new permanent data model:
 The same Harness process may serve multiple logical scopes while keeping their
 conversation contexts distinct.
 
+Retained Task scopes are a bounded local cache, not a permanent per-Task
+allocation. When a Runtime is at its logical-scope bound, it may give back one
+Task scope whose collaboration lifecycle is already terminal (Completed or
+Failed) and which has no running or queued work. A Task with work in flight is
+never reclaimed.
+
+Both sides of that cache are bounded. The Runtime remembers only the most
+recently released window of Task conversations, and a conversation that leaves
+that window is forgotten together with its exact native session identity, so
+the provider's process is never asked to hold identities the Runtime no longer
+accounts for. Inside the window the released conversation keeps its exact native
+session identity and its delivery knowledge whenever the provider can
+materialize it again, so continuing that Task resumes the same conversation
+without being told it is new and without replaying context it already consumed.
+When the provider cannot, the Task's next instruction is a genuinely new session
+the Harness is told is new; a native session the Human explicitly handed off
+fails closed instead of being replaced.
+
 ## Event is not trigger
 
 A Room may expose shared facts without waking every Agent.

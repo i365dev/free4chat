@@ -10,15 +10,18 @@ import (
 )
 
 type fakeIsolatedLane struct {
-	index      int
-	failure    types.AdapterFailureHandler
-	ensured    []string
-	cancelled  []string
-	loaded     map[string]string
-	closed     bool
-	closeCount int
-	activity   ACPActivityHandler
-	permission ACPPermissionResponder
+	index       int
+	failure     types.AdapterFailureHandler
+	ensured     []string
+	cancelled   []string
+	loaded      map[string]string
+	released    []string
+	forgot      []string
+	retainOnRel bool
+	closed      bool
+	closeCount  int
+	activity    ACPActivityHandler
+	permission  ACPPermissionResponder
 }
 
 func (f *fakeIsolatedLane) Name() string { return "fake" }
@@ -58,6 +61,14 @@ func (f *fakeIsolatedLane) CancelTurnFor(scope string) error {
 	return nil
 }
 func (f *fakeIsolatedLane) TurnOwnerFor(string) (string, bool) { return "", false }
+func (f *fakeIsolatedLane) ReleaseSessionFor(scope string, keepIdentity bool) (bool, error) {
+	f.released = append(f.released, scope)
+	if !keepIdentity {
+		f.forgot = append(f.forgot, scope)
+		return false, nil
+	}
+	return f.retainOnRel, nil
+}
 func (f *fakeIsolatedLane) ListSessions(ACPSessionListOptions) (ACPSessionPage, error) {
 	return ACPSessionPage{}, nil
 }

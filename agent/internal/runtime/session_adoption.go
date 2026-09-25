@@ -557,8 +557,8 @@ func (r *ResidentRuntime) admitHarnessSession(scope string, target int64) error 
 	}
 	taskRequestID := taskRequestIDForScope(scope)
 	r.mu.Lock()
-	_, adopted := r.adoptedScopes[scope]
-	_, lost := r.adoptedLostScopes[scope]
+	adopted := r.isAdoptedScopeLocked(scope)
+	lost := r.adoptedScopeLostLocked(scope)
 	adoption := r.expirePreparedAdoptionLocked(time.Now().UnixMilli())
 	exact := adoption != nil && adoption.taskRequestID != "" && adoption.taskRequestID == taskRequestID
 	r.mu.Unlock()
@@ -646,8 +646,7 @@ func (r *ResidentRuntime) adoptionMayBind(scope string, target int64, adoption *
 func (r *ResidentRuntime) isAdoptedScope(scope string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, adopted := r.adoptedScopes[scope]
-	return adopted
+	return r.isAdoptedScopeLocked(scope)
 }
 
 // singleHumanParticipantID returns the one Human in the current roster, or ""
@@ -699,23 +698,21 @@ func (r *ResidentRuntime) bindSessionAdoption(scope string, adoption *pendingSes
 	// only reach this point while it is not adopted, so a lost fact here would
 	// describe a binding that no longer exists.
 	r.pendingAdoption = nil
+	identity := r.recordTaskIdentityLocked(scope)
 	if adoption.modeID != "" {
-		r.taskSessionModes[scope] = adoption.modeID
+		identity.modeID = adoption.modeID
 	}
 	if len(adoption.configOptions) > 0 {
-		r.taskSessionConfig[scope] = cloneNativeControlSelections(adoption.configOptions)
+		identity.configOptions = cloneNativeControlSelections(adoption.configOptions)
 	}
 	if adoption.newSession {
-		if r.taskProjectCwds == nil {
-			r.taskProjectCwds = make(map[string]string)
-		}
-		r.taskProjectCwds[scope] = cwd
+		identity.projectCwd = cwd
 		r.mu.Unlock()
 		r.log("task_project_bound", map[string]string{"scopeKind": "task"})
 		return r.ensureHarnessSession(scope)
 	}
-	r.adoptedScopes[scope] = struct{}{}
-	delete(r.adoptedLostScopes, scope)
+	identity.adopted = true
+	identity.adoptedLost = false
 	r.mu.Unlock()
 
 	if err := adapter.LoadSession(scope, sessionID, cwd); err != nil {
@@ -756,8 +753,21 @@ func (r *ResidentRuntime) bindSessionAdoption(scope string, adoption *pendingSes
 func (r *ResidentRuntime) adoptedScopeLost(scope string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, lost := r.adoptedLostScopes[scope]
-	return lost
+	return r.adoptedScopeLostLocked(scope)
+}
+
+// isAdoptedScopeLocked reports whether this scope is permanently bound to a
+// native conversation. Callers must hold r.mu.
+func (r *ResidentRuntime) isAdoptedScopeLocked(scope string) bool {
+	identity := r.taskIdentityLocked(scope)
+	return identity != nil && identity.adopted
+}
+
+// adoptedScopeLostLocked reports whether that adopted conversation is gone.
+// Callers must hold r.mu.
+func (r *ResidentRuntime) adoptedScopeLostLocked(scope string) bool {
+	identity := r.taskIdentityLocked(scope)
+	return identity != nil && identity.adoptedLost
 }
 
 // noteAdoptedScopeLoss marks every adopted Task scope as unavailable after an
@@ -772,15 +782,18 @@ func (r *ResidentRuntime) noteAdoptedScopeLoss() {
 // provider process. A nil set preserves the legacy one-process behavior.
 func (r *ResidentRuntime) noteAdoptedScopeLossFor(failed map[string]struct{}) {
 	r.mu.Lock()
-	scopes := make([]string, 0, len(r.adoptedScopes))
-	for scope := range r.adoptedScopes {
+	scopes := make([]string, 0, len(r.taskIdentities))
+	for scope, identity := range r.taskIdentities {
+		if identity == nil || !identity.adopted {
+			continue
+		}
 		if failed != nil {
 			if _, ok := failed[scope]; !ok {
 				continue
 			}
 		}
 		scopes = append(scopes, scope)
-		r.adoptedLostScopes[scope] = struct{}{}
+		identity.adoptedLost = true
 	}
 	r.mu.Unlock()
 	for _, scope := range scopes {
@@ -796,8 +809,9 @@ func (r *ResidentRuntime) noteAdoptedScopeLossFor(failed map[string]struct{}) {
 // cases instead of a Task that silently stopped.
 func (r *ResidentRuntime) markAdoptedScopeUnavailable(scope string) {
 	r.mu.Lock()
-	r.adoptedScopes[scope] = struct{}{}
-	r.adoptedLostScopes[scope] = struct{}{}
+	identity := r.recordTaskIdentityLocked(scope)
+	identity.adopted = true
+	identity.adoptedLost = true
 	r.mu.Unlock()
 	r.markTaskSessionLost(scope)
 }
@@ -807,9 +821,11 @@ func (r *ResidentRuntime) markAdoptedScopeUnavailable(scope string) {
 func (r *ResidentRuntime) adoptedScopesSnapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]string, 0, len(r.adoptedScopes))
-	for scope := range r.adoptedScopes {
-		out = append(out, scope)
+	out := make([]string, 0, len(r.taskIdentities))
+	for scope, identity := range r.taskIdentities {
+		if identity != nil && identity.adopted {
+			out = append(out, scope)
+		}
 	}
 	return out
 }

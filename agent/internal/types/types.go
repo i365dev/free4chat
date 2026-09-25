@@ -967,6 +967,51 @@ type ScopedProjectHarnessAdapter interface {
 	EnsureSessionForCwd(scope, cwd string) error
 }
 
+// MaxReleasedTaskScopes bounds the Runtime's own memory of Task conversations
+// it gave back but can still materialize exactly (#473). One released window is
+// remembered in release order; an older released conversation is forgotten —
+// together with its exact native identity — so the resident's retained state is
+// a bounded cache rather than a growing ledger.
+const MaxReleasedTaskScopes = MaxLogicalTaskScopes
+
+// MaxRetainedNativeSessions bounds the adapter-side table of retained native
+// session identities. It is the sum of the two Runtime-side windows a resident
+// can hold at once (live Task scopes plus released ones), so the Runtime always
+// forgets an identity first and the adapter never has to evict one the Runtime
+// still relies on. It exists as a hard ceiling, not as a policy: a future
+// caller that retains without the Runtime's ledger cannot make it unbounded.
+const MaxRetainedNativeSessions = 2 * MaxLogicalTaskScopes
+
+// ScopedHarnessReleaser is the small optional seam that lets the Runtime give
+// back ONE retained Task conversation when it reclaims a terminal logical
+// scope (#473). It is the per-scope form of the retention rule the ACP adapter
+// already applies when it reaps an idle provider process: the process and its
+// in-memory conversations are disposable, the native session identity is not.
+//
+// The Runtime calls it only for a Task scope that is terminal and idle, and
+// neither direction ever carries a native session id.
+type ScopedHarnessReleaser interface {
+	// ReleaseSessionFor gives back the live conversation bound to scope.
+	//
+	// keepIdentity asks the adapter to remember the exact native identity so a
+	// later EnsureSessionFor(scope) materializes THAT conversation again. When
+	// it is false the adapter must also drop any identity it already retains
+	// for scope: the Runtime is forgetting the conversation, and a later
+	// instruction must be a genuinely new session instead of a silent
+	// resurrection of a conversation nobody remembers.
+	//
+	// retained reports whether an exact native identity for scope survives this
+	// call. True means a later EnsureSessionFor(scope) materializes that same
+	// conversation and never a fresh one; false means nothing survives, so a
+	// later ensure creates a new conversation. It is always false when
+	// keepIdentity is false.
+	//
+	// It returns a non-nil error without releasing anything while that
+	// conversation is executing a turn: the Runtime must not reclaim a scope
+	// whose conversation is still busy elsewhere.
+	ReleaseSessionFor(scope string, keepIdentity bool) (retained bool, err error)
+}
+
 // HarnessSessionControls contains the exact native controls a Harness
 // advertised for one session. Free4Chat stores provider ids and labels without
 // translating them into universal permission tiers.

@@ -343,7 +343,7 @@ func (r *ResidentRuntime) noteTaskSessionLossFor(failed map[string]struct{}) {
 		// Task that adopted an existing native session (which may have died
 		// during its very first Free4Chat turn, before any generation was
 		// observed here).
-		_, adopted := r.adoptedScopes[scope]
+		adopted := r.isAdoptedScopeLocked(scope)
 		if !adopted && state.observedHarnessGeneration <= 0 && state.bootstrappedHarnessGeneration <= 0 {
 			continue
 		}

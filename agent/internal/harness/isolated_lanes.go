@@ -30,6 +30,7 @@ type isolatedLaneAdapter interface {
 	types.ScopedProjectHarnessAdapter
 	types.ScopedHarnessSessionControls
 	types.ScopedHarnessSessionDefaults
+	types.ScopedHarnessReleaser
 	types.ScopedTurnCanceller
 	types.ScopedTurnOwnership
 	SessionHandoff
@@ -197,6 +198,43 @@ func (a *IsolatedACPAdapter) SessionGenerationFor(scope string) int64 {
 		return 0
 	}
 	return adapter.SessionGenerationFor(scope)
+}
+
+// ReleaseSessionFor gives back one scope's live conversation on the lane that
+// owns it. A scope with no lane never materialized a conversation, so there is
+// nothing to release.
+//
+// A release that truly drops the conversation also drops EVERY pin for that
+// scope: the retained native identity it existed for is gone, so a later
+// instruction is a genuinely new conversation that must be free to pick a lane
+// again. Keeping the pin would leave one lifetime entry per Task the resident
+// ever released (#473 bounded-state invariant), and the native-session pins
+// would keep claiming a binding that no longer exists.
+//
+// A retained release KEEPS the scope-to-lane pin: the exact native identity
+// lives inside that lane's adapter, so a later re-materialization must reach the
+// same process.
+func (a *IsolatedACPAdapter) ReleaseSessionFor(scope string, keepIdentity bool) (bool, error) {
+	adapter, err := a.adapterForScope(scope, false)
+	if err != nil {
+		return false, nil
+	}
+	retained, err := adapter.ReleaseSessionFor(scope, keepIdentity)
+	if err != nil || retained {
+		return retained, err
+	}
+	scope = strings.TrimSpace(scope)
+	a.mu.Lock()
+	for sessionID, owner := range a.sessionScope {
+		if owner != scope {
+			continue
+		}
+		delete(a.sessionScope, sessionID)
+		delete(a.sessionLane, sessionID)
+	}
+	delete(a.scopeLane, scope)
+	a.mu.Unlock()
+	return false, nil
 }
 
 func (a *IsolatedACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, generation int64) (types.HarnessTurnResult, error) {
