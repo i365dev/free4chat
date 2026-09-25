@@ -163,6 +163,28 @@ func (r *ResidentRuntime) failTurn(
 	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 }
 
+// recordDeliveredTurnFailure records a Room-side failure after the Harness has
+// successfully consumed and acknowledged its canonical turn. runTurn owns the
+// one terminal CollabResult in this case; this helper records diagnostics only
+// and must not try to settle other pending requests in the same scope.
+func (r *ResidentRuntime) recordDeliveredTurnFailure(
+	scope, lastErrorSource, failureClass string,
+	started time.Time,
+	err error,
+) {
+	r.mu.Lock()
+	r.lastError = err.Error()
+	r.lastErrorSource = lastErrorSource
+	r.state = StateReconnecting
+	r.mu.Unlock()
+	r.log("turn_failed", map[string]string{
+		"scopeKind":    scopeKindOf(scope),
+		"failureClass": failureClass,
+		"elapsedMs":    strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+		"retryAttempt": "0",
+	})
+}
+
 // scheduleTurnRetry records one failed Harness turn for the canonical target
 // and arms the single bounded retry clock. The budget belongs to that exact
 // (scope, target): an unrelated Room event re-entering the drain can never
@@ -247,6 +269,20 @@ func (r *ResidentRuntime) nextTurnRetry() (plan turnRetryPlan, wait time.Duratio
 	plan = *earliest.plan
 	earliest.plan = nil
 	return plan, 0, true
+}
+
+// scopeHasScheduledTurnRetryLocked keeps a failed canonical head parked until
+// its own bounded retry clock consumes the plan. A new envelope advances the
+// global drain generation so independent scopes can use newly free lanes, but
+// it must not bypass this scope's dueAt back-off. Callers must hold r.mu.
+func (r *ResidentRuntime) scopeHasScheduledTurnRetryLocked(scope string) bool {
+	scope = normalizeScope(scope)
+	for key, state := range r.turnRetries {
+		if key.scope == scope && state != nil && state.plan != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // clearTurnRetry drops the retry budget for a canonical turn that has just
@@ -356,18 +392,13 @@ func (r *ResidentRuntime) reopenTurnRecoveryLocked(scope string) {
 	}
 }
 
-// drainTurnsWithRetryClock is the event-loop entry point. It runs the bounded
-// turn drain to quiescence and then rides the autonomous retry clock, so a
-// pending addressed turn never needs an unrelated future Room event before it
-// is retried. It adds no goroutine and no scheduler: the wait is the existing
-// stop-aware sleep on the one event-loop goroutine that already owns the drain.
-//
-// Blocking here is deliberate and matches the pre-#421 contract. The resident
-// frame READER is a separate goroutine that has already ingested every frame —
-// including a private Task interrupt — so a long Harness turn can never delay
-// an interrupt or a Room event. Only turn SCHEDULING waits.
+// drainTurnsWithRetryClock is the legacy blocking long-poll entry point. It
+// drains to quiescence and then rides the bounded retry clock, so a pending
+// addressed turn does not need another Room event before retry. The resident
+// stream path instead uses kickResidentTurnRetryClock, which keeps that clock
+// on one bounded goroutine while the stream reader continues ingesting frames.
 func (r *ResidentRuntime) drainTurnsWithRetryClock() {
-	r.drainTurns()
+	r.drainTurnsWithRetryGate(true)
 	r.runTurnRetryClock()
 }
 

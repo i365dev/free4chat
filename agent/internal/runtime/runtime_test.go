@@ -139,6 +139,7 @@ type fakeClient struct {
 	contextCalls          int
 	contextOptions        []types.RoomContextReadOptions
 	collabResults         []types.CollabResultArgs
+	collabResultHook      func(types.CollabResultArgs)
 	collabResponses       []types.CollabResponseArgs
 	collabResponseHook    func(types.CollabResponseArgs)
 	collabResponseErrors  []error
@@ -791,7 +792,11 @@ func (c *fakeClient) SendCollabResponse(_ string, args types.CollabResponseArgs)
 func (c *fakeClient) SendCollabResult(_ string, args types.CollabResultArgs) (types.SendTextResult, error) {
 	c.mu.Lock()
 	c.collabResults = append(c.collabResults, args)
+	hook := c.collabResultHook
 	c.mu.Unlock()
+	if hook != nil {
+		hook(args)
+	}
 	return types.SendTextResult{Sequence: 1}, nil
 }
 
@@ -1250,13 +1255,8 @@ func TestUnaddressedReplyKeepsNoTargets(t *testing.T) {
 
 func TestHumanAddressedLifecycleLeaveIsConfirmedBeforeDaemonCleanup(t *testing.T) {
 	client := &fakeClient{}
-	client.script = []waitStep{
-		{events: []types.RoomEvent{roomEvent(1, true)}},
-		// A replay/stale later wait result must never produce a second leave or
-		// a second reply after the first confirmed self-leave stops the loop.
-		{events: []types.RoomEvent{roomEvent(1, true)}},
-	}
-	adapter := &fakeAdapter{name: "pi", turnResults: []types.HarnessTurnResult{{
+	task := taskRequestEvent(1, "task:req-self-leave", "req-self-leave", "human-1")
+	adapter := &fakeAdapter{name: "pi", scopedTurnResults: []types.HarnessTurnResult{{
 		Text:            "I left the Room and will not return.",
 		LifecycleIntent: types.LifecycleIntentLeave,
 	}}}
@@ -1274,9 +1274,9 @@ func TestHumanAddressedLifecycleLeaveIsConfirmedBeforeDaemonCleanup(t *testing.T
 			}()
 		},
 	})
-	if err := rt.Start(); err != nil {
-		t.Fatalf("start failed: %v", err)
-	}
+	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "room-secret", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	turnDone := startTurn(rt, task)
+	waitForDone(t, turnDone, "confirmed lifecycle leave turn")
 	select {
 	case <-cleanupDone:
 	case <-time.After(2 * time.Second):
@@ -1289,14 +1289,15 @@ func TestHumanAddressedLifecycleLeaveIsConfirmedBeforeDaemonCleanup(t *testing.T
 	if sent := client.snapshotSent(); len(sent) != 0 {
 		t.Fatalf("arbitrary Harness success body must never publish before leave: %v", sent)
 	}
-	if got := adapter.sessionsInt(); got != 1 || !adapter.closeConfirmed() {
-		t.Fatalf("stale turn or adapter cleanup mismatch: turns=%d closed=%v", got, adapter.closeConfirmed())
+	if results := client.snapshotCollabResults(); len(results) != 1 || results[0].RequestID != "req-self-leave" || results[0].Status != "completed" {
+		t.Fatalf("a successful Task leave must settle its canonical Task before clearing credentials: %+v", results)
+	}
+	runs, _ := adapter.scopedRunSnapshot()
+	if len(runs) != 1 || !adapter.closeConfirmed() {
+		t.Fatalf("stale turn or adapter cleanup mismatch: turns=%v closed=%v", runs, adapter.closeConfirmed())
 	}
 	if status := rt.Status(); status.State != StateStopped || status.ParticipantID != "" {
 		t.Fatalf("confirmed leave must be terminal and clear public participation: %+v", status)
-	}
-	if joins := client.joinCount(); joins != 1 {
-		t.Fatalf("intentional leave must not rejoin, got %d joins", joins)
 	}
 }
 

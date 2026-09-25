@@ -165,6 +165,40 @@ func TestFailedHarnessTurnRetriesAutonomouslyWithoutNewRoomEvent(t *testing.T) {
 	}
 }
 
+func TestUnrelatedRoomEnvelopeDoesNotBypassScheduledRetryDelay(t *testing.T) {
+	client, stream := newResidentTurnRetryClient(t)
+	adapter := &fakeAdapter{name: "pi", turnErr: errors.New("transient ACP failure")}
+	log := &turnLogRecorder{}
+	rt := newTurnRetryRuntime(t, adapter, client, log.log)
+	rt.turnRetryDelay = func(int) time.Duration { return 700 * time.Millisecond }
+	if err := rt.Start(); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer rt.Stop()
+
+	stream.results <- addressedEnvelope(roomEvent(1, true))
+	waitFor(t, 3*time.Second, func() bool {
+		return adapter.sessionsInt() == 1 && log.count("retry_scheduled") == 1
+	}, "first attempt to arm its bounded retry")
+
+	// An unrelated Room event advances the global drain generation so other
+	// scopes can run, but it must leave this failed canonical head parked until
+	// the retry plan reaches dueAt.
+	stream.results <- addressedEnvelope(roomEvent(2, false))
+	waitFor(t, 2*time.Second, func() bool { return rt.currentCursor() >= 2 }, "unrelated envelope to be ingested")
+	time.Sleep(100 * time.Millisecond)
+	if got := adapter.sessionsInt(); got != 1 {
+		t.Fatalf("unrelated Room traffic bypassed retry back-off: Harness ran %d times before dueAt", got)
+	}
+
+	adapter.mu.Lock()
+	adapter.turnErr = nil
+	adapter.mu.Unlock()
+	waitFor(t, 3*time.Second, func() bool {
+		return len(rt.pendingAddressedSnapshot()) == 0 && adapter.sessionsInt() == 2 && len(client.snapshotSent()) == 1
+	}, "the due retry to deliver the canonical turn")
+}
+
 // TestRepeatedHarnessFailureExhaustsBoundedRetryAndStops pins the bounded
 // budget: a persistently failing Harness must end in a truthful local state
 // instead of spinning forever.

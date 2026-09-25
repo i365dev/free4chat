@@ -1155,3 +1155,54 @@ func TestGracefulRuntimeStopSettlesOwnedWorkingTask(t *testing.T) {
 		t.Fatalf("Runtime stop left phantom active ownership: stopped=%v active=%d", rt.isStopped(), rt.activeTurnCount())
 	}
 }
+
+func TestStopFencesNewTaskAdmissionsBeforeSettlingCapturedTasks(t *testing.T) {
+	rt, _, client := newExecutionRuntime(t)
+	stream := newResidentTestStream()
+	if !rt.setResidentStream(stream) {
+		t.Fatal("could not install resident stream for shutdown race test")
+	}
+	enteredSettlement := make(chan struct{})
+	continueStop := make(chan struct{})
+	client.fakeClient.collabResultHook = func(args types.CollabResultArgs) {
+		if args.RequestID == "req-before-stop" {
+			close(enteredSettlement)
+			<-continueStop
+		}
+	}
+	rt.acceptEvent(taskRequestEvent(1, "task:req-before-stop", "req-before-stop", "human-1"))
+
+	stopDone := make(chan struct{})
+	go func() {
+		rt.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-enteredSettlement:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not begin settling its captured Task")
+	}
+
+	// This models a resident envelope arriving while a Room result call is
+	// blocked. The shutdown fence has already won the admission lock, so the
+	// new request receives an immediate terminal result and is never queued.
+	frame := addressedEnvelope(taskRequestEvent(2, "task:req-after-stop", "req-after-stop", "human-1"))
+	if outcome, _ := rt.applyResidentFrame(stream, frame, nil); outcome != residentFrameApplied {
+		t.Fatalf("resident frame was not applied during the shutdown window: %v", outcome)
+	}
+	if pending := rt.pendingAddressedSnapshotFor("task:req-after-stop"); len(pending) != 0 {
+		t.Fatalf("Task arriving during shutdown entered the pending queue: %v", pending)
+	}
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 2 || results[0].RequestID != "req-before-stop" || results[0].Status != "failed" ||
+		results[1].RequestID != "req-after-stop" || results[1].Status != "failed" {
+		t.Fatalf("shutdown must settle captured and post-fence Tasks without admitting new work: %+v", results)
+	}
+
+	close(continueStop)
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not finish after Task settlement")
+	}
+}

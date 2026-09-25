@@ -12,6 +12,7 @@ const lifecycleLeaveFailureText = "I couldn't leave the Room; I'm still connecte
 func (r *ResidentRuntime) handleLifecycleIntent(
 	input *types.HarnessTurnInput,
 	result types.HarnessTurnResult,
+	roomEvents []types.RoomEvent,
 ) bool {
 	if result.LifecycleIntent == types.LifecycleIntentNone {
 		return false
@@ -22,6 +23,7 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	if result.LifecycleIntent != types.LifecycleIntentLeave ||
 		len(result.TargetParticipantIDs) != 0 || !hasAddressedHuman(input) {
 		r.log("lifecycle_leave_failed", nil)
+		r.settleHumanTask(roomEvents, "failed", "Agent left before completing the task.")
 		r.publishLifecycleLeaveFailure()
 		return true
 	}
@@ -30,6 +32,7 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	handle, err := r.requireHandle()
 	if err != nil {
 		r.log("lifecycle_leave_failed", nil)
+		r.settleHumanTask(roomEvents, "failed", "Agent left before completing the task.")
 		r.publishLifecycleLeaveFailure()
 		return true
 	}
@@ -38,9 +41,21 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	// lifecycle claim is accepted only after this call confirms success.
 	if err := r.options.Client.LeaveRoom(handle); err != nil {
 		r.log("lifecycle_leave_failed", nil)
+		r.settleHumanTask(roomEvents, "failed", "Agent left before completing the task.")
 		r.publishLifecycleLeaveFailure()
 		return true
 	}
+
+	// Fence new Room work before publishing terminal Task outcomes. The
+	// current request has already crossed the Harness success/ack boundary, so
+	// settle it as completed while its private participant capability is still
+	// available. Other captured Tasks are failed before beginStop clears state.
+	scopes, ownsShutdown := r.fenceAdmissionsForShutdown()
+	if !ownsShutdown {
+		return true
+	}
+	r.settleHumanTask(roomEvents, "completed", "Agent completed the task before leaving the Room.")
+	r.failPendingHumanTasks(scopes, "Agent stopped before the task completed.")
 
 	if !r.beginStop("") {
 		// Another terminal owner already took over. In particular, never emit a

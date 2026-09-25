@@ -655,6 +655,35 @@ func TestFinalHarnessFailureSettlesHumanTaskAsFailed(t *testing.T) {
 	}
 }
 
+func TestHarnessReplySendFailurePublishesOneTaskSettlement(t *testing.T) {
+	client := newExecutionClient()
+	client.fakeClient.sendFailuresRemaining = 1
+	adapter := &fakeAdapter{
+		name:              "pi",
+		scopedTurnResults: []types.HarnessTurnResult{{Text: "completed work"}},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "send-failure-single-settlement",
+		RoomID:     "room-send-failure-single-settlement",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	waitForDone(t, startTurn(rt, taskRequestEvent(1, "task:req-send-failure", "req-send-failure", "human-1")), "failed Task reply delivery")
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-send-failure" || results[0].Status != "failed" {
+		t.Fatalf("the RunTurn-success/SendText-failure path must publish exactly one terminal result: %+v", results)
+	}
+}
+
 func TestExecutorLossSettlesCurrentHumanTaskAsFailed(t *testing.T) {
 	client := newExecutionClient()
 	gate := make(chan struct{})

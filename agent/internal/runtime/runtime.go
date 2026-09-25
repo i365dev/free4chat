@@ -207,7 +207,10 @@ type ResidentRuntime struct {
 	state             State
 	lastError         string
 	stopped           bool
-	harnessFailed     bool
+	// admissionsClosed fences Room events and new Harness lanes while shutdown
+	// settles accepted Human Tasks with the still-live participant capability.
+	admissionsClosed bool
+	harnessFailed    bool
 	// activeTurns holds the canonical turn this Runtime is executing RIGHT
 	// NOW for each logical scope. It replaces the single `turnRunning` bool
 	// (#421): logical scopes were always isolated for conversation state, and
@@ -1077,7 +1080,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 				}
 				// Heartbeats are also the narrow retry clock for a Human Task
 				// whose canonical accepted response failed. Keep the signal
-				// bounded; drainTurns remains the sole serial admission path.
+				// bounded; the turn launcher remains the sole bounded admission path.
 				select {
 				case retrySignals <- struct{}{}:
 				default:
@@ -1097,7 +1100,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 				r.mu.Lock()
 				r.drainGeneration++
 				r.mu.Unlock()
-				r.launchTurns()
+				r.launchTurnsWithRetryGate(true)
 			}
 			r.kickResidentTurnRetryClock()
 		case err := <-readErrors:
@@ -1121,7 +1124,7 @@ func (r *ResidentRuntime) consumeResidentEventStream(
 				// and return to receiving scheduler wakes: waiting for all active
 				// turns here would leave newly accepted work queued even when a
 				// bounded lane is free. Each turn settlement refills lanes too.
-				r.launchTurns()
+				r.launchTurnsWithRetryGate(true)
 				r.kickResidentTurnRetryClock()
 			}
 		}
@@ -1351,6 +1354,11 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	r.mu.Lock()
+	if r.stopped || r.admissionsClosed {
+		r.mu.Unlock()
+		r.reportTaskShutdownFailure(event)
+		return
+	}
 	scope := scopeForRoomEvent(event)
 	if scope == "" {
 		r.mu.Unlock()
@@ -1425,15 +1433,27 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 // this Runtime's bounded scope admission. It is intentionally called only
 // after acceptEvent has released r.mu: SendCollabResult is external I/O.
 func (r *ResidentRuntime) reportTaskScopeCapacityFailure(event types.RoomEvent) {
+	r.reportTaskAdmissionFailure(event, "Agent cannot start another task right now.", "task_scope_capacity")
+}
+
+// reportTaskShutdownFailure closes an addressed Human Task that arrives after
+// shutdown has atomically fenced new admissions. It is not added to Runtime
+// state, but it still receives a canonical terminal result while credentials
+// are available.
+func (r *ResidentRuntime) reportTaskShutdownFailure(event types.RoomEvent) {
+	r.reportTaskAdmissionFailure(event, "Agent is stopping and cannot start another task.", "task_shutdown")
+}
+
+func (r *ResidentRuntime) reportTaskAdmissionFailure(event types.RoomEvent, summary, reason string) {
 	if !event.Addressed || event.Collab == nil || event.Collab.Kind != types.CollabRequest || event.Collab.RequestID == "" {
 		return
 	}
 	if _, err := r.CollabResult(types.CollabResultArgs{
 		RequestID: event.Collab.RequestID,
 		Status:    "failed",
-		Summary:   "Agent cannot start another task right now.",
+		Summary:   summary,
 	}); err != nil {
-		r.log("collab_result_failed", map[string]string{"reason": "task_scope_capacity"})
+		r.log("collab_result_failed", map[string]string{"reason": reason})
 	}
 }
 
@@ -1511,7 +1531,7 @@ func (r *ResidentRuntime) activeTurnCount() int {
 func (r *ResidentRuntime) beginTurnLane(scope string, target int64) turnLaneResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.stopped {
+	if r.stopped || r.admissionsClosed {
 		return laneCapacityFull
 	}
 	if _, running := r.activeTurns[scope]; running {
@@ -1613,11 +1633,19 @@ func (r *ResidentRuntime) scopeRunning(scope string) bool {
 // the others, so an independent Task keeps making progress beside it. There is
 // no scheduler, no queue, and no worker pool here: only a bounded count.
 func (r *ResidentRuntime) drainTurns() {
+	r.drainTurnsWithRetryGate(false)
+}
+
+// drainTurnsWithRetryGate runs the bounded quiescent drain. Event-driven
+// admissions preserve any already-armed scope retry until its dueAt; an
+// explicit retry-clock dispatch has already consumed that plan and uses the
+// ordinary drain path.
+func (r *ResidentRuntime) drainTurnsWithRetryGate(preserveRetryDelay bool) {
 	r.mu.Lock()
 	r.drainGeneration++
 	r.mu.Unlock()
 	for {
-		r.launchTurns()
+		r.launchTurnsWithRetryGate(preserveRetryDelay)
 		r.mu.Lock()
 		if r.stopped || len(r.activeTurns) == 0 {
 			r.mu.Unlock()
@@ -1633,13 +1661,17 @@ func (r *ResidentRuntime) drainTurns() {
 // launchTurns starts as many queued addressed turns as the bounded execution
 // policy allows, then returns without waiting.
 func (r *ResidentRuntime) launchTurns() {
+	r.launchTurnsWithRetryGate(false)
+}
+
+func (r *ResidentRuntime) launchTurnsWithRetryGate(preserveRetryDelay bool) {
 	if r.isStopped() {
 		return
 	}
 	// ONE pass over the candidates. Each candidate is considered once and its
 	// lane is claimed before the next is examined, so a turn that settles
 	// quickly can never be relaunched by the same pass.
-	for _, candidate := range r.runnableTurns() {
+	for _, candidate := range r.runnableTurnsWithRetryGate(preserveRetryDelay) {
 		if r.boundToRunningConversation(candidate.scope) {
 			// Two Task scopes named the SAME native conversation. The adapter
 			// enforces one turn per conversation; the scheduler simply does
@@ -1697,11 +1729,16 @@ type turnCandidate struct {
 // long-lived Task can never starve an independent one: it occupies one lane,
 // not the queue.
 func (r *ResidentRuntime) runnableTurns() []turnCandidate {
+	return r.runnableTurnsWithRetryGate(false)
+}
+
+func (r *ResidentRuntime) runnableTurnsWithRetryGate(preserveRetryDelay bool) []turnCandidate {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []turnCandidate
 	for _, scope := range r.pendingScopesLocked() {
-		if r.scopeRunningLocked(scope) || r.failedInCurrentPassLocked(scope) {
+		if r.scopeRunningLocked(scope) || r.failedInCurrentPassLocked(scope) ||
+			(preserveRetryDelay && r.scopeHasScheduledTurnRetryLocked(scope)) {
 			continue
 		}
 		ref := r.sessionRefLocked(scope)
@@ -1736,20 +1773,16 @@ func (r *ResidentRuntime) boundToRunningConversation(scope string) bool {
 	return true
 }
 
-// afterTurnSettled is the single completion path of one finished turn. It runs
-// on that turn's own goroutine, so it adds no goroutine and cannot outlive the
-// turn's lifecycle.
-//
-// It refills the freed lane — an already-queued successor turn runs next, on
-// the same retained conversation — and wakes any drain waiting for
-// quiescence. It deliberately does NOT drive the autonomous retry clock: that
-// remains the job of drainTurnsWithRetryClock, exactly as before, so a plain
-// drain still performs one pass and never silently retries a failed turn.
+// afterTurnSettled is the completion path of one finished turn. It runs on
+// that turn's goroutine, refills the freed lane without bypassing any scheduled
+// retry delay, and wakes drains waiting for quiescence. For a resident stream
+// it also kicks the single bounded retry-clock goroutine; the turn itself never
+// waits for that clock. Legacy blocking drains continue to own their clock.
 func (r *ResidentRuntime) afterTurnSettled() {
 	if r.isStopped() {
 		return
 	}
-	r.launchTurns()
+	r.launchTurnsWithRetryGate(true)
 	r.kickResidentTurnRetryClock()
 	r.mu.Lock()
 	r.turnIdleCond.Broadcast()
@@ -1974,8 +2007,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// an untruthful success claim, so consume the closed local intent before
 	// any SendText attempt. Confirmed leave hands cleanup to the daemon after
 	// this turn unwinds; rejected/failed intents use fixed truthful text.
-	if r.handleLifecycleIntent(input, result) {
-		r.settleHumanTask(events, "failed", "Agent left before completing the task.")
+	if r.handleLifecycleIntent(input, result, events) {
 		// A lifecycle intent ends this scope's work for this pass, exactly as a
 		// failed turn does: the resident is leaving, so re-launching its head
 		// turn would contradict the intent it just acted on.
@@ -1990,13 +2022,16 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	}
 	handle, err := r.requireHandle()
 	if err != nil {
-		r.failTurn(scope, target, "harness", turnFailureSend, started, err, false)
+		// Harness delivery already acknowledged this canonical turn. The
+		// Runtime owns its single Task settlement here; do not route it through
+		// failTurn, which settles still-pending Harness-delivery failures.
+		r.recordDeliveredTurnFailure(scope, "harness", turnFailureSend, started, err)
 		r.settleHumanTask(events, "failed", "Agent task failed before completion.")
 		return
 	}
 	sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
 	if err != nil {
-		r.failTurn(scope, target, "send", turnFailureSend, started, err, false)
+		r.recordDeliveredTurnFailure(scope, "send", turnFailureSend, started, err)
 		r.settleHumanTask(events, "failed", "Agent task failed before completion.")
 		return
 	}
@@ -2316,15 +2351,31 @@ func (r *ResidentRuntime) cleanupAfterRoomExpiry() {
 // stream, best-effort cancel any running Harness turn, release the room lease,
 // close the ACP process, and close the client.
 func (r *ResidentRuntime) Stop() {
-	if !r.isStopped() {
-		r.mu.Lock()
-		scopes := append([]string{roomScope}, r.scopeOrder...)
-		r.mu.Unlock()
+	scopes, ownsShutdown := r.fenceAdmissionsForShutdown()
+	if ownsShutdown {
 		r.failPendingHumanTasks(scopes, "Agent stopped before the task completed.")
+		r.beginStop("")
+	} else if !r.isStopped() {
+		// Another terminal path owns the transition and is settling its captured
+		// work. Do not clear those contexts before its Room calls finish.
+		<-r.stopCh
 	}
-	r.beginStop("")
 	r.releaseResources()
 	r.loopWG.Wait()
+}
+
+// fenceAdmissionsForShutdown closes the admission boundary and captures every
+// current scope in one critical section. The owner can then publish terminal
+// Task results before beginStop clears pending contexts and the capability.
+func (r *ResidentRuntime) fenceAdmissionsForShutdown() ([]string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped || r.admissionsClosed {
+		return nil, false
+	}
+	r.admissionsClosed = true
+	scopes := append([]string{roomScope}, r.scopeOrder...)
+	return scopes, true
 }
 
 // beginStop transitions this Runtime to terminal local state exactly once and
@@ -2335,6 +2386,7 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 	r.cleanupOnce.Do(func() {
 		r.mu.Lock()
 		r.stopped = true
+		r.admissionsClosed = true
 		r.state = StateStopped
 		if lastError != "" {
 			r.lastError = lastError
