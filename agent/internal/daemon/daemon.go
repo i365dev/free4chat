@@ -578,27 +578,18 @@ func (d *Daemon) prepareRuntime(
 			// handed prompts, tool input, credentials, or native session ids.
 			d.hostLog.Appendf("[%s] %s %v", instanceID, event, details)
 		},
+		// Lane owners tag their own diagnostics; the shared factory owns that
+		// wrapping so a change to the topology cannot silently drop lane
+		// attribution from the local support surface.
+		LaneDiagnostics: true,
 	}
-	var agentAdapter types.HarnessAdapter
-	if laneCount := launcher.TaskExecution.Lanes(); launcher.TaskExecution.Concurrency == types.TaskExecutionCrossSession && laneCount > 1 {
-		isolated, adapterErr := harness.NewIsolatedACPAdapterWithCapacity(laneCount, func(lane int) *harness.ACPAdapter {
-			localOptions := adapterOptions
-			localOptions.DiagnosticSink = func(event string, details map[string]string) {
-				if details == nil {
-					details = map[string]string{}
-				}
-				details["lane"] = strconv.Itoa(lane)
-				adapterOptions.DiagnosticSink(event, details)
-			}
-			return harness.NewACPAdapter(launcher, workspace, localOptions)
-		})
-		if adapterErr != nil {
-			_ = os.RemoveAll(workspace)
-			return nil, "", "", adapterErr
-		}
-		agentAdapter = isolated
-	} else {
-		agentAdapter = harness.NewACPAdapter(launcher, workspace, adapterOptions)
+	// #474: the topology decision lives in ONE place, so the daemon and its
+	// regressions cannot drift into two different answers to "does this
+	// launcher policy get N lanes?".
+	agentAdapter, adapterErr := harness.BuildAdapter(launcher, workspace, adapterOptions)
+	if adapterErr != nil {
+		_ = os.RemoveAll(workspace)
+		return nil, "", "", adapterErr
 	}
 	residentRuntime := runtime.NewResidentRuntime(runtime.Options{
 		InstanceID: instanceID,

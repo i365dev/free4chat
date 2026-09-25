@@ -15,50 +15,38 @@ import (
 )
 
 /*
- * Cross-session Task overlap through the REAL daemon composition (#474).
+ * Cross-session Task overlap through the REAL provider topology (#474).
  *
- * #474 reported that a provider whose registry policy is
- * `cross-session` / maxConcurrent 2 still serialized two independent Tasks in
- * a real Room. The Runtime's own scheduler is covered by
- * concurrent_execution_test.go against a HAND-WRITTEN scoped double, and the
- * isolated lane owner is covered by isolated_lanes_test.go against a
- * HAND-WRITTEN lane double. Neither covers the composition the daemon
- * actually builds for such a provider:
+ * #474 reported that a provider whose registry policy is `cross-session` with
+ * maxConcurrent 2 still serialized two independent Tasks in a real Room. The
+ * pre-existing coverage stopped short of the composition the daemon builds:
+ * concurrent_execution_test.go drives the Runtime with a HAND-WRITTEN scoped
+ * double, and isolated_lanes_test.go drives the lane owner with a HAND-WRITTEN
+ * lane double.
  *
- *   provider registry policy
- *     -> daemon lane construction (harness.NewIsolatedACPAdapterWithCapacity)
- *       -> ResidentRuntime turn lanes (resolveTurnLanes)
+ * This regression asks the registry and the production factory instead of
+ * restating their answers:
+ *
+ *   harness.ProviderByID("hermes").Launcher()   <- the real registry policy
+ *     -> harness.BuildAdapter                   <- the ONE topology decision
+ *       -> ResidentRuntime turn lanes           <- resolveTurnLanes
  *         -> ACPAdapter.EnsureSessionForCwd / RunTurnFor
  *           -> real ACP child processes
  *
- * This regression builds exactly that composition against the scripted ACP
- * Harness in its `hold_all` mode, which parks every prompt per native session
- * and serves them CONCURRENTLY. Two independent Human Tasks are admitted the
- * way the resident event loop admits them, and the assertions are made on
- * PROVIDER-side truth (a trace file the child writes) rather than on anything
- * the Runtime believes:
+ * Everything asserted here is provider-side truth: the adapter's own
+ * DiagnosticsSnapshot (lane -> scope, session hash, provider pid, turn active)
+ * and a trace file the child process writes. Nothing is asserted about vendor
+ * model latency: the double's "work" is a parked prompt, so a topology or
+ * serialization regression fails deterministically.
  *
- *   - lane 1: A and B hold two DIFFERENT native conversations;
- *   - lane 2: those conversations live in two DIFFERENT provider processes,
- *             so the Runtime is not merely multiplexing one shared process;
- *   - lane 3: neither Task waits for the other (B is executing while A is
- *             still running), which is the exact #474 symptom;
- *   - lane 4: settling A neither cancels nor re-dispatches B.
- *
- * It deliberately does NOT assert anything about vendor model latency: the
- * provider double's "work" is a parked prompt, so a scheduler or adapter
- * serialization bug fails this test deterministically instead of depending on
- * a real model's timing.
+ * Deliberately NOT covered: which launcher a real Room selected. The registry
+ * entry's own lane count IS guarded below, so a silent downgrade to one lane
+ * fails loudly rather than quietly passing.
  */
 
-// providerTrace captures the scripted Harness's provider-side lifecycle.
+// providerTrace reads the scripted Harness's provider-side frame log.
 type providerTrace struct {
 	path string
-}
-
-func newProviderTrace(t *testing.T) *providerTrace {
-	t.Helper()
-	return &providerTrace{path: filepath.Join(t.TempDir(), "provider.trace")}
 }
 
 // prompts returns every `session/prompt` the provider received, in order. Each
@@ -100,12 +88,22 @@ func providerPID(sessionID string) string {
 	return parts[1]
 }
 
-// isolatedLaneComposition builds the adapter the daemon builds for a provider
-// whose registry policy is cross-session with two lanes. The provider command
-// is the scripted Harness, so the composition under test is the production one
-// while the "model" is deterministic.
-func isolatedLaneComposition(t *testing.T, policy types.TaskExecutionPolicy) (types.HarnessAdapter, string, *providerTrace) {
+// hermesPolicyThroughProductionFactory builds the adapter the DAEMON builds for
+// Hermes: the real registry policy in, harness.BuildAdapter out. The provider
+// command is swapped for the scripted Harness so the topology under test is
+// production while the "model" is deterministic.
+func hermesPolicyThroughProductionFactory(t *testing.T) (types.HarnessAdapter, types.TaskExecutionPolicy, string, *providerTrace) {
 	t.Helper()
+	provider, err := harness.ProviderByID("hermes")
+	if err != nil {
+		t.Fatalf("hermes provider: %v", err)
+	}
+	launcher := provider.Launcher()
+	policy := launcher.TaskExecution
+	if policy.Concurrency != types.TaskExecutionCrossSession || policy.Lanes() != 2 {
+		t.Fatalf("#474: Hermes registry policy no longer advertises two cross-session lanes: %+v", policy)
+	}
+
 	_, source, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("could not locate runtime test source")
@@ -117,50 +115,44 @@ func isolatedLaneComposition(t *testing.T, policy types.TaskExecutionPolicy) (ty
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build fake ACP Harness: %v\n%s", err, output)
 	}
-	trace := newProviderTrace(t)
+	trace := &providerTrace{path: filepath.Join(t.TempDir(), "provider.trace")}
 	releaseDir := t.TempDir()
-	launcher := types.AgentLauncher{
-		ID:          "cross-session-provider",
-		DisplayName: "Cross-session provider",
-		Command:     path,
-		Maturity:    types.MaturityNative,
-		Security:    types.SecurityTrustedRoom,
-		Environment: map[string]string{
-			"FAKE_MODE":               "hold_all",
-			"FAKE_RELEASE_DIR":        releaseDir,
-			"FAKE_TRACE":              trace.path,
-			"FAKE_UNIQUE_SESSION_IDS": "1",
-		},
-		TaskExecution: policy,
+	launcher.Command = path
+	launcher.Args = nil
+	launcher.Environment = map[string]string{
+		"FAKE_MODE":               "hold_all",
+		"FAKE_RELEASE_DIR":        releaseDir,
+		"FAKE_TRACE":              trace.path,
+		"FAKE_UNIQUE_SESSION_IDS": "1",
 	}
-	laneCount := launcher.TaskExecution.Lanes()
-	if launcher.TaskExecution.Concurrency != types.TaskExecutionCrossSession || laneCount < 2 {
-		t.Fatalf("fixture policy did not resolve to a cross-session lane pair: %+v", launcher.TaskExecution)
-	}
-	// The daemon's own construction branch, chosen by the same policy.
-	isolated, err := harness.NewIsolatedACPAdapterWithCapacity(laneCount, func(lane int) *harness.ACPAdapter {
-		return harness.NewACPAdapter(launcher, t.TempDir(), harness.AdapterOptions{
-			TurnTimeoutMs: 120_000,
-			CancelGraceMs: 500,
-		})
+
+	adapter, err := harness.BuildAdapter(launcher, t.TempDir(), harness.AdapterOptions{
+		TurnTimeoutMs: 120_000,
+		CancelGraceMs: 500,
 	})
 	if err != nil {
-		t.Fatalf("build isolated adapter: %v", err)
+		t.Fatalf("BuildAdapter: %v", err)
 	}
-	return isolated, releaseDir, trace
+	diagnostics, ok := adapter.(types.HarnessDiagnostics)
+	if !ok {
+		t.Fatalf("#474: production factory produced %T without a diagnostics snapshot", adapter)
+	}
+	// The topology decision itself: the registry policy must have become real
+	// provider-process lanes, not one serial adapter.
+	if capacity := diagnostics.DiagnosticsSnapshot().Capacity; capacity != policy.Lanes() {
+		t.Fatalf("#474: registry policy advertises %d lanes but the production factory built %d", policy.Lanes(), capacity)
+	}
+	return adapter, policy, releaseDir, trace
 }
 
 // TestCrossSessionPolicyOverlapsIndependentTasksThroughIsolatedLanes is the
-// #474 regression: the production composition must actually overlap two
-// independent Task scopes, in two provider processes, before either settles.
+// #474 regression: the REAL registry policy, through the REAL daemon factory,
+// must overlap two independent Task scopes in two provider processes before
+// either settles.
 func TestCrossSessionPolicyOverlapsIndependentTasksThroughIsolatedLanes(t *testing.T) {
-	policy := types.TaskExecutionPolicy{
-		Probe:         types.TaskExecutionProbeVerifiedCrossSession,
-		Concurrency:   types.TaskExecutionCrossSession,
-		MaxConcurrent: 2,
-	}
-	adapter, releaseDir, trace := isolatedLaneComposition(t, policy)
+	adapter, policy, releaseDir, trace := hermesPolicyThroughProductionFactory(t)
 	t.Cleanup(func() { _ = adapter.Close() })
+	diagnostics := adapter.(types.HarnessDiagnostics)
 
 	rt, client := newLaneRuntime(t, adapter, policy)
 
@@ -173,25 +165,48 @@ func TestCrossSessionPolicyOverlapsIndependentTasksThroughIsolatedLanes(t *testi
 
 	startScopedTurn(rt, 61, "task:req-B", "independent long shell work B")
 
-	// Provider-side truth of overlap: two different native conversations are
-	// executing at the same time, before either is released.
+	// Provider-side truth of overlap: the adapter itself reports TWO lanes
+	// executing a turn, for two DIFFERENT scopes, before either is released.
 	waitFor(t, 20*time.Second, func() bool {
-		prompts := trace.prompts(t)
-		return len(prompts) >= 2 && prompts[0] != prompts[1]
-	}, "both Tasks to execute concurrently at the provider")
+		active := map[string]int{}
+		for _, lane := range diagnostics.DiagnosticsSnapshot().Lanes {
+			if lane.TurnActive {
+				active[lane.Scope]++
+			}
+		}
+		return active["task:req-A"] == 1 && active["task:req-B"] == 1
+	}, "both Tasks to execute concurrently in their own lane")
 
+	snapshot := diagnostics.DiagnosticsSnapshot()
+	lanes := map[string]types.HarnessLaneDiagnostic{}
+	for _, lane := range snapshot.Lanes {
+		if lane.TurnActive {
+			lanes[lane.Scope] = lane
+		}
+	}
+	laneA, laneB := lanes["task:req-A"], lanes["task:req-B"]
+	if laneA.Lane == laneB.Lane {
+		t.Fatalf("#474: both Tasks executed in one lane: %+v", snapshot.Lanes)
+	}
+	if laneA.SessionHash == "" || laneA.SessionHash == laneB.SessionHash {
+		t.Fatalf("#474: both Tasks were bound to ONE native conversation: %+v", snapshot.Lanes)
+	}
+	if laneA.ProviderPID <= 0 || laneA.ProviderPID == laneB.ProviderPID {
+		t.Fatalf("#474: independent Tasks shared one provider process: %+v", snapshot.Lanes)
+	}
+
+	// The same fact from the child processes themselves.
 	prompts := trace.prompts(t)
 	if len(prompts) != 2 {
 		t.Fatalf("expected exactly two provider prompts before any release, got %d: %v", len(prompts), prompts)
 	}
+	if prompts[0] == prompts[1] {
+		t.Fatalf("#474: both Tasks were bound to ONE native conversation %q", prompts[0])
+	}
+	if pidA, pidB := providerPID(prompts[0]), providerPID(prompts[1]); pidA == "" || pidA == pidB {
+		t.Fatalf("#474: independent Tasks shared one provider process (%q / %q)", prompts[0], prompts[1])
+	}
 	sessionA, sessionB := prompts[0], prompts[1]
-	if sessionA == sessionB {
-		t.Fatalf("#474: both Tasks were bound to ONE native conversation %q", sessionA)
-	}
-	// A single provider process serving two sessions would still be one lane.
-	if pidA, pidB := providerPID(sessionA), providerPID(sessionB); pidA == "" || pidA == pidB {
-		t.Fatalf("#474: independent Tasks shared one provider process (%q / %q)", sessionA, sessionB)
-	}
 
 	// Settling A must not settle, cancel, or re-dispatch B.
 	if err := os.WriteFile(filepath.Join(releaseDir, sessionA), []byte("go"), 0o600); err != nil {
@@ -210,10 +225,19 @@ func TestCrossSessionPolicyOverlapsIndependentTasksThroughIsolatedLanes(t *testi
 	if counts[sessionB] != 1 {
 		t.Fatalf("Task B was re-dispatched or lost while A settled: %v", counts)
 	}
-	// B still owns its own execution lane: the Runtime reports it running.
+	// B still owns its own execution lane: the Runtime reports it running and
+	// the adapter still reports a live provider turn for it.
 	waitFor(t, 5*time.Second, func() bool {
 		projection, ok := client.latest("req-B")
-		return ok && projection.Phase == types.TaskExecutionPhaseRunning
+		if !ok || projection.Phase != types.TaskExecutionPhaseRunning {
+			return false
+		}
+		for _, lane := range diagnostics.DiagnosticsSnapshot().Lanes {
+			if lane.Scope == "task:req-B" && lane.TurnActive {
+				return true
+			}
+		}
+		return false
 	}, "Task B to remain the running Task after A settled")
 
 	if err := os.WriteFile(filepath.Join(releaseDir, sessionB), []byte("go"), 0o600); err != nil {
