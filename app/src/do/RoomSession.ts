@@ -6797,21 +6797,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     await this.scheduleNextAlarm(room)
     await this.broadcast({ type: "message", message })
     this.resolveAgentWaiters(room)
-    // #346: the accepted canonical resolution is the success boundary. The
-    // control value comes from the SELECTED option's protocol-level `kind`
-    // (ACP allow_once/allow_always/reject_once/reject_always) when the Room
-    // holds it, and degenerates to a single coarse `permission-response`
-    // otherwise — display names and opaque optionIds are never interpreted.
-    // Unknown/expired/invalid requests and non-Human callers returned above
-    // and emit nothing.
-    this.trackTaskControl(
-      room,
-      permissionControlValue(
-        record.event.options.find(
-          (option) => option.optionId === selectedOptionId
-        )?.kind
+    // #346: the accepted canonical resolution is the success boundary, but
+    // ONLY a Task-correlated permission is Task supervision. An ordinary Room
+    // conversation permission carries no taskRequestId and must never enter
+    // TaskControlUsed — otherwise the supervision metric would be diluted by
+    // unrelated conversation approvals.
+    //
+    // For a genuinely Task-scoped request the control value comes from the
+    // SELECTED option's protocol-level `kind` (ACP allow_once/allow_always/
+    // reject_once/reject_always) when the Room holds it, and degenerates to a
+    // single coarse `permission-response` otherwise — display names and
+    // opaque optionIds are never interpreted. Unknown/expired/invalid
+    // requests and non-Human callers returned above and emit nothing.
+    if (record.taskRequestId !== undefined) {
+      this.trackTaskControl(
+        room,
+        permissionControlValue(
+          record.event.options.find(
+            (option) => option.optionId === selectedOptionId
+          )?.kind
+        )
       )
-    )
+    }
     return { ok: true }
   }
 

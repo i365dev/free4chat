@@ -3,7 +3,7 @@
  *
  * Free4Chat deliberately has no durable user identity, and this module does
  * not add one. It reads the browser-local Room history that already exists
- * (the visits this browser chose to remember, written by
+ * (the Rooms this browser chose to remember, written by
  * `saveRoomToLocalStorage` into the `rooms` key) and reduces it to two COARSE
  * properties on an already-meaningful Room-scoped event.
  *
@@ -16,6 +16,24 @@
  *
  * Nothing here is ever sent: only the bucket and the boolean leave the
  * browser. Room names, nicknames, and counts stay local.
+ *
+ * ## What counts as "prior use"
+ *
+ * The whole question is `how much prior Room use did this same browser have
+ * BEFORE this meaningful activation?`, and the only thing that must never be
+ * counted is the CURRENT page load's own history write.
+ *
+ * Excluding the current Room *by name* would be wrong: the history is already
+ * deduplicated by name, so a browser that used `room-a` last week and opens
+ * `room-a` again — even though that name now names a brand-new Room
+ * generation — would be scored as having no prior use at all, systematically
+ * erasing same-name reuse.
+ *
+ * So the boundary is the PAGE LOAD, not the name: the history is snapshotted
+ * (see `preVisitRoomNames`) before this page load writes anything, and every
+ * Room remembered at that instant is prior use. A Room that only appears in
+ * history because this launch just wrote it is therefore not counted, while a
+ * Room that was genuinely already there — same name or not — is.
  */
 
 /** The existing browser-local Room history key (see utils.saveRoomToLocalStorage). */
@@ -39,45 +57,61 @@ export function priorRoomCountBucket(count: number): PriorRoomCountBucket {
   return "6+"
 }
 
-/**
- * Prior Room count for the CURRENT Room name, excluding the current Room
- * itself.
- *
- * The existing helper stores at most one entry per Room name, and the
- * current Room is normally written BEFORE this is read (the join flow saves
- * it on nickname confirmation, while RoomActivated only fires once the Room
- * is already meaningfully connected). Subtracting the current entry when it
- * is present is what keeps that off-by-one out: the current Room is never
- * counted as prior use, and a browser where it has not been written yet is
- * counted identically.
- */
-export function priorRoomCount(
-  storedRoomNames: readonly string[],
-  currentRoomName: string
-): number {
-  const others = storedRoomNames.filter((name) => name !== currentRoomName)
-  return others.length
-}
-
 export interface BrowserRepeatUse {
   returningBrowser: boolean
   priorRoomCountBucket: PriorRoomCountBucket
 }
 
 /**
- * Read the browser-local Room history and reduce it to the coarse repeat-use
- * properties. Any storage failure (private mode, disabled storage, malformed
- * or foreign value) degrades to the same truthful "no prior Rooms" answer
- * instead of breaking the product flow.
+ * The browser's Room history as it was BEFORE this page load wrote anything.
+ *
+ * Frozen on first touch by the deliberate page-load boundary: every writer
+ * calls `noteRoomHistoryWrite()` first (see utils.saveRoomToLocalStorage), and
+ * a read that happens first freezes the same pre-write state, so the snapshot
+ * can never contain this page load's own entry no matter which happens first.
+ *
+ * In-memory only: nothing new is persisted, and nothing identifies the
+ * browser, tab, or person. The consequence is that a full reload starts a new
+ * boundary, so reloading a Room that this browser remembered before the
+ * reload reads as prior use — a truthful statement about the browser, and one
+ * that requires an explicit user action to reach.
  */
-export function browserRepeatUse(roomName: string): BrowserRepeatUse {
-  const count = priorRoomCount(readStoredRoomNames(), roomName)
+let preVisitRoomNames: readonly string[] | null = null
+
+function preVisitHistory(): readonly string[] {
+  if (preVisitRoomNames === null) preVisitRoomNames = readStoredRoomNames()
+  return preVisitRoomNames
+}
+
+/**
+ * The page-load boundary. MUST be called before the history is written, so
+ * the current launch's own entry can never be counted as prior use.
+ */
+export function noteRoomHistoryWrite(): void {
+  preVisitHistory()
+}
+
+/**
+ * Reduce the pre-visit history to the coarse repeat-use properties. Any
+ * storage failure (private mode, disabled storage, malformed or foreign
+ * value) degrades to the same truthful "no prior Rooms" answer instead of
+ * breaking the product flow.
+ *
+ * The current Room is NOT excluded by name: if it was already remembered
+ * before this page load, it is genuine prior use.
+ */
+export function browserRepeatUse(): BrowserRepeatUse {
+  const count = preVisitHistory().length
   return {
     returningBrowser: count > 0,
     priorRoomCountBucket: priorRoomCountBucket(count),
   }
 }
 
+/**
+ * Distinct remembered Room names. The writer deduplicates by name, but a
+ * malformed or foreign value must not be able to inflate the count.
+ */
 function readStoredRoomNames(): string[] {
   if (typeof window === "undefined") return []
   try {
@@ -85,13 +119,14 @@ function readStoredRoomNames(): string[] {
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
-    return parsed
+    const names = parsed
       .map((entry) =>
         entry && typeof entry === "object"
           ? (entry as { roomName?: unknown }).roomName
           : undefined
       )
       .filter((name): name is string => typeof name === "string")
+    return [...new Set(names)]
   } catch {
     return []
   }

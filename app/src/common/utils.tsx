@@ -1,8 +1,12 @@
 import { Color } from "@common/types"
 
-import { ROOM_HISTORY_STORAGE_KEY } from "./roomHistory"
+import { noteRoomHistoryWrite, ROOM_HISTORY_STORAGE_KEY } from "./roomHistory"
 
 export const saveRoomToLocalStorage = (roomName, nickName) => {
+  // #346: freeze the pre-visit Room history BEFORE this launch's own entry is
+  // written, so repeat-use direction can never count the current Room as
+  // prior use (and can still count a genuinely returning one).
+  noteRoomHistoryWrite()
   var rooms: {}[] = JSON.parse(
     localStorage.getItem(ROOM_HISTORY_STORAGE_KEY) || "[]"
   )

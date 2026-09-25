@@ -1887,12 +1887,14 @@ export default function RoomContent({
 
     const timeout = window.setTimeout(() => {
       activatedRoomRef.current = true
-      // #346 same-browser repeat-use direction. Read from the browser-local
-      // Room history at the moment of activation, EXCLUDING this Room, and
-      // reduced to a boolean plus a coarse bucket. It is directional
-      // evidence about this one browser — never account, cross-device, or
-      // D7/D30 retention — and no Room name ever leaves the browser.
-      const repeatUse = browserRepeatUse(roomName)
+      // #346 same-browser repeat-use direction: the Rooms this browser
+      // remembered BEFORE this page load wrote its own entry, reduced to a
+      // boolean plus a coarse bucket. Same-name reuse still counts — a
+      // returning visitor is never scored as new — while this launch's own
+      // entry never can. It is directional evidence about this one browser,
+      // never account / cross-device / D7-D30 retention, and no Room name
+      // leaves it.
+      const repeatUse = browserRepeatUse()
       trackRoomScopedEvent(
         "RoomActivated",
         withAcquisitionPage(
@@ -1913,7 +1915,6 @@ export default function RoomContent({
     acquisitionPage,
     connectionStatus,
     participants.length,
-    roomName,
     resolvedRoomType,
     trackRoomScopedEvent,
   ])

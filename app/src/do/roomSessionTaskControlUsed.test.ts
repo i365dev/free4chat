@@ -493,11 +493,23 @@ describe("TaskControlUsed — permission resolution (#346)", () => {
     vi.unstubAllGlobals()
   })
 
+  /**
+   * One canonical Human -> Agent Task, so a permission can be genuinely
+   * Task-scoped exactly as the resident Runtime correlates it.
+   */
+  async function createCanonicalTask(
+    test: ReturnType<typeof harness>,
+    humanSocket: FakeSocket
+  ) {
+    return createTask(test, humanSocket)
+  }
+
   async function pendingPermission(
     test: ReturnType<typeof harness>,
     options: Array<Record<string, unknown>>,
-    participantId = "agent-a"
+    options2: { participantId?: string; taskRequestId?: string } = {}
   ) {
+    const participantId = options2.participantId ?? "agent-a"
     const result = await test.control({
       action: "agent-send-permission",
       participantId,
@@ -507,6 +519,9 @@ describe("TaskControlUsed — permission resolution (#346)", () => {
         toolCall: { title: "Run command", kind: "execute" },
         options,
         expiresInMs: 60_000,
+        ...(options2.taskRequestId === undefined
+          ? {}
+          : { taskRequestId: options2.taskRequestId }),
       },
     })
     expect(result.status).toBe(200)
@@ -515,12 +530,17 @@ describe("TaskControlUsed — permission resolution (#346)", () => {
   it("maps the stable ACP option kind, never the display name or option id", async () => {
     const test = harness()
     const humanSocket = test.connectHuman("human-1")
+    const taskRequestId = await createCanonicalTask(test, humanSocket)
     // Deliberately misleading presentation: the NAME says Allow, the
     // protocol-level kind says reject.
-    await pendingPermission(test, [
-      { optionId: "opaque-a", name: "Allow", kind: "reject_once" },
-      { optionId: "opaque-b", name: "Deny", kind: "allow_once" },
-    ])
+    await pendingPermission(
+      test,
+      [
+        { optionId: "opaque-a", name: "Allow", kind: "reject_once" },
+        { optionId: "opaque-b", name: "Deny", kind: "allow_once" },
+      ],
+      { taskRequestId }
+    )
 
     await test.sendHuman(humanSocket, {
       type: "permission-response",
@@ -540,7 +560,10 @@ describe("TaskControlUsed — permission resolution (#346)", () => {
   it("degenerates to one coarse value when the Room has no protocol-level kind", async () => {
     const test = harness()
     const humanSocket = test.connectHuman("human-1")
-    await pendingPermission(test, [{ optionId: "opaque-a", name: "Approve" }])
+    const taskRequestId = await createCanonicalTask(test, humanSocket)
+    await pendingPermission(test, [{ optionId: "opaque-a", name: "Approve" }], {
+      taskRequestId,
+    })
 
     await test.sendHuman(humanSocket, {
       type: "permission-response",
@@ -557,9 +580,12 @@ describe("TaskControlUsed — permission resolution (#346)", () => {
   it("emits nothing for an invalid, unknown, or replayed resolution", async () => {
     const test = harness()
     const humanSocket = test.connectHuman("human-1")
-    await pendingPermission(test, [
-      { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
-    ])
+    const taskRequestId = await createCanonicalTask(test, humanSocket)
+    await pendingPermission(
+      test,
+      [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+      { taskRequestId }
+    )
 
     // Unknown request.
     await test.sendHuman(humanSocket, {
@@ -601,11 +627,47 @@ describe("TaskControlUsed — permission resolution (#346)", () => {
     expect(controlEvents(test.fetchCalls, "permission-allow")).toHaveLength(1)
   })
 
-  it("emits nothing for a non-Human responder", async () => {
+  it("emits NOTHING for an ordinary Room conversation permission", async () => {
+    // PermissionRequestRecord.taskRequestId is optional: a permission raised
+    // by ordinary Room conversation has no Task correlation at all. Counted
+    // as supervision it would dilute the metric with unrelated approvals, so
+    // it must stay silent.
     const test = harness()
+    const humanSocket = test.connectHuman("human-1")
     await pendingPermission(test, [
       { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
     ])
+
+    await test.sendHuman(humanSocket, {
+      type: "permission-response",
+      requestId: "permission-1",
+      selectedOptionId: "allow-once",
+    })
+    await flushMicrotasks()
+
+    // The canonical request and resolution still happened, uncorrelated...
+    const messages = test.stored().messages
+    expect(messages.map((message) => message.actionType)).toEqual([
+      "permission",
+      "permission",
+    ])
+    expect(messages[0].permission?.kind).toBe("request")
+    expect(messages[1].permission?.kind).toBe("resolved")
+    for (const message of messages)
+      expect(message.taskRequestId).toBeUndefined()
+    // ...but no Task supervision was used.
+    expect(allControlEvents(test.fetchCalls)).toHaveLength(0)
+  })
+
+  it("emits nothing for a non-Human responder", async () => {
+    const test = harness()
+    const humanSocket = test.connectHuman("human-1")
+    const taskRequestId = await createCanonicalTask(test, humanSocket)
+    await pendingPermission(
+      test,
+      [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+      { taskRequestId }
+    )
     const agentSocket = makeSocket(undefined, {
       participantId: "agent-b",
       token: "agent-b-token",

@@ -1,12 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   ROOM_HISTORY_STORAGE_KEY,
-  browserRepeatUse,
-  priorRoomCount,
   priorRoomCountBucket,
+  type BrowserRepeatUse,
 } from "./roomHistory"
-import { saveRoomToLocalStorage } from "./utils"
 
 /**
  * #346: same-browser repeat-use direction.
@@ -14,9 +12,32 @@ import { saveRoomToLocalStorage } from "./utils"
  * The signal must be browser-local, coarse, and directional:
  *   - no durable identifier is introduced for it;
  *   - no historical Room name (or nickname) ever leaves the browser;
- *   - the CURRENT Room is never counted as prior use, whether or not the
- *     join flow has already remembered it.
+ *   - the CURRENT page load's own history write is never counted as prior
+ *     use, while a Room this browser genuinely remembered before this launch
+ *     IS — including when it is the same Room NAME (a name reused after
+ *     expiry is a new Room generation, but it is still returning use).
+ *
+ * `roomHistory` freezes its pre-visit snapshot on first touch, so every test
+ * re-imports the module to get a fresh page-load boundary. The writer helper
+ * is exercised through the real `saveRoomToLocalStorage`.
  */
+
+async function freshModule() {
+  vi.resetModules()
+  const roomHistory = await import("./roomHistory")
+  const utils = await import("./utils")
+  return {
+    ...roomHistory,
+    saveRoomToLocalStorage: utils.saveRoomToLocalStorage,
+  }
+}
+
+function remember(names: string[]) {
+  window.localStorage.setItem(
+    ROOM_HISTORY_STORAGE_KEY,
+    JSON.stringify(names.map((roomName) => ({ roomName, nickName: "n" })))
+  )
+}
 
 describe("priorRoomCountBucket (#346)", () => {
   it("uses the documented coarse bands", () => {
@@ -35,24 +56,6 @@ describe("priorRoomCountBucket (#346)", () => {
   })
 })
 
-describe("priorRoomCount (#346)", () => {
-  it("excludes the current Room from prior use", () => {
-    // The join flow writes the current Room BEFORE activation, so the stored
-    // list already contains it — counting it would be the off-by-one.
-    expect(priorRoomCount(["room-a"], "room-a")).toBe(0)
-    expect(priorRoomCount(["room-a", "room-b"], "room-b")).toBe(1)
-    expect(priorRoomCount(["room-a"], "room-b")).toBe(1)
-    expect(priorRoomCount([], "room-a")).toBe(0)
-  })
-
-  it("counts each remembered Room once, even against a repeated name", () => {
-    // The existing helper stores at most one entry per Room name, but the
-    // exclusion must stay correct even for a malformed list.
-    expect(priorRoomCount(["room-a", "room-a"], "room-b")).toBe(2)
-    expect(priorRoomCount(["room-a", "room-a"], "room-a")).toBe(0)
-  })
-})
-
 describe("browserRepeatUse (#346)", () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -60,30 +63,64 @@ describe("browserRepeatUse (#346)", () => {
 
   afterEach(() => {
     window.localStorage.clear()
+    vi.resetModules()
   })
 
-  it("reports no prior use for a first-time browser", () => {
-    expect(browserRepeatUse("room-new")).toEqual({
+  async function repeatUse(): Promise<BrowserRepeatUse> {
+    const mod = await freshModule()
+    return mod.browserRepeatUse()
+  }
+
+  it("reports no prior use for a browser that remembered nothing", async () => {
+    expect(await repeatUse()).toEqual({
       returningBrowser: false,
       priorRoomCountBucket: "0",
     })
   })
 
-  it("reports correct buckets for 1, 2..5, and 6+ prior Rooms", () => {
-    const remember = (names: string[]) =>
-      window.localStorage.setItem(
-        ROOM_HISTORY_STORAGE_KEY,
-        JSON.stringify(names.map((roomName) => ({ roomName, nickName: "n" })))
-      )
+  it("does not count THIS launch's own history write as prior use", async () => {
+    const mod = await freshModule()
+    mod.saveRoomToLocalStorage("room-first", "Alice")
+    expect(mod.browserRepeatUse()).toEqual({
+      returningBrowser: false,
+      priorRoomCountBucket: "0",
+    })
+  })
 
-    remember(["room-1"])
-    expect(browserRepeatUse("room-new")).toEqual({
+  it("counts a returning browser that reuses the SAME Room name", async () => {
+    // The reported gap: the history is deduplicated by name, so excluding the
+    // current name would score this as a brand-new browser. The Room name is
+    // the same; the canonical generation behind it is not, and neither fact
+    // makes the human a first-time user.
+    remember(["room-a"])
+    const mod = await freshModule()
+    // The join flow rewrites the entry for this launch's visit.
+    mod.saveRoomToLocalStorage("room-a", "Alice")
+    expect(window.localStorage.getItem(ROOM_HISTORY_STORAGE_KEY)).toContain(
+      "room-a"
+    )
+    expect(mod.browserRepeatUse()).toEqual({
       returningBrowser: true,
       priorRoomCountBucket: "1",
     })
+  })
+
+  it("counts a returning browser that opens the same Room without a rewrite", async () => {
+    // The same Room page can bind straight from remembered history and never
+    // write at all.
+    remember(["room-a"])
+    expect(await repeatUse()).toEqual({
+      returningBrowser: true,
+      priorRoomCountBucket: "1",
+    })
+  })
+
+  it("reports correct buckets for 1, 2..5, and 6+ prior Rooms", async () => {
+    remember(["room-1"])
+    expect((await repeatUse()).priorRoomCountBucket).toBe("1")
 
     remember(["room-1", "room-2", "room-3", "room-4", "room-5"])
-    expect(browserRepeatUse("room-new")).toEqual({
+    expect(await repeatUse()).toEqual({
       returningBrowser: true,
       priorRoomCountBucket: "2-5",
     })
@@ -97,48 +134,33 @@ describe("browserRepeatUse (#346)", () => {
       "room-6",
       "room-7",
     ])
-    expect(browserRepeatUse("room-new")).toEqual({
-      returningBrowser: true,
-      priorRoomCountBucket: "6+",
-    })
+    expect((await repeatUse()).priorRoomCountBucket).toBe("6+")
   })
 
-  it("never counts the current Room as prior use, in either write order", () => {
-    // Before the join flow remembered it.
+  it("counts distinct remembered Rooms only", async () => {
+    // The writer deduplicates by name; a duplicated or malformed list must
+    // still not inflate the signal.
     window.localStorage.setItem(
       ROOM_HISTORY_STORAGE_KEY,
-      JSON.stringify([{ roomName: "room-x", nickName: "n" }])
+      JSON.stringify([
+        { roomName: "room-a", nickName: "n" },
+        { roomName: "room-a", nickName: "n" },
+        { nickName: "no room name" },
+        { roomName: 42 },
+      ])
     )
-    expect(browserRepeatUse("room-x")).toEqual({
-      returningBrowser: false,
-      priorRoomCountBucket: "0",
-    })
-
-    // After the real join flow wrote it (the production ordering).
-    saveRoomToLocalStorage("room-x", "nick")
-    expect(browserRepeatUse("room-x")).toEqual({
-      returningBrowser: false,
-      priorRoomCountBucket: "0",
-    })
-
-    // A genuinely prior Room still counts.
-    saveRoomToLocalStorage("room-y", "nick")
-    expect(browserRepeatUse("room-x")).toEqual({
+    expect(await repeatUse()).toEqual({
       returningBrowser: true,
       priorRoomCountBucket: "1",
     })
   })
 
-  it("sends no Room name or nickname through the emitted properties", () => {
-    saveRoomToLocalStorage("secret-room-alpha", "Alice")
-    saveRoomToLocalStorage("secret-room-beta", "Bob")
-    const properties = browserRepeatUse("secret-room-current")
+  it("sends no Room name or nickname through the emitted properties", async () => {
+    remember(["secret-room-alpha", "secret-room-beta"])
+    const properties = await repeatUse()
     const serialized = JSON.stringify(properties)
     expect(serialized).not.toContain("secret-room")
     expect(serialized).not.toContain("Alice")
-    expect(serialized).not.toContain("Bob")
-    // Only the two approved coarse properties exist — there is no raw count
-    // and no room name key at all.
     expect(Object.keys(properties).sort()).toEqual([
       "priorRoomCountBucket",
       "returningBrowser",
@@ -147,17 +169,10 @@ describe("browserRepeatUse (#346)", () => {
     expect(Object.values(properties)).not.toContain(2)
   })
 
-  it("degrades to no prior use on unreadable or foreign storage", () => {
-    for (const raw of [
-      "not json",
-      "{}",
-      "42",
-      "[null]",
-      JSON.stringify([{ nickName: "no room name" }]),
-      JSON.stringify([{ roomName: 42 }]),
-    ]) {
+  it("degrades to no prior use on unreadable or foreign storage", async () => {
+    for (const raw of ["not json", "{}", "42", "[null]"]) {
       window.localStorage.setItem(ROOM_HISTORY_STORAGE_KEY, raw)
-      expect(browserRepeatUse("room-new")).toEqual({
+      expect(await repeatUse()).toEqual({
         returningBrowser: false,
         priorRoomCountBucket: "0",
       })
