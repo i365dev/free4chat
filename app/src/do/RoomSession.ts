@@ -273,7 +273,7 @@ const MAX_TASK_LIVE_VIEWS = 16
 // bound matches the Runtime's private resident control bound; the browser can
 // never widen it into a payload.
 const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
-// #480: bounded hibernation-durable control authority per resident socket. Only
+// Bounded hibernation-durable control authority per resident socket. Only
 // current active turns are stored, so this covers the product's lane capacity
 // (<= 4 concurrent turns per Agent) with margin; the oldest entry is dropped
 // when it is exceeded, so the newest turns always survive.
@@ -3699,7 +3699,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           delete (attachment as { pendingSessionControl?: unknown })
             .pendingSessionControl
       }
-      // #480: a malformed or oversized record is dropped, never trusted.
+      // Reject malformed or oversized socket authority.
       if (attachment.activeTaskTurns !== undefined) {
         const turns = attachment.activeTaskTurns
         if (
@@ -4378,8 +4378,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // independent execution lane is retained; neither can overwrite the
       // other's concurrent turn.
       this.transientTaskExecutions.set(key, projection)
-      // #480: mirror the same authority into the resident socket's hibernation
-      // attachment, which is the only place Task control truth is persisted.
+      // Mirror the accepted active turn into the resident attachment.
       this.recordAttachmentActiveTaskTurn(room, participant.id, projection)
       await this.broadcast({ type: "taskExecution", execution: projection })
       return this.json({ ok: true })
@@ -7509,8 +7508,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // (production: `task_turn_not_active` on a Task the Room itself showed as
     // Running). Exact turn matching is NOT weakened: the requested turn must
     // equal the authoritative current turn of THIS canonical Task.
-    // #480: falls back to the resident socket's hibernation attachment when
-    // this instance's in-memory projection was evicted. The requested turn must
+    // Falls back to the resident socket's hibernation attachment when this
+    // instance's in-memory projection was evicted. The requested turn must
     // still equal the recovered current turn exactly.
     const activeTurn = this.taskExecutionFor(
       room,
@@ -7570,10 +7569,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #480: the authoritative current truth of one (Agent, Task) lane — this
-   * instance's in-memory projection when it has one, else the resident socket's
-   * hibernation attachment. The in-memory fact is newer, so a settled entry
-   * always outranks a stale attachment entry.
+   * The authoritative current truth of one (Agent, Task) lane — this instance's
+   * in-memory projection when it has one, else the resident socket's
+   * hibernation attachment. In-memory truth is newer, so a settled entry always
+   * outranks a stale attachment entry.
    */
   private taskExecutionFor(
     room: RoomRecord,
@@ -7588,8 +7587,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #480: the durable fallback, read only from a socket bound to this exact
-   * participant and its CURRENT connection nonce, so a replaced socket's
+   * The durable fallback, read only from a socket bound to this exact
+   * participant and its current connection nonce, so a replaced socket's
    * authority is dead. An absent turn is unknown, never inferred.
    */
   private attachmentTaskExecution(
@@ -7626,10 +7625,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #480: the single writer, called only from the authenticated
+   * The single writer, called only from the authenticated
    * `agent-task-execution` event — no timer, alarm, poll, or storage write.
-   * Records the current turn of that Task, or removes the entry when the
-   * authoritative projection has none, so no Task history accumulates.
+   * Records the current turn, or removes the entry when the projection has
+   * none, so no Task history accumulates.
    */
   private recordAttachmentActiveTaskTurn(
     room: RoomRecord,

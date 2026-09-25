@@ -857,7 +857,7 @@ describe("#421 Interrupt & send race (Fix D/G)", () => {
 })
 
 /**
- * #480: exact Task control authority after Durable Object hibernation. Execution
+ * Exact Task control authority after Durable Object hibernation. Execution
  * projections are memory-only, so the Room recovers the exact turn from the
  * resident socket's hibernation attachment. Hibernation is explicit here and the
  * Runtime's answers are driven by the test, never by a real browser.
