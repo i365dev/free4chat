@@ -273,14 +273,10 @@ const MAX_TASK_LIVE_VIEWS = 16
 // bound matches the Runtime's private resident control bound; the browser can
 // never widen it into a payload.
 const MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH = 64
-// #480: explicit product bound for the hibernation-durable Task control
-// authority one resident socket attachment may carry. Only CURRENT active turns
-// are stored (never history), and this product's provider lane capacity is at
-// most 4 concurrent turns per Agent, so this is a deliberate small bound rather
-// than a consequence of the platform's per-attachment byte cap. An attachment
-// that would exceed it drops its oldest entry: a Task whose turn can no longer
-// be verified fails closed exactly like the pre-#480 state (the Runtime stays
-// the final exact-turn authority), and the newest turns always survive.
+// #480: bounded hibernation-durable control authority per resident socket. Only
+// current active turns are stored, so this covers the product's lane capacity
+// (<= 4 concurrent turns per Agent) with margin; the oldest entry is dropped
+// when it is exceeded, so the newest turns always survive.
 export const MAX_ATTACHMENT_ACTIVE_TASK_TURNS = 8
 const TASK_LIVE_VIEW_KEY_PREFIX = "task-live-view:"
 const GENERATED_APP_KEY_PREFIX = "generated-app:"
@@ -469,29 +465,12 @@ interface AgentEventSocketAttachment {
   cursor: number
   pendingSessionControl?: PendingSessionControl
   /**
-   * #480: the CURRENT active Task turns of this resident socket.
-   *
-   * A Durable Object is hibernatable, so its in-memory Task execution
-   * projections can be evicted while the resident socket, the local Harness, and
-   * a long-running Task all survive. Without a hibernation-durable copy of the
-   * exact-turn authority, the first real Human Task control after such an
-   * eviction had nothing to verify a turn against (`task_turn_not_active`) and
-   * never reached the Runtime at all.
-   *
-   * The socket ATTACHMENT is the correct persistence boundary for that: it is
-   * hibernation-durable, it belongs to exactly this socket, and writing it is
-   * not a Durable Object storage write. Only turns that are active RIGHT NOW are
-   * recorded here — a projection with no current turn removes its entry — so
-   * this is bounded control authority, never Task execution history.
+   * #480: this socket's exact active Task turns, so control authority survives
+   * a Durable Object eviction. Current turns only, bounded, exact-turn bound.
    */
   activeTaskTurns?: AgentEventActiveTaskTurn[]
 }
 
-/**
- * #480: one currently active Task turn of one resident socket. Bounded by
- * MAX_ATTACHMENT_ACTIVE_TASK_TURNS; it carries no participant capability, no
- * Harness identity, and no Task content.
- */
 interface AgentEventActiveTaskTurn {
   taskRequestId: string
   turnSequence: number
@@ -3720,11 +3699,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           delete (attachment as { pendingSessionControl?: unknown })
             .pendingSessionControl
       }
-      // #480: the hibernation-durable active Task turns are validated with the
-      // same fail-closed rule. A malformed, oversized, or non-exact-turn record
-      // is dropped rather than trusted: an attachment can never invent control
-      // authority for a Task, and the explicit product bound is enforced on
-      // READ as well as on write.
+      // #480: a malformed or oversized record is dropped, never trusted.
       if (attachment.activeTaskTurns !== undefined) {
         const turns = attachment.activeTaskTurns
         if (
@@ -4403,11 +4378,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // independent execution lane is retained; neither can overwrite the
       // other's concurrent turn.
       this.transientTaskExecutions.set(key, projection)
-      // #480: mirror the same authoritative projection into this resident
-      // socket's hibernation attachment, so control authority for the exact
-      // current turn survives a Durable Object eviction. Bounded, current-turn
-      // only, and written only here — the explicit `resync` path stays the
-      // Browser's UI reconciliation trigger and is not involved in control.
+      // #480: mirror the same authority into the resident socket's hibernation
+      // attachment, which is the only place Task control truth is persisted.
       this.recordAttachmentActiveTaskTurn(room, participant.id, projection)
       await this.broadcast({ type: "taskExecution", execution: projection })
       return this.json({ ok: true })
@@ -7537,13 +7509,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     // (production: `task_turn_not_active` on a Task the Room itself showed as
     // Running). Exact turn matching is NOT weakened: the requested turn must
     // equal the authoritative current turn of THIS canonical Task.
-    //
-    // #480: after a hibernation the authoritative turn is recovered from the
-    // resident socket's own hibernation-durable attachment (see
-    // taskExecutionFor), so a Human who never left the Room can still control
-    // the exact turn the browser is showing. It is still exact: the requested
-    // turn must equal the recovered current turn, and a stale attachment can
-    // only ever name its own turn — never a successor.
+    // #480: falls back to the resident socket's hibernation attachment when
+    // this instance's in-memory projection was evicted. The requested turn must
+    // still equal the recovered current turn exactly.
     const activeTurn = this.taskExecutionFor(
       room,
       authorized.executorAgentId,
@@ -7602,18 +7570,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #480: the authoritative execution truth of exactly ONE (Agent, Task) lane.
-   *
-   * This instance's in-memory projection wins whenever it exists: it is the
-   * newest fact the Room has observed, so a retained terminal entry always
-   * outranks a stale attachment entry for the same lane. The resident socket
-   * ATTACHMENT is the fallback, which is what lets a restarted Durable Object
-   * recover control authority instead of guessing a current turn or degrading
-   * to a scope-only cancel.
-   *
-   * Callers pass an executor that is already a current connected participant;
-   * the attachment path additionally requires the exact participantId and the
-   * CURRENT connectionNonce binding, so a replaced socket's authority is dead.
+   * #480: the authoritative current truth of one (Agent, Task) lane — this
+   * instance's in-memory projection when it has one, else the resident socket's
+   * hibernation attachment. The in-memory fact is newer, so a settled entry
+   * always outranks a stale attachment entry.
    */
   private taskExecutionFor(
     room: RoomRecord,
@@ -7628,16 +7588,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #480: the hibernation-durable last-known ACTIVE turn of one (Agent, Task)
-   * lane, read only from a resident socket that is bound to this exact
-   * participant and its current connection nonce. A turn that is absent from
-   * every current attachment is simply unknown: no turn is ever inferred.
-   *
-   * This is deliberately NOT gated on a Runtime capability: the attachment is
-   * written only from that same participant's own authenticated execution
-   * publishes, so it carries exactly the authority the in-memory projection
-   * carries for a Runtime that publishes exact turns without advertising the
-   * (unrelated) reconciliation request.
+   * #480: the durable fallback, read only from a socket bound to this exact
+   * participant and its CURRENT connection nonce, so a replaced socket's
+   * authority is dead. An absent turn is unknown, never inferred.
    */
   private attachmentTaskExecution(
     room: RoomRecord,
@@ -7673,15 +7626,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
-   * #480: mirror ONE authoritative execution projection into the resident
-   * socket's hibernation attachment. This is the ONLY writer, and it runs only
-   * inside the already authenticated `agent-task-execution` event — no timer, no
-   * alarm, no poll, and no Durable Object storage write.
-   *
-   * It records the current turn of that Task, or REMOVES the entry when the
-   * authoritative projection reports no current turn, so the attachment can
-   * never accumulate Task history. Only a socket bound to the same participant
-   * AND the current connection nonce is ever written.
+   * #480: the single writer, called only from the authenticated
+   * `agent-task-execution` event — no timer, alarm, poll, or storage write.
+   * Records the current turn of that Task, or removes the entry when the
+   * authoritative projection has none, so no Task history accumulates.
    */
   private recordAttachmentActiveTaskTurn(
     room: RoomRecord,
@@ -7709,8 +7657,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         currentTurn === undefined
           ? others
           : [
-              // The explicit product bound drops the OLDEST entry, so the
-              // newest active turns are the ones that always survive.
+              // Oldest entry drops first: the newest turns survive.
               ...others.slice(-(MAX_ATTACHMENT_ACTIVE_TASK_TURNS - 1)),
               {
                 taskRequestId: projection.taskRequestId,
@@ -7731,9 +7678,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           activeTaskTurns: next,
         } satisfies AgentEventSocketAttachment)
       } catch {
-        // A socket that cannot record the turn keeps its previous last-known
-        // authority: the Room's in-memory truth is unaffected, and the Runtime
-        // remains the final exact-turn authority either way.
+        // Keep the previous authority; the Runtime is still the final judge.
       }
     }
   }

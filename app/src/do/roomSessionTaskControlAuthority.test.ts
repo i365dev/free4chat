@@ -34,7 +34,7 @@ const FAR_FUTURE = Date.now() + 365 * 24 * 60 * 60 * 1000
 interface FakeSocket {
   readonly tag?: string
   readonly sent: string[]
-  /** The hibernation-durable attachment, exactly as Cloudflare keeps it. */
+  /** The hibernation-durable attachment, as Cloudflare keeps it. */
   attachment: Record<string, unknown>
   send: (payload: string) => void
   close: ReturnType<typeof vi.fn>
@@ -104,9 +104,8 @@ function room(): RoomRecord {
 function harness() {
   const store = new Map<string, unknown>([["room", room()]])
   const humanSocket = { send: vi.fn(), close: vi.fn() } as unknown as WebSocket
-  // Every socket the Room currently owns per participant. A reconnect closes
-  // the previous socket in production; the regressions that prove the
-  // participantId + connectionNonce fence deliberately keep it registered.
+  // Every socket the Room owns per participant. The nonce-fence regression
+  // deliberately keeps a replaced socket registered.
   const agentSockets = new Map<string, FakeSocket[]>()
 
   const ctx = {
@@ -160,9 +159,9 @@ function harness() {
     humanSocket,
     store,
     /**
-     * Registers one resident socket for a participant, exactly like a fresh
-     * `/agent-events` upgrade: the participant record carries this nonce and the
-     * socket starts with a fresh, empty hibernation attachment.
+     * Registers one resident socket like a fresh `/agent-events` upgrade: the
+     * participant carries this nonce and the socket starts with an empty
+     * hibernation attachment.
      */
     connectAgentSocket: (
       participantId: string,
@@ -240,7 +239,7 @@ function harness() {
         taskRequestId: string
         turnSequence: number
       }>,
-    /** Simulates a write the Room could not complete, i.e. a stale attachment. */
+    /** Simulates a write the Room could not complete: a stale attachment. */
     setActiveTaskTurns: (
       participantId: string,
       turns: Array<{ taskRequestId: string; turnSequence: number }>
@@ -317,10 +316,8 @@ function harness() {
         })
       ),
     /**
-     * What a hibernating Durable Object does: the MEMORY-ONLY projections are
-     * lost while the resident socket — and therefore its hibernation-durable
-     * attachment — and the local Harness both survive. That attachment is the
-     * only Task control authority the restarted Room can derive.
+     * What hibernation does: memory-only projections are lost while the resident
+     * socket, and therefore its durable attachment, survives.
      */
     simulateHibernation: () => {
       internal.transientTaskExecutions.clear()
@@ -860,25 +857,10 @@ describe("#421 Interrupt & send race (Fix D/G)", () => {
 })
 
 /**
- * #480 — exact Task control authority that survives Durable Object hibernation.
- *
- * The real-Room G4 failure: A and B were both running (2 active Task scopes, 2
- * live processes) when the Human clicked A's own Interrupt once. A never showed
- * Interrupting or Interrupted and ran its full ~300s; B was unaffected. The Room
- * had hibernated — the resident's lease heartbeat is only a 15s backoff hint and
- * the object hibernates after ~10s of inactivity — so its MEMORY-ONLY
- * `transientTaskExecutions` map was empty while the Human browser socket, the
- * resident socket, and the local Harness all survived. The exact-turn
- * authorization therefore answered `task_turn_not_active`, never wrote a
- * `task-control` frame, and the Runtime was never asked.
- *
- * The fix persists the authority at the hibernation boundary that already
- * exists: the resident WebSocket ATTACHMENT (hibernation-durable, owned by the
- * exact socket, no Durable Object storage write), written ONLY from the
- * authenticated `agent-task-execution` event, holding ONLY current active turns.
- *
- * Every regression below is deterministic: hibernation is explicit and the
- * Runtime's answer is driven by the test rather than by a real browser.
+ * #480: exact Task control authority after Durable Object hibernation. Execution
+ * projections are memory-only, so the Room recovers the exact turn from the
+ * resident socket's hibernation attachment. Hibernation is explicit here and the
+ * Runtime's answers are driven by the test, never by a real browser.
  */
 describe("#480 hibernation-durable Task control authority", () => {
   it("1: warm Room -> exact turn controlled, and mirrored into the attachment", async () => {
@@ -896,13 +878,13 @@ describe("#480 hibernation-durable Task control authority", () => {
       42
     )
 
-    // The authoritative projection is durable in the socket attachment too.
+    // The same authority is mirrored durably.
     expect(test.activeTaskTurns("agent-a")).toEqual([
       { taskRequestId: requestId, turnSequence: 42 },
     ])
     test.clearAgentFrames("agent-a")
 
-    // A stale attachment never outranks this instance's in-memory truth.
+    // A stale attachment never outranks in-memory truth.
     test.setActiveTaskTurns("agent-a", [
       { taskRequestId: requestId, turnSequence: 41 },
     ])
@@ -952,7 +934,7 @@ describe("#480 hibernation-durable Task control authority", () => {
 
     expect(test.errors()).toEqual([])
     expect(test.notices()).toEqual([])
-    // No control-path reconciliation frame: authority came from the attachment.
+    // No reconciliation frame: authority came from the attachment.
     expect(test.agentResyncs("agent-a")).toEqual([])
     expect(test.agentControls("agent-a")).toEqual([
       {
@@ -962,8 +944,7 @@ describe("#480 hibernation-durable Task control authority", () => {
         turnSequence: 42,
       },
     ])
-    // ...because the resident socket and its hibernation attachment survived
-    // the eviction and still carry the exact active turn.
+    // ...from the attachment that survived the eviction.
     expect(test.activeTaskTurns("agent-a")).toEqual([
       { taskRequestId: requestId, turnSequence: 42 },
     ])
@@ -990,7 +971,7 @@ describe("#480 hibernation-durable Task control authority", () => {
     expect(test.errors()).toEqual([])
     expect(test.notices()).toEqual(["interrupt_turn_finished"])
 
-    // The successor is still controllable by ITS own exact turn.
+    // The successor is still controllable by its own exact turn.
     await test.sendHuman({
       type: "task-interrupt",
       taskRequestId: requestId,
@@ -1005,7 +986,7 @@ describe("#480 hibernation-durable Task control authority", () => {
       },
     ])
 
-    // The same holds for a successor the Room only learns about after waking.
+    // Same for a successor the Room only learns about after waking.
     await test.publishExecution("agent-a", requestId, {
       currentTurnSequence: 44,
       phase: "running",
@@ -1030,7 +1011,7 @@ describe("#480 hibernation-durable Task control authority", () => {
     test.connectAgentSocket("agent-b")
     const requestId = await createTask(test)
 
-    // A was the initial executor and has settled; B is the admitted replacement.
+    // A was the initial executor and has settled; B is the replacement.
     await test.publishExecution("agent-a", requestId, { queuedCount: 0 })
     await test.sendHuman({
       type: "chat",
@@ -1043,7 +1024,7 @@ describe("#480 hibernation-durable Task control authority", () => {
       phase: "running",
     })
 
-    // A settled Task keeps NO attachment entry: only current turns are stored.
+    // A settled Task keeps no entry: only current turns are stored.
     expect(test.activeTaskTurns("agent-a")).toEqual([])
     expect(test.activeTaskTurns("agent-b")).toEqual([
       { taskRequestId: requestId, turnSequence: 88 },
@@ -1134,11 +1115,10 @@ describe("#480 hibernation-durable Task control authority", () => {
     test.clearAgentFrames("agent-a")
     test.simulateHibernation()
 
-    // The Runtime already moved to 43 but never published it, so the Room's only
-    // truth is the stale attachment. A click for the successor is refused, and
-    // the control that IS written for 42 names exactly 42 — never a successor
-    // and never a scope-only cancel — so the Runtime, which remains the final
-    // exact-turn authority, can still refuse it.
+    // The Runtime already moved to 43 but never published it, so the only truth
+    // is the stale attachment. The successor is refused, and the control that is
+    // written for 42 names exactly 42 — never a scope-only cancel — so the
+    // Runtime can still refuse it.
     await test.sendHuman({
       type: "task-interrupt",
       taskRequestId: requestId,
@@ -1165,7 +1145,7 @@ describe("#480 hibernation-durable Task control authority", () => {
       expect(control.turnSequence).toBeGreaterThan(0)
     }
 
-    // Once the Room HAS the successor, the stale turn is refused outright.
+    // Once the Room has the successor, the stale turn is refused outright.
     await test.publishExecution("agent-a", requestId, {
       currentTurnSequence: 43,
       phase: "running",
@@ -1193,9 +1173,9 @@ describe("#480 hibernation-durable Task control authority", () => {
     })
     test.simulateHibernation()
 
-    // The resident reconnects: same participant, NEW connectionNonce, fresh
+    // The resident reconnects: same participant, new connectionNonce, fresh
     // empty attachment. The previous socket stays registered with its stale
-    // attachment, so only the participantId + nonce binding can fence it.
+    // attachment, so only the nonce binding can fence it.
     const replacement = test.connectAgentSocket("agent-a", "agent-a-nonce-2")
     expect(test.stored().participants["agent-a"].connectionNonce).toBe(
       "agent-a-nonce-2"
@@ -1211,7 +1191,7 @@ describe("#480 hibernation-durable Task control authority", () => {
     expect(test.agentControls("agent-a")).toEqual([])
     expect(test.notices()).toEqual(["interrupt_turn_finished"])
 
-    // The replacement socket's own authoritative projection restores authority.
+    // The replacement socket's own projection restores authority.
     await test.publishExecution("agent-a", requestId, {
       currentTurnSequence: 42,
       phase: "running",
@@ -1250,7 +1230,7 @@ describe("#480 hibernation-durable Task control authority", () => {
     }
 
     const turns = test.activeTaskTurns("agent-a")
-    // The explicit product bound holds, and the NEWEST turns survive it.
+    // The explicit bound holds, and the newest turns survive it.
     expect(turns).toHaveLength(MAX_ATTACHMENT_ACTIVE_TASK_TURNS)
     expect(turns.map((turn) => turn.taskRequestId)).toEqual(
       requestIds.slice(total - MAX_ATTACHMENT_ACTIVE_TASK_TURNS)
@@ -1260,8 +1240,7 @@ describe("#480 hibernation-durable Task control authority", () => {
       true
     )
 
-    // A Task whose authoritative projection reports no current turn is removed,
-    // so the attachment can never accumulate Task execution history.
+    // A Task with no current turn is removed, so no history accumulates.
     const newest = requestIds[requestIds.length - 1]
     await test.publishExecution("agent-a", newest, { queuedCount: 0 })
     expect(
