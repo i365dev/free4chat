@@ -10,6 +10,7 @@ function clone<T>(value: T): T {
 function roomFixture(): RoomRecord {
   return {
     createdAt: Date.now(),
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: Date.now() + 60_000,
     participants: {
       agent: {

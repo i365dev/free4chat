@@ -109,6 +109,7 @@ function agent(id: string, continuation: boolean, connected = true) {
 function room(continuation = true): RoomRecord {
   return {
     createdAt: 1,
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: FAR_FUTURE,
     participants: {
       "human-1": human("human-1", "human-1-token"),

@@ -7,6 +7,7 @@ function expiredRoom(): RoomRecord {
   const now = Date.now()
   return {
     createdAt: now - 60_000,
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: now - 1,
     participants: {
       agent: {
@@ -166,6 +167,7 @@ function agentEventRoom(): RoomRecord {
   const now = Date.now()
   return {
     createdAt: now,
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: now + 60_000,
     participants: {
       human: {

@@ -14,6 +14,11 @@ import type { RoomParticipant } from "../room/types"
  * transcript text, artifact contents, credentials, and session identifiers
  * never cross this module.
  *
+ * #346: every Room-scoped event also carries the canonical generation's
+ * `analyticsRoomId` (see RoomRecord.analyticsRoomId). It is read from the
+ * persisted Room — never minted here — and always rides together with the
+ * existing `roomHash`, which stays for historical report compatibility.
+ *
  * Ingestion is the direct Mixpanel import API (the Zaraz HTTP Events route
  * was proven unreliable and is explicitly not used). MIXPANEL_PROJECT_TOKEN
  * is a preconfigured Cloudflare Worker secret; absence (local/test) makes
@@ -57,8 +62,24 @@ export interface RoomAnalyticsEvent {
     | "CollaborationDuration"
     | "LiveViewPublished"
     | "RoomAppPublished"
+    | "TaskControlUsed"
   properties: Record<string, unknown>
 }
+
+// #346: coarse Task duration. Raw milliseconds and start/end timestamps are
+// deliberately never emitted — only which band the Task landed in.
+export type TaskDurationBucket = "<1m" | "1-5m" | "5-15m" | "15-60m" | "60m+"
+
+// #346: the supervision controls Free4Chat actually ships, each emitted ONLY
+// after the Room accepted and performed the canonical action. Low
+// cardinality by construction: one value per shipped control.
+export type TaskControl =
+  | "interrupt"
+  | "interrupt-send"
+  | "session-continue"
+  | "permission-allow"
+  | "permission-reject"
+  | "permission-response"
 
 export type RoomCreatedCreatorKind = "human" | "agent"
 export type RoomCreationSource = "browser" | "agent-runtime" | "mcp"
@@ -84,6 +105,63 @@ export function hashRoom(roomName: string): string {
     h = (h * 0x01000193) >>> 0
   }
   return h.toString(16).padStart(8, "0")
+}
+
+// #346: the persisted canonical Room generation id is exactly what
+// crypto.randomUUID() produces. Validating the shape keeps a forged or
+// corrupted stored value from becoming a high-cardinality analytics
+// dimension; the loader replaces anything else once and persists the healed
+// record.
+const ANALYTICS_ROOM_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+export function isAnalyticsRoomId(value: unknown): value is string {
+  return typeof value === "string" && ANALYTICS_ROOM_ID_PATTERN.test(value)
+}
+
+/**
+ * #346: coarse Task duration band. Returns undefined for a duration that
+ * cannot be truthfully derived (missing, non-finite, or negative — the last
+ * only possible through a backwards clock step). Callers OMIT the property
+ * in that case rather than fabricating one.
+ *
+ * Boundaries are inclusive-lower: exactly 60s is "1-5m", exactly 5m is
+ * "5-15m", exactly 15m is "15-60m", exactly 60m is "60m+".
+ */
+export function taskDurationBucket(
+  durationMs: number
+): TaskDurationBucket | undefined {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return undefined
+  const minutes = durationMs / 60_000
+  if (minutes < 1) return "<1m"
+  if (minutes < 5) return "1-5m"
+  if (minutes < 15) return "5-15m"
+  if (minutes < 60) return "15-60m"
+  return "60m+"
+}
+
+/**
+ * #346: classify ONE accepted permission response into a low-cardinality
+ * control value.
+ *
+ * The ACP protocol's `PermissionOption.kind` is the only stable,
+ * truth-level field the Room holds (it is preserved verbatim on the
+ * canonical request; Free4Chat never infers meaning from the display name or
+ * from an opaque optionId). When kind is absent, or carries any value
+ * outside the protocol's enum, the Room degenerates to a single
+ * `permission-response` value rather than guessing allow/reject.
+ */
+export function permissionControlValue(
+  optionKind: unknown
+): Extract<
+  TaskControl,
+  "permission-allow" | "permission-reject" | "permission-response"
+> {
+  if (optionKind === "allow_once" || optionKind === "allow_always")
+    return "permission-allow"
+  if (optionKind === "reject_once" || optionKind === "reject_always")
+    return "permission-reject"
+  return "permission-response"
 }
 
 export function roomComposition(
@@ -130,6 +208,7 @@ export function delegationTopology(
 
 export function buildAgentJoinedEvent(args: {
   roomName: string
+  analyticsRoomId: string
   participants: RoomParticipant[]
 }): RoomAnalyticsEvent {
   return {
@@ -137,6 +216,7 @@ export function buildAgentJoinedEvent(args: {
     properties: {
       roomType: "unknown",
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       participantBucket: participantsBucket(args.participants.length),
       roomComposition: roomComposition(args.participants),
     },
@@ -148,8 +228,11 @@ export function buildAgentJoinedEvent(args: {
 // creationSource is classified from the entry path (browser session,
 // official Runtime User-Agent, or other MCP caller). Coarse telemetry only —
 // it never affects authentication, authorization, or Room behavior.
+// #346: analyticsRoomId is the id persisted WITH this generation, never a
+// temporary value minted for the event.
 export function buildRoomCreatedEvent(args: {
   roomName: string
+  analyticsRoomId: string
   creatorKind: RoomCreatedCreatorKind
   creationSource: RoomCreationSource
 }): RoomAnalyticsEvent {
@@ -157,6 +240,7 @@ export function buildRoomCreatedEvent(args: {
     name: "RoomCreated",
     properties: {
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       creatorKind: args.creatorKind,
       creationSource: args.creationSource,
     },
@@ -165,6 +249,7 @@ export function buildRoomCreatedEvent(args: {
 
 export function buildCollabRequestedEvent(args: {
   roomName: string
+  analyticsRoomId: string
   participants: RoomParticipant[]
   fromParticipantId: string
   targetParticipantId: string
@@ -179,6 +264,7 @@ export function buildCollabRequestedEvent(args: {
     properties: {
       roomType: "unknown",
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       requesterKind: resolveParticipantKind(
         args.participants,
         topology.requesterId
@@ -189,19 +275,47 @@ export function buildCollabRequestedEvent(args: {
   }
 }
 
+/**
+ * #346: terminal collaboration outcome. `hasArtifact` is the pre-existing
+ * property and keeps its exact semantics (the terminal envelope carried at
+ * least one referenced attachment id).
+ *
+ * The additions are bounded product-value flags derived from canonical
+ * Room state correlated by the SAME taskRequestId that identifies this
+ * collaboration request — never from another Task's state:
+ *
+ *   hasLiveView     this Task's own current Live View snapshot exists
+ *   hasGeneratedApp a generated Room App publication names this Task
+ *   durationBucket  coarse band from the retained canonical request
+ *                   message's createdAt to the canonical terminal time;
+ *                   omitted when the request has fallen outside the bounded
+ *                   message ring (no Task timing database is invented)
+ *
+ * Requester/target ids, request ids, attachment ids, surface ids, and app
+ * instance ids never cross this boundary.
+ */
 export function buildCollabOutcomeEvent(args: {
   roomName: string
+  analyticsRoomId: string
   participants: RoomParticipant[]
   kind: "declined" | "completed" | "failed"
   fromParticipantId: string
   targetParticipantId: string
   attachmentIds?: string[]
+  requestCreatedAt?: number
+  completedAt?: number
+  hasLiveView?: boolean
+  hasGeneratedApp?: boolean
 }): RoomAnalyticsEvent {
   const topology = delegationTopology(
     "outcome",
     args.fromParticipantId,
     args.targetParticipantId
   )
+  const durationBucket =
+    args.requestCreatedAt === undefined || args.completedAt === undefined
+      ? undefined
+      : taskDurationBucket(args.completedAt - args.requestCreatedAt)
   return {
     name: "CollabOutcome",
     properties: {
@@ -213,9 +327,13 @@ export function buildCollabOutcomeEvent(args: {
       targetKind: resolveParticipantKind(args.participants, topology.targetId),
       roomType: "unknown",
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       hasArtifact: Array.isArray(args.attachmentIds)
         ? args.attachmentIds.length > 0
         : false,
+      ...(durationBucket === undefined ? {} : { durationBucket }),
+      hasLiveView: args.hasLiveView === true,
+      hasGeneratedApp: args.hasGeneratedApp === true,
       roomComposition: roomComposition(args.participants),
     },
   }
@@ -223,6 +341,7 @@ export function buildCollabOutcomeEvent(args: {
 
 export function buildCollaborationDurationEvent(args: {
   roomName: string
+  analyticsRoomId: string
   durationMs: number
   collaborationMode: "human-only" | "agent-only" | "human-agent"
   participantBucket: "1" | "2-3" | "4-9" | "10+"
@@ -233,6 +352,7 @@ export function buildCollaborationDurationEvent(args: {
       durationMs: args.durationMs,
       roomType: "unknown",
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       collaborationMode: args.collaborationMode,
       participantBucket: args.participantBucket,
     },
@@ -251,6 +371,7 @@ export function buildCollaborationDurationEvent(args: {
 // rather than inventing a new kind.
 export function buildTargetedMessageEvent(args: {
   roomName: string
+  analyticsRoomId: string
   participants: RoomParticipant[]
   senderParticipantId: string
   targetParticipantIds: string[]
@@ -271,6 +392,7 @@ export function buildTargetedMessageEvent(args: {
     properties: {
       roomType: "unknown",
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       senderKind: resolveParticipantKind(
         args.participants,
         args.senderParticipantId
@@ -284,6 +406,7 @@ export function buildTargetedMessageEvent(args: {
 
 export function buildLiveViewPublishedEvent(args: {
   roomName: string
+  analyticsRoomId: string
   participants: RoomParticipant[]
   phase: "first" | "replacement"
 }): RoomAnalyticsEvent {
@@ -293,6 +416,7 @@ export function buildLiveViewPublishedEvent(args: {
       phase: args.phase,
       roomType: "unknown",
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       participantBucket: participantsBucket(args.participants.length),
       roomComposition: roomComposition(args.participants),
     },
@@ -310,6 +434,7 @@ export function generatedBundleSizeBucket(
 
 export function buildGeneratedRoomAppPublishedEvent(args: {
   roomName: string
+  analyticsRoomId: string
   participants: RoomParticipant[]
   phase: "first" | "update"
   bundleBytes: number
@@ -322,7 +447,38 @@ export function buildGeneratedRoomAppPublishedEvent(args: {
       bundleSizeBucket: generatedBundleSizeBucket(args.bundleBytes),
       roomType: "unknown",
       roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       participantBucket: participantsBucket(args.participants.length),
+      roomComposition: roomComposition(args.participants),
+    },
+  }
+}
+
+/**
+ * #346: exactly one event per ACCEPTED canonical supervision control. Emitted
+ * only after the Room has performed the action (an accepted interrupt
+ * delivered to the canonical Agent endpoint, a canonical Task created by a
+ * successful session continuation, an accepted permission resolution) — never
+ * from a click, an impression, a disabled control, a rejected/unauthorized
+ * attempt, or a malformed request.
+ *
+ * Properties stay minimal on purpose: taskRequestId, turnSequence, permission
+ * request/option ids, session tokens, participant ids, and instruction text
+ * are all deliberately absent.
+ */
+export function buildTaskControlUsedEvent(args: {
+  roomName: string
+  analyticsRoomId: string
+  participants: RoomParticipant[]
+  control: TaskControl
+}): RoomAnalyticsEvent {
+  return {
+    name: "TaskControlUsed",
+    properties: {
+      control: args.control,
+      roomType: "unknown",
+      roomHash: hashRoom(args.roomName),
+      analyticsRoomId: args.analyticsRoomId,
       roomComposition: roomComposition(args.participants),
     },
   }
@@ -405,16 +561,25 @@ export function normalizeStoredCollaborationActivity(
   }
 }
 
-/** The only properties each event may carry (#228 schema freeze). */
+/** The only properties each event may carry (#228 schema freeze).
+ * #346: every Room-scoped event dual-writes `roomHash` (historical report
+ * compatibility) and `analyticsRoomId` (canonical generation correlation). */
 export const APPROVED_ANALYTICS_PROPERTIES: Record<
   RoomAnalyticsEvent["name"],
   readonly string[]
 > = {
-  AgentJoined: ["roomType", "roomHash", "participantBucket", "roomComposition"],
-  RoomCreated: ["roomHash", "creatorKind", "creationSource"],
+  AgentJoined: [
+    "roomType",
+    "roomHash",
+    "analyticsRoomId",
+    "participantBucket",
+    "roomComposition",
+  ],
+  RoomCreated: ["roomHash", "analyticsRoomId", "creatorKind", "creationSource"],
   TargetedMessage: [
     "roomType",
     "roomHash",
+    "analyticsRoomId",
     "senderKind",
     "targetKind",
     "targetCountBucket",
@@ -424,12 +589,14 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
     "durationMs",
     "roomType",
     "roomHash",
+    "analyticsRoomId",
     "collaborationMode",
     "participantBucket",
   ],
   CollabRequested: [
     "roomType",
     "roomHash",
+    "analyticsRoomId",
     "requesterKind",
     "targetKind",
     "roomComposition",
@@ -440,13 +607,18 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
     "targetKind",
     "roomType",
     "roomHash",
+    "analyticsRoomId",
     "hasArtifact",
+    "durationBucket",
+    "hasLiveView",
+    "hasGeneratedApp",
     "roomComposition",
   ],
   LiveViewPublished: [
     "phase",
     "roomType",
     "roomHash",
+    "analyticsRoomId",
     "participantBucket",
     "roomComposition",
   ],
@@ -456,7 +628,15 @@ export const APPROVED_ANALYTICS_PROPERTIES: Record<
     "bundleSizeBucket",
     "roomType",
     "roomHash",
+    "analyticsRoomId",
     "participantBucket",
+    "roomComposition",
+  ],
+  TaskControlUsed: [
+    "control",
+    "roomType",
+    "roomHash",
+    "analyticsRoomId",
     "roomComposition",
   ],
 }

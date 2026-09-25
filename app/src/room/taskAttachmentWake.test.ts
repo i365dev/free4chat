@@ -44,6 +44,7 @@ type AgentEventProjection = {
 function buildStoredRoom(): RoomRecord {
   return {
     createdAt: Date.now(),
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: FAR_FUTURE,
     participants: {
       "human-1": {

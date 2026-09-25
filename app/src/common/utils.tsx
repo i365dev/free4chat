@@ -1,10 +1,14 @@
 import { Color } from "@common/types"
 
+import { ROOM_HISTORY_STORAGE_KEY } from "./roomHistory"
+
 export const saveRoomToLocalStorage = (roomName, nickName) => {
-  var rooms: {}[] = JSON.parse(localStorage.getItem("rooms") || "[]")
+  var rooms: {}[] = JSON.parse(
+    localStorage.getItem(ROOM_HISTORY_STORAGE_KEY) || "[]"
+  )
   rooms = rooms.filter((room: any) => room.roomName !== roomName)
   rooms.push({ roomName: roomName, nickName: nickName })
-  localStorage.setItem("rooms", JSON.stringify(rooms))
+  localStorage.setItem(ROOM_HISTORY_STORAGE_KEY, JSON.stringify(rooms))
 }
 
 export const nameToColor = (name: string) => {
@@ -128,6 +132,26 @@ export const trackAnalyticsEvent = (
 // Keep existing instrumentation and its Umami reports working while forwarding
 // product events through the Cloudflare Zaraz Mixpanel tag.
 export const umamiEvent = trackAnalyticsEvent
+
+/**
+ * #346: attach the Room-authoritative generation correlation id to a
+ * Room-scoped browser event.
+ *
+ * The value ALWAYS comes from RoomState — the browser never mints one, so a
+ * browser-side event can only ever carry the id of the canonical Room
+ * generation the server actually created. When the browser has no
+ * authoritative Room state yet (which is exactly the case for events that
+ * happen before a Room exists), the property is simply absent rather than
+ * fabricated.
+ *
+ * `roomHash` keeps riding alongside it for as long as the existing reports
+ * need it.
+ */
+export const withAnalyticsRoomId = <T extends AnalyticsProperties>(
+  eventData: T,
+  analyticsRoomId: string | undefined
+): T & { analyticsRoomId?: string } =>
+  analyticsRoomId ? { ...eventData, analyticsRoomId } : eventData
 
 export const hashRoom = (roomName: string): string => {
   let h = 0x811c9dc5

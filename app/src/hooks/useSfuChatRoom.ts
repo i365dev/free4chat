@@ -668,6 +668,12 @@ export function useSfuChatRoom(
   const [participants, setParticipants] = useState<UserInfo[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [attachments, setAttachments] = useState<RoomAttachmentProjection[]>([])
+  // #346: the canonical Room generation's analytics correlation id, exactly
+  // as projected by RoomState. Undefined until the first authoritative Room
+  // state arrives; the browser never invents one.
+  const [analyticsRoomId, setAnalyticsRoomId] = useState<string | undefined>(
+    undefined
+  )
   const [taskLiveViews, setTaskLiveViews] = useState<
     SfuRoomState["taskLiveViews"]
   >({})
@@ -2824,6 +2830,7 @@ export function useSfuChatRoom(
       setAttachments(nextAttachments)
       setTaskLiveViews(state.taskLiveViews ?? {})
       setGeneratedApps(state.generatedApps ?? {})
+      setAnalyticsRoomId(state.analyticsRoomId)
       const agentAudioTrackCount = state.participants.reduce(
         (count, participant) =>
           count +
@@ -4825,6 +4832,7 @@ export function useSfuChatRoom(
     getLocalRoomAuth,
     messages,
     attachments,
+    analyticsRoomId,
     taskLiveViews,
     generatedApps,
     roomAppsEnabled,

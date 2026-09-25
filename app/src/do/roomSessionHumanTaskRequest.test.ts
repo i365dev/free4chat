@@ -46,6 +46,7 @@ function agent(id: string) {
 function room(): RoomRecord {
   return {
     createdAt: 1,
+    analyticsRoomId: crypto.randomUUID(),
     expiresAt: FAR_FUTURE,
     participants: {
       "human-1": human(),

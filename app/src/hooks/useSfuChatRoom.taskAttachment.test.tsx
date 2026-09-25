@@ -152,10 +152,14 @@ function agentParticipant(id: string): StateParticipant {
   }
 }
 
+// #346: Room-authoritative generation correlation id.
+const TEST_ANALYTICS_ROOM_ID = "3f7c1c2e-9a4b-4d5e-8f01-2b6c7d8e9f10"
+
 function roomState(participants: StateParticipant[]): SfuRoomState {
   return {
     createdAt: 0,
     expiresAt: Date.now() + 60 * 60 * 1000,
+    analyticsRoomId: TEST_ANALYTICS_ROOM_ID,
     participants,
     messages: [],
     meetingNotes: { active: false },
@@ -646,6 +650,30 @@ describe("Room file release edge (#363 review point 1)", () => {
       (channel) => channel.label === "files-participant-1"
     )!
   }
+
+  it("projects the canonical Room generation id from RoomState (#346)", async () => {
+    const hook = await connectWithAgent()
+    expect(hook.result.current.analyticsRoomId).toBe(TEST_ANALYTICS_ROOM_ID)
+
+    // A later authoritative state carrying a different generation replaces
+    // it — the browser only ever mirrors what the server projected.
+    act(() =>
+      lastFakeWebSocket?.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            ...roomState([humanParticipant("participant-1")]),
+            analyticsRoomId: "9c1e4a76-1111-4222-8333-444455556666",
+          },
+        }),
+      })
+    )
+    await waitFor(() =>
+      expect(hook.result.current.analyticsRoomId).toBe(
+        "9c1e4a76-1111-4222-8333-444455556666"
+      )
+    )
+  })
 
   function attachmentUploadCalls() {
     return fetchMock.mock.calls.filter(([input]) =>

@@ -515,6 +515,14 @@ export interface AgentMediaPermissions {
 export interface RoomState {
   createdAt: number
   expiresAt: number
+  // #346: host-owned analytics correlation for THIS canonical Room
+  // generation. A random UUID minted once when the generation is
+  // materialized; never derived from the Room name, never used for
+  // authentication/authorization/routing, and never placed into invite
+  // links or Generated Room App payloads. It exists only so a connected
+  // browser can attach the same Room-scoped correlation key the Room itself
+  // already emits, and it disappears with this generation.
+  analyticsRoomId: string
   participants: Array<Omit<RoomParticipant, "token" | "connectionNonce">>
   // #176 Phase A: one readiness projection per Runtime Host id (see
   // RoomRecord.runtimeHosts).
@@ -587,6 +595,13 @@ export interface CollaborationActivity {
 export interface RoomRecord {
   createdAt: number
   expiresAt: number
+  // #346: ONE analytics correlation id per canonical Room generation,
+  // persisted with the record so it survives Durable Object eviction/restart
+  // and never changes for this generation. It is minted randomly, is never
+  // derived from the Room name, is never authorization or routing, and is
+  // deleted with the record when the Room expires — so the same
+  // human-readable Room name created later is a different analytics entity.
+  analyticsRoomId: string
   participants: Record<string, RoomParticipant>
   // #176 Phase A (canonical Room model): ONE readiness projection per
   // Runtime Host id, shared by all same-host Agents. Garbage-collected when
