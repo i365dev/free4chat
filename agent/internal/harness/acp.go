@@ -109,6 +109,12 @@ type AdapterOptions struct {
 	// ProviderSpec is a bounded registry launch description used only by local
 	// diagnostics (for example `npx @...@1.2.3`).
 	ProviderSpec string
+	// LaneDiagnostics asks BuildAdapter to tag every DiagnosticSink event of a
+	// multi-lane build with the numeric lane that emitted it. It is a
+	// diagnostics-only convenience owned by the lane owner: the sink still
+	// receives only bounded lifecycle metadata, and a single-lane build never
+	// gains a lane key it cannot attribute truthfully.
+	LaneDiagnostics bool
 	// PermissionResponder is an optional, resident-local decision seam for
 	// ACP session/request_permission calls. A nil responder preserves the
 	// production fail-closed behavior and cancels the request immediately.
