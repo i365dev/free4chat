@@ -658,7 +658,7 @@ describe("#421 Task control authority (Fix C)", () => {
 describe("#480 hibernated Room: the first exact Task control still reaches the resident", () => {
   it("B: memory-only execution lost, Human socket kept, NO explicit resync -> exact interrupt N lands", async () => {
     const test = harness()
-    const agentSocket = test.connectAgentSocket("agent-a")
+    test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
     await test.publishExecution("agent-a", requestId, {
       currentTurnSequence: 42,
@@ -713,9 +713,18 @@ describe("#480 hibernated Room: the first exact Task control still reaches the r
         turnSequence: 42,
       },
     ])
-    // The reconciliation frame is a one-shot request, not a poll.
+    // The reconciliation frame is a one-shot request, not a poll, and the
+    // resident's socket received exactly those two bounded private frames.
     expect(test.agentResyncs("agent-a")).toHaveLength(1)
-    expect(agentSocket.sent).toHaveLength(2)
+    expect(test.agentFrames("agent-a")).toEqual([
+      { type: "task-execution-resync" },
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 42,
+      },
+    ])
   })
 
   it("C: recovery finds a successor turn instead -> the held N never cancels N+1", async () => {
