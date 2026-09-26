@@ -39,10 +39,13 @@ import "github.com/i365dev/free4chat/agent/internal/types"
  *	    provider process to be torn down;
  *	  - returns once the request has been dispatched to that exact turn.
  *
- *	SteerTurnFor(scope, input)
+ *	SteerTurnFor(scope, expectedTurnSequence, input)
  *	  - delivers one already-accepted canonical Human instruction into exactly
  *	    that scope's ACTIVE turn, so it changes what the Agent does next
  *	    instead of becoming an ordinary FIFO follow-up;
+ *	  - carries the EXACT Runtime turn identity the caller fenced against, and
+ *	    must refuse when that is not the turn it is executing, so native
+ *	    steering can never redirect a successor turn;
  *	  - is independent of cancellation: cancellation is only one fallback way
  *	    to make the active turn yield sooner, and steer must survive cancel
  *	    being slow, ignored, or refused;

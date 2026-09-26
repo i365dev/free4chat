@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -21,6 +22,15 @@ import (
  * to make the current turn yield sooner: a slow, ignored, or refused cancel
  * must never lose the steer.
  */
+
+// newSteerRuntime is the shared interrupt double plus the cleanup that
+// unblocks any turn a failing assertion left parked.
+func newSteerRuntime(t *testing.T) (*ResidentRuntime, *interruptAdapter) {
+	t.Helper()
+	rt, adapter := newTaskInterruptRuntime()
+	t.Cleanup(adapter.releaseAllTurns)
+	return rt, adapter
+}
 
 func steerControl(taskRequestID string, turnSequence, steerSequence int64) *types.ResidentTaskControl {
 	return &types.ResidentTaskControl{
@@ -45,7 +55,7 @@ func waitForTurnTexts(t *testing.T, adapter *interruptAdapter, scope string, wan
 }
 
 func TestSteerJumpsOrdinaryFollowUpsAfterTheActiveTurnSettles(t *testing.T) {
-	rt, adapter := newTaskInterruptRuntime()
+	rt, adapter := newSteerRuntime(t)
 	defer rt.Stop()
 
 	// N is active. The Human then had already queued A and B, and only then
@@ -61,9 +71,12 @@ func TestSteerJumpsOrdinaryFollowUpsAfterTheActiveTurnSettles(t *testing.T) {
 
 	// Priority is decided BEFORE the turn settles: the running turn keeps the
 	// head, and the steer is already the next not-yet-started instruction.
-	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 4, 2, 3}) {
-		t.Fatalf("steer was not promoted to priority-next: %v", got)
+	// The canonical ledger is UNCHANGED: priority is an overlay, not a reorder.
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3, 4}) {
+		t.Fatalf("steer rewrote the canonical ledger: %v", got)
 	}
+	// ...and the delivery decision is the steer.
+	assertNextDelivery(t, rt, "task:req-T", 4)
 
 	close(hold)
 	waitForDone(t, drained, "steered Task to drain")
@@ -71,7 +84,7 @@ func TestSteerJumpsOrdinaryFollowUpsAfterTheActiveTurnSettles(t *testing.T) {
 }
 
 func TestSteerPreservesCanonicalOrderAmongMultipleSteers(t *testing.T) {
-	rt, adapter := newTaskInterruptRuntime()
+	rt, adapter := newSteerRuntime(t)
 	defer rt.Stop()
 
 	hold := adapter.holdTurns()
@@ -85,9 +98,13 @@ func TestSteerPreservesCanonicalOrderAmongMultipleSteers(t *testing.T) {
 	rt.applyResidentTaskControl(steerControl("req-T", 1, 3))
 	rt.applyResidentTaskControl(steerControl("req-T", 1, 4))
 
-	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 3, 4, 2, 5}) {
-		t.Fatalf("steers did not keep canonical order ahead of ordinary work: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3, 4, 5}) {
+		t.Fatalf("steering rewrote the canonical ledger: %v", got)
 	}
+	// Steers keep canonical order among themselves and both stay ahead of the
+	// ordinary follow-up.
+	assertNextDelivery(t, rt, "task:req-T", 3)
+	assertDeliveryOrder(t, rt, "task:req-T", []int64{3, 4, 2, 5})
 
 	close(hold)
 	waitForDone(t, drained, "steered Task to drain")
@@ -98,7 +115,7 @@ func TestSteerPreservesCanonicalOrderAmongMultipleSteers(t *testing.T) {
 // accepts the yield request and ignores it. The steer must stay priority-next
 // and run exactly once, immediately after the old turn eventually settles.
 func TestSteerSurvivesAnIgnoredCancel(t *testing.T) {
-	rt, adapter := newTaskInterruptRuntime()
+	rt, adapter := newSteerRuntime(t)
 	defer rt.Stop()
 	adapter.ignoreCancel()
 
@@ -113,9 +130,10 @@ func TestSteerSurvivesAnIgnoredCancel(t *testing.T) {
 	if got := adapter.cancelCount(); got != 1 {
 		t.Fatalf("the fallback must still ask the exact turn to yield, got %d", got)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 3, 2}) {
-		t.Fatalf("an ignored cancel lost the steer promotion: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("an ignored cancel rewrote the canonical ledger: %v", got)
 	}
+	assertNextDelivery(t, rt, "task:req-T", 3)
 	// The ignored turn is still the active one, so nothing was falsely settled.
 	if got := activeScope(rt); got != "task:req-T" {
 		t.Fatalf("an ignored cancel must not settle the turn: %q", got)
@@ -132,7 +150,7 @@ func TestSteerSurvivesAnIgnoredCancel(t *testing.T) {
 // canonical, so a cancel that cannot even be dispatched only changes how soon
 // the steer runs — never whether it survives.
 func TestSteerSurvivesACancelWriteFailure(t *testing.T) {
-	rt, adapter := newTaskInterruptRuntime()
+	rt, adapter := newSteerRuntime(t)
 	defer rt.Stop()
 	adapter.failCancel(errors.New("cancel write failed"))
 
@@ -144,9 +162,10 @@ func TestSteerSurvivesACancelWriteFailure(t *testing.T) {
 
 	rt.applyResidentTaskControl(steerControl("req-T", 1, 3))
 
-	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 3, 2}) {
-		t.Fatalf("a failed cancel lost the steer promotion: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("a failed cancel rewrote the canonical ledger: %v", got)
 	}
+	assertNextDelivery(t, rt, "task:req-T", 3)
 	// A refused yield is not an interruption: the exact turn keeps running.
 	if got := adapter.cancelCount(); got != 1 {
 		t.Fatalf("the fallback must attempt the yield once, got %d", got)
@@ -189,8 +208,9 @@ func TestSteerLeavesAnotherTaskUntouched(t *testing.T) {
 		t.Fatalf("Task B pending work was reordered: %v", got)
 	}
 	if got := rt.pendingAddressedSnapshotFor("task:req-A"); !reflect.DeepEqual(got, []int64{1, 3}) {
-		t.Fatalf("Task A steer was not promoted: %v", got)
+		t.Fatalf("Task A ledger changed: %v", got)
 	}
+	assertNextDelivery(t, rt, "task:req-A", 3)
 
 	adapter.release("task:req-B")
 	waitFor(t, 3*time.Second, func() bool { return !adapter.isRunning("task:req-B") }, "Task B to finish")
@@ -207,7 +227,7 @@ func TestSteerLeavesAnotherTaskUntouched(t *testing.T) {
 // TestSteerKeepsTheSameTaskSession: a steer is a delivery-priority decision, so
 // the retained Task conversation is never replaced by it.
 func TestSteerKeepsTheSameTaskSession(t *testing.T) {
-	rt, adapter := newTaskInterruptRuntime()
+	rt, adapter := newSteerRuntime(t)
 	defer rt.Stop()
 
 	drained := startTurn(rt, scopedEvent(1, "task:req-T", "N"))
@@ -234,7 +254,7 @@ func TestSteerKeepsTheSameTaskSession(t *testing.T) {
 // no stale active turn, no duplicate pending entry, no stale control, and
 // pending work bounded by the canonical instructions that are really waiting.
 func TestRepeatedSteerCyclesStayBounded(t *testing.T) {
-	rt, adapter := newTaskInterruptRuntime()
+	rt, adapter := newSteerRuntime(t)
 	defer rt.Stop()
 
 	sequence := int64(1)
@@ -255,9 +275,10 @@ func TestRepeatedSteerCyclesStayBounded(t *testing.T) {
 		// A duplicated/replayed steer cycle must not add a second promotion.
 		rt.applyResidentTaskControl(steerControl("req-T", sequence-2, sequence))
 
-		if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{sequence - 2, sequence, sequence - 1}) {
-			t.Fatalf("cycle %d produced a duplicate or stale pending order: %v", cycle, got)
+		if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{sequence - 2, sequence - 1, sequence}) {
+			t.Fatalf("cycle %d produced a duplicate or stale canonical ledger: %v", cycle, got)
 		}
+		assertNextDelivery(t, rt, "task:req-T", sequence)
 		adapter.releaseTurn()
 		close(hold)
 		waitForDone(t, drained, "steered Task to drain")
@@ -277,11 +298,11 @@ func TestRepeatedSteerCyclesStayBounded(t *testing.T) {
 	if pendingContexts != 0 {
 		t.Fatalf("steer cycles left %d pending contexts", pendingContexts)
 	}
-	// Each cycle applies its steer control twice (the duplicate is a replay the
-	// Runtime must not let grow state), so the bounded yield requests are
-	// exactly two per cycle and pending work is what stays bounded.
-	if got := adapter.cancelCount(); got != 10 {
-		t.Fatalf("expected one yield request per applied control, got %d", got)
+	// Each cycle applies its steer control twice; the replayed control is a
+	// bounded no-op, so there is exactly ONE yield request per cycle and no
+	// state growth.
+	if got := adapter.cancelCount(); got != 5 {
+		t.Fatalf("a duplicate steer control must not request a second yield: got %d cancels", got)
 	}
 }
 
@@ -296,7 +317,7 @@ type nativeSteerAdapter struct {
 	steerCalls int
 }
 
-func (a *nativeSteerAdapter) SteerTurnFor(scope string, input types.HarnessTurnInput) error {
+func (a *nativeSteerAdapter) SteerTurnFor(scope string, expectedTurnSequence int64, input types.HarnessTurnInput) error {
 	a.steerMu.Lock()
 	defer a.steerMu.Unlock()
 	a.steerCalls++
@@ -305,7 +326,7 @@ func (a *nativeSteerAdapter) SteerTurnFor(scope string, input types.HarnessTurnI
 	}
 	for _, event := range input.Events {
 		if event.Text != "" {
-			a.steered = append(a.steered, scope+"="+event.Text)
+			a.steered = append(a.steered, fmt.Sprintf("%s@%d=%s", scope, expectedTurnSequence, event.Text))
 		}
 	}
 	return nil
@@ -339,6 +360,7 @@ func newNativeSteerRuntime(t *testing.T) (*ResidentRuntime, *nativeSteerAdapter)
 		Cursor:            0,
 		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
 	})
+	t.Cleanup(adapter.releaseAllTurns)
 	return rt, adapter
 }
 
@@ -357,12 +379,17 @@ func TestNativeSteerDeliversOnceAndNeverReplays(t *testing.T) {
 
 	rt.applyResidentTaskControl(steerControl("req-T", 1, 3))
 
-	if got := adapter.steeredTexts(); !reflect.DeepEqual(got, []string{"task:req-T=steer-now"}) {
-		t.Fatalf("native steer did not deliver the canonical instruction once: %v", got)
+	if got := adapter.steeredTexts(); !reflect.DeepEqual(got, []string{"task:req-T@1=steer-now"}) {
+		t.Fatalf("native steer did not deliver the canonical instruction once, with the exact turn: %v", got)
 	}
-	// Delivered instructions must not also run as their own queued turn.
-	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2}) {
-		t.Fatalf("a natively delivered steer stayed queued: %v", got)
+	// The canonical ledger is untouched, and the delivered steer is recorded as
+	// delivered instead of being reordered or dropped ahead of the ordinary
+	// follow-up that is still undelivered behind it.
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("native steer rewrote the canonical ledger: %v", got)
+	}
+	if got := rt.deliveredSeqFor("task:req-T"); got != 0 {
+		t.Fatalf("native steer advanced the canonical cursor past undelivered work: %d", got)
 	}
 	// A native steer does not cancel: the same turn keeps running.
 	if got := adapter.cancelCount(); got != 0 {
@@ -395,9 +422,10 @@ func TestNativeSteerFailureFallsBackWithoutLosingTheInstruction(t *testing.T) {
 
 	rt.applyResidentTaskControl(steerControl("req-T", 1, 3))
 
-	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 3, 2}) {
-		t.Fatalf("a failed native steer did not fall back to promotion: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("a failed native steer rewrote the canonical ledger: %v", got)
 	}
+	assertNextDelivery(t, rt, "task:req-T", 3)
 	if got := adapter.cancelCount(); got != 1 {
 		t.Fatalf("the fallback must still ask the turn to yield, got %d", got)
 	}
@@ -415,7 +443,7 @@ func TestNativeSteerFailureFallsBackWithoutLosingTheInstruction(t *testing.T) {
 // another turn, another Task, or an instruction this Runtime no longer holds
 // must not reorder anything and must not interrupt anything.
 func TestSteerControlForAStaleTurnOrInstructionIsABoundedNoOp(t *testing.T) {
-	rt, adapter := newTaskInterruptRuntime()
+	rt, adapter := newSteerRuntime(t)
 	defer rt.Stop()
 
 	hold := adapter.holdTurns()
@@ -435,8 +463,9 @@ func TestSteerControlForAStaleTurnOrInstructionIsABoundedNoOp(t *testing.T) {
 			t.Fatalf("%s: a stale steer interrupted the active turn (%d cancels)", name, got)
 		}
 		if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
-			t.Fatalf("%s: a stale steer reordered pending work: %v", name, got)
+			t.Fatalf("%s: a stale steer changed the canonical ledger: %v", name, got)
 		}
+		assertNextDelivery(t, rt, "task:req-T", 1)
 	}
 
 	// The real control still works afterwards: fail-closed never wedges the
@@ -445,9 +474,10 @@ func TestSteerControlForAStaleTurnOrInstructionIsABoundedNoOp(t *testing.T) {
 	if got := adapter.cancelCount(); got != 1 {
 		t.Fatalf("the valid steer did not request a yield, got %d", got)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 3, 2}) {
-		t.Fatalf("the valid steer did not promote: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("the valid steer rewrote the canonical ledger: %v", got)
 	}
+	assertNextDelivery(t, rt, "task:req-T", 3)
 	adapter.releaseTurn()
 	close(hold)
 	waitForDone(t, drained, "steered Task to drain")
@@ -494,4 +524,236 @@ func TestInterruptReachesOnlyItsOwnTask(t *testing.T) {
 	waitFor(t, 3*time.Second, func() bool {
 		return !adapter.isRunning("task:req-A") && !adapter.isRunning("task:req-B")
 	}, "both Tasks to settle")
+}
+
+// assertNextDelivery proves which canonical instruction this scope would
+// deliver next, without mutating anything.
+func assertNextDelivery(t *testing.T, rt *ResidentRuntime, scope string, want int64) {
+	t.Helper()
+	rt.mu.Lock()
+	target, ok := rt.nextPendingTargetLocked(scope, rt.sessionRefLocked(scope))
+	rt.mu.Unlock()
+	if !ok || target != want {
+		t.Fatalf("next delivery for %s = %d (ok=%v), want %d", scope, target, ok, want)
+	}
+}
+
+// assertDeliveryOrder proves the exact order the overlay will deliver the
+// pending instructions in: steers in canonical order first, then the remaining
+// ordinary work in canonical order. Nothing is mutated.
+func assertDeliveryOrder(t *testing.T, rt *ResidentRuntime, scope string, want []int64) {
+	t.Helper()
+	rt.mu.Lock()
+	ref := rt.sessionRefLocked(scope)
+	running := int64(0)
+	if lane, ok := rt.activeTurns[scope]; ok {
+		running = lane.target
+	}
+	order := make([]int64, 0, len(*ref.pendingAddressed))
+	for _, sequence := range *ref.pendingAddressed {
+		if sequence == running {
+			continue
+		}
+		context, ok := (*ref.pendingContexts)[sequence]
+		if ok && (context.delivered || !context.steer) {
+			continue
+		}
+		order = append(order, sequence)
+	}
+	for _, sequence := range *ref.pendingAddressed {
+		if sequence == running {
+			continue
+		}
+		context, ok := (*ref.pendingContexts)[sequence]
+		if ok && (context.delivered || context.steer) {
+			continue
+		}
+		order = append(order, sequence)
+	}
+	rt.mu.Unlock()
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("delivery overlay for %s = %v, want %v", scope, order, want)
+	}
+}
+
+// runningTargetFor reports the canonical instruction this scope is executing.
+func runningTargetFor(rt *ResidentRuntime, scope string) int64 {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if lane, ok := rt.activeTurns[scope]; ok {
+		return lane.target
+	}
+	return 0
+}
+
+func waitForRunningTarget(t *testing.T, rt *ResidentRuntime, scope string, want int64) {
+	t.Helper()
+	waitFor(t, 3*time.Second, func() bool { return runningTargetFor(rt, scope) == want },
+		fmt.Sprintf("%s to execute turn %d", scope, want))
+}
+
+func waitForDeliveredThrough(t *testing.T, rt *ResidentRuntime, scope string, want int64) {
+	t.Helper()
+	waitFor(t, 3*time.Second, func() bool { return rt.deliveredSeqFor(scope) == want },
+		fmt.Sprintf("%s delivery cursor to reach %d", scope, want))
+}
+
+// TestSteerDeliversOutOfCanonicalOrderWithoutBreakingTheLedger is the #484
+// canonical-storage contract, with a later instruction arriving mid-drain:
+//
+//	N active, A and B already queued, C steers, D arrives before A/B drain.
+//
+// Required: execution N -> C -> A -> B -> D, canonical storage [N, A, B, C, D]
+// throughout, C exactly once, A and B never skipped, and a delivery cursor that
+// never jumps over the undelivered ordinary work.
+func TestSteerDeliversOutOfCanonicalOrderWithoutBreakingTheLedger(t *testing.T) {
+	rt, adapter := newSteerRuntime(t)
+
+	hold := adapter.holdTurns()
+	drained := startTurn(rt, scopedEvent(1, "task:req-T", "N"))
+	waitForActiveScope(t, rt, "task:req-T")
+	rt.acceptEvent(scopedEvent(2, "task:req-T", "A"))
+	rt.acceptEvent(scopedEvent(3, "task:req-T", "B"))
+	rt.acceptEvent(scopedEvent(4, "task:req-T", "C"))
+	rt.applyResidentTaskControl(steerControl("req-T", 1, 4))
+
+	// Canonical storage is untouched; only the delivery decision changes.
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{1, 2, 3, 4}) {
+		t.Fatalf("steer rewrote the canonical ledger: %v", got)
+	}
+	assertNextDelivery(t, rt, "task:req-T", 4)
+	assertDeliveryOrder(t, rt, "task:req-T", []int64{4, 2, 3})
+
+	// C runs BEFORE the ordinary follow-ups that were queued earlier.
+	adapter.blockNextTurn() // parks C, so its delivery is observable
+	close(hold)
+	waitForRunningTarget(t, rt, "task:req-T", 4)
+	// N is delivered and collapsed, but the cursor must NOT move over A/B.
+	if got := rt.deliveredSeqFor("task:req-T"); got != 1 {
+		t.Fatalf("the cursor advanced past undelivered follow-ups while C ran: %d", got)
+	}
+
+	// Park A next so the post-C ledger state is observable.
+	adapter.blockNextTurn()
+	adapter.releaseTurn()
+	waitForRunningTarget(t, rt, "task:req-T", 2)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{2, 3, 4}) {
+		t.Fatalf("delivering C out of order changed canonical storage: %v", got)
+	}
+	if got := rt.deliveredSeqFor("task:req-T"); got != 1 {
+		t.Fatalf("the cursor jumped to C while A/B were still undelivered: %d", got)
+	}
+
+	// D arrives while A is running and B is still undelivered.
+	rt.acceptEvent(scopedEvent(5, "task:req-T", "D"))
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{2, 3, 4, 5}) {
+		t.Fatalf("a later instruction did not append canonically: %v", got)
+	}
+
+	// A and B still run, in canonical order, before D.
+	adapter.blockNextTurn()
+	adapter.releaseTurn()
+	waitForRunningTarget(t, rt, "task:req-T", 3)
+	waitForDeliveredThrough(t, rt, "task:req-T", 2)
+	adapter.releaseTurn()
+	waitForDone(t, drained, "steered Task to drain")
+
+	texts := turnTexts(t, adapter, "task:req-T")
+	if !reflect.DeepEqual(texts, []string{"N", "C", "A", "B", "D"}) {
+		t.Fatalf("execution order = %v, want [N C A B D]", texts)
+	}
+	// C is delivered exactly once and never re-enters a later turn's context.
+	if got := len(texts); got != 5 {
+		t.Fatalf("a steered instruction was delivered more than once: %v", texts)
+	}
+	if texts[4] != "D" {
+		t.Fatalf("D's context replayed earlier instructions: %q", texts[4])
+	}
+	if got := adapter.cancelCount(); got != 1 {
+		t.Fatalf("a first steer must request exactly one best-effort yield, got %d", got)
+	}
+	// The cursor ends exactly at the last delivered instruction, with nothing
+	// left in the ledger.
+	waitForDeliveredThrough(t, rt, "task:req-T", 5)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); len(got) != 0 {
+		t.Fatalf("the canonical ledger did not drain: %v", got)
+	}
+}
+
+// steerLogRecorder captures the bounded task_steer_* diagnostics.
+type steerLogRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *steerLogRecorder) log(event string, _ map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, event)
+}
+
+func (r *steerLogRecorder) count(event string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	total := 0
+	for _, recorded := range r.events {
+		if recorded == event {
+			total++
+		}
+	}
+	return total
+}
+
+// TestSteerDistinguishesPromotionAlreadyNextAndDuplicate covers the three
+// control outcomes (#484): a first steer that must jump ordinary work, a first
+// steer whose instruction was going to be next anyway, and a replayed control.
+// Each first application requests exactly one best-effort yield; a duplicate
+// changes nothing and requests none.
+func TestSteerDistinguishesPromotionAlreadyNextAndDuplicate(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		ordinaryQueued bool
+		wantNext       int64
+		wantOrder      []int64
+	}{
+		"first steer must jump ordinary work": {ordinaryQueued: true, wantNext: 4, wantOrder: []int64{4, 2}},
+		"first steer was already next":        {ordinaryQueued: false, wantNext: 3, wantOrder: []int64{3}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt, adapter := newSteerRuntime(t)
+			logged := &steerLogRecorder{}
+			rt.log = logged.log
+
+			hold := adapter.holdTurns()
+			drained := startTurn(rt, scopedEvent(1, "task:req-T", "N"))
+			waitForActiveScope(t, rt, "task:req-T")
+			if testCase.ordinaryQueued {
+				rt.acceptEvent(scopedEvent(2, "task:req-T", "A"))
+			}
+			rt.acceptEvent(scopedEvent(testCase.wantNext, "task:req-T", "C"))
+
+			rt.applyResidentTaskControl(steerControl("req-T", 1, testCase.wantNext))
+			assertNextDelivery(t, rt, "task:req-T", testCase.wantNext)
+			assertDeliveryOrder(t, rt, "task:req-T", testCase.wantOrder)
+			if got := adapter.cancelCount(); got != 1 {
+				t.Fatalf("a first steer must request exactly one yield, got %d", got)
+			}
+			if got := logged.count("task_steer_fallback"); got != 1 {
+				t.Fatalf("the first steer was not reported once: %v", logged.events)
+			}
+
+			// Replaying the SAME control is a bounded no-op.
+			rt.applyResidentTaskControl(steerControl("req-T", 1, testCase.wantNext))
+			if got := adapter.cancelCount(); got != 1 {
+				t.Fatalf("a duplicate steer requested a second yield: %d", got)
+			}
+			if got := logged.count("task_steer_duplicate"); got != 1 {
+				t.Fatalf("the duplicate was not reported as such: %v", logged.events)
+			}
+			assertNextDelivery(t, rt, "task:req-T", testCase.wantNext)
+
+			adapter.releaseTurn()
+			close(hold)
+			waitForDone(t, drained, "steered Task to drain")
+		})
+	}
 }

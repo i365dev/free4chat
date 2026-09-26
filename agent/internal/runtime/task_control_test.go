@@ -54,6 +54,34 @@ type interruptAdapter struct {
 // holdTurns parks the NEXT turn body until the returned channel is closed, so a
 // test can observe state that exists only while the turn is still active. It is
 // the locked counterpart of assigning holdTurn directly.
+// releaseAllTurns unblocks every parked turn this double is holding, so a test
+// that fails before releasing its gates still tears down promptly instead of
+// deadlocking ResidentRuntime.Stop on a parked turn. Double closes are ignored:
+// a test that already released a gate must not turn cleanup into a panic.
+func (a *interruptAdapter) releaseAllTurns() {
+	a.gateMu.Lock()
+	open := make([]chan struct{}, 0, 2+len(a.gates))
+	if a.current != nil {
+		open = append(open, a.current)
+		a.current = nil
+	}
+	open = append(open, a.gates...)
+	a.gates = nil
+	if a.holdTurn != nil {
+		open = append(open, a.holdTurn)
+		a.holdTurn = nil
+	}
+	a.gateMu.Unlock()
+	for _, gate := range open {
+		closeGateIgnoringDoubleClose(gate)
+	}
+}
+
+func closeGateIgnoringDoubleClose(gate chan struct{}) {
+	defer func() { _ = recover() }()
+	close(gate)
+}
+
 func (a *interruptAdapter) holdTurns() chan struct{} {
 	hold := make(chan struct{})
 	a.gateMu.Lock()

@@ -13,7 +13,9 @@ The official, self-contained `free4chat-agent` Runtime binary. See
 verification, the checksum-verifying installer, and the join command
 boundaries. Current native releases target macOS and Linux; Windows support is
 deferred. The binary needs no Node, npm, Go toolchain, or separately
-provisioned media engine; Pion runs in-process.
+provisioned media engine; Pion runs in-process. Use the **latest released**
+Runtime: older versions are unsupported and may be incompatible with the hosted
+service ([Runtime version support](../concepts/runtime-harness)).
 
 ## Create and join
 

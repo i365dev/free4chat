@@ -1080,11 +1080,16 @@ type ScopedTurnCanceller interface {
 // product semantics with its own bounded priority-next fallback. Nothing above
 // this seam may branch on a provider name or on a bridge's wire spelling.
 type ScopedTurnSteerer interface {
-	// SteerTurnFor returns nil ONLY when the guidance really reached the active
-	// turn. A non-nil error — including ErrNativeSteerUnsupported — means the
-	// caller must keep the instruction for its own fallback delivery, so a
-	// failure here can never lose Human guidance.
-	SteerTurnFor(scope string, input HarnessTurnInput) error
+	// SteerTurnFor carries the EXACT Runtime turn identity the caller fenced
+	// against (the canonical Room sequence of the turn the Human was looking
+	// at). An implementation must refuse when that is not the turn it is
+	// actually executing, so native steering can never redirect a successor.
+	//
+	// It returns nil ONLY when the guidance really reached that active turn. A
+	// non-nil error means the caller must keep the instruction for its own
+	// bounded fallback delivery, so a failure here can never lose Human
+	// guidance.
+	SteerTurnFor(scope string, expectedTurnSequence int64, input HarnessTurnInput) error
 }
 
 // ScopedTurnOwnership is the small optional seam that lets the Runtime avoid

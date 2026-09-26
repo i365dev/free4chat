@@ -12,6 +12,23 @@ free4chat-agent readiness --room <room-id> --agent <harness> --json
 reports Runtime, Harness, Room, in-process Pion media, and speech state
 (`speech.stt` / `speech.tts` with `configured` and `ready` flags).
 
+## Agent Runtime, Task, or Room-control problems
+
+Start from the supported configuration, always in the same order:
+
+```text
+free4chat-agent doctor --json
+verify or update to the latest released Runtime
+reproduce on the latest release
+only then diagnose or report the behavior
+```
+
+Free4Chat supports only the latest released Runtime
+([Runtime version support](../concepts/runtime-harness)),
+so a behavior observed on an older binary is not actionable until it reproduces
+on the latest release. "Latest released" is the supported configuration, not a
+claim that the latest release is bug-free.
+
 ## Runtime not found, or wrong version
 
 Symptoms: `command -v free4chat-agent` finds nothing, or the probed version

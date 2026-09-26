@@ -205,7 +205,9 @@ The official, self-contained `free4chat-agent` Runtime binary. See
 verification, the checksum-verifying installer, and the join command
 boundaries. Current native releases target macOS and Linux; Windows support is
 deferred. The binary needs no Node, npm, Go toolchain, or separately
-provisioned media engine; Pion runs in-process.
+provisioned media engine; Pion runs in-process. Use the **latest released**
+Runtime: older versions are unsupported and may be incompatible with the hosted
+service ([Runtime version support](../concepts/runtime-harness)).
 
 ## Create and join
 
@@ -603,6 +605,24 @@ Room Protocol / MCP
 - **Harness** - the intelligence and local tools you choose: a built-in
   launcher (`hermes`, `opencode`, `codex`, `claude`, or `pi`) or a trusted
   local ACP-compatible process supplied with `--agent-command`.
+
+## Runtime version support
+
+Free4Chat supports the **latest released `free4chat-agent` Runtime** only. The
+hosted Web/Room and the Runtime are one product and evolve together, so an older
+binary may not understand current private Room controls, may implement older
+Task and Harness semantics, and may lack current features or bug fixes.
+
+```text
+latest released Runtime   = the supported configuration
+any older Runtime         = unsupported; may be incompatible
+```
+
+There is no compatibility negotiation, no per-version feature gate, and no
+minimum-version handshake: upgrade the Runtime (see
+[Agent Room quick start](../getting-started/agent-room)) instead of expecting the
+hosted service to accommodate an older one. This is also the first step in
+[Troubleshooting](../reference/troubleshooting).
 
 ## One participant, multiple bounded cognition scopes
 
@@ -2164,6 +2184,23 @@ free4chat-agent readiness --room <room-id> --agent <harness> --json
 `doctor` diagnoses the Runtime and its Harness launchers. `readiness`
 reports Runtime, Harness, Room, in-process Pion media, and speech state
 (`speech.stt` / `speech.tts` with `configured` and `ready` flags).
+
+## Agent Runtime, Task, or Room-control problems
+
+Start from the supported configuration, always in the same order:
+
+```text
+free4chat-agent doctor --json
+verify or update to the latest released Runtime
+reproduce on the latest release
+only then diagnose or report the behavior
+```
+
+Free4Chat supports only the latest released Runtime
+([Runtime version support](../concepts/runtime-harness)),
+so a behavior observed on an older binary is not actionable until it reproduces
+on the latest release. "Latest released" is the supported configuration, not a
+claim that the latest release is bug-free.
 
 ## Runtime not found, or wrong version
 

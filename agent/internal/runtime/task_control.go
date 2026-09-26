@@ -101,35 +101,68 @@ func (r *ResidentRuntime) applyResidentTaskSteer(control *types.ResidentTaskCont
 		control.SteerInstructionSequence > types.MaxResidentTurnSequence {
 		return
 	}
-	// Steer authority is the same exact-turn authority as cancel: only the turn
-	// the Human was actually looking at may be steered, so a stale control can
-	// never redirect a successor turn.
-	if !r.turnControlAuthorized(requestedScope, control.TurnSequence) {
+	// ONE critical section decides and records everything that makes this steer
+	// authoritative (#484):
+	//
+	//   - the exact-turn fence: activeTurns[scope].target must still be the turn
+	//     the Human saw. If N already settled, this control must not promote
+	//     anything and must not cancel N's successor — the instruction simply
+	//     stays ordinary canonical follow-up work;
+	//   - the canonical instruction must still be pending work;
+	//   - the priority overlay and the "control already applied" marker are
+	//     written together, so a replayed control can never dispatch a second
+	//     yield.
+	//
+	// Holding r.mu across all three is what makes them atomic with lane
+	// claim/release: a successor cannot claim the lane between the fence and the
+	// mark.
+	r.mu.Lock()
+	lane, running := r.activeTurns[requestedScope]
+	if !running || lane.target != control.TurnSequence {
+		r.mu.Unlock()
 		r.log("task_steer_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
 		return
 	}
-	// The instruction must still be pending work. A control that names an
-	// instruction this Runtime already delivered (or refused) has nothing left
-	// to steer and must not cancel the current turn for nothing.
-	if !r.steerInstructionPending(requestedScope, control.SteerInstructionSequence) {
+	ref := r.sessionRefLocked(requestedScope)
+	if ref == nil || ref.pendingAddressed == nil || !containsSequence(*ref.pendingAddressed, control.SteerInstructionSequence) {
+		r.mu.Unlock()
 		r.log("task_steer_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
 		return
 	}
-	if r.deliverNativeSteer(requestedScope, control.SteerInstructionSequence) {
+	promotion := r.markSteerPriorityLocked(requestedScope, control.SteerInstructionSequence)
+	r.mu.Unlock()
+
+	switch promotion {
+	case steerPromotionMissing:
+		// The instruction settled between the checks and this decision, so its
+		// successor already consumed it: nothing to prioritize, nothing to
+		// interrupt.
+		r.log("task_steer_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
+		return
+	case steerPromotionDuplicate:
+		// A replayed steer control: no state growth, no second yield request.
+		r.log("task_steer_duplicate", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
+		return
+	}
+
+	// A proven native Harness steering path is tried first, because injecting
+	// the guidance into the live turn changes what the Agent does next without
+	// giving up work. No shipped adapter implements the seam yet (#486 owns the
+	// Codex/Claude `_session/steering` mapping and its idle-race accounting), so
+	// today this is a bounded no-op and every provider takes the fallback.
+	// The call happens outside r.mu because it writes to the Harness, and it
+	// carries the exact turn identity so an implementation can refuse a turn
+	// that settled in that window.
+	if r.deliverNativeSteer(requestedScope, control.TurnSequence, control.SteerInstructionSequence) {
 		r.log("task_steer_native_delivered", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
 		return
 	}
-	// Fallback: preserve first, then ask the turn to yield. Promotion is done
-	// before the cancel dispatch so the steer is already the priority-next
-	// instruction when that turn settles, however it settles.
-	promotion := r.promoteSteerPending(requestedScope, control.SteerInstructionSequence)
-	if promotion == steerPromotionMissing {
-		// The turn settled between the check above and this decision, so its
-		// successor already consumed the instruction: nothing to promote and
-		// nothing to interrupt.
-		r.log("task_steer_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
-		return
-	}
+
+	// Otherwise a first steer is worth one best-effort yield request, whether
+	// or not the instruction was already the canonical head. It is dispatched
+	// outside r.mu too; the exact-turn authority is re-checked by that dispatch
+	// itself, so a turn that settles in this window simply means the steer runs
+	// next without a yield.
 	cancelled := r.cancelActiveTaskTurn(requestedScope, control.TurnSequence)
 	if cancelled {
 		r.publishTaskExecution(requestedScope)
@@ -139,76 +172,6 @@ func (r *ResidentRuntime) applyResidentTaskSteer(control *types.ResidentTaskCont
 		"promoted":  strconv.FormatBool(promotion == steerPromotionMoved),
 		"cancel":    strconv.FormatBool(cancelled),
 	})
-}
-
-// steerInstructionPending reports whether this canonical instruction is still
-// waiting to be delivered for that Task.
-func (r *ResidentRuntime) steerInstructionPending(scope string, sequence int64) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	ref := r.sessionRefLocked(scope)
-	if ref == nil || ref.pendingAddressed == nil {
-		return false
-	}
-	return containsSequence(*ref.pendingAddressed, sequence)
-}
-
-// turnControlAuthorized reports whether this exact canonical turn is still the
-// active turn of that scope. It is the read-only half of the cancel authority
-// and is used where a control must be validated before any other effect.
-func (r *ResidentRuntime) turnControlAuthorized(scope string, turnSequence int64) bool {
-	r.turnControlMu.Lock()
-	defer r.turnControlMu.Unlock()
-	r.activityMu.Lock()
-	defer r.activityMu.Unlock()
-	current, active := r.activities[scope]
-	return active && current.sequence == turnSequence
-}
-
-// promoteSteerPending marks the canonical steer instruction as priority-next
-// for its Task inside the existing bounded pending state.
-func (r *ResidentRuntime) promoteSteerPending(scope string, sequence int64) steerPromotion {
-	r.mu.Lock()
-	promotion := r.promoteSteerPendingLocked(scope, sequence)
-	r.mu.Unlock()
-	return promotion
-}
-
-// deliverNativeSteer attempts the provider-neutral native steering seam. It
-// reports true only when the Harness confirms the guidance really reached the
-// active turn; in that case the canonical instruction is acknowledged exactly
-// once so it can never also run as its own queued turn.
-//
-// A Harness without a proven native path simply does not implement the seam,
-// which is the common case today: no current pinned bridge exposes one. Nothing
-// here branches on a provider name, and a bridge's wire spelling is never
-// visible above the adapter.
-func (r *ResidentRuntime) deliverNativeSteer(scope string, steerSequence int64) bool {
-	steerer, ok := r.options.Adapter.(types.ScopedTurnSteerer)
-	if !ok {
-		return false
-	}
-	events, err := r.pendingContextFor(scope, steerSequence)
-	if err != nil || len(events) == 0 {
-		return false
-	}
-	input := BuildHarnessTurn(events, &TurnContextOptions{
-		Self:          r.selfContext(),
-		Participants:  r.rosterSnapshot(),
-		TaskRequestID: taskRequestIDForScope(scope),
-	})
-	if err := steerer.SteerTurnFor(scope, *input); err != nil {
-		return false
-	}
-	// The active turn consumed this exact canonical instruction, so it is
-	// delivered: advance the delivery boundary and drop the queued trigger
-	// exactly once. A later successor turn therefore never replays it.
-	generation, generationErr := r.harnessSessionGeneration(scope)
-	if generationErr != nil {
-		generation = 0
-	}
-	r.acknowledgeHarnessDeliveryFor(scope, steerSequence, steerSequence, generation)
-	return true
 }
 
 // taskScopeForRequestID builds the exact logical scope for one Task id. It
@@ -281,4 +244,34 @@ func (r *ResidentRuntime) cancelHarnessTurnFor(scope string) error {
 		return adapter.CancelTurnFor(scope)
 	}
 	return r.options.Adapter.CancelTurn()
+}
+
+// deliverNativeSteer attempts the optional provider-neutral native steering
+// seam for ONE canonical instruction the caller already fenced to the exact
+// Runtime turn. It reports true only when the Harness confirms the guidance
+// reached that turn, and then records the instruction as delivered — so it can
+// never also run as its own queued turn.
+func (r *ResidentRuntime) deliverNativeSteer(scope string, expectedTurnSequence, steerSequence int64) bool {
+	steerer, ok := r.options.Adapter.(types.ScopedTurnSteerer)
+	if !ok {
+		return false
+	}
+	events, err := r.pendingContextFor(scope, steerSequence)
+	if err != nil || len(events) == 0 {
+		return false
+	}
+	input := BuildHarnessTurn(events, &TurnContextOptions{
+		Self:          r.selfContext(),
+		Participants:  r.rosterSnapshot(),
+		TaskRequestID: taskRequestIDForScope(scope),
+	})
+	if err := steerer.SteerTurnFor(scope, expectedTurnSequence, *input); err != nil {
+		return false
+	}
+	generation, generationErr := r.harnessSessionGeneration(scope)
+	if generationErr != nil {
+		generation = 0
+	}
+	r.acknowledgeHarnessDeliveryFor(scope, steerSequence, steerSequence, generation)
+	return true
 }

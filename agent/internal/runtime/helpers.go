@@ -21,11 +21,15 @@ const (
 	// so there is nothing left to prioritize and the control must not cancel
 	// anything.
 	steerPromotionMissing steerPromotion = iota
-	// steerPromotionAlreadyNext: the instruction is already the next
-	// not-yet-started instruction of its Task.
+	// steerPromotionAlreadyNext: the instruction is already the canonical head,
+	// so recording its priority did not change delivery order.
 	steerPromotionAlreadyNext
-	// steerPromotionMoved: this control reordered the Task's pending work.
+	// steerPromotionMoved: this control made an out-of-order instruction the
+	// next one to deliver.
 	steerPromotionMoved
+	// steerPromotionDuplicate: this exact control was already applied, so it
+	// changed nothing and must not request another yield.
+	steerPromotionDuplicate
 )
 
 type pendingTurnContext struct {
@@ -33,10 +37,23 @@ type pendingTurnContext struct {
 	target int64
 	events []types.RoomEvent
 	// steer marks a canonical Human instruction that was explicitly steered
-	// (#484). It is a DELIVERY priority only: the instruction stays where the
-	// Room put it in canonical history, and this flag lives inside the existing
-	// bounded pending map, so it is pruned with the entry it describes.
+	// (#484). It is a DELIVERY priority only: pendingAddressed stays exactly
+	// the canonical order the Room produced, and the drain selects this entry
+	// ahead of ordinary not-yet-started follow-ups. It lives inside the
+	// existing bounded pending map, so it is pruned with the entry it
+	// describes.
 	steer bool
+	// steerRequested records that a steer CONTROL for this exact instruction
+	// was already applied. A replayed control is then a bounded no-op instead
+	// of dispatching a second yield request. First application always issues
+	// one best-effort yield, whether or not priority had to change.
+	steerRequested bool
+	// delivered records that this exact instruction already reached the
+	// Harness. A steered instruction can be delivered OUT of canonical order,
+	// so this is what lets deliveredThrough stay a contiguous canonical
+	// cursor: it only advances over a delivered prefix, never over undelivered
+	// ordinary follow-ups.
+	delivered bool
 }
 
 var errScopedHarnessUnsupported = errors.New("scoped Harness adapter is unavailable")
@@ -495,11 +512,8 @@ func (r *ResidentRuntime) nextRunnableTurnLocked() (string, int64, bool) {
 			continue
 		}
 		ref := r.sessionRefLocked(scope)
-		if ref == nil || len(*ref.pendingAddressed) == 0 {
-			continue
-		}
-		target := (*ref.pendingAddressed)[0]
-		if r.turnRecoveryClosedLocked(scope, target) {
+		target, ok := r.nextPendingTargetLocked(scope, ref)
+		if !ok {
 			continue
 		}
 		return scope, target, true
@@ -595,6 +609,16 @@ func (r *ResidentRuntime) acknowledgeHarnessDelivery(target, through, generation
 	r.acknowledgeHarnessDeliveryFor(roomScope, target, through, generation)
 }
 
+// acknowledgeHarnessDelivery records that the Harness really consumed ONE
+// canonical instruction, then advances the canonical cursor only as far as the
+// delivered prefix allows.
+//
+// A steered instruction can be delivered BEFORE ordinary follow-ups that the
+// Room queued earlier, so the cursor is never moved straight to that
+// instruction's sequence: it would jump over undelivered work and the skipped
+// follow-ups would lose the context they still need. Marking the entry and
+// collapsing the delivered prefix keeps `deliveredThrough` a contiguous
+// canonical boundary in every delivery order.
 func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, through, generation int64) {
 	r.mu.Lock()
 	ref := r.sessionRefLocked(scope)
@@ -602,23 +626,18 @@ func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, th
 		r.mu.Unlock()
 		return
 	}
-	removed := false
-	if through > *ref.deliveredThrough {
-		*ref.deliveredThrough = through
-	}
 	if generation > 0 && generation == *ref.observedHarnessGeneration {
 		*ref.bootstrappedHarnessGeneration = generation
 	}
-	for index, pending := range *ref.pendingAddressed {
-		if pending != target {
-			continue
-		}
-		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
-		delete(*ref.pendingContexts, target)
-		r.forgetTurnRecoveryLocked(scope, target)
-		removed = true
-		break
+	if context, ok := (*ref.pendingContexts)[target]; ok {
+		context.delivered = true
+		(*ref.pendingContexts)[target] = context
+	} else if len(*ref.pendingAddressed) == 0 && through > *ref.deliveredThrough {
+		// Nothing is waiting behind it, so the cursor can still move: this is
+		// the ordinary in-order case where the entry was already collapsed.
+		*ref.deliveredThrough = through
 	}
+	removed := r.collapseDeliveredPrefixLocked(scope, ref)
 	r.mu.Unlock()
 	if removed {
 		// The consumed trigger is no longer waiting; refresh the transient
@@ -911,14 +930,21 @@ func (r *ResidentRuntime) sleep(d time.Duration) bool {
 //   - nothing crosses a Task boundary: this touches exactly one scope.
 //
 // It reports how the queue order was decided. Callers must hold r.mu.
-func (r *ResidentRuntime) promoteSteerPendingLocked(scope string, sequence int64) steerPromotion {
+// markSteerPriorityLocked records ONE canonical steer instruction as
+// delivery-priority for its Task and reports how the decision resolved.
+//
+// The canonical ledger is never rewritten: pendingAddressed keeps exactly the
+// order the Room produced ([N, A, B, C] stays [N, A, B, C]). Priority is an
+// overlay the drain consults when it chooses what to deliver next, so a
+// steered instruction executes before ordinary not-yet-started follow-ups while
+// canonical storage remains canonical. Callers must hold r.mu.
+func (r *ResidentRuntime) markSteerPriorityLocked(scope string, sequence int64) steerPromotion {
 	ref := r.sessionRefLocked(scope)
 	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
 		return steerPromotionMissing
 	}
-	pending := *ref.pendingAddressed
 	index := -1
-	for position, candidate := range pending {
+	for position, candidate := range *ref.pendingAddressed {
 		if candidate == sequence {
 			index = position
 			break
@@ -934,30 +960,105 @@ func (r *ResidentRuntime) promoteSteerPendingLocked(scope string, sequence int64
 	if !ok {
 		return steerPromotionMissing
 	}
+	if context.steerRequested {
+		// A replayed control: no state change and no second yield request.
+		return steerPromotionDuplicate
+	}
+	// Whether this control actually changes delivery order is decided BEFORE the
+	// overlay is written: a steer that was going to be delivered next anyway is
+	// still recorded as applied (so a replay is a no-op) and still gets its one
+	// best-effort yield, but it is not a promotion.
+	alreadyNext := r.steerWouldBeNextLocked(scope, ref, sequence)
 	context.steer = true
+	context.steerRequested = true
 	(*ref.pendingContexts)[sequence] = context
-
-	frontier := 0
-	if r.scopeRunningLocked(scope) && len(pending) > 0 {
-		// Index 0 is the turn this scope is executing right now.
-		frontier = 1
-	}
-	for frontier < len(pending) && frontier != index {
-		entry, ok := (*ref.pendingContexts)[pending[frontier]]
-		if !ok || !entry.steer {
-			break
-		}
-		frontier++
-	}
-	if frontier == index {
+	if alreadyNext {
 		return steerPromotionAlreadyNext
 	}
-	moved := make([]int64, 0, len(pending))
-	moved = append(moved, pending[:index]...)
-	moved = append(moved, pending[index+1:]...)
-	moved = append(moved, 0)
-	copy(moved[frontier+1:], moved[frontier:])
-	moved[frontier] = sequence
-	*ref.pendingAddressed = moved
 	return steerPromotionMoved
+}
+
+// steerWouldBeNextLocked reports whether the delivery overlay would choose this
+// instruction next if it were not steered, ignoring the turn already executing.
+// Callers must hold r.mu.
+func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessionRef, sequence int64) bool {
+	running := int64(0)
+	if lane, ok := r.activeTurns[scope]; ok {
+		running = lane.target
+	}
+	for _, candidate := range *ref.pendingAddressed {
+		if candidate == running {
+			continue
+		}
+		context, ok := (*ref.pendingContexts)[candidate]
+		if ok && context.delivered {
+			continue
+		}
+		return candidate == sequence
+	}
+	return false
+}
+
+// nextPendingTargetLocked returns the instruction this scope should deliver
+// next. Canonical storage is untouched; this is purely which entry the drain
+// picks. Callers must hold r.mu.
+//
+//	the running turn is never selected here (its scope is skipped by callers);
+//	a steer is delivered before ordinary not-yet-started follow-ups;
+//	among steers, canonical order wins;
+//	a scope whose only runnable work is a closed-recovery head stays parked.
+func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSessionRef) (int64, bool) {
+	if ref == nil || ref.pendingAddressed == nil || len(*ref.pendingAddressed) == 0 {
+		return 0, false
+	}
+	head := int64(0)
+	headFound := false
+	for _, sequence := range *ref.pendingAddressed {
+		context, ok := (*ref.pendingContexts)[sequence]
+		if ok && context.delivered {
+			// Already consumed out of canonical order. It stays in the ledger
+			// only because earlier ordinary work is still undelivered, so it
+			// must never be selected again.
+			continue
+		}
+		if r.turnRecoveryClosedLocked(scope, sequence) {
+			continue
+		}
+		if !headFound {
+			head, headFound = sequence, true
+		}
+		if ok && context.steer {
+			return sequence, true
+		}
+	}
+	if !headFound {
+		return 0, false
+	}
+	return head, true
+}
+
+// collapseDeliveredPrefixLocked removes the delivered prefix of the canonical
+// ledger and advances deliveredThrough over it. Because a steered instruction
+// may be delivered out of order, the cursor only ever moves over entries that
+// are actually delivered AND contiguous from the canonical head — it can never
+// jump over undelivered ordinary follow-ups. Callers must hold r.mu.
+func (r *ResidentRuntime) collapseDeliveredPrefixLocked(scope string, ref *logicalSessionRef) bool {
+	removed := false
+	for len(*ref.pendingAddressed) > 0 {
+		head := (*ref.pendingAddressed)[0]
+		context, ok := (*ref.pendingContexts)[head]
+		if ok && !context.delivered {
+			break
+		}
+		// A missing entry was already consumed (a duplicate or an explicitly
+		// dropped trigger), so it must not block the canonical cursor.
+		*ref.pendingAddressed = (*ref.pendingAddressed)[1:]
+		delete(*ref.pendingContexts, head)
+		r.forgetTurnRecoveryLocked(scope, head)
+		if head > *ref.deliveredThrough {
+			*ref.deliveredThrough = head
+		}
+		removed = true
+	}
+	return removed
 }
