@@ -13,7 +13,7 @@ export default function AgentTasksPage() {
       secondaryCta={{
         href: "/docs/guides/tasks-and-live-views",
         label: "Read the Agent Tasks guide",
-        analyticsTarget: "bring-agent",
+        analyticsTarget: "docs",
       }}
     >
       <p>

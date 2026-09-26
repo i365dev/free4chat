@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import DiscoveryFooter from "../../components/DiscoveryFooter"
+import AgentTasksPage from "../../pages/agent-tasks"
 import AiAgentRoomPage from "../../pages/ai-agent-room"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
@@ -65,6 +66,12 @@ describe("Discovery pages — CTA analytics", () => {
       label: "Bring your Agent",
       page: "multi-agent-collaboration",
       target: "bring-agent",
+    },
+    {
+      Component: AgentTasksPage,
+      label: "Read the Agent Tasks guide",
+      page: "agent-tasks",
+      target: "docs",
     },
   ])(
     "tracks a secondary discovery CTA with bounded page and target buckets",
