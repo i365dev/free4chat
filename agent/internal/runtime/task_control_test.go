@@ -45,6 +45,10 @@ type interruptAdapter struct {
 	holdTurn chan struct{}
 	// turnFinished signals that a parked Harness turn body returned.
 	turnFinished chan struct{}
+	// cancelErr makes the exact-turn cancel report a lane teardown failure.
+	// A failing cancel must NOT release the parked turn: the Runtime owns a
+	// turn whose local execution could not be confirmed stopped.
+	cancelErr error
 }
 
 func newInterruptAdapter() *interruptAdapter {
@@ -57,7 +61,11 @@ func newInterruptAdapter() *interruptAdapter {
 func (a *interruptAdapter) CancelTurn() error {
 	a.cancelMu.Lock()
 	a.cancels++
+	cancelErr := a.cancelErr
 	a.cancelMu.Unlock()
+	if cancelErr != nil {
+		return cancelErr
+	}
 	if a.cancelEntered != nil {
 		a.cancelEntered <- struct{}{}
 	}
@@ -66,6 +74,14 @@ func (a *interruptAdapter) CancelTurn() error {
 	}
 	a.releaseTurn()
 	return nil
+}
+
+// failCancel makes every subsequent exact-turn cancel report a lane teardown
+// failure, exactly like a lane whose owned process could not be confirmed gone.
+func (a *interruptAdapter) failCancel(err error) {
+	a.cancelMu.Lock()
+	a.cancelErr = err
+	a.cancelMu.Unlock()
 }
 
 func (a *interruptAdapter) cancelCount() int {

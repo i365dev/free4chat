@@ -19,6 +19,12 @@
 //	               by the test creating FAKE_RELEASE_DIR/<sessionId>. This is
 //	               the model of a provider that genuinely serves independent
 //	               conversations at the same time (#421).
+//	detached_tool  park the prompt forever while running a long tool child in
+//	               its OWN session/process group (FAKE_TOOL_PID_FILE), i.e. a
+//	               tool descendant that a provider process-group signal cannot
+//	               reach (lane teardown ownership tests).
+//	attached_tool  the same, but the tool child stays in the provider's process
+//	               group (the ordinary cleanup shape).
 //
 // Session discovery/load (#409) is scripted through initialize plus
 // session/list and session/load handlers; see FAKE_LIST_CAP, FAKE_LOAD_CAP,
@@ -154,6 +160,12 @@ func main() {
 		// Dies before the handshake completes: EnsureSession must fail fast.
 		time.Sleep(20 * time.Millisecond)
 		os.Exit(1)
+	}
+	if os.Getenv("FAKE_MODE") == "tool_child" {
+		// The long-running tool process started by detached_tool/attached_tool.
+		// Only the lane's own teardown may end it.
+		time.Sleep(10 * time.Minute)
+		return
 	}
 	tracePath = os.Getenv("FAKE_TRACE")
 	mode := os.Getenv("FAKE_MODE")
@@ -583,6 +595,19 @@ func main() {
 					continue
 				}
 				a.finishNormal(&message, promptSessionID)
+			case "detached_tool", "attached_tool":
+				// Models a provider running a long tool call. The tool child is
+				// a real child of THIS provider; in detached_tool mode it
+				// deliberately moves into its own session/process group, which
+				// is the shape a process-group-only teardown cannot reach.
+				// The prompt is never answered, so the turn stays active until
+				// the adapter tears the lane down. The park must be a timer (or
+				// any blocking primitive the runtime can observe): a bare
+				// select{} with no other runnable goroutine makes a Go program
+				// abort itself, which would end this provider before the test's
+				// control ever runs.
+				startToolChild(a.mode == "detached_tool")
+				time.Sleep(10 * time.Minute)
 			case "exit":
 				a.finishNormal(&message, promptSessionID)
 				a.killAfter(10*time.Millisecond, "FAKE_EXIT_MARKER")
@@ -735,6 +760,25 @@ func (a *agent) finishNormal(message *frame, sessionID string) {
 
 func contains(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
+}
+
+// startToolChild starts one long-running tool process as a child of this
+// provider. detached=true gives it its own session (and therefore its own
+// process group), so signalling the provider's group cannot reach it. The pid
+// is published to FAKE_TOOL_PID_FILE so a test can observe the exact process
+// it owns, never inferring cleanup from the provider's own exit.
+func startToolChild(detached bool) {
+	child := exec.Command(os.Args[0])
+	child.Env = append(os.Environ(), "FAKE_MODE=tool_child")
+	if detached {
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
+	if err := child.Start(); err != nil {
+		return
+	}
+	if pidFile := os.Getenv("FAKE_TOOL_PID_FILE"); pidFile != "" {
+		_ = os.WriteFile(pidFile, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+	}
 }
 
 func indexOf(haystack, needle string) int {

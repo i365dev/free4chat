@@ -354,6 +354,12 @@ func (e *promptBusyError) Error() string { return "ACP prompt is already running
 // "not runnable yet" rather than as a Harness failure.
 var ErrSessionPromptBusy error = &promptBusyError{}
 
+// ErrLaneNotQuiescent reports that a lane's OWNED local execution did not stop
+// within the bounded teardown window. It is what keeps a Human exact interrupt
+// from being published as Interrupted while the tool process that turn started
+// is still running.
+var ErrLaneNotQuiescent = errors.New("harness lane teardown is not quiescent")
+
 type acpSession struct {
 	sessionID string
 	// cwd is the exact Harness-reported/selected project directory bound to
@@ -2776,32 +2782,57 @@ func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expec
 	}
 	if proc != nil && proc.cmd.Process != nil {
 		pid := proc.cmd.Process.Pid
+		// Ownership is snapshotted BEFORE any signal: a tool child that moved
+		// into its own process group/session is still reachable by parent link
+		// now, and is re-parented (and therefore undiscoverable) as soon as the
+		// provider exits. Everything after this point verifies that snapshot.
+		owned := laneProcessSnapshot(pid)
 		// The watcher goroutine remains the single Wait owner; we observe
 		// its exit signal instead of re-Wait-ing the same Cmd. A Harness
 		// that ignores SIGTERM therefore reaches the SIGKILL fallback after
 		// the shutdown budget instead of slipping past it.
 		a.emitDiagnostic("PROCESS_GROUP_TERM", nil)
 		_ = signalHarnessProcessGroup(pid, syscall.SIGTERM)
-		quiescent := false
+		providerExited := false
 		select {
 		case <-proc.exited:
-			quiescent = true
+			providerExited = true
 		case <-time.After(time.Duration(shutdownTimeoutMs) * time.Millisecond):
 			a.emitDiagnostic("PROCESS_GROUP_KILL", nil)
 			_ = signalHarnessProcessGroup(pid, syscall.SIGKILL)
 			select {
 			case <-proc.exited:
-				quiescent = true
+				providerExited = true
 			case <-time.After(2 * time.Second):
 				// Absolute bound: even a pathological reaper stall cannot
 				// make shutdown unbounded; the background reaper still
 				// collects the zombie.
 			}
 		}
-		if quiescent {
+		// A provider exiting is NOT lane quiescence. The process group signal
+		// cannot reach a tool descendant that put itself in another group, so
+		// every owned process is terminated explicitly and verified gone before
+		// this lane may claim it. Reporting Interrupted while owned execution
+		// still runs is the #482 false-settle.
+		survivors := sweepLaneProcesses(owned)
+		if len(owned) > 0 {
+			a.emitDiagnostic("PROCESS_TREE_SWEPT", map[string]string{
+				"owned":     strconv.Itoa(len(owned)),
+				"survivors": strconv.Itoa(len(survivors)),
+			})
+		}
+		if providerExited && len(survivors) == 0 {
 			a.emitDiagnostic("PROCESS_GROUP_QUIESCENT", nil)
 		} else {
-			a.emitDiagnostic("PROCESS_GROUP_STILL_ALIVE", map[string]string{"class": "process_group_not_quiescent"})
+			class := "process_group_not_quiescent"
+			if providerExited {
+				class = "owned_process_alive"
+			}
+			a.emitDiagnostic("PROCESS_GROUP_STILL_ALIVE", map[string]string{
+				"class":     class,
+				"survivors": strconv.Itoa(len(survivors)),
+			})
+			return fmt.Errorf("%w: %s", ErrLaneNotQuiescent, class)
 		}
 	}
 	return nil
