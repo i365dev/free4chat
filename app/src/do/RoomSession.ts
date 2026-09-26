@@ -2890,7 +2890,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   private sendAgentTaskControl(
     room: RoomRecord,
     participantId: string,
-    control: { control: string; taskRequestId: string; turnSequence: number }
+    control: {
+      control: string
+      taskRequestId: string
+      turnSequence: number
+      /**
+       * #484 STEER only: the canonical Room sequence of the replacement
+       * instruction this Room already accepted for that Task. It is identity,
+       * never content — the instruction itself is ordinary canonical Room
+       * input, so nothing is duplicated into a second durable store.
+       */
+      steerInstructionSequence?: number
+    }
   ): boolean {
     const participant = room.participants[participantId]
     if (!participant || participant.kind !== "agent" || !participant.connected)
@@ -2913,6 +2924,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             control: control.control,
             taskRequestId: control.taskRequestId,
             turnSequence: control.turnSequence,
+            ...(control.steerInstructionSequence === undefined
+              ? {}
+              : {
+                  steerInstructionSequence: control.steerInstructionSequence,
+                }),
           })
         )
         delivered = true
@@ -8346,9 +8362,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
       if (
         !this.sendAgentTaskControl(room, task.executorAgentId, {
-          control: "interrupt",
+          // #484: Interrupt & Send is STEER, not a second cancel. The Runtime
+          // makes this exact canonical instruction the next not-yet-started
+          // instruction of the Task and only then asks the current turn to
+          // yield, so the guidance survives however that yield behaves.
+          control: "steer",
           taskRequestId: task.requestId,
           turnSequence: currentTurn,
+          steerInstructionSequence: instruction.message.sequence,
         })
       ) {
         // Truthful partial success: the instruction is durably queued and the

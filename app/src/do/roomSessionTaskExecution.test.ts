@@ -528,7 +528,7 @@ describe("RoomSession transient Task execution (#409)", () => {
 })
 
 describe("RoomSession interrupt & send (#409)", () => {
-  it("persists the instruction before dispatching the exact-turn interrupt", async () => {
+  it("persists the instruction before dispatching the exact-turn steer", async () => {
     const test = harness()
     const agentSocket = test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
@@ -545,7 +545,7 @@ describe("RoomSession interrupt & send (#409)", () => {
     })
 
     // Exactly one canonical Task text instruction, targeted at the canonical
-    // Agent, appended and persisted before the private interrupt frame.
+    // Agent, appended and persisted before the private steer frame.
     const stored = test.stored()
     expect(stored.messages).toHaveLength(messagesBefore + 1)
     const instruction = stored.messages[stored.messages.length - 1]
@@ -556,24 +556,29 @@ describe("RoomSession interrupt & send (#409)", () => {
       targets: ["agent-a"],
     })
     expect(test.errorFrames()).toEqual([])
+    // #484: Interrupt & Send is STEER. The private control carries the canonical
+    // sequence of the instruction persisted above and no instruction text, so
+    // priority needs no second durable copy of it.
     expect(test.agentControls("agent-a")).toEqual([
       {
         type: "task-control",
-        control: "interrupt",
+        control: "steer",
         taskRequestId: requestId,
         turnSequence: 42,
+        steerInstructionSequence: instruction.sequence,
       },
     ])
     expect(agentSocket.close).not.toHaveBeenCalled()
 
-    // The ordering guarantee: persistence strictly precedes the interrupt.
+    // The ordering guarantee: persistence strictly precedes the steer control.
     const persistIndex = test.events.indexOf("persist")
-    const interruptIndex = test.events.indexOf("control:agent-a")
+    const steerIndex = test.events.indexOf("control:agent-a")
     expect(persistIndex).toBeGreaterThanOrEqual(0)
-    expect(interruptIndex).toBeGreaterThan(persistIndex)
+    expect(steerIndex).toBeGreaterThan(persistIndex)
 
     // The instruction is broadcast through the ordinary Task path and wakes
-    // waiters, so it is a normal queued follow-up for the Runtime.
+    // waiters: it is canonical Task input, and steering only prioritizes how the
+    // Runtime delivers it.
     expect(
       test
         .broadcasts()

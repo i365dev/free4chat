@@ -85,10 +85,13 @@ type residentEventEnvelope struct {
 	MediaState   *types.ResidentMediaState  `json:"mediaState,omitempty"`
 	Expired      bool                       `json:"expired,omitempty"`
 	Truncated    bool                       `json:"truncated,omitempty"`
-	// Private resident-only Task control (#409).
+	// Private resident-only Task control (#409, #484).
 	Control       string `json:"control,omitempty"`
 	TaskRequestID string `json:"taskRequestId,omitempty"`
 	TurnSequence  int64  `json:"turnSequence,omitempty"`
+	// SteerInstructionSequence is the canonical Room sequence of the already
+	// persisted steer instruction. Identity only: never instruction text.
+	SteerInstructionSequence int64 `json:"steerInstructionSequence,omitempty"`
 	// Private resident-only Task Session Continuation control (#409).
 	// Operation is the closed "list" | "prepare" | "cancel" set; the tokens
 	// are opaque Runtime-local handles relayed unchanged.
@@ -218,6 +221,7 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 			envelope.Control,
 			envelope.TaskRequestID,
 			envelope.TurnSequence,
+			envelope.SteerInstructionSequence,
 		)
 		if err != nil {
 			return types.WaitResult{}, err
@@ -262,9 +266,20 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 // parseResidentTaskControl validates one private resident control frame. A
 // malformed, unknown, unidentified, or oversized control fails closed: it is
 // neither degraded into an ordinary Room event nor partially applied.
-func parseResidentTaskControl(rawControl, rawTaskRequestID string, rawTurnSequence int64) (*types.ResidentTaskControl, error) {
+//
+// Two shapes exist (#484):
+//
+//	interrupt  names only the EXACT active turn to yield;
+//	steer      names that same exact turn AND the canonical Room sequence of the
+//	           already-persisted steer instruction.
+//
+// The instruction text is deliberately absent: it is ordinary canonical Room
+// input, and the control only carries its identity. An interrupt that carries a
+// steer sequence, or a steer that carries none, is rejected outright instead of
+// being guessed at.
+func parseResidentTaskControl(rawControl, rawTaskRequestID string, rawTurnSequence, rawSteerSequence int64) (*types.ResidentTaskControl, error) {
 	kind := types.ResidentTaskControlKind(rawControl)
-	if kind != types.ResidentTaskControlInterrupt {
+	if kind != types.ResidentTaskControlInterrupt && kind != types.ResidentTaskControlSteer {
 		return nil, &Error{Message: "resident event stream returned an unsupported task control", Code: CodeToolError}
 	}
 	if !validResidentTaskRequestID(rawTaskRequestID) {
@@ -276,11 +291,24 @@ func parseResidentTaskControl(rawControl, rawTaskRequestID string, rawTurnSequen
 	if rawTurnSequence <= 0 || rawTurnSequence > types.MaxResidentTurnSequence {
 		return nil, &Error{Message: "resident event stream returned an invalid task turn", Code: CodeToolError}
 	}
-	return &types.ResidentTaskControl{
+	control := &types.ResidentTaskControl{
 		Kind:          kind,
 		TaskRequestID: rawTaskRequestID,
 		TurnSequence:  rawTurnSequence,
-	}, nil
+	}
+	if kind == types.ResidentTaskControlInterrupt {
+		if rawSteerSequence != 0 {
+			return nil, &Error{Message: "resident event stream returned an invalid task control", Code: CodeToolError}
+		}
+		return control, nil
+	}
+	// The steer identity is a canonical Room sequence of an instruction this
+	// Runtime can still deliver; anything else cannot name one.
+	if rawSteerSequence <= 0 || rawSteerSequence > types.MaxResidentTurnSequence {
+		return nil, &Error{Message: "resident event stream returned an invalid task steer", Code: CodeToolError}
+	}
+	control.SteerInstructionSequence = rawSteerSequence
+	return control, nil
 }
 
 // parseResidentSessionControl validates one private session-control frame

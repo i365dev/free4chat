@@ -1131,7 +1131,8 @@ states you may see include:
 - **Starting** / **Working** — the Task is being set up, or an Agent is working;
 - **Running** — an Agent turn is executing right now;
 - **Queued** — accepted work is waiting for execution capacity;
-- **Interrupted** — the active turn was stopped;
+- **Interrupted** — you asked the active turn to stop, and that same turn then
+  settled;
 - **Completed** / **Failed** — the Task reached a terminal outcome;
 - **Session lost** — the retained Harness conversation for this Task is gone.
 
@@ -1160,22 +1161,33 @@ the browser coming back does not make the Room permanent.
 
 While a Task has an active turn, the Task offers explicit controls.
 
-**Interrupt** stops the exact turn that is running for that Task. It does not
-affect other Tasks, and it does not cancel work that already finished.
+**Interrupt** asks exactly the turn that is running for that Task to stop or
+yield. It is best-effort: Free4Chat sends the request to that one conversation
+and leaves the local Harness to unwind its own work, so a Harness that is slow
+to honor it keeps the Task in `Interrupting` until that same turn settles. It
+does not affect other Tasks, it does not cancel work that already finished, and
+it never claims that the Harness's own tools were synchronously terminated.
 
-**Interrupt & send** is one action, not two. Your typed replacement instruction is
-kept first, and the currently running turn is then interrupted:
+**Interrupt & send** is STEER: one action, not two. Your typed instruction is
+canonical Task input first, and it is then prioritized so it changes what the
+Agent does next instead of waiting behind follow-ups that were already queued:
 
 ```text
 Interrupt & send
-→ your replacement instruction is preserved as Task input
-→ the current turn is stopped when it is still the active one
-→ the replacement becomes the Task's next instruction
+→ your instruction is preserved as canonical Task input
+→ the Harness delivers it into the active turn when it supports steering
+  natively; otherwise the runtime marks it as the Task's next instruction
+→ the active turn is asked to yield (best-effort) so the instruction runs sooner
+→ the instruction runs exactly once, ahead of ordinary queued follow-ups
 ```
 
-If the turn you were reacting to had already finished, the action is not an
-error: your instruction is still accepted as the next Task instruction, nothing
-later is cancelled, and the Task continues normally.
+The important guarantee is that your instruction is never lost. A slow, ignored,
+or refused yield only changes *when* the steer runs, never whether it survives:
+the instruction stays the Task's next instruction and runs as soon as the current
+turn settles. If the turn you were reacting to had already finished, the action is
+not an error either — your instruction is still accepted as the next Task
+instruction (in its ordinary place), nothing later is cancelled, and the Task
+continues normally.
 
 ## Execution capacity
 

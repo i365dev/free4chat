@@ -234,21 +234,26 @@ permissionDrainDone:
 	}
 	t.Log("hard_stop_exact_session_reload=PASS retained_context=PASS stale_cancelled_output=PASS")
 
-	// Repeat the same hard-stop -> later exact-load boundary once more. This
+	// Repeat the same forced-close -> later exact-load boundary once more. This
 	// catches implementations that preserve identity only for the first
 	// replacement process.
+	//
+	// #484: a Human cancel is cooperative-only, so the descendant/teardown
+	// assertion below belongs to the LIFECYCLE boundary and the probe forces
+	// that close explicitly instead of assuming `CancelTurn` performs it.
 	turnA2 := startCodexProbeTurn(adapterA, "Use your terminal tool now. Execute exactly `sleep 17`, wait for that command to finish, then reply only TASK_A2_DONE. Do not simulate the command.")
 	waitForProcessCommand(t, adapterPID(adapterA), "sleep 17", 75*time.Second)
 	idsA2 := processTreePIDs(adapterPID(adapterA))
 	if err := adapterA.CancelTurn(); err != nil {
-		t.Fatalf("second lane A cancel failed: %v", err)
+		t.Fatalf("second lane A cooperative cancel failed: %v", err)
 	}
-	outcomeA2 := awaitProbeOutcome(t, turnA2, 15*time.Second, "second hard-stopped lane A turn")
+	adapterA.forceClose()
+	outcomeA2 := awaitProbeOutcome(t, turnA2, 15*time.Second, "second closed lane A turn")
 	if outcomeA2.err == nil && strings.Contains(outcomeA2.result.Text, "TASK_A2_DONE") {
 		t.Fatalf("second cancelled turn returned stale completion: %q", outcomeA2.result.Text)
 	}
 	if !waitGone(idsA2, 8*time.Second) {
-		t.Fatalf("second hard-stop left lane A descendants: %v", alivePIDs(idsA2))
+		t.Fatalf("forced lane close left lane A descendants: %v", alivePIDs(idsA2))
 	}
 	if err := adapterA.EnsureSession(); err != nil {
 		t.Fatalf("second lane A exact session reload failed: %v", err)
@@ -257,7 +262,7 @@ permissionDrainDone:
 	if !strings.Contains(recoveredA2, "CODEWORD_ALPHA") {
 		t.Fatalf("second exact reload lost retained context: %q", recoveredA2)
 	}
-	t.Log("repeated_hard_stop_exact_reload=PASS")
+	t.Log("repeated_forced_close_exact_reload=PASS")
 
 	// An unexpected bridge death must settle only its own turn while a second
 	// provider process finishes normally.

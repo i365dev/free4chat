@@ -13,10 +13,30 @@ import (
 // addressed delta. It is deliberately separate from EventBuffer: the latter
 // may evict recent transport history, but must never decide whether an
 // unacknowledged Harness turn remains retryable.
+// steerPromotion is the bounded outcome of one steer-priority decision.
+type steerPromotion int
+
+const (
+	// steerPromotionMissing: the named instruction is no longer pending work,
+	// so there is nothing left to prioritize and the control must not cancel
+	// anything.
+	steerPromotionMissing steerPromotion = iota
+	// steerPromotionAlreadyNext: the instruction is already the next
+	// not-yet-started instruction of its Task.
+	steerPromotionAlreadyNext
+	// steerPromotionMoved: this control reordered the Task's pending work.
+	steerPromotionMoved
+)
+
 type pendingTurnContext struct {
 	after  int64
 	target int64
 	events []types.RoomEvent
+	// steer marks a canonical Human instruction that was explicitly steered
+	// (#484). It is a DELIVERY priority only: the instruction stays where the
+	// Room put it in canonical history, and this flag lives inside the existing
+	// bounded pending map, so it is pruned with the entry it describes.
+	steer bool
 }
 
 var errScopedHarnessUnsupported = errors.New("scoped Harness adapter is unavailable")
@@ -874,4 +894,70 @@ func (r *ResidentRuntime) sleep(d time.Duration) bool {
 	case <-r.stopCh:
 		return false
 	}
+}
+
+// promoteSteerPendingLocked moves one canonical steer instruction to the front
+// of this Task's NOT-YET-STARTED work (#484). It is a delivery-priority
+// decision over already-accepted canonical events, never a rewrite of Room
+// history or of any Room sequence.
+//
+// The rules are deliberately small, and each one is load-bearing:
+//
+//   - the turn that is running right now keeps the head of the queue, so a
+//     steer never starts concurrently with it and never cancels it implicitly;
+//   - steers already waiting keep their canonical order among themselves, so
+//     repeated steering replays in the order the Human wrote it;
+//   - ordinary follow-ups keep their FIFO order behind the steers;
+//   - nothing crosses a Task boundary: this touches exactly one scope.
+//
+// It reports how the queue order was decided. Callers must hold r.mu.
+func (r *ResidentRuntime) promoteSteerPendingLocked(scope string, sequence int64) steerPromotion {
+	ref := r.sessionRefLocked(scope)
+	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
+		return steerPromotionMissing
+	}
+	pending := *ref.pendingAddressed
+	index := -1
+	for position, candidate := range pending {
+		if candidate == sequence {
+			index = position
+			break
+		}
+	}
+	// A steer instruction the Runtime no longer holds as pending work is not
+	// promotable: it was either delivered already or refused by the bounded
+	// queue. Either way it must never be invented here.
+	if index < 0 {
+		return steerPromotionMissing
+	}
+	context, ok := (*ref.pendingContexts)[sequence]
+	if !ok {
+		return steerPromotionMissing
+	}
+	context.steer = true
+	(*ref.pendingContexts)[sequence] = context
+
+	frontier := 0
+	if r.scopeRunningLocked(scope) && len(pending) > 0 {
+		// Index 0 is the turn this scope is executing right now.
+		frontier = 1
+	}
+	for frontier < len(pending) && frontier != index {
+		entry, ok := (*ref.pendingContexts)[pending[frontier]]
+		if !ok || !entry.steer {
+			break
+		}
+		frontier++
+	}
+	if frontier == index {
+		return steerPromotionAlreadyNext
+	}
+	moved := make([]int64, 0, len(pending))
+	moved = append(moved, pending[:index]...)
+	moved = append(moved, pending[index+1:]...)
+	moved = append(moved, 0)
+	copy(moved[frontier+1:], moved[frontier:])
+	moved[frontier] = sequence
+	*ref.pendingAddressed = moved
+	return steerPromotionMoved
 }

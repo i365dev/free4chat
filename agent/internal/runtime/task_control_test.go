@@ -45,6 +45,33 @@ type interruptAdapter struct {
 	holdTurn chan struct{}
 	// turnFinished signals that a parked Harness turn body returned.
 	turnFinished chan struct{}
+	// cancelIgnored makes the yield request a no-op the Harness accepts and
+	// ignores; cancelErr makes the request itself fail (#484 weak-cancel tests).
+	cancelIgnored bool
+	cancelErr     error
+}
+
+// holdTurns parks the NEXT turn body until the returned channel is closed, so a
+// test can observe state that exists only while the turn is still active. It is
+// the locked counterpart of assigning holdTurn directly.
+func (a *interruptAdapter) holdTurns() chan struct{} {
+	hold := make(chan struct{})
+	a.gateMu.Lock()
+	a.holdTurn = hold
+	a.gateMu.Unlock()
+	return hold
+}
+
+func (a *interruptAdapter) ignoreCancel() {
+	a.cancelMu.Lock()
+	a.cancelIgnored = true
+	a.cancelMu.Unlock()
+}
+
+func (a *interruptAdapter) failCancel(err error) {
+	a.cancelMu.Lock()
+	a.cancelErr = err
+	a.cancelMu.Unlock()
 }
 
 func newInterruptAdapter() *interruptAdapter {
@@ -57,7 +84,17 @@ func newInterruptAdapter() *interruptAdapter {
 func (a *interruptAdapter) CancelTurn() error {
 	a.cancelMu.Lock()
 	a.cancels++
+	ignored := a.cancelIgnored
+	cancelErr := a.cancelErr
 	a.cancelMu.Unlock()
+	if cancelErr != nil {
+		return cancelErr
+	}
+	if ignored {
+		// The Harness accepted the yield request and ignored it: the turn stays
+		// parked until the test settles it.
+		return nil
+	}
 	if a.cancelEntered != nil {
 		a.cancelEntered <- struct{}{}
 	}

@@ -312,7 +312,7 @@ describe("Room-shared Task supervision after the creator expires (#421)", () => 
     ])
   })
 
-  it("persists a returning Human's replacement BEFORE interrupting the old turn", async () => {
+  it("persists a returning Human's replacement BEFORE steering the old turn", async () => {
     const test = harness()
     const requestId = await creatorLeftAndHumanReturned(test)
     const agentSocket = test.connectAgentSocket("agent-a")
@@ -336,13 +336,15 @@ describe("Room-shared Task supervision after the creator expires (#421)", () => 
     const replacement = messages[messages.length - 1]
     expect(replacement.text).toBe("do it differently")
     expect(replacement.taskRequestId).toBe(requestId)
-    // And exactly ONE interrupt of exactly the old live turn.
+    // And exactly ONE steer of exactly the old live turn, naming the
+    // instruction above by its canonical sequence (#484).
     expect(test.agentControls("agent-a")).toEqual([
       {
         type: "task-control",
-        control: "interrupt",
+        control: "steer",
         taskRequestId: requestId,
         turnSequence: 42,
+        steerInstructionSequence: replacement.sequence,
       },
     ])
   })

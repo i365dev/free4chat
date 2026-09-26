@@ -1,45 +1,61 @@
 package runtime
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
 /*
- * Task-scoped remote interrupt (#409).
+ * Task-scoped remote supervision (#409, #484).
  *
- * This is deliberately the narrowest possible seam: a Human clicking
- * Interrupt in the Room must cancel only the Harness turn the resident
- * Runtime CURRENTLY owns for exactly that Task.
+ * Two semantics share one private control frame, and they are deliberately
+ * different operations:
  *
- *	Free4Chat Runtime currently owns Task T's active Harness turn, identified
- *	by the canonical Room sequence of its trigger
- *	  + the Room sends a transient private control naming Task T and that
- *	    exact turnSequence
- *	  = cancel that turn through the existing Adapter.CancelTurn()
+ *	Interrupt  = best-effort request for exactly that scope's active turn to
+ *	             stop or yield. It is NOT a promise that Free4Chat
+ *	             synchronously terminates Harness-owned tool work, and it is
+ *	             never provider recovery.
+ *	Steer      = make an already-accepted canonical Human instruction affect
+ *	             that scope's work before ordinary queued follow-ups. It does
+ *	             not depend on a successful cancel.
  *
- * A Task scope alone is NOT turn identity: the same Task runs many turns, so
- * matching only the scope would let a delayed or stale control kill a later
- * turn. Turn identity is the canonical addressed Room sequence the Runtime
- * already received as `target` at the serialized admission boundary.
+ * Both are exact to ONE turn: a Task scope alone is NOT turn identity, because
+ * the same Task runs many turns and matching only the scope would let a delayed
+ * or stale control stop or redirect a later turn. Turn identity is the
+ * canonical addressed Room sequence the Runtime already received as `target` at
+ * the serialized admission boundary.
  *
  * It is NOT: Task deletion, leaving the Room, killing the Runtime or the
- * Harness process, clearing Task history, cancelling another client's turn,
- * or steering/taking over a native CLI session. The Runtime never trusts the
- * control by itself — authorization comes from the turn it already owns.
+ * Harness process, clearing Task history, or cancelling another client's turn.
+ * The Runtime never trusts the control by itself — authorization comes from the
+ * turn it already owns.
  *
- * A control with no matching active turn is a local no-op. It is never
- * retained as a pending intent, because a stale button click must never be
- * able to cancel a future turn that happens to reuse the same Task scope.
+ * A control with no matching active turn is a local no-op. It is never retained
+ * as a pending intent, because a stale button click must never be able to stop
+ * or redirect a future turn that happens to reuse the same Task scope.
  */
 
 // applyResidentTaskControl handles one private resident control frame. It is
 // called from the resident event loop and never from the human/Room path.
 func (r *ResidentRuntime) applyResidentTaskControl(control *types.ResidentTaskControl) {
-	if control == nil || control.Kind != types.ResidentTaskControlInterrupt {
+	if control == nil {
 		return
 	}
+	switch control.Kind {
+	case types.ResidentTaskControlInterrupt:
+		r.applyResidentTaskInterrupt(control)
+	case types.ResidentTaskControlSteer:
+		r.applyResidentTaskSteer(control)
+	}
+}
+
+// applyResidentTaskInterrupt is the plain Human Interrupt: ask exactly the turn
+// the Human saw running to stop or yield. It is best-effort by contract — the
+// Runtime marks the turn as interrupt-requested only when the dispatch really
+// happened, and the turn's own settlement remains the only thing that ends it.
+func (r *ResidentRuntime) applyResidentTaskInterrupt(control *types.ResidentTaskControl) {
 	requestedScope := taskScopeForRequestID(control.TaskRequestID)
 	if requestedScope == "" ||
 		control.TurnSequence <= 0 ||
@@ -57,6 +73,142 @@ func (r *ResidentRuntime) applyResidentTaskControl(control *types.ResidentTaskCo
 	// projection snapshot takes that same lock.
 	r.publishTaskExecution(requestedScope)
 	r.log("task_interrupt_requested", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
+}
+
+// applyResidentTaskSteer is STEER (#484). The Room already accepted the Human's
+// replacement instruction as canonical Task input and named it here by
+// sequence; this makes that SAME canonical instruction take priority over
+// ordinary queued follow-ups, and only then asks the current turn to yield.
+//
+// Order matters and is the product guarantee:
+//
+//  1. a proven native Harness steering path is tried first, because injecting
+//     the guidance into the live turn changes what the Agent does next without
+//     giving up any work;
+//  2. otherwise the instruction becomes the next not-yet-started instruction of
+//     this Task, so it is preserved no matter how cancellation behaves;
+//  3. only then is the exact turn asked to yield, best-effort.
+//
+// The instruction is therefore never lost when cancel is slow, ignored, or
+// cannot be written: cancel only decides how soon the steer runs, never
+// whether it survives.
+func (r *ResidentRuntime) applyResidentTaskSteer(control *types.ResidentTaskControl) {
+	requestedScope := taskScopeForRequestID(control.TaskRequestID)
+	if requestedScope == "" ||
+		control.TurnSequence <= 0 ||
+		control.TurnSequence > types.MaxResidentTurnSequence ||
+		control.SteerInstructionSequence <= 0 ||
+		control.SteerInstructionSequence > types.MaxResidentTurnSequence {
+		return
+	}
+	// Steer authority is the same exact-turn authority as cancel: only the turn
+	// the Human was actually looking at may be steered, so a stale control can
+	// never redirect a successor turn.
+	if !r.turnControlAuthorized(requestedScope, control.TurnSequence) {
+		r.log("task_steer_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
+		return
+	}
+	// The instruction must still be pending work. A control that names an
+	// instruction this Runtime already delivered (or refused) has nothing left
+	// to steer and must not cancel the current turn for nothing.
+	if !r.steerInstructionPending(requestedScope, control.SteerInstructionSequence) {
+		r.log("task_steer_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
+		return
+	}
+	if r.deliverNativeSteer(requestedScope, control.SteerInstructionSequence) {
+		r.log("task_steer_native_delivered", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
+		return
+	}
+	// Fallback: preserve first, then ask the turn to yield. Promotion is done
+	// before the cancel dispatch so the steer is already the priority-next
+	// instruction when that turn settles, however it settles.
+	promotion := r.promoteSteerPending(requestedScope, control.SteerInstructionSequence)
+	if promotion == steerPromotionMissing {
+		// The turn settled between the check above and this decision, so its
+		// successor already consumed the instruction: nothing to promote and
+		// nothing to interrupt.
+		r.log("task_steer_ignored", map[string]string{"scopeKind": scopeKindOf(requestedScope)})
+		return
+	}
+	cancelled := r.cancelActiveTaskTurn(requestedScope, control.TurnSequence)
+	if cancelled {
+		r.publishTaskExecution(requestedScope)
+	}
+	r.log("task_steer_fallback", map[string]string{
+		"scopeKind": scopeKindOf(requestedScope),
+		"promoted":  strconv.FormatBool(promotion == steerPromotionMoved),
+		"cancel":    strconv.FormatBool(cancelled),
+	})
+}
+
+// steerInstructionPending reports whether this canonical instruction is still
+// waiting to be delivered for that Task.
+func (r *ResidentRuntime) steerInstructionPending(scope string, sequence int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ref := r.sessionRefLocked(scope)
+	if ref == nil || ref.pendingAddressed == nil {
+		return false
+	}
+	return containsSequence(*ref.pendingAddressed, sequence)
+}
+
+// turnControlAuthorized reports whether this exact canonical turn is still the
+// active turn of that scope. It is the read-only half of the cancel authority
+// and is used where a control must be validated before any other effect.
+func (r *ResidentRuntime) turnControlAuthorized(scope string, turnSequence int64) bool {
+	r.turnControlMu.Lock()
+	defer r.turnControlMu.Unlock()
+	r.activityMu.Lock()
+	defer r.activityMu.Unlock()
+	current, active := r.activities[scope]
+	return active && current.sequence == turnSequence
+}
+
+// promoteSteerPending marks the canonical steer instruction as priority-next
+// for its Task inside the existing bounded pending state.
+func (r *ResidentRuntime) promoteSteerPending(scope string, sequence int64) steerPromotion {
+	r.mu.Lock()
+	promotion := r.promoteSteerPendingLocked(scope, sequence)
+	r.mu.Unlock()
+	return promotion
+}
+
+// deliverNativeSteer attempts the provider-neutral native steering seam. It
+// reports true only when the Harness confirms the guidance really reached the
+// active turn; in that case the canonical instruction is acknowledged exactly
+// once so it can never also run as its own queued turn.
+//
+// A Harness without a proven native path simply does not implement the seam,
+// which is the common case today: no current pinned bridge exposes one. Nothing
+// here branches on a provider name, and a bridge's wire spelling is never
+// visible above the adapter.
+func (r *ResidentRuntime) deliverNativeSteer(scope string, steerSequence int64) bool {
+	steerer, ok := r.options.Adapter.(types.ScopedTurnSteerer)
+	if !ok {
+		return false
+	}
+	events, err := r.pendingContextFor(scope, steerSequence)
+	if err != nil || len(events) == 0 {
+		return false
+	}
+	input := BuildHarnessTurn(events, &TurnContextOptions{
+		Self:          r.selfContext(),
+		Participants:  r.rosterSnapshot(),
+		TaskRequestID: taskRequestIDForScope(scope),
+	})
+	if err := steerer.SteerTurnFor(scope, *input); err != nil {
+		return false
+	}
+	// The active turn consumed this exact canonical instruction, so it is
+	// delivered: advance the delivery boundary and drop the queued trigger
+	// exactly once. A later successor turn therefore never replays it.
+	generation, generationErr := r.harnessSessionGeneration(scope)
+	if generationErr != nil {
+		generation = 0
+	}
+	r.acknowledgeHarnessDeliveryFor(scope, steerSequence, steerSequence, generation)
+	return true
 }
 
 // taskScopeForRequestID builds the exact logical scope for one Task id. It
