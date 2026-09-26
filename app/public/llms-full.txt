@@ -2041,6 +2041,11 @@ adoption on the selected resident Runtime, and the next eligible
 Human-started Task binds it. A native session that a Human explicitly handed
 off fails closed instead of being silently replaced by a new session.
 
+Session handoff requires a Harness whose session continuation is *verified*:
+currently Codex and Pi. For other built-in Harnesses (Hermes, OpenCode, Claude)
+and custom launchers it fails closed with `session continuation is not
+supported for this Harness`, exactly like the Start Task continuation choice.
+
 ## Local Runtime handoff
 
 ```text
