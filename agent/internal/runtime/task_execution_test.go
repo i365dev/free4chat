@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -751,4 +752,78 @@ func TestExecutorLossSettlesCurrentHumanTaskAsFailed(t *testing.T) {
 	}
 	close(gate)
 	waitForDone(t, done, "executor loss turn cleanup")
+}
+
+// TestQueuedProjectionCountsOnlyUndeliveredWork is the #484 P2 regression: a
+// steered instruction delivered out of canonical order is no longer queued
+// work, even though it legitimately stays in the canonical ledger until the
+// earlier gap collapses.
+//
+//	A active, B queued, C steered and already delivered into A
+//	-> QueuedCount must count B only (1), not the raw ledger length (2).
+func TestQueuedProjectionCountsOnlyUndeliveredWork(t *testing.T) {
+	const scope = "task:req-T"
+	adapter := &nativeSteerAdapter{interruptAdapter: newInterruptAdapter()}
+	client := newExecutionClient()
+	rt := NewResidentRuntime(Options{
+		InstanceID: "steer-queued",
+		RoomID:     "room-steer-queued",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	t.Cleanup(rt.Stop) // LIFO: the adapter releases parked turns first.
+	t.Cleanup(adapter.releaseAllTurns)
+
+	hold := adapter.holdTurns()
+	drained := startTurn(rt, scopedEvent(1, scope, "A"))
+	waitForActiveScope(t, rt, scope)
+	rt.acceptEvent(scopedEvent(2, scope, "B"))
+	rt.acceptEvent(scopedEvent(3, scope, "C"))
+	waitForExecution(t, client, "req-T", "running turn with two waiting instructions", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 1 && p.QueuedCount == 2
+	})
+
+	// C is steered and the Harness confirms it reached the ACTIVE turn, so it
+	// is delivered out of canonical order and A keeps running.
+	rt.applyResidentTaskControl(steerControl("req-T", 1, 3))
+	if got := adapter.steeredTexts(); !reflect.DeepEqual(got, []string{"task:req-T@1=C"}) {
+		t.Fatalf("native steer delivery mismatch: %v", got)
+	}
+	adapter.releaseTurn() // A keeps running on the hold channel.
+
+	// Truth: only B is still waiting. The delivered C is retained in the
+	// canonical ledger behind the A/B gap and must NOT be reported as queued.
+	waitForExecution(t, client, "req-T", "running turn with one undelivered successor", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 1 && p.QueuedCount == 1
+	})
+	if got := rt.pendingAddressedSnapshotFor(scope); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("canonical ledger changed under an out-of-order delivery: %v", got)
+	}
+	if steerStillUndelivered(rt, scope, 3) {
+		t.Fatal("the steered instruction was not recorded as delivered")
+	}
+	// The delivery cursor must not have jumped over the undelivered B.
+	if got := rt.deliveredSeqFor(scope); got != 0 {
+		t.Fatalf("cursor advanced past undelivered work: %d", got)
+	}
+
+	// A finishes, B drains, and only then does the canonical prefix collapse.
+	close(hold)
+	waitForDone(t, drained, "steered Task to drain")
+	waitForExecution(t, client, "req-T", "settled projection with no reported work", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == 0 && p.QueuedCount == 0
+	})
+	if got := rt.pendingAddressedSnapshotFor(scope); len(got) != 0 {
+		t.Fatalf("a delivered steer stayed in the canonical ledger: %v", got)
+	}
+	if got := rt.deliveredSeqFor(scope); got != 3 {
+		t.Fatalf("delivery cursor = %d, want the collapsed canonical prefix", got)
+	}
 }

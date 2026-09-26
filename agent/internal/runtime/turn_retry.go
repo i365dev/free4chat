@@ -441,10 +441,13 @@ func (r *ResidentRuntime) runTurnRetryClock() {
 			}
 			continue
 		}
-		if target, pending := r.peekPendingFor(plan.scope); !pending || target != plan.target {
-			// The canonical turn settled while the clock was armed. Never
-			// resurrect a stale retry for a different or already-delivered
-			// trigger.
+		// The retry validator is TARGET-EXACT, not canonical-head-based: a
+		// steered instruction is delivered before earlier canonical entries, so
+		// requiring the plan's target to still be the head would silently drop
+		// the autonomous retry of a legitimate failure (#484).
+		if !r.pendingUndeliveredFor(plan.scope, plan.target) {
+			// The canonical turn was delivered, replaced, or left the ledger
+			// while the clock was armed. Never resurrect a stale retry.
 			r.clearTurnRetry(plan.scope, plan.target)
 			continue
 		}

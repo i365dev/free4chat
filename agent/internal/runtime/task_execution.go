@@ -80,17 +80,17 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 	r.activityMu.Unlock()
 	r.turnControlMu.Unlock()
 
-	// Queue depth: the existing serial pending list. The turn that is running
-	// right now is still the head of that list, so it is not "queued".
+	// Queue depth: the canonical ledger minus everything that already reached
+	// the Harness and minus the turn executing right now. A steered instruction
+	// delivered out of canonical order stays in the ledger until the earlier gap
+	// collapses, and it is not queued work any more, so raw ledger length would
+	// over-report it (#484).
 	r.mu.Lock()
 	queued := 0
-	if ref := r.sessionRefLocked(scope); ref != nil && ref.pendingAddressed != nil {
-		queued = len(*ref.pendingAddressed)
+	if ref := r.sessionRefLocked(scope); ref != nil {
+		queued = r.undeliveredDeliveryCountLocked(scope, ref, currentTurn)
 	}
 	r.mu.Unlock()
-	if active && queued > 0 {
-		queued--
-	}
 
 	r.taskExecutionMu.Lock()
 	facts := r.taskExecutionFacts[scope]

@@ -629,9 +629,13 @@ func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, th
 	if generation > 0 && generation == *ref.observedHarnessGeneration {
 		*ref.bootstrappedHarnessGeneration = generation
 	}
+	marked := false
 	if context, ok := (*ref.pendingContexts)[target]; ok {
-		context.delivered = true
-		(*ref.pendingContexts)[target] = context
+		if !context.delivered {
+			context.delivered = true
+			(*ref.pendingContexts)[target] = context
+			marked = true
+		}
 	} else if len(*ref.pendingAddressed) == 0 && through > *ref.deliveredThrough {
 		// Nothing is waiting behind it, so the cursor can still move: this is
 		// the ordinary in-order case where the entry was already collapsed.
@@ -639,9 +643,11 @@ func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, th
 	}
 	removed := r.collapseDeliveredPrefixLocked(scope, ref)
 	r.mu.Unlock()
-	if removed {
-		// The consumed trigger is no longer waiting; refresh the transient
-		// execution projection outside r.mu (it is presentation only).
+	if removed || marked {
+		// Delivery changed what is still waiting, so refresh the transient
+		// execution projection outside r.mu (it is presentation only). This is
+		// what makes QueuedCount truthful after an out-of-order delivery whose
+		// entry cannot collapse yet.
 		r.publishTaskExecution(scope)
 	}
 }
@@ -1035,6 +1041,67 @@ func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSess
 		return 0, false
 	}
 	return head, true
+}
+
+// pendingUndeliveredLocked reports whether this EXACT canonical instruction is
+// still waiting to be delivered for that scope: still present in the canonical
+// ledger, still holding its pending context, and not already delivered.
+//
+// It deliberately does not require the target to be the canonical HEAD. A
+// steered instruction is delivered out of canonical order while earlier
+// instructions are still waiting behind it, so a head-based check would wrongly
+// treat a genuine retry for that instruction as stale. Callers must hold r.mu.
+func (r *ResidentRuntime) pendingUndeliveredLocked(scope string, target int64) bool {
+	ref := r.sessionRefLocked(scope)
+	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
+		return false
+	}
+	if !containsSequence(*ref.pendingAddressed, target) {
+		return false
+	}
+	context, ok := (*ref.pendingContexts)[target]
+	if !ok {
+		return false
+	}
+	return !context.delivered
+}
+
+func (r *ResidentRuntime) pendingUndeliveredFor(scope string, target int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pendingUndeliveredLocked(scope, target)
+}
+
+// undeliveredDeliveryCountLocked counts the canonical instructions of one scope
+// that have NOT reached the Harness yet, excluding the turn that is executing
+// right now. Delivered entries can legitimately remain in the canonical ledger
+// while an earlier gap is still undelivered, and they are no longer queued work,
+// so raw ledger length over-reports.
+//
+// The executing turn is excluded by BOTH identities that can name it: the
+// projection's own current turn (set when a prompt is admitted) and the
+// scheduler lane target (claimed just before that). Callers must hold r.mu.
+func (r *ResidentRuntime) undeliveredDeliveryCountLocked(scope string, ref *logicalSessionRef, currentTurn int64) int {
+	if ref == nil || ref.pendingAddressed == nil {
+		return 0
+	}
+	running := currentTurn
+	if lane, ok := r.activeTurns[scope]; ok && lane.target != 0 {
+		running = lane.target
+	}
+	queued := 0
+	for _, sequence := range *ref.pendingAddressed {
+		if sequence == running {
+			// The running turn is executing, not queued.
+			continue
+		}
+		context, ok := (*ref.pendingContexts)[sequence]
+		if ok && context.delivered {
+			continue
+		}
+		queued++
+	}
+	return queued
 }
 
 // collapseDeliveredPrefixLocked removes the delivered prefix of the canonical
