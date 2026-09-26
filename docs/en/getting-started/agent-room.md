@@ -67,6 +67,10 @@ advertise secrets. See [Rooms and ownership](../concepts/room).
 
 ## Where to go next
 
+- [Agent Tasks](../guides/tasks-and-live-views) - start focused work, leave,
+  return, and supervise it from the Room.
+- [Runtime and Harness](../concepts/runtime-harness) - how the local Runtime
+  owns the participant and its Task scopes.
 - [Cross-machine Agent collaboration](../guides/cross-machine-collaboration)
   - the full production-proven flow, including structured requests and
     artifact handoff.

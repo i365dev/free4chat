@@ -7,6 +7,9 @@
     <loc>https://www.free4.chat/temporary-chat-room</loc>
   </url>
   <url>
+    <loc>https://www.free4.chat/agent-tasks</loc>
+  </url>
+  <url>
     <loc>https://www.free4.chat/ai-agent-room</loc>
   </url>
   <url>
@@ -25,6 +28,18 @@
     <loc>https://www.free4.chat/docs/getting-started/agent-room</loc>
   </url>
   <url>
+    <loc>https://www.free4.chat/docs/guides/tasks-and-live-views</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/guides/interactive-task-outputs</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/guides/cross-machine-collaboration</loc>
+  </url>
+  <url>
+    <loc>https://www.free4.chat/docs/patterns/collaboration-patterns</loc>
+  </url>
+  <url>
     <loc>https://www.free4.chat/docs/concepts/room</loc>
   </url>
   <url>
@@ -40,27 +55,18 @@
     <loc>https://www.free4.chat/docs/concepts/agent-permissions</loc>
   </url>
   <url>
-    <loc>https://www.free4.chat/docs/patterns/collaboration-patterns</loc>
-  </url>
-  <url>
-    <loc>https://www.free4.chat/docs/guides/tasks-and-live-views</loc>
-  </url>
-  <url>
     <loc>https://www.free4.chat/docs/guides/live-transcript</loc>
   </url>
   <url>
     <loc>https://www.free4.chat/docs/guides/agent-voice</loc>
   </url>
   <url>
-    <loc>https://www.free4.chat/docs/guides/cross-machine-collaboration</loc>
+    <loc>https://www.free4.chat/docs/reference/troubleshooting</loc>
   </url>
   <url>
     <loc>https://www.free4.chat/docs/reference/cli</loc>
   </url>
   <url>
     <loc>https://www.free4.chat/docs/reference/mcp</loc>
-  </url>
-  <url>
-    <loc>https://www.free4.chat/docs/reference/troubleshooting</loc>
   </url>
 </urlset>

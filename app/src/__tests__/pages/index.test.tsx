@@ -55,10 +55,9 @@ describe("Home page", () => {
       "href",
       "/apps"
     )
-    expect(screen.getByRole("link", { name: "Documentation" })).toHaveAttribute(
-      "href",
-      "/docs"
-    )
+    expect(
+      screen.getByRole("link", { name: "Documentation →" })
+    ).toHaveAttribute("href", "/docs")
 
     // The stale immediate-expiry wording must not come back.
     expect(

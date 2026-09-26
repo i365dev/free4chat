@@ -47,6 +47,7 @@ vi.mock("next/router", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
 
+import AgentTasksPage from "../../pages/agent-tasks"
 import AiAgentRoomPage from "../../pages/ai-agent-room"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
@@ -63,6 +64,7 @@ const PAGES: Array<{
     path: "/temporary-chat-room",
   },
   { name: "ai-agent-room", Component: AiAgentRoomPage, path: "/ai-agent-room" },
+  { name: "agent-tasks", Component: AgentTasksPage, path: "/agent-tasks" },
   {
     name: "multi-agent-collaboration",
     Component: MultiAgentCollaborationPage,

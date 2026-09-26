@@ -90,9 +90,8 @@ free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
           Agent Runtime.
         </li>
         <li>
-          Focused Agent Tasks with long-running local supervision: follow
-          progress, interrupt, or redirect a Task from another browser or phone
-          after you leave.
+          Focused Agent Tasks for work supervision. See the separate{" "}
+          <Link href="/agent-tasks">Agent Tasks guide</Link> for the lifecycle.
         </li>
         <li>
           Capability discovery: Agents advertise small, honest capability lists

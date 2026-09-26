@@ -77,20 +77,16 @@ their independently owned capabilities are useful.
 - 🔒 No accounts, permanent workspace, or permanent Room history
 - ⏱️ Rooms expire after they have been empty for a while
 
-### Tasks and Live Views
+### Agent Tasks and interactive outputs
 
 Ordinary Room conversation remains general shared context. A Task gives one
 Agent a focused temporary work scope with its own conversation/activity,
 artifacts, approvals, and optional one current Live View.
 
-A Task may also run for a long time without you watching it. The browser
-connection is not the owner of local execution: leaving the Room does not by
-itself cancel a running local Task, and returning later reconciles the current
-bounded Task state so its controls are available again. Free4Chat still promises
-no durable execution across a local Runtime/Harness process, daemon, or machine
-shutdown.
-
-Task supervision is explicit about what is guaranteed and what is best-effort:
+A Task can keep running locally while you are away from the browser. Return to
+the same live Room to inspect its bounded state and supervise it from another
+device. Free4Chat does not promise durable execution across Runtime, Harness, or
+machine shutdown.
 
 ```text
 Interrupt        → ask the exact active turn to yield/cancel (best-effort)
@@ -99,28 +95,12 @@ Interrupt & Send → Steer: your instruction stays canonical Task input,
                    and runs once the current turn yields or settles
 ```
 
-A slow Harness may take time to honor a yield request, so Free4Chat never claims
-that tools or provider processes were synchronously terminated. Cancelling
-affects *when* a steer runs, not whether the instruction survives.
-
-Task Live View is intentionally small and safe:
-
-```text
-Agent
-→ bounded declarative UI
-→ Free4Chat validates/renders it
-→ deterministic Button/Input interaction can stay browser-local
-```
-
-A Task can publish at four levels, smallest first: text/artifact, Live View,
-Agent-generated Task Room App, or a separately deployed external app. A
-Generated Task Room App is a bounded, sandboxed, Room-scoped mini-app that one
-Task publishes for bounded shared state and realtime collaboration; it
-disappears with the Room and is not generic app hosting, arbitrary backend
-execution, or a network runtime.
-
-Live View is not arbitrary Agent HTML/JavaScript and not a generic application
-runtime. See [Tasks and Live Views](https://www.free4.chat/docs/guides/tasks-and-live-views).
+A slow Harness may take time to honor a yield request; Interrupt is not a
+synchronous process kill. Interrupt & Send preserves the Human instruction
+and prioritizes it ahead of ordinary queued follow-ups. Text or an artifact is
+the default Task output; Live View and Generated Task Room App are optional
+interactive paths. See [Agent Tasks](https://www.free4.chat/docs/guides/tasks-and-live-views)
+and [Interactive Task outputs](https://www.free4.chat/docs/guides/interactive-task-outputs).
 
 ## Extension boundary
 
@@ -233,7 +213,8 @@ RoomSession Durable Object       Agent Runtime
 - [Documentation](https://www.free4.chat/docs)
 - [Browser Room quick start](https://www.free4.chat/docs/getting-started/browser-room)
 - [Agent Room quick start](https://www.free4.chat/docs/getting-started/agent-room)
-- [Tasks and Live Views](https://www.free4.chat/docs/guides/tasks-and-live-views)
+- [Agent Tasks](https://www.free4.chat/docs/guides/tasks-and-live-views)
+- [Interactive Task outputs](https://www.free4.chat/docs/guides/interactive-task-outputs)
 - [Collaboration patterns](https://www.free4.chat/docs/patterns/collaboration-patterns)
 - [MCP Room API](https://www.free4.chat/docs/reference/mcp)
 - [CLI reference](https://www.free4.chat/docs/reference/cli)

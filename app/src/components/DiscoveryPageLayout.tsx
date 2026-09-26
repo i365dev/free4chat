@@ -24,7 +24,7 @@ export interface DiscoveryPageLayoutProps {
     href: string
     label: string
     /** Small, static destination bucket — never a URL or user-provided value. */
-    analyticsTarget: "mcp-docs" | "bring-agent" | "github"
+    analyticsTarget: "mcp-docs" | "bring-agent" | "github" | "docs"
   }
   /** Optional action CTA for a page that creates a Room before navigation. */
   primaryCta?: {

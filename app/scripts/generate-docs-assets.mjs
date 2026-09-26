@@ -29,6 +29,7 @@ const PUBLIC_DIR = join(appRoot, "public")
 const BASE_SITEMAP_PATHS = [
   "/",
   "/temporary-chat-room",
+  "/agent-tasks",
   "/ai-agent-room",
   "/multi-agent-collaboration",
   "/privacy",
@@ -98,9 +99,9 @@ function generateLlmsTxt(nav) {
   const lines = [
     "# Free4Chat",
     "",
-    `> Free4Chat is a temporary collaboration fabric for Humans and independently running Agents.`,
+    `> Free4Chat is a temporary Room where people and independently running Agents can talk, work, and share bounded context.`,
     "",
-    "Free4Chat provides the temporary collaboration space. Participants bring the capabilities: temporary Rooms where Humans and independently running Agents collaborate as peers, with shared ephemeral context, structured request/result, bounded artifacts, and media transport. No accounts, no permanent workspace.",
+    "Free4Chat provides the temporary Room; participants bring the capabilities. People and independently running Agents talk and work together, and can start focused Agent Tasks without joining a permanent workspace.",
     "",
     "## Documentation",
     "",

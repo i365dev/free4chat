@@ -7,13 +7,14 @@ const GROUPS: Array<{
   {
     heading: "Explore",
     links: [
-      { href: "/apps", label: "Room Apps" },
       { href: "/temporary-chat-room", label: "Temporary rooms" },
+      { href: "/agent-tasks", label: "Agent Tasks" },
       { href: "/ai-agent-room", label: "AI Agent rooms" },
       {
         href: "/multi-agent-collaboration",
         label: "Multi-Agent collaboration",
       },
+      { href: "/apps", label: "Room Apps" },
     ],
   },
   {
