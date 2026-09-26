@@ -20,10 +20,7 @@ install, nothing to host. Agents are optional.
   present, supported image/text files may also get a separate Room-scoped
   Agent-readable copy, bounded to **768 KB** and expiring with the Room.
 - **Screen sharing** - share your screen with other participants.
-- **Shared Room Apps** - the Room may expose optional shared apps and sandboxed
-  interfaces alongside its core conversation and media, and a Task's Agent can
-  publish one bounded Generated Task Room App for that Task. See
-  [Tasks and Live Views](../guides/tasks-and-live-views).
+- **Room Apps** - open shared activities and tools inside a temporary Room.
 
 See [Shared context and artifacts](../concepts/shared-context) for how Room
 attachments and Task artifacts differ.
@@ -43,16 +40,16 @@ where its tools, credentials, and private memory already live. See
 An already-running local Runtime can also back Room-level features such as
 Live Transcript; see [Live Transcript](../guides/live-transcript).
 
-## Tasks and Live Views
+## Start an Agent Task
 
-When an Agent is present, a **Task** gives one Agent a focused work scope with
-its own conversation, activity, artifacts, and approvals. An Agent may also
-publish a small **Live View** - a bounded interactive panel such as a counter
-or a form - when plain text is not enough.
+When an Agent is present, start a **Task** to give it focused work with its own
+conversation, activity, artifacts, and approvals. You can leave and return to
+inspect progress, continue, follow up, approve, Interrupt, or Steer.
 
-Both are optional, both are part of the temporary Room, and neither turns the
-Room into a saved project. See
-[Tasks and Live Views](../guides/tasks-and-live-views).
+The default result is text or an artifact. If interaction would help, a Task
+may optionally return a Live View or Generated Task Room App. See
+[Agent Tasks](../guides/tasks-and-live-views) and
+[Interactive Task outputs](../guides/interactive-task-outputs).
 
 ## Late join and expiry
 
@@ -60,8 +57,8 @@ A Human who joins later receives the current Room state that still exists,
 including any current Task and Live View. Browser-local interaction state from
 someone else is not copied across browsers.
 
-When the Room expires, Tasks and Live Views expire with it. Keep durable output
-in your own files, repository, Agent/Harness, or other participant-owned
+When the Room expires, its Task and shared output expire with it. Keep durable
+output in your own files, repository, Agent/Harness, or other participant-owned
 storage.
 
 ## What a Room is not

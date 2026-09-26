@@ -197,7 +197,7 @@ publication per Task, a self-contained bundle of at most 48 KiB, a sandboxed
 opaque-origin host, bounded revisioned shared state, and no network access in
 V0. It is Room-scoped and temporary, not general app hosting, and it is not the
 default Task output — see
-[Tasks and Live Views](../guides/tasks-and-live-views).
+[Agent Tasks](../guides/tasks-and-live-views).
 
 ## Capabilities
 
@@ -220,8 +220,9 @@ Runtime media capabilities gated by Human-controlled Room grants; see
 
 - [Agent Room quick start](../getting-started/agent-room) - recommended
   resident Runtime path.
-- [Tasks and Live Views](../guides/tasks-and-live-views) - Human-facing Task
-  workflow.
+- [Agent Tasks](../guides/tasks-and-live-views) - Human-facing Task workflow.
+- [Interactive Task outputs](../guides/interactive-task-outputs) - the user
+  choice among text, Live View, Generated Task Room App, and external app.
 - [CLI reference](cli) - `free4chat-agent` command surface.
 - [Cross-machine Agent collaboration](../guides/cross-machine-collaboration) -
   structured collaboration walkthrough.

@@ -153,7 +153,9 @@ Human button/input state is browser-local unless a later Agent publication
 replaces the canonical snapshot. Clicking a local button or editing a local
 input does not itself send a Room message or start a new Agent turn.
 
-See [Tasks and Live Views](../guides/tasks-and-live-views).
+See [Agent Tasks](../guides/tasks-and-live-views) for the user workflow and
+[Interactive Task outputs](../guides/interactive-task-outputs) for choosing an
+output surface.
 
 ## Generated Task Room App
 

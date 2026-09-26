@@ -60,6 +60,32 @@ describe("docs navigation", () => {
       listDocsMarkdownSlugs().every((slug) => !slug.startsWith("zh"))
     ).toBe(true)
   })
+
+  it("groups user tasks and machine contracts separately", () => {
+    expect(nav.sections.map((section) => section.title)).toEqual([
+      "Getting started",
+      "Using Free4Chat",
+      "Room & Sharing",
+      "Agent Runtime",
+      "Reference",
+    ])
+    expect(nav.external.map((link) => link.title)).toContain(
+      "Agent contract (agent.md)"
+    )
+    expect(nav.sections.at(-1)?.title).not.toBe("Machine contracts")
+    expect(
+      nav.sections.flatMap((section) => section.pages).map((p) => p.title)
+    ).toContain("Interactive Task outputs")
+  })
+
+  it("keeps the former Task guide URL and adds the output guide", () => {
+    expect(
+      pages.find((page) => page.slug === "guides/tasks-and-live-views")?.title
+    ).toBe("Agent Tasks")
+    expect(
+      pages.some((page) => page.slug === "guides/interactive-task-outputs")
+    ).toBe(true)
+  })
 })
 
 describe("docs static generation", () => {
@@ -147,7 +173,7 @@ describe("llms.txt", () => {
 
   it("identifies Free4Chat with the canonical sentence", () => {
     expect(llms).toContain(
-      "Free4Chat is a temporary collaboration fabric for Humans and independently running Agents."
+      "Free4Chat is a temporary Room where people and independently running Agents can talk, work, and share bounded context."
     )
   })
 
@@ -267,8 +293,10 @@ describe("docs Markdown links", () => {
     "/",
     "/privacy",
     "/temporary-chat-room",
+    "/agent-tasks",
     "/ai-agent-room",
     "/multi-agent-collaboration",
+    "/apps",
   ])
 
   it("resolves every link to a real docs page, public file, or site route", () => {

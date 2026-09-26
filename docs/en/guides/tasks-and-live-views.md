@@ -1,4 +1,4 @@
-# Tasks and Live Views
+# Agent Tasks
 
 A Free4Chat Room supports ordinary shared conversation and focused Agent Tasks.
 They use the same temporary Room but serve different interaction needs.
@@ -24,8 +24,8 @@ Task
 → optional current Live View, or one Generated Task Room App
 ```
 
-A Task is not a permanent Thread, project, or workspace. It exists only inside
-the temporary Room.
+A Task is focused work and supervision scope, not a permanent Thread, project,
+or workspace. It exists only inside the temporary Room.
 
 ## Starting a Task
 
@@ -227,33 +227,13 @@ artifact or exposing it to unrelated Agent Tasks.
 
 Room-level artifacts still exist for information meant for the general Room.
 
-## Task output surfaces
+## What a Task can produce
 
-A Task result can take four different shapes. They are deliberately separate
-levels, not one surface growing bigger:
-
-```text
-Text / Artifact
-→ ordinary Task result: text, notes, a patch, a bounded file
-
-Live View
-→ bounded declarative UI, validated and rendered by Free4Chat
-→ small deterministic local controls
-
-Generated Task Room App
-→ bounded executable mini-app generated from this one Task
-→ sandboxed, Room-scoped, bounded shared state, realtime collaboration
-
-External app
-→ backend-heavy, large, long-lived, or otherwise arbitrary deployments
-```
-
-Start at the smallest level that fits. Text/artifact stays the default Task
-result; a Live View is for a compact structured interface; a Generated Task Room
-App is the escape hatch when text is too small and a Live View is too
-constrained, but a real external deployment is unnecessary; an external
-application is for work that genuinely needs its own backend, scale, or
-long-lived deployment.
+Text or an artifact is the default. A Task may optionally produce a Live View
+or Generated Task Room App when interaction helps. Start with the smallest
+output that fits; a real backend or durable deployment belongs in an external
+app. See [Interactive Task outputs](interactive-task-outputs) for the choices,
+examples, and boundaries.
 
 ## Sending an attachment into a Task
 
@@ -311,161 +291,14 @@ Room approval card. The actual tool/permission policy remains Harness-owned;
 joining the Room never grants shell, filesystem, browser, or credential access
 by itself.
 
-## What is a Live View?
+## Optional interactive output
 
-A Live View is an optional small interactive interface that the Agent may
-publish for a Task.
-
-Examples:
-
-- a counter or status value;
-- a small form/filter;
-- a compact task-specific control panel;
-- a structured result that benefits from a few local controls.
-
-The Agent publishes bounded declarative data. Free4Chat validates it and renders
-platform-owned UI components.
-
-```text
-Agent
-→ bounded declarative Live View
-→ Free4Chat renderer
-→ Human interaction
-```
-
-Live View does **not** execute arbitrary Agent HTML, JavaScript, CSS, or iframe
-content.
-
-## Why a button can work without calling the Agent
-
-Current Live View Button/Input actions are deterministic browser-local
-interactions.
-
-Those clicks do not automatically:
-
-- send a Room message;
-- write Durable Object state;
-- start another Harness turn;
-- ask an LLM to recompute the value.
-
-This keeps simple interaction fast and cheap.
-
-The important distinction is:
-
-```text
-local UI action != Agent cognition
-```
-
-If new reasoning is required, that should be an explicit Agent interaction
-rather than hidden behind every UI event.
-
-## Canonical state vs browser-local state
-
-The Room keeps one canonical Live View snapshot for the Task; your post-click
-and post-input values stay local to your browser. A Human who joins later
-receives the canonical snapshot, never another browser's private local values.
-A newer Agent publication replaces the snapshot; Free4Chat keeps no Live View
-revision history.
-
-[Shared context and artifacts](../concepts/shared-context) explains the
-canonical/local split, and why visibility is not activation.
-
-## Reconnect and late join
-
-A resident Agent Runtime may reconnect/rejoin while preserving the logical Task
-scope as designed by the Runtime/Harness lifecycle. A Human joining later can
-receive the current Room-visible Task and current canonical Live View state
-that still exists.
-
-This does not turn the Room into permanent history. Everything still expires
-with the Room.
-
-## Live View vs Screen Share
-
-They solve different problems.
-
-### Live View
-
-```text
-small Task-specific interactive UI
-host-rendered and declarative
-bounded data
-local deterministic controls
-```
-
-Use it when the task benefits from a compact structured interface.
-
-### Screen Share
-
-```text
-live visual media from a participant
-continuous screen observation
-```
-
-Use it when participants need to see an actual desktop/application view.
-
-A Room can present both without treating one as the other.
-
-## Live View vs a complex application
-
-Task Live View is deliberately small. Do not keep expanding it until it becomes
-a second browser/runtime.
-
-Decision rule:
-
-```text
-small declarative presentation/control
-→ Task Live View
-
-small executable mini-app, bounded state, Room-scoped collaboration
-→ Generated Task Room App
-
-arbitrary executable JS / Canvas / WebGL / CRDT / complex realtime
-application state, own backend, or long-lived deployment
-→ not a Task surface
-→ curated external App or your own external application
-```
-
-Free4Chat provides only the sandbox, trusted-origin, and transport boundary for
-such surfaces. The separate Extension Lab owns the curated App portfolio and
-its runtime/discovery lifecycle; this is not a general-purpose plugin SDK.
-
-## Generated Task Room Apps
-
-Some work needs a small executable interface rather than a result to read. For
-that, the Task's Agent can publish one **Generated Task Room App**: a
-self-contained mini-app generated from that single Task.
-
-```text
-Task Agent
-→ publish_generated_app (bundle: html + css + js + manifest + initialState)
-→ Free4Chat validates it and stores it as Room-scoped Task state
-→ the Room renders it in an opaque-origin sandbox
-→ Humans in the Room interact with it and share bounded state
-```
-
-What this is:
-
-- **One Task, one App.** The Task's canonical Agent is the only publisher; a
-  changed valid bundle updates that same App instead of creating a second one.
-- **Bounded.** The bundle is at most 48 KiB and its shared state at most 16 KiB.
-- **Sandboxed.** No Room cookies, participant credentials, filesystem, camera,
-  microphone, or raw peer connection, and no arbitrary network runtime.
-- **Room-scoped and temporary.** The App, its bundle, and its shared state
-  disappear with the Room. A Human who refreshes, rejoins, or joins later
-  reconstructs the current published App and shared state instead of replaying
-  history.
-- **Collaborative.** Shared state is revisioned by the Room, so several Humans
-  can interact with the same App while the Room remains the authority.
-
-It is not generic app hosting, not an arbitrary backend runtime, not a plugin
-marketplace, and not a way to publish a localhost service. Work that needs its
-own backend, scale, or long-lived deployment belongs in an external application
-instead.
-
-See the [CLI reference](../reference/cli) for the `generated-app` commands and
-the [MCP Room API](../reference/mcp) for the exact `publish_generated_app`
-contract.
+Live View and Generated Task Room App are optional Task outputs. A Live View is
+a small declarative interface; a Generated Task Room App is a bounded sandboxed
+mini-app with Room-shared state. Use screen sharing when people need to see a
+live desktop. See [Interactive Task outputs](interactive-task-outputs) for
+examples, state behavior, and the distinction from existing Room Apps and
+external apps.
 
 ## What disappears when the Room expires?
 

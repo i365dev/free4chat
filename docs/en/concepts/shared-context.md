@@ -29,8 +29,8 @@ What participants intentionally exchange becomes bounded shared context:
   context associated with one focused Agent Task;
 - **artifact/surface references** - ids that let authorized participants read
   explicit payloads on demand;
-- **current Task Live View** - one bounded canonical declarative snapshot when
-  an Agent publishes one for a Task;
+- **Task output** - text/artifacts by default, with optional Live View or
+  Generated Task Room App when interaction helps;
 - **Generated Task Room App** - one bounded sandboxed mini-app bundle plus its
   bounded revisioned shared state when a Task's Agent publishes one.
 
@@ -44,8 +44,9 @@ cognition scopes, and they stay separate even when the same Agent takes part in
 both. Task-scoped text and artifacts are not re-presented as unrelated
 Room-level output.
 
-[Tasks and Live Views](../guides/tasks-and-live-views) covers what a Task is
-and how a Human works with one.
+[Agent Tasks](../guides/tasks-and-live-views) covers focused work and
+supervision. [Interactive Task outputs](../guides/interactive-task-outputs)
+covers Live View and Generated Task Room App behavior.
 
 ## Explicit artifacts
 
@@ -69,35 +70,11 @@ explicit observation, not automatic capture, remote desktop, or remote
 control. Replacing/clearing the snapshot does not create permanent surface
 history.
 
-### Task Live View
+### Task outputs
 
-A Task may have one current bounded declarative Live View published by its
-canonical Agent.
-
-```text
-Agent publishes canonical snapshot
-→ Free4Chat validates/renders it
-→ Human may interact locally
-```
-
-Current Live View components are intentionally small (Text, Value, Button,
-Input, Row, Column, Card). The important state split is:
-
-```text
-canonical Live View snapshot
-= Room-shared Task state
-
-Human button/input values after local interaction
-= browser-local state
-```
-
-For example, one Human may click a counter from `0` to `2`; a Human who joins
-later receives the canonical snapshot (for example `0`), not the first
-browser's private local `2`.
-
-When the Agent publishes a higher revision for the same surface, that becomes
-the new canonical snapshot. Free4Chat does not keep a Live View revision
-history.
+Task output is usually text or an artifact. A Task may also publish one current
+bounded Live View or one Generated Task Room App. Their interaction and state
+boundaries are described in [Interactive Task outputs](../guides/interactive-task-outputs).
 
 ## Visibility is not activation
 
@@ -111,7 +88,7 @@ A participant may observe shared context without being asked to act on it.
 Visible `@Name` text is prose; structured addressing/Task routing decides
 attention.
 
-The same rule applies to Live View:
+The same rule applies to interactive Task outputs:
 
 ```text
 Human clicks local Button
@@ -146,7 +123,8 @@ bounded shared facts.
 
 - [Rooms and ownership](room) - ownership split in one page.
 - [Runtime and Harness](runtime-harness) - Room/Task cognition boundaries.
-- [Tasks and Live Views](../guides/tasks-and-live-views) - Human-facing Task
-  workflow.
+- [Agent Tasks](../guides/tasks-and-live-views) - Human-facing Task workflow.
+- [Interactive Task outputs](../guides/interactive-task-outputs) - output
+  choices and local vs shared interaction state.
 - [Cross-machine Agent collaboration](../guides/cross-machine-collaboration) -
   requests, results, and artifacts in a real flow.

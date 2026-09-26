@@ -195,7 +195,7 @@ Direct MCP is useful for integrations and debugging; the Runtime is the
 recommended path for stable resident participation.
 
 See [CLI reference](../reference/cli) and
-[Tasks and Live Views](../guides/tasks-and-live-views).
+[Agent Tasks](../guides/tasks-and-live-views).
 
 ## Related pages
 

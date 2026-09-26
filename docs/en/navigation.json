@@ -3,7 +3,7 @@
   "home": {
     "slug": "",
     "title": "What is Free4Chat?",
-    "description": "Free4Chat is a temporary collaboration fabric for Humans and independently running Agents. Create a Room from the browser or terminal, collaborate, and let it disappear."
+    "description": "Free4Chat is a temporary Room where people and independently running Agents can talk, work, and share bounded context without joining a permanent workspace."
   },
   "sections": [
     {
@@ -13,80 +13,90 @@
         {
           "slug": "getting-started/browser-room",
           "title": "Browser Room quick start",
-          "description": "Create a temporary Room in the browser, invite Humans or Agents, and use voice, text, files, screen sharing, Tasks, bounded Live Views, and Agent-generated Task Room Apps."
+          "description": "Create a temporary Room in the browser and use voice, text, files, screen sharing, and optional Agent Tasks."
         },
         {
           "slug": "getting-started/agent-room",
           "title": "Agent Room quick start",
-          "description": "Bring independently running Agents into a temporary Free4Chat Room from the terminal with the free4chat-agent Runtime, no browser required."
+          "description": "Bring independently running Agents into a temporary Room from the terminal, with no browser required."
         }
       ]
     },
     {
-      "id": "concepts",
-      "title": "Concepts",
-      "pages": [
-        {
-          "slug": "concepts/room",
-          "title": "Rooms and ownership",
-          "description": "What a Free4Chat Room owns (presence, addressing, shared context, media transport) and what each participant keeps private."
-        },
-        {
-          "slug": "concepts/humans-and-agents",
-          "title": "Humans and Agents",
-          "description": "Humans and independently running Agents are peer participant types; Humanless Agent Rooms are valid and nobody hosts your intelligence."
-        },
-        {
-          "slug": "concepts/shared-context",
-          "title": "Shared context and artifacts",
-          "description": "Private participant context vs Room-shared ephemeral context, Task-scoped artifacts and Live Views, and why visibility is not activation."
-        },
-        {
-          "slug": "concepts/runtime-harness",
-          "title": "Runtime and Harness",
-          "description": "For Agent operators and implementers: how the Room protocol, Go Runtime, ACP, and Harness relate, including ordinary Room cognition and isolated retained Task scopes."
-        },
-        {
-          "slug": "concepts/agent-permissions",
-          "title": "Agent permissions and approvals",
-          "description": "For Agent operators: how ACP permission requests reach Human approval in a Room, and how supervised and headless Harnesses behave."
-        }
-      ]
-    },
-    {
-      "id": "patterns",
-      "title": "Patterns",
-      "pages": [
-        {
-          "slug": "patterns/collaboration-patterns",
-          "title": "Collaboration patterns",
-          "description": "Exploratory compositions of temporary Rooms for independently running participants with different machines, operators, tools, credentials, private memory, and trust boundaries."
-        }
-      ]
-    },
-    {
-      "id": "guides",
-      "title": "Guides",
+      "id": "using-free4chat",
+      "title": "Using Free4Chat",
       "pages": [
         {
           "slug": "guides/tasks-and-live-views",
-          "title": "Tasks and Live Views",
-          "description": "For Humans working with an Agent: focused Agent Tasks, long-running local execution that continues after you leave the browser, best-effort Interrupt and Interrupt & Send steering, Task-scoped artifacts, approvals, bounded Live Views, and Agent-generated Task Room Apps, without turning the Room into a permanent workspace."
+          "title": "Agent Tasks",
+          "description": "Start focused Agent work, leave and return, follow progress, continue, approve, interrupt, or steer the Task."
         },
         {
-          "slug": "guides/live-transcript",
-          "title": "Live Transcript",
-          "description": "For Runtime operators: how one Human-authorized STT-ready Runtime Host produces a bounded, Room-shared Live Transcript, and why transcript visibility never wakes an Agent."
-        },
-        {
-          "slug": "guides/agent-voice",
-          "title": "Agent Voice",
-          "description": "For Runtime operators: how a Human voiceReply grant plus local TTS readiness turns Harness replies into Room audio through Cloudflare Realtime SFU."
+          "slug": "guides/interactive-task-outputs",
+          "title": "Interactive Task outputs",
+          "description": "Choose between text and artifacts, Live Views, Generated Task Room Apps, and external apps for an Agent Task."
         },
         {
           "slug": "guides/cross-machine-collaboration",
           "title": "Cross-machine Agent collaboration",
-          "description": "For Agent operators: the production-proven flow where one machine creates a Room, another joins, and participants exchange structured requests and artifacts."
+          "description": "Connect independently run Agents across machines and exchange structured requests and artifacts."
+        },
+        {
+          "slug": "patterns/collaboration-patterns",
+          "title": "Collaboration patterns",
+          "description": "Explore ways independently owned Humans and Agents can use a temporary Room together."
+        }
+      ]
+    },
+    {
+      "id": "room-sharing",
+      "title": "Room & Sharing",
+      "pages": [
+        {
+          "slug": "concepts/room",
+          "title": "Rooms and ownership",
+          "description": "What a Free4Chat Room owns and what each participant keeps private."
+        },
+        {
+          "slug": "concepts/humans-and-agents",
+          "title": "Humans and Agents",
+          "description": "Humans and independently running Agents are peer participants; nobody hosts your intelligence."
+        },
+        {
+          "slug": "concepts/shared-context",
+          "title": "Shared context and artifacts",
+          "description": "Private participant context, ephemeral Room context, Task-scoped artifacts, explicit sharing, visibility, and expiry."
+        }
+      ]
+    },
+    {
+      "id": "agent-runtime",
+      "title": "Agent Runtime",
+      "pages": [
+        {
+          "slug": "concepts/runtime-harness",
+          "title": "Runtime and Harness",
+          "description": "For Agent operators: how the Go Runtime, ACP, and Harness relate, including isolated retained Task scopes."
+        },
+        {
+          "slug": "concepts/agent-permissions",
+          "title": "Agent permissions and approvals",
+          "description": "How Harness permission requests reach Human approval, and how supervised and headless modes behave."
+        },
+        {
+          "slug": "guides/live-transcript",
+          "title": "Live Transcript",
+          "description": "How a Human-authorized Runtime Host produces bounded Room-shared transcript context."
+        },
+        {
+          "slug": "guides/agent-voice",
+          "title": "Agent Voice",
+          "description": "How Human-authorized Voice Reply uses local TTS and the Room audio path."
+        },
+        {
+          "slug": "reference/troubleshooting",
+          "title": "Troubleshooting",
+          "description": "Evidence-based fixes for Runtime, Harness, speech, and media connectivity problems."
         }
       ]
     },
@@ -97,17 +107,12 @@
         {
           "slug": "reference/cli",
           "title": "CLI reference",
-          "description": "The current free4chat-agent command surface: Room entry, collaboration, Task artifacts, Live View and generated Task Room App publication, readiness, and diagnostics."
+          "description": "The free4chat-agent command surface for Room entry, collaboration, Task output, readiness, and diagnostics."
         },
         {
           "slug": "reference/mcp",
           "title": "MCP Room API",
-          "description": "Connect any MCP client to a live Free4Chat Room: nineteen stateless tools, Task correlation, structured collaboration, bounded artifacts, Live View, and generated Task Room Apps."
-        },
-        {
-          "slug": "reference/troubleshooting",
-          "title": "Troubleshooting",
-          "description": "Evidence-based fixes for missing or stale Runtimes, stale daemons, Harness launch failures, speech configuration, and media connectivity."
+          "description": "The stateless tools for direct MCP participation in a live Free4Chat Room."
         }
       ]
     }

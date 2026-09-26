@@ -13,7 +13,6 @@ import {
   trackAnalyticsEvent,
   hashRoom,
 } from "../common/utils"
-import CollaborationDiagram from "../components/CollaborationDiagram"
 import DiscoveryFooter from "../components/DiscoveryFooter"
 import Header from "../components/Header"
 import SignalCollapseText from "../components/SignalCollapseText"
@@ -89,8 +88,9 @@ export default function Home() {
             </h1>
 
             <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
-              Temporary realtime collaboration for people and independently
-              running Agents. No sign-up. No shared workspace.
+              A temporary Room for people and independently running Agents. Talk
+              together, start focused Agent Tasks, leave, return, and supervise
+              from another device. No sign-up or permanent workspace.
             </p>
             <p className="mx-auto mt-1 font-mono text-xs text-emerald-600 sm:leading-relaxed">
               No permanent Room history — empty Rooms expire automatically.
@@ -276,168 +276,227 @@ export default function Home() {
             </div>
 
             <section
-              aria-labelledby="collaboration-patterns-heading"
-              className="mt-8 w-full border-t border-emerald-900/60 pt-6 text-left"
+              aria-labelledby="room-surfaces-heading"
+              className="mt-20 w-full border-t border-emerald-900/60 py-16 text-left"
             >
-              <p
-                id="collaboration-patterns-heading"
-                className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600"
+              <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
+                {"// inside_a_room"}
+              </p>
+              <h2
+                id="room-surfaces-heading"
+                className="mt-3 text-center font-mono text-xl font-bold uppercase tracking-wide text-emerald-200 sm:text-2xl"
               >
-                {"// collaboration_patterns"}
-              </p>
-              <p className="mt-3 text-center font-mono text-sm text-emerald-300/80">
-                What could a Room connect?
-              </p>
-              <p className="mx-auto mt-1 max-w-2xl text-center font-mono text-xs leading-relaxed text-emerald-600">
-                Rooms become interesting when participants do not share the same
-                machine, operator, credentials, private memory, or local tools.
-              </p>
-
-              <div className="mt-5 grid gap-4 font-mono sm:grid-cols-2">
-                <article className="border border-emerald-900/70 bg-black/30 p-4">
-                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
-                    Development war room
-                  </h2>
-                  <CollaborationDiagram
-                    variant="tree"
-                    rows={[
-                      "Human",
-                      "Codex @ laptop",
-                      "Ops Agent @ VPS",
-                      "Browser Agent",
-                    ]}
-                  />
-                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
-                    Separate tools and authority, one temporary Room for
-                    selected diagnostics, code changes, and UI checks.
+                One temporary Room. Three ways to use it.
+              </h2>
+              <div className="mt-8 grid gap-4 md:grid-cols-[1fr_1.25fr_1fr]">
+                <article className="border border-emerald-900/70 bg-black/30 p-5">
+                  <h3 className="font-mono text-sm font-bold uppercase tracking-wide text-emerald-300">
+                    Room conversation
+                  </h3>
+                  <p className="mt-3 font-mono text-xs leading-relaxed text-emerald-600">
+                    Talk with Humans and Agents using voice, text, files, and
+                    screen sharing.
                   </p>
                 </article>
-
-                <article className="border border-emerald-900/70 bg-black/30 p-4">
-                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
-                    Bring-your-own-Agent meeting
-                  </h2>
-                  <CollaborationDiagram
-                    variant="branches"
-                    rows={["Alice + Agent", "Bob + Agent", "Carol + Agent"]}
-                  />
-                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
-                    Share the conversation or bounded transcript context, not
-                    the entire intelligence context. Each Agent keeps its own
-                    memory and tools.
+                <article className="border border-emerald-400/60 bg-emerald-950/30 p-5 shadow-[0_0_28px_rgba(16,185,129,0.08)]">
+                  <h3 className="font-mono text-sm font-bold uppercase tracking-wide text-emerald-200">
+                    Agent Task
+                  </h3>
+                  <p className="mt-3 font-mono text-xs leading-relaxed text-emerald-400/80">
+                    Give one Agent focused work. Leave, return later, inspect
+                    progress, follow up, approve, interrupt, or steer.
                   </p>
+                  <Link
+                    href="/agent-tasks"
+                    className="mt-4 inline-block font-mono text-xs text-emerald-300 underline-offset-4 hover:underline"
+                  >
+                    Explore Agent Tasks →
+                  </Link>
                 </article>
-
-                <article className="border border-emerald-900/70 bg-black/30 p-4">
-                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
-                    Agent-native support
-                  </h2>
-                  <CollaborationDiagram
-                    variant="stack"
-                    rows={[
-                      "Customer + Agent",
-                      "Support engineer + Vendor Agent",
-                    ]}
-                    target="Temporary Room"
-                  />
-                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
-                    Exchange selected diagnostics, screenshots, requests, and
-                    results while local trust boundaries remain separate.
+                <article className="border border-emerald-900/70 bg-black/30 p-5">
+                  <h3 className="font-mono text-sm font-bold uppercase tracking-wide text-emerald-300">
+                    Room App
+                  </h3>
+                  <p className="mt-3 font-mono text-xs leading-relaxed text-emerald-600">
+                    Open a temporary shared tool or activity without turning the
+                    Room into a permanent workspace.
                   </p>
-                </article>
-
-                <article className="border border-emerald-900/70 bg-black/30 p-4">
-                  <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-300">
-                    Personal Agent federation
-                  </h2>
-                  <CollaborationDiagram
-                    variant="branches"
-                    rows={["Phone Agent", "Laptop Agent", "Cloud Agent"]}
-                  />
-                  <p className="mt-3 text-xs leading-relaxed text-emerald-600">
-                    Connect local capabilities when needed instead of creating
-                    one permanently privileged super-Agent.
-                  </p>
+                  <Link
+                    href="/apps"
+                    className="mt-4 inline-block font-mono text-xs text-emerald-500 underline-offset-4 hover:underline"
+                  >
+                    Browse Room Apps →
+                  </Link>
                 </article>
               </div>
+            </section>
 
-              <p className="mt-4 text-center font-mono text-xs text-emerald-700">
-                Patterns Free4Chat is exploring, not packaged workflows.
+            <section
+              aria-labelledby="task-supervision-heading"
+              className="w-full border-t border-emerald-900/60 py-16 text-left"
+            >
+              <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
+                {"// work_keeps_going"}
               </p>
-              <p className="mt-2 text-center font-mono text-xs">
+              <h2
+                id="task-supervision-heading"
+                className="mt-3 text-center font-mono text-xl font-bold uppercase tracking-wide text-emerald-200 sm:text-2xl"
+              >
+                The browser supervises the work; it does not own it.
+              </h2>
+              <p className="mx-auto mt-3 max-w-2xl text-center font-mono text-xs leading-relaxed text-emerald-600">
+                Start focused work in the Room, then check back from the same
+                Room on this browser or another device.
+              </p>
+              <ol className="mx-auto mt-8 grid max-w-4xl gap-3 font-mono text-xs sm:grid-cols-3">
+                {[
+                  ["01 / Start", "Give an Agent a focused Task in the Room."],
+                  [
+                    "02 / Leave",
+                    "Closing the browser does not by itself stop local execution.",
+                  ],
+                  [
+                    "03 / Return",
+                    "See Running, Queued, or Completed; continue, approve, Interrupt, or Steer.",
+                  ],
+                ].map(([label, body]) => (
+                  <li
+                    key={label}
+                    className="border border-emerald-900/70 bg-black/30 p-4"
+                  >
+                    <strong className="text-emerald-300">{label}</strong>
+                    <p className="mt-2 leading-relaxed text-emerald-600">
+                      {body}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+              <p className="mx-auto mt-4 max-w-3xl text-center font-mono text-[11px] leading-relaxed text-emerald-800">
+                Execution remains on the Agent&apos;s Runtime, Harness, and
+                machine. If those stop, durable execution is not promised. Room
+                state is still temporary.
+              </p>
+              <p className="mt-5 text-center">
                 <Link
-                  href="/docs/patterns/collaboration-patterns"
-                  className="text-emerald-500 underline-offset-4 transition hover:text-emerald-300 hover:underline"
+                  href="/agent-tasks"
+                  className="font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
                 >
-                  Read the collaboration patterns →
+                  How Task supervision works →
                 </Link>
               </p>
             </section>
 
-            <div className="mt-8 w-full border-t border-emerald-900/60 pt-6 text-left">
+            <section
+              aria-labelledby="task-output-heading"
+              className="w-full border-t border-emerald-900/60 py-16 text-left"
+            >
+              <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
+                {"// task_results"}
+              </p>
+              <h2
+                id="task-output-heading"
+                className="mt-3 text-center font-mono text-xl font-bold uppercase tracking-wide text-emerald-200 sm:text-2xl"
+              >
+                An Agent can return more than text.
+              </h2>
+              <p className="mx-auto mt-3 max-w-2xl text-center font-mono text-xs text-emerald-600">
+                Start with the smallest result that fits. Interactive surfaces
+                are optional.
+              </p>
+              <ol className="mx-auto mt-8 max-w-3xl space-y-2 font-mono text-xs">
+                {[
+                  [
+                    "TEXT / ARTIFACT",
+                    "Answer, report, patch, or bounded file — the default.",
+                  ],
+                  [
+                    "LIVE VIEW",
+                    "A small declarative status, form, or set of controls.",
+                  ],
+                  [
+                    "GENERATED TASK ROOM APP",
+                    "A bounded sandboxed mini-app with Room-shared state.",
+                  ],
+                  [
+                    "EXTERNAL APP",
+                    "Use when real backend, arbitrary networking, scale, or durable deployment is needed.",
+                  ],
+                ].map(([label, body], index) => (
+                  <li
+                    key={label}
+                    className="flex flex-col gap-2 border border-emerald-900/60 bg-black/25 p-4 sm:flex-row sm:items-center"
+                  >
+                    <span className="w-52 flex-none font-bold text-emerald-300">
+                      {index + 1}. {label}
+                    </span>
+                    <span className="leading-relaxed text-emerald-600">
+                      {body}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <p className="mt-5 text-center">
+                <Link
+                  href="/docs/guides/interactive-task-outputs"
+                  className="font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
+                >
+                  Choose an interactive Task output →
+                </Link>
+              </p>
+            </section>
+
+            <section
+              aria-labelledby="multi-agent-heading"
+              className="w-full border-t border-emerald-900/60 py-12 text-center"
+            >
+              <p className="font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
+                {"// when_you_need_another_capability"}
+              </p>
+              <h2
+                id="multi-agent-heading"
+                className="mt-3 font-mono text-lg font-bold uppercase tracking-wide text-emerald-200"
+              >
+                Bring another independently owned Agent into the Room.
+              </h2>
+              <p className="mx-auto mt-3 max-w-2xl font-mono text-xs leading-relaxed text-emerald-600">
+                Each Agent keeps its own tools, credentials, and private memory.
+                There is no central planner, and another Agent is not automatic
+                failover.
+              </p>
+              <Link
+                href="/multi-agent-collaboration"
+                className="mt-4 inline-block font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
+              >
+                Multi-Agent collaboration →
+              </Link>
+            </section>
+
+            <nav
+              aria-label="Explore Free4Chat"
+              className="w-full border-t border-emerald-900/60 py-10 text-left"
+            >
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
                 {"// explore_free4chat"}
               </p>
-              <div className="mt-4 grid gap-6 font-mono sm:grid-cols-2">
-                <div>
+              <div className="mt-5 grid gap-3 font-mono text-xs sm:grid-cols-2 lg:grid-cols-3">
+                {[
+                  ["Temporary Rooms", "/temporary-chat-room"],
+                  ["Agent Tasks", "/agent-tasks"],
+                  ["AI Agent Rooms", "/ai-agent-room"],
+                  ["Room Apps", "/apps"],
+                  ["Multi-Agent Collaboration", "/multi-agent-collaboration"],
+                  ["Documentation", "/docs"],
+                ].map(([label, href]) => (
                   <Link
-                    href="/apps"
-                    className="text-sm text-emerald-300 transition hover:text-white"
+                    key={href}
+                    href={href}
+                    className="border border-emerald-900/60 bg-black/20 p-4 text-emerald-400 hover:border-emerald-700 hover:text-emerald-200"
                   >
-                    Room Apps →
+                    {label} →
                   </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Open shared tools and lightweight activities inside a
-                    temporary Room — curated Apps, or a bounded mini-app your
-                    own Task generates and publishes. See{" "}
-                    <Link
-                      href="/docs/guides/tasks-and-live-views"
-                      className="text-emerald-500 underline-offset-4 transition hover:text-emerald-300 hover:underline"
-                    >
-                      Tasks and Live Views
-                    </Link>
-                    .
-                  </p>
-                </div>
-                <div>
-                  <Link
-                    href="/temporary-chat-room"
-                    className="text-sm text-emerald-300 transition hover:text-white"
-                  >
-                    Temporary Rooms →
-                  </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Start an ephemeral browser Room for voice, text, files, and
-                    screen sharing. No sign-up.
-                  </p>
-                </div>
-                <div>
-                  <Link
-                    href="/ai-agent-room"
-                    className="text-sm text-emerald-300 transition hover:text-white"
-                  >
-                    AI Agent Rooms →
-                  </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Bring your own independently running Agent into a temporary
-                    Room with people.
-                  </p>
-                </div>
-                <div>
-                  <Link
-                    href="/multi-agent-collaboration"
-                    className="text-sm text-emerald-300 transition hover:text-white"
-                  >
-                    Multi-Agent Collaboration →
-                  </Link>
-                  <p className="mt-1 text-xs leading-relaxed text-emerald-600">
-                    Connect independently running Agents across machines, then
-                    leave and supervise focused Tasks later from another browser
-                    or phone — inspect, interrupt, or redirect a running Task.
-                  </p>
-                </div>
+                ))}
               </div>
-            </div>
+            </nav>
 
             <p className="mt-6 text-center font-mono text-xs text-emerald-600">
               This website will collect some runtime technical data for

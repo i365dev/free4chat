@@ -66,7 +66,7 @@ function SidebarNav({
       ))}
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-600">
-          Reference
+          Machine contracts
         </p>
         <ul className="space-y-1">
           {sidebar.external.map((link) => (
@@ -119,6 +119,11 @@ function useDocsMarkdownComponents(slugParts: string[]) {
     },
     // No images are shipped in the docs; never load remote content.
     img: () => null,
+    table: ({ children }: { children?: ReactNode }) => (
+      <div className="max-w-full overflow-x-auto">
+        <table>{children}</table>
+      </div>
+    ),
   }
 }
 
