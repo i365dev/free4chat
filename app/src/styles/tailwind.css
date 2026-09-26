@@ -482,6 +482,185 @@ html {
   opacity: 0.45;
 }
 
+/* Short-lived joining motion; the ordinary Room backdrop remains untouched. */
+.room-warp-host {
+  position: relative;
+  display: flex;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  background: #02050c;
+  color: #f8fafc;
+}
+
+.room-warp {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: hidden;
+  place-content: center;
+  justify-items: center;
+  gap: 1.25rem;
+  padding: 1.5rem 1rem;
+  text-align: center;
+}
+
+.room-warp__sky,
+.room-warp__streaks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.room-warp__sky {
+  z-index: -1;
+  background-color: #02050c;
+  background-image: radial-gradient(
+      ellipse at 50% 48%,
+      rgba(9, 38, 44, 0.46),
+      transparent 54%
+    ),
+    url("/cosmic-stars.svg");
+  background-position: center;
+  background-size: cover;
+}
+
+.room-warp__streaks {
+  overflow: hidden;
+}
+
+.room-warp__streak {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: clamp(3rem, 8vmin, 7rem);
+  height: 1px;
+  transform-origin: left center;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(206, 235, 255, 0.64) 56%,
+    rgba(248, 253, 255, 0.94)
+  );
+  opacity: 0;
+  animation: room-warp-streak var(--warp-duration) ease-out var(--warp-delay)
+    infinite;
+  will-change: transform, opacity;
+}
+
+.room-warp__streak--emerald {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(52, 211, 153, 0.58) 56%,
+    rgba(209, 250, 229, 0.96)
+  );
+}
+
+.room-warp__hud {
+  position: relative;
+  display: grid;
+  width: clamp(9rem, 48vmin, 16rem);
+  aspect-ratio: 1;
+  place-items: center;
+}
+
+.room-warp__ring,
+.room-warp__loader {
+  position: absolute;
+  display: block;
+  aspect-ratio: 1;
+  border-radius: 50%;
+}
+
+.room-warp__ring--outer {
+  width: 100%;
+  border: 1px solid rgba(110, 231, 183, 0.2);
+  box-shadow: 0 0 24px rgba(16, 185, 129, 0.07);
+  animation: room-warp-ring 18s linear infinite;
+}
+
+.room-warp__ring--middle {
+  width: 78%;
+  border: 1px dashed rgba(190, 226, 245, 0.38);
+  animation: room-warp-ring 13s linear infinite reverse;
+}
+
+.room-warp__loader {
+  width: 56%;
+  border: 3px solid rgba(148, 163, 184, 0.28);
+  border-top-color: #34d399;
+  box-shadow: 0 0 18px rgba(52, 211, 153, 0.12);
+  animation: room-warp-ring 1.05s linear infinite;
+}
+
+.room-warp__copy {
+  position: relative;
+  z-index: 1;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.room-warp__copy p:first-child {
+  color: #a7f3d0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.room-warp__copy p + p {
+  margin-top: 0.45rem;
+  color: #84949f;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+}
+
+.room-warp__turnstile {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes room-warp-streak {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--warp-angle)) translateX(3vmin) scaleX(0.15);
+  }
+  15% {
+    opacity: 0.36;
+  }
+  55% {
+    opacity: 0.78;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--warp-angle)) translateX(65vmax) scaleX(1.5);
+  }
+}
+
+@keyframes room-warp-ring {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .room-warp__streaks {
+    display: none;
+  }
+
+  .room-warp__ring,
+  .room-warp__loader {
+    animation: none;
+  }
+}
+
 .room-participants-panel > :not(.room-cosmos-sky):not(.room-cosmos-glints) {
   position: relative;
   z-index: 1;

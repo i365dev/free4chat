@@ -325,6 +325,72 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     vi.restoreAllMocks()
   })
 
+  it("shows warp motion only while connecting and removes it when the Room is ready", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "verifying",
+      participants: [],
+    })
+
+    const { container, rerender } = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.getByText("Verifying…")).toBeInTheDocument()
+    expect(screen.queryByTestId("room-joining-warp")).not.toBeInTheDocument()
+    const turnstileMount = screen.getByTestId("turnstile-mount")
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connecting",
+      participants: [],
+    })
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.getByText("Warping into room…")).toBeInTheDocument()
+    expect(screen.getByTestId("room-joining-warp")).toBeInTheDocument()
+    expect(screen.getByTestId("turnstile-mount")).toBe(turnstileMount)
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "verification_failed",
+      participants: [],
+    })
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.getByText("Verification failed")).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Try again" })
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    expect(baseHookReturn.retryVerification).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId("room-joining-warp")).not.toBeInTheDocument()
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.queryByTestId("room-joining-warp")).not.toBeInTheDocument()
+    expect(container.querySelector(".room-warp__streak")).toBeNull()
+  })
+
   it("shows Harness-advertised select controls only after choosing an explicit project", async () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
