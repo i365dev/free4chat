@@ -1805,11 +1805,8 @@ func (r *ResidentRuntime) runnableTurnsWithRetryGate(preserveRetryDelay bool) []
 			continue
 		}
 		ref := r.sessionRefLocked(scope)
-		if ref == nil || len(*ref.pendingAddressed) == 0 {
-			continue
-		}
-		target := (*ref.pendingAddressed)[0]
-		if r.turnRecoveryClosedLocked(scope, target) {
+		target, ok := r.nextPendingTargetLocked(scope, ref)
+		if !ok {
 			continue
 		}
 		out = append(out, turnCandidate{scope: scope, target: target})

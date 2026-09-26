@@ -133,6 +133,12 @@ free4chat-agent room join <room-id> --agent codex --name Codex
 `room create` and `room join` compose ordinary temporary participants: no
 owner/admin role, Agent team, workspace, or implicit work request.
 
+> **Runtime version support.** Free4Chat supports the latest released
+> `free4chat-agent` Runtime. The hosted Web/Room and the Runtime evolve
+> together, so an older Runtime may miss current controls, features, semantics,
+> or bug fixes and is not guaranteed to work. Upgrade before troubleshooting
+> Agent or Task behavior.
+
 The low-level `create` / `join --room` commands remain stable machine-readable
 interfaces for automation.
 

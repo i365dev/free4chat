@@ -205,7 +205,9 @@ The official, self-contained `free4chat-agent` Runtime binary. See
 verification, the checksum-verifying installer, and the join command
 boundaries. Current native releases target macOS and Linux; Windows support is
 deferred. The binary needs no Node, npm, Go toolchain, or separately
-provisioned media engine; Pion runs in-process.
+provisioned media engine; Pion runs in-process. Use the **latest released**
+Runtime: older versions are unsupported and may be incompatible with the hosted
+service ([Runtime version support](../concepts/runtime-harness)).
 
 ## Create and join
 
@@ -603,6 +605,24 @@ Room Protocol / MCP
 - **Harness** - the intelligence and local tools you choose: a built-in
   launcher (`hermes`, `opencode`, `codex`, `claude`, or `pi`) or a trusted
   local ACP-compatible process supplied with `--agent-command`.
+
+## Runtime version support
+
+Free4Chat supports the **latest released `free4chat-agent` Runtime** only. The
+hosted Web/Room and the Runtime are one product and evolve together, so an older
+binary may not understand current private Room controls, may implement older
+Task and Harness semantics, and may lack current features or bug fixes.
+
+```text
+latest released Runtime   = the supported configuration
+any older Runtime         = unsupported; may be incompatible
+```
+
+There is no compatibility negotiation, no per-version feature gate, and no
+minimum-version handshake: upgrade the Runtime (see
+[Agent Room quick start](../getting-started/agent-room)) instead of expecting the
+hosted service to accommodate an older one. This is also the first step in
+[Troubleshooting](../reference/troubleshooting).
 
 ## One participant, multiple bounded cognition scopes
 
@@ -1131,7 +1151,8 @@ states you may see include:
 - **Starting** / **Working** — the Task is being set up, or an Agent is working;
 - **Running** — an Agent turn is executing right now;
 - **Queued** — accepted work is waiting for execution capacity;
-- **Interrupted** — the active turn was stopped;
+- **Interrupted** — you asked the active turn to stop, and that same turn then
+  settled;
 - **Completed** / **Failed** — the Task reached a terminal outcome;
 - **Session lost** — the retained Harness conversation for this Task is gone.
 
@@ -1160,22 +1181,33 @@ the browser coming back does not make the Room permanent.
 
 While a Task has an active turn, the Task offers explicit controls.
 
-**Interrupt** stops the exact turn that is running for that Task. It does not
-affect other Tasks, and it does not cancel work that already finished.
+**Interrupt** asks exactly the turn that is running for that Task to stop or
+yield. It is best-effort: Free4Chat sends the request to that one conversation
+and leaves the local Harness to unwind its own work, so a Harness that is slow
+to honor it keeps the Task in `Interrupting` until that same turn settles. It
+does not affect other Tasks, it does not cancel work that already finished, and
+it never claims that the Harness's own tools were synchronously terminated.
 
-**Interrupt & send** is one action, not two. Your typed replacement instruction is
-kept first, and the currently running turn is then interrupted:
+**Interrupt & send** is STEER: one action, not two. Your typed instruction is
+canonical Task input first, and it is then prioritized so it changes what the
+Agent does next instead of waiting behind follow-ups that were already queued:
 
 ```text
 Interrupt & send
-→ your replacement instruction is preserved as Task input
-→ the current turn is stopped when it is still the active one
-→ the replacement becomes the Task's next instruction
+→ your instruction is preserved as canonical Task input
+→ the Harness delivers it into the active turn when it supports steering
+  natively; otherwise the runtime marks it as the Task's next instruction
+→ the active turn is asked to yield (best-effort) so the instruction runs sooner
+→ the instruction runs exactly once, ahead of ordinary queued follow-ups
 ```
 
-If the turn you were reacting to had already finished, the action is not an
-error: your instruction is still accepted as the next Task instruction, nothing
-later is cancelled, and the Task continues normally.
+The important guarantee is that your instruction is never lost. A slow, ignored,
+or refused yield only changes *when* the steer runs, never whether it survives:
+the instruction stays the Task's next instruction and runs as soon as the current
+turn settles. If the turn you were reacting to had already finished, the action is
+not an error either — your instruction is still accepted as the next Task
+instruction (in its ordinary place), nothing later is cancelled, and the Task
+continues normally.
 
 ## Execution capacity
 
@@ -2152,6 +2184,23 @@ free4chat-agent readiness --room <room-id> --agent <harness> --json
 `doctor` diagnoses the Runtime and its Harness launchers. `readiness`
 reports Runtime, Harness, Room, in-process Pion media, and speech state
 (`speech.stt` / `speech.tts` with `configured` and `ready` flags).
+
+## Agent Runtime, Task, or Room-control problems
+
+Start from the supported configuration, always in the same order:
+
+```text
+free4chat-agent doctor --json
+verify or update to the latest released Runtime
+reproduce on the latest release
+only then diagnose or report the behavior
+```
+
+Free4Chat supports only the latest released Runtime
+([Runtime version support](../concepts/runtime-harness)),
+so a behavior observed on an older binary is not actionable until it reproduces
+on the latest release. "Latest released" is the supported configuration, not a
+claim that the latest release is bug-free.
 
 ## Runtime not found, or wrong version
 

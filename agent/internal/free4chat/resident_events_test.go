@@ -423,6 +423,27 @@ func TestResidentEventStreamDecodesPrivateTaskControl(t *testing.T) {
 		wait.TaskControl.TurnSequence != 42 {
 		t.Fatalf("private task control mismatch: %+v", wait.TaskControl)
 	}
+	// #484 STEER travels on the same private frame family and names the already
+	// canonical instruction by sequence, never by content.
+	steer, steerErr := receiveResidentFrame(t, map[string]any{
+		"type":                     "task-control",
+		"control":                  "steer",
+		"taskRequestId":            "req-T-0001",
+		"turnSequence":             42,
+		"steerInstructionSequence": 43,
+	})
+	if steerErr != nil {
+		t.Fatalf("decode private steer control: %v", steerErr)
+	}
+	if steer.TaskControl == nil ||
+		steer.TaskControl.Kind != types.ResidentTaskControlSteer ||
+		steer.TaskControl.TurnSequence != 42 ||
+		steer.TaskControl.SteerInstructionSequence != 43 {
+		t.Fatalf("private steer control mismatch: %+v", steer.TaskControl)
+	}
+	if steer.Cursor != 0 || len(steer.Events) != 0 {
+		t.Fatalf("a steer control must not be projected as a Room event: %+v", steer)
+	}
 	if wait.Cursor != 0 || len(wait.Events) != 0 || wait.MediaState != nil || wait.Participants != nil {
 		t.Fatalf("a task control must not be projected as a Room event: %+v", wait)
 	}
@@ -446,7 +467,22 @@ func TestResidentEventStreamRejectsMalformedTaskControl(t *testing.T) {
 		frame map[string]any
 	}{
 		{name: "unsupported control", frame: map[string]any{
+			"type": "task-control", "control": "inject", "taskRequestId": "req-T-0001", "turnSequence": 42,
+		}},
+		{name: "steer without an instruction", frame: map[string]any{
 			"type": "task-control", "control": "steer", "taskRequestId": "req-T-0001", "turnSequence": 42,
+		}},
+		{name: "steer with a zero instruction", frame: map[string]any{
+			"type": "task-control", "control": "steer", "taskRequestId": "req-T-0001", "turnSequence": 42,
+			"steerInstructionSequence": 0,
+		}},
+		{name: "steer with an unrepresentable instruction", frame: map[string]any{
+			"type": "task-control", "control": "steer", "taskRequestId": "req-T-0001", "turnSequence": 42,
+			"steerInstructionSequence": float64(1 << 53),
+		}},
+		{name: "interrupt carrying a steer instruction", frame: map[string]any{
+			"type": "task-control", "control": "interrupt", "taskRequestId": "req-T-0001", "turnSequence": 42,
+			"steerInstructionSequence": 43,
 		}},
 		{name: "missing control", frame: map[string]any{
 			"type": "task-control", "taskRequestId": "req-T-0001", "turnSequence": 42,

@@ -678,7 +678,7 @@ describe("#421 Task control authority (Fix C)", () => {
 })
 
 describe("#421 Interrupt & send race (Fix D/G)", () => {
-  it("F: the old turn is still active -> one instruction, one exact interrupt", async () => {
+  it("F: the old turn is still active -> one canonical instruction, one exact steer", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
@@ -695,23 +695,31 @@ describe("#421 Interrupt & send race (Fix D/G)", () => {
       text: "stop and do this instead",
     })
 
-    // The replacement is stored EXACTLY once, as a canonical Task instruction.
+    // The replacement is stored EXACTLY once, as a canonical Task instruction,
+    // BEFORE any private control is dispatched (#484).
     expect(instructions(test)).toEqual(["stop and do this instead"])
-    expect(test.stored().messages.at(-1)?.taskRequestId).toBe(requestId)
-    expect(test.stored().messages.at(-1)?.targets).toEqual(["agent-a"])
+    const instruction = test.stored().messages.at(-1)
+    expect(instruction?.taskRequestId).toBe(requestId)
+    expect(instruction?.targets).toEqual(["agent-a"])
     expect(test.errors()).toEqual([])
     expect(test.notices()).toEqual([])
+    // Interrupt & Send is STEER: the control names the persisted instruction by
+    // its canonical sequence and carries no instruction text at all.
     expect(test.agentControls("agent-a")).toEqual([
       {
         type: "task-control",
-        control: "interrupt",
+        control: "steer",
         taskRequestId: requestId,
         turnSequence: 42,
+        steerInstructionSequence: instruction?.sequence,
       },
     ])
+    expect(
+      "text" in (test.agentControls("agent-a")[0] as Record<string, unknown>)
+    ).toBe(false)
   })
 
-  it("F2: a replacement executor receives both the queued instruction and exact interrupt", async () => {
+  it("F2: a replacement executor receives both the queued instruction and exact steer", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     test.connectAgentSocket("agent-b")
@@ -743,9 +751,10 @@ describe("#421 Interrupt & send race (Fix D/G)", () => {
     expect(test.agentControls("agent-b")).toEqual([
       {
         type: "task-control",
-        control: "interrupt",
+        control: "steer",
         taskRequestId: requestId,
         turnSequence: 88,
+        steerInstructionSequence: test.stored().messages.at(-1)?.sequence,
       },
     ])
   })
@@ -773,7 +782,8 @@ describe("#421 Interrupt & send race (Fix D/G)", () => {
     expect(instructions(test)).toEqual(["the replacement must survive"])
     expect(test.stored().messages.at(-1)?.taskRequestId).toBe(requestId)
     expect(test.stored().messages.at(-1)?.targets).toEqual(["agent-a"])
-    // The LATER turn 47 is never cancelled by a stale turn-42 request.
+    // The LATER turn 47 is never steered or cancelled by a stale turn-42
+    // request: no control at all is dispatched.
     expect(test.agentControls("agent-a")).toEqual([])
     // No raw protocol code and no scary operation failure.
     expect(test.errors()).toEqual([])
@@ -1249,5 +1259,84 @@ describe("#480 hibernation-durable Task control authority", () => {
     expect(test.activeTaskTurns("agent-a")).toHaveLength(
       MAX_ATTACHMENT_ACTIVE_TASK_TURNS - 1
     )
+  })
+})
+
+/**
+ * #484: Interrupt & Send is STEER, not a second cancel.
+ *
+ * The Human's replacement instruction is canonical Room input that the Room
+ * persists BEFORE it dispatches anything, and the private control only names
+ * that instruction by its canonical sequence. Priority is therefore a Runtime
+ * delivery decision over accepted canonical events — never a rewrite of Room
+ * history, and never a second durable copy of the instruction text.
+ */
+describe("#484 Interrupt & Send is Steer", () => {
+  it("persists the canonical instruction before dispatching a control that only names it", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    const sequencesBefore = test.stored().messages.map((m) => m.sequence)
+    test.clearAgentFrames("agent-a")
+
+    await test.sendHuman({
+      type: "task-interrupt-and-send",
+      taskRequestId: requestId,
+      turnSequence: 42,
+      text: "steer toward the new plan",
+    })
+
+    // Exactly one canonical instruction, appended after the turn it reacts to.
+    const stored = test.stored().messages
+    const instruction = stored.at(-1)
+    expect(instruction?.type).toBe("text")
+    expect(instruction?.text).toBe("steer toward the new plan")
+    expect(instruction?.taskRequestId).toBe(requestId)
+    expect(instruction?.targets).toEqual(["agent-a"])
+    // Canonical append order: this instruction is the newest Room sequence, so
+    // the private control's steer identity is a real canonical sequence (the
+    // turn number above is a published projection value, not a Room sequence).
+    expect(instruction?.sequence).toBe(
+      Math.max(...stored.map((message) => message.sequence))
+    )
+    expect(Number.isSafeInteger(instruction?.sequence)).toBe(true)
+    // Durable Room history is only appended to: storage order is unchanged.
+    expect(
+      stored.slice(0, sequencesBefore.length).map((m) => m.sequence)
+    ).toEqual(sequencesBefore)
+
+    // The private control names that exact instruction and carries no text.
+    const controls = test.agentControls("agent-a")
+    expect(controls).toEqual([
+      {
+        type: "task-control",
+        control: "steer",
+        taskRequestId: requestId,
+        turnSequence: 42,
+        steerInstructionSequence: instruction?.sequence,
+      },
+    ])
+    expect(JSON.stringify(controls)).not.toContain("steer toward the new plan")
+
+    // Steering is not a second cancel command: a standalone Interrupt remains
+    // the only thing that dispatches a plain `interrupt` control.
+    test.clearAgentFrames("agent-a")
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 42,
+      },
+    ])
   })
 })

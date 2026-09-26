@@ -33,7 +33,30 @@ import "github.com/i365dev/free4chat/agent/internal/types"
  *	  - per-scope stream, cancellation, and permission state stay isolated.
  *
  *	CancelTurnFor(scope)
- *	  - cancels exactly the active turn of that scope and no other.
+ *	  - asks exactly the active turn of that scope, and no other, to stop or
+ *	    yield; it is best-effort and never a promise that Harness-owned tool
+ *	    work is synchronously terminated, and it never requires this lane's
+ *	    provider process to be torn down;
+ *	  - returns once the request has been dispatched to that exact turn.
+ *
+ *	SteerTurnFor(scope, expectedTurnSequence, input)
+ *	  - delivers one already-accepted canonical Human instruction into exactly
+ *	    that scope's ACTIVE turn, so it changes what the Agent does next
+ *	    instead of becoming an ordinary FIFO follow-up;
+ *	  - carries the EXACT Runtime turn identity the caller fenced against, and
+ *	    must refuse when that is not the turn it is executing, so native
+ *	    steering can never redirect a successor turn;
+ *	  - is independent of cancellation: cancellation is only one fallback way
+ *	    to make the active turn yield sooner, and steer must survive cancel
+ *	    being slow, ignored, or refused;
+ *	  - is OPTIONAL by capability: a Harness with no proven native steering path
+ *	    does not implement it, and the Runtime then realizes the same semantics
+ *	    with its own bounded priority-next delivery. A nil error is the only
+ *	    proof that the guidance really reached the active turn.
+ *
+ * Provider hard-stop/reap belongs to the independent LIFECYCLE boundaries
+ * (adapter Close/shutdown, idle reap, genuine turn timeout, provider or
+ * transport failure) and is never the semantics of a Human Interrupt.
  *
  *	TurnOwnerFor(scope)
  *	  - reports the scope currently executing on the same native

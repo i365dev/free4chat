@@ -13,10 +13,47 @@ import (
 // addressed delta. It is deliberately separate from EventBuffer: the latter
 // may evict recent transport history, but must never decide whether an
 // unacknowledged Harness turn remains retryable.
+// steerPromotion is the bounded outcome of one steer-priority decision.
+type steerPromotion int
+
+const (
+	// steerPromotionMissing: the named instruction is no longer pending work,
+	// so there is nothing left to prioritize and the control must not cancel
+	// anything.
+	steerPromotionMissing steerPromotion = iota
+	// steerPromotionAlreadyNext: the instruction is already the canonical head,
+	// so recording its priority did not change delivery order.
+	steerPromotionAlreadyNext
+	// steerPromotionMoved: this control made an out-of-order instruction the
+	// next one to deliver.
+	steerPromotionMoved
+	// steerPromotionDuplicate: this exact control was already applied, so it
+	// changed nothing and must not request another yield.
+	steerPromotionDuplicate
+)
+
 type pendingTurnContext struct {
 	after  int64
 	target int64
 	events []types.RoomEvent
+	// steer marks a canonical Human instruction that was explicitly steered
+	// (#484). It is a DELIVERY priority only: pendingAddressed stays exactly
+	// the canonical order the Room produced, and the drain selects this entry
+	// ahead of ordinary not-yet-started follow-ups. It lives inside the
+	// existing bounded pending map, so it is pruned with the entry it
+	// describes.
+	steer bool
+	// steerRequested records that a steer CONTROL for this exact instruction
+	// was already applied. A replayed control is then a bounded no-op instead
+	// of dispatching a second yield request. First application always issues
+	// one best-effort yield, whether or not priority had to change.
+	steerRequested bool
+	// delivered records that this exact instruction already reached the
+	// Harness. A steered instruction can be delivered OUT of canonical order,
+	// so this is what lets deliveredThrough stay a contiguous canonical
+	// cursor: it only advances over a delivered prefix, never over undelivered
+	// ordinary follow-ups.
+	delivered bool
 }
 
 var errScopedHarnessUnsupported = errors.New("scoped Harness adapter is unavailable")
@@ -475,11 +512,8 @@ func (r *ResidentRuntime) nextRunnableTurnLocked() (string, int64, bool) {
 			continue
 		}
 		ref := r.sessionRefLocked(scope)
-		if ref == nil || len(*ref.pendingAddressed) == 0 {
-			continue
-		}
-		target := (*ref.pendingAddressed)[0]
-		if r.turnRecoveryClosedLocked(scope, target) {
+		target, ok := r.nextPendingTargetLocked(scope, ref)
+		if !ok {
 			continue
 		}
 		return scope, target, true
@@ -575,6 +609,16 @@ func (r *ResidentRuntime) acknowledgeHarnessDelivery(target, through, generation
 	r.acknowledgeHarnessDeliveryFor(roomScope, target, through, generation)
 }
 
+// acknowledgeHarnessDelivery records that the Harness really consumed ONE
+// canonical instruction, then advances the canonical cursor only as far as the
+// delivered prefix allows.
+//
+// A steered instruction can be delivered BEFORE ordinary follow-ups that the
+// Room queued earlier, so the cursor is never moved straight to that
+// instruction's sequence: it would jump over undelivered work and the skipped
+// follow-ups would lose the context they still need. Marking the entry and
+// collapsing the delivered prefix keeps `deliveredThrough` a contiguous
+// canonical boundary in every delivery order.
 func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, through, generation int64) {
 	r.mu.Lock()
 	ref := r.sessionRefLocked(scope)
@@ -582,27 +626,28 @@ func (r *ResidentRuntime) acknowledgeHarnessDeliveryFor(scope string, target, th
 		r.mu.Unlock()
 		return
 	}
-	removed := false
-	if through > *ref.deliveredThrough {
-		*ref.deliveredThrough = through
-	}
 	if generation > 0 && generation == *ref.observedHarnessGeneration {
 		*ref.bootstrappedHarnessGeneration = generation
 	}
-	for index, pending := range *ref.pendingAddressed {
-		if pending != target {
-			continue
+	marked := false
+	if context, ok := (*ref.pendingContexts)[target]; ok {
+		if !context.delivered {
+			context.delivered = true
+			(*ref.pendingContexts)[target] = context
+			marked = true
 		}
-		*ref.pendingAddressed = append((*ref.pendingAddressed)[:index], (*ref.pendingAddressed)[index+1:]...)
-		delete(*ref.pendingContexts, target)
-		r.forgetTurnRecoveryLocked(scope, target)
-		removed = true
-		break
+	} else if len(*ref.pendingAddressed) == 0 && through > *ref.deliveredThrough {
+		// Nothing is waiting behind it, so the cursor can still move: this is
+		// the ordinary in-order case where the entry was already collapsed.
+		*ref.deliveredThrough = through
 	}
+	removed := r.collapseDeliveredPrefixLocked(scope, ref)
 	r.mu.Unlock()
-	if removed {
-		// The consumed trigger is no longer waiting; refresh the transient
-		// execution projection outside r.mu (it is presentation only).
+	if removed || marked {
+		// Delivery changed what is still waiting, so refresh the transient
+		// execution projection outside r.mu (it is presentation only). This is
+		// what makes QueuedCount truthful after an out-of-order delivery whose
+		// entry cannot collapse yet.
 		r.publishTaskExecution(scope)
 	}
 }
@@ -874,4 +919,213 @@ func (r *ResidentRuntime) sleep(d time.Duration) bool {
 	case <-r.stopCh:
 		return false
 	}
+}
+
+// promoteSteerPendingLocked moves one canonical steer instruction to the front
+// of this Task's NOT-YET-STARTED work (#484). It is a delivery-priority
+// decision over already-accepted canonical events, never a rewrite of Room
+// history or of any Room sequence.
+//
+// The rules are deliberately small, and each one is load-bearing:
+//
+//   - the turn that is running right now keeps the head of the queue, so a
+//     steer never starts concurrently with it and never cancels it implicitly;
+//   - steers already waiting keep their canonical order among themselves, so
+//     repeated steering replays in the order the Human wrote it;
+//   - ordinary follow-ups keep their FIFO order behind the steers;
+//   - nothing crosses a Task boundary: this touches exactly one scope.
+//
+// It reports how the queue order was decided. Callers must hold r.mu.
+// markSteerPriorityLocked records ONE canonical steer instruction as
+// delivery-priority for its Task and reports how the decision resolved.
+//
+// The canonical ledger is never rewritten: pendingAddressed keeps exactly the
+// order the Room produced ([N, A, B, C] stays [N, A, B, C]). Priority is an
+// overlay the drain consults when it chooses what to deliver next, so a
+// steered instruction executes before ordinary not-yet-started follow-ups while
+// canonical storage remains canonical. Callers must hold r.mu.
+func (r *ResidentRuntime) markSteerPriorityLocked(scope string, sequence int64) steerPromotion {
+	ref := r.sessionRefLocked(scope)
+	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
+		return steerPromotionMissing
+	}
+	index := -1
+	for position, candidate := range *ref.pendingAddressed {
+		if candidate == sequence {
+			index = position
+			break
+		}
+	}
+	// A steer instruction the Runtime no longer holds as pending work is not
+	// promotable: it was either delivered already or refused by the bounded
+	// queue. Either way it must never be invented here.
+	if index < 0 {
+		return steerPromotionMissing
+	}
+	context, ok := (*ref.pendingContexts)[sequence]
+	if !ok {
+		return steerPromotionMissing
+	}
+	if context.steerRequested {
+		// A replayed control: no state change and no second yield request.
+		return steerPromotionDuplicate
+	}
+	// Whether this control actually changes delivery order is decided BEFORE the
+	// overlay is written: a steer that was going to be delivered next anyway is
+	// still recorded as applied (so a replay is a no-op) and still gets its one
+	// best-effort yield, but it is not a promotion.
+	alreadyNext := r.steerWouldBeNextLocked(scope, ref, sequence)
+	context.steer = true
+	context.steerRequested = true
+	(*ref.pendingContexts)[sequence] = context
+	if alreadyNext {
+		return steerPromotionAlreadyNext
+	}
+	return steerPromotionMoved
+}
+
+// steerWouldBeNextLocked reports whether the delivery overlay would choose this
+// instruction next if it were not steered, ignoring the turn already executing.
+// Callers must hold r.mu.
+func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessionRef, sequence int64) bool {
+	running := int64(0)
+	if lane, ok := r.activeTurns[scope]; ok {
+		running = lane.target
+	}
+	for _, candidate := range *ref.pendingAddressed {
+		if candidate == running {
+			continue
+		}
+		context, ok := (*ref.pendingContexts)[candidate]
+		if ok && context.delivered {
+			continue
+		}
+		return candidate == sequence
+	}
+	return false
+}
+
+// nextPendingTargetLocked returns the instruction this scope should deliver
+// next. Canonical storage is untouched; this is purely which entry the drain
+// picks. Callers must hold r.mu.
+//
+//	the running turn is never selected here (its scope is skipped by callers);
+//	a steer is delivered before ordinary not-yet-started follow-ups;
+//	among steers, canonical order wins;
+//	a scope whose only runnable work is a closed-recovery head stays parked.
+func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSessionRef) (int64, bool) {
+	if ref == nil || ref.pendingAddressed == nil || len(*ref.pendingAddressed) == 0 {
+		return 0, false
+	}
+	head := int64(0)
+	headFound := false
+	for _, sequence := range *ref.pendingAddressed {
+		context, ok := (*ref.pendingContexts)[sequence]
+		if ok && context.delivered {
+			// Already consumed out of canonical order. It stays in the ledger
+			// only because earlier ordinary work is still undelivered, so it
+			// must never be selected again.
+			continue
+		}
+		if r.turnRecoveryClosedLocked(scope, sequence) {
+			continue
+		}
+		if !headFound {
+			head, headFound = sequence, true
+		}
+		if ok && context.steer {
+			return sequence, true
+		}
+	}
+	if !headFound {
+		return 0, false
+	}
+	return head, true
+}
+
+// pendingUndeliveredLocked reports whether this EXACT canonical instruction is
+// still waiting to be delivered for that scope: still present in the canonical
+// ledger, still holding its pending context, and not already delivered.
+//
+// It deliberately does not require the target to be the canonical HEAD. A
+// steered instruction is delivered out of canonical order while earlier
+// instructions are still waiting behind it, so a head-based check would wrongly
+// treat a genuine retry for that instruction as stale. Callers must hold r.mu.
+func (r *ResidentRuntime) pendingUndeliveredLocked(scope string, target int64) bool {
+	ref := r.sessionRefLocked(scope)
+	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
+		return false
+	}
+	if !containsSequence(*ref.pendingAddressed, target) {
+		return false
+	}
+	context, ok := (*ref.pendingContexts)[target]
+	if !ok {
+		return false
+	}
+	return !context.delivered
+}
+
+func (r *ResidentRuntime) pendingUndeliveredFor(scope string, target int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.pendingUndeliveredLocked(scope, target)
+}
+
+// undeliveredDeliveryCountLocked counts the canonical instructions of one scope
+// that have NOT reached the Harness yet, excluding the turn that is executing
+// right now. Delivered entries can legitimately remain in the canonical ledger
+// while an earlier gap is still undelivered, and they are no longer queued work,
+// so raw ledger length over-reports.
+//
+// The executing turn is excluded by BOTH identities that can name it: the
+// projection's own current turn (set when a prompt is admitted) and the
+// scheduler lane target (claimed just before that). Callers must hold r.mu.
+func (r *ResidentRuntime) undeliveredDeliveryCountLocked(scope string, ref *logicalSessionRef, currentTurn int64) int {
+	if ref == nil || ref.pendingAddressed == nil {
+		return 0
+	}
+	running := currentTurn
+	if lane, ok := r.activeTurns[scope]; ok && lane.target != 0 {
+		running = lane.target
+	}
+	queued := 0
+	for _, sequence := range *ref.pendingAddressed {
+		if sequence == running {
+			// The running turn is executing, not queued.
+			continue
+		}
+		context, ok := (*ref.pendingContexts)[sequence]
+		if ok && context.delivered {
+			continue
+		}
+		queued++
+	}
+	return queued
+}
+
+// collapseDeliveredPrefixLocked removes the delivered prefix of the canonical
+// ledger and advances deliveredThrough over it. Because a steered instruction
+// may be delivered out of order, the cursor only ever moves over entries that
+// are actually delivered AND contiguous from the canonical head — it can never
+// jump over undelivered ordinary follow-ups. Callers must hold r.mu.
+func (r *ResidentRuntime) collapseDeliveredPrefixLocked(scope string, ref *logicalSessionRef) bool {
+	removed := false
+	for len(*ref.pendingAddressed) > 0 {
+		head := (*ref.pendingAddressed)[0]
+		context, ok := (*ref.pendingContexts)[head]
+		if ok && !context.delivered {
+			break
+		}
+		// A missing entry was already consumed (a duplicate or an explicitly
+		// dropped trigger), so it must not block the canonical cursor.
+		*ref.pendingAddressed = (*ref.pendingAddressed)[1:]
+		delete(*ref.pendingContexts, head)
+		r.forgetTurnRecoveryLocked(scope, head)
+		if head > *ref.deliveredThrough {
+			*ref.deliveredThrough = head
+		}
+		removed = true
+	}
+	return removed
 }

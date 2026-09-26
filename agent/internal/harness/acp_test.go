@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1154,12 +1155,17 @@ func TestACPStalePermissionResponderCannotResolveReusedRequest(t *testing.T) {
 	}
 }
 
+// TestACPCancelStopsInFlightPrompt is the #484 cooperative Human Interrupt
+// contract: the cancel request reaches exactly the active turn, the lane is NOT
+// torn down by it, and the same retained conversation keeps serving turns.
 func TestACPCancelStopsInFlightPrompt(t *testing.T) {
+	diagnostics := &diagnosticEvents{}
 	adapter, _ := newTestAdapter(t, scriptLauncher("cancel", map[string]string{
 		"FAKE_LOAD_CAP":           "1",
 		"FAKE_UNIQUE_SESSION_IDS": "1",
 	}), AdapterOptions{
-		TurnTimeoutMs: 5_000,
+		TurnTimeoutMs:  5_000,
+		DiagnosticSink: diagnostics.record,
 	})
 	defer adapter.Close()
 	if err := adapter.EnsureSession(); err != nil {
@@ -1188,31 +1194,67 @@ func TestACPCancelStopsInFlightPrompt(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("turn never settled after cancel")
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		adapter.mu.Lock()
-		gone := adapter.proc == nil
-		adapter.mu.Unlock()
-		if gone {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	// A Human Interrupt is a best-effort yield request, not provider recovery:
+	// the owning lane stays alive and warm.
+	adapter.mu.Lock()
+	livePID := 0
+	if adapter.proc != nil && adapter.proc.cmd != nil && adapter.proc.cmd.Process != nil {
+		livePID = adapter.proc.cmd.Process.Pid
+	}
+	adapter.mu.Unlock()
+	if livePID == 0 {
+		t.Fatal("a Human Interrupt tore down the provider lane")
+	}
+	if diagnostics.has("PROCESS_GROUP_TERM") || diagnostics.has("PROCESS_GROUP_KILL") {
+		t.Fatalf("a Human Interrupt must not take the provider lifecycle boundary: %v", diagnostics.events)
+	}
+	// The same retained conversation keeps working in that same process.
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("session unavailable after cooperative interrupt: %v", err)
+	}
+	sessions := adapter.SessionDiagnostics()
+	if len(sessions) != 1 || sessions[0].SessionID != initialSession {
+		t.Fatalf("interrupt replaced the retained native session: before=%q after=%+v", initialSession, sessions)
+	}
+	result, err := adapter.RunTurn(turnInput("next instruction"), adapter.SessionGeneration())
+	if err != nil {
+		t.Fatalf("continuation after interrupt failed: %v", err)
+	}
+	if result.Text == "" {
+		t.Fatal("continuation after interrupt produced no reply")
 	}
 	adapter.mu.Lock()
-	stillLive := adapter.proc != nil
+	afterPID := 0
+	if adapter.proc != nil && adapter.proc.cmd != nil && adapter.proc.cmd.Process != nil {
+		afterPID = adapter.proc.cmd.Process.Pid
+	}
 	adapter.mu.Unlock()
-	if stillLive {
-		t.Fatal("interrupt grace did not hard-stop the provider process")
+	if afterPID != livePID {
+		t.Fatalf("continuation respawned the provider: %d -> %d", livePID, afterPID)
 	}
-	// The Human interrupt tears down the disposable process after its grace
-	// period. A later continuation must load the same native identity.
-	if err := adapter.EnsureSession(); err != nil {
-		t.Fatalf("exact session reload after interrupt failed: %v", err)
+}
+
+// diagnosticEvents records the bounded lifecycle diagnostics one adapter emits.
+type diagnosticEvents struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (d *diagnosticEvents) record(event string, _ map[string]string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.events = append(d.events, event)
+}
+
+func (d *diagnosticEvents) has(event string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, recorded := range d.events {
+		if recorded == event {
+			return true
+		}
 	}
-	diagnostics := adapter.SessionDiagnostics()
-	if len(diagnostics) != 1 || diagnostics[0].SessionID != initialSession {
-		t.Fatalf("interrupt replaced the retained native session: before=%q after=%+v", initialSession, diagnostics)
-	}
+	return false
 }
 
 func TestACPProcessDeathFailsPromptlyAndRecovers(t *testing.T) {

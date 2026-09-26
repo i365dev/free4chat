@@ -45,6 +45,61 @@ type interruptAdapter struct {
 	holdTurn chan struct{}
 	// turnFinished signals that a parked Harness turn body returned.
 	turnFinished chan struct{}
+	// cancelIgnored makes the yield request a no-op the Harness accepts and
+	// ignores; cancelErr makes the request itself fail (#484 weak-cancel tests).
+	cancelIgnored bool
+	cancelErr     error
+}
+
+// holdTurns parks the NEXT turn body until the returned channel is closed, so a
+// test can observe state that exists only while the turn is still active. It is
+// the locked counterpart of assigning holdTurn directly.
+// releaseAllTurns unblocks every parked turn this double is holding, so a test
+// that fails before releasing its gates still tears down promptly instead of
+// deadlocking ResidentRuntime.Stop on a parked turn. Double closes are ignored:
+// a test that already released a gate must not turn cleanup into a panic.
+func (a *interruptAdapter) releaseAllTurns() {
+	a.gateMu.Lock()
+	open := make([]chan struct{}, 0, 2+len(a.gates))
+	if a.current != nil {
+		open = append(open, a.current)
+		a.current = nil
+	}
+	open = append(open, a.gates...)
+	a.gates = nil
+	if a.holdTurn != nil {
+		open = append(open, a.holdTurn)
+		a.holdTurn = nil
+	}
+	a.gateMu.Unlock()
+	for _, gate := range open {
+		closeGateIgnoringDoubleClose(gate)
+	}
+}
+
+func closeGateIgnoringDoubleClose(gate chan struct{}) {
+	defer func() { _ = recover() }()
+	close(gate)
+}
+
+func (a *interruptAdapter) holdTurns() chan struct{} {
+	hold := make(chan struct{})
+	a.gateMu.Lock()
+	a.holdTurn = hold
+	a.gateMu.Unlock()
+	return hold
+}
+
+func (a *interruptAdapter) ignoreCancel() {
+	a.cancelMu.Lock()
+	a.cancelIgnored = true
+	a.cancelMu.Unlock()
+}
+
+func (a *interruptAdapter) failCancel(err error) {
+	a.cancelMu.Lock()
+	a.cancelErr = err
+	a.cancelMu.Unlock()
 }
 
 func newInterruptAdapter() *interruptAdapter {
@@ -57,7 +112,17 @@ func newInterruptAdapter() *interruptAdapter {
 func (a *interruptAdapter) CancelTurn() error {
 	a.cancelMu.Lock()
 	a.cancels++
+	ignored := a.cancelIgnored
+	cancelErr := a.cancelErr
 	a.cancelMu.Unlock()
+	if cancelErr != nil {
+		return cancelErr
+	}
+	if ignored {
+		// The Harness accepted the yield request and ignored it: the turn stays
+		// parked until the test settles it.
+		return nil
+	}
 	if a.cancelEntered != nil {
 		a.cancelEntered <- struct{}{}
 	}

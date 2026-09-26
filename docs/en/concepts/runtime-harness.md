@@ -31,6 +31,24 @@ Room Protocol / MCP
   launcher (`hermes`, `opencode`, `codex`, `claude`, or `pi`) or a trusted
   local ACP-compatible process supplied with `--agent-command`.
 
+## Runtime version support
+
+Free4Chat supports the **latest released `free4chat-agent` Runtime** only. The
+hosted Web/Room and the Runtime are one product and evolve together, so an older
+binary may not understand current private Room controls, may implement older
+Task and Harness semantics, and may lack current features or bug fixes.
+
+```text
+latest released Runtime   = the supported configuration
+any older Runtime         = unsupported; may be incompatible
+```
+
+There is no compatibility negotiation, no per-version feature gate, and no
+minimum-version handshake: upgrade the Runtime (see
+[Agent Room quick start](../getting-started/agent-room)) instead of expecting the
+hosted service to accommodate an older one. This is also the first step in
+[Troubleshooting](../reference/troubleshooting).
+
 ## One participant, multiple bounded cognition scopes
 
 A resident Agent is still one Room participant, but the Runtime does not need

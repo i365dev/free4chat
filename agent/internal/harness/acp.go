@@ -2538,9 +2538,23 @@ func (a *ACPAdapter) CancelTurn() error {
 	return a.CancelTurnFor("room")
 }
 
-// CancelTurnFor notifies the Harness to cancel exactly the active prompt of
-// ONE logical scope. A scope with no active turn is a local no-op, so a stale
-// or duplicated interrupt can never cancel a different conversation.
+// CancelTurnFor asks exactly ONE logical scope's active prompt to stop or
+// yield (#484). It is the cooperative Human Interrupt boundary:
+//
+//	resolve the exact active native conversation for this scope
+//	-> cancel that conversation's pending permission requests
+//	-> write session/cancel
+//	-> return once the request has been dispatched
+//
+// It deliberately does NOT sleep for a cancel grace and does NOT close or reap
+// the provider lane: a Human Interrupt is not provider recovery, and a Harness
+// that is slow to honor the request simply keeps its turn active until it
+// settles (the Runtime keeps projecting Interrupting). Provider hard-stop stays
+// on the independent lifecycle boundaries — adapter Close/shutdown, idle reap,
+// a genuine turn timeout, and provider/transport failure recovery.
+//
+// A scope with no active turn is a local no-op, so a stale or duplicated
+// interrupt can never cancel a different conversation.
 func (a *ACPAdapter) CancelTurnFor(scope string) error {
 	a.mu.Lock()
 	sessionID := ""
@@ -2555,40 +2569,7 @@ func (a *ACPAdapter) CancelTurnFor(scope string) error {
 		return nil
 	}
 	a.emitDiagnostic("CANCEL_REQUESTED", map[string]string{"scope": normalizeScopeName(scope)})
-	return a.cancelAndHardStop(sessionID)
-}
-
-// cancelAndHardStop is the Runtime-owned Human interrupt boundary. ACP
-// cancellation is cooperative, so its response is not treated as proof that
-// a tool descendant stopped (Codex 0.154 demonstrated the false-settled
-// shape). We always spend the bounded grace period, then close this adapter's
-// process group. In an isolated owner that is exactly one lane; the retained
-// native session id is preserved for a later exact session/load.
-func (a *ACPAdapter) cancelAndHardStop(sessionID string) error {
-	a.mu.Lock()
-	activeCount := len(a.activeTurns)
-	a.mu.Unlock()
-	// A bare ACPAdapter may still host multiple conversations in one shared
-	// provider process (legacy/test path). Killing that process would violate
-	// cancel isolation, so only an actually isolated single-turn lane escalates
-	// after the cooperative cancel. Production bounded-N uses one ACPAdapter
-	// per lane.
-	if activeCount > 1 {
-		return a.CancelTurnForSession(sessionID)
-	}
-	if err := a.CancelTurnForSession(sessionID); err != nil {
-		// The process may already be gone. Closing below still establishes the
-		// same fail-closed lane boundary and returns the transport error.
-		_ = a.closeInternalRetaining(true)
-		return err
-	}
-	grace := a.options.CancelGraceMs
-	if grace <= 0 {
-		grace = defaultCancelGraceMs
-	}
-	time.Sleep(time.Duration(grace) * time.Millisecond)
-	a.emitDiagnostic("CANCEL_GRACE_EXPIRED", nil)
-	return a.closeInternalRetaining(true)
+	return a.CancelTurnForSession(sessionID)
 }
 
 // ReapIdle releases an idle provider process while retaining every exact

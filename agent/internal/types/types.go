@@ -1061,8 +1061,35 @@ type ScopedHarnessSessionDefaults interface {
 // exact once more than one conversation may execute at a time: the Runtime
 // names the ONE scope whose turn it proved it owns, and the adapter cancels
 // that conversation only. It never carries a native session id.
+//
+// Cancellation is BEST-EFFORT: it asks that exact turn to yield. It is not a
+// promise that Free4Chat synchronously terminates Harness-owned tool work, and
+// it never requires the provider lane to be torn down.
 type ScopedTurnCanceller interface {
 	CancelTurnFor(scope string) error
+}
+
+// ScopedTurnSteerer is the small optional seam for STEER (#484): deliver one
+// already-accepted canonical Human instruction into that scope's ACTIVE turn so
+// it influences the work before any ordinary queued follow-up.
+//
+// It is deliberately separate from ScopedTurnCanceller: cancel asks the turn to
+// stop, steer changes what the Agent does next, and steering never depends on a
+// successful cancel. A Harness that has no proven native steering path simply
+// does not implement this seam, and the Runtime then realizes the very same
+// product semantics with its own bounded priority-next fallback. Nothing above
+// this seam may branch on a provider name or on a bridge's wire spelling.
+type ScopedTurnSteerer interface {
+	// SteerTurnFor carries the EXACT Runtime turn identity the caller fenced
+	// against (the canonical Room sequence of the turn the Human was looking
+	// at). An implementation must refuse when that is not the turn it is
+	// actually executing, so native steering can never redirect a successor.
+	//
+	// It returns nil ONLY when the guidance really reached that active turn. A
+	// non-nil error means the caller must keep the instruction for its own
+	// bounded fallback delivery, so a failure here can never lose Human
+	// guidance.
+	SteerTurnFor(scope string, expectedTurnSequence int64, input HarnessTurnInput) error
 }
 
 // ScopedTurnOwnership is the small optional seam that lets the Runtime avoid
@@ -1228,6 +1255,13 @@ const (
 	// control that arrives with no matching active turn is a local no-op and
 	// is never retained for a later turn.
 	ResidentTaskControlInterrupt ResidentTaskControlKind = "interrupt"
+	// ResidentTaskControlSteer is STEER (#484): the Room already accepted the
+	// Human's replacement instruction as ordinary canonical Task input and
+	// names it here by canonical sequence, so the Runtime can make it the next
+	// not-yet-started instruction for that Task instead of an ordinary FIFO
+	// follow-up. It carries no instruction text: the text is already canonical
+	// Room input, never duplicated into a second durable store.
+	ResidentTaskControlSteer ResidentTaskControlKind = "steer"
 )
 
 // MaxResidentTurnSequence bounds the canonical Room sequence used as transient
@@ -1251,6 +1285,11 @@ type ResidentTaskControl struct {
 	// saw running. A Task scope alone is not turn identity: the same Task can
 	// run many turns, and a stale control must never cancel a later one.
 	TurnSequence int64 `json:"turnSequence"`
+	// SteerInstructionSequence is the canonical Room sequence of the
+	// already-persisted steer instruction (Kind == steer only). It is identity,
+	// not content: the Runtime promotes exactly that canonical instruction and
+	// never trusts text from the control itself.
+	SteerInstructionSequence int64 `json:"steerInstructionSequence,omitempty"`
 }
 
 /*
