@@ -2781,6 +2781,16 @@ func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expec
 		cancel()
 	}
 
+	// Ownership is captured here, before ANY step that can end the provider:
+	// the graceful session/close frames below, the stdin EOF, and the process
+	// group signal all make it exit, and a descendant of a provider that is
+	// already gone is re-parented and can no longer be discovered. A snapshot
+	// carried from before a cooperative cancel is merged with this one.
+	liveOwnership := laneOwnership{known: true}
+	if proc != nil && proc.cmd.Process != nil {
+		liveOwnership = snapshotLaneOwnership(proc.cmd.Process.Pid)
+	}
+
 	// Teardown state is cleared; allow a later EnsureSession to spawn a
 	// fresh process (timed-out turns rely on this recovery path). Late death
 	// notifications against cleared state stay silent no-ops.
@@ -2822,7 +2832,7 @@ func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expec
 	providerExited := false
 	if proc != nil && proc.cmd.Process != nil {
 		pid := proc.cmd.Process.Pid
-		ownership = ownership.merge(snapshotLaneOwnership(pid))
+		ownership = ownership.merge(liveOwnership)
 		verifyOwnership = true
 		// The watcher goroutine remains the single Wait owner; we observe
 		// its exit signal instead of re-Wait-ing the same Cmd. A Harness
