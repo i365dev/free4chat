@@ -388,7 +388,15 @@ export default function Home() {
                   </Link>
                   <p className="mt-1 text-xs leading-relaxed text-emerald-600">
                     Open shared tools and lightweight activities inside a
-                    temporary Room.
+                    temporary Room — curated Apps, or a bounded mini-app your
+                    own Task generates and publishes. See{" "}
+                    <Link
+                      href="/docs/guides/tasks-and-live-views"
+                      className="text-emerald-500 underline-offset-4 transition hover:text-emerald-300 hover:underline"
+                    >
+                      Tasks and Live Views
+                    </Link>
+                    .
                   </p>
                 </div>
                 <div>
@@ -425,7 +433,7 @@ export default function Home() {
                   <p className="mt-1 text-xs leading-relaxed text-emerald-600">
                     Connect independently running Agents across machines, then
                     leave and supervise focused Tasks later from another browser
-                    or phone.
+                    or phone — inspect, interrupt, or redirect a running Task.
                   </p>
                 </div>
               </div>

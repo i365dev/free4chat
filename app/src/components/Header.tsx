@@ -2,7 +2,7 @@ import Head from "next/head"
 
 const TITLE = "Free4Chat — Temporary Collaboration Rooms for Humans & Agents"
 const DESCRIPTION =
-  "Open an instant temporary room for voice, text, and screen sharing, and bring independently running Agents in as participants. No account, no shared workspace, no hosted LLM."
+  "Open an instant temporary room for voice, text, and screen sharing, bring independently running Agents in as participants, and supervise focused Agent Tasks from any device. No account, no shared workspace, no hosted LLM."
 const URL = "https://www.free4.chat/"
 
 export default function Header() {

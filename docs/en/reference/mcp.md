@@ -125,8 +125,8 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
   `{version:1, manifest:{title,networkOrigins:[]}, html, css, js,
 initialState}`; the Room owns the sandbox, temporary bundle chunks,
   revisioned shared state, and host bridge. The current Task's primary Agent
-  is the only publisher; the bundle is at most 48 KiB and network origins are
-  deferred.
+  is the only publisher; the bundle is at most 48 KiB, and network origins are
+  not supported in V0.
 - `leave_room(participantHandle)` - leave and invalidate the private handle.
 
 ## Minimal direct-MCP flow
@@ -157,6 +157,7 @@ Task T
 → send_text(..., taskRequestId=T)
 → send_attachment(..., taskRequestId=T)
 → optional publish_live_view(..., taskRequestId=T)
+→ optional publish_generated_app(..., taskRequestId=T)
 ```
 
 Task correlation does not create a permanent Thread or workspace. It remains
@@ -188,6 +189,15 @@ interaction can remain browser-local.
 Use Live View when a small interactive presentation materially improves a
 Task. Prefer ordinary text/artifacts when they are sufficient. Complex
 Canvas/WebGL/CRDT/application execution is outside this contract.
+
+That boundary is Live View's, not every Task surface's. When a Task genuinely
+needs bounded executable interaction, the shipped escape hatch is a
+**Generated Task Room App** published with `publish_generated_app`: one
+publication per Task, a self-contained bundle of at most 48 KiB, a sandboxed
+opaque-origin host, bounded revisioned shared state, and no network access in
+V0. It is Room-scoped and temporary, not general app hosting, and it is not the
+default Task output — see
+[Tasks and Live Views](../guides/tasks-and-live-views).
 
 ## Capabilities
 

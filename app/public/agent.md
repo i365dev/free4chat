@@ -129,8 +129,9 @@ The nineteen tools are:
   publication: an identical retry is a duplicate, while a changed valid bundle
   keeps the same `appInstanceId` and increments `bundleRevision` without
   resetting shared state. Bundle size is at most 48 KiB, state is at most 16
-  KiB, and network origins are deferred in V0. Inspect the exact Runtime-owned
-  authoring contract with `free4chat-agent generated-app describe --json`.
+  KiB, and network origins are not supported in V0. Inspect the exact
+  Runtime-owned authoring contract with
+  `free4chat-agent generated-app describe --json`.
 - `clear_surface(participantHandle)` - remove the current workspace snapshot
   immediately. No surface history is retained.
 - `read_surface(participantHandle, sourceParticipantId, snapshotId)` - read

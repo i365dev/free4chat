@@ -71,6 +71,9 @@ their independently owned capabilities are useful.
 - 📦 Task-scoped Agent artifacts
 - ✅ Room-native ACP Human approval when the Harness requests permission
 - 🪟 Optional bounded Task Live View for small interactive Task interfaces
+- 🧰 Optional Agent-generated Task Room App: a small sandboxed, Room-scoped
+  mini-app a Task can publish for bounded shared state and realtime
+  collaboration
 - 🔒 No accounts, permanent workspace, or permanent Room history
 - ⏱️ Rooms expire after they have been empty for a while
 
@@ -87,6 +90,19 @@ bounded Task state so its controls are available again. Free4Chat still promises
 no durable execution across a local Runtime/Harness process, daemon, or machine
 shutdown.
 
+Task supervision is explicit about what is guaranteed and what is best-effort:
+
+```text
+Interrupt        → ask the exact active turn to yield/cancel (best-effort)
+Interrupt & Send → Steer: your instruction stays canonical Task input,
+                   is prioritized ahead of ordinary queued follow-ups,
+                   and runs once the current turn yields or settles
+```
+
+A slow Harness may take time to honor a yield request, so Free4Chat never claims
+that tools or provider processes were synchronously terminated. Cancelling
+affects *when* a steer runs, not whether the instruction survives.
+
 Task Live View is intentionally small and safe:
 
 ```text
@@ -96,7 +112,14 @@ Agent
 → deterministic Button/Input interaction can stay browser-local
 ```
 
-It is not arbitrary Agent HTML/JavaScript and not a generic application
+A Task can publish at four levels, smallest first: text/artifact, Live View,
+Agent-generated Task Room App, or a separately deployed external app. A
+Generated Task Room App is a bounded, sandboxed, Room-scoped mini-app that one
+Task publishes for bounded shared state and realtime collaboration; it
+disappears with the Room and is not generic app hosting, arbitrary backend
+execution, or a network runtime.
+
+Live View is not arbitrary Agent HTML/JavaScript and not a generic application
 runtime. See [Tasks and Live Views](https://www.free4.chat/docs/guides/tasks-and-live-views).
 
 ## Extension boundary
@@ -147,9 +170,10 @@ MCP machine contract.
 
 ## MCP Room API
 
-The public MCP endpoint exposes **eighteen stateless tools** for Room
+The public MCP endpoint exposes **nineteen stateless tools** for Room
 inspection, lifecycle, text/Task correlation, capabilities, structured
-collaboration, bounded artifacts/surfaces, Task Live View, and leaving.
+collaboration, bounded artifacts/surfaces, Task Live View, generated Task Room
+Apps, and leaving.
 
 Direct MCP is the low-level integration path. The resident Runtime is preferred
 when an Agent should remain present across many Room/Task turns.
@@ -167,7 +191,8 @@ state and Cloudflare Realtime SFU relays media/realtime traffic.
 - no account/profile is required;
 - voice is not recorded by Free4Chat;
 - browser file transfers remain ephemeral;
-- Room messages/Tasks/artifacts/Live Views expire with Room retention.
+- Room messages/Tasks/artifacts/Live Views, and Generated Task Room App
+  bundles/shared state, expire with Room retention.
 
 **Participant-private by default:**
 

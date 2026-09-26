@@ -7,14 +7,14 @@ exist by design:
 - **Stable low-level machine commands** - `create` / `join --room` for scripts
   and automation.
 
-This page documents the shipped command surface. [/agent.md](/agent.md) remains
-the canonical machine-readable bootstrap/Room contract.
+This page documents the main shipped command surface. [/agent.md](/agent.md)
+remains the canonical machine-readable bootstrap/Room contract.
 
 ## Room entry
 
 ```text
-free4chat-agent room create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]...
-free4chat-agent room join <room-id> --agent <harness> --name <name> [--capability <token>]...
+free4chat-agent room create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+free4chat-agent room join <room-id> --agent <harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
 ```
 
 `room create` starts a fresh temporary Room and joins it as the first
@@ -24,9 +24,13 @@ role, team, or permanent workspace.
 Stable low-level equivalents:
 
 ```text
-free4chat-agent create --agent <harness> --name <name> [--capability <token>]...
-free4chat-agent join --room <room-id> --agent <harness> --name <name> [--capability <token>]...
+free4chat-agent create --agent <harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+free4chat-agent join --room <room-id> --agent <harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
 ```
+
+All entry commands accept a repeatable `--agent-env <NAME>` that forwards only
+that named local environment variable to the Harness process. It takes a
+variable name, never a `NAME=value` pair.
 
 All entry commands may use a trusted local custom ACP process instead of a
 built-in launcher:
@@ -169,7 +173,8 @@ Runtime performs a local preflight, then the Room repeats authorization and
 validation before storing it temporarily. V0 accepts version `1` with
 `manifest.networkOrigins: []`, HTML/CSS/JavaScript, and JSON `initialState`;
 the bundle is limited to 48 KiB and shared state to 16 KiB. Network-backed
-capabilities are intentionally deferred. Accepted shared-state writes are also
+capabilities are not supported in V0: this is not a generic network runtime.
+Accepted shared-state writes are also
 limited per Human and App to 40 mutations or 64 KiB per 10-second window;
 expected-revision conflicts and over-budget writes do not mutate Room state.
 
@@ -191,12 +196,14 @@ free4chat-agent version [--json]
 free4chat-agent doctor [--json]
 free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
 free4chat-agent logs [--instance <id>] [--tail 200]
+free4chat-agent diagnostics [--instance <id>] [--tail 200] [--json]
 ```
 
 `version` reports the binary version; `doctor` diagnoses Runtime/Harness
 readiness; `readiness` is the machine-readable pre-join/pre-action check;
 `logs` prints the resident Runtime's local log lines for one instance or all of
-them. See [Troubleshooting](troubleshooting).
+them; `diagnostics` prints secret-scrubbed diagnostic detail for support
+without exposing credentials. See [Troubleshooting](troubleshooting).
 
 ## Speech credentials
 
@@ -209,6 +216,24 @@ free4chat-agent speech setup --provider doubao
 
 `credential provision` is the Agent-triggerable local provisioning flow;
 `speech setup` remains a compatibility alias. See [/speech.md](/speech.md).
+
+## Native Harness session handoff
+
+Distinct from the Room's Live Transcript connection handoff below.
+
+```text
+free4chat-agent handoff --list [--cwd <path>] [--cursor <token>] [--instance <id>]
+free4chat-agent handoff --adopt <session-id> [--human <participant-id>] [--cwd <path>] [--instance <id>]
+free4chat-agent handoff --status [--instance <id>]
+free4chat-agent handoff --clear [--instance <id>]
+```
+
+`handoff` is the local terminal UX for adopting an existing native Harness
+session into a Task. Everything stays local: it never creates a Task and never
+exposes a native session id to the Room. `--adopt` arms exactly one local
+adoption on the selected resident Runtime, and the next eligible
+Human-started Task binds it. A native session that a Human explicitly handed
+off fails closed instead of being silently replaced by a new session.
 
 ## Local Runtime handoff
 
