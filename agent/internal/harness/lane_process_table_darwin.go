@@ -35,12 +35,14 @@ func darwinProcessIdentity(info *unix.KinfoProc) processIdentity {
 	return processIdentity(uint64(uint32(start.Sec))<<32 | uint64(uint32(start.Usec)))
 }
 
-// readProcessTable snapshots the kernel process table. It is called only while
-// a lane is being torn down, never on a timer.
-func readProcessTable() []processRow {
+// readProcessTable snapshots the kernel process table and reports whether the
+// platform could be asked at all. It is called only while a lane is being torn
+// down, never on a timer. A failing sysctl is NOT "no descendants": ownership
+// is unknown, and the teardown boundary fails closed on it.
+func readProcessTable() ([]processRow, bool) {
 	all, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	rows := make([]processRow, 0, len(all))
 	for index := range all {
@@ -50,7 +52,7 @@ func readProcessTable() []processRow {
 		}
 		rows = append(rows, row)
 	}
-	return rows
+	return rows, true
 }
 
 func readProcessRow(pid int) (processRow, bool) {

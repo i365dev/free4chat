@@ -2391,7 +2391,7 @@ func (a *ACPAdapter) scheduleIdleReapLocked() {
 	a.cancelIdleReapLocked()
 	gen := a.gen
 	a.idleReapTimer = time.AfterFunc(time.Duration(a.options.IdleReapMs)*time.Millisecond, func() {
-		_ = a.closeInternalWithRetentionGuarded(true, true, &gen)
+		_ = a.closeInternalWithRetentionGuarded(true, true, &gen, nil)
 	})
 }
 
@@ -2582,10 +2582,16 @@ func (a *ACPAdapter) cancelAndHardStop(sessionID string) error {
 	if activeCount > 1 {
 		return a.CancelTurnForSession(sessionID)
 	}
+	// Ownership is captured BEFORE the cooperative cancel. That cancel can end
+	// the provider by itself (the fake regression models exactly this), and once
+	// the provider is gone its detached tool descendants are re-parented and
+	// undiscoverable. The hard stop below verifies THIS evidence; if the
+	// provider survives the grace it also takes a second look and unions the two.
+	carried := a.laneOwnershipBeforeCancel()
 	if err := a.CancelTurnForSession(sessionID); err != nil {
 		// The process may already be gone. Closing below still establishes the
 		// same fail-closed lane boundary and returns the transport error.
-		_ = a.closeInternalRetaining(true)
+		_ = a.closeInternalWithRetentionOwned(true, carried)
 		return err
 	}
 	grace := a.options.CancelGraceMs
@@ -2594,7 +2600,21 @@ func (a *ACPAdapter) cancelAndHardStop(sessionID string) error {
 	}
 	time.Sleep(time.Duration(grace) * time.Millisecond)
 	a.emitDiagnostic("CANCEL_GRACE_EXPIRED", nil)
-	return a.closeInternalRetaining(true)
+	return a.closeInternalWithRetentionOwned(true, carried)
+}
+
+// laneOwnershipBeforeCancel snapshots the provider's descendants while it is
+// still alive, or reports that there is no provider to snapshot. A nil result
+// means "no snapshot was attempted" and preserves the ordinary close behavior.
+func (a *ACPAdapter) laneOwnershipBeforeCancel() *laneOwnership {
+	a.mu.Lock()
+	proc := a.proc
+	a.mu.Unlock()
+	if proc == nil || proc.cmd.Process == nil {
+		return nil
+	}
+	ownership := snapshotLaneOwnership(proc.cmd.Process.Pid)
+	return &ownership
 }
 
 // ReapIdle releases an idle provider process while retaining every exact
@@ -2609,7 +2629,7 @@ func (a *ACPAdapter) ReapIdle() error {
 		return nil
 	}
 	a.emitDiagnostic("IDLE_REAP_START", nil)
-	err := a.closeInternalRetaining(true)
+	err := a.closeInternalWithRetentionOwned(true, nil)
 	if err != nil {
 		a.emitDiagnostic("IDLE_REAP_FAIL", map[string]string{"class": "idle_reap_failed"})
 	} else {
@@ -2669,13 +2689,21 @@ func (a *ACPAdapter) closeInternalRetaining(force bool) error {
 }
 
 func (a *ACPAdapter) closeInternalWithRetention(force, retain bool) error {
-	return a.closeInternalWithRetentionGuarded(force, retain, nil)
+	return a.closeInternalWithRetentionGuarded(force, retain, nil, nil)
+}
+
+// closeInternalWithRetentionOwned carries the ownership snapshot taken BEFORE a
+// cooperative cancel into the hard stop. That ordering matters: the cancel may
+// end the provider, and a descendant of a provider that is already gone can no
+// longer be discovered at all.
+func (a *ACPAdapter) closeInternalWithRetentionOwned(force bool, carried *laneOwnership) error {
+	return a.closeInternalWithRetentionGuarded(force, true, nil, carried)
 }
 
 // closeInternalWithRetentionGuarded commits an idle reap under the same lock
 // that protects discovery holds. A nil expectedIdleGen requests an ordinary
 // close; otherwise the callback must still own the current idle generation.
-func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expectedIdleGen *int64) error {
+func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expectedIdleGen *int64, carried *laneOwnership) error {
 	var turnCancels []context.CancelFunc
 	a.mu.Lock()
 	if a.closing {
@@ -2780,20 +2808,28 @@ func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expec
 		}
 		_ = writer.Close()
 	}
+	// Ownership evidence: a snapshot carried from BEFORE the cooperative cancel
+	// (that cancel can end the provider, and a descendant of a dead provider is
+	// re-parented and undiscoverable), merged with a fresh look at a provider
+	// that is still alive here — which also catches descendants it started
+	// during the cancel grace.
+	ownership := laneOwnership{known: true}
+	verifyOwnership := false
+	if carried != nil {
+		ownership = *carried
+		verifyOwnership = true
+	}
+	providerExited := false
 	if proc != nil && proc.cmd.Process != nil {
 		pid := proc.cmd.Process.Pid
-		// Ownership is snapshotted BEFORE any signal: a tool child that moved
-		// into its own process group/session is still reachable by parent link
-		// now, and is re-parented (and therefore undiscoverable) as soon as the
-		// provider exits. Everything after this point verifies that snapshot.
-		owned := laneProcessSnapshot(pid)
+		ownership = ownership.merge(snapshotLaneOwnership(pid))
+		verifyOwnership = true
 		// The watcher goroutine remains the single Wait owner; we observe
 		// its exit signal instead of re-Wait-ing the same Cmd. A Harness
 		// that ignores SIGTERM therefore reaches the SIGKILL fallback after
 		// the shutdown budget instead of slipping past it.
 		a.emitDiagnostic("PROCESS_GROUP_TERM", nil)
 		_ = signalHarnessProcessGroup(pid, syscall.SIGTERM)
-		providerExited := false
 		select {
 		case <-proc.exited:
 			providerExited = true
@@ -2809,17 +2845,33 @@ func (a *ACPAdapter) closeInternalWithRetentionGuarded(force, retain bool, expec
 				// collects the zombie.
 			}
 		}
+	} else if verifyOwnership {
+		// The provider is already gone — for example the cooperative cancel
+		// ended it during the grace window — so the carried ownership is the
+		// ONLY remaining evidence of the tool descendants it started.
+		providerExited = true
+	}
+	if verifyOwnership {
 		// A provider exiting is NOT lane quiescence. The process group signal
 		// cannot reach a tool descendant that put itself in another group, so
 		// every owned process is terminated explicitly and verified gone before
 		// this lane may claim it. Reporting Interrupted while owned execution
 		// still runs is the #482 false-settle.
-		survivors := sweepLaneProcesses(owned)
-		if len(owned) > 0 {
+		survivors := sweepLaneProcesses(ownership.processes)
+		if len(ownership.processes) > 0 {
 			a.emitDiagnostic("PROCESS_TREE_SWEPT", map[string]string{
-				"owned":     strconv.Itoa(len(owned)),
+				"owned":     strconv.Itoa(len(ownership.processes)),
 				"survivors": strconv.Itoa(len(survivors)),
 			})
+		}
+		// A process table that could not be read means ownership is unknown, not
+		// empty: the lane cannot prove that anything it owned has stopped.
+		if !ownership.known {
+			a.emitDiagnostic("PROCESS_GROUP_STILL_ALIVE", map[string]string{
+				"class":     "process_tree_unavailable",
+				"survivors": strconv.Itoa(len(survivors)),
+			})
+			return fmt.Errorf("%w: %s", ErrLaneNotQuiescent, errProcessTableUnavailable)
 		}
 		if providerExited && len(survivors) == 0 {
 			a.emitDiagnostic("PROCESS_GROUP_QUIESCENT", nil)

@@ -72,12 +72,12 @@ func TestHermesToolDescendantTeardownProbe(t *testing.T) {
 
 	// The lane's own ownership view at the moment of the control: this is what
 	// the teardown boundary is allowed to reason about.
-	owned := laneProcessSnapshot(providerPID)
-	described := make([]string, 0, len(owned))
-	for _, process := range owned {
+	ownership := snapshotLaneOwnership(providerPID)
+	described := make([]string, 0, len(ownership.processes))
+	for _, process := range ownership.processes {
 		described = append(described, describeProcess(t, process.pid))
 	}
-	t.Logf("owned at control: %d [%s]", len(owned), strings.Join(described, " | "))
+	t.Logf("owned before cancel: %d known=%v [%s]", len(ownership.processes), ownership.known, strings.Join(described, " | "))
 
 	if err := adapter.CancelTurnFor("room"); err != nil {
 		t.Fatalf("exact hard stop reported failure: %v", err)

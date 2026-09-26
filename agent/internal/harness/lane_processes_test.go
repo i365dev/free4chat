@@ -61,3 +61,49 @@ func TestParseProcStatReadsParentAndStartTime(t *testing.T) {
 		}
 	}
 }
+
+// laneProcessTree is the ownership walk itself: it must reach grandchildren,
+// keep every process's own identity token, and never include a zombie (already
+// stopped) or the provider it started from.
+func TestLaneProcessTreeWalksDescendantsAndDropsZombies(t *testing.T) {
+	rows := []processRow{
+		{pid: 10, ppid: 1, ident: 1000},
+		{pid: 20, ppid: 10, ident: 2000}, // tool runner
+		{pid: 21, ppid: 20, ident: 2100}, // tool (grandchild)
+		{pid: 22, ppid: 20, ident: 2200, zombie: true},
+		{pid: 30, ppid: 1, ident: 3000}, // unrelated process
+	}
+	owned := laneProcessTree(rows, 10)
+	if len(owned) != 2 {
+		t.Fatalf("expected the runner and the tool, got %+v", owned)
+	}
+	if owned[0].pid != 20 || owned[0].ident != processIdentity(2000) {
+		t.Fatalf("runner identity lost: %+v", owned[0])
+	}
+	if owned[1].pid != 21 || owned[1].ident != processIdentity(2100) {
+		t.Fatalf("grandchild identity lost: %+v", owned[1])
+	}
+	if laneProcessTree(rows, 1) != nil {
+		t.Fatal("an invalid root must own nothing")
+	}
+}
+
+// Ownership is known only when every read succeeded: one unreadable table means
+// the lane cannot prove what it owned at that moment, so the merged result must
+// stay unknown even if the other read worked.
+func TestLaneOwnershipMergeFailsClosedWhenEitherReadIsUnknown(t *testing.T) {
+	known := laneOwnership{processes: []laneProcess{{pid: 20, ident: 2000}}, known: true}
+	other := laneOwnership{processes: []laneProcess{{pid: 21, ident: 2100}, {pid: 20, ident: 2000}}, known: true}
+	merged := known.merge(other)
+	if !merged.known || len(merged.processes) != 2 {
+		t.Fatalf("a union of two known reads must keep both processes once: %+v", merged)
+	}
+
+	unknown := laneOwnership{}
+	if merged.merge(unknown).known {
+		t.Fatal("a failed read must make the merged ownership unknown")
+	}
+	if unknown.merge(merged).known {
+		t.Fatal("a failed read must make the merged ownership unknown in either order")
+	}
+}

@@ -155,7 +155,7 @@ func TestIdleReapCallbackRespectsAnActiveDiscoveryHold(t *testing.T) {
 	adapter.idleReapHolds++
 	gen := adapter.gen
 	adapter.mu.Unlock()
-	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen); err != nil {
+	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen, nil); err != nil {
 		t.Fatalf("guarded idle reap: %v", err)
 	}
 	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); !hasProc {
@@ -165,7 +165,7 @@ func TestIdleReapCallbackRespectsAnActiveDiscoveryHold(t *testing.T) {
 	adapter.mu.Lock()
 	adapter.idleReapHolds--
 	adapter.mu.Unlock()
-	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen); err != nil {
+	if err := adapter.closeInternalWithRetentionGuarded(true, true, &gen, nil); err != nil {
 		t.Fatalf("idle reap after discovery hold ended: %v", err)
 	}
 	if _, hasProc, _, _, _ := adapterStateSnapshot(adapter); hasProc {

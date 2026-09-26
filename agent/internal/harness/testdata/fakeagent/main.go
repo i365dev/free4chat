@@ -26,6 +26,11 @@
 //	attached_tool  the same, but the tool child stays in the provider's process
 //	               group (the ordinary cleanup shape).
 //
+// FAKE_CANCEL_EXIT=1 makes the provider exit IMMEDIATELY on session/cancel
+// without cleaning up the tool child it started: the provider disappears, the
+// child is re-parented, and only ownership captured before the cancel can still
+// account for it.
+//
 // Session discovery/load (#409) is scripted through initialize plus
 // session/list and session/load handlers; see FAKE_LIST_CAP, FAKE_LOAD_CAP,
 // FAKE_LIST_RAW and FAKE_LIST_NO_CURSOR below.
@@ -418,6 +423,13 @@ func main() {
 				SessionID string `json:"sessionId"`
 			}
 			_ = json.Unmarshal(message.Params, &cancelParams)
+			if os.Getenv("FAKE_CANCEL_EXIT") == "1" {
+				// A provider that dies on the cooperative cancel and leaves the
+				// tool it started running. Any tool child it put in its own
+				// session/process group survives this, and the provider is gone
+				// by the time the hard stop runs.
+				os.Exit(0)
+			}
 			switch a.mode {
 			case "hold_all":
 				// Cancel reaches EXACTLY the conversation it names. A cancel
@@ -600,14 +612,17 @@ func main() {
 				// a real child of THIS provider; in detached_tool mode it
 				// deliberately moves into its own session/process group, which
 				// is the shape a process-group-only teardown cannot reach.
+				//
 				// The prompt is never answered, so the turn stays active until
-				// the adapter tears the lane down. The park must be a timer (or
-				// any blocking primitive the runtime can observe): a bare
-				// select{} with no other runnable goroutine makes a Go program
-				// abort itself, which would end this provider before the test's
-				// control ever runs.
+				// the adapter tears the lane down — but this goroutine KEEPS
+				// SERVING stdin, so a cooperative session/cancel really reaches
+				// the provider. That is what lets FAKE_CANCEL_EXIT model a
+				// provider that dies on cancel and leaves its tool behind.
 				startToolChild(a.mode == "detached_tool")
-				time.Sleep(10 * time.Minute)
+				a.heldMu.Lock()
+				a.held[promptSessionID] = append([]byte(nil), message.ID...)
+				a.heldMu.Unlock()
+				continue
 			case "exit":
 				a.finishNormal(&message, promptSessionID)
 				a.killAfter(10*time.Millisecond, "FAKE_EXIT_MARKER")

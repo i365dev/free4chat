@@ -19,12 +19,14 @@ type processRow struct {
 	zombie bool
 }
 
-// readProcessTable snapshots /proc. It is called only while a lane is being
-// torn down, never on a timer.
-func readProcessTable() []processRow {
+// readProcessTable snapshots /proc and reports whether the platform could be
+// asked at all. It is called only while a lane is being torn down, never on a
+// timer. An unreadable /proc is NOT "no descendants": ownership is unknown, and
+// the teardown boundary fails closed on it.
+func readProcessTable() ([]processRow, bool) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	rows := make([]processRow, 0, len(entries))
 	for _, entry := range entries {
@@ -36,7 +38,7 @@ func readProcessTable() []processRow {
 			rows = append(rows, row)
 		}
 	}
-	return rows
+	return rows, true
 }
 
 func readProcessRow(pid int) (processRow, bool) {

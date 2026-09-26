@@ -13,6 +13,10 @@ type processRow struct {
 	zombie bool
 }
 
-func readProcessTable() []processRow { return nil }
+// These platforms have no lane process-ownership model: the adapter's teardown
+// boundary is the direct provider process, exactly as before. The read is
+// therefore reported as known-but-empty rather than unavailable, so the
+// fail-closed rule above stays scoped to the shipped Darwin/Linux targets.
+func readProcessTable() ([]processRow, bool) { return nil, true }
 
 func readProcessRow(int) (processRow, bool) { return processRow{}, false }

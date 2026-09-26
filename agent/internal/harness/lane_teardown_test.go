@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,11 +60,28 @@ func (r *diagnosticRecorder) count(event string) int {
 // toolLauncher starts the scripted provider that parks its prompt forever while
 // running one long tool child (detached => its own session/process group).
 func toolLauncher(pidFile string, detached bool) types.AgentLauncher {
+	return toolLauncherWithEnv(pidFile, detached, nil)
+}
+
+func toolLauncherWithEnv(pidFile string, detached bool, extra map[string]string) types.AgentLauncher {
 	mode := "attached_tool"
 	if detached {
 		mode = "detached_tool"
 	}
-	return scriptLauncher(mode, map[string]string{"FAKE_TOOL_PID_FILE": pidFile})
+	env := map[string]string{"FAKE_TOOL_PID_FILE": pidFile}
+	for key, value := range extra {
+		env[key] = value
+	}
+	return scriptLauncher(mode, env)
+}
+
+// swapLaneProcessTableReader installs a test process-table reader, so the
+// fail-closed path can be proven without breaking the host's /proc or sysctl.
+// The harness tests run sequentially, so a package-level seam is safe here.
+func swapLaneProcessTableReader(reader func() ([]processRow, bool)) func() {
+	previous := readLaneProcessTable
+	readLaneProcessTable = reader
+	return func() { readLaneProcessTable = previous }
 }
 
 func readPIDFile(t *testing.T, path string, timeout time.Duration) int {
@@ -283,6 +301,102 @@ func TestRepeatedHardStopLeavesNoOwnedDescendant(t *testing.T) {
 	adapter := NewACPAdapter(toolLauncher(pidFile, true), t.TempDir(), AdapterOptions{CancelGraceMs: 50})
 	t.Cleanup(func() { _ = adapter.Close() })
 
+	// TWO genuine provider lifecycles: hard stop, rematerialize the lane, a new
+	// detached tool, hard stop again. A repeated call against an already
+	// cancelled turn is only a no-op and would not cover this.
+	seen := map[int]bool{}
+	for life := 1; life <= 2; life++ {
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("life %d: ensure session: %v", life, err)
+		}
+		if life > 1 {
+			// A fresh lifecycle must publish its own tool pid.
+			_ = os.Remove(pidFile)
+		}
+		provider := providerPID(t, adapter)
+		settled := startParkedTurn(t, adapter)
+		tool := readPIDFile(t, pidFile, 10*time.Second)
+		t.Cleanup(func() { killOwnedProcess(tool) })
+		if seen[tool] {
+			t.Fatalf("life %d reused tool pid %d", life, tool)
+		}
+		seen[tool] = true
+
+		if err := adapter.CancelTurnFor("room"); err != nil {
+			t.Fatalf("life %d: hard stop reported failure: %v", life, err)
+		}
+		select {
+		case <-settled:
+		case <-time.After(15 * time.Second):
+			t.Fatalf("life %d: the cancelled turn never settled", life)
+		}
+		if !processGone(provider, 5*time.Second) {
+			t.Fatalf("life %d: provider %d survived the hard stop", life, provider)
+		}
+		if !processGone(tool, 5*time.Second) {
+			t.Fatalf("life %d: owned detached tool child %d survived the hard stop", life, tool)
+		}
+	}
+}
+
+// TestHardStopSweepsDescendantWhenTheCancelEndsTheProvider is the race that a
+// snapshot taken at close time cannot cover: the cooperative cancel itself ends
+// the provider while a detached tool keeps running. Ownership must therefore be
+// captured BEFORE that cancel.
+func TestHardStopSweepsDescendantWhenTheCancelEndsTheProvider(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "tool.pid")
+	diagnostics := &diagnosticRecorder{}
+	adapter := NewACPAdapter(
+		toolLauncherWithEnv(pidFile, true, map[string]string{"FAKE_CANCEL_EXIT": "1"}),
+		t.TempDir(),
+		AdapterOptions{CancelGraceMs: 200, DiagnosticSink: diagnostics.record},
+	)
+	t.Cleanup(func() { _ = adapter.Close() })
+
+	if err := adapter.EnsureSession(); err != nil {
+		t.Fatalf("ensure session: %v", err)
+	}
+	provider := providerPID(t, adapter)
+	settled := startParkedTurn(t, adapter)
+	tool := readPIDFile(t, pidFile, 10*time.Second)
+	t.Cleanup(func() { killOwnedProcess(tool) })
+	if got := processParent(t, tool); got != provider {
+		t.Fatalf("tool child %d parent = %d, want provider %d", tool, got, provider)
+	}
+
+	// The cancel makes the provider exit well inside the grace window, so the
+	// provider handle is already gone when the hard stop runs.
+	if err := adapter.CancelTurnFor("room"); err != nil {
+		t.Fatalf("hard stop reported failure: %v", err)
+	}
+	select {
+	case <-settled:
+	case <-time.After(15 * time.Second):
+		t.Fatal("the cancelled turn never settled")
+	}
+	if !processGone(provider, 5*time.Second) {
+		t.Fatalf("provider %d survived the hard stop", provider)
+	}
+	if !processGone(tool, 5*time.Second) {
+		t.Fatalf("owned detached tool child %d survived a cancel that ended its provider", tool)
+	}
+	if diagnostics.count("PROCESS_GROUP_STILL_ALIVE") != 0 {
+		t.Fatalf("lane claimed a non-quiescent teardown: %v", diagnostics.events)
+	}
+}
+
+// TestHardStopFailsClosedWhenProcessTableIsUnavailable pins the other half of
+// the contract: an unreadable process table means ownership is UNKNOWN, not
+// empty, so the lane must report a teardown failure instead of quiescence.
+func TestHardStopFailsClosedWhenProcessTableIsUnavailable(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "tool.pid")
+	diagnostics := &diagnosticRecorder{}
+	adapter := NewACPAdapter(toolLauncher(pidFile, true), t.TempDir(), AdapterOptions{
+		CancelGraceMs:  50,
+		DiagnosticSink: diagnostics.record,
+	})
+	t.Cleanup(func() { _ = adapter.Close() })
+
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("ensure session: %v", err)
 	}
@@ -291,22 +405,28 @@ func TestRepeatedHardStopLeavesNoOwnedDescendant(t *testing.T) {
 	tool := readPIDFile(t, pidFile, 10*time.Second)
 	t.Cleanup(func() { killOwnedProcess(tool) })
 
-	for attempt := 1; attempt <= 2; attempt++ {
-		if err := adapter.CancelTurnFor("room"); err != nil {
-			t.Fatalf("hard stop %d reported failure: %v", attempt, err)
-		}
+	restore := swapLaneProcessTableReader(func() ([]processRow, bool) { return nil, false })
+	defer restore()
+	err := adapter.CancelTurnFor("room")
+	restore()
+	if !errors.Is(err, ErrLaneNotQuiescent) {
+		t.Fatalf("an unreadable process table must fail closed, got %v", err)
 	}
+	if diagnostics.count("PROCESS_GROUP_QUIESCENT") != 0 {
+		t.Fatalf("the lane claimed quiescence it could not prove: %v", diagnostics.events)
+	}
+	if diagnostics.count("PROCESS_GROUP_STILL_ALIVE") == 0 {
+		t.Fatalf("the unverifiable teardown was not reported: %v", diagnostics.events)
+	}
+	// The provider was still terminated; only the ownership claim was refused.
+	if !processGone(provider, 5*time.Second) {
+		t.Fatalf("provider %d survived the hard stop", provider)
+	}
+	_ = adapter.Close()
 	select {
 	case <-settled:
 	case <-time.After(15 * time.Second):
 		t.Fatal("the cancelled turn never settled")
-	}
-
-	if !processGone(provider, 5*time.Second) {
-		t.Fatalf("provider %d survived repeated hard stop", provider)
-	}
-	if !processGone(tool, 5*time.Second) {
-		t.Fatalf("owned detached tool child %d survived repeated hard stop", tool)
 	}
 }
 
