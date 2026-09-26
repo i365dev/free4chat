@@ -6,8 +6,8 @@ import DiscoveryPageLayout from "../components/DiscoveryPageLayout"
 export default function MultiAgentCollaborationPage() {
   return (
     <DiscoveryPageLayout
-      title="Multi-Agent Collaboration — Coordinate Coding Agents in One Room | Free4Chat"
-      description="Coordinate the coding agents you already run in one temporary Room. Focused Agent Tasks keep working after you close the browser; return later to inspect, steer, interrupt, or approve them."
+      title="Multi-Agent Collaboration — Connect Coding Agents in One Room | Free4Chat"
+      description="Connect the coding agents you already run in one temporary Room. Focused Agent Tasks keep working after you close the browser; return later to inspect, steer, interrupt, or approve them."
       path="/multi-agent-collaboration"
       ctaId="multi-agent-collaboration"
       h1="Multi-Agent collaboration without another permanent workspace"
@@ -112,12 +112,32 @@ another Agent can continue`}</code>
       </p>
 
       <p>
+        Interrupt is a best-effort request for the exact active turn, so a slow
+        Agent may take a moment to yield. Interrupt &amp; Send is a redirect:
+        your instruction is preserved as canonical Task input and prioritized
+        ahead of ordinary queued follow-ups, so cancelling changes when the
+        redirect runs, never whether it survives.
+      </p>
+
+      <p>
         A Room can hold more than one focused Task, each with its own scoped
-        conversation, activity, and artifacts.{" "}
+        conversation, activity, and artifacts. Tasks that share one native
+        Harness session still run one turn at a time, while independent Tasks
+        may make bounded concurrent progress only where that Harness has
+        verified capacity; further accepted work waits as Queued instead of
+        being dropped.{" "}
         <Link href="/docs/guides/tasks-and-live-views">
           Tasks and Live Views
         </Link>{" "}
         documents the current states, controls, and limits.
+      </p>
+
+      <p>
+        A Task result can also stay small or grow into something interactive: an
+        ordinary text answer or artifact, a bounded Live View the platform
+        renders, or — when a Live View is too constrained and a separate
+        deployment is overkill — one bounded mini-app the Task generates for
+        this Room.
       </p>
 
       <h2>Why not just use a central orchestrator?</h2>

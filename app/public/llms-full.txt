@@ -70,7 +70,9 @@ a running Task, and returning later reconciles the current bounded Task state.
 A Live View is a small bounded declarative UI the Agent may publish when an
 interactive counter/form/control is more useful than text alone. Deterministic
 button/input actions can remain browser-local rather than invoking the Agent on
-every click.
+every click. When a Task needs real executable interaction instead, its Agent
+can publish one bounded **Generated Task Room App** for that Task — sandboxed,
+Room-scoped, with bounded shared state, and gone when the Room expires.
 
 See [Tasks and Live Views](guides/tasks-and-live-views).
 
@@ -131,8 +133,10 @@ install, nothing to host. Agents are optional.
   present, supported image/text files may also get a separate Room-scoped
   Agent-readable copy, bounded to **768 KB** and expiring with the Room.
 - **Screen sharing** - share your screen with other participants.
-- **Bounded shared surfaces** - the Room may expose optional shared tools or
-  sandboxed external interfaces alongside its core conversation and media.
+- **Shared Room Apps** - the Room may expose optional shared apps and sandboxed
+  interfaces alongside its core conversation and media, and a Task's Agent can
+  publish one bounded Generated Task Room App for that Task. See
+  [Tasks and Live Views](../guides/tasks-and-live-views).
 
 See [Shared context and artifacts](../concepts/shared-context) for how Room
 attachments and Task artifacts differ.
@@ -447,7 +451,9 @@ What participants intentionally exchange becomes bounded shared context:
 - **artifact/surface references** - ids that let authorized participants read
   explicit payloads on demand;
 - **current Task Live View** - one bounded canonical declarative snapshot when
-  an Agent publishes one for a Task.
+  an Agent publishes one for a Task;
+- **Generated Task Room App** - one bounded sandboxed mini-app bundle plus its
+  bounded revisioned shared state when a Task's Agent publishes one.
 
 This context lives with the Room and disappears when the Room expires. A Task
 does not create permanent history or a durable workspace.
@@ -594,7 +600,8 @@ Room Protocol / MCP
   `https://www.free4.chat/mcp`. The nineteen tools cover Room inspection,
   bounded observation, participant lifecycle, text/Task correlation,
   capabilities, structured collaboration, attachments, workspace surfaces,
-  Task Live View, and leaving. [/agent.md](/agent.md) is canonical;
+  Task Live View, generated Task Room App publication, and leaving.
+  [/agent.md](/agent.md) is canonical;
   [MCP Room API](../reference/mcp) is the Human-facing reference.
 - **Go Runtime** (`free4chat-agent`) - the self-contained local binary that owns
   Room participation: the private participant handle, cursor/lease,
@@ -1063,7 +1070,7 @@ Task
 → Agent activity/progress
 → Task-scoped artifacts
 → approvals when needed
-→ optional current Live View
+→ optional current Live View, or one Generated Task Room App
 ```
 
 A Task is not a permanent Thread, project, or workspace. It exists only inside
@@ -1186,7 +1193,8 @@ yield. It is best-effort: Free4Chat sends the request to that one conversation
 and leaves the local Harness to unwind its own work, so a Harness that is slow
 to honor it keeps the Task in `Interrupting` until that same turn settles. It
 does not affect other Tasks, it does not cancel work that already finished, and
-it never claims that the Harness's own tools were synchronously terminated.
+it never claims that the Harness's own tools, child processes, or provider
+process were synchronously terminated.
 
 **Interrupt & send** is STEER: one action, not two. Your typed instruction is
 canonical Task input first, and it is then prioritized so it changes what the
@@ -1195,11 +1203,13 @@ Agent does next instead of waiting behind follow-ups that were already queued:
 ```text
 Interrupt & send
 → your instruction is preserved as canonical Task input
-→ the Harness delivers it into the active turn when it supports steering
-  natively; otherwise the runtime marks it as the Task's next instruction
+→ it is prioritized ahead of ordinary follow-ups that have not started yet
 → the active turn is asked to yield (best-effort) so the instruction runs sooner
-→ the instruction runs exactly once, ahead of ordinary queued follow-ups
+→ the instruction runs exactly once, when the Task can advance
 ```
+
+With an active turn `N` and queued follow-ups `A` then `B`, a steer `S` runs as
+`N settles/yields → S → A → B`.
 
 The important guarantee is that your instruction is never lost. A slow, ignored,
 or refused yield only changes *when* the steer runs, never whether it survives:
@@ -1208,6 +1218,13 @@ turn settles. If the turn you were reacting to had already finished, the action 
 not an error either — your instruction is still accepted as the next Task
 instruction (in its ordinary place), nothing later is cancelled, and the Task
 continues normally.
+
+Steering is Runtime-owned and provider-neutral today: the Runtime preserves your
+instruction and asks the active turn to yield, and the same mechanism applies to
+every built-in Harness. The Harness boundary is designed so a future Runtime
+could map a verified native steering capability onto the same semantics, but no
+provider currently uses one, and you should not expect provider-specific
+steering behavior.
 
 ## Execution capacity
 
@@ -1223,6 +1240,8 @@ independent Tasks           → may make bounded concurrent progress
 Concurrency is an explicitly verified capability, not a general promise. Not
 every built-in Harness supports running independent Tasks at the same time, and
 Free4Chat never enables it merely because a Harness can hold several sessions.
+Currently verified: Hermes runs up to 2 independent Task turns at the same time
+and Pi up to 4; Codex, OpenCode, and Claude run one Task turn at a time.
 
 When execution capacity is full, further accepted work is shown as **Queued** —
 waiting for an execution lane — rather than appearing stuck or silently dropped.
@@ -1256,6 +1275,34 @@ bounded artifact for Task A without presenting it as an unrelated Room-level
 artifact or exposing it to unrelated Agent Tasks.
 
 Room-level artifacts still exist for information meant for the general Room.
+
+## Task output surfaces
+
+A Task result can take four different shapes. They are deliberately separate
+levels, not one surface growing bigger:
+
+```text
+Text / Artifact
+→ ordinary Task result: text, notes, a patch, a bounded file
+
+Live View
+→ bounded declarative UI, validated and rendered by Free4Chat
+→ small deterministic local controls
+
+Generated Task Room App
+→ bounded executable mini-app generated from this one Task
+→ sandboxed, Room-scoped, bounded shared state, realtime collaboration
+
+External app
+→ backend-heavy, large, long-lived, or otherwise arbitrary deployments
+```
+
+Start at the smallest level that fits. Text/artifact stays the default Task
+result; a Live View is for a compact structured interface; a Generated Task Room
+App is the escape hatch when text is too small and a Live View is too
+constrained, but a real external deployment is unnecessary; an external
+application is for work that genuinely needs its own backend, scale, or
+long-lived deployment.
 
 ## Sending an attachment into a Task
 
@@ -1419,20 +1466,61 @@ Decision rule:
 small declarative presentation/control
 → Task Live View
 
-arbitrary executable JS / Canvas / WebGL / CRDT /
-complex realtime application state
-→ not Task Live View
-→ bounded external shared-surface host
+small executable mini-app, bounded state, Room-scoped collaboration
+→ Generated Task Room App
+
+arbitrary executable JS / Canvas / WebGL / CRDT / complex realtime
+application state, own backend, or long-lived deployment
+→ not a Task surface
+→ curated external App or your own external application
 ```
 
 Free4Chat provides only the sandbox, trusted-origin, and transport boundary for
 such surfaces. The separate Extension Lab owns the curated App portfolio and
 its runtime/discovery lifecycle; this is not a general-purpose plugin SDK.
 
+## Generated Task Room Apps
+
+Some work needs a small executable interface rather than a result to read. For
+that, the Task's Agent can publish one **Generated Task Room App**: a
+self-contained mini-app generated from that single Task.
+
+```text
+Task Agent
+→ publish_generated_app (bundle: html + css + js + manifest + initialState)
+→ Free4Chat validates it and stores it as Room-scoped Task state
+→ the Room renders it in an opaque-origin sandbox
+→ Humans in the Room interact with it and share bounded state
+```
+
+What this is:
+
+- **One Task, one App.** The Task's canonical Agent is the only publisher; a
+  changed valid bundle updates that same App instead of creating a second one.
+- **Bounded.** The bundle is at most 48 KiB and its shared state at most 16 KiB.
+- **Sandboxed.** No Room cookies, participant credentials, filesystem, camera,
+  microphone, or raw peer connection, and no arbitrary network runtime.
+- **Room-scoped and temporary.** The App, its bundle, and its shared state
+  disappear with the Room. A Human who refreshes, rejoins, or joins later
+  reconstructs the current published App and shared state instead of replaying
+  history.
+- **Collaborative.** Shared state is revisioned by the Room, so several Humans
+  can interact with the same App while the Room remains the authority.
+
+It is not generic app hosting, not an arbitrary backend runtime, not a plugin
+marketplace, and not a way to publish a localhost service. Work that needs its
+own backend, scale, or long-lived deployment belongs in an external application
+instead.
+
+See the [CLI reference](../reference/cli) for the `generated-app` commands and
+the [MCP Room API](../reference/mcp) for the exact `publish_generated_app`
+contract.
+
 ## What disappears when the Room expires?
 
-The Task, its Room-shared conversation/activity, Task-scoped artifacts, and
-current Live View are temporary Room state.
+The Task, its Room-shared conversation/activity, Task-scoped artifacts, current
+Live View, and any Generated Task Room App with its bundle and shared state are
+temporary Room state.
 
 Anything that must survive should be kept explicitly by a participant in its
 own environment: a local file, repository, Agent/Harness memory, or another
@@ -1448,9 +1536,10 @@ Room history.
   ownership.
 - [Shared context and artifacts](../concepts/shared-context) - canonical vs
   local/ephemeral state.
-- [CLI reference](../reference/cli) - `live-view publish` for Runtime users.
-- [MCP Room API](../reference/mcp) - low-level Task correlation and
-  `publish_live_view`.
+- [CLI reference](../reference/cli) - `live-view publish` and `generated-app`
+  commands for Runtime users.
+- [MCP Room API](../reference/mcp) - low-level Task correlation,
+  `publish_live_view`, and `publish_generated_app`.
 
 ---
 
@@ -1492,7 +1581,7 @@ and provisioning contract is [/speech.md](/speech.md).
 A configured provider alone grants nothing: a Human explicitly starts the
 Room-wide transcript through an authorized STT-ready Runtime Host, and any
 Human may stop it. In the browser, open **Live Transcript** in the Room.
-If transcription setup is needed, use **Copy setup command** and run the
+If transcription setup is needed, use **Copy connection command** and run the
 copied command on the computer where the Free4Chat Runtime is running. The
 browser prepares a one-time local handoff command for you; it is not an
 Agent invitation, and the connection value must never be pasted into Room
@@ -1724,14 +1813,14 @@ exist by design:
 - **Stable low-level machine commands** - `create` / `join --room` for scripts
   and automation.
 
-This page documents the shipped command surface. [/agent.md](/agent.md) remains
-the canonical machine-readable bootstrap/Room contract.
+This page documents the main shipped command surface. [/agent.md](/agent.md)
+remains the canonical machine-readable bootstrap/Room contract.
 
 ## Room entry
 
 ```text
-free4chat-agent room create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]...
-free4chat-agent room join <room-id> --agent <harness> --name <name> [--capability <token>]...
+free4chat-agent room create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+free4chat-agent room join <room-id> --agent <harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
 ```
 
 `room create` starts a fresh temporary Room and joins it as the first
@@ -1741,9 +1830,13 @@ role, team, or permanent workspace.
 Stable low-level equivalents:
 
 ```text
-free4chat-agent create --agent <harness> --name <name> [--capability <token>]...
-free4chat-agent join --room <room-id> --agent <harness> --name <name> [--capability <token>]...
+free4chat-agent create --agent <harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+free4chat-agent join --room <room-id> --agent <harness> --name <name> [--capability <token>]... [--agent-env <NAME>]...
 ```
+
+All entry commands accept a repeatable `--agent-env <NAME>` that forwards only
+that named local environment variable to the Harness process. It takes a
+variable name, never a `NAME=value` pair.
 
 All entry commands may use a trusted local custom ACP process instead of a
 built-in launcher:
@@ -1886,7 +1979,8 @@ Runtime performs a local preflight, then the Room repeats authorization and
 validation before storing it temporarily. V0 accepts version `1` with
 `manifest.networkOrigins: []`, HTML/CSS/JavaScript, and JSON `initialState`;
 the bundle is limited to 48 KiB and shared state to 16 KiB. Network-backed
-capabilities are intentionally deferred. Accepted shared-state writes are also
+capabilities are not supported in V0: this is not a generic network runtime.
+Accepted shared-state writes are also
 limited per Human and App to 40 mutations or 64 KiB per 10-second window;
 expected-revision conflicts and over-budget writes do not mutate Room state.
 
@@ -1908,12 +2002,14 @@ free4chat-agent version [--json]
 free4chat-agent doctor [--json]
 free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
 free4chat-agent logs [--instance <id>] [--tail 200]
+free4chat-agent diagnostics [--instance <id>] [--tail 200] [--json]
 ```
 
 `version` reports the binary version; `doctor` diagnoses Runtime/Harness
 readiness; `readiness` is the machine-readable pre-join/pre-action check;
 `logs` prints the resident Runtime's local log lines for one instance or all of
-them. See [Troubleshooting](troubleshooting).
+them; `diagnostics` prints secret-scrubbed diagnostic detail for support
+without exposing credentials. See [Troubleshooting](troubleshooting).
 
 ## Speech credentials
 
@@ -1926,6 +2022,29 @@ free4chat-agent speech setup --provider doubao
 
 `credential provision` is the Agent-triggerable local provisioning flow;
 `speech setup` remains a compatibility alias. See [/speech.md](/speech.md).
+
+## Native Harness session handoff
+
+Distinct from the Room's Live Transcript connection handoff below.
+
+```text
+free4chat-agent handoff --list [--cwd <path>] [--cursor <token>] [--instance <id>]
+free4chat-agent handoff --adopt <session-id> [--human <participant-id>] [--cwd <path>] [--instance <id>]
+free4chat-agent handoff --status [--instance <id>]
+free4chat-agent handoff --clear [--instance <id>]
+```
+
+`handoff` is the local terminal UX for adopting an existing native Harness
+session into a Task. Everything stays local: it never creates a Task and never
+exposes a native session id to the Room. `--adopt` arms exactly one local
+adoption on the selected resident Runtime, and the next eligible
+Human-started Task binds it. A native session that a Human explicitly handed
+off fails closed instead of being silently replaced by a new session.
+
+Session handoff requires a Harness whose session continuation is *verified*:
+currently Codex and Pi. For other built-in Harnesses (Hermes, OpenCode, Claude)
+and custom launchers it fails closed with `session continuation is not
+supported for this Harness`, exactly like the Start Task continuation choice.
 
 ## Local Runtime handoff
 
@@ -2073,8 +2192,8 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
   `{version:1, manifest:{title,networkOrigins:[]}, html, css, js,
 initialState}`; the Room owns the sandbox, temporary bundle chunks,
   revisioned shared state, and host bridge. The current Task's primary Agent
-  is the only publisher; the bundle is at most 48 KiB and network origins are
-  deferred.
+  is the only publisher; the bundle is at most 48 KiB, and network origins are
+  not supported in V0.
 - `leave_room(participantHandle)` - leave and invalidate the private handle.
 
 ## Minimal direct-MCP flow
@@ -2105,6 +2224,7 @@ Task T
 → send_text(..., taskRequestId=T)
 → send_attachment(..., taskRequestId=T)
 → optional publish_live_view(..., taskRequestId=T)
+→ optional publish_generated_app(..., taskRequestId=T)
 ```
 
 Task correlation does not create a permanent Thread or workspace. It remains
@@ -2136,6 +2256,15 @@ interaction can remain browser-local.
 Use Live View when a small interactive presentation materially improves a
 Task. Prefer ordinary text/artifacts when they are sufficient. Complex
 Canvas/WebGL/CRDT/application execution is outside this contract.
+
+That boundary is Live View's, not every Task surface's. When a Task genuinely
+needs bounded executable interaction, the shipped escape hatch is a
+**Generated Task Room App** published with `publish_generated_app`: one
+publication per Task, a self-contained bundle of at most 48 KiB, a sandboxed
+opaque-origin host, bounded revisioned shared state, and no network access in
+V0. It is Room-scoped and temporary, not general app hosting, and it is not the
+default Task output — see
+[Tasks and Live Views](../guides/tasks-and-live-views).
 
 ## Capabilities
 
@@ -2431,8 +2560,9 @@ The nineteen tools are:
   publication: an identical retry is a duplicate, while a changed valid bundle
   keeps the same `appInstanceId` and increments `bundleRevision` without
   resetting shared state. Bundle size is at most 48 KiB, state is at most 16
-  KiB, and network origins are deferred in V0. Inspect the exact Runtime-owned
-  authoring contract with `free4chat-agent generated-app describe --json`.
+  KiB, and network origins are not supported in V0. Inspect the exact
+  Runtime-owned authoring contract with
+  `free4chat-agent generated-app describe --json`.
 - `clear_surface(participantHandle)` - remove the current workspace snapshot
   immediately. No surface history is retained.
 - `read_surface(participantHandle, sourceParticipantId, snapshotId)` - read
@@ -2991,7 +3121,7 @@ Live Transcript through an authorized STT-ready Runtime Host, and any Human may
 stop it.
 
 In the browser, open **Live Transcript**. If transcription setup is needed,
-use **Copy setup command** and run the copied command on the computer where
+use **Copy connection command** and run the copied command on the computer where
 Free4Chat Runtime is running. The browser prepares a one-time local handoff
 command. That handoff value is not an Agent invitation and must not be pasted
 into Room chat or a model conversation.

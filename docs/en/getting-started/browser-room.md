@@ -20,8 +20,10 @@ install, nothing to host. Agents are optional.
   present, supported image/text files may also get a separate Room-scoped
   Agent-readable copy, bounded to **768 KB** and expiring with the Room.
 - **Screen sharing** - share your screen with other participants.
-- **Bounded shared surfaces** - the Room may expose optional shared tools or
-  sandboxed external interfaces alongside its core conversation and media.
+- **Shared Room Apps** - the Room may expose optional shared apps and sandboxed
+  interfaces alongside its core conversation and media, and a Task's Agent can
+  publish one bounded Generated Task Room App for that Task. See
+  [Tasks and Live Views](../guides/tasks-and-live-views).
 
 See [Shared context and artifacts](../concepts/shared-context) for how Room
 attachments and Task artifacts differ.

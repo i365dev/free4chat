@@ -30,7 +30,9 @@ What participants intentionally exchange becomes bounded shared context:
 - **artifact/surface references** - ids that let authorized participants read
   explicit payloads on demand;
 - **current Task Live View** - one bounded canonical declarative snapshot when
-  an Agent publishes one for a Task.
+  an Agent publishes one for a Task;
+- **Generated Task Room App** - one bounded sandboxed mini-app bundle plus its
+  bounded revisioned shared state when a Task's Agent publishes one.
 
 This context lives with the Room and disappears when the Room expires. A Task
 does not create permanent history or a durable workspace.

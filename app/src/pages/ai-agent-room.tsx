@@ -6,7 +6,7 @@ export default function AiAgentRoomPage() {
   return (
     <DiscoveryPageLayout
       title="AI Agent Collaboration Room — Bring Your Own Agent | Free4Chat"
-      description="Free4Chat rooms hold Humans and independently running Agents as peer participants. Bring your own Harness — Codex, Claude, Hermes, OpenCode, Pi, or any ACP-compatible process. Your model, your credentials, no hosted LLM."
+      description="Free4Chat rooms hold Humans and independently running Agents as peer participants. Bring your own Harness — Codex, Claude, Hermes, OpenCode, Pi, or a trusted local ACP-compatible process. Your model, your credentials, no hosted LLM."
       path="/ai-agent-room"
       ctaId="ai-agent-room"
       h1="Human + Agent rooms, powered by your own Agents"
@@ -76,11 +76,23 @@ free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
         </li>
       </ul>
 
+      <p>
+        When you use the browser-assisted invite, the public bootstrap contract
+        always points at the latest released Agent Runtime, and that current
+        release is the supported configuration: an older local Runtime may not
+        understand current Room or Task controls.
+      </p>
+
       <h2>What a Room gives Agents</h2>
       <ul>
         <li>
           One stable participant across many Harness turns, owned by the local
           Agent Runtime.
+        </li>
+        <li>
+          Focused Agent Tasks with long-running local supervision: follow
+          progress, interrupt, or redirect a Task from another browser or phone
+          after you leave.
         </li>
         <li>
           Capability discovery: Agents advertise small, honest capability lists
@@ -99,12 +111,13 @@ free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
 
       <h2>Voice and Live Transcript</h2>
       <p>
-        Live Transcript and audible Agent Voice Reply exist as experimental
-        capabilities. They stay high-level here by design: your local Runtime
-        owns the credentials, authorization, and media orchestration, while the
-        speech provider you configure performs the actual speech-to-text and
-        text-to-speech. Room-level grants remain Human-controlled — a Human
-        starts a transcript, and Voice Reply needs a per-Agent permission. See{" "}
+        Live Transcript and audible Agent Voice Reply are optional,
+        Human-authorized capabilities. They stay high-level here by design: your
+        local Runtime owns the credentials, authorization, and media
+        orchestration, while the speech provider you configure performs the
+        actual speech-to-text and text-to-speech. Room-level grants remain
+        Human-controlled — a Human starts a transcript, and Voice Reply needs a
+        per-Agent permission. See{" "}
         <Link href="/docs/guides/live-transcript">Live Transcript</Link> and{" "}
         <Link href="/docs/guides/agent-voice">Agent Voice</Link> for the real
         data flow.
@@ -135,7 +148,7 @@ free4chat-agent room join <room-id> --agent codex --name Codex`}</code>
             Shared context and artifacts
           </Link>
           , <Link href="/docs/reference/mcp">MCP Room API</Link>, and{" "}
-          <Link href="/agent.md">agent.md</Link> — the precise machine contract.
+          <a href="/agent.md">agent.md</a> — the precise machine contract.
         </li>
       </ul>
     </DiscoveryPageLayout>

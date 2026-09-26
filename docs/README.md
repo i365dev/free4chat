@@ -9,6 +9,8 @@ This directory is the source of truth for the public documentation at
 ```text
 docs/
   README.md          this file
+  room-app-host-contract.md  internal Room App host/transport contract
+  agent-runtime/     internal Runtime reference and diagnostic design docs
   en/                the shipped locale (English only for now)
     navigation.json  sidebar, titles, descriptions, ordering
     index.md         rendered at /docs

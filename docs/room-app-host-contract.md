@@ -25,8 +25,9 @@ Generated Apps use the same host and MessagePort boundary, plus a strict
 inline-only CSP (`connect-src 'none'`, `img-src data:`). V0 accepts only
 `html`, `css`, and `js` source with an empty `networkOrigins` list. The bundle
 is at most 48 KiB, initial/shared state at most 16 KiB, and one Room may hold at
-most four generated Apps. Network-backed capabilities are deliberately
-deferred until a separate authorization and proxy design exists.
+most four generated Apps. Network-backed capabilities are intentionally not
+part of V0; a generic network runtime would need a separate authorization and
+proxy design first.
 
 On iframe load, the host sends a bootstrap `postMessage` with a dedicated
 `MessagePort`, bounded `appInstanceId`, and one-time handshake token. The App
@@ -90,8 +91,10 @@ reconnect/convergence, duplicate/stale handling, and recovery semantics.
 - generated bundle: at most 48 KiB per Task App, four Apps per Room;
 - generated state: at most 16 KiB per snapshot and 4 KiB per update.
 
-The host keeps only coarse in-memory transport counters. App payloads do not
-enter Room messages, history, analytics, or Durable Object storage.
+The host keeps only coarse in-memory transport counters. App message payloads do
+not enter Room messages, history, analytics, or Durable Object storage; the
+bounded Generated Task Room App bundle and shared state below are the
+deliberate exception.
 
 ## Stage and lifecycle
 
@@ -112,17 +115,21 @@ attachments, or screen sharing unavailable.
 ## State ownership
 
 Free4Chat owns Room lifecycle, participant presence, App identity, sandbox
-host, bounded participant projection, transport, lifecycle, and security/rate
-limits. The App owns rendering, domain rules, operation/state model, convergence,
-simulation/authority model, reset semantics, and any persistence or backend.
+host, bounded participant projection, transport, lifecycle, coarse host-owned
+lifecycle analytics, and security/rate limits. The App owns rendering, domain
+rules, operation/state model, convergence, simulation/authority model, reset
+semantics, and any persistence or backend.
 
 The Room does not provide an App-domain database, event log, snapshot service,
 or periodic App-state backup. Apps that keep only browser replicas may restart
 empty after every active replica disappears. That is an App-level durability
 choice, not a reason to make the Room understand domain payloads.
 
-Generated Task Room Apps are the narrow exception for this spike: the Room
-stores their bounded bundle chunks and one current state snapshot so late Room
-participants can load the same Task App. This is still temporary Room state,
-not a durable application backend, and the publishing Agent must be the
-current authority for the correlated Task.
+Generated Task Room Apps are the bounded exception to participant-owned App
+state: the Room stores their bundle chunks and one current state snapshot so
+late Room participants can load the same Task App. One Task has at most one
+publication: an identical retry is a duplicate, while a changed valid bundle
+keeps the same `appInstanceId` and increments `bundleRevision` without resetting
+shared state. This is still temporary Room
+state that disappears with the Room, not a durable application backend, and the
+publishing Agent must be the current authority for the correlated Task.

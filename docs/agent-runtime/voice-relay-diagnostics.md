@@ -7,10 +7,12 @@ tracking issue, NOT behavior code; the Go runtime's implementation of these
 aggregates lives entirely under `agent/internal/media` (see the PR body for
 the scope statement).
 
-Status: **AWAITING DIAGNOSTIC EVIDENCE.** PR #148 Gate B remains open: a
-human has not yet confirmed clean room playback (latest operator report:
-improved but still audible artifacts). This document defines the layered,
-secret-safe diagnostic plan; it changes NO browser/SFU/RTP behavior.
+Status: **RESOLVED / HISTORICAL.** Issue #149 was closed on 2026-08-30 after
+fresh production runs no longer reproduced the electric/robotic distortion and
+human listening was normal/acceptable, including the Voice Stop -> Start
+re-grant path. PR #148 is merged. This document is retained as the layered,
+secret-safe diagnostic plan to reuse if the artifact becomes reproducible
+again; it changes NO browser/SFU/RTP behavior.
 
 ## Reproduction conditions
 
@@ -102,8 +104,9 @@ becomes the investigation target.
 - Short sentence: human hears clean speech, no truncation.
 - Long multi-sentence reply: complete and clean.
 - Voice Stop -> Start re-grant: next turn still audible and clean.
-- Until a human confirms: **AWAITING HUMAN AUDIBILITY CONFIRMATION** —
-  never claim fixed from counters alone.
+- #149 met these criteria as of 2026-08-30. If the artifact recurs, stay at
+  **AWAITING HUMAN AUDIBILITY CONFIRMATION** until a human confirms — never
+  claim fixed from counters alone.
 
 ## Known separate observation
 

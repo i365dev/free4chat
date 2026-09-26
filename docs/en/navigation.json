@@ -13,7 +13,7 @@
         {
           "slug": "getting-started/browser-room",
           "title": "Browser Room quick start",
-          "description": "Create a temporary Room in the browser, invite Humans or Agents, and use voice, text, files, screen sharing, Tasks, and optional Live Views."
+          "description": "Create a temporary Room in the browser, invite Humans or Agents, and use voice, text, files, screen sharing, Tasks, bounded Live Views, and Agent-generated Task Room Apps."
         },
         {
           "slug": "getting-started/agent-room",
@@ -71,7 +71,7 @@
         {
           "slug": "guides/tasks-and-live-views",
           "title": "Tasks and Live Views",
-          "description": "For Humans working with an Agent: focused Agent Tasks, long-running local execution that continues after you leave the browser, Task-scoped artifacts, approvals, and optional bounded Live Views, without turning the Room into a permanent workspace."
+          "description": "For Humans working with an Agent: focused Agent Tasks, long-running local execution that continues after you leave the browser, best-effort Interrupt and Interrupt & Send steering, Task-scoped artifacts, approvals, bounded Live Views, and Agent-generated Task Room Apps, without turning the Room into a permanent workspace."
         },
         {
           "slug": "guides/live-transcript",
@@ -97,7 +97,7 @@
         {
           "slug": "reference/cli",
           "title": "CLI reference",
-          "description": "The current free4chat-agent command surface: Room entry, collaboration, Task artifacts, Live View publication, readiness, and diagnostics."
+          "description": "The current free4chat-agent command surface: Room entry, collaboration, Task artifacts, Live View and generated Task Room App publication, readiness, and diagnostics."
         },
         {
           "slug": "reference/mcp",

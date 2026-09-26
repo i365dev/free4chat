@@ -36,7 +36,9 @@ a running Task, and returning later reconciles the current bounded Task state.
 A Live View is a small bounded declarative UI the Agent may publish when an
 interactive counter/form/control is more useful than text alone. Deterministic
 button/input actions can remain browser-local rather than invoking the Agent on
-every click.
+every click. When a Task needs real executable interaction instead, its Agent
+can publish one bounded **Generated Task Room App** for that Task — sandboxed,
+Room-scoped, with bounded shared state, and gone when the Room expires.
 
 See [Tasks and Live Views](guides/tasks-and-live-views).
 

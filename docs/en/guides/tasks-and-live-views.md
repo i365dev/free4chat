@@ -21,7 +21,7 @@ Task
 → Agent activity/progress
 → Task-scoped artifacts
 → approvals when needed
-→ optional current Live View
+→ optional current Live View, or one Generated Task Room App
 ```
 
 A Task is not a permanent Thread, project, or workspace. It exists only inside
@@ -144,7 +144,8 @@ yield. It is best-effort: Free4Chat sends the request to that one conversation
 and leaves the local Harness to unwind its own work, so a Harness that is slow
 to honor it keeps the Task in `Interrupting` until that same turn settles. It
 does not affect other Tasks, it does not cancel work that already finished, and
-it never claims that the Harness's own tools were synchronously terminated.
+it never claims that the Harness's own tools, child processes, or provider
+process were synchronously terminated.
 
 **Interrupt & send** is STEER: one action, not two. Your typed instruction is
 canonical Task input first, and it is then prioritized so it changes what the
@@ -153,11 +154,13 @@ Agent does next instead of waiting behind follow-ups that were already queued:
 ```text
 Interrupt & send
 → your instruction is preserved as canonical Task input
-→ the Harness delivers it into the active turn when it supports steering
-  natively; otherwise the runtime marks it as the Task's next instruction
+→ it is prioritized ahead of ordinary follow-ups that have not started yet
 → the active turn is asked to yield (best-effort) so the instruction runs sooner
-→ the instruction runs exactly once, ahead of ordinary queued follow-ups
+→ the instruction runs exactly once, when the Task can advance
 ```
+
+With an active turn `N` and queued follow-ups `A` then `B`, a steer `S` runs as
+`N settles/yields → S → A → B`.
 
 The important guarantee is that your instruction is never lost. A slow, ignored,
 or refused yield only changes *when* the steer runs, never whether it survives:
@@ -166,6 +169,13 @@ turn settles. If the turn you were reacting to had already finished, the action 
 not an error either — your instruction is still accepted as the next Task
 instruction (in its ordinary place), nothing later is cancelled, and the Task
 continues normally.
+
+Steering is Runtime-owned and provider-neutral today: the Runtime preserves your
+instruction and asks the active turn to yield, and the same mechanism applies to
+every built-in Harness. The Harness boundary is designed so a future Runtime
+could map a verified native steering capability onto the same semantics, but no
+provider currently uses one, and you should not expect provider-specific
+steering behavior.
 
 ## Execution capacity
 
@@ -181,6 +191,8 @@ independent Tasks           → may make bounded concurrent progress
 Concurrency is an explicitly verified capability, not a general promise. Not
 every built-in Harness supports running independent Tasks at the same time, and
 Free4Chat never enables it merely because a Harness can hold several sessions.
+Currently verified: Hermes runs up to 2 independent Task turns at the same time
+and Pi up to 4; Codex, OpenCode, and Claude run one Task turn at a time.
 
 When execution capacity is full, further accepted work is shown as **Queued** —
 waiting for an execution lane — rather than appearing stuck or silently dropped.
@@ -214,6 +226,34 @@ bounded artifact for Task A without presenting it as an unrelated Room-level
 artifact or exposing it to unrelated Agent Tasks.
 
 Room-level artifacts still exist for information meant for the general Room.
+
+## Task output surfaces
+
+A Task result can take four different shapes. They are deliberately separate
+levels, not one surface growing bigger:
+
+```text
+Text / Artifact
+→ ordinary Task result: text, notes, a patch, a bounded file
+
+Live View
+→ bounded declarative UI, validated and rendered by Free4Chat
+→ small deterministic local controls
+
+Generated Task Room App
+→ bounded executable mini-app generated from this one Task
+→ sandboxed, Room-scoped, bounded shared state, realtime collaboration
+
+External app
+→ backend-heavy, large, long-lived, or otherwise arbitrary deployments
+```
+
+Start at the smallest level that fits. Text/artifact stays the default Task
+result; a Live View is for a compact structured interface; a Generated Task Room
+App is the escape hatch when text is too small and a Live View is too
+constrained, but a real external deployment is unnecessary; an external
+application is for work that genuinely needs its own backend, scale, or
+long-lived deployment.
 
 ## Sending an attachment into a Task
 
@@ -377,20 +417,61 @@ Decision rule:
 small declarative presentation/control
 → Task Live View
 
-arbitrary executable JS / Canvas / WebGL / CRDT /
-complex realtime application state
-→ not Task Live View
-→ bounded external shared-surface host
+small executable mini-app, bounded state, Room-scoped collaboration
+→ Generated Task Room App
+
+arbitrary executable JS / Canvas / WebGL / CRDT / complex realtime
+application state, own backend, or long-lived deployment
+→ not a Task surface
+→ curated external App or your own external application
 ```
 
 Free4Chat provides only the sandbox, trusted-origin, and transport boundary for
 such surfaces. The separate Extension Lab owns the curated App portfolio and
 its runtime/discovery lifecycle; this is not a general-purpose plugin SDK.
 
+## Generated Task Room Apps
+
+Some work needs a small executable interface rather than a result to read. For
+that, the Task's Agent can publish one **Generated Task Room App**: a
+self-contained mini-app generated from that single Task.
+
+```text
+Task Agent
+→ publish_generated_app (bundle: html + css + js + manifest + initialState)
+→ Free4Chat validates it and stores it as Room-scoped Task state
+→ the Room renders it in an opaque-origin sandbox
+→ Humans in the Room interact with it and share bounded state
+```
+
+What this is:
+
+- **One Task, one App.** The Task's canonical Agent is the only publisher; a
+  changed valid bundle updates that same App instead of creating a second one.
+- **Bounded.** The bundle is at most 48 KiB and its shared state at most 16 KiB.
+- **Sandboxed.** No Room cookies, participant credentials, filesystem, camera,
+  microphone, or raw peer connection, and no arbitrary network runtime.
+- **Room-scoped and temporary.** The App, its bundle, and its shared state
+  disappear with the Room. A Human who refreshes, rejoins, or joins later
+  reconstructs the current published App and shared state instead of replaying
+  history.
+- **Collaborative.** Shared state is revisioned by the Room, so several Humans
+  can interact with the same App while the Room remains the authority.
+
+It is not generic app hosting, not an arbitrary backend runtime, not a plugin
+marketplace, and not a way to publish a localhost service. Work that needs its
+own backend, scale, or long-lived deployment belongs in an external application
+instead.
+
+See the [CLI reference](../reference/cli) for the `generated-app` commands and
+the [MCP Room API](../reference/mcp) for the exact `publish_generated_app`
+contract.
+
 ## What disappears when the Room expires?
 
-The Task, its Room-shared conversation/activity, Task-scoped artifacts, and
-current Live View are temporary Room state.
+The Task, its Room-shared conversation/activity, Task-scoped artifacts, current
+Live View, and any Generated Task Room App with its bundle and shared state are
+temporary Room state.
 
 Anything that must survive should be kept explicitly by a participant in its
 own environment: a local file, repository, Agent/Harness memory, or another
@@ -406,6 +487,7 @@ Room history.
   ownership.
 - [Shared context and artifacts](../concepts/shared-context) - canonical vs
   local/ephemeral state.
-- [CLI reference](../reference/cli) - `live-view publish` for Runtime users.
-- [MCP Room API](../reference/mcp) - low-level Task correlation and
-  `publish_live_view`.
+- [CLI reference](../reference/cli) - `live-view publish` and `generated-app`
+  commands for Runtime users.
+- [MCP Room API](../reference/mcp) - low-level Task correlation,
+  `publish_live_view`, and `publish_generated_app`.
