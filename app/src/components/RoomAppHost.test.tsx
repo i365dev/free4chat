@@ -11,6 +11,7 @@ import {
 } from "../common/roomApp"
 import type {
   RoomAppDefinition,
+  RoomAppAgentRequestEnvelope,
   RoomAppParticipantProjection,
   RoomAppUnicastEnvelope,
   RoomAppUnicastResult,
@@ -889,9 +890,13 @@ describe("RoomAppHost", () => {
 describe("RoomAppHost App-instance transport lifetime", () => {
   const appInstanceId = "test-app:room"
   let deliverRemote: ((message: RoomAppTransportEnvelope) => void) | undefined
+  let deliverAgentRequest:
+    | ((request: RoomAppAgentRequestEnvelope) => void)
+    | undefined
 
   beforeEach(() => {
     deliverRemote = undefined
+    deliverAgentRequest = undefined
   })
 
   /**
@@ -920,6 +925,14 @@ describe("RoomAppHost App-instance transport lifetime", () => {
     subscribeUnicast: () => () => undefined,
     subscribeUnicastResults: () => () => undefined,
     sendUnicast: () => "sent" as const,
+    subscribeAgentRequests: (
+      listener: (request: RoomAppAgentRequestEnvelope) => void
+    ) => {
+      deliverAgentRequest = listener
+      return () => undefined
+    },
+    setAgentHostReady: () => undefined,
+    respondAgentRequest: () => true,
     onClose: () => undefined,
   }
 
@@ -1006,6 +1019,101 @@ describe("RoomAppHost App-instance transport lifetime", () => {
       sourceParticipantId: "human-b",
       payload: { type: "tick", at: 2 },
     })
+    rendered.unmount()
+  })
+
+  it("forwards opaque Agent requests over MessagePort and returns one correlated response", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const setAgentHostReady = vi.fn()
+    const respondAgentRequest = vi.fn(() => true)
+    const { rendered, iframe, frameWindow } = mountApp(catalogRevision(), {
+      setAgentHostReady,
+      respondAgentRequest,
+    })
+    const { port } = handshake(iframe, frameWindow)
+    expect(setAgentHostReady).toHaveBeenCalledWith(appInstanceId, true)
+    const payload = { arbitrary: [1, "two"], nested: { value: true } }
+    act(() =>
+      deliverAgentRequest?.({ requestId: "req_1", appInstanceId, payload })
+    )
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "agent_request",
+      requestId: "req_1",
+      appInstanceId,
+      payload,
+    })
+    act(() =>
+      port.emit({
+        type: "agentResponse",
+        appInstanceId,
+        requestId: "req_1",
+        ok: true,
+        result: { echoed: payload },
+      })
+    )
+    expect(respondAgentRequest).toHaveBeenCalledWith({
+      requestId: "req_1",
+      appInstanceId,
+      ok: true,
+      result: { echoed: payload },
+    })
+    act(() =>
+      port.emit({
+        type: "agentResponse",
+        appInstanceId,
+        requestId: "req_1",
+        ok: true,
+        result: { duplicate: true },
+      })
+    )
+    expect(respondAgentRequest).toHaveBeenCalledTimes(1)
+    rendered.unmount()
+    expect(setAgentHostReady).toHaveBeenLastCalledWith(appInstanceId, false)
+  })
+
+  it("withdraws host readiness across an iframe re-bootstrap gap", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const setAgentHostReady = vi.fn()
+    const { rendered, iframe, frameWindow } = mountApp(catalogRevision(), {
+      setAgentHostReady,
+    })
+    const { port: oldPort } = handshake(iframe, frameWindow)
+    expect(setAgentHostReady.mock.calls.map(([, ready]) => ready)).toEqual([
+      false,
+      true,
+    ])
+
+    fireEvent.load(iframe)
+    expect(setAgentHostReady.mock.calls.map(([, ready]) => ready)).toEqual([
+      false,
+      true,
+      false,
+    ])
+    expect(oldPort.close).toHaveBeenCalled()
+    const bootstrap = frameWindow.postMessage.mock.calls[1]![0]
+    const newPort = lastChannel!.port1
+    act(() =>
+      deliverAgentRequest?.({
+        requestId: "req_during_bootstrap",
+        appInstanceId,
+        payload: { opaque: true },
+      })
+    )
+    expect(newPort.postMessage).not.toHaveBeenCalled()
+
+    act(() =>
+      newPort.emit({
+        type: "ready",
+        appInstanceId,
+        handshakeToken: bootstrap.handshakeToken,
+      })
+    )
+    expect(setAgentHostReady.mock.calls.map(([, ready]) => ready)).toEqual([
+      false,
+      true,
+      false,
+      true,
+    ])
     rendered.unmount()
   })
 

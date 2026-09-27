@@ -520,6 +520,9 @@ export default function RoomContent({
     sendRoomAppUnicast,
     subscribeRoomAppUnicast,
     subscribeRoomAppUnicastResults,
+    subscribeRoomAppAgentRequests,
+    setRoomAppHostReady,
+    respondRoomAppAgentRequest,
     sendGeneratedAppState,
     subscribeGeneratedAppState = () => () => undefined,
   } = useSfuChatRoom(roomName, nickName, roomType, {
@@ -2903,6 +2906,9 @@ export default function RoomContent({
                         subscribeUnicast={subscribeRoomAppUnicast}
                         subscribeUnicastResults={subscribeRoomAppUnicastResults}
                         sendUnicast={sendRoomAppUnicast}
+                        subscribeAgentRequests={subscribeRoomAppAgentRequests}
+                        setAgentHostReady={setRoomAppHostReady}
+                        respondAgentRequest={respondRoomAppAgentRequest}
                         isFullscreen={isFullscreen}
                         onToggleFullscreen={() =>
                           toggleGeneratedAppFullscreen(
@@ -2946,6 +2952,9 @@ export default function RoomContent({
                         subscribeUnicast={subscribeRoomAppUnicast}
                         subscribeUnicastResults={subscribeRoomAppUnicastResults}
                         sendUnicast={sendRoomAppUnicast}
+                        subscribeAgentRequests={subscribeRoomAppAgentRequests}
+                        setAgentHostReady={setRoomAppHostReady}
+                        respondAgentRequest={respondRoomAppAgentRequest}
                         isFullscreen={isFullscreen}
                         onToggleFullscreen={() =>
                           toggleRoomAppFullscreen(app.id)

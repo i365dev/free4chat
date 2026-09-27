@@ -75,6 +75,27 @@ queued for offline participants, or stored in Room state, message history,
 Agent event streams, analytics, or logs. It is not end-to-end encrypted because
 the Room server relays the payload.
 
+## Resident Agent request relay
+
+An explicitly invoked resident Runtime request may use the generic MCP tool
+`room_app_request(appInstanceId, payload)`. The Room accepts only a current
+Agent participant handle and a curated Room App instance in the current Room.
+An eligible host is a connected Human browser socket whose sandboxed curated
+iframe has completed the existing MessagePort handshake and whose socket
+attachment still names that App instance. The Room routes only when exactly
+one eligible host exists; zero hosts or multiple hosts fail immediately.
+
+The host forwards the opaque JSON request and correlated `requestId` through
+the existing iframe MessagePort. A response must return on the same
+authenticated host socket, name the exact current App instance and request id,
+and fit the same 16 KiB serialized UTF-8 bound. Requests expire after 15
+seconds, at most four may be in flight per Room, and host/Agent disconnect,
+App unmount, or Room teardown fails the request. Unknown, duplicate, and late
+responses are ignored. No offline queue, retry, replay, persistence, Room
+history, analytics content, arbitrary URL proxy, or App-specific interpretation
+is provided. The Runtime keeps the participant handle private and exposes only
+the generic local `room-app request` operation.
+
 Free4Chat does not interpret App payloads or define App operation semantics.
 Reliable delivery is not an operation log or replay service; realtime delivery
 does not guarantee intermediate updates arrive. Apps own bootstrap,

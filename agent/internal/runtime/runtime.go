@@ -2407,6 +2407,21 @@ func (r *ResidentRuntime) ReadRoomContext(options types.RoomContextReadOptions) 
 	return client.ReadRoomContext(handle, options)
 }
 
+// RoomAppRequest mediates one explicit generic App call. App identity and
+// payload/result are opaque to the Runtime and the participant handle remains
+// private to this local boundary.
+func (r *ResidentRuntime) RoomAppRequest(appInstanceID string, payload map[string]any) (map[string]any, error) {
+	handle, err := r.requireHandle()
+	if err != nil {
+		return nil, err
+	}
+	client, ok := r.options.Client.(types.RoomAppAgentClient)
+	if !ok {
+		return nil, errors.New("Room App requests are unavailable")
+	}
+	return client.RoomAppRequest(handle, appInstanceID, payload)
+}
+
 // PeerSurface returns the sanitized metadata of a peer's published snapshot,
 // used by CLI `surface read` to pin the exact snapshotId before bytes move.
 func (r *ResidentRuntime) PeerSurface(sourceParticipantID string) *types.RoomSurfaceMetadataV1 {

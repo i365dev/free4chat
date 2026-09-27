@@ -8,6 +8,10 @@ export const ROOM_APP_REALTIME_MESSAGES_PER_SECOND = 60
 export const ROOM_APP_BYTES_PER_SECOND = 256 * 1024
 export const ROOM_APP_UNICAST_MESSAGES_PER_SECOND = 10
 export const ROOM_APP_UNICAST_BYTES_PER_SECOND = 64 * 1024
+// One-shot resident requests use the existing Room App payload budget and do
+// not become shared App transport or state.
+export const ROOM_APP_AGENT_REQUEST_TIMEOUT_MS = 15_000
+export const ROOM_APP_AGENT_MAX_IN_FLIGHT = 4
 export const ROOM_APP_TRUSTED_ORIGIN = "https://room-apps.free4.chat"
 export const ROOM_APP_CATALOG_ENDPOINT = `${ROOM_APP_TRUSTED_ORIGIN}/_catalog.json`
 export const ROOM_APP_CATALOG_MAX_ENTRIES = 32
@@ -330,6 +334,7 @@ export type RoomAppHostMessage =
       sourceParticipantId?: string
     }
   | ({ type: "unicast_result" } & RoomAppUnicastResult)
+  | ({ type: "agent_request" } & RoomAppAgentRequestEnvelope)
   | {
       type: "error"
       appInstanceId: string
@@ -376,6 +381,20 @@ export type RoomAppClientMessage =
       expectedRevision: number
       state: Record<string, unknown>
     }
+  | {
+      type: "agentResponse"
+      appInstanceId: string
+      requestId: string
+      ok: boolean
+      result?: Record<string, unknown>
+      error?: string
+    }
+
+export interface RoomAppAgentRequestEnvelope {
+  requestId: string
+  appInstanceId: string
+  payload: Record<string, unknown>
+}
 
 export function isValidRoomAppParticipantId(value: unknown): value is string {
   return (
@@ -462,6 +481,34 @@ export function decodeRoomAppClientMessage(
   appInstanceId: string
 ): RoomAppClientMessage | null {
   if (!isRecord(value) || value.appInstanceId !== appInstanceId) return null
+  if (value.type === "agentResponse") {
+    if (
+      !isValidRoomAppRequestId(value.requestId) ||
+      typeof value.ok !== "boolean" ||
+      (value.ok && !isRecord(value.result)) ||
+      (!value.ok &&
+        (typeof value.error !== "string" || value.error.length > 256))
+    )
+      return null
+    const response = {
+      type: "room-app-agent-response",
+      requestId: value.requestId,
+      appInstanceId,
+      ok: value.ok,
+      ...(value.ok ? { result: value.result } : { error: value.error }),
+    }
+    const bytes = serializedRoomAppBytes(response)
+    if (bytes === null || bytes > ROOM_APP_MAX_PAYLOAD_BYTES) return null
+    return {
+      type: "agentResponse",
+      appInstanceId,
+      requestId: value.requestId,
+      ok: value.ok,
+      ...(value.ok
+        ? { result: value.result as Record<string, unknown> }
+        : { error: value.error as string }),
+    }
+  }
   if (
     value.type === "milestone" &&
     value.milestone === "engaged" &&
@@ -514,6 +561,29 @@ export function decodeRoomAppClientMessage(
   return {
     type: value.type,
     appInstanceId,
+    payload: payload.payload,
+  }
+}
+
+export function decodeRoomAppAgentRequest(
+  value: unknown,
+  roomName: string
+): RoomAppAgentRequestEnvelope | null {
+  if (
+    !isRecord(value) ||
+    value.type !== "room-app-agent-request" ||
+    typeof value.appInstanceId !== "string" ||
+    !isRoomAppInstanceForRoom(roomName, value.appInstanceId) ||
+    !isValidRoomAppRequestId(value.requestId)
+  )
+    return null
+  const payload = validateRoomAppPayload(value.payload)
+  if (!payload.ok) return null
+  const bytes = serializedRoomAppBytes(value)
+  if (bytes === null || bytes > ROOM_APP_MAX_PAYLOAD_BYTES) return null
+  return {
+    requestId: value.requestId,
+    appInstanceId: value.appInstanceId,
     payload: payload.payload,
   }
 }

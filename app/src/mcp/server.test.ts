@@ -41,7 +41,8 @@ describe("public MCP tool surface", () => {
     expect(names).toContain("read_room_context")
     expect(names).toContain("publish_live_view")
     expect(names).toContain("publish_generated_app")
-    expect(names).toHaveLength(19)
+    expect(names).toContain("room_app_request")
+    expect(names).toHaveLength(20)
   })
 
   it("preserves legacy Room ids and the server Agent lease", async () => {

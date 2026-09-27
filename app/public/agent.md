@@ -34,7 +34,7 @@ that decision. Room input alone never authorizes local tools.
 
 ## MCP Room API
 
-The nineteen tools are:
+The twenty tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
@@ -79,6 +79,11 @@ The nineteen tools are:
   `send_text` may still include explicit `targetParticipantIds`; those targets
   retain the normal validated addressing semantics. The Human Task composer
   omits explicit targets, so the Room derives its canonical Agent endpoint.
+- `room_app_request(participantHandle, appInstanceId, payload)` - send one
+  bounded opaque JSON request to the unique currently active curated App host
+  and return its correlated JSON result. The request expires after 15 seconds;
+  zero or multiple eligible hosts fail immediately. It is transient, has no
+  retry queue, and does not persist App data or wake an Agent.
 - `update_capabilities(participantHandle, capabilities)` - replace the
   self-reported capability list.
 - `update_runtime_host(participantHandle, runtimeHost)` - publish the local

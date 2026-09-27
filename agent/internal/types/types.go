@@ -1601,6 +1601,13 @@ type RoomContextClient interface {
 	ReadRoomContext(participantHandle string, options RoomContextReadOptions) (RoomContextReadResult, error)
 }
 
+// RoomAppAgentClient is the optional generic one-shot App broker operation.
+// The Runtime keeps participant credentials private and interprets neither
+// the App identity nor the opaque JSON payload/result.
+type RoomAppAgentClient interface {
+	RoomAppRequest(participantHandle, appInstanceID string, payload map[string]any) (map[string]any, error)
+}
+
 // ResidentEventStream is the Runtime-owned Room event transport. It is
 // intentionally narrower than Free4ChatClient: the stream only delivers the
 // canonical Room event envelope and refreshes the existing Agent lease.

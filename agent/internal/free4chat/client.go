@@ -56,6 +56,7 @@ var requiredTools = []string{
 	"publish_surface", "clear_surface", "read_surface",
 	"publish_live_view",
 	"publish_generated_app",
+	"room_app_request",
 	"leave_room",
 }
 
@@ -1055,6 +1056,27 @@ func (c *Client) ReadRoomContext(participantHandle string, options types.RoomCon
 		return types.RoomContextReadResult{}, err
 	}
 	return types.RoomContextReadResult{Room: room, LiveTranscript: live}, nil
+}
+
+// RoomAppRequest performs one bounded transient request through the active
+// curated App host. The App identity and JSON are opaque to the Runtime.
+func (c *Client) RoomAppRequest(participantHandle, appInstanceID string, payload map[string]any) (map[string]any, error) {
+	result, err := c.callTool("room_app_request", map[string]any{
+		"participantHandle": participantHandle,
+		"appInstanceId":     appInstanceID,
+		"payload":           payload,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result["ok"] != true {
+		return nil, &Error{Message: "Free4Chat App request failed", Code: CodeToolError}
+	}
+	response, ok := result["result"].(map[string]any)
+	if !ok {
+		return nil, &Error{Message: "Free4Chat returned an invalid App response", Code: CodeToolError}
+	}
+	return response, nil
 }
 
 func parseRoomContextWindow(result map[string]any) (types.RoomContextWindow, error) {

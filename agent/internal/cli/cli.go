@@ -25,6 +25,7 @@ const maxAttachmentBytes = attachments.MaxAttachmentBytes
 const maxSurfaceBytes = attachments.MaxSurfaceBytes
 const maxTaskLiveViewBytes = 32 * 1024
 const maxGeneratedAppBytes = 48 * 1024
+const maxRoomAppRequestBytes = 16 * 1024
 
 const mcpEndpointDefault = "https://www.free4.chat/mcp"
 
@@ -67,6 +68,7 @@ func usageText() string {
   free4chat-agent handoff --clear [--instance <id>]
   free4chat-agent handoff --status [--instance <id>]
   free4chat-agent context read [--before-sequence <n>] [--after-sequence <n>] [--limit <1-50>] [--before-transcript-sequence <n>] [--after-transcript-sequence <n>] [--transcript-limit <1-50>] [--instance <id>]
+  free4chat-agent room-app request --app-instance <id> --payload-file <json> [--instance <id>]
   free4chat-agent version [--json]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
@@ -363,6 +365,29 @@ func run(args []string) error {
 			BeforeTranscriptSequence: beforeTranscript,
 			AfterTranscriptSequence:  afterTranscript,
 			TranscriptLimit:          transcriptLimit,
+		})
+
+	case "room-app":
+		if len(rest) < 1 || rest[0] != "request" {
+			return errUsage()
+		}
+		requestArgs := rest[1:]
+		appInstanceID := option(requestArgs, "--app-instance")
+		payloadPath := option(requestArgs, "--payload-file")
+		if appInstanceID == "" || len(appInstanceID) > 96 || !regexp.MustCompile(`^[a-z0-9][a-z0-9:-]{0,95}$`).MatchString(appInstanceID) || payloadPath == "" {
+			return errUsage()
+		}
+		data, err := attachments.ReadBounded(payloadPath, maxRoomAppRequestBytes)
+		if err != nil {
+			return fmt.Errorf("Room App request JSON must be a non-empty file up to %d bytes", maxRoomAppRequestBytes)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(data, &payload); err != nil || payload == nil {
+			return errors.New("Room App request payload must be a JSON object")
+		}
+		return runViaDaemon(&daemon.IpcRequest{
+			Op: "room-app-request", InstanceID: option(requestArgs, "--instance"),
+			AppInstanceID: appInstanceID, Payload: payload,
 		})
 
 	case "collab":

@@ -14,6 +14,7 @@ import {
   decodeRoomAppEnvelope,
   decodeRoomAppUnicastEnvelope,
   decodeRoomAppUnicastResult,
+  decodeRoomAppAgentRequest,
   encodeRoomAppUnicastRequest,
   encodeRoomAppEnvelope,
   isRoomAppInstanceForRoom,
@@ -723,5 +724,34 @@ describe("Room App host contract", () => {
     const bytesGuard = roomAppUnicastRateGuard()
     expect(bytesGuard.allow(64 * 1024, 1000)).toBe(true)
     expect(bytesGuard.allow(1, 1000)).toBe(false)
+  })
+
+  it("relays arbitrary opaque JSON with strict instance, correlation, and size checks", () => {
+    const roomName = "room-a"
+    const appInstanceId = roomAppInstanceId(roomName, "test-app")
+    const request = {
+      type: "room-app-agent-request",
+      requestId: "req_1",
+      appInstanceId,
+      payload: { arbitrary: [1, "two"], nested: { opaque: true } },
+    }
+    expect(decodeRoomAppAgentRequest(request, roomName)).toEqual({
+      requestId: "req_1",
+      appInstanceId,
+      payload: request.payload,
+    })
+    expect(decodeRoomAppAgentRequest(request, "room-b")).toBeNull()
+    expect(
+      decodeRoomAppAgentRequest({ ...request, requestId: "bad id" }, roomName)
+    ).toBeNull()
+    expect(
+      decodeRoomAppAgentRequest(
+        {
+          ...request,
+          payload: { data: "x".repeat(ROOM_APP_MAX_PAYLOAD_BYTES) },
+        },
+        roomName
+      )
+    ).toBeNull()
   })
 })

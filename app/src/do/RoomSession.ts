@@ -159,6 +159,9 @@ import {
 } from "../common/generatedRoomApp"
 import {
   ROOM_APP_MAX_PAYLOAD_BYTES,
+  ROOM_APP_AGENT_MAX_IN_FLIGHT,
+  ROOM_APP_AGENT_REQUEST_TIMEOUT_MS,
+  ROOM_APP_MAX_INSTANCES,
   ROOM_APP_PROTOCOL_VERSION,
   ROOM_APP_UNICAST_BYTES_PER_SECOND,
   ROOM_APP_UNICAST_MESSAGES_PER_SECOND,
@@ -454,6 +457,7 @@ interface ConnectionAttachment {
   token: string
   connectionNonce: string
   roomAppUnicastRateSamples?: Array<{ at: number; bytes: number }>
+  activeRoomAppInstances?: string[]
   pendingTaskSessionDiscovery?: PendingTaskSessionDiscovery
   pendingTaskSessionStart?: PendingTaskSessionStart
 }
@@ -1038,6 +1042,15 @@ type ClientMessage =
       appInstanceId: string
       payload: Record<string, unknown>
     }
+  | { type: "room-app-host-state"; appInstanceId: string; ready: boolean }
+  | {
+      type: "room-app-agent-response"
+      requestId: string
+      appInstanceId: string
+      ok: boolean
+      result?: Record<string, unknown>
+      error?: string
+    }
   | {
       // #410: generated App shared state is a Room-owned replace operation,
       // unlike the existing peer/SFU App transport. The expected revision
@@ -1049,6 +1062,24 @@ type ClientMessage =
     }
 
 export class RoomSession extends DurableObject<RoomSessionEnv> {
+  // One-shot requests exist only in this live DO instance and are never
+  // persisted or replayed after eviction/reconnect.
+  private readonly pendingRoomAppAgentRequests = new Map<
+    string,
+    {
+      appInstanceId: string
+      agentParticipantId: string
+      agentConnectionNonce: string
+      hostParticipantId: string
+      hostConnectionNonce: string
+      resolve: (value: {
+        ok: boolean
+        result?: Record<string, unknown>
+        error?: string
+      }) => void
+      timer: ReturnType<typeof setTimeout>
+    }
+  >()
   // A participant has at most one outstanding long-poll. A null value is a
   // short-lived reservation while the request refreshes its lease.
   private readonly agentWaiters = new Map<string, AgentWaiter | null>()
@@ -2175,6 +2206,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   private async expireRoom(room: RoomRecord): Promise<void> {
+    this.failAllRoomAppAgentRequests("room_expired")
     // Snapshot and detach the expiring generation's in-memory recipients
     // before the first external await. Storage deletion does not isolate the
     // live DO instance: a recycled room name can create a new generation
@@ -7238,6 +7270,164 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  private async handleRoomAppHostState(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    message: Extract<ClientMessage, { type: "room-app-host-state" }>
+  ): Promise<void> {
+    if (!isValidRoomAppInstanceId(message.appInstanceId)) return
+    if (this.env.ROOM_APPS_ENABLED !== "true") return
+    if (message.ready) {
+      setProductionRoomAppCatalog(
+        await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
+      )
+      const room = await this.activeRoom()
+      const participant = room?.participants[attachment.participantId]
+      if (
+        !room ||
+        !participant ||
+        participant.kind !== "human" ||
+        !participant.connected ||
+        participant.connectionNonce !== attachment.connectionNonce ||
+        !isRoomAppInstanceForRoom(
+          this.roomAnalyticsName(),
+          message.appInstanceId
+        )
+      )
+        return
+    }
+    const current = Array.isArray(attachment.activeRoomAppInstances)
+      ? attachment.activeRoomAppInstances
+          .filter(isValidRoomAppInstanceId)
+          .slice(0, ROOM_APP_MAX_INSTANCES)
+      : []
+    const next = message.ready
+      ? [...new Set([...current, message.appInstanceId])].slice(
+          0,
+          ROOM_APP_MAX_INSTANCES
+        )
+      : current.filter((id) => id !== message.appInstanceId)
+    try {
+      socket.serializeAttachment({
+        ...attachment,
+        activeRoomAppInstances: next,
+      } satisfies ConnectionAttachment)
+    } catch {
+      return
+    }
+    if (!message.ready)
+      this.failRoomAppAgentRequestsForHost(
+        attachment.participantId,
+        attachment.connectionNonce,
+        "host_unavailable",
+        message.appInstanceId
+      )
+  }
+
+  private async handleRoomAppAgentResponse(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    message: Extract<ClientMessage, { type: "room-app-agent-response" }>
+  ): Promise<void> {
+    if (
+      !isValidRoomAppRequestId(message.requestId) ||
+      !isValidRoomAppInstanceId(message.appInstanceId)
+    )
+      return
+    const pending = this.pendingRoomAppAgentRequests.get(message.requestId)
+    if (
+      !pending ||
+      pending.appInstanceId !== message.appInstanceId ||
+      pending.hostParticipantId !== attachment.participantId ||
+      pending.hostConnectionNonce !== attachment.connectionNonce ||
+      !attachment.activeRoomAppInstances?.includes(message.appInstanceId)
+    )
+      return
+    const envelope = message.ok
+      ? {
+          type: "room-app-agent-response",
+          requestId: message.requestId,
+          appInstanceId: message.appInstanceId,
+          ok: true,
+          result: message.result,
+        }
+      : {
+          type: "room-app-agent-response",
+          requestId: message.requestId,
+          appInstanceId: message.appInstanceId,
+          ok: false,
+          error: message.error,
+        }
+    const bytes = serializedRoomAppBytes(envelope)
+    if (
+      typeof message.ok !== "boolean" ||
+      (message.ok &&
+        (!message.result ||
+          typeof message.result !== "object" ||
+          Array.isArray(message.result))) ||
+      (!message.ok &&
+        (typeof message.error !== "string" || message.error.length > 256)) ||
+      bytes === null ||
+      bytes > ROOM_APP_MAX_PAYLOAD_BYTES
+    ) {
+      this.finishRoomAppAgentRequest(message.requestId, {
+        ok: false,
+        error: "invalid_response",
+      })
+      return
+    }
+    this.finishRoomAppAgentRequest(
+      message.requestId,
+      message.ok
+        ? { ok: true, result: message.result }
+        : { ok: false, error: message.error }
+    )
+  }
+
+  private finishRoomAppAgentRequest(
+    requestId: string,
+    result: { ok: boolean; result?: Record<string, unknown>; error?: string }
+  ): void {
+    const pending = this.pendingRoomAppAgentRequests.get(requestId)
+    if (!pending) return
+    this.pendingRoomAppAgentRequests.delete(requestId)
+    clearTimeout(pending.timer)
+    pending.resolve(result)
+  }
+
+  private failRoomAppAgentRequestsForHost(
+    participantId: string,
+    nonce: string,
+    error: string,
+    appInstanceId?: string
+  ): void {
+    for (const [requestId, pending] of this.pendingRoomAppAgentRequests)
+      if (
+        pending.hostParticipantId === participantId &&
+        pending.hostConnectionNonce === nonce &&
+        (appInstanceId === undefined || pending.appInstanceId === appInstanceId)
+      )
+        this.finishRoomAppAgentRequest(requestId, { ok: false, error })
+  }
+
+  private failRoomAppAgentRequestsForAgent(
+    participantId: string,
+    nonce: string,
+    error: string
+  ): void {
+    for (const [requestId, pending] of this.pendingRoomAppAgentRequests)
+      if (
+        pending.agentParticipantId === participantId &&
+        pending.agentConnectionNonce === nonce
+      )
+        this.finishRoomAppAgentRequest(requestId, { ok: false, error })
+  }
+
+  private failAllRoomAppAgentRequests(error: string): void {
+    for (const requestId of this.pendingRoomAppAgentRequests.keys())
+      this.finishRoomAppAgentRequest(requestId, { ok: false, error })
+  }
+
   private async handleRoomAppUnicast(
     socket: WebSocket,
     attachment: ConnectionAttachment,
@@ -7866,6 +8056,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
     if (!participant || participant.kind !== "human" || !participant.media) {
       socket.close(4003, "Unauthorized")
+      return
+    }
+    if (message.type === "room-app-host-state") {
+      await this.handleRoomAppHostState(socket, attachment, message)
+      return
+    }
+    if (message.type === "room-app-agent-response") {
+      await this.handleRoomAppAgentResponse(socket, attachment, message)
       return
     }
     if (message.type === "room-app-unicast") {
@@ -8671,6 +8869,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    if (request.method === "POST" && url.pathname === "/agent-app-request")
+      return this.handleAgentRoomAppRequest(request)
     if (request.method === "POST" && url.pathname === "/attachment")
       return this.handleAttachmentUpload(request)
     if (request.method === "POST" && url.pathname === "/surface")
@@ -8766,6 +8966,132 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return this.json({ error: "room_state_budget_exceeded" }, 507)
       return this.json({ error: "invalid_request" }, 400)
     }
+  }
+
+  private async handleAgentRoomAppRequest(request: Request): Promise<Response> {
+    if (this.env.ROOM_APPS_ENABLED !== "true")
+      return this.json({ ok: false, error: "app_unavailable" }, 503)
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    const body = (await request.json().catch(() => null)) as {
+      appInstanceId?: unknown
+      payload?: unknown
+    } | null
+    if (
+      !body ||
+      !isValidRoomAppInstanceId(body.appInstanceId) ||
+      !isValidRoomAppParticipantId(participantId) ||
+      !token
+    )
+      return this.json({ ok: false, error: "invalid_request" }, 400)
+    const payload = validateRoomAppPayload(body.payload)
+    if (!payload.ok)
+      return this.json({ ok: false, error: "invalid_request" }, 413)
+
+    setProductionRoomAppCatalog(
+      await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
+    )
+    const room = await this.activeRoom()
+    const agent = room && this.findParticipant(room, participantId, token)
+    if (!room) {
+      this.failAllRoomAppAgentRequests("room_expired")
+      return this.json({ ok: false, error: "room_expired" }, 410)
+    }
+    if (
+      !agent ||
+      agent.kind !== "agent" ||
+      !agent.connected ||
+      !agent.connectionNonce
+    )
+      return this.json({ ok: false, error: "unauthorized" }, 401)
+    if (!isRoomAppInstanceForRoom(this.roomAnalyticsName(), body.appInstanceId))
+      return this.json({ ok: false, error: "app_unavailable" }, 404)
+    const residentConnected = this.ctx.getWebSockets().some((candidate) => {
+      const attachment = this.deserializeAgentEventAttachment(candidate)
+      return (
+        attachment?.participantId === agent.id &&
+        attachment.connectionNonce === agent.connectionNonce
+      )
+    })
+    if (!residentConnected)
+      return this.json({ ok: false, error: "agent_unavailable" }, 409)
+
+    const hosts: Array<{
+      socket: WebSocket
+      attachment: ConnectionAttachment
+    }> = []
+    for (const candidate of this.ctx.getWebSockets()) {
+      if (
+        candidate.readyState !== 1 ||
+        this.deserializeAgentEventAttachment(candidate)
+      )
+        continue
+      let attachment: ConnectionAttachment | null = null
+      try {
+        attachment =
+          candidate.deserializeAttachment() as ConnectionAttachment | null
+      } catch {
+        continue
+      }
+      const host = attachment && room.participants[attachment.participantId]
+      if (
+        attachment?.activeRoomAppInstances?.includes(body.appInstanceId) &&
+        host?.kind === "human" &&
+        host.connected &&
+        host.connectionNonce === attachment.connectionNonce
+      )
+        hosts.push({ socket: candidate, attachment })
+    }
+    if (hosts.length === 0)
+      return this.json({ ok: false, error: "host_unavailable" }, 409)
+    if (hosts.length !== 1)
+      return this.json({ ok: false, error: "ambiguous_host" }, 409)
+    if (this.pendingRoomAppAgentRequests.size >= ROOM_APP_AGENT_MAX_IN_FLIGHT)
+      return this.json({ ok: false, error: "too_many_requests" }, 429)
+
+    const requestId = crypto.randomUUID()
+    const target = hosts[0]!
+    const envelope = {
+      type: "room-app-agent-request",
+      requestId,
+      appInstanceId: body.appInstanceId,
+      payload: payload.payload,
+    }
+    const bytes = serializedRoomAppBytes(envelope)
+    if (bytes === null || bytes > ROOM_APP_MAX_PAYLOAD_BYTES)
+      return this.json({ ok: false, error: "invalid_request" }, 413)
+    const result = await new Promise<{
+      ok: boolean
+      result?: Record<string, unknown>
+      error?: string
+    }>((resolve) => {
+      const timer = setTimeout(
+        () =>
+          this.finishRoomAppAgentRequest(requestId, {
+            ok: false,
+            error: "timeout",
+          }),
+        ROOM_APP_AGENT_REQUEST_TIMEOUT_MS
+      )
+      this.pendingRoomAppAgentRequests.set(requestId, {
+        appInstanceId: body.appInstanceId as string,
+        agentParticipantId: agent.id,
+        agentConnectionNonce: agent.connectionNonce!,
+        hostParticipantId: target.attachment.participantId,
+        hostConnectionNonce: target.attachment.connectionNonce,
+        resolve,
+        timer,
+      })
+      try {
+        target.socket.send(JSON.stringify(envelope))
+      } catch {
+        this.finishRoomAppAgentRequest(requestId, {
+          ok: false,
+          error: "host_unavailable",
+        })
+      }
+    })
+    return this.json(result, result.ok ? 200 : 502)
   }
 
   private async readGeneratedAppBundleBytes(
@@ -9241,6 +9567,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   ): Promise<void> {
     const agentAttachment = this.deserializeAgentEventAttachment(socket)
     if (agentAttachment) {
+      this.failRoomAppAgentRequestsForAgent(
+        agentAttachment.participantId,
+        agentAttachment.connectionNonce,
+        "agent_disconnected"
+      )
       await this.handleAgentEventClose(socket, agentAttachment)
       return
     }
@@ -9255,6 +9586,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.connectionNonce !== attachment.connectionNonce
     )
       return
+    this.failRoomAppAgentRequestsForHost(
+      participant.id,
+      attachment.connectionNonce,
+      "host_disconnected"
+    )
     participant.connected = false
     participant.lastSeenAt = Date.now()
     participant.connectionNonce = undefined

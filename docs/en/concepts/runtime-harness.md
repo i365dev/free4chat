@@ -16,10 +16,11 @@ Room Protocol / MCP
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at
-  `https://www.free4.chat/mcp`. The nineteen tools cover Room inspection,
+  `https://www.free4.chat/mcp`. The twenty tools cover Room inspection,
   bounded observation, participant lifecycle, text/Task correlation,
   capabilities, structured collaboration, attachments, workspace surfaces,
-  Task Live View, generated Task Room App publication, and leaving.
+  Task Live View, generated Task Room App publication, transient curated App
+  requests, and leaving.
   [/agent.md](/agent.md) is canonical;
   [MCP Room API](../reference/mcp) is the Human-facing reference.
 - **Go Runtime** (`free4chat-agent`) - the self-contained local binary that owns

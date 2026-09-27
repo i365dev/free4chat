@@ -10,15 +10,18 @@ import {
 import {
   decodeRoomAppUnicastEnvelope,
   decodeRoomAppUnicastResult,
+  decodeRoomAppAgentRequest,
   decodeRoomAppEnvelope,
   encodeRoomAppUnicastRequest,
   encodeRoomAppEnvelope,
   isRoomAppInstanceForRoom,
   roomAppRateGuard,
   roomAppUnicastRateGuard,
+  serializedRoomAppBytes,
   type RoomAppLane,
   type RoomAppUnicastEnvelope,
   type RoomAppUnicastResult,
+  type RoomAppAgentRequestEnvelope,
   type RoomAppTransportEnvelope,
 } from "@common/roomApp"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
@@ -579,6 +582,7 @@ interface SfuServerMessage {
     | "agentActivity"
     | "room-app-unicast"
     | "room-app-unicast-result"
+    | "room-app-agent-request"
     | "task-session-list-result"
     | "task-session-start-result"
     | "taskExecution"
@@ -831,6 +835,10 @@ export function useSfuChatRoom(
   const roomAppUnicastResultListenersRef = useRef(
     new Set<(result: RoomAppUnicastResult) => void>()
   )
+  const roomAppAgentRequestListenersRef = useRef(
+    new Set<(request: RoomAppAgentRequestEnvelope) => void>()
+  )
+  const roomAppHostsRef = useRef(new Set<string>())
   const generatedAppStateListenersRef = useRef(
     new Set<
       (message: {
@@ -3076,6 +3084,12 @@ export function useSfuChatRoom(
       setConnectionStatus("connected")
       setError("")
       sendSocketMessage({ type: "resync" })
+      for (const appInstanceId of roomAppHostsRef.current)
+        sendSocketMessage({
+          type: "room-app-host-state",
+          appInstanceId,
+          ready: true,
+        })
       // #402: keep the Room-visible voice projection truthful across a
       // reconnect. No live local track (never enabled, or the device went away)
       // means "muted"; a soft-muted live track stays muted.
@@ -3108,6 +3122,11 @@ export function useSfuChatRoom(
         if (!result) return
         for (const listener of roomAppUnicastResultListenersRef.current)
           listener(result)
+      } else if (message.type === "room-app-agent-request") {
+        const request = decodeRoomAppAgentRequest(message, roomName)
+        if (!request) return
+        for (const listener of roomAppAgentRequestListenersRef.current)
+          listener(request)
       } else if (
         (message.type === "generated-app-state" ||
           message.type === "generated-app-state-conflict") &&
@@ -4082,6 +4101,44 @@ export function useSfuChatRoom(
     []
   )
 
+  const subscribeRoomAppAgentRequests = useCallback(
+    (listener: (request: RoomAppAgentRequestEnvelope) => void) => {
+      roomAppAgentRequestListenersRef.current.add(listener)
+      return () => roomAppAgentRequestListenersRef.current.delete(listener)
+    },
+    []
+  )
+
+  const setRoomAppHostReady = useCallback(
+    (appInstanceId: string, ready: boolean) => {
+      if (!ready) roomAppHostsRef.current.delete(appInstanceId)
+      else {
+        if (!isRoomAppInstanceForRoom(roomName, appInstanceId)) return
+        roomAppHostsRef.current.add(appInstanceId)
+      }
+      if (!isRoomAppInstanceForRoom(roomName, appInstanceId)) return
+      sendSocketMessage({ type: "room-app-host-state", appInstanceId, ready })
+    },
+    [roomName, sendSocketMessage]
+  )
+
+  const respondRoomAppAgentRequest = useCallback(
+    (response: {
+      requestId: string
+      appInstanceId: string
+      ok: boolean
+      result?: Record<string, unknown>
+      error?: string
+    }) => {
+      if (!isRoomAppInstanceForRoom(roomName, response.appInstanceId))
+        return false
+      const wire = { type: "room-app-agent-response", ...response }
+      const bytes = serializedRoomAppBytes(wire)
+      return bytes !== null && bytes <= 16 * 1024 && sendSocketMessage(wire)
+    },
+    [roomName, sendSocketMessage]
+  )
+
   const sendGeneratedAppState = useCallback(
     (
       appInstanceId: string,
@@ -4841,6 +4898,9 @@ export function useSfuChatRoom(
     sendRoomAppUnicast,
     subscribeRoomAppUnicast,
     subscribeRoomAppUnicastResults,
+    subscribeRoomAppAgentRequests,
+    setRoomAppHostReady,
+    respondRoomAppAgentRequest,
     sendGeneratedAppState,
     subscribeGeneratedAppState,
     getRoomAppStats,
