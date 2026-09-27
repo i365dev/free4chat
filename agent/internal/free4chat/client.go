@@ -56,13 +56,9 @@ var requiredTools = []string{
 	"publish_surface", "clear_surface", "read_surface",
 	"publish_live_view",
 	"publish_generated_app",
+	"room_app_request",
 	"leave_room",
 }
-
-// optionalTools are additive operations that newer Runtime builds may call
-// when the server advertises them. They must not prevent rolling upgrades
-// from connecting to an older compatible Core.
-var optionalTools = []string{"room_app_request"}
 
 // RequiredToolNames returns the tool set Connect requires. Test doubles in
 // other packages serve a complete tools/list from this, so the handshake

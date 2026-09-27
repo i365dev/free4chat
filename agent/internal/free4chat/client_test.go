@@ -395,15 +395,6 @@ func TestConnectVerifiesRequiredToolSet(t *testing.T) {
 	}
 }
 
-func TestConnectAllowsMissingOptionalRoomAppRequest(t *testing.T) {
-	client, _ := newTestClient(t, func(w http.ResponseWriter, _ map[string]any) {
-		respondToolsList(w)
-	})
-	if err := client.Connect(); err != nil {
-		t.Fatalf("an older Core without the optional Room App tool must remain compatible: %v", err)
-	}
-}
-
 // invokedToolNames derives the MCP tools this client calls straight from the
 // production source, so the required handshake set cannot silently drift from
 // real usage. Every call form in client.go names its tool in one of three
@@ -443,16 +434,9 @@ func TestRequiredToolsCoverEveryInvokedTool(t *testing.T) {
 		}
 		required[name] = true
 	}
-	optional := map[string]bool{}
-	for _, name := range optionalTools {
-		if optional[name] || required[name] {
-			t.Fatalf("optionalTools duplicates %q", name)
-		}
-		optional[name] = true
-	}
 	for name := range invoked {
-		if !required[name] && !optional[name] {
-			t.Errorf("client calls %q but neither requiredTools nor optionalTools declares it", name)
+		if !required[name] {
+			t.Errorf("client calls %q but requiredTools does not require it", name)
 		}
 	}
 	for name := range required {
@@ -463,9 +447,8 @@ func TestRequiredToolsCoverEveryInvokedTool(t *testing.T) {
 }
 
 // TestConnectRejectsServerMissingAnyRequiredTool proves the handshake is
-// actually enforced for every required tool, including the two this client
-// gained after the original sixteen-entry list (update_runtime_host and
-// publish_live_view).
+// actually enforced for every required tool, including current Runtime Host,
+// Live View, generated App, and Room App operations.
 func TestConnectRejectsServerMissingAnyRequiredTool(t *testing.T) {
 	for _, missing := range requiredTools {
 		t.Run(missing, func(t *testing.T) {

@@ -567,12 +567,13 @@ export function decodeRoomAppClientMessage(
 
 export function decodeRoomAppAgentRequest(
   value: unknown,
-  appInstanceId: string
+  roomName: string
 ): RoomAppAgentRequestEnvelope | null {
   if (
     !isRecord(value) ||
     value.type !== "room-app-agent-request" ||
-    value.appInstanceId !== appInstanceId ||
+    typeof value.appInstanceId !== "string" ||
+    !isRoomAppInstanceForRoom(roomName, value.appInstanceId) ||
     !isValidRoomAppRequestId(value.requestId)
   )
     return null
@@ -580,7 +581,11 @@ export function decodeRoomAppAgentRequest(
   if (!payload.ok) return null
   const bytes = serializedRoomAppBytes(value)
   if (bytes === null || bytes > ROOM_APP_MAX_PAYLOAD_BYTES) return null
-  return { requestId: value.requestId, appInstanceId, payload: payload.payload }
+  return {
+    requestId: value.requestId,
+    appInstanceId: value.appInstanceId,
+    payload: payload.payload,
+  }
 }
 
 export function encodeRoomAppUnicastRequest(input: {

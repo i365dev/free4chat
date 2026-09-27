@@ -1071,6 +1071,52 @@ describe("RoomAppHost App-instance transport lifetime", () => {
     expect(setAgentHostReady).toHaveBeenLastCalledWith(appInstanceId, false)
   })
 
+  it("withdraws host readiness across an iframe re-bootstrap gap", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const setAgentHostReady = vi.fn()
+    const { rendered, iframe, frameWindow } = mountApp(catalogRevision(), {
+      setAgentHostReady,
+    })
+    const { port: oldPort } = handshake(iframe, frameWindow)
+    expect(setAgentHostReady.mock.calls.map(([, ready]) => ready)).toEqual([
+      false,
+      true,
+    ])
+
+    fireEvent.load(iframe)
+    expect(setAgentHostReady.mock.calls.map(([, ready]) => ready)).toEqual([
+      false,
+      true,
+      false,
+    ])
+    expect(oldPort.close).toHaveBeenCalled()
+    const bootstrap = frameWindow.postMessage.mock.calls[1]![0]
+    const newPort = lastChannel!.port1
+    act(() =>
+      deliverAgentRequest?.({
+        requestId: "req_during_bootstrap",
+        appInstanceId,
+        payload: { opaque: true },
+      })
+    )
+    expect(newPort.postMessage).not.toHaveBeenCalled()
+
+    act(() =>
+      newPort.emit({
+        type: "ready",
+        appInstanceId,
+        handshakeToken: bootstrap.handshakeToken,
+      })
+    )
+    expect(setAgentHostReady.mock.calls.map(([, ready]) => ready)).toEqual([
+      false,
+      true,
+      false,
+      true,
+    ])
+    rendered.unmount()
+  })
+
   it("keeps the handshaken bridge when only App metadata changes", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const send = vi.fn(() => true)

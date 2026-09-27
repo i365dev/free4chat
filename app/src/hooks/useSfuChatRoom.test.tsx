@@ -329,6 +329,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
 
     const privateMessages: unknown[] = []
     const privateResults: unknown[] = []
+    const agentRequests: unknown[] = []
 
     await waitFor(() => expect(result.current.roomAppsEnabled).toBe(true))
     await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
@@ -339,6 +340,9 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       )
       result.current.subscribeRoomAppUnicastResults((response) =>
         privateResults.push(response)
+      )
+      result.current.subscribeRoomAppAgentRequests((request) =>
+        agentRequests.push(request)
       )
     })
     await waitFor(() =>
@@ -395,6 +399,14 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
           ok: true,
         }),
       })
+      lastFakeWebSocket?.onmessage?.({
+        data: JSON.stringify({
+          type: "room-app-agent-request",
+          requestId: "agent_request_1",
+          appInstanceId,
+          payload: { opaque: [1, "two"] },
+        }),
+      })
     })
     expect(privateMessages).toEqual([
       {
@@ -406,6 +418,13 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     ])
     expect(privateResults).toEqual([
       { requestId: "request_1", appInstanceId, ok: true },
+    ])
+    expect(agentRequests).toEqual([
+      {
+        requestId: "agent_request_1",
+        appInstanceId,
+        payload: { opaque: [1, "two"] },
+      },
     ])
 
     const channels = FakePeerConnection.dataChannels.filter((channel) =>

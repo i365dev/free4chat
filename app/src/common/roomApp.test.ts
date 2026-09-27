@@ -727,29 +727,22 @@ describe("Room App host contract", () => {
   })
 
   it("relays arbitrary opaque JSON with strict instance, correlation, and size checks", () => {
-    const appInstanceId = roomAppInstanceId("room-a", "test-app")
+    const roomName = "room-a"
+    const appInstanceId = roomAppInstanceId(roomName, "test-app")
     const request = {
       type: "room-app-agent-request",
       requestId: "req_1",
       appInstanceId,
       payload: { arbitrary: [1, "two"], nested: { opaque: true } },
     }
-    expect(decodeRoomAppAgentRequest(request, appInstanceId)).toEqual({
+    expect(decodeRoomAppAgentRequest(request, roomName)).toEqual({
       requestId: "req_1",
       appInstanceId,
       payload: request.payload,
     })
+    expect(decodeRoomAppAgentRequest(request, "room-b")).toBeNull()
     expect(
-      decodeRoomAppAgentRequest(
-        request,
-        roomAppInstanceId("room-b", "test-app")
-      )
-    ).toBeNull()
-    expect(
-      decodeRoomAppAgentRequest(
-        { ...request, requestId: "bad id" },
-        appInstanceId
-      )
+      decodeRoomAppAgentRequest({ ...request, requestId: "bad id" }, roomName)
     ).toBeNull()
     expect(
       decodeRoomAppAgentRequest(
@@ -757,7 +750,7 @@ describe("Room App host contract", () => {
           ...request,
           payload: { data: "x".repeat(ROOM_APP_MAX_PAYLOAD_BYTES) },
         },
-        appInstanceId
+        roomName
       )
     ).toBeNull()
   })

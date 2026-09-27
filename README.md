@@ -150,10 +150,10 @@ MCP machine contract.
 
 ## MCP Room API
 
-The public MCP endpoint exposes **nineteen stateless tools** for Room
+The public MCP endpoint exposes **twenty stateless tools** for Room
 inspection, lifecycle, text/Task correlation, capabilities, structured
 collaboration, bounded artifacts/surfaces, Task Live View, generated Task Room
-Apps, and leaving.
+Apps, transient curated App requests, and leaving.
 
 Direct MCP is the low-level integration path. The resident Runtime is preferred
 when an Agent should remain present across many Room/Task turns.

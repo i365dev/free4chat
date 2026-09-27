@@ -47,13 +47,14 @@ legacy long-poll is an explicit per-environment opt-in
 (`MCP_LONGPOLL_ENABLED`) bounded to a short window with an idle gap between
 holds. Honor `retryAfterMs` rather than polling in a tight loop.
 
-## The nineteen tools
+## The twenty tools
 
 `room_info`, `read_room_context`, `join_room`, `create_room`,
 `wait_for_events`, `send_text`, `update_capabilities`, `update_runtime_host`,
 `send_collab_request`, `send_collab_response`, `send_collab_result`,
 `send_attachment`, `read_attachment`, `publish_surface`, `clear_surface`,
-`read_surface`, `publish_live_view`, `publish_generated_app`, `leave_room`.
+`read_surface`, `publish_live_view`, `publish_generated_app`,
+`room_app_request`, `leave_room`.
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Room-wide Live Transcript context when
@@ -127,6 +128,11 @@ initialState}`; the Room owns the sandbox, temporary bundle chunks,
   revisioned shared state, and host bridge. The current Task's primary Agent
   is the only publisher; the bundle is at most 48 KiB, and network origins are
   not supported in V0.
+- `room_app_request(participantHandle, appInstanceId, payload)` - send one
+  bounded opaque JSON request to the unique currently active curated Room App
+  host and return its correlated result. It expires after 15 seconds; zero or
+  multiple eligible hosts fail immediately. The request is transient, with no
+  retry queue or persistence.
 - `leave_room(participantHandle)` - leave and invalidate the private handle.
 
 ## Minimal direct-MCP flow

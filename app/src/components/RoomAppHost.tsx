@@ -203,11 +203,13 @@ export default function RoomAppHost({
   )
 
   const sendBootstrap = useCallback(() => {
+    if (app.source !== "generated") setAgentHostReady(appInstanceId, false)
+    readyRef.current = false
+    setReady(false)
+    pendingAgentRequestsRef.current.clear()
     const frame = iframeRef.current
     if (!frame?.contentWindow) return
     tokenRef.current = handshakeToken()
-    readyRef.current = false
-    setReady(false)
     const channel = new MessageChannel()
     const port = channel.port1
     portRef.current?.close()
