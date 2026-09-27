@@ -73,6 +73,8 @@ type IpcRequest struct {
 	MimeType                 string            `json:"mimeType,omitempty"`
 	DataBase64               string            `json:"dataBase64,omitempty"`
 	SourceParticipantID      string            `json:"sourceParticipantId,omitempty"`
+	AppInstanceID            string            `json:"appInstanceId,omitempty"`
+	Payload                  map[string]any    `json:"payload,omitempty"`
 	BeforeSequence           *int64            `json:"beforeSequence,omitempty"`
 	AfterSequence            *int64            `json:"afterSequence,omitempty"`
 	Limit                    int               `json:"limit,omitempty"`

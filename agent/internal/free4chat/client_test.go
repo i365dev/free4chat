@@ -344,6 +344,31 @@ func mustJSONValue(value any) json.RawMessage {
 	return data
 }
 
+func TestRoomAppRequestKeepsPayloadOpaque(t *testing.T) {
+	wantPayload := map[string]any{"arbitrary": []any{float64(1), "value"}}
+	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
+		if toolNameOf(body) != "room_app_request" {
+			t.Fatalf("unexpected tool: %q", toolNameOf(body))
+		}
+		args := toolArgs(body)
+		if args["participantHandle"] != "private-handle" || args["appInstanceId"] != "opaque-app-id" {
+			t.Fatalf("request identity mismatch: %#v", args)
+		}
+		payload, ok := args["payload"].(map[string]any)
+		if !ok || payload["arbitrary"] == nil {
+			t.Fatalf("opaque payload was not preserved: %#v", args["payload"])
+		}
+		writeJSON(w, callResult(map[string]any{"ok": true, "result": wantPayload}))
+	})
+	result, err := client.RoomAppRequest("private-handle", "opaque-app-id", wantPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["arbitrary"] == nil {
+		t.Fatalf("unexpected opaque response: %#v", result)
+	}
+}
+
 func TestConnectVerifiesRequiredToolSet(t *testing.T) {
 	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
 		params, _ := body["params"].(map[string]any)
@@ -370,6 +395,15 @@ func TestConnectVerifiesRequiredToolSet(t *testing.T) {
 	}
 }
 
+func TestConnectAllowsMissingOptionalRoomAppRequest(t *testing.T) {
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ map[string]any) {
+		respondToolsList(w)
+	})
+	if err := client.Connect(); err != nil {
+		t.Fatalf("an older Core without the optional Room App tool must remain compatible: %v", err)
+	}
+}
+
 // invokedToolNames derives the MCP tools this client calls straight from the
 // production source, so the required handshake set cannot silently drift from
 // real usage. Every call form in client.go names its tool in one of three
@@ -391,8 +425,8 @@ func invokedToolNames(t *testing.T) map[string]bool {
 			names[match[1]] = true
 		}
 	}
-	if len(names) != 19 {
-		t.Fatalf("derived %d invoked tools, want the shipped nineteen: %v", len(names), names)
+	if len(names) != 20 {
+		t.Fatalf("derived %d invoked tools, want the shipped twenty: %v", len(names), names)
 	}
 	return names
 }
@@ -409,9 +443,16 @@ func TestRequiredToolsCoverEveryInvokedTool(t *testing.T) {
 		}
 		required[name] = true
 	}
+	optional := map[string]bool{}
+	for _, name := range optionalTools {
+		if optional[name] || required[name] {
+			t.Fatalf("optionalTools duplicates %q", name)
+		}
+		optional[name] = true
+	}
 	for name := range invoked {
-		if !required[name] {
-			t.Errorf("client calls %q but requiredTools does not require it", name)
+		if !required[name] && !optional[name] {
+			t.Errorf("client calls %q but neither requiredTools nor optionalTools declares it", name)
 		}
 	}
 	for name := range required {

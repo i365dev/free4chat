@@ -448,6 +448,15 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 			AfterTranscriptSequence:  request.AfterTranscriptSequence,
 			TranscriptLimit:          request.TranscriptLimit,
 		})
+	case "room-app-request":
+		rt, err := d.resolveRuntime(request.InstanceID)
+		if err != nil {
+			return nil, err
+		}
+		if request.AppInstanceID == "" || request.Payload == nil {
+			return nil, errors.New("Room App request requires an App instance and JSON payload")
+		}
+		return rt.RoomAppRequest(request.AppInstanceID, request.Payload)
 	default:
 		return nil, errors.New("unknown daemon operation")
 	}

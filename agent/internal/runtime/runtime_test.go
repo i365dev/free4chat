@@ -33,6 +33,25 @@ func TestReloadSpeechReplacesOptionalConfigWithoutTextLifecycleChange(t *testing
 	}
 }
 
+func TestRoomAppRequestMediatesOpaqueAppAndPayload(t *testing.T) {
+	client := &fakeClient{appResult: map[string]any{"ok": true, "value": "opaque"}}
+	rt := NewResidentRuntime(Options{RoomID: "room", Client: client})
+	rt.mu.Lock()
+	rt.participantHandle = "private-handle"
+	rt.mu.Unlock()
+	payload := map[string]any{"arbitrary": []any{"data", float64(3)}}
+	result, err := rt.RoomAppRequest("opaque-app-id", payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.appHandle != "private-handle" || client.appInstanceID != "opaque-app-id" || client.appPayload["arbitrary"] == nil {
+		t.Fatalf("Runtime did not mediate the opaque request: handle=%q app=%q payload=%#v", client.appHandle, client.appInstanceID, client.appPayload)
+	}
+	if result["value"] != "opaque" {
+		t.Fatalf("opaque result was not returned: %#v", result)
+	}
+}
+
 func TestReloadSpeechBeforeStopRebuildsThenStopTearsDown(t *testing.T) {
 	rt := mediaRuntimeForReloadTest(t)
 	rt.ReloadSpeech(speech.Config{APIKey: "runtime-private-key", STTEnabled: true, TTSEnabled: true})
@@ -138,6 +157,11 @@ type fakeClient struct {
 	contextErr            error
 	contextCalls          int
 	contextOptions        []types.RoomContextReadOptions
+	appInstanceID         string
+	appHandle             string
+	appPayload            map[string]any
+	appResult             map[string]any
+	appErr                error
 	collabResults         []types.CollabResultArgs
 	collabResultHook      func(types.CollabResultArgs)
 	leaveHook             func()
@@ -366,6 +390,13 @@ func (c *fakeClient) ReadRoomContext(_ string, options types.RoomContextReadOpti
 	c.contextCalls++
 	c.contextOptions = append(c.contextOptions, options)
 	return c.contextResult, c.contextErr
+}
+
+func (c *fakeClient) RoomAppRequest(handle string, appInstanceID string, payload map[string]any) (map[string]any, error) {
+	c.appHandle = handle
+	c.appInstanceID = appInstanceID
+	c.appPayload = payload
+	return c.appResult, c.appErr
 }
 
 func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {

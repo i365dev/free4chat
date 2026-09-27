@@ -26,6 +26,7 @@ const MAX_ATTACHMENT_BASE64 = 1400_000
 // applies when persisting addressed text targets.
 const MAX_TARGETS = 8
 const MAX_TARGET_ID_LENGTH = 64
+const MAX_ROOM_APP_PAYLOAD_BYTES = 16 * 1024
 const JOIN_RATE_LIMIT = 10
 const JOIN_RATE_WINDOW_S = 60
 // #406: unauthenticated room_info probe budget (see allowRoomInfoProbe).
@@ -1016,6 +1017,50 @@ function createMcpServer(context: McpRequestContext) {
         return toolResult({ attachment, data, text })
       }
       return imageToolResult({ data, mimeType }, attachment)
+    }
+  )
+
+  server.registerTool(
+    "room_app_request",
+    {
+      description:
+        "Send one bounded opaque JSON request to the unique currently active curated Room App host and return its correlated result. Fails immediately when there is no unique host; expires after 15 seconds; never queues or persists the request.",
+      inputSchema: {
+        participantHandle: z.string().min(1),
+        appInstanceId: z.string().regex(/^[a-z0-9][a-z0-9:-]{0,95}$/),
+        payload: z.record(z.string(), z.unknown()),
+      },
+    },
+    async ({ participantHandle, appInstanceId, payload }) => {
+      const handle = decodeHandle(participantHandle)
+      if (!handle) return toolError("invalid_participant_handle")
+      if (!(await allowHandleIngress(env, context.requestInfo)))
+        return toolError(MCP_INGRESS_RATE_LIMITED)
+      const body = { appInstanceId, payload }
+      const bytes = new TextEncoder().encode(JSON.stringify(body)).byteLength
+      if (bytes > MAX_ROOM_APP_PAYLOAD_BYTES)
+        return toolError("request_too_large")
+      const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(handle.room))
+      const response = await stub.fetch("https://room/agent-app-request", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Room-Participant-Id": handle.participantId,
+          "X-Room-Participant-Token": handle.participantToken,
+        },
+        body: JSON.stringify(body),
+      })
+      const result = (await response.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >
+      return response.ok
+        ? toolResult(result)
+        : toolError(
+            typeof result.error === "string"
+              ? result.error
+              : "app_request_failed"
+          )
     }
   )
 

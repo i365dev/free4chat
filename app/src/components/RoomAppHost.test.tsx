@@ -11,6 +11,7 @@ import {
 } from "../common/roomApp"
 import type {
   RoomAppDefinition,
+  RoomAppAgentRequestEnvelope,
   RoomAppParticipantProjection,
   RoomAppUnicastEnvelope,
   RoomAppUnicastResult,
@@ -889,9 +890,13 @@ describe("RoomAppHost", () => {
 describe("RoomAppHost App-instance transport lifetime", () => {
   const appInstanceId = "test-app:room"
   let deliverRemote: ((message: RoomAppTransportEnvelope) => void) | undefined
+  let deliverAgentRequest:
+    | ((request: RoomAppAgentRequestEnvelope) => void)
+    | undefined
 
   beforeEach(() => {
     deliverRemote = undefined
+    deliverAgentRequest = undefined
   })
 
   /**
@@ -920,6 +925,14 @@ describe("RoomAppHost App-instance transport lifetime", () => {
     subscribeUnicast: () => () => undefined,
     subscribeUnicastResults: () => () => undefined,
     sendUnicast: () => "sent" as const,
+    subscribeAgentRequests: (
+      listener: (request: RoomAppAgentRequestEnvelope) => void
+    ) => {
+      deliverAgentRequest = listener
+      return () => undefined
+    },
+    setAgentHostReady: () => undefined,
+    respondAgentRequest: () => true,
     onClose: () => undefined,
   }
 
@@ -1007,6 +1020,55 @@ describe("RoomAppHost App-instance transport lifetime", () => {
       payload: { type: "tick", at: 2 },
     })
     rendered.unmount()
+  })
+
+  it("forwards opaque Agent requests over MessagePort and returns one correlated response", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const setAgentHostReady = vi.fn()
+    const respondAgentRequest = vi.fn(() => true)
+    const { rendered, iframe, frameWindow } = mountApp(catalogRevision(), {
+      setAgentHostReady,
+      respondAgentRequest,
+    })
+    const { port } = handshake(iframe, frameWindow)
+    expect(setAgentHostReady).toHaveBeenCalledWith(appInstanceId, true)
+    const payload = { arbitrary: [1, "two"], nested: { value: true } }
+    act(() =>
+      deliverAgentRequest?.({ requestId: "req_1", appInstanceId, payload })
+    )
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "agent_request",
+      requestId: "req_1",
+      appInstanceId,
+      payload,
+    })
+    act(() =>
+      port.emit({
+        type: "agentResponse",
+        appInstanceId,
+        requestId: "req_1",
+        ok: true,
+        result: { echoed: payload },
+      })
+    )
+    expect(respondAgentRequest).toHaveBeenCalledWith({
+      requestId: "req_1",
+      appInstanceId,
+      ok: true,
+      result: { echoed: payload },
+    })
+    act(() =>
+      port.emit({
+        type: "agentResponse",
+        appInstanceId,
+        requestId: "req_1",
+        ok: true,
+        result: { duplicate: true },
+      })
+    )
+    expect(respondAgentRequest).toHaveBeenCalledTimes(1)
+    rendered.unmount()
+    expect(setAgentHostReady).toHaveBeenLastCalledWith(appInstanceId, false)
   })
 
   it("keeps the handshaken bridge when only App metadata changes", () => {

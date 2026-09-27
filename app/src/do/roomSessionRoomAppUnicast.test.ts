@@ -73,7 +73,9 @@ function buildStoredRoom() {
       "human-a": participant("human-a", "human"),
       "human-b": participant("human-b", "human"),
       "human-c": participant("human-c", "human"),
-      "agent-c": participant("agent-c", "agent"),
+      "agent-c": participant("agent-c", "agent", {
+        connectionNonce: "nonce-agent-c",
+      }),
     },
     messages: [],
     nextMessageSequence: 1,
@@ -141,6 +143,7 @@ function makeRoomSession() {
       put: async (key: string, value: unknown) =>
         void store.set(key, structuredClone(value)),
       delete: async (key: string) => void store.delete(key),
+      deleteAll: async () => void store.clear(),
       setAlarm: async () => undefined,
       deleteAlarm: async () => undefined,
       getAlarm: async () => undefined,
@@ -201,6 +204,47 @@ function makeRoomSession() {
       }
     ).webSocketMessage(socket as unknown as WebSocket, message)
   }
+  const setHostReady = async (
+    socket: FakeSocket,
+    appInstanceId = APP_INSTANCE_ID,
+    ready = true
+  ) =>
+    (
+      session as unknown as {
+        webSocketMessage: (socket: WebSocket, raw: string) => Promise<void>
+      }
+    ).webSocketMessage(
+      socket as unknown as WebSocket,
+      JSON.stringify({
+        type: "room-app-host-state",
+        appInstanceId,
+        ready,
+      })
+    )
+  const requestFromAgent = (
+    appInstanceId = APP_INSTANCE_ID,
+    payload: Record<string, unknown> = { opaque: true }
+  ) =>
+    session.fetch(
+      new Request("https://room/agent-app-request", {
+        method: "POST",
+        headers: {
+          "X-Room-Participant-Id": "agent-c",
+          "X-Room-Participant-Token": "token-agent-c",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ appInstanceId, payload }),
+      })
+    )
+  const sendHostResponse = (
+    socket: FakeSocket,
+    response: Record<string, unknown>
+  ) =>
+    (
+      session as unknown as {
+        webSocketMessage: (socket: WebSocket, raw: string) => Promise<void>
+      }
+    ).webSocketMessage(socket as unknown as WebSocket, JSON.stringify(response))
   return {
     session,
     store,
@@ -209,6 +253,9 @@ function makeRoomSession() {
     addHumanSocket,
     addAgentSocket,
     sendFrom,
+    setHostReady,
+    requestFromAgent,
+    sendHostResponse,
   }
 }
 
@@ -261,6 +308,182 @@ describe("RoomSession reliable participant unicast (#377)", () => {
       requestId: "draw_guess_wrong_room",
       ok: false,
       error: "app_unavailable",
+    })
+  })
+
+  it("routes one opaque Agent request to the unique active host and correlates its result", async () => {
+    const {
+      store,
+      addHumanSocket,
+      addAgentSocket,
+      setHostReady,
+      requestFromAgent,
+      sendHostResponse,
+    } = makeRoomSession()
+    const host = addHumanSocket("human-a")
+    const other = addHumanSocket("human-b")
+    addAgentSocket("agent-c")
+    await setHostReady(host)
+    const pending = requestFromAgent(APP_INSTANCE_ID, {
+      arbitrary: { value: 42 },
+    })
+    await vi.waitFor(() => expect(host.messages()).toHaveLength(1))
+    const request = host.messages()[0]!
+    expect(request).toMatchObject({
+      type: "room-app-agent-request",
+      appInstanceId: APP_INSTANCE_ID,
+      payload: { arbitrary: { value: 42 } },
+    })
+    expect(other.messages()).toEqual([])
+    const responseMessage = {
+      type: "room-app-agent-response",
+      requestId: request.requestId,
+      appInstanceId: APP_INSTANCE_ID,
+      ok: true,
+      result: { arbitrary: ["result"] },
+    }
+    await sendHostResponse(host, responseMessage)
+    const result = await pending
+    expect(result.status).toBe(200)
+    expect(await result.json()).toEqual({
+      ok: true,
+      result: { arbitrary: ["result"] },
+    })
+    expect(
+      (store.get("room") as ReturnType<typeof buildStoredRoom>).messages
+    ).toEqual([])
+    expect(JSON.stringify([...store.values()])).not.toContain('"value":42')
+    // A replayed/late response no longer has a live correlation and is ignored.
+    await sendHostResponse(host, responseMessage)
+    expect(host.sent).toHaveLength(1)
+  })
+
+  it("fails immediately without one active curated host", async () => {
+    const { addAgentSocket, requestFromAgent } = makeRoomSession()
+    addAgentSocket("agent-c")
+    const response = await requestFromAgent()
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: "host_unavailable",
+    })
+    const outsideApp = await requestFromAgent(
+      roomAppInstanceId("other-room", "test-app-1")
+    )
+    expect(outsideApp.status).toBe(404)
+  })
+
+  it("fails explicitly when more than one eligible host is active", async () => {
+    const { addHumanSocket, addAgentSocket, setHostReady, requestFromAgent } =
+      makeRoomSession()
+    const first = addHumanSocket("human-a")
+    const second = addHumanSocket("human-b")
+    addAgentSocket("agent-c")
+    await setHostReady(first)
+    await setHostReady(second)
+    const response = await requestFromAgent()
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: "ambiguous_host",
+    })
+    expect(first.messages()).toEqual([])
+    expect(second.messages()).toEqual([])
+  })
+
+  it("ends an in-flight request immediately when its selected host disconnects", async () => {
+    const {
+      session,
+      addHumanSocket,
+      addAgentSocket,
+      setHostReady,
+      requestFromAgent,
+    } = makeRoomSession()
+    const host = addHumanSocket("human-a")
+    addAgentSocket("agent-c")
+    await setHostReady(host)
+    const pending = requestFromAgent()
+    await vi.waitFor(() => expect(host.messages()).toHaveLength(1))
+    await (
+      session as unknown as {
+        webSocketClose: (
+          socket: WebSocket,
+          code: number,
+          reason: string,
+          clean: boolean
+        ) => Promise<void>
+      }
+    ).webSocketClose(host as unknown as WebSocket, 1000, "closed", true)
+    const response = await pending
+    expect(response.status).toBe(502)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: "host_disconnected",
+    })
+  })
+
+  it("fails only the request for an App that closes on a multi-App host", async () => {
+    const {
+      addHumanSocket,
+      addAgentSocket,
+      setHostReady,
+      requestFromAgent,
+      sendHostResponse,
+    } = makeRoomSession()
+    const host = addHumanSocket("human-a")
+    addAgentSocket("agent-c")
+    await setHostReady(host, APP_INSTANCE_ID)
+    await setHostReady(host, SECOND_TEST_APP_INSTANCE_ID)
+
+    const closes = requestFromAgent(APP_INSTANCE_ID)
+    const remains = requestFromAgent(SECOND_TEST_APP_INSTANCE_ID)
+    await vi.waitFor(() => expect(host.messages()).toHaveLength(2))
+    const secondRequest = host
+      .messages()
+      .find((message) => message.appInstanceId === SECOND_TEST_APP_INSTANCE_ID)!
+    await setHostReady(host, APP_INSTANCE_ID, false)
+
+    const closedResponse = await closes
+    expect(await closedResponse.json()).toMatchObject({
+      ok: false,
+      error: "host_unavailable",
+    })
+    await sendHostResponse(host, {
+      type: "room-app-agent-response",
+      requestId: secondRequest.requestId,
+      appInstanceId: SECOND_TEST_APP_INSTANCE_ID,
+      ok: true,
+      result: { opaque: true },
+    })
+    expect(await (await remains).json()).toEqual({
+      ok: true,
+      result: { opaque: true },
+    })
+  })
+
+  it("clears pending requests when the Room expires", async () => {
+    const {
+      session,
+      store,
+      addHumanSocket,
+      addAgentSocket,
+      setHostReady,
+      requestFromAgent,
+    } = makeRoomSession()
+    const host = addHumanSocket("human-a")
+    addAgentSocket("agent-c")
+    await setHostReady(host)
+    const pending = requestFromAgent()
+    await vi.waitFor(() => expect(host.messages()).toHaveLength(1))
+    const room = store.get("room") as ReturnType<typeof buildStoredRoom>
+    room.expiresAt = Date.now() - 1
+    store.set("room", room)
+    await (session as unknown as { alarm: () => Promise<void> }).alarm()
+    const response = await pending
+    expect(response.status).toBe(502)
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: "room_expired",
     })
   })
 

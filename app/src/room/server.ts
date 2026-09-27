@@ -1,4 +1,10 @@
 import { isAllowedOrigin } from "../common/origin"
+import {
+  ROOM_APP_MAX_PAYLOAD_BYTES,
+  isValidRoomAppInstanceId,
+  serializedRoomAppBytes,
+  validateRoomAppPayload,
+} from "../common/roomApp"
 import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
 import {
   encodeTaskAttachmentWake,
@@ -15,6 +21,7 @@ const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
 const MAX_PERMISSION_REQUEST_BODY_BYTES = 64 * 1024
 const AGENT_EVENT_PATH = "/api/room/agent-events"
 const AGENT_ACTIVITY_PATH = "/api/room/agent-activity"
+const AGENT_ROOM_APP_REQUEST_PATH = "/api/room/agent-app-request"
 // #409: the Runtime-only transient Task execution projection rides the same
 // control route as activity/permissions/surfaces. It is not a second
 // transport: the Worker only authenticates and forwards the bounded body.
@@ -25,6 +32,7 @@ const ROOM_REQUEST_PATHS = new Set([
   "/api/room/live-transcript/append",
   AGENT_EVENT_PATH,
   AGENT_ACTIVITY_PATH,
+  AGENT_ROOM_APP_REQUEST_PATH,
   AGENT_TASK_EXECUTION_PATH,
   GENERATED_APP_PATH,
   "/api/room/permissions/request",
@@ -66,6 +74,7 @@ export async function handleRoomRequest(
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname
   const isAgentEventSocket = pathname === AGENT_EVENT_PATH
+  const isAgentRoomAppRequest = pathname === AGENT_ROOM_APP_REQUEST_PATH
   // A same-origin browser GET does not send an Origin header, but the
   // generated-app read still carries the Room capability headers below. Keep
   // cross-origin requests origin-gated while allowing this authenticated
@@ -81,7 +90,8 @@ export async function handleRoomRequest(
   if (
     !isAllowedOrigin(request.headers.get("Origin")) &&
     !isSameOriginGeneratedAppRead &&
-    !(isAgentEventSocket && request.headers.get("Origin") === null)
+    !(isAgentEventSocket && request.headers.get("Origin") === null) &&
+    !(isAgentRoomAppRequest && request.headers.get("Origin") === null)
   )
     return json({ error: "forbidden_origin" }, 403)
 
@@ -116,6 +126,50 @@ export async function handleRoomRequest(
     const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
     const doRequest = new Request("https://room/agent-events", request)
     return stub.fetch(doRequest)
+  }
+
+  if (isAgentRoomAppRequest) {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
+    if (declaredSize > ROOM_APP_MAX_PAYLOAD_BYTES)
+      return json({ error: "request_too_large" }, 413)
+    let body: { appInstanceId?: unknown; payload?: unknown }
+    try {
+      const bytes = new Uint8Array(await request.arrayBuffer())
+      if (bytes.byteLength > ROOM_APP_MAX_PAYLOAD_BYTES)
+        return json({ error: "request_too_large" }, 413)
+      body = JSON.parse(new TextDecoder().decode(bytes)) as typeof body
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    const payload = validateRoomAppPayload(body?.payload)
+    const total = serializedRoomAppBytes(body)
+    if (
+      !isValidRoomAppInstanceId(body?.appInstanceId) ||
+      !payload.ok ||
+      total === null ||
+      total > ROOM_APP_MAX_PAYLOAD_BYTES
+    )
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/agent-app-request", {
+      method: "POST",
+      headers: {
+        "X-Room-Participant-Id": participantId,
+        "X-Room-Participant-Token": token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        appInstanceId: body.appInstanceId,
+        payload: payload.payload,
+      }),
+    })
   }
 
   if (pathname === GENERATED_APP_PATH) {

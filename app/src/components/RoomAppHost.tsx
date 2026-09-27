@@ -12,6 +12,7 @@ import {
   type RoomAppUnicastEnvelope,
   type RoomAppUnicastResult,
   type RoomAppTransportEnvelope,
+  type RoomAppAgentRequestEnvelope,
 } from "../common/roomApp"
 
 interface RoomAppHostProps {
@@ -39,6 +40,17 @@ interface RoomAppHostProps {
     appInstanceId: string,
     payload: Record<string, unknown>
   ) => "sent" | "rate_limited" | "payload_too_large" | "delivery_unavailable"
+  subscribeAgentRequests?: (
+    listener: (request: RoomAppAgentRequestEnvelope) => void
+  ) => () => void
+  setAgentHostReady?: (appInstanceId: string, ready: boolean) => void
+  respondAgentRequest?: (response: {
+    requestId: string
+    appInstanceId: string
+    ok: boolean
+    result?: Record<string, unknown>
+    error?: string
+  }) => boolean
   sharedState?: { revision: number; state: Record<string, unknown> }
   sendGeneratedState?: (
     appInstanceId: string,
@@ -71,6 +83,10 @@ function handshakeToken(): string {
   }
 }
 
+const NO_ROOM_APP_AGENT_SUBSCRIBE = () => () => undefined
+const NO_ROOM_APP_AGENT_HOST_STATE = () => undefined
+const NO_ROOM_APP_AGENT_RESPONSE = () => false
+
 export default function RoomAppHost({
   app,
   appInstanceId,
@@ -81,6 +97,9 @@ export default function RoomAppHost({
   subscribeUnicast,
   subscribeUnicastResults,
   sendUnicast,
+  subscribeAgentRequests = NO_ROOM_APP_AGENT_SUBSCRIBE,
+  setAgentHostReady = NO_ROOM_APP_AGENT_HOST_STATE,
+  respondAgentRequest = NO_ROOM_APP_AGENT_RESPONSE,
   sharedState,
   sendGeneratedState,
   subscribeGeneratedState,
@@ -107,6 +126,7 @@ export default function RoomAppHost({
   const sendUnicastRef = useRef(sendUnicast)
   sendUnicastRef.current = sendUnicast
   const pendingUnicastRequestsRef = useRef(new Map<string, number>())
+  const pendingAgentRequestsRef = useRef(new Map<string, number>())
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
   const [inviteCopied, setInviteCopied] = useState(false)
@@ -153,6 +173,35 @@ export default function RoomAppHost({
     }
   }, [])
 
+  useEffect(() => {
+    if (app.source === "generated") return
+    return subscribeAgentRequests((request) => {
+      if (!readyRef.current || request.appInstanceId !== appInstanceId) return
+      const now = Date.now()
+      for (const [id, created] of pendingAgentRequestsRef.current)
+        if (now - created > 15_000) pendingAgentRequestsRef.current.delete(id)
+      if (
+        pendingAgentRequestsRef.current.size >= 4 ||
+        pendingAgentRequestsRef.current.has(request.requestId)
+      )
+        return
+      pendingAgentRequestsRef.current.set(request.requestId, now)
+      post({ type: "agent_request", ...request })
+      setTimeout(
+        () => pendingAgentRequestsRef.current.delete(request.requestId),
+        15_000
+      )
+    })
+  }, [app.source, appInstanceId, post, subscribeAgentRequests])
+
+  useEffect(
+    () => () => {
+      if (app.source !== "generated") setAgentHostReady(appInstanceId, false)
+      pendingAgentRequestsRef.current.clear()
+    },
+    [app.source, appInstanceId, setAgentHostReady]
+  )
+
   const sendBootstrap = useCallback(() => {
     const frame = iframeRef.current
     if (!frame?.contentWindow) return
@@ -181,6 +230,7 @@ export default function RoomAppHost({
         }
         readyRef.current = true
         setReady(true)
+        if (app.source !== "generated") setAgentHostReady(appInstanceId, true)
         if (!readyNotifiedRef.current) {
           readyNotifiedRef.current = true
           onReady?.(app.id)
@@ -195,6 +245,23 @@ export default function RoomAppHost({
           self,
           participants: projected,
           ...(sharedState ? { shared: sharedState } : {}),
+        })
+        return
+      }
+      if (message.type === "agentResponse") {
+        if (
+          !readyRef.current ||
+          !pendingAgentRequestsRef.current.has(message.requestId)
+        )
+          return
+        pendingAgentRequestsRef.current.delete(message.requestId)
+        respondAgentRequest({
+          requestId: message.requestId,
+          appInstanceId,
+          ok: message.ok,
+          ...(message.ok
+            ? { result: message.result }
+            : { error: message.error }),
         })
         return
       }
@@ -281,12 +348,15 @@ export default function RoomAppHost({
   }, [
     app.id,
     app.origin,
+    app.source,
     appInstanceId,
     onEngaged,
     onReady,
     participants,
     post,
+    respondAgentRequest,
     self,
+    setAgentHostReady,
     sendGeneratedState,
     sharedState,
   ])
@@ -302,10 +372,12 @@ export default function RoomAppHost({
   const retireTransport = useCallback(() => {
     readyRef.current = false
     setReady(false)
+    if (app.source !== "generated") setAgentHostReady(appInstanceId, false)
     portRef.current?.close()
     portRef.current = null
     pendingUnicastRequestsRef.current.clear()
-  }, [])
+    pendingAgentRequestsRef.current.clear()
+  }, [app.source, appInstanceId, setAgentHostReady])
 
   useEffect(() => retireTransport, [appInstanceId, retireTransport])
 
