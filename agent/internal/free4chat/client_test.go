@@ -1128,6 +1128,23 @@ func TestWaitForEventsParsesRuntimeHostsServerShape(t *testing.T) {
 						"runtimeHostId": "33333333-4444-5555-6666-777777777777",
 					},
 				},
+				"roomApps": []any{
+					map[string]any{
+						"appInstanceId": "test-app:0123abcd",
+						"appId":         "test-app",
+						"title":         "Test App",
+						"source":        "curated",
+						"callable":      true,
+					},
+					map[string]any{
+						"appInstanceId": "test-app:0123abcd",
+						"appId":         "test-app",
+						"title":         "Test App",
+						"source":        "curated",
+						"callable":      true,
+						"url":           "https://example.invalid",
+					},
+				},
 			}))
 		default:
 			writeJSON(w, callResult(map[string]any{"sequence": float64(1)}))
@@ -1147,5 +1164,8 @@ func TestWaitForEventsParsesRuntimeHostsServerShape(t *testing.T) {
 	}
 	if roster := wait.Participants; len(roster) != 1 || roster[0].RuntimeHostID != "11111111-2222-3333-4444-555555555555" {
 		t.Fatalf("roster runtimeHostId mismatch: %+v", roster)
+	}
+	if len(wait.RoomApps) != 1 || wait.RoomApps[0].AppInstanceID != "test-app:0123abcd" {
+		t.Fatalf("current Room App projection mismatch: %+v", wait.RoomApps)
 	}
 }

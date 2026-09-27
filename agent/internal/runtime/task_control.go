@@ -263,6 +263,7 @@ func (r *ResidentRuntime) deliverNativeSteer(scope string, expectedTurnSequence,
 	input := BuildHarnessTurn(events, &TurnContextOptions{
 		Self:          r.selfContext(),
 		Participants:  r.rosterSnapshot(),
+		RoomApps:      r.roomAppsSnapshot(),
 		TaskRequestID: taskRequestIDForScope(scope),
 	})
 	if err := steerer.SteerTurnFor(scope, expectedTurnSequence, *input); err != nil {

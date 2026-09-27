@@ -32,6 +32,20 @@ export interface RoomAppDefinition {
   srcDoc?: string
 }
 
+export interface RoomAppHostMetadata {
+  appInstanceId: string
+  appId: string
+  title: string
+  source: "curated" | "generated"
+}
+
+export interface RoomAppAgentProjection
+  extends Omit<RoomAppHostMetadata, "source"> {
+  source: "curated"
+  callable: boolean
+  unavailableReason?: "ambiguous_host"
+}
+
 /** Public, read-only Worker Service Binding used by the Room authority. */
 export interface RoomAppCatalogService {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
@@ -684,6 +698,67 @@ export function roomAppInstanceId(roomName: string, appId: string): string {
     hash = Math.imul(hash, 0x01000193) >>> 0
   }
   return `${appId}:${hash.toString(16).padStart(8, "0")}`
+}
+
+/** Project only live, host-ready curated instances into the Agent's Room view. */
+export function projectCallableRoomApps(
+  roomName: string,
+  activeHosts: readonly (readonly RoomAppHostMetadata[])[],
+  enabled: boolean
+): RoomAppAgentProjection[] {
+  if (!enabled || !roomName) return []
+  const currentCatalog = new Map(
+    currentRoomAppCatalog()
+      .filter(
+        (app) =>
+          app.source !== "generated" &&
+          validateRoomAppDefinition(app) &&
+          isRoomAppAllowlisted(app)
+      )
+      .map((app) => [app.id, app])
+  )
+  const hostsByInstance = new Map<
+    string,
+    { metadata: RoomAppHostMetadata; count: number }
+  >()
+  for (const hostApps of activeHosts) {
+    const seenOnHost = new Set<string>()
+    for (const app of hostApps) {
+      const definition = currentCatalog.get(app.appId)
+      if (
+        !definition ||
+        app.source !== "curated" ||
+        app.appInstanceId !== roomAppInstanceId(roomName, app.appId) ||
+        seenOnHost.has(app.appInstanceId)
+      )
+        continue
+      seenOnHost.add(app.appInstanceId)
+      const currentMetadata: RoomAppHostMetadata = {
+        appInstanceId: app.appInstanceId,
+        appId: definition.id,
+        title: definition.label,
+        source: "curated",
+      }
+      const existing = hostsByInstance.get(app.appInstanceId)
+      if (existing) existing.count += 1
+      else
+        hostsByInstance.set(app.appInstanceId, {
+          metadata: currentMetadata,
+          count: 1,
+        })
+    }
+  }
+
+  return [...hostsByInstance.values()]
+    .sort((left, right) =>
+      left.metadata.appId.localeCompare(right.metadata.appId)
+    )
+    .map(({ metadata, count }) => ({
+      ...metadata,
+      source: "curated" as const,
+      callable: count === 1,
+      ...(count > 1 ? { unavailableReason: "ambiguous_host" as const } : {}),
+    }))
 }
 
 export function isRoomAppInstanceForRoom(

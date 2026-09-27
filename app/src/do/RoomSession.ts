@@ -165,13 +165,18 @@ import {
   ROOM_APP_PROTOCOL_VERSION,
   ROOM_APP_UNICAST_BYTES_PER_SECOND,
   ROOM_APP_UNICAST_MESSAGES_PER_SECOND,
+  currentRoomAppCatalog,
   type RoomAppCatalogService,
+  type RoomAppHostMetadata,
   isRoomAppInstanceForRoom,
+  isRoomAppAllowlisted,
   isValidRoomAppInstanceId,
   isValidRoomAppParticipantId,
   isValidRoomAppRequestId,
   loadProductionRoomAppCatalog,
   serializedRoomAppBytes,
+  projectCallableRoomApps,
+  roomAppInstanceId,
   setProductionRoomAppCatalog,
   validateRoomAppPayload,
 } from "../common/roomApp"
@@ -458,6 +463,7 @@ interface ConnectionAttachment {
   connectionNonce: string
   roomAppUnicastRateSamples?: Array<{ at: number; bytes: number }>
   activeRoomAppInstances?: string[]
+  activeRoomApps?: RoomAppHostMetadata[]
   pendingTaskSessionDiscovery?: PendingTaskSessionDiscovery
   pendingTaskSessionStart?: PendingTaskSessionStart
 }
@@ -1080,6 +1086,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       timer: ReturnType<typeof setTimeout>
     }
   >()
+  // A ready handshake may yield while refreshing the Lab catalog. Keep only
+  // those in-flight host-state operations so a later Human chat is not
+  // accepted before its discovery snapshot can include the ready App. This is
+  // an ordering barrier, not an event queue: message bodies remain on their
+  // original WebSocket handler until the preceding readiness operation ends.
+  private readonly pendingRoomAppHostStates = new Set<Promise<void>>()
   // A participant has at most one outstanding long-poll. A null value is a
   // short-lived reservation while the request refreshes its lease.
   private readonly agentWaiters = new Map<string, AgentWaiter | null>()
@@ -2714,6 +2726,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     events: AgentEvent[]
     cursor: number
     expiresAt: number
+    roomApps: ReturnType<typeof projectCallableRoomApps>
     truncated?: boolean
   } {
     this.warmCollabRegistry(room)
@@ -2774,8 +2787,52 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         .map((entry) => entry.event!),
       cursor: serverCursor,
       expiresAt: room.expiresAt,
+      roomApps: this.projectRoomAppsForAgent(room),
       ...(truncated ? { truncated: true } : {}),
     }
+  }
+
+  private projectRoomAppsForAgent(
+    room: RoomRecord
+  ): ReturnType<typeof projectCallableRoomApps> {
+    if (this.env.ROOM_APPS_ENABLED !== "true") return []
+    const activeHosts: RoomAppHostMetadata[][] = []
+    for (const candidate of this.ctx.getWebSockets()) {
+      if (
+        candidate.readyState !== 1 ||
+        this.deserializeAgentEventAttachment(candidate)
+      )
+        continue
+      let attachment: Partial<ConnectionAttachment> | null = null
+      try {
+        attachment =
+          candidate.deserializeAttachment() as Partial<ConnectionAttachment> | null
+      } catch {
+        continue
+      }
+      const host = attachment && room.participants[attachment.participantId]
+      if (
+        !attachment ||
+        host?.kind !== "human" ||
+        !host.connected ||
+        host.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      const currentIds = new Set(
+        Array.isArray(attachment.activeRoomAppInstances)
+          ? attachment.activeRoomAppInstances
+              .filter(isValidRoomAppInstanceId)
+              .slice(0, ROOM_APP_MAX_INSTANCES)
+          : []
+      )
+      const metadata = Array.isArray(attachment.activeRoomApps)
+        ? attachment.activeRoomApps
+            .filter((app) => currentIds.has(app.appInstanceId))
+            .slice(0, ROOM_APP_MAX_INSTANCES)
+        : []
+      activeHosts.push(metadata)
+    }
+    return projectCallableRoomApps(this.roomAnalyticsName(), activeHosts, true)
   }
 
   // retainedContextEvents exposes the same sanitized event shapes as the
@@ -7277,24 +7334,47 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   ): Promise<void> {
     if (!isValidRoomAppInstanceId(message.appInstanceId)) return
     if (this.env.ROOM_APPS_ENABLED !== "true") return
+    let readyMetadata: RoomAppHostMetadata | undefined
     if (message.ready) {
       setProductionRoomAppCatalog(
         await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
       )
-      const room = await this.activeRoom()
-      const participant = room?.participants[attachment.participantId]
+    }
+    const room = await this.activeRoom()
+    const participant =
+      room &&
+      this.findParticipant(room, attachment.participantId, attachment.token)
+    if (
+      !room ||
+      !participant ||
+      participant.kind !== "human" ||
+      !participant.media ||
+      !participant.connected ||
+      participant.connectionNonce !== attachment.connectionNonce
+    )
+      return
+    if (message.ready) {
       if (
-        !room ||
-        !participant ||
-        participant.kind !== "human" ||
-        !participant.connected ||
-        participant.connectionNonce !== attachment.connectionNonce ||
         !isRoomAppInstanceForRoom(
           this.roomAnalyticsName(),
           message.appInstanceId
         )
       )
         return
+      const definition = currentRoomAppCatalog().find(
+        (app) =>
+          isRoomAppAllowlisted(app) &&
+          app.source !== "generated" &&
+          roomAppInstanceId(this.roomAnalyticsName(), app.id) ===
+            message.appInstanceId
+      )
+      if (!definition) return
+      readyMetadata = {
+        appInstanceId: message.appInstanceId,
+        appId: definition.id,
+        title: definition.label,
+        source: "curated",
+      }
     }
     const current = Array.isArray(attachment.activeRoomAppInstances)
       ? attachment.activeRoomAppInstances
@@ -7307,10 +7387,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           ROOM_APP_MAX_INSTANCES
         )
       : current.filter((id) => id !== message.appInstanceId)
+    const metadataById = new Map<string, RoomAppHostMetadata>()
+    for (const app of Array.isArray(attachment.activeRoomApps)
+      ? attachment.activeRoomApps
+      : [])
+      if (current.includes(app.appInstanceId))
+        metadataById.set(app.appInstanceId, app)
+    if (readyMetadata)
+      metadataById.set(readyMetadata.appInstanceId, readyMetadata)
+    const nextMetadata = next.flatMap((id) => {
+      const app = metadataById.get(id)
+      return app ? [app] : []
+    })
     try {
       socket.serializeAttachment({
         ...attachment,
         activeRoomAppInstances: next,
+        activeRoomApps: nextMetadata,
       } satisfies ConnectionAttachment)
     } catch {
       return
@@ -7645,6 +7738,57 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         ? { taskRequestId: taskRequest.requestId }
         : {}),
     }
+  }
+
+  /**
+   * Preflight only the routing decision needed to order Lab catalog work.
+   * Return a boolean rather than Room state so callers can safely await the
+   * external catalog without retaining a RoomRecord that may later be saved.
+   */
+  private async chatCanActivateAgent(
+    attachment: ConnectionAttachment,
+    message: Extract<ClientMessage, { type: "chat" }>
+  ): Promise<boolean> {
+    const room = await this.activeRoom()
+    if (!room) return false
+    const participant = this.findParticipant(
+      room,
+      attachment.participantId,
+      attachment.token
+    )
+    if (
+      !participant ||
+      participant.kind !== "human" ||
+      !participant.media ||
+      !participant.connected ||
+      participant.connectionNonce !== attachment.connectionNonce
+    )
+      return false
+
+    let targets: readonly string[]
+    if (message.taskRequestId !== undefined) {
+      const resolution = resolveTaskRequest(
+        buildTaskProjectionIndex(room.messages, room.participants),
+        message.taskRequestId,
+        room.participants
+      )
+      if (!resolution.ok) return false
+      const taskTargets = resolveHumanTaskTargets(
+        resolution,
+        participant,
+        room.participants,
+        message.targets,
+        MAX_TARGETS
+      )
+      if (!taskTargets.ok) return false
+      targets = taskTargets.targets
+    } else {
+      targets = normalizeChatTargets(room, message.targets)
+    }
+    return targets.some((id) => {
+      const target = room.participants[id]
+      return target?.kind === "agent" && target.connected
+    })
   }
 
   /**
@@ -8043,6 +8187,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     attachment: ConnectionAttachment,
     message: ClientMessage
   ): Promise<void> {
+    if (message.type === "room-app-host-state") {
+      await this.handleRoomAppHostState(socket, attachment, message)
+      return
+    }
     const room = await this.activeRoom()
     if (!room) {
       socket.send(JSON.stringify({ type: "expired" }))
@@ -8056,10 +8204,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
     if (!participant || participant.kind !== "human" || !participant.media) {
       socket.close(4003, "Unauthorized")
-      return
-    }
-    if (message.type === "room-app-host-state") {
-      await this.handleRoomAppHostState(socket, attachment, message)
       return
     }
     if (message.type === "room-app-agent-response") {
@@ -9538,11 +9682,36 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     try {
-      await this.handleClientMessage(
-        socket,
-        attachment,
-        JSON.parse(raw) as ClientMessage
-      )
+      const message = JSON.parse(raw) as ClientMessage
+      if (message.type === "room-app-host-state" && message.ready) {
+        const handling = Promise.resolve().then(() =>
+          this.handleClientMessage(socket, attachment, message)
+        )
+        const barrier = handling.then(
+          () => undefined,
+          () => undefined
+        )
+        this.pendingRoomAppHostStates.add(barrier)
+        try {
+          await handling
+        } finally {
+          this.pendingRoomAppHostStates.delete(barrier)
+        }
+        return
+      }
+      if (message.type === "chat") {
+        if (await this.chatCanActivateAgent(attachment, message)) {
+          while (this.pendingRoomAppHostStates.size > 0)
+            await Promise.all([...this.pendingRoomAppHostStates])
+          // Agent discovery is a snapshot for this turn. Refresh before the
+          // addressed message is accepted so its persisted Room projection
+          // cannot advertise an App that current Lab policy has disabled.
+          setProductionRoomAppCatalog(
+            await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
+          )
+        }
+      }
+      await this.handleClientMessage(socket, attachment, message)
     } catch (error) {
       // #406: an oversized primary Room record is a controlled protocol
       // rejection, not an "invalid_message".

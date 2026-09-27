@@ -24,6 +24,7 @@ import {
   roomAppUnicastRateGuard,
   roomAppInstanceId,
   parseRoomAppCatalog,
+  projectCallableRoomApps,
   resolveProductionRoomAppId,
   setProductionRoomAppCatalog,
   validateRoomAppDefinition,
@@ -689,6 +690,153 @@ describe("Room App host contract", () => {
         roomAppInstanceId("room-a", "second-app")
       )
     ).toBe(false)
+  })
+
+  it("projects zero and one current callable curated App without exposing catalog URLs", () => {
+    const appInstanceId = roomAppInstanceId("room-a", "test-app")
+    expect(projectCallableRoomApps("room-a", [], true)).toEqual([])
+    expect(
+      projectCallableRoomApps(
+        "room-a",
+        [
+          [
+            {
+              appInstanceId,
+              appId: "test-app",
+              title: "Test App",
+              source: "curated",
+            },
+          ],
+        ],
+        true
+      )
+    ).toEqual([
+      {
+        appInstanceId,
+        appId: "test-app",
+        title: "Test App",
+        source: "curated",
+        callable: true,
+      },
+    ])
+    expect(
+      projectCallableRoomApps(
+        "room-a",
+        [
+          [
+            {
+              appInstanceId,
+              appId: "test-app",
+              title: "Test App",
+              source: "curated",
+            },
+          ],
+        ],
+        false
+      )
+    ).toEqual([])
+  })
+
+  it("keeps multiple current Apps distinguishable by stable id and title", () => {
+    const projected = projectCallableRoomApps(
+      "room-a",
+      [
+        [
+          {
+            appInstanceId: roomAppInstanceId("room-a", "second-app"),
+            appId: "second-app",
+            title: "Second App",
+            source: "curated",
+          },
+          {
+            appInstanceId: roomAppInstanceId("room-a", "test-app"),
+            appId: "test-app",
+            title: "Test App",
+            source: "curated",
+          },
+        ],
+      ],
+      true
+    )
+    expect(
+      projected.map(({ appId, title, callable }) => ({
+        appId,
+        title,
+        callable,
+      }))
+    ).toEqual([
+      { appId: "second-app", title: "Second App", callable: true },
+      { appId: "test-app", title: "Test App", callable: true },
+    ])
+  })
+
+  it("omits stale/closed instances and marks a multi-host instance non-callable", () => {
+    const app = {
+      appInstanceId: roomAppInstanceId("room-a", "test-app"),
+      appId: "test-app",
+      title: "Test App",
+      source: "curated" as const,
+    }
+    const stale = {
+      ...app,
+      appInstanceId: roomAppInstanceId("old-room", "test-app"),
+    }
+    expect(projectCallableRoomApps("room-a", [[], [stale]], true)).toEqual([])
+    expect(projectCallableRoomApps("room-a", [[app], [app]], true)).toEqual([
+      {
+        ...app,
+        callable: false,
+        unavailableReason: "ambiguous_host",
+      },
+    ])
+    expect(
+      projectCallableRoomApps(
+        "room-a",
+        [[{ ...app, source: "generated" }]],
+        true
+      )
+    ).toEqual([])
+  })
+
+  it("revalidates cached ready metadata against the current Lab catalog", () => {
+    const cachedHost = [
+      {
+        appInstanceId: roomAppInstanceId("room-a", "test-app"),
+        appId: "test-app",
+        title: "Old App Title",
+        source: "curated" as const,
+      },
+    ]
+    setProductionRoomAppCatalog([
+      {
+        ...TEST_ROOM_APP_CATALOG[0]!,
+        label: "Renamed App",
+      },
+    ])
+    expect(projectCallableRoomApps("room-a", [cachedHost], true)).toEqual([
+      {
+        appInstanceId: roomAppInstanceId("room-a", "test-app"),
+        appId: "test-app",
+        title: "Renamed App",
+        source: "curated",
+        callable: true,
+      },
+    ])
+
+    setProductionRoomAppCatalog(
+      parseRoomAppCatalog({
+        version: 1,
+        apps: [
+          {
+            id: "test-app",
+            label: "Disabled App",
+            path: "/test-app",
+            status: "disabled",
+          },
+        ],
+      }) ?? []
+    )
+    expect(projectCallableRoomApps("room-a", [cachedHost], true)).toEqual([])
   })
 
   it("bounds the participant projection and separates reliable/realtime rate", () => {

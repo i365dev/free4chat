@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { RoomSession } from "./RoomSession"
 import {
   EMPTY_ROOM_APP_CATALOG,
+  ROOM_APP_CATALOG_REFRESH_INTERVAL_MS,
   ROOM_APP_CATALOG_ENDPOINT,
   roomAppInstanceId,
   setProductionRoomAppCatalog,
@@ -356,6 +357,214 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     // A replayed/late response no longer has a live correlation and is ignored.
     await sendHostResponse(host, responseMessage)
     expect(host.sent).toHaveLength(1)
+  })
+
+  it("projects only current curated Room Apps into the resident Agent view", async () => {
+    const { session, store, addHumanSocket, setHostReady } = makeRoomSession()
+    const host = addHumanSocket("human-a")
+    await setHostReady(host, APP_INSTANCE_ID)
+    await setHostReady(host, SECOND_TEST_APP_INSTANCE_ID)
+    const room = store.get("room") as ReturnType<typeof buildStoredRoom>
+    const result = (
+      session as unknown as {
+        agentEvents: (
+          room: ReturnType<typeof buildStoredRoom>,
+          participantId: string,
+          cursor: number
+        ) => {
+          roomApps: unknown[]
+        }
+      }
+    ).agentEvents(room, "agent-c", 0)
+    expect(result.roomApps).toEqual([
+      {
+        appInstanceId: APP_INSTANCE_ID,
+        appId: "test-app-1",
+        title: "Test App 1",
+        source: "curated",
+        callable: true,
+      },
+      {
+        appInstanceId: SECOND_TEST_APP_INSTANCE_ID,
+        appId: "test-app-2",
+        title: "Test App 2",
+        source: "curated",
+        callable: true,
+      },
+    ])
+    expect(JSON.stringify(result.roomApps)).not.toMatch(
+      /url|token|bearer|socket/i
+    )
+  })
+
+  it("commits ready discovery before accepting the next addressed Human chat", async () => {
+    const { session, store, catalogService, addHumanSocket, setHostReady } =
+      makeRoomSession()
+    let resolveCatalog!: (response: Response) => void
+    const catalogResponse = new Promise<Response>((resolve) => {
+      resolveCatalog = resolve
+    })
+    catalogService.fetch.mockImplementationOnce(() => catalogResponse)
+    const host = addHumanSocket("human-a")
+
+    const ready = setHostReady(host, APP_INSTANCE_ID)
+    await vi.waitFor(() => expect(catalogService.fetch).toHaveBeenCalledOnce())
+
+    const sendChat = (
+      session as unknown as {
+        webSocketMessage: (socket: WebSocket, raw: string) => Promise<void>
+      }
+    ).webSocketMessage(
+      host as unknown as WebSocket,
+      JSON.stringify({
+        type: "chat",
+        text: "Draw this on the board",
+        targets: ["agent-c"],
+      })
+    )
+    await Promise.resolve()
+    expect(
+      (store.get("room") as ReturnType<typeof buildStoredRoom>).messages
+    ).toHaveLength(0)
+
+    resolveCatalog(
+      new Response(JSON.stringify(TEST_CATALOG_RESPONSE), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    )
+    await Promise.all([ready, sendChat])
+
+    const room = store.get("room") as ReturnType<typeof buildStoredRoom>
+    expect(room.messages).toHaveLength(1)
+    expect(room.messages[0]).toMatchObject({
+      type: "text",
+      text: "Draw this on the board",
+      targets: ["agent-c"],
+    })
+    const projection = (
+      session as unknown as {
+        agentEvents: (
+          room: ReturnType<typeof buildStoredRoom>,
+          participantId: string,
+          cursor: number
+        ) => {
+          events: Array<{ text?: string; addressed: boolean }>
+          roomApps: unknown[]
+        }
+      }
+    ).agentEvents(room, "agent-c", 0)
+    expect(projection.events).toContainEqual(
+      expect.objectContaining({
+        text: "Draw this on the board",
+        addressed: true,
+      })
+    )
+    expect(projection.roomApps).toContainEqual({
+      appInstanceId: APP_INSTANCE_ID,
+      appId: "test-app-1",
+      title: "Test App 1",
+      source: "curated",
+      callable: true,
+    })
+  })
+
+  it("does not block ordinary Human chat on pending Room App readiness", async () => {
+    const { session, store, catalogService, addHumanSocket, setHostReady } =
+      makeRoomSession()
+    let resolveCatalog!: (response: Response) => void
+    const catalogResponse = new Promise<Response>((resolve) => {
+      resolveCatalog = resolve
+    })
+    catalogService.fetch.mockImplementationOnce(() => catalogResponse)
+    const host = addHumanSocket("human-a")
+
+    const ready = setHostReady(host, APP_INSTANCE_ID)
+    await vi.waitFor(() => expect(catalogService.fetch).toHaveBeenCalledOnce())
+    const ordinaryChat = (
+      session as unknown as {
+        webSocketMessage: (socket: WebSocket, raw: string) => Promise<void>
+      }
+    ).webSocketMessage(
+      host as unknown as WebSocket,
+      JSON.stringify({ type: "chat", text: "Ordinary room chat" })
+    )
+
+    await vi.waitFor(() => {
+      expect(
+        (store.get("room") as ReturnType<typeof buildStoredRoom>).messages
+      ).toHaveLength(1)
+    })
+    expect(
+      (store.get("room") as ReturnType<typeof buildStoredRoom>).messages[0]
+    ).toMatchObject({ text: "Ordinary room chat" })
+
+    resolveCatalog(
+      new Response(JSON.stringify(TEST_CATALOG_RESPONSE), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    )
+    await Promise.all([ready, ordinaryChat])
+  })
+
+  it("refreshes catalog truth before accepting an addressed Agent chat", async () => {
+    vi.useFakeTimers()
+    try {
+      const { session, store, catalogService, addHumanSocket, setHostReady } =
+        makeRoomSession()
+      const host = addHumanSocket("human-a")
+      await setHostReady(host, APP_INSTANCE_ID)
+      expect(catalogService.fetch).toHaveBeenCalledOnce()
+
+      catalogService.fetch.mockImplementationOnce(
+        async () =>
+          new Response(
+            JSON.stringify({
+              version: 1,
+              apps: [
+                {
+                  id: "test-app-1",
+                  label: "Test App 1",
+                  path: "/test-app-1",
+                  status: "disabled",
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          )
+      )
+      await vi.advanceTimersByTimeAsync(ROOM_APP_CATALOG_REFRESH_INTERVAL_MS)
+
+      await (
+        session as unknown as {
+          webSocketMessage: (socket: WebSocket, raw: string) => Promise<void>
+        }
+      ).webSocketMessage(
+        host as unknown as WebSocket,
+        JSON.stringify({
+          type: "chat",
+          text: "Use the current App",
+          targets: ["agent-c"],
+        })
+      )
+      expect(catalogService.fetch).toHaveBeenCalledTimes(2)
+
+      const room = store.get("room") as ReturnType<typeof buildStoredRoom>
+      expect(room.messages).toHaveLength(1)
+      const projection = (
+        session as unknown as {
+          agentEvents: (
+            room: ReturnType<typeof buildStoredRoom>,
+            participantId: string,
+            cursor: number
+          ) => { roomApps: unknown[] }
+        }
+      ).agentEvents(room, "agent-c", 0)
+      expect(projection.roomApps).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("fails immediately without one active curated host", async () => {

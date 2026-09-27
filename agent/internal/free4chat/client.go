@@ -999,6 +999,15 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 	if participants, ok := result["participants"].([]any); ok {
 		wait.Participants = NormalizeRoster(participants)
 	}
+	if rawApps, ok := result["roomApps"]; ok {
+		encoded, marshalErr := json.Marshal(rawApps)
+		var entries []json.RawMessage
+		if marshalErr == nil && json.Unmarshal(encoded, &entries) == nil {
+			wait.RoomApps = parseResidentRoomApps(entries)
+		} else {
+			wait.RoomApps = []types.RoomAppProjection{}
+		}
+	}
 	// #176 Phase A (#178 review fix 1): the server's runtimeHosts map
 	// values ARE complete RuntimeHostProjection objects. Parse each value
 	// directly (fail-closed) and require the embedded id to match the map
