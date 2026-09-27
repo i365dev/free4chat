@@ -27,7 +27,18 @@ const GROUPS: Array<{
   },
   {
     heading: "Project",
-    links: [{ href: "/privacy", label: "Privacy" }],
+    links: [
+      { href: "/privacy", label: "Privacy" },
+      {
+        href: "https://github.com/i365dev/free4chat/discussions",
+        label: "Discussions",
+      },
+      {
+        href: "https://github.com/i365dev/free4chat/issues",
+        label: "Report a bug",
+      },
+      { href: "mailto:hello@free4.chat", label: "Contact" },
+    ],
   },
 ]
 
