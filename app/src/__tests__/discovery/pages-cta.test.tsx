@@ -103,4 +103,25 @@ describe("Room Apps discovery link", () => {
       "/apps"
     )
   })
+
+  it("includes the Project privacy and community links", () => {
+    render(<DiscoveryFooter />)
+
+    expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute(
+      "href",
+      "/privacy"
+    )
+    expect(screen.getByRole("link", { name: "Discussions" })).toHaveAttribute(
+      "href",
+      "https://github.com/i365dev/free4chat/discussions"
+    )
+    expect(screen.getByRole("link", { name: "Report a bug" })).toHaveAttribute(
+      "href",
+      "https://github.com/i365dev/free4chat/issues"
+    )
+    expect(screen.getByRole("link", { name: "Contact" })).toHaveAttribute(
+      "href",
+      "mailto:hello@free4.chat"
+    )
+  })
 })
