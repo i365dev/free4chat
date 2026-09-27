@@ -358,6 +358,44 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     expect(host.sent).toHaveLength(1)
   })
 
+  it("projects only current curated Room Apps into the resident Agent view", async () => {
+    const { session, store, addHumanSocket, setHostReady } = makeRoomSession()
+    const host = addHumanSocket("human-a")
+    await setHostReady(host, APP_INSTANCE_ID)
+    await setHostReady(host, SECOND_TEST_APP_INSTANCE_ID)
+    const room = store.get("room") as ReturnType<typeof buildStoredRoom>
+    const result = (
+      session as unknown as {
+        agentEvents: (
+          room: ReturnType<typeof buildStoredRoom>,
+          participantId: string,
+          cursor: number
+        ) => {
+          roomApps: unknown[]
+        }
+      }
+    ).agentEvents(room, "agent-c", 0)
+    expect(result.roomApps).toEqual([
+      {
+        appInstanceId: APP_INSTANCE_ID,
+        appId: "test-app-1",
+        title: "Test App 1",
+        source: "curated",
+        callable: true,
+      },
+      {
+        appInstanceId: SECOND_TEST_APP_INSTANCE_ID,
+        appId: "test-app-2",
+        title: "Test App 2",
+        source: "curated",
+        callable: true,
+      },
+    ])
+    expect(JSON.stringify(result.roomApps)).not.toMatch(
+      /url|token|bearer|socket/i
+    )
+  })
+
   it("fails immediately without one active curated host", async () => {
     const { addAgentSocket, requestFromAgent } = makeRoomSession()
     addAgentSocket("agent-c")

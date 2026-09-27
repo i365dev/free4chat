@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/coder/websocket"
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -56,6 +58,11 @@ const (
 	residentTaskExecutionResyncType = "task-execution-resync"
 )
 
+var (
+	roomAppIDPattern       = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+	roomAppInstancePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}:[0-9a-f]{8}$`)
+)
+
 // residentEventStream is deliberately a one-reader/one-writer wrapper around
 // coder/websocket. The Runtime reads server envelopes and sends only sparse
 // heartbeat messages; ordinary Room mutations continue to use the existing
@@ -82,6 +89,7 @@ type residentEventEnvelope struct {
 	ExpiresAt    int64                      `json:"expiresAt"`
 	Participants []json.RawMessage          `json:"participants"`
 	RuntimeHosts map[string]json.RawMessage `json:"runtimeHosts"`
+	RoomApps     []json.RawMessage          `json:"roomApps"`
 	MediaState   *types.ResidentMediaState  `json:"mediaState,omitempty"`
 	Expired      bool                       `json:"expired,omitempty"`
 	Truncated    bool                       `json:"truncated,omitempty"`
@@ -236,6 +244,7 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 		Cursor:     envelope.Cursor,
 		ExpiresAt:  envelope.ExpiresAt,
 		MediaState: envelope.MediaState,
+		RoomApps:   parseResidentRoomApps(envelope.RoomApps),
 	}
 	if envelope.Participants != nil {
 		raw := make([]any, 0, len(envelope.Participants))
@@ -261,6 +270,39 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 		}
 	}
 	return wait, nil
+}
+
+// parseResidentRoomApps accepts only the deliberately small discovery
+// projection. Invalid entries are omitted; App data never becomes prompt
+// instructions or transport authority.
+func parseResidentRoomApps(entries []json.RawMessage) []types.RoomAppProjection {
+	if len(entries) > 32 {
+		return []types.RoomAppProjection{}
+	}
+	apps := make([]types.RoomAppProjection, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, raw := range entries {
+		var app types.RoomAppProjection
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&app) != nil ||
+			!roomAppIDPattern.MatchString(app.AppID) ||
+			!roomAppInstancePattern.MatchString(app.AppInstanceID) ||
+			!strings.HasPrefix(app.AppInstanceID, app.AppID+":") ||
+			app.Title == "" || len([]rune(app.Title)) > 64 ||
+			strings.IndexFunc(app.Title, unicode.IsControl) >= 0 ||
+			app.Source != "curated" ||
+			(app.Callable && app.UnavailableReason != "") ||
+			(!app.Callable && app.UnavailableReason != "ambiguous_host") {
+			continue
+		}
+		if _, ok := seen[app.AppInstanceID]; ok {
+			continue
+		}
+		seen[app.AppInstanceID] = struct{}{}
+		apps = append(apps, app)
+	}
+	return apps
 }
 
 // parseResidentTaskControl validates one private resident control frame. A

@@ -1860,6 +1860,25 @@ func TestRetainedHarnessDeliveryAcknowledgesOnlySuccessfulTurn(t *testing.T) {
 	}
 }
 
+func TestAdvanceFromWaitRefreshesRoomAppDiscovery(t *testing.T) {
+	rt := &ResidentRuntime{}
+	app := types.RoomAppProjection{
+		AppInstanceID: "test-app:0123abcd",
+		AppID:         "test-app",
+		Title:         "Test App",
+		Source:        "curated",
+		Callable:      true,
+	}
+	rt.advanceFromWait(types.WaitResult{RoomApps: []types.RoomAppProjection{app}})
+	if got := rt.roomAppsSnapshot(); len(got) != 1 || got[0] != app {
+		t.Fatalf("Room App discovery was not refreshed: %+v", got)
+	}
+	rt.advanceFromWait(types.WaitResult{RoomApps: []types.RoomAppProjection{}})
+	if got := rt.roomAppsSnapshot(); len(got) != 0 {
+		t.Fatalf("empty Room App projection did not clear stale discovery: %+v", got)
+	}
+}
+
 func TestTransportReplayAfterSuccessfulHarnessAckIsIgnored(t *testing.T) {
 	client := &fakeClient{}
 	adapter := &fakeAdapter{name: "pi"}

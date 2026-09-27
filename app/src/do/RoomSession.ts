@@ -165,13 +165,18 @@ import {
   ROOM_APP_PROTOCOL_VERSION,
   ROOM_APP_UNICAST_BYTES_PER_SECOND,
   ROOM_APP_UNICAST_MESSAGES_PER_SECOND,
+  currentRoomAppCatalog,
   type RoomAppCatalogService,
+  type RoomAppHostMetadata,
   isRoomAppInstanceForRoom,
+  isRoomAppAllowlisted,
   isValidRoomAppInstanceId,
   isValidRoomAppParticipantId,
   isValidRoomAppRequestId,
   loadProductionRoomAppCatalog,
   serializedRoomAppBytes,
+  projectCallableRoomApps,
+  roomAppInstanceId,
   setProductionRoomAppCatalog,
   validateRoomAppPayload,
 } from "../common/roomApp"
@@ -458,6 +463,7 @@ interface ConnectionAttachment {
   connectionNonce: string
   roomAppUnicastRateSamples?: Array<{ at: number; bytes: number }>
   activeRoomAppInstances?: string[]
+  activeRoomApps?: RoomAppHostMetadata[]
   pendingTaskSessionDiscovery?: PendingTaskSessionDiscovery
   pendingTaskSessionStart?: PendingTaskSessionStart
 }
@@ -2714,6 +2720,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     events: AgentEvent[]
     cursor: number
     expiresAt: number
+    roomApps: ReturnType<typeof projectCallableRoomApps>
     truncated?: boolean
   } {
     this.warmCollabRegistry(room)
@@ -2774,8 +2781,52 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         .map((entry) => entry.event!),
       cursor: serverCursor,
       expiresAt: room.expiresAt,
+      roomApps: this.projectRoomAppsForAgent(room),
       ...(truncated ? { truncated: true } : {}),
     }
+  }
+
+  private projectRoomAppsForAgent(
+    room: RoomRecord
+  ): ReturnType<typeof projectCallableRoomApps> {
+    if (this.env.ROOM_APPS_ENABLED !== "true") return []
+    const activeHosts: RoomAppHostMetadata[][] = []
+    for (const candidate of this.ctx.getWebSockets()) {
+      if (
+        candidate.readyState !== 1 ||
+        this.deserializeAgentEventAttachment(candidate)
+      )
+        continue
+      let attachment: Partial<ConnectionAttachment> | null = null
+      try {
+        attachment =
+          candidate.deserializeAttachment() as Partial<ConnectionAttachment> | null
+      } catch {
+        continue
+      }
+      const host = attachment && room.participants[attachment.participantId]
+      if (
+        !attachment ||
+        host?.kind !== "human" ||
+        !host.connected ||
+        host.connectionNonce !== attachment.connectionNonce
+      )
+        continue
+      const currentIds = new Set(
+        Array.isArray(attachment.activeRoomAppInstances)
+          ? attachment.activeRoomAppInstances
+              .filter(isValidRoomAppInstanceId)
+              .slice(0, ROOM_APP_MAX_INSTANCES)
+          : []
+      )
+      const metadata = Array.isArray(attachment.activeRoomApps)
+        ? attachment.activeRoomApps
+            .filter((app) => currentIds.has(app.appInstanceId))
+            .slice(0, ROOM_APP_MAX_INSTANCES)
+        : []
+      activeHosts.push(metadata)
+    }
+    return projectCallableRoomApps(this.roomAnalyticsName(), activeHosts, true)
   }
 
   // retainedContextEvents exposes the same sanitized event shapes as the
@@ -7277,6 +7328,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   ): Promise<void> {
     if (!isValidRoomAppInstanceId(message.appInstanceId)) return
     if (this.env.ROOM_APPS_ENABLED !== "true") return
+    let readyMetadata: RoomAppHostMetadata | undefined
     if (message.ready) {
       setProductionRoomAppCatalog(
         await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
@@ -7295,6 +7347,20 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
       )
         return
+      const definition = currentRoomAppCatalog().find(
+        (app) =>
+          isRoomAppAllowlisted(app) &&
+          app.source !== "generated" &&
+          roomAppInstanceId(this.roomAnalyticsName(), app.id) ===
+            message.appInstanceId
+      )
+      if (!definition) return
+      readyMetadata = {
+        appInstanceId: message.appInstanceId,
+        appId: definition.id,
+        title: definition.label,
+        source: "curated",
+      }
     }
     const current = Array.isArray(attachment.activeRoomAppInstances)
       ? attachment.activeRoomAppInstances
@@ -7307,10 +7373,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           ROOM_APP_MAX_INSTANCES
         )
       : current.filter((id) => id !== message.appInstanceId)
+    const metadataById = new Map<string, RoomAppHostMetadata>()
+    for (const app of Array.isArray(attachment.activeRoomApps)
+      ? attachment.activeRoomApps
+      : [])
+      if (current.includes(app.appInstanceId))
+        metadataById.set(app.appInstanceId, app)
+    if (readyMetadata)
+      metadataById.set(readyMetadata.appInstanceId, readyMetadata)
+    const nextMetadata = next.flatMap((id) => {
+      const app = metadataById.get(id)
+      return app ? [app] : []
+    })
     try {
       socket.serializeAttachment({
         ...attachment,
         activeRoomAppInstances: next,
+        activeRoomApps: nextMetadata,
       } satisfies ConnectionAttachment)
     } catch {
       return

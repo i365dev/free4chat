@@ -778,6 +778,18 @@ type RoomTurnContext struct {
 	Ephemeral    bool                     `json:"ephemeral"`
 	Self         *RoomSelfContext         `json:"self,omitempty"`
 	Participants []ParticipantRosterEntry `json:"participants,omitempty"`
+	RoomApps     []RoomAppProjection      `json:"roomApps,omitempty"`
+}
+
+// RoomAppProjection is bounded discovery metadata for one currently hosted,
+// curated Room App. It contains no URL, credentials, or App-private state.
+type RoomAppProjection struct {
+	AppInstanceID     string `json:"appInstanceId"`
+	AppID             string `json:"appId"`
+	Title             string `json:"title"`
+	Source            string `json:"source"`
+	Callable          bool   `json:"callable"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
 }
 
 // HarnessTranscriptSegment is one committed attributed utterance.
@@ -1218,6 +1230,9 @@ type WaitResult struct {
 	Cursor       int64
 	ExpiresAt    int64
 	Participants []ParticipantRosterEntry
+	// RoomApps is populated by the private resident event stream with current,
+	// bounded App discovery metadata. The public MCP contract is unchanged.
+	RoomApps []RoomAppProjection `json:"-"`
 	// RuntimeHosts (#176 Phase A): one coarse readiness projection per
 	// Runtime Host id present in the Room, shared by all same-host Agents.
 	RuntimeHosts map[string]RuntimeHostProjection

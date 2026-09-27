@@ -910,6 +910,14 @@ func (r *ResidentRuntime) rosterSnapshot() []types.ParticipantRosterEntry {
 	return out
 }
 
+func (r *ResidentRuntime) roomAppsSnapshot() []types.RoomAppProjection {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]types.RoomAppProjection, len(r.roomApps))
+	copy(out, r.roomApps)
+	return out
+}
+
 // sleep waits for d or until stop is signalled; returns whether the full
 // duration elapsed without a stop signal.
 func (r *ResidentRuntime) sleep(d time.Duration) bool {

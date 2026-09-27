@@ -59,6 +59,13 @@ func TestResidentEventStreamUsesHeadersAndDecodesEnvelope(t *testing.T) {
 					"speech":        map[string]any{"stt": true, "tts": false},
 				},
 			},
+			"roomApps": []any{map[string]any{
+				"appInstanceId": "test-app:0123abcd",
+				"appId":         "test-app",
+				"title":         "Test App",
+				"source":        "curated",
+				"callable":      true,
+			}},
 			"mediaState": map[string]any{
 				"meetingNotes":        map[string]any{"active": true, "startedAt": 11},
 				"agentVoiceEnabledAt": float64(22),
@@ -94,6 +101,9 @@ func TestResidentEventStreamUsesHeadersAndDecodesEnvelope(t *testing.T) {
 	if !host.Speech.STT || host.Speech.TTS {
 		t.Fatalf("runtime host envelope mismatch: %+v", wait.RuntimeHosts)
 	}
+	if len(wait.RoomApps) != 1 || wait.RoomApps[0].AppInstanceID != "test-app:0123abcd" || !wait.RoomApps[0].Callable {
+		t.Fatalf("room app envelope mismatch: %+v", wait.RoomApps)
+	}
 	if wait.MediaState == nil || !wait.MediaState.MediaAvailable ||
 		!wait.MediaState.MeetingNotes.Active || wait.MediaState.AgentVoiceEnabledAt != 22 ||
 		!wait.MediaState.LiveTranscript.Active ||
@@ -109,6 +119,22 @@ func TestResidentEventStreamUsesHeadersAndDecodesEnvelope(t *testing.T) {
 		headers.Get("X-Room-Id") != "room-1" ||
 		headers.Get("X-Room-Cursor") != "3" {
 		t.Fatalf("resident capability headers mismatch: %v", headers)
+	}
+}
+
+func TestParseResidentRoomAppsFailsClosed(t *testing.T) {
+	entries := []json.RawMessage{
+		json.RawMessage(`{"appInstanceId":"test-app:0123abcd","appId":"test-app","title":"Test App","source":"curated","callable":false,"unavailableReason":"ambiguous_host"}`),
+		json.RawMessage(`{"appInstanceId":"test-app:0123abcd","appId":"test-app","title":"Test App","source":"curated","callable":true,"url":"https://example.invalid"}`),
+		json.RawMessage(`{"appInstanceId":"generated:0123abcd","appId":"generated","title":"Task App","source":"generated","callable":true}`),
+		json.RawMessage(`{"appInstanceId":"test-app:0123abcd","appId":"test-app","title":"bad\u0000title","source":"curated","callable":true}`),
+	}
+	got := parseResidentRoomApps(entries)
+	if len(got) != 1 || got[0].Callable || got[0].UnavailableReason != "ambiguous_host" {
+		t.Fatalf("unsafe or malformed Room Apps were not omitted: %+v", got)
+	}
+	if empty := parseResidentRoomApps(nil); empty == nil || len(empty) != 0 {
+		t.Fatalf("an explicit empty discovery projection must clear stale state: %#v", empty)
 	}
 }
 

@@ -316,6 +316,7 @@ type ResidentRuntime struct {
 	releasedTaskOrder  []string
 	advertisedCaps     []string
 	roster             []types.ParticipantRosterEntry
+	roomApps           []types.RoomAppProjection
 	resolvedRoomID     string
 	// participatingSince is set once on the lifecycle's first successful
 	// adoptJoin and preserved across transient retries/reconnects (#228).
@@ -1344,6 +1345,9 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	if result.Participants != nil {
 		r.roster = append([]types.ParticipantRosterEntry(nil), result.Participants...)
 	}
+	if result.RoomApps != nil {
+		r.roomApps = append([]types.RoomAppProjection{}, result.RoomApps...)
+	}
 	r.mu.Unlock()
 
 	// Media state is observation-only runtime input. It is deliberately
@@ -1924,6 +1928,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	input := BuildHarnessTurn(events, &TurnContextOptions{
 		Self:         r.selfContext(),
 		Participants: r.rosterSnapshot(),
+		RoomApps:     r.roomAppsSnapshot(),
 		// #421 dogfood finding E: the exact Task id must be directly
 		// actionable in the prompt, so an artifact produced for this Task is
 		// correlated by construction instead of defaulting to a Room

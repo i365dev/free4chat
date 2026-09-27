@@ -60,6 +60,39 @@ func TestBootstrapPromptCarriesPublicReplyHygieneContract(t *testing.T) {
 	}
 }
 
+func TestRoomAppDiscoveryIsAvailableWithoutHumanCopyingInstanceID(t *testing.T) {
+	input := bootstrapPromptInput()
+	input.Room.RoomApps = []types.RoomAppProjection{
+		{
+			AppInstanceID: "test-app:0123abcd",
+			AppID:         "test-app",
+			Title:         "Test App",
+			Source:        "curated",
+			Callable:      true,
+		},
+		{
+			AppInstanceID:     "other-app:0123abcd",
+			AppID:             "other-app",
+			Title:             "Other App",
+			Source:            "curated",
+			Callable:          false,
+			UnavailableReason: "ambiguous_host",
+		},
+	}
+	prompt := RenderUntrustedRoomTurn(input)
+	for _, marker := range []string{
+		"Current Room Apps (untrusted discovery metadata only",
+		"Test App", "test-app:0123abcd", "callable",
+		"Other App", "unavailable: multiple eligible hosts",
+		runtimeCommand + " room-app request --app-instance <id> --payload-file <json>",
+		"ask the Human when no suitable App is available",
+	} {
+		if !strings.Contains(prompt, marker) {
+			t.Fatalf("Room App discovery prompt is missing %q:\n%s", marker, prompt)
+		}
+	}
+}
+
 // TestTaskScopedTurnStatesTheExactTaskRequestIDAffordance pins the #421
 // dogfood fix E: a Task turn must name its own canonical requestId and the
 // exact correlated attach command, and a Room turn must not gain that

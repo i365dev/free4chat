@@ -96,6 +96,32 @@ history, analytics content, arbitrary URL proxy, or App-specific interpretation
 is provided. The Runtime keeps the participant handle private and exposes only
 the generic local `room-app request` operation.
 
+## Resident Agent discovery projection
+
+The existing private resident `events` envelope includes a bounded `roomApps`
+array alongside the current participant and Runtime Host projections. Each
+entry contains only `appInstanceId`, `appId`, the Lab catalog label as `title`,
+`source: "curated"`, and whether the instance is currently callable. An
+instance appears only while a connected Human socket is current and its
+sandboxed iframe has completed the existing ready handshake. Generated Task
+Apps are not included in this Room-scoped projection.
+
+An instance with exactly one eligible host is marked callable. If more than
+one connected Human hosts the same instance, it is included with
+`callable: false` and `unavailableReason: "ambiguous_host"`; the Runtime must
+not guess which host to use. Stale, invalid, or unallowlisted metadata is
+omitted. The projection contains no App URL, token, socket identity, or private
+App state. It is refreshed with the existing Room event projection and does
+not itself wake an Agent or create a Harness turn; the next Human event carries
+the current snapshot into that turn.
+
+The projection is discovery metadata only. Core and Runtime do not interpret
+App-specific request payloads or define App operations. An Agent uses the
+existing opaque `room_app_request` path only when the Human request and App
+identity are clear; ambiguity or absence requires clarification. `$App` as a
+structured Human message reference remains a separate follow-up because it
+requires changes to composer selection state and Room/Task message contracts.
+
 Free4Chat does not interpret App payloads or define App operation semantics.
 Reliable delivery is not an operation log or replay service; realtime delivery
 does not guarantee intermediate updates arrive. Apps own bootstrap,
