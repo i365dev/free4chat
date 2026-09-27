@@ -18,6 +18,7 @@ import RoomAppHost from "./RoomAppHost"
 import RoomAppLauncher from "./RoomAppLauncher"
 import RoomAudioSinks from "./RoomAudioSinks"
 import RoomCosmosBackdrop from "./RoomCosmosBackdrop"
+import RoomJoiningWarpScreen from "./RoomJoiningWarpScreen"
 import TaskLiveView from "./TaskLiveView"
 import TaskSessionPicker from "./TaskSessionPicker"
 import TextChatCard from "./TextChatCard"
@@ -2314,29 +2315,45 @@ export default function RoomContent({
       connectionStatus === "verification_failed") &&
     participants.length === 0
   ) {
+    const isConnecting = connectionStatus === "connecting"
+    const hasVerificationFailed = connectionStatus === "verification_failed"
+
     return (
-      <main className="flex min-h-screen flex-col items-center justify-center gap-4 bg-gray-950 px-4 text-center text-white">
-        {connectionStatus === "verification_failed" ? (
-          <>
-            <p className="text-lg font-semibold text-gray-200">
-              Verification failed
-            </p>
-            <p className="max-w-sm text-sm text-gray-500">
-              {error || "We couldn't verify you're human. Please try again."}
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
-            <p className="text-sm text-gray-500">
-              {connectionStatus === "verifying" ? "Verifying…" : "Joining…"}
-            </p>
-          </>
-        )}
+      <main
+        className={
+          isConnecting
+            ? "room-warp-host"
+            : "flex min-h-screen flex-col items-center justify-center gap-4 bg-gray-950 px-4 text-center text-white"
+        }
+      >
+        <div className="flex flex-col items-center justify-center gap-4">
+          {hasVerificationFailed ? (
+            <>
+              <p className="text-lg font-semibold text-gray-200">
+                Verification failed
+              </p>
+              <p className="max-w-sm text-sm text-gray-500">
+                {error || "We couldn't verify you're human. Please try again."}
+              </p>
+            </>
+          ) : isConnecting ? (
+            <RoomJoiningWarpScreen />
+          ) : (
+            <>
+              <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
+              <p className="text-sm text-gray-500">Verifying…</p>
+            </>
+          )}
+        </div>
         {/* Bounded, interaction-only Turnstile mount point — stays empty
-            unless Cloudflare decides the visitor needs to interact. */}
-        <div ref={turnstileContainerRef} />
-        {connectionStatus === "verification_failed" && (
+            unless Cloudflare decides the visitor needs to interact. Its DOM
+            position stays stable as verification transitions into joining. */}
+        <div
+          ref={turnstileContainerRef}
+          className={isConnecting ? "room-warp__turnstile" : undefined}
+          data-testid="turnstile-mount"
+        />
+        {hasVerificationFailed && (
           <button
             type="button"
             onClick={retryVerification}
