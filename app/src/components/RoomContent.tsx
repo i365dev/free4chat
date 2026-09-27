@@ -2326,42 +2326,44 @@ export default function RoomContent({
             : "flex min-h-screen flex-col items-center justify-center gap-4 bg-gray-950 px-4 text-center text-white"
         }
       >
-        <div className="flex flex-col items-center justify-center gap-4">
-          {hasVerificationFailed ? (
-            <>
-              <p className="text-lg font-semibold text-gray-200">
-                Verification failed
-              </p>
-              <p className="max-w-sm text-sm text-gray-500">
-                {error || "We couldn't verify you're human. Please try again."}
-              </p>
-            </>
-          ) : isConnecting ? (
-            <RoomJoiningWarpScreen />
-          ) : (
-            <>
-              <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
-              <p className="text-sm text-gray-500">Verifying…</p>
-            </>
-          )}
-        </div>
-        {/* Bounded, interaction-only Turnstile mount point — stays empty
-            unless Cloudflare decides the visitor needs to interact. Its DOM
-            position stays stable as verification transitions into joining. */}
+        {isConnecting ? (
+          <RoomJoiningWarpScreen />
+        ) : (
+          <div className="flex flex-col items-center justify-center gap-4">
+            {hasVerificationFailed ? (
+              <>
+                <p className="text-lg font-semibold text-gray-200">
+                  Verification failed
+                </p>
+                <p className="max-w-sm text-sm text-gray-500">
+                  {error ||
+                    "We couldn't verify you're human. Please try again."}
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
+                <p className="text-sm text-gray-500">Verifying…</p>
+              </>
+            )}
+            {hasVerificationFailed && (
+              <button
+                type="button"
+                onClick={retryVerification}
+                className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        )}
+        {/* Keep Turnstile at a stable position across verifying → connecting.
+            On the warp path it is hidden after verification has settled. */}
         <div
           ref={turnstileContainerRef}
           className={isConnecting ? "room-warp__turnstile" : undefined}
           data-testid="turnstile-mount"
         />
-        {hasVerificationFailed && (
-          <button
-            type="button"
-            onClick={retryVerification}
-            className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
-          >
-            Try again
-          </button>
-        )}
       </main>
     )
   }

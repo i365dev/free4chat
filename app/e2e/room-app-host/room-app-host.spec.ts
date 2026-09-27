@@ -38,6 +38,11 @@ const TOLERANCE = 1
 const MIN_IFRAME_WIDTH = 200
 const MIN_IFRAME_HEIGHT = 120
 
+const WARP_VIEWPORTS = [
+  { name: "desktop", width: 1280, height: 900 },
+  { name: "phone", width: 390, height: 844 },
+] as const
+
 /** External runtime resources used by the production document. Fulfilling them
  * locally keeps this gate hermetic (no Google Fonts, no analytics) and keeps CI
  * traffic out of the production analytics property. Content types must match
@@ -342,6 +347,109 @@ async function expectNoPageOverflow(page: Page, what: string) {
     `${what}: no page-level horizontal overflow`
   ).toBeLessThanOrEqual(metrics.clientWidth + TOLERANCE)
 }
+
+test("joining warp fills desktop and phone viewports", async ({
+  page,
+}, testInfo) => {
+  // One real browser engine is enough for this geometry invariant; the shared
+  // compatibility matrix continues to cover normal Room/App behavior on both
+  // Chromium and WebKit.
+  test.skip(testInfo.project.name !== "chromium-desktop")
+  await installMediaShim(page)
+
+  for (const viewport of WARP_VIEWPORTS) {
+    await page.setViewportSize({
+      width: viewport.width,
+      height: viewport.height,
+    })
+
+    let requestArrived = false
+    let signalRequest!: () => void
+    let releaseSessionResponse!: () => void
+    let finishSessionResponse!: () => void
+    const sessionRequestSeen = new Promise<void>((resolve) => {
+      signalRequest = resolve
+    })
+    const sessionResponseGate = new Promise<void>((resolve) => {
+      releaseSessionResponse = resolve
+    })
+    const sessionResponseFinished = new Promise<void>((resolve) => {
+      finishSessionResponse = resolve
+    })
+
+    await page.route("**/api/sfu/session", async (route) => {
+      requestArrived = true
+      signalRequest()
+      try {
+        await sessionResponseGate
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "geometry_test_complete" }),
+        })
+      } finally {
+        finishSessionResponse()
+      }
+    })
+
+    try {
+      await openLocalRoom(page, `warp-geometry-${viewport.name}-${Date.now()}`)
+      await page.getByLabel("Nickname").fill("Warp geometry")
+      await page.getByRole("button", { name: /Go/i }).click()
+      await sessionRequestSeen
+
+      const warp = page.getByTestId("room-joining-warp")
+      await expect(warp).toBeVisible()
+
+      const warpBox = await warp.boundingBox()
+      const hudBox = await page.locator(".room-warp__hud").boundingBox()
+      const copyBox = await page.locator(".room-warp__copy").boundingBox()
+      expect(
+        warpBox,
+        `${viewport.name} warp surface should have a box`
+      ).not.toBeNull()
+      expect(hudBox, `${viewport.name} HUD should have a box`).not.toBeNull()
+      expect(
+        copyBox,
+        `${viewport.name} status copy should have a box`
+      ).not.toBeNull()
+      if (!warpBox || !hudBox || !copyBox) {
+        throw new Error("warp geometry missing")
+      }
+
+      expect(
+        Math.abs(warpBox.width - viewport.width),
+        `${viewport.name} warp width should match the viewport`
+      ).toBeLessThanOrEqual(2)
+      expect(
+        Math.abs(warpBox.height - viewport.height),
+        `${viewport.name} warp height should match the viewport`
+      ).toBeLessThanOrEqual(2)
+      expect(
+        Math.abs(hudBox.x + hudBox.width / 2 - viewport.width / 2),
+        `${viewport.name} HUD should be centered horizontally in the viewport`
+      ).toBeLessThanOrEqual(2)
+      const contentCenterY = (hudBox.y + copyBox.y + copyBox.height) / 2
+      expect(
+        Math.abs(contentCenterY - viewport.height / 2),
+        `${viewport.name} HUD and status group should be vertically centered`
+      ).toBeLessThanOrEqual(2)
+      console.info("[warp-geometry]", viewport.name, {
+        viewport: `${viewport.width}x${viewport.height}`,
+        warp: `${warpBox.width}x${warpBox.height}`,
+        hudCenter: `${(hudBox.x + hudBox.width / 2).toFixed(1)},${(
+          hudBox.y +
+          hudBox.height / 2
+        ).toFixed(1)}`,
+        contentCenterY: contentCenterY.toFixed(1),
+      })
+    } finally {
+      releaseSessionResponse()
+      if (requestArrived) await sessionResponseFinished
+      await page.unroute("**/api/sfu/session")
+    }
+  }
+})
 
 test("Room App host contract survives open, fullscreen, exit, hide and reopen", async ({
   page,
