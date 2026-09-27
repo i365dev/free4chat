@@ -396,6 +396,78 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     )
   })
 
+  it("commits ready discovery before accepting the next addressed Human chat", async () => {
+    const { session, store, catalogService, addHumanSocket, setHostReady } =
+      makeRoomSession()
+    let resolveCatalog!: (response: Response) => void
+    const catalogResponse = new Promise<Response>((resolve) => {
+      resolveCatalog = resolve
+    })
+    catalogService.fetch.mockImplementationOnce(() => catalogResponse)
+    const host = addHumanSocket("human-a")
+
+    const ready = setHostReady(host, APP_INSTANCE_ID)
+    await vi.waitFor(() => expect(catalogService.fetch).toHaveBeenCalledOnce())
+
+    const sendChat = (
+      session as unknown as {
+        webSocketMessage: (socket: WebSocket, raw: string) => Promise<void>
+      }
+    ).webSocketMessage(
+      host as unknown as WebSocket,
+      JSON.stringify({
+        type: "chat",
+        text: "Draw this on the board",
+        targets: ["agent-c"],
+      })
+    )
+    await Promise.resolve()
+    expect(
+      (store.get("room") as ReturnType<typeof buildStoredRoom>).messages
+    ).toHaveLength(0)
+
+    resolveCatalog(
+      new Response(JSON.stringify(TEST_CATALOG_RESPONSE), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    )
+    await Promise.all([ready, sendChat])
+
+    const room = store.get("room") as ReturnType<typeof buildStoredRoom>
+    expect(room.messages).toHaveLength(1)
+    expect(room.messages[0]).toMatchObject({
+      type: "text",
+      text: "Draw this on the board",
+      targets: ["agent-c"],
+    })
+    const projection = (
+      session as unknown as {
+        agentEvents: (
+          room: ReturnType<typeof buildStoredRoom>,
+          participantId: string,
+          cursor: number
+        ) => {
+          events: Array<{ text?: string; addressed: boolean }>
+          roomApps: unknown[]
+        }
+      }
+    ).agentEvents(room, "agent-c", 0)
+    expect(projection.events).toContainEqual(
+      expect.objectContaining({
+        text: "Draw this on the board",
+        addressed: true,
+      })
+    )
+    expect(projection.roomApps).toContainEqual({
+      appInstanceId: APP_INSTANCE_ID,
+      appId: "test-app-1",
+      title: "Test App 1",
+      source: "curated",
+      callable: true,
+    })
+  })
+
   it("fails immediately without one active curated host", async () => {
     const { addAgentSocket, requestFromAgent } = makeRoomSession()
     addAgentSocket("agent-c")

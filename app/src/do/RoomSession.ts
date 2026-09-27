@@ -1086,6 +1086,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       timer: ReturnType<typeof setTimeout>
     }
   >()
+  // A ready handshake may yield while refreshing the Lab catalog. Keep only
+  // those in-flight host-state operations so a later Human chat is not
+  // accepted before its discovery snapshot can include the ready App. This is
+  // an ordering barrier, not an event queue: message bodies remain on their
+  // original WebSocket handler until the preceding readiness operation ends.
+  private readonly pendingRoomAppHostStates = new Set<Promise<void>>()
   // A participant has at most one outstanding long-poll. A null value is a
   // short-lived reservation while the request refreshes its lease.
   private readonly agentWaiters = new Map<string, AgentWaiter | null>()
@@ -7333,14 +7339,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       setProductionRoomAppCatalog(
         await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
       )
-      const room = await this.activeRoom()
-      const participant = room?.participants[attachment.participantId]
+    }
+    const room = await this.activeRoom()
+    const participant =
+      room &&
+      this.findParticipant(room, attachment.participantId, attachment.token)
+    if (
+      !room ||
+      !participant ||
+      participant.kind !== "human" ||
+      !participant.media ||
+      !participant.connected ||
+      participant.connectionNonce !== attachment.connectionNonce
+    )
+      return
+    if (message.ready) {
       if (
-        !room ||
-        !participant ||
-        participant.kind !== "human" ||
-        !participant.connected ||
-        participant.connectionNonce !== attachment.connectionNonce ||
         !isRoomAppInstanceForRoom(
           this.roomAnalyticsName(),
           message.appInstanceId
@@ -8122,6 +8136,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     attachment: ConnectionAttachment,
     message: ClientMessage
   ): Promise<void> {
+    if (message.type === "room-app-host-state") {
+      await this.handleRoomAppHostState(socket, attachment, message)
+      return
+    }
     const room = await this.activeRoom()
     if (!room) {
       socket.send(JSON.stringify({ type: "expired" }))
@@ -8135,10 +8153,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
     if (!participant || participant.kind !== "human" || !participant.media) {
       socket.close(4003, "Unauthorized")
-      return
-    }
-    if (message.type === "room-app-host-state") {
-      await this.handleRoomAppHostState(socket, attachment, message)
       return
     }
     if (message.type === "room-app-agent-response") {
@@ -9617,11 +9631,28 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return
     }
     try {
-      await this.handleClientMessage(
-        socket,
-        attachment,
-        JSON.parse(raw) as ClientMessage
-      )
+      const message = JSON.parse(raw) as ClientMessage
+      if (message.type === "room-app-host-state" && message.ready) {
+        const handling = Promise.resolve().then(() =>
+          this.handleClientMessage(socket, attachment, message)
+        )
+        const barrier = handling.then(
+          () => undefined,
+          () => undefined
+        )
+        this.pendingRoomAppHostStates.add(barrier)
+        try {
+          await handling
+        } finally {
+          this.pendingRoomAppHostStates.delete(barrier)
+        }
+        return
+      }
+      if (message.type === "chat") {
+        while (this.pendingRoomAppHostStates.size > 0)
+          await Promise.all([...this.pendingRoomAppHostStates])
+      }
+      await this.handleClientMessage(socket, attachment, message)
     } catch (error) {
       // #406: an oversized primary Room record is a controlled protocol
       // rejection, not an "invalid_message".

@@ -707,6 +707,16 @@ export function projectCallableRoomApps(
   enabled: boolean
 ): RoomAppAgentProjection[] {
   if (!enabled || !roomName) return []
+  const currentCatalog = new Map(
+    currentRoomAppCatalog()
+      .filter(
+        (app) =>
+          app.source !== "generated" &&
+          validateRoomAppDefinition(app) &&
+          isRoomAppAllowlisted(app)
+      )
+      .map((app) => [app.id, app])
+  )
   const hostsByInstance = new Map<
     string,
     { metadata: RoomAppHostMetadata; count: number }
@@ -714,21 +724,28 @@ export function projectCallableRoomApps(
   for (const hostApps of activeHosts) {
     const seenOnHost = new Set<string>()
     for (const app of hostApps) {
+      const definition = currentCatalog.get(app.appId)
       if (
+        !definition ||
         app.source !== "curated" ||
-        !isValidRoomAppId(app.appId) ||
         app.appInstanceId !== roomAppInstanceId(roomName, app.appId) ||
-        typeof app.title !== "string" ||
-        app.title.trim().length === 0 ||
-        app.title.length > 64 ||
-        /[\u0000-\u001f\u007f]/.test(app.title) ||
         seenOnHost.has(app.appInstanceId)
       )
         continue
       seenOnHost.add(app.appInstanceId)
+      const currentMetadata: RoomAppHostMetadata = {
+        appInstanceId: app.appInstanceId,
+        appId: definition.id,
+        title: definition.label,
+        source: "curated",
+      }
       const existing = hostsByInstance.get(app.appInstanceId)
       if (existing) existing.count += 1
-      else hostsByInstance.set(app.appInstanceId, { metadata: app, count: 1 })
+      else
+        hostsByInstance.set(app.appInstanceId, {
+          metadata: currentMetadata,
+          count: 1,
+        })
     }
   }
 

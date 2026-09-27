@@ -798,6 +798,47 @@ describe("Room App host contract", () => {
     ).toEqual([])
   })
 
+  it("revalidates cached ready metadata against the current Lab catalog", () => {
+    const cachedHost = [
+      {
+        appInstanceId: roomAppInstanceId("room-a", "test-app"),
+        appId: "test-app",
+        title: "Old App Title",
+        source: "curated" as const,
+      },
+    ]
+    setProductionRoomAppCatalog([
+      {
+        ...TEST_ROOM_APP_CATALOG[0]!,
+        label: "Renamed App",
+      },
+    ])
+    expect(projectCallableRoomApps("room-a", [cachedHost], true)).toEqual([
+      {
+        appInstanceId: roomAppInstanceId("room-a", "test-app"),
+        appId: "test-app",
+        title: "Renamed App",
+        source: "curated",
+        callable: true,
+      },
+    ])
+
+    setProductionRoomAppCatalog(
+      parseRoomAppCatalog({
+        version: 1,
+        apps: [
+          {
+            id: "test-app",
+            label: "Disabled App",
+            path: "/test-app",
+            status: "disabled",
+          },
+        ],
+      }) ?? []
+    )
+    expect(projectCallableRoomApps("room-a", [cachedHost], true)).toEqual([])
+  })
+
   it("bounds the participant projection and separates reliable/realtime rate", () => {
     expect(
       projectRoomAppParticipants([
