@@ -7741,6 +7741,57 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
+   * Preflight only the routing decision needed to order Lab catalog work.
+   * Return a boolean rather than Room state so callers can safely await the
+   * external catalog without retaining a RoomRecord that may later be saved.
+   */
+  private async chatCanActivateAgent(
+    attachment: ConnectionAttachment,
+    message: Extract<ClientMessage, { type: "chat" }>
+  ): Promise<boolean> {
+    const room = await this.activeRoom()
+    if (!room) return false
+    const participant = this.findParticipant(
+      room,
+      attachment.participantId,
+      attachment.token
+    )
+    if (
+      !participant ||
+      participant.kind !== "human" ||
+      !participant.media ||
+      !participant.connected ||
+      participant.connectionNonce !== attachment.connectionNonce
+    )
+      return false
+
+    let targets: readonly string[]
+    if (message.taskRequestId !== undefined) {
+      const resolution = resolveTaskRequest(
+        buildTaskProjectionIndex(room.messages, room.participants),
+        message.taskRequestId,
+        room.participants
+      )
+      if (!resolution.ok) return false
+      const taskTargets = resolveHumanTaskTargets(
+        resolution,
+        participant,
+        room.participants,
+        message.targets,
+        MAX_TARGETS
+      )
+      if (!taskTargets.ok) return false
+      targets = taskTargets.targets
+    } else {
+      targets = normalizeChatTargets(room, message.targets)
+    }
+    return targets.some((id) => {
+      const target = room.participants[id]
+      return target?.kind === "agent" && target.connected
+    })
+  }
+
+  /**
    * #409/#421 Fix C: resolve the exact Live interrupt target of one Task
    * interrupt.
    *
@@ -9649,8 +9700,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return
       }
       if (message.type === "chat") {
-        while (this.pendingRoomAppHostStates.size > 0)
-          await Promise.all([...this.pendingRoomAppHostStates])
+        if (await this.chatCanActivateAgent(attachment, message)) {
+          while (this.pendingRoomAppHostStates.size > 0)
+            await Promise.all([...this.pendingRoomAppHostStates])
+          // Agent discovery is a snapshot for this turn. Refresh before the
+          // addressed message is accepted so its persisted Room projection
+          // cannot advertise an App that current Lab policy has disabled.
+          setProductionRoomAppCatalog(
+            await loadProductionRoomAppCatalog(this.env.ROOM_APP_CONTROL_PLANE)
+          )
+        }
       }
       await this.handleClientMessage(socket, attachment, message)
     } catch (error) {
