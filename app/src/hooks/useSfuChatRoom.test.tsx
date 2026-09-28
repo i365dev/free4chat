@@ -119,6 +119,7 @@ function localTrackResponse(init?: RequestInit) {
 
 let lastFakeWebSocket: {
   onopen: (() => void) | null
+  onclose: (() => void) | null
   onmessage: ((event: { data: string }) => void) | null
   send: ReturnType<typeof vi.fn>
 } | null = null
@@ -436,6 +437,135 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     expect(
       JSON.parse(String(channels[1]!.send.mock.calls[0]![0]))
     ).toMatchObject({ lane: "realtime", appInstanceId })
+    unmount()
+  })
+
+  it("correlates host eligibility sends and broker receipt across Room socket epochs", async () => {
+    const appInstanceId = roomAppInstanceId("room-app", "test-app")
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "SECRET_TOKEN",
+            sessionId: "SECRET_SESSION",
+            expiresAt: Date.now() + 3600000,
+            roomAppsEnabled: true,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-app", "alice", "audio", {})
+    )
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+    const firstSocket = lastFakeWebSocket!
+    const trace = window.__free4chatRoomAppTransportDiagnostics!
+    trace.enable()
+    act(() => {
+      firstSocket.onopen?.()
+      result.current.setRoomAppHostReady(appInstanceId, true)
+    })
+    expect(
+      trace
+        .read()
+        .find(
+          ({ event, ready }) => event === "room_app_host_state_sent" && ready
+        )
+    ).toMatchObject({
+      appInstanceId,
+      participantId: "participant-1",
+      roomSocketEpoch: 1,
+    })
+
+    vi.useFakeTimers()
+    act(() => firstSocket.onclose?.())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    vi.useRealTimers()
+    const secondSocket = lastFakeWebSocket!
+    expect(secondSocket).not.toBe(firstSocket)
+    act(() => secondSocket.onopen?.())
+    expect(
+      trace
+        .read()
+        .filter(({ event }) => event === "room_socket_created")
+        .map(({ roomSocketEpoch }) => roomSocketEpoch)
+    ).toEqual([2]) // The trace was enabled after socket 1 was created.
+    expect(trace.current().roomSocketEpoch).toBe(2)
+    expect(
+      trace
+        .read()
+        .filter(
+          ({ event, ready }) => event === "room_app_host_state_sent" && ready
+        )
+        .at(-1)
+    ).toMatchObject({
+      appInstanceId,
+      roomSocketEpoch: 2,
+    })
+    let loggedBeforeForward = false
+    const unsubscribe = result.current.subscribeRoomAppAgentRequests(() => {
+      loggedBeforeForward = trace
+        .read()
+        .some(({ event }) => event === "broker_agent_request_received")
+    })
+    act(() =>
+      secondSocket.onmessage?.({
+        data: JSON.stringify({
+          type: "room-app-agent-request",
+          appInstanceId,
+          requestId: "PRIVATE_REQUEST_ID",
+          payload: { text: "PRIVATE_BOARD_TEXT" },
+        }),
+      })
+    )
+    expect(
+      trace
+        .read()
+        .find(({ event }) => event === "broker_agent_request_received")
+    ).toMatchObject({
+      appInstanceId,
+      participantId: "participant-1",
+      roomSocketEpoch: 2,
+      requestTag: expect.any(String),
+    })
+    expect(loggedBeforeForward).toBe(true)
+    expect(
+      trace
+        .read()
+        .find(({ event }) => event === "broker_agent_request_received")
+        ?.requestTag
+    ).toMatch(/^[0-9a-f]{8}$/)
+    act(() => result.current.setRoomAppHostReady(appInstanceId, false))
+    expect(
+      trace
+        .read()
+        .filter(({ event }) => event === "room_app_host_state_sent")
+        .at(-1)
+    ).toMatchObject({
+      appInstanceId,
+      ready: false,
+      roomSocketEpoch: 2,
+    })
+    const serialized = JSON.stringify(trace.read())
+    for (const secret of [
+      "SECRET_TOKEN",
+      "SECRET_SESSION",
+      "PRIVATE_REQUEST_ID",
+      "PRIVATE_BOARD_TEXT",
+    ])
+      expect(serialized).not.toContain(secret)
+    trace.disable()
+    unsubscribe()
     unmount()
   })
 

@@ -179,7 +179,12 @@ Collect `current()` and `read()` from every Human host in the same time window
 as the Whiteboard iframe's own trace. Capture each side before and after a
 reload. The Core trace uses a new, non-secret `browserId` for each Room page
 execution and a monotonically increasing `sessionEpoch` for media session
-rotations in that page. It includes the public participant ID, current local
+rotations in that page. `roomSocketEpoch` increments for each Room control
+WebSocket created in the same page. `room_app_host_state_sent` records a locally
+successful `ready=true/false` send, including reconnect replay; it does not
+claim server acceptance or scene convergence. `broker_agent_request_received`
+records receipt at the parent browser before iframe forwarding, with a fixed
+hash of the request ID for correlation to the Whiteboard trace. It includes the public participant ID, current local
 reliable DataChannel state, ready remote reliable peers, and bounded events for
 channel creation/open/close, reconnection, and accepted or rejected reliable
 transport sends/receives. `reliable_sent` means the browser accepted a send;

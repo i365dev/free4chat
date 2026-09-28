@@ -4,6 +4,9 @@ export const ROOM_APP_DIAGNOSTIC_CAPACITY = 200
 export type RoomAppDiagnosticName =
   | "host_snapshot"
   | "session_started"
+  | "room_socket_created"
+  | "room_app_host_state_sent"
+  | "broker_agent_request_received"
   | "media_reconnect_start"
   | "media_reconnect_complete"
   | "media_reconnect_failed"
@@ -26,6 +29,10 @@ export interface RoomAppDiagnosticEvent {
   peerParticipantId?: string
   appInstanceId?: string
   sessionEpoch: number
+  /** Monotonic per parent page; increments for each Room control WebSocket. */
+  roomSocketEpoch: number
+  ready?: boolean
+  requestTag?: string
   localReliableState?: RTCDataChannelState | "absent"
   remoteReliablePeers?: string[]
   reason?:
@@ -41,14 +48,15 @@ export interface RoomAppDiagnosticEvent {
 
 type DiagnosticFields = Omit<
   RoomAppDiagnosticEvent,
-  "at" | "browserId" | "participantId" | "sessionEpoch"
->
+  "at" | "browserId" | "participantId" | "sessionEpoch" | "roomSocketEpoch"
+> & { roomSocketEpoch?: number; participantId?: string }
 
 export class RoomAppTransportDiagnosticTrace {
   readonly browserId: string
   private enabledValue = false
   private participantId: string | undefined
   private sessionEpoch = 0
+  private roomSocketEpoch = 0
   private readonly events: RoomAppDiagnosticEvent[] = []
   private snapshotProvider:
     | (() => Pick<
@@ -78,6 +86,20 @@ export class RoomAppTransportDiagnosticTrace {
     this.record({ event: "session_started" })
   }
 
+  nextRoomSocketEpoch(): number {
+    this.roomSocketEpoch += 1
+    this.record({ event: "room_socket_created" })
+    return this.roomSocketEpoch
+  }
+
+  recordForRoomSocket(
+    fields: DiagnosticFields,
+    roomSocketEpoch: number,
+    participantId: string
+  ): void {
+    this.record({ ...fields, roomSocketEpoch, participantId })
+  }
+
   current(): RoomAppDiagnosticEvent {
     let state: ReturnType<NonNullable<typeof this.snapshotProvider>> = {}
     try {
@@ -91,6 +113,7 @@ export class RoomAppTransportDiagnosticTrace {
       browserId: this.browserId,
       participantId: this.participantId,
       sessionEpoch: this.sessionEpoch,
+      roomSocketEpoch: this.roomSocketEpoch,
       ...state,
     }
   }
@@ -121,10 +144,19 @@ export class RoomAppTransportDiagnosticTrace {
       browserId: this.browserId,
       participantId: this.participantId,
       sessionEpoch: this.sessionEpoch,
+      roomSocketEpoch: this.roomSocketEpoch,
       ...fields,
     })
     if (this.events.length > ROOM_APP_DIAGNOSTIC_CAPACITY) this.events.shift()
   }
+}
+
+/** Fixed-size correlation tag for request IDs; never expose the raw ID. */
+export function roomAppRequestTag(value: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < value.length; index += 1)
+    hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193) >>> 0
+  return hash.toString(16).padStart(8, "0")
 }
 
 export function whiteboardProtocolType(

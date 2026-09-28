@@ -27,6 +27,7 @@ import {
 import {
   installRoomAppTransportDiagnostics,
   RoomAppTransportDiagnosticTrace,
+  roomAppRequestTag,
   whiteboardProtocolType,
 } from "@common/roomAppTransportDiagnostics"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
@@ -3164,18 +3165,27 @@ export function useSfuChatRoom(
     url.searchParams.set("participantId", session.participantId)
     url.searchParams.set("token", session.participantToken)
     const socket = new WebSocket(url)
+    const roomSocketEpoch = roomAppDiagnostic.nextRoomSocketEpoch()
     websocketRef.current = socket
     socket.onopen = () => {
       reconnectAttemptsRef.current = 0
       setConnectionStatus("connected")
       setError("")
       sendSocketMessage({ type: "resync" })
-      for (const appInstanceId of roomAppHostsRef.current)
-        sendSocketMessage({
-          type: "room-app-host-state",
-          appInstanceId,
-          ready: true,
-        })
+      for (const appInstanceId of roomAppHostsRef.current) {
+        if (
+          sendSocketMessage({
+            type: "room-app-host-state",
+            appInstanceId,
+            ready: true,
+          })
+        )
+          roomAppDiagnostic.record({
+            event: "room_app_host_state_sent",
+            appInstanceId,
+            ready: true,
+          })
+      }
       // #402: keep the Room-visible voice projection truthful across a
       // reconnect. No live local track (never enabled, or the device went away)
       // means "muted"; a soft-muted live track stays muted.
@@ -3211,6 +3221,15 @@ export function useSfuChatRoom(
       } else if (message.type === "room-app-agent-request") {
         const request = decodeRoomAppAgentRequest(message, roomName)
         if (!request) return
+        roomAppDiagnostic.recordForRoomSocket(
+          {
+            event: "broker_agent_request_received",
+            appInstanceId: request.appInstanceId,
+            requestTag: roomAppRequestTag(request.requestId),
+          },
+          roomSocketEpoch,
+          session.participantId
+        )
         for (const listener of roomAppAgentRequestListenersRef.current)
           listener(request)
       } else if (
@@ -3584,6 +3603,7 @@ export function useSfuChatRoom(
     resetRemoteParticipant,
     resetRemoteTrackSubscription,
     roomName,
+    roomAppDiagnostic,
     sendSocketMessage,
     subscribeFileChannel,
     subscribeRoomAppChannel,
@@ -4245,9 +4265,16 @@ export function useSfuChatRoom(
         roomAppHostsRef.current.add(appInstanceId)
       }
       if (!isRoomAppInstanceForRoom(roomName, appInstanceId)) return
-      sendSocketMessage({ type: "room-app-host-state", appInstanceId, ready })
+      if (
+        sendSocketMessage({ type: "room-app-host-state", appInstanceId, ready })
+      )
+        roomAppDiagnostic.record({
+          event: "room_app_host_state_sent",
+          appInstanceId,
+          ready,
+        })
     },
-    [roomName, sendSocketMessage]
+    [roomName, roomAppDiagnostic, sendSocketMessage]
   )
 
   const respondRoomAppAgentRequest = useCallback(
