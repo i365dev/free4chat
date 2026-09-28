@@ -1115,22 +1115,62 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       ],
     })
 
-    const { container } = render(
+    const { container, rerender } = render(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
 
-    const cards = container.querySelectorAll(
-      '[data-testid="room-stage-participants"] .participant-card-shell'
-    )
     const cardFor = (name: string) =>
-      Array.from(cards).find((card) => card.textContent?.includes(name))
+      Array.from(
+        container.querySelectorAll(
+          '[data-testid="room-stage-participants"] .participant-card-shell'
+        )
+      ).find((card) => card.textContent?.includes(name))
 
     expect(cardFor("Codex")).toHaveTextContent("Working…")
     expect(cardFor("Pi")).toHaveTextContent("Waiting for approval")
+    expect(
+      cardFor("Hannah")?.querySelector('[data-testid="agent-activity"]')
+    ).toBeNull()
     expect(cardFor("OpenCode")).not.toHaveTextContent("Queued")
     expect(
       cardFor("OpenCode")?.querySelector('[data-testid="agent-activity"]')
     ).toBeNull()
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+        },
+        { peerId: "agent-pi", name: "Pi", kind: "agent", room: "test-room" },
+      ],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-pi",
+          scopeId: "room",
+          state: "waiting_approval",
+          turnSequence: 43,
+        },
+      ],
+    })
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    expect(
+      cardFor("Codex")?.querySelector('[data-testid="agent-activity"]')
+    ).toBeNull()
+    expect(cardFor("Pi")).toHaveTextContent("Waiting for approval")
   })
 
   it("keeps compact participant activity scoped to that Agent and the Room", () => {
