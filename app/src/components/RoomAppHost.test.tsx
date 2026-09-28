@@ -298,6 +298,86 @@ describe("RoomAppHost", () => {
     expect(send).not.toHaveBeenCalled()
   })
 
+  it("delegates only clipboard-write to an opted-in curated App", () => {
+    const optedIn = { ...app, clipboardWrite: true } as const
+    setProductionRoomAppCatalog([optedIn])
+    render(
+      <RoomAppHost
+        app={optedIn}
+        appInstanceId="test-app:room"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={() => true}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={() => "sent"}
+        onClose={() => undefined}
+      />
+    )
+
+    const iframe = screen.getByTestId("room-app-iframe")
+    expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+    expect(iframe).toHaveAttribute("allow", "clipboard-write")
+    expect(iframe.getAttribute("allow")).not.toContain("clipboard-read")
+    expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin")
+  })
+
+  it("keeps clipboard-write disabled for generated Apps and rejects invented metadata", () => {
+    const generated = {
+      id: "generated:task-1",
+      label: "Task App",
+      url: "https://room-apps.free4.chat/generated",
+      origin: "https://room-apps.free4.chat",
+      source: "generated" as const,
+      srcDoc: "<main>Task</main>",
+    }
+    const props = {
+      app: generated,
+      appInstanceId: generated.id,
+      self,
+      participants,
+      subscribe: () => () => undefined,
+      send: () => true,
+      subscribeUnicast: () => () => undefined,
+      subscribeUnicastResults: () => () => undefined,
+      sendUnicast: () => "sent" as const,
+      onClose: () => undefined,
+    }
+    const rendered = render(<RoomAppHost {...props} />)
+    expect(screen.getByTestId("room-app-iframe")).toHaveAttribute("allow", "")
+    rendered.unmount()
+
+    const malformed = {
+      ...generated,
+      clipboardWrite: true,
+    } as unknown as RoomAppDefinition
+    render(<RoomAppHost {...props} app={malformed} />)
+    expect(screen.queryByTestId("room-app-iframe")).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This Room App is not allowlisted."
+    )
+  })
+
+  it("does not grant a capability absent from the current curated allowlist", () => {
+    const optedIn = { ...app, clipboardWrite: true } as const
+    render(
+      <RoomAppHost
+        app={optedIn}
+        appInstanceId="test-app:room"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={() => true}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={() => "sent"}
+        onClose={() => undefined}
+      />
+    )
+    expect(screen.queryByTestId("room-app-iframe")).not.toBeInTheDocument()
+  })
+
   it("counts only THIS Human's accepted generated-state update as engagement", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     let generatedStateListener:

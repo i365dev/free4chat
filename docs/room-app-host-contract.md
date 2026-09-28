@@ -19,8 +19,14 @@ or a general hosting URL.
 The iframe uses `sandbox="allow-scripts"` only. It receives no
 `allow-same-origin`, Room cookies/history, participant or SFU credentials,
 provider credentials, filesystem access, microphone/camera permission,
-PeerConnection, or raw DataChannel.
+PeerConnection, or raw DataChannel. A curated App may receive the narrowly
+delegated `clipboard-write` permission only when its validated Lab catalog
+entry opts in. This permits browser clipboard writes subject to browser policy
+and the browser's user-gesture requirements. `clipboard-read` remains
+unavailable, and the opaque-origin sandbox is unchanged.
 
+Generated Task Apps receive no iframe permission delegation, including
+`clipboard-write`, even if their source attempts to use the Clipboard API.
 Generated Apps use the same host and MessagePort boundary, plus a strict
 inline-only CSP (`connect-src 'none'`, `img-src data:`). V0 accepts only
 `html`, `css`, and `js` source with an empty `networkOrigins` list. The bundle
@@ -28,6 +34,13 @@ is at most 48 KiB, initial/shared state at most 16 KiB, and one Room may hold at
 most four generated Apps. Network-backed capabilities are intentionally not
 part of V0; a generic network runtime would need a separate authorization and
 proxy design first.
+
+The Lab catalog's optional `clipboardWrite: true` field is the only current
+clipboard opt-in. Missing metadata grants nothing; unsupported capability
+fields or values fail catalog validation. Roll out Core support first, deploy
+it, and only then add the field to the Lab catalog. Older deployed Core parsers
+reject unknown catalog keys, so the Lab catalog must remain unchanged until
+Core is deployed.
 
 On iframe load, the host sends a bootstrap `postMessage` with a dedicated
 `MessagePort`, bounded `appInstanceId`, and one-time handshake token. The App
