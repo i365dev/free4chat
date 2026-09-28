@@ -208,7 +208,7 @@ export async function handleRoomRequest(
       return json({ error: "missing_room_capability" }, 400)
     const declaredSize = Number(request.headers.get("Content-Length") ?? "0")
     if (declaredSize > 4096) return json({ error: "request_too_large" }, 413)
-    let body: { scopeId?: unknown; activity?: unknown; turnSequence?: unknown }
+    let body: { scopeId?: unknown; activity?: unknown; turnSequence: unknown }
     try {
       const bytes = new Uint8Array(await request.arrayBuffer())
       if (bytes.byteLength > 4096)

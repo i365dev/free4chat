@@ -21,10 +21,8 @@ export interface AgentActivityProjection {
   // what lets a Human interrupt bind to the exact turn they are looking at
   // instead of to the Task scope.
   //
-  // Additive and optional: a pre-#414 Agent Runtime omits it, and that legacy
-  // activity keeps projecting normally while carrying no interrupt authority.
-  // A missing value is never back-filled with 0, -1, or a Room cursor.
-  turnSequence?: number
+  // Every published activity belongs to one exact canonical Room turn.
+  turnSequence: number
 }
 
 // #409: the Runtime-authoritative TRANSIENT execution state of one Task. It is

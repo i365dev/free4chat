@@ -3045,6 +3045,15 @@ export default function RoomContent({
                             peerId={p.peerId}
                             name={p.name}
                             kind={p.kind}
+                            activity={
+                              p.kind === "agent"
+                                ? agentActivities?.find(
+                                    (activity) =>
+                                      activity.agentParticipantId ===
+                                        p.peerId && activity.scopeId === "room"
+                                  )?.state
+                                : undefined
+                            }
                             room={p.room}
                             muteState={p.muteState}
                             audioStream={p.audioStream}
@@ -3089,6 +3098,15 @@ export default function RoomContent({
                           peerId={p.peerId}
                           name={p.name}
                           kind={p.kind}
+                          activity={
+                            p.kind === "agent"
+                              ? agentActivities?.find(
+                                  (activity) =>
+                                    activity.agentParticipantId === p.peerId &&
+                                    activity.scopeId === "room"
+                                )?.state
+                              : undefined
+                          }
                           room={p.room}
                           muteState={p.muteState}
                           audioStream={p.audioStream}
