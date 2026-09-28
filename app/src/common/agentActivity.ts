@@ -20,11 +20,13 @@ export function agentActivityLabel(state: AgentActivityState): string {
   switch (state) {
     case "working":
       return "Working"
-    case "thinking":
-      return "Thinking"
-    case "using_tools":
-      return "Using tools"
-    case "responding":
-      return "Responding"
+    case "waiting_approval":
+      return "Waiting for approval"
+    case "queued":
+      return "Queued"
   }
+}
+
+export function agentActivityStatus(state: AgentActivityState): string {
+  return state === "working" ? "Working…" : agentActivityLabel(state)
 }

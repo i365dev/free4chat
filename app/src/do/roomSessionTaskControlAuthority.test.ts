@@ -364,7 +364,7 @@ describe("#421 Task control authority (Fix C)", () => {
     await test.publishActivity(
       "agent-a",
       `task:${requestId}`,
-      "using_tools",
+      "waiting_approval",
       42
     )
     test.clearAgentFrames("agent-a")
@@ -482,7 +482,7 @@ describe("#421 Task control authority (Fix C)", () => {
     await test.publishActivity(
       "agent-a",
       `task:${requestId}`,
-      "using_tools",
+      "waiting_approval",
       42
     )
     test.clearAgentFrames("agent-a")
@@ -884,7 +884,7 @@ describe("#480 hibernation-durable Task control authority", () => {
     await test.publishActivity(
       "agent-a",
       `task:${requestId}`,
-      "using_tools",
+      "waiting_approval",
       42
     )
 

@@ -39,7 +39,7 @@ describe("Runtime Agent activity route", () => {
         },
         body: JSON.stringify({
           scopeId: "task:req-1",
-          activity: "thinking",
+          activity: "waiting_approval",
           turnSequence: 42,
         }),
       }),
@@ -53,7 +53,7 @@ describe("Runtime Agent activity route", () => {
         participantId: "agent-1",
         token: "private-token",
         scopeId: "task:req-1",
-        activity: "thinking",
+        activity: "waiting_approval",
         turnSequence: 42,
       },
     })
@@ -88,7 +88,7 @@ describe("Runtime Agent activity route", () => {
           "X-Room-Participant-Id": "agent-1",
           "X-Room-Participant-Token": "private-token",
         },
-        body: JSON.stringify({ scopeId: "task:req-1", activity: "thinking" }),
+        body: JSON.stringify({ scopeId: "task:req-1", activity: "working" }),
       }),
       env
     )
@@ -99,7 +99,7 @@ describe("Runtime Agent activity route", () => {
       participantId: "agent-1",
       token: "private-token",
       scopeId: "task:req-1",
-      activity: "thinking",
+      activity: "working",
     })
     expect("turnSequence" in (forwardedBody ?? {})).toBe(false)
   })

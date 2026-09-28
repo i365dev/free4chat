@@ -109,7 +109,7 @@ func (r *ResidentRuntime) publishActivity(scope string, state types.AgentActivit
 // not a general event bus. A single sender preserves application order for a
 // scope: if an old state is already in flight, a later clear waits behind it;
 // if it is still queued, latest-state replacement removes it. Thus a final
-// clear cannot be overtaken by stale Working/Thinking network traffic.
+// clear cannot be overtaken by stale non-empty state network traffic.
 func (r *ResidentRuntime) drainActivityPublications() {
 	for {
 		r.activityPublishMu.Lock()
@@ -176,6 +176,57 @@ func (r *ResidentRuntime) beginActivity(scope string, turnSequence int64) {
 	r.publishActivity(scope, types.AgentActivityWorking, turnSequence)
 }
 
+// queueActivity reflects an addressed turn that is still in Runtime's
+// existing pending queue because no bounded execution lane is available. A
+// queued turn is not an active turn and cannot authorize an interrupt.
+func (r *ResidentRuntime) queueActivity(scope string, turnSequence int64) {
+	if scope != roomScope || turnSequence <= 0 {
+		return
+	}
+	r.turnControlMu.Lock()
+	r.activityMu.Lock()
+	previous, existed := r.activities[scope]
+	unchanged := existed && previous.state == types.AgentActivityQueued &&
+		previous.sequence == turnSequence
+	if !unchanged {
+		r.activities[scope] = activityTurnState{
+			state:    types.AgentActivityQueued,
+			sequence: turnSequence,
+		}
+	}
+	r.activityMu.Unlock()
+	r.turnControlMu.Unlock()
+	if !unchanged {
+		r.publishActivity(scope, types.AgentActivityQueued, turnSequence)
+	}
+}
+
+// setWaitingApproval projects only the generic native Room permission
+// lifecycle. It preserves the current exact turn and ignores stale requests.
+func (r *ResidentRuntime) setWaitingApproval(scope string) {
+	r.setActiveActivityState(scope, types.AgentActivityWaitingApproval)
+}
+
+func (r *ResidentRuntime) restoreWorkingAfterApproval(scope string) {
+	r.setActiveActivityState(scope, types.AgentActivityWorking)
+}
+
+func (r *ResidentRuntime) setActiveActivityState(scope string, state types.AgentActivityState) {
+	if !validActivityScope(scope) {
+		return
+	}
+	r.activityMu.Lock()
+	current, active := r.activities[scope]
+	if !active || current.state == types.AgentActivityQueued || current.state == state {
+		r.activityMu.Unlock()
+		return
+	}
+	r.activities[scope] = activityTurnState{state: state, sequence: current.sequence}
+	turnSequence := current.sequence
+	r.activityMu.Unlock()
+	r.publishActivity(scope, state, turnSequence)
+}
+
 // observeHarnessActivity accepts normalized events only while THAT scope's
 // prompt is active. It therefore ignores late events from a settled or
 // cancelled turn, cannot resurrect a cleared state, and cannot attribute one
@@ -230,7 +281,7 @@ func (r *ResidentRuntime) activeTurnOf(scope string) (int64, bool) {
 	r.activityMu.Lock()
 	defer r.activityMu.Unlock()
 	current, ok := r.activities[scope]
-	if !ok {
+	if !ok || current.state == types.AgentActivityQueued {
 		return 0, false
 	}
 	return current.sequence, true

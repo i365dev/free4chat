@@ -225,14 +225,14 @@ func TestUpdateAgentActivityUsesBoundedRoomControlWire(t *testing.T) {
 	})
 	handle := base64.RawURLEncoding.EncodeToString(handleBytes)
 	client := New(server.URL + "/mcp")
-	if err := client.UpdateAgentActivity(handle, "task:req-1", types.AgentActivityThinking, 42); err != nil {
+	if err := client.UpdateAgentActivity(handle, "task:req-1", types.AgentActivityWaitingApproval, 42); err != nil {
 		t.Fatal(err)
 	}
 	if seenPath != "/api/room/agent-activity" ||
 		seenHeaders.Get("X-Room-Id") != "room-activity" ||
 		seenHeaders.Get("X-Room-Participant-Id") != "agent-activity" ||
 		seenHeaders.Get("X-Room-Participant-Token") != "secret-token" ||
-		seenBody["scopeId"] != "task:req-1" || seenBody["activity"] != string(types.AgentActivityThinking) ||
+		seenBody["scopeId"] != "task:req-1" || seenBody["activity"] != string(types.AgentActivityWaitingApproval) ||
 		seenBody["turnSequence"] != float64(42) {
 		t.Fatalf("wrong activity wire: path=%q headers=%v body=%#v", seenPath, seenHeaders, seenBody)
 	}

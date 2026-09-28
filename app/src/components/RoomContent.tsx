@@ -24,7 +24,7 @@ import TaskSessionPicker from "./TaskSessionPicker"
 import TextChatCard from "./TextChatCard"
 import UserCard from "./UserCard"
 import WorkspaceSnapshots from "./WorkspaceSnapshots"
-import { agentActivityLabel } from "../common/agentActivity"
+import { agentActivityStatus } from "../common/agentActivity"
 import { buildAgentInvitePrompt } from "../common/agentInvite"
 import {
   generatedRoomAppSrcDoc,
@@ -1008,9 +1008,9 @@ export default function RoomContent({
   const activeTaskInterrupting =
     activeTaskExecution?.phase === "interrupting" &&
     activeTaskExecution.currentTurnSequence !== undefined
-  // #421 Fix C: AgentActivity is PRESENTATION ONLY. It supplies the coarse
-  // verb ("Using tools…"), and it can be missing or stale after a Room
-  // hibernation or reconciliation — neither of which may make a genuinely
+  // #421 Fix C: AgentActivity is PRESENTATION ONLY. It supplies a coarse
+  // state (Working, Waiting for approval, Queued), and it can be missing or
+  // stale after a Room hibernation or reconciliation — neither of which may make a genuinely
   // running Task uncontrollable. The exact interrupt turn comes from the
   // authoritative execution projection above, never from this value.
   // The exact turn this Human may interrupt right now, or undefined when the
@@ -1049,7 +1049,7 @@ export default function RoomContent({
         )
     const activity = activeTask ? taskActivity : roomActivity
     const state = activity
-      ? `${agentActivityLabel(activity.state)}…`
+      ? agentActivityStatus(activity.state)
       : activeTask
       ? activeTaskExecutionLabel?.label ?? ""
       : ""
@@ -3237,7 +3237,7 @@ export default function RoomContent({
                   return (
                     <span key={activity.agentParticipantId}>
                       {participant?.name ?? "Agent"} ·{" "}
-                      {agentActivityLabel(activity.state)}…
+                      {agentActivityStatus(activity.state)}
                     </span>
                   )
                 })}

@@ -661,9 +661,8 @@ describe("RoomSession Task interrupt (#409)", () => {
 
     for (const [state, sequence] of [
       ["working", 42],
-      ["thinking", 42],
-      ["using_tools", 42],
-      ["responding", 42],
+      ["waiting_approval", 42],
+      ["queued", 42],
     ] as const) {
       const published = await test.publishActivity(
         "agent-a",
@@ -689,19 +688,13 @@ describe("RoomSession Task interrupt (#409)", () => {
       {
         agentParticipantId: "agent-a",
         scopeId,
-        state: "thinking",
+        state: "waiting_approval",
         turnSequence: 42,
       },
       {
         agentParticipantId: "agent-a",
         scopeId,
-        state: "using_tools",
-        turnSequence: 42,
-      },
-      {
-        agentParticipantId: "agent-a",
-        scopeId,
-        state: "responding",
+        state: "queued",
         turnSequence: 42,
       },
     ])

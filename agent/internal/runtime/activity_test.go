@@ -44,36 +44,31 @@ func (c *activityClient) snapshot() []activityUpdate {
 	return append([]activityUpdate(nil), c.updates...)
 }
 
-func TestResidentActivityCoalescesACPStatesAndClearsOnCompletion(t *testing.T) {
-	client := &activityClient{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-	}
+func TestResidentActivityProjectsApprovalAndClearsOnCompletion(t *testing.T) {
+	client := &activityClient{}
 	runtime := NewResidentRuntime(Options{Client: client})
 	runtime.mu.Lock()
 	runtime.participantHandle = "private-handle"
 	runtime.mu.Unlock()
 
 	runtime.beginActivity("task:request-1", 42)
-	select {
-	case <-client.started:
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for the first activity publication")
-	}
-	runtime.observeHarnessActivity("task:request-1", types.AgentActivityThinking)
-	runtime.observeHarnessActivity("task:request-1", types.AgentActivityThinking)
-	runtime.observeHarnessActivity("task:request-1", types.AgentActivityUsingTools)
+	waitFor(t, time.Second, func() bool { return len(client.snapshot()) == 1 }, "working activity")
+	runtime.setWaitingApproval("task:request-1")
+	waitFor(t, time.Second, func() bool { return len(client.snapshot()) == 2 }, "approval activity")
+	runtime.setWaitingApproval("task:request-1")
+	runtime.restoreWorkingAfterApproval("task:request-1")
+	waitFor(t, time.Second, func() bool { return len(client.snapshot()) == 3 }, "approval resolution")
 	runtime.finishActivity("task:request-1", 42)
-	runtime.observeHarnessActivity("task:request-1", types.AgentActivityResponding)
-	close(client.release)
-
+	runtime.observeHarnessActivity("task:request-1", types.AgentActivityWorking)
+	waitFor(t, time.Second, func() bool {
+		return len(client.snapshot()) == 4
+	}, "completed activity clear")
 	want := []activityUpdate{
+		{scope: "task:request-1", state: types.AgentActivityWorking, sequence: 42},
+		{scope: "task:request-1", state: types.AgentActivityWaitingApproval, sequence: 42},
 		{scope: "task:request-1", state: types.AgentActivityWorking, sequence: 42},
 		{scope: "task:request-1", state: ""},
 	}
-	waitFor(t, time.Second, func() bool {
-		return len(client.snapshot()) == len(want)
-	}, "coalesced activity updates")
 	updates := client.snapshot()
 	if len(updates) != len(want) {
 		t.Fatalf("activity updates = %#v, want %#v", updates, want)
@@ -93,7 +88,7 @@ func TestResidentActivityDoesNotCrossLogicalScopes(t *testing.T) {
 	runtime.mu.Unlock()
 
 	runtime.beginActivity("task:request-t", 7)
-	runtime.observeHarnessActivity("task:request-u", types.AgentActivityThinking)
+	runtime.observeHarnessActivity("task:request-u", types.AgentActivityWorking)
 	waitFor(t, time.Second, func() bool {
 		updates := client.snapshot()
 		return len(updates) == 1 && updates[0].scope == "task:request-t"
@@ -145,6 +140,33 @@ func TestResidentActivityStartsAtTurnAdmissionAndClearsAfterFailure(t *testing.T
 		updates[1] != (activityUpdate{scope: "room", state: ""}) {
 		t.Fatalf("failed turn activity lifecycle = %#v", updates)
 	}
+}
+
+func TestResidentActivityMarksAcceptedRoomTurnQueuedWhenLanesAreFull(t *testing.T) {
+	client := &activityClient{fakeClient: &fakeClient{}}
+	runtime := NewResidentRuntime(Options{
+		RoomID: "room", Name: "Pi", Client: client, Adapter: &fakeAdapter{name: "pi"},
+	})
+	runtime.adoptJoin(types.JoinResult{
+		ParticipantID: "agent", ParticipantHandle: "private-handle", Cursor: 0,
+	})
+	runtime.mu.Lock()
+	runtime.turnLanes = 1
+	runtime.activeTurns["task:request-1"] = activeTurnLane{target: 7}
+	runtime.mu.Unlock()
+	runtime.acceptEvent(roomEvent(1, true))
+	runtime.launchTurns()
+
+	waitFor(t, time.Second, func() bool {
+		updates := client.snapshot()
+		return len(updates) == 1 && updates[0] == (activityUpdate{
+			scope: "room", state: types.AgentActivityQueued, sequence: 1,
+		})
+	}, "authoritative lane-queued activity")
+	if _, active := runtime.activeTurnOf("room"); active {
+		t.Fatal("a queued Room turn must not be treated as a running or interruptible turn")
+	}
+	runtime.clearActivity()
 }
 
 func TestResidentActivityPublisherDoesNotBlockTurnPath(t *testing.T) {
@@ -256,30 +278,22 @@ func TestResidentActivityKeepsExactTurnSequencePerTurn(t *testing.T) {
 
 	runtime.beginActivity(scope, 42)
 	published(1)
-	for index, state := range []types.AgentActivityState{
-		types.AgentActivityThinking,
-		types.AgentActivityUsingTools,
-		types.AgentActivityResponding,
-	} {
-		runtime.observeHarnessActivity(scope, state)
-		// Wait for each state: the publisher deliberately coalesces a burst
-		// into the newest state, and this test is about the sequence each
-		// published state carries.
-		published(index + 2)
-	}
+	runtime.setWaitingApproval(scope)
+	published(2)
+	runtime.restoreWorkingAfterApproval(scope)
+	published(3)
 
 	// The next turn of the same Task replaces the identity with its own exact
 	// sequence; the states of turn 42 can no longer be published.
 	runtime.finishActivity(scope, 42)
-	published(5)
+	published(4)
 	if active, _, _ := activeTurn(); active {
 		t.Fatal("a finished turn must not stay active")
 	}
-	runtime.observeHarnessActivity(scope, types.AgentActivityThinking)
 	runtime.beginActivity(scope, 47)
-	published(6)
+	published(5)
 	runtime.clearActivity()
-	published(7)
+	published(6)
 
 	if active, activeScope, sequence := activeTurn(); active || activeScope != "" || sequence != 0 {
 		t.Fatalf("clearActivity left an active turn identity: %v %q %d", active, activeScope, sequence)
@@ -287,9 +301,8 @@ func TestResidentActivityKeepsExactTurnSequencePerTurn(t *testing.T) {
 
 	want := []activityUpdate{
 		{scope: scope, state: types.AgentActivityWorking, sequence: 42},
-		{scope: scope, state: types.AgentActivityThinking, sequence: 42},
-		{scope: scope, state: types.AgentActivityUsingTools, sequence: 42},
-		{scope: scope, state: types.AgentActivityResponding, sequence: 42},
+		{scope: scope, state: types.AgentActivityWaitingApproval, sequence: 42},
+		{scope: scope, state: types.AgentActivityWorking, sequence: 42},
 		{scope: scope, state: ""},
 		{scope: scope, state: types.AgentActivityWorking, sequence: 47},
 		{scope: scope, state: ""},

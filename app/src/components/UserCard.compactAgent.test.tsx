@@ -29,7 +29,7 @@ function agentCard(overrides: Record<string, unknown> = {}) {
     voiceEnabled: false,
     onToggleAgentVoice: vi.fn(),
     onStartTask: vi.fn(),
-    activity: "using_tools" as const,
+    activity: "waiting_approval" as const,
     ...overrides,
   }
 }
@@ -102,8 +102,8 @@ describe("compact Agent card density (#348)", () => {
     expect(kind.closest('[data-testid="compact-agent-controls"]')).toBeNull()
 
     const activity = getByTestId("agent-activity")
-    expect(activity).toHaveAccessibleName("Using tools")
-    expect(activity.getAttribute("title")).toBe("Using tools")
+    expect(activity).toHaveAccessibleName("Waiting for approval")
+    expect(activity.getAttribute("title")).toBe("Waiting for approval")
     // Activity is a compact avatar indicator with a tooltip, not a text row.
     expect(activity.closest(".participant-card__avatar")).toBeTruthy()
     expect(

@@ -1043,13 +1043,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-t",
-          state: "responding",
+          state: "queued",
           turnSequence: 42,
         },
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-t",
-          state: "thinking",
+          state: "working",
           turnSequence: 43,
         },
       ],
@@ -1063,8 +1063,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-t"))
     const activity = screen.getByTestId("task-agent-activity")
-    expect(activity).toHaveTextContent("Codex · Responding…")
-    expect(activity).toHaveTextContent("Pi · Thinking…")
+    expect(activity).toHaveTextContent("Codex · Queued")
+    expect(activity).toHaveTextContent("Pi · Working…")
   })
 
   it("offers Interrupt from the authoritative execution projection, not AgentActivity", () => {
@@ -1135,7 +1135,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-interrupt",
-          state: "thinking",
+          state: "working",
         },
       ],
       taskExecutions: [],
@@ -1148,7 +1148,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
-      "Codex · Thinking…"
+      "Codex · Working…"
     )
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
     legacyActivity.unmount()
@@ -1164,7 +1164,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-interrupt",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 7,
         },
       ],
@@ -1227,13 +1227,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-interrupt",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 99,
         },
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-interrupt",
-          state: "thinking",
+          state: "working",
           turnSequence: 7,
         },
       ],
@@ -1478,7 +1478,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     const activity = {
       agentParticipantId: "agent-codex",
       scopeId: "task:task-exec",
-      state: "thinking" as const,
+      state: "working" as const,
       turnSequence: 42,
     }
     const base = {
@@ -1509,7 +1509,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
-      "Codex · Thinking…"
+      "Codex · Working…"
     )
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Running"
@@ -1741,7 +1741,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-exec-send",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 42,
         },
       ],
@@ -1820,7 +1820,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-layout",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 42,
         },
       ],

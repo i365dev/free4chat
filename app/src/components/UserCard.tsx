@@ -2,7 +2,10 @@ import { memo, useEffect, useRef, useState } from "react"
 
 import { LOCAL_PEER_ID } from "@common/consts"
 
-import { agentActivityLabel } from "../common/agentActivity"
+import {
+  agentActivityLabel,
+  agentActivityStatus,
+} from "../common/agentActivity"
 import { UserInfo } from "../common/types"
 import AudioVisualizer from "../components/AudioVisualizer"
 import ParticipantAvatar from "../components/ParticipantAvatar"
@@ -397,7 +400,7 @@ function UserCard(user: UserCardProps) {
               data-testid="agent-activity"
               className="text-[10px] text-blue-200/80"
             >
-              {agentActivityLabel(user.activity)}…
+              {agentActivityStatus(user.activity)}
             </span>
           )}
           {user.kind === "agent" && user.voiceAvailable && (

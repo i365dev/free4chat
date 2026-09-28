@@ -2,9 +2,8 @@ import type { AgentActivityState } from "../room/types"
 
 export const AGENT_ACTIVITY_STATES = [
   "working",
-  "thinking",
-  "using_tools",
-  "responding",
+  "waiting_approval",
+  "queued",
 ] as const satisfies readonly AgentActivityState[]
 
 export const MAX_AGENT_ACTIVITY_SCOPE_LENGTH = 128

@@ -17,11 +17,17 @@ function card(overrides: Record<string, unknown> = {}) {
 }
 
 describe("UserCard Agent Voice", () => {
-  it("renders only the coarse transient Agent activity label", () => {
-    const { getByTestId } = render(
-      <UserCard {...card({ activity: "using_tools" })} />
+  it("renders only the coarse transient Agent activity labels", () => {
+    const { getByTestId, rerender } = render(
+      <UserCard {...card({ activity: "working" })} />
     )
-    expect(getByTestId("agent-activity")).toHaveTextContent("Using tools")
+    expect(getByTestId("agent-activity")).toHaveTextContent("Working…")
+    rerender(<UserCard {...card({ activity: "waiting_approval" })} />)
+    expect(getByTestId("agent-activity")).toHaveTextContent(
+      "Waiting for approval"
+    )
+    rerender(<UserCard {...card({ activity: "queued" })} />)
+    expect(getByTestId("agent-activity")).toHaveTextContent("Queued")
   })
 
   it("shows an accessible per-Agent enable control", () => {

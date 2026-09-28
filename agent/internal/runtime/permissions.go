@@ -60,6 +60,7 @@ var errRoomPermissionCancelled = errors.New("Room permission approval was cancel
 type pendingRoomPermission struct {
 	done    chan roomPermissionDecision
 	offered map[string]struct{}
+	scope   string
 }
 
 type roomPermissionDecision struct {
@@ -125,6 +126,7 @@ func (r *ResidentRuntime) respondToPermission(
 	pending := &pendingRoomPermission{
 		done:    make(chan roomPermissionDecision, 1),
 		offered: offered,
+		scope:   normalizeScope(request.Scope),
 	}
 	r.permissionMu.Lock()
 	if len(r.pendingPermissions) >= maxPendingRoomPermissions {
@@ -133,6 +135,7 @@ func (r *ResidentRuntime) respondToPermission(
 	}
 	r.pendingPermissions[correlationID] = pending
 	r.permissionMu.Unlock()
+	r.setWaitingApproval(pending.scope)
 
 	if err := client.RequestPermission(handle, projected); err != nil {
 		r.removePendingPermission(correlationID, pending)
@@ -410,6 +413,7 @@ func (r *ResidentRuntime) handleRoomPermissionEvent(event types.RoomEvent) bool 
 	if !ok {
 		return true
 	}
+	r.restoreActivityAfterPermission(pending.scope)
 	decision := roomPermissionDecision{}
 	if event.Permission.Kind == "resolved" {
 		if _, offered := pending.offered[event.Permission.SelectedOptionID]; !offered {
@@ -438,10 +442,33 @@ func (r *ResidentRuntime) removePendingPermission(
 	pending *pendingRoomPermission,
 ) {
 	r.permissionMu.Lock()
+	removed := false
 	if current, ok := r.pendingPermissions[correlationID]; ok && current == pending {
 		delete(r.pendingPermissions, correlationID)
+		removed = true
 	}
 	r.permissionMu.Unlock()
+	if removed {
+		r.restoreActivityAfterPermission(pending.scope)
+	}
+}
+
+// restoreActivityAfterPermission returns one turn to Working only after its
+// last native permission is no longer pending. The activity map remains the
+// source for the exact active turn; this helper adds no independent lifecycle.
+func (r *ResidentRuntime) restoreActivityAfterPermission(scope string) {
+	r.permissionMu.Lock()
+	stillPending := false
+	for _, pending := range r.pendingPermissions {
+		if pending.scope == scope {
+			stillPending = true
+			break
+		}
+	}
+	r.permissionMu.Unlock()
+	if !stillPending {
+		r.restoreWorkingAfterApproval(scope)
+	}
 }
 
 func (r *ResidentRuntime) cancelPendingPermissions(reason error) {
@@ -450,11 +477,16 @@ func (r *ResidentRuntime) cancelPendingPermissions(reason error) {
 	}
 	r.permissionMu.Lock()
 	pending := make([]*pendingRoomPermission, 0, len(r.pendingPermissions))
+	scopes := make(map[string]struct{}, len(r.pendingPermissions))
 	for correlationID, request := range r.pendingPermissions {
 		delete(r.pendingPermissions, correlationID)
 		pending = append(pending, request)
+		scopes[request.scope] = struct{}{}
 	}
 	r.permissionMu.Unlock()
+	for scope := range scopes {
+		r.restoreWorkingAfterApproval(scope)
+	}
 	for _, request := range pending {
 		request.done <- roomPermissionDecision{err: reason}
 	}

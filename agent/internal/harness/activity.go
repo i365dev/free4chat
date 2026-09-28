@@ -26,12 +26,8 @@ func mapACPActivity(params json.RawMessage) (types.AgentActivityState, bool) {
 		return "", false
 	}
 	switch document.Update.SessionUpdate {
-	case "agent_thought_chunk":
-		return types.AgentActivityThinking, true
-	case "agent_message_chunk":
-		return types.AgentActivityResponding, true
-	case "tool_call":
-		return types.AgentActivityUsingTools, true
+	case "agent_thought_chunk", "agent_message_chunk", "tool_call":
+		return types.AgentActivityWorking, true
 	case "tool_call_update":
 		status := strings.ToLower(strings.TrimSpace(document.Update.Status))
 		if status == "" {
@@ -42,7 +38,7 @@ func mapACPActivity(params json.RawMessage) (types.AgentActivityState, bool) {
 			status == "done" {
 			return "", false
 		}
-		return types.AgentActivityUsingTools, true
+		return types.AgentActivityWorking, true
 	default:
 		return "", false
 	}
