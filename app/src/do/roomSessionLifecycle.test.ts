@@ -265,7 +265,7 @@ describe("RoomSession expiry cleanup", () => {
     ).transientAgentActivities.set("old-agent:room", {
       agentParticipantId: "agent",
       scopeId: "room",
-      state: "thinking",
+      state: "working",
     })
     await (
       session as unknown as {

@@ -39,7 +39,7 @@ describe("Runtime Agent activity route", () => {
         },
         body: JSON.stringify({
           scopeId: "task:req-1",
-          activity: "thinking",
+          activity: "waiting_approval",
           turnSequence: 42,
         }),
       }),
@@ -53,13 +53,13 @@ describe("Runtime Agent activity route", () => {
         participantId: "agent-1",
         token: "private-token",
         scopeId: "task:req-1",
-        activity: "thinking",
+        activity: "waiting_approval",
         turnSequence: 42,
       },
     })
   })
 
-  it("forwards a legacy Agent body with no turnSequence untouched", async () => {
+  it("forwards the canonical clear turn sequence unchanged", async () => {
     let forwardedBody: Record<string, unknown> | undefined
     const env = {
       SFU_ROOM: {
@@ -76,9 +76,6 @@ describe("Runtime Agent activity route", () => {
       },
     } as unknown as RoomProtocolEnv
 
-    // A pre-#414 Agent Runtime sends only scopeId + activity. The route must
-    // not invent a turn: an absent field stays absent, so the Durable Object
-    // takes its legacy-compatible path.
     const response = await handleRoomRequest(
       new Request("https://www.free4.chat/api/room/agent-activity", {
         method: "POST",
@@ -88,7 +85,11 @@ describe("Runtime Agent activity route", () => {
           "X-Room-Participant-Id": "agent-1",
           "X-Room-Participant-Token": "private-token",
         },
-        body: JSON.stringify({ scopeId: "task:req-1", activity: "thinking" }),
+        body: JSON.stringify({
+          scopeId: "task:req-1",
+          activity: null,
+          turnSequence: 0,
+        }),
       }),
       env
     )
@@ -99,9 +100,9 @@ describe("Runtime Agent activity route", () => {
       participantId: "agent-1",
       token: "private-token",
       scopeId: "task:req-1",
-      activity: "thinking",
+      activity: null,
+      turnSequence: 0,
     })
-    expect("turnSequence" in (forwardedBody ?? {})).toBe(false)
   })
 
   it("rejects the wrong method before touching the Durable Object", async () => {

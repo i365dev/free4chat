@@ -14,11 +14,11 @@ func TestMapACPActivityIsCoarseAndDropsCompletedToolUpdates(t *testing.T) {
 		want   types.AgentActivityState
 		ok     bool
 	}{
-		{"thought", `{"update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"private"}}}`, types.AgentActivityThinking, true},
-		{"tool", `{"update":{"sessionUpdate":"tool_call","toolCall":{"rawInput":{"command":"secret"}}}}`, types.AgentActivityUsingTools, true},
-		{"active tool update", `{"update":{"sessionUpdate":"tool_call_update","status":"in_progress"}}`, types.AgentActivityUsingTools, true},
+		{"thought", `{"update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"private"}}}`, types.AgentActivityWorking, true},
+		{"tool", `{"update":{"sessionUpdate":"tool_call","toolCall":{"rawInput":{"command":"secret"}}}}`, types.AgentActivityWorking, true},
+		{"active tool update", `{"update":{"sessionUpdate":"tool_call_update","status":"in_progress"}}`, types.AgentActivityWorking, true},
 		{"completed tool update", `{"update":{"sessionUpdate":"tool_call_update","status":"completed"}}`, "", false},
-		{"message", `{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"public"}}}`, types.AgentActivityResponding, true},
+		{"message", `{"update":{"sessionUpdate":"agent_message_chunk","content":{"text":"public"}}}`, types.AgentActivityWorking, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

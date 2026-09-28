@@ -23,6 +23,7 @@ type permissionRequestObservation struct {
 type permissionResidentClient struct {
 	*residentTestClient
 	requests chan permissionRequestObservation
+	activity chan activityUpdate
 	err      error
 }
 
@@ -37,10 +38,84 @@ func (c *permissionResidentClient) RequestPermission(
 	return nil
 }
 
+func (c *permissionResidentClient) UpdateAgentActivity(
+	_ string,
+	scope string,
+	state types.AgentActivityState,
+	turnSequence int64,
+) error {
+	if c.activity != nil {
+		c.activity <- activityUpdate{scope: scope, state: state, sequence: turnSequence}
+	}
+	return nil
+}
+
 func newPermissionResidentClient() *permissionResidentClient {
 	return &permissionResidentClient{
 		residentTestClient: &residentTestClient{fakeClient: &fakeClient{}},
 		requests:           make(chan permissionRequestObservation, 2),
+		activity:           make(chan activityUpdate, 8),
+	}
+}
+
+func TestRoomPermissionProjectsWaitingApprovalAndRestoresWorking(t *testing.T) {
+	client := newPermissionResidentClient()
+	rt := NewResidentRuntime(Options{
+		RoomID: "room", Client: client, Adapter: &fakeAdapter{name: "pi"},
+	})
+	rt.mu.Lock()
+	rt.participantHandle = "private-handle"
+	rt.participantID = "agent-1"
+	rt.mu.Unlock()
+	rt.beginActivity("room", 42)
+	if got := <-client.activity; got != (activityUpdate{
+		scope: "room", state: types.AgentActivityWorking, sequence: 42,
+	}) {
+		t.Fatalf("turn admission activity = %+v", got)
+	}
+
+	request := harness.ACPPermissionRequest{
+		Scope: "room",
+		ToolCall: harness.ACPToolCall{
+			Title: "Read project overview", Kind: "read",
+		},
+		Options: []harness.ACPPermissionOption{
+			{OptionID: "allow-once", Name: "Allow once", Kind: "allow_once"},
+		},
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := rt.respondToPermission(context.Background(), request)
+		result <- err
+	}()
+	var observed permissionRequestObservation
+	select {
+	case observed = <-client.requests:
+	case <-time.After(time.Second):
+		t.Fatal("native permission request was not published")
+	}
+	if got := <-client.activity; got != (activityUpdate{
+		scope: "room", state: types.AgentActivityWaitingApproval, sequence: 42,
+	}) {
+		t.Fatalf("pending permission activity = %+v", got)
+	}
+
+	if !rt.handleRoomPermissionEvent(roomPermissionResponseEvent(
+		observed.request.RequestID, "agent-1", "resolved", "allow-once",
+	)) {
+		t.Fatal("permission response was not consumed")
+	}
+	if err := <-result; err != nil {
+		t.Fatalf("resolved permission failed: %v", err)
+	}
+	if got := <-client.activity; got != (activityUpdate{
+		scope: "room", state: types.AgentActivityWorking, sequence: 42,
+	}) {
+		t.Fatalf("resolved permission activity = %+v", got)
+	}
+	rt.finishActivity("room", 42)
+	if got := <-client.activity; got != (activityUpdate{scope: "room", state: ""}) {
+		t.Fatalf("completed turn activity = %+v", got)
 	}
 }
 

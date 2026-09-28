@@ -236,7 +236,7 @@ describe("RoomContent — narrow-screen composition", () => {
         {
           agentParticipantId: "agent-pi",
           scopeId: "room",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 11,
         },
       ],
@@ -245,7 +245,9 @@ describe("RoomContent — narrow-screen composition", () => {
     expect(signal.tagName).toBe("P")
     expect(signal.className).toContain("truncate")
     expect(signal.className).toContain("md:hidden")
-    expect(signal.textContent).toBe("3 participants · Pi · Using tools…")
+    expect(signal.textContent).toBe(
+      "3 participants · Pi · Waiting for approval"
+    )
     roomScope.unmount()
 
     // Nothing is invented when no Agent reports any state at all.

@@ -9,11 +9,7 @@ export type {
 import type { GeneratedRoomAppPublication } from "../common/generatedRoomApp"
 import type { TaskLiveViewSnapshot } from "../common/taskLiveView"
 
-export type AgentActivityState =
-  | "working"
-  | "thinking"
-  | "using_tools"
-  | "responding"
+export type AgentActivityState = "working" | "waiting_approval" | "queued"
 
 export interface AgentActivityProjection {
   agentParticipantId: string
@@ -25,15 +21,13 @@ export interface AgentActivityProjection {
   // what lets a Human interrupt bind to the exact turn they are looking at
   // instead of to the Task scope.
   //
-  // Additive and optional: a pre-#414 Agent Runtime omits it, and that legacy
-  // activity keeps projecting normally while carrying no interrupt authority.
-  // A missing value is never back-filled with 0, -1, or a Room cursor.
-  turnSequence?: number
+  // Every published activity belongs to one exact canonical Room turn.
+  turnSequence: number
 }
 
 // #409: the Runtime-authoritative TRANSIENT execution state of one Task. It is
 // not the retained Task lifecycle (Starting|Working|Completed|Failed) and not
-// Harness activity (working|thinking|using_tools|responding): execution owns
+// coarse Agent activity (working|waiting_approval|queued): execution owns
 // control truth only, which is why "running with 2 queued" is one projection
 // rather than an enum value. The Room stores it transiently and the browser
 // only renders it; neither derives it from Room history.

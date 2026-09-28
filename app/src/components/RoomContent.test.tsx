@@ -1043,13 +1043,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-t",
-          state: "responding",
+          state: "queued",
           turnSequence: 42,
         },
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-t",
-          state: "thinking",
+          state: "working",
           turnSequence: 43,
         },
       ],
@@ -1063,8 +1063,149 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-t"))
     const activity = screen.getByTestId("task-agent-activity")
-    expect(activity).toHaveTextContent("Codex · Responding…")
-    expect(activity).toHaveTextContent("Pi · Thinking…")
+    expect(activity).toHaveTextContent("Codex · Queued")
+    expect(activity).toHaveTextContent("Pi · Working…")
+  })
+
+  it("shows each Agent's exact Room activity on its participant card", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+        },
+        { peerId: "agent-pi", name: "Pi", kind: "agent", room: "test-room" },
+        {
+          peerId: "agent-opencode",
+          name: "OpenCode",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-codex",
+          scopeId: "room",
+          state: "working",
+          turnSequence: 42,
+        },
+        {
+          agentParticipantId: "agent-pi",
+          scopeId: "room",
+          state: "waiting_approval",
+          turnSequence: 43,
+        },
+        {
+          agentParticipantId: "agent-opencode",
+          scopeId: "task:other-task",
+          state: "queued",
+          turnSequence: 44,
+        },
+      ],
+    })
+
+    const { container } = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    const cards = container.querySelectorAll(
+      '[data-testid="room-stage-participants"] .participant-card-shell'
+    )
+    const cardFor = (name: string) =>
+      Array.from(cards).find((card) => card.textContent?.includes(name))
+
+    expect(cardFor("Codex")).toHaveTextContent("Working…")
+    expect(cardFor("Pi")).toHaveTextContent("Waiting for approval")
+    expect(cardFor("OpenCode")).not.toHaveTextContent("Queued")
+    expect(
+      cardFor("OpenCode")?.querySelector('[data-testid="agent-activity"]')
+    ).toBeNull()
+  })
+
+  it("keeps compact participant activity scoped to that Agent and the Room", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "Hannah",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "human-sharing",
+          name: "Bob",
+          kind: "human",
+          room: "test-room",
+          screenShareEnabled: true,
+          screenShareStream: {} as MediaStream,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+        },
+        { peerId: "agent-pi", name: "Pi", kind: "agent", room: "test-room" },
+        {
+          peerId: "agent-opencode",
+          name: "OpenCode",
+          kind: "agent",
+          room: "test-room",
+        },
+      ],
+      agentActivities: [
+        {
+          agentParticipantId: "agent-codex",
+          scopeId: "room",
+          state: "working",
+          turnSequence: 42,
+        },
+        {
+          agentParticipantId: "agent-pi",
+          scopeId: "room",
+          state: "waiting_approval",
+          turnSequence: 43,
+        },
+        {
+          agentParticipantId: "agent-opencode",
+          scopeId: "task:other-task",
+          state: "queued",
+          turnSequence: 44,
+        },
+      ],
+    })
+
+    const { container } = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    const strip = container.querySelector(".room-participant-strip")
+    expect(strip).toHaveTextContent("Codex")
+    expect(
+      within(strip as HTMLElement).getByRole("img", { name: "Working" })
+    ).toBeInTheDocument()
+    expect(
+      within(strip as HTMLElement).getByRole("img", {
+        name: "Waiting for approval",
+      })
+    ).toBeInTheDocument()
+    expect(
+      within(strip as HTMLElement).queryByRole("img", { name: "Queued" })
+    ).toBeNull()
   })
 
   it("offers Interrupt from the authoritative execution projection, not AgentActivity", () => {
@@ -1123,9 +1264,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
     idle.unmount()
 
-    // A legacy Agent Runtime (pre-#414 binary) reports canonical activity with
-    // no exact turn and publishes no execution projection: the Human still sees
-    // it working, but there is no interrupt authority to bind a click to.
+    // Exact-turn AgentActivity is presentation only. Without an authoritative
+    // execution projection, it does not offer Task interrupt control.
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
@@ -1135,7 +1275,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-interrupt",
-          state: "thinking",
+          state: "working",
+          turnSequence: 42,
         },
       ],
       taskExecutions: [],
@@ -1143,15 +1284,15 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       sendTextMessage,
       sendActionMessage,
     })
-    const legacyActivity = render(
+    const activityWithoutExecution = render(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-interrupt"))
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
-      "Codex · Thinking…"
+      "Codex · Working…"
     )
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
-    legacyActivity.unmount()
+    activityWithoutExecution.unmount()
 
     // Only a SECONDARY participating Agent is active: the canonical Agent owns
     // no running turn, so no Interrupt may be offered.
@@ -1164,7 +1305,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-interrupt",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 7,
         },
       ],
@@ -1227,13 +1368,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-interrupt",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 99,
         },
         {
           agentParticipantId: "agent-pi",
           scopeId: "task:task-interrupt",
-          state: "thinking",
+          state: "working",
           turnSequence: 7,
         },
       ],
@@ -1478,7 +1619,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     const activity = {
       agentParticipantId: "agent-codex",
       scopeId: "task:task-exec",
-      state: "thinking" as const,
+      state: "working" as const,
       turnSequence: 42,
     }
     const base = {
@@ -1509,7 +1650,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
     fireEvent.click(screen.getByTestId("interaction-tab-task-task-exec"))
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
-      "Codex · Thinking…"
+      "Codex · Working…"
     )
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Running"
@@ -1741,7 +1882,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-exec-send",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 42,
         },
       ],
@@ -1820,7 +1961,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         {
           agentParticipantId: "agent-codex",
           scopeId: "task:task-layout",
-          state: "using_tools",
+          state: "waiting_approval",
           turnSequence: 42,
         },
       ],

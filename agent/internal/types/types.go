@@ -466,16 +466,14 @@ const (
 type AgentActivityState string
 
 const (
-	AgentActivityWorking    AgentActivityState = "working"
-	AgentActivityThinking   AgentActivityState = "thinking"
-	AgentActivityUsingTools AgentActivityState = "using_tools"
-	AgentActivityResponding AgentActivityState = "responding"
+	AgentActivityWorking         AgentActivityState = "working"
+	AgentActivityWaitingApproval AgentActivityState = "waiting_approval"
+	AgentActivityQueued          AgentActivityState = "queued"
 )
 
 func (state AgentActivityState) Valid() bool {
 	switch state {
-	case AgentActivityWorking, AgentActivityThinking,
-		AgentActivityUsingTools, AgentActivityResponding:
+	case AgentActivityWorking, AgentActivityWaitingApproval, AgentActivityQueued:
 		return true
 	default:
 		return false
@@ -545,8 +543,8 @@ func (availability TaskExecutionAvailability) Valid() bool {
 // settlement, and whether the retained Harness session is gone.
 //
 // It is deliberately NOT: the retained Task lifecycle
-// (Starting|Working|Completed|Failed), Harness activity
-// (working|thinking|using_tools|responding), a queue of its own, or persisted
+// (Starting|Working|Completed|Failed), coarse Agent activity
+// (working|waiting_approval|queued), a queue of its own, or persisted
 // history. "Running with N queued" is a valid single state, which is why this
 // is a projection and not an enum. It is presented to Humans and never carries
 // task text, prompts, paths, credentials, or ACP identifiers.

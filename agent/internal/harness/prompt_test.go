@@ -175,11 +175,11 @@ func TestThoughtFilteringAndCoarseActivityProjectionUnchanged(t *testing.T) {
 	if text, ok := extractTextChunk(thought); ok || text != "" {
 		t.Fatalf("thought chunk must stay out of the public reply: ok=%v text=%q", ok, text)
 	}
-	if state, ok := mapACPActivity(thought); !ok || state != types.AgentActivityThinking {
+	if state, ok := mapACPActivity(thought); !ok || state != types.AgentActivityWorking {
 		t.Fatalf("thought progress must stay a coarse activity state: %q %v", state, ok)
 	}
 	tool := json.RawMessage(`{"update":{"sessionUpdate":"tool_call","toolCall":{"rawInput":{"command":"secret"}}}}`)
-	if state, ok := mapACPActivity(tool); !ok || state != types.AgentActivityUsingTools {
+	if state, ok := mapACPActivity(tool); !ok || state != types.AgentActivityWorking {
 		t.Fatalf("tool progress must stay a coarse activity state: %q %v", state, ok)
 	}
 }

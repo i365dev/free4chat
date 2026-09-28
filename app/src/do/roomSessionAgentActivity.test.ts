@@ -100,7 +100,7 @@ function activities(room: ReturnType<typeof harness>) {
     agentParticipantId: string
     scopeId: string
     state: string
-    turnSequence?: number
+    turnSequence: number
   }[]
 }
 
@@ -130,7 +130,7 @@ describe("RoomSession transient Agent activity", () => {
       participantId: "agentT",
       token: "agentT-token",
       scopeId: "task:request-1",
-      activity: "thinking",
+      activity: "working",
       turnSequence: 42,
     })
     expect(thinking.status).toBe(200)
@@ -180,9 +180,7 @@ describe("RoomSession transient Agent activity", () => {
 
   it("still rejects an explicitly malformed turn", async () => {
     const room = harness()
-    // An ABSENT field is the legacy-compatible case (covered below); these are
-    // explicit values that cannot identify a turn and must fail closed.
-    for (const turnSequence of [0, -1, 1.5, "42", null, {}]) {
+    for (const turnSequence of [undefined, 0, -1, 1.5, "42", null, {}]) {
       const invalid = await room.control({
         action: "agent-activity",
         participantId: "agentT",
@@ -196,6 +194,60 @@ describe("RoomSession transient Agent activity", () => {
         json: { error: "invalid_activity_turn" },
       })
     }
+  })
+
+  it("rejects detailed or untrusted activity states", async () => {
+    const room = harness()
+    for (const activity of [
+      "thinking",
+      "using_tools",
+      "responding",
+      { state: "working", command: "private command" },
+    ]) {
+      const rejected = await room.control({
+        action: "agent-activity",
+        participantId: "agentT",
+        token: "agentT-token",
+        scopeId: "room",
+        activity,
+        turnSequence: 42,
+      })
+      expect(rejected).toMatchObject({
+        status: 400,
+        json: { error: "invalid_activity_state" },
+      })
+    }
+    expect(activities(room)).toEqual([])
+  })
+
+  it("keeps activity independent per Agent and clears only the leaver", async () => {
+    const room = harness()
+    await room.control({
+      action: "agent-activity",
+      participantId: "agentT",
+      token: "agentT-token",
+      scopeId: "room",
+      activity: "waiting_approval",
+      turnSequence: 42,
+    })
+    await room.control({
+      action: "agent-activity",
+      participantId: "agentU",
+      token: "agentU-token",
+      scopeId: "room",
+      activity: "working",
+      turnSequence: 43,
+    })
+    expect(activities(room)).toHaveLength(2)
+    ;(room.session as any).clearAgentActivitiesForParticipant("agentT")
+    expect(activities(room)).toEqual([
+      {
+        agentParticipantId: "agentU",
+        scopeId: "room",
+        state: "working",
+        turnSequence: 43,
+      },
+    ])
   })
 
   it("requires an exact positive turn and replaces the identity on the next turn", async () => {
@@ -229,92 +281,39 @@ describe("RoomSession transient Agent activity", () => {
     ])
   })
 
-  it("accepts a legacy Agent activity that carries no turnSequence", async () => {
+  it("requires the canonical zero turn sequence when clearing activity", async () => {
     const room = harness()
-    // Pre-#414 Agent binaries send only scopeId + activity. The projection must
-    // still appear; it just carries no exact-turn identity.
-    const legacy = await room.control({
+    await room.control({
       action: "agent-activity",
       participantId: "agentT",
       token: "agentT-token",
       scopeId: "task:request-1",
-      activity: "thinking",
+      activity: "working",
+      turnSequence: 42,
     })
-    expect(legacy).toMatchObject({ status: 200, json: { changed: true } })
-    expect(activities(room)).toEqual([
-      {
-        agentParticipantId: "agentT",
+    for (const turnSequence of [undefined, -1, 1, null]) {
+      const invalidClear = await room.control({
+        action: "agent-activity",
+        participantId: "agentT",
+        token: "agentT-token",
         scopeId: "task:request-1",
-        state: "thinking",
-      },
-    ])
-    expect("turnSequence" in activities(room)[0]).toBe(false)
-
-    // A legacy replay of the same state is still unchanged.
-    const replay = await room.control({
-      action: "agent-activity",
-      participantId: "agentT",
-      token: "agentT-token",
-      scopeId: "task:request-1",
-      activity: "thinking",
-    })
-    expect(replay).toMatchObject({ status: 200, json: { changed: false } })
-
-    // A legacy clear (null with no turn) is accepted too.
+        activity: null,
+        turnSequence,
+      })
+      expect(invalidClear).toMatchObject({
+        status: 400,
+        json: { error: "invalid_activity_turn" },
+      })
+    }
     const clear = await room.control({
       action: "agent-activity",
       participantId: "agentT",
       token: "agentT-token",
       scopeId: "task:request-1",
       activity: null,
+      turnSequence: 0,
     })
     expect(clear).toMatchObject({ status: 200, json: { changed: true } })
     expect(activities(room)).toEqual([])
-  })
-
-  it("tracks legacy and exact-turn producers without inheriting identity", async () => {
-    const room = harness()
-    const publish = (activity: unknown, turnSequence?: unknown) =>
-      room.control({
-        action: "agent-activity",
-        participantId: "agentT",
-        token: "agentT-token",
-        scopeId: "task:request-1",
-        activity,
-        ...(turnSequence === undefined ? {} : { turnSequence }),
-      })
-
-    // legacy -> exact: a real change that starts carrying exact-turn identity.
-    expect(await publish("thinking")).toMatchObject({
-      status: 200,
-      json: { changed: true },
-    })
-    expect(await publish("thinking", 42)).toMatchObject({
-      status: 200,
-      json: { changed: true },
-    })
-    expect(activities(room)).toEqual([
-      {
-        agentParticipantId: "agentT",
-        scopeId: "task:request-1",
-        state: "thinking",
-        turnSequence: 42,
-      },
-    ])
-
-    // exact -> legacy (old producer): a real change that LOSES the identity
-    // instead of inheriting 42 from the previous activity.
-    expect(await publish("thinking")).toMatchObject({
-      status: 200,
-      json: { changed: true },
-    })
-    expect(activities(room)).toEqual([
-      {
-        agentParticipantId: "agentT",
-        scopeId: "task:request-1",
-        state: "thinking",
-      },
-    ])
-    expect("turnSequence" in activities(room)[0]).toBe(false)
   })
 })

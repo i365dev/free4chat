@@ -1745,6 +1745,9 @@ func (r *ResidentRuntime) launchTurnsWithRetryGate(preserveRetryDelay bool) {
 			// not offer it work until the owner settles, so no turn is
 			// dispatched only to be refused.
 			r.log("SAME_SESSION_BUSY", map[string]string{"scopeKind": scopeKindOf(candidate.scope)})
+			if candidate.scope == roomScope {
+				r.queueActivity(candidate.scope, candidate.target)
+			}
 			continue
 		}
 		switch r.beginTurnLane(candidate.scope, candidate.target) {
@@ -1754,6 +1757,9 @@ func (r *ResidentRuntime) launchTurnsWithRetryGate(preserveRetryDelay bool) {
 			r.mu.Lock()
 			active, capacity := len(r.activeTurns), r.turnLanes
 			r.mu.Unlock()
+			if candidate.scope == roomScope {
+				r.queueActivity(candidate.scope, candidate.target)
+			}
 			r.log("LANE_CAPACITY_QUEUED", map[string]string{
 				"scopeKind": scopeKindOf(candidate.scope),
 				"active":    strconv.Itoa(active),

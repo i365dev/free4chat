@@ -4524,22 +4524,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           return this.json({ error: "invalid_activity_scope" }, 403)
       }
 
-      // #409: turnSequence is ADDITIVE exact-turn metadata, never a required
-      // field. A pre-#414 Agent Runtime omits it entirely, and its activity must
-      // keep projecting normally — it simply carries no interrupt authority.
-      //
-      //   absent    = legacy compatible (accepted, no exact-turn identity)
-      //   valid     = exact-turn capable (accepted, interrupt eligible)
-      //   malformed = rejected (fail closed)
-      //
-      // A clear is compatible with both producers: legacy `null` without a turn,
-      // and the new explicit `turnSequence: 0`.
-      let activityTurnSequence: number | undefined
+      // Every activity names its exact Room turn; clear uses the single
+      // canonical sequence value 0.
+      let activityTurnSequence: number
       if (normalizedActivity === null) {
-        if (request.turnSequence !== undefined && request.turnSequence !== 0)
+        if (request.turnSequence !== 0)
           return this.json({ error: "invalid_activity_turn" }, 400)
-      } else if (request.turnSequence === undefined) {
-        activityTurnSequence = undefined
+        activityTurnSequence = 0
       } else if (isAgentActivityTurnSequence(request.turnSequence)) {
         activityTurnSequence = request.turnSequence
       } else {
@@ -4559,10 +4550,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         })
         return this.json({ ok: true, changed: true })
       }
-      // Dedup compares state AND exact-turn identity, and never inherits a turn
-      // from the previous activity: legacy->legacy and same-turn->same-turn are
-      // unchanged, while legacy->exact, exact->legacy and exact->other-turn are
-      // all real changes.
+      // Dedup compares state and exact-turn identity.
       if (
         previous?.state === normalizedActivity &&
         previous.turnSequence === activityTurnSequence
@@ -4577,11 +4565,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         agentParticipantId: participant.id,
         scopeId: request.scopeId,
         state: normalizedActivity,
-        // A legacy activity stays absent here: no fabricated 0/-1/cursor, so
-        // the browser can never mistake it for interrupt authority.
-        ...(activityTurnSequence === undefined
-          ? {}
-          : { turnSequence: activityTurnSequence }),
+        turnSequence: activityTurnSequence,
       }
       this.transientAgentActivities.set(key, activity)
       await this.broadcast({ type: "agentActivity", activity })

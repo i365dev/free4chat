@@ -575,26 +575,27 @@ describe("RoomSession Task interrupt (#409)", () => {
     expect(test.agentControls("agent-a")).toEqual([])
   })
 
-  it("never treats a legacy activity without a turn as interrupt authority", async () => {
+  it("never treats AgentActivity as Task interrupt authority", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
-    // A pre-#414 Agent Runtime publishes activity with no exact turn. It is
-    // still projected (the Human sees the Agent working) but it can never
-    // authorize a control.
-    const legacy = await test.control({
+    // Exact-turn presentation activity still cannot authorize Task control;
+    // only the authoritative TaskExecution projection can do that.
+    const activity = await test.control({
       action: "agent-activity",
       participantId: "agent-a",
       token: "agent-a-token",
       scopeId: `task:${requestId}`,
       activity: "working",
+      turnSequence: 42,
     })
-    expect(legacy.status).toBe(200)
+    expect(activity.status).toBe(200)
     expect(test.transientActivities()).toEqual([
       {
         agentParticipantId: "agent-a",
         scopeId: `task:${requestId}`,
         state: "working",
+        turnSequence: 42,
       },
     ])
     test.clearAgentFrames("agent-a")
@@ -661,9 +662,8 @@ describe("RoomSession Task interrupt (#409)", () => {
 
     for (const [state, sequence] of [
       ["working", 42],
-      ["thinking", 42],
-      ["using_tools", 42],
-      ["responding", 42],
+      ["waiting_approval", 42],
+      ["queued", 42],
     ] as const) {
       const published = await test.publishActivity(
         "agent-a",
@@ -689,19 +689,13 @@ describe("RoomSession Task interrupt (#409)", () => {
       {
         agentParticipantId: "agent-a",
         scopeId,
-        state: "thinking",
+        state: "waiting_approval",
         turnSequence: 42,
       },
       {
         agentParticipantId: "agent-a",
         scopeId,
-        state: "using_tools",
-        turnSequence: 42,
-      },
-      {
-        agentParticipantId: "agent-a",
-        scopeId,
-        state: "responding",
+        state: "queued",
         turnSequence: 42,
       },
     ])
@@ -729,14 +723,12 @@ describe("RoomSession Task interrupt (#409)", () => {
     expect(test.transientActivities()).toEqual([])
   })
 
-  it("rejects an explicitly malformed activity turn", async () => {
+  it("rejects a missing or malformed activity turn", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
     const requestId = await createTask(test)
 
-    // An ABSENT turnSequence is the legacy-compatible case (covered above);
-    // these explicit values cannot identify a turn and must fail closed.
-    for (const turnSequence of [0, -1, 1.5, "42", null]) {
+    for (const turnSequence of [undefined, 0, -1, 1.5, "42", null]) {
       const published = await test.publishActivity(
         "agent-a",
         `task:${requestId}`,
