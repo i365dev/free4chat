@@ -163,6 +163,34 @@ re-run the `CI / Deploy` workflow run in GitHub Actions instead of deploying
 locally, unless you're deliberately reproducing the full production build-time
 configuration.
 
+## Temporary Room App transport diagnostics (#221)
+
+For a Whiteboard multi-host investigation, use the **parent Room page** DevTools
+console (not the App iframe) to opt into the local Core transport trace:
+
+```js
+window.__free4chatRoomAppTransportDiagnostics.enable()
+window.__free4chatRoomAppTransportDiagnostics.current()
+window.__free4chatRoomAppTransportDiagnostics.read()
+window.__free4chatRoomAppTransportDiagnostics.disable()
+```
+
+Collect `current()` and `read()` from every Human host in the same time window
+as the Whiteboard iframe's own trace. Capture each side before and after a
+reload. The Core trace uses a new, non-secret `browserId` for each Room page
+execution and a monotonically increasing `sessionEpoch` for media session
+rotations in that page. It includes the public participant ID, current local
+reliable DataChannel state, ready remote reliable peers, and bounded events for
+channel creation/open/close, reconnection, and accepted or rejected reliable
+transport sends/receives. `reliable_sent` means the browser accepted a send;
+the other host's `reliable_received` is the evidence of delivery.
+
+The trace is off by default, keeps at most 200 events in memory, and disappears
+on page reload. It records fixed Whiteboard protocol type classes only, never
+Room message contents, Whiteboard elements, participant tokens/handles, SFU
+session IDs, DataChannel IDs, credentials, or arbitrary payloads. Do not paste
+the whole browser console or network captures into an issue.
+
 ## SFU architecture
 
 The browser connects directly to Cloudflare Realtime SFU for audio and screen sharing. `RoomSession` is a hibernating Durable Object for presence, mute state, text, reactions, resync, Room-wide Live Transcript, bounded artifacts and published surfaces, Generated Task Room App bundle/state, and room expiry. A room has no fixed total lifetime while it holds at least one participant (human or agent); it's cleaned up automatically once it has held zero participants for `EMPTY_ROOM_TIMEOUT_MS` (30 minutes). Expiry explicitly cancels the alarm and clears all Durable Object storage after taking the exact media-close snapshot, so a recycled Room name starts with no prior-generation keys. Human browser-to-browser files and images use chunked, reliable DataChannels and are not persisted by the application. This is distinct from a bounded temporary Agent-readable copy of a Human-shared image and explicit bounded Room attachments (jpeg/png/webp or plain/markdown/csv/json/yaml, ≤768KB), which live in Room state/chunks only until eviction or room expiry.

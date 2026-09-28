@@ -24,6 +24,11 @@ import {
   type RoomAppAgentRequestEnvelope,
   type RoomAppTransportEnvelope,
 } from "@common/roomApp"
+import {
+  installRoomAppTransportDiagnostics,
+  RoomAppTransportDiagnosticTrace,
+  whiteboardProtocolType,
+} from "@common/roomAppTransportDiagnostics"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
 import {
   createRuntimeProviderClaim as createRuntimeProviderCredential,
@@ -826,6 +831,27 @@ export function useSfuChatRoom(
     new Map<string, RemoteRoomAppChannelAttempt>()
   )
   const remoteRoomAppChannelAttemptCountsRef = useRef(new Map<string, number>())
+  const roomAppDiagnosticRef = useRef<RoomAppTransportDiagnosticTrace | null>(
+    null
+  )
+  if (!roomAppDiagnosticRef.current)
+    roomAppDiagnosticRef.current = new RoomAppTransportDiagnosticTrace()
+  const roomAppDiagnostic = roomAppDiagnosticRef.current
+  roomAppDiagnostic.setSnapshotProvider(() => ({
+    localReliableState:
+      localRoomAppChannelsRef.current.get("reliable")?.readyState ?? "absent",
+    remoteReliablePeers: Array.from(remoteRoomAppChannelsRef.current.entries())
+      .filter(
+        ([key, channel]) =>
+          key.endsWith(":reliable") && channel.readyState === "open"
+      )
+      .map(([key]) => key.slice(0, -":reliable".length))
+      .slice(0, 32),
+  }))
+  useEffect(
+    () => installRoomAppTransportDiagnostics(roomAppDiagnostic),
+    [roomAppDiagnostic]
+  )
   const roomAppListenersRef = useRef(
     new Set<(message: RoomAppTransportEnvelope) => void>()
   )
@@ -1672,6 +1698,12 @@ export function useSfuChatRoom(
         !isRoomAppInstanceForRoom(roomName, envelope.appInstanceId)
       ) {
         roomAppStatsRef.current.droppedMessages += 1
+        if (lane === "reliable")
+          roomAppDiagnostic.record({
+            event: "reliable_receive_dropped",
+            peerParticipantId: sourceParticipantId,
+            reason: "invalid_envelope",
+          })
         return
       }
       const bytes = new TextEncoder().encode(
@@ -1679,15 +1711,29 @@ export function useSfuChatRoom(
       ).byteLength
       if (!roomAppInboundRateRef.current.allow(lane, bytes)) {
         roomAppStatsRef.current.droppedMessages += 1
+        if (lane === "reliable")
+          roomAppDiagnostic.record({
+            event: "reliable_receive_dropped",
+            peerParticipantId: sourceParticipantId,
+            appInstanceId: envelope.appInstanceId,
+            reason: "rate_limited",
+          })
         return
       }
       roomAppStatsRef.current.bytesReceived += bytes
       if (lane === "reliable") roomAppStatsRef.current.reliableMessages += 1
       else roomAppStatsRef.current.realtimeMessages += 1
+      if (lane === "reliable")
+        roomAppDiagnostic.record({
+          event: "reliable_received",
+          peerParticipantId: sourceParticipantId,
+          appInstanceId: envelope.appInstanceId,
+          protocolType: whiteboardProtocolType(envelope.payload),
+        })
       const received = { ...envelope, sourceParticipantId }
       for (const listener of roomAppListenersRef.current) listener(received)
     },
-    [roomName]
+    [roomName, roomAppDiagnostic]
   )
 
   const cleanupRemoteRoomAppChannel = useCallback(
@@ -1709,9 +1755,20 @@ export function useSfuChatRoom(
       if (ownsReadyChannel || ownsAttempt)
         remoteRoomAppChannelIdsRef.current.delete(key)
       sfuClientDiagnostic("room_app_channel_cleanup", { reason })
+      if (attempt.lane === "reliable")
+        roomAppDiagnostic.record({
+          event: "remote_reliable_closed",
+          peerParticipantId: key.slice(0, -":reliable".length),
+          reason:
+            reason === "media_reconnect"
+              ? "media_reconnect"
+              : reason === "establishment_failed"
+              ? "establishment_failed"
+              : "closed",
+        })
       return true
     },
-    []
+    [roomAppDiagnostic]
   )
 
   const clearAllRemoteRoomAppChannels = useCallback(
@@ -1804,6 +1861,11 @@ export function useSfuChatRoom(
         channelId: null,
       }
       remoteRoomAppChannelAttemptsRef.current.set(key, channelAttempt)
+      if (lane === "reliable")
+        roomAppDiagnostic.record({
+          event: "remote_reliable_subscribe",
+          peerParticipantId: participant.id,
+        })
       try {
         const response = await apiRequest("datachannels/new", {
           room: roomName,
@@ -1863,6 +1925,11 @@ export function useSfuChatRoom(
         channel.send("ack")
         remoteRoomAppChannelAttemptsRef.current.delete(key)
         remoteRoomAppChannelsRef.current.set(key, channel)
+        if (lane === "reliable")
+          roomAppDiagnostic.record({
+            event: "remote_reliable_ready",
+            peerParticipantId: participant.id,
+          })
       } catch {
         cleanupRemoteRoomAppChannel(key, channelAttempt, "establishment_failed")
         const delay = ROOM_APP_RETRY_DELAYS_MS[attempt - 1]
@@ -1882,6 +1949,7 @@ export function useSfuChatRoom(
       roomAppChannelKey,
       roomAppChannelName,
       roomName,
+      roomAppDiagnostic,
       waitForDataChannelOpen,
     ]
   )
@@ -2000,6 +2068,24 @@ export function useSfuChatRoom(
           dataChannelsRef.current.add(channel)
           dataChannelIdsRef.current.add(channelId)
           localRoomAppChannelsRef.current.set(lane, channel)
+          if (lane === "reliable") {
+            roomAppDiagnostic.record({ event: "local_reliable_created" })
+            channel.addEventListener("open", () =>
+              roomAppDiagnostic.record({ event: "local_reliable_open" })
+            )
+            channel.addEventListener("close", () =>
+              roomAppDiagnostic.record({
+                event: "local_reliable_closed",
+                reason: "closed",
+              })
+            )
+            channel.addEventListener("error", () =>
+              roomAppDiagnostic.record({
+                event: "local_reliable_closed",
+                reason: "closed",
+              })
+            )
+          }
         }
         roomAppChannelsReadyRef.current = true
         roomAppsEnabledRef.current = roomAppsServerEnabledRef.current
@@ -2017,7 +2103,7 @@ export function useSfuChatRoom(
         setRoomAppsEnabled(false)
       }
     }
-  }, [apiRequest, roomAppChannelName, roomName])
+  }, [apiRequest, roomAppChannelName, roomName, roomAppDiagnostic])
 
   const subscribeFileChannel = useCallback(
     async (participant: SfuParticipant) => {
@@ -3626,6 +3712,7 @@ export function useSfuChatRoom(
       }
       const session = (await response.json()) as SfuSessionResponse
       sessionRef.current = { ...session, room: roomName }
+      roomAppDiagnostic.setParticipant(session.participantId)
       roomAppsServerEnabledRef.current = session.roomAppsEnabled === true
       roomAppsEnabledRef.current = false
       setRoomAppsEnabled(false)
@@ -3644,6 +3731,8 @@ export function useSfuChatRoom(
         )
       }
       connectWebSocket()
+      if (reconnecting)
+        roomAppDiagnostic.record({ event: "media_reconnect_complete" })
     },
     [
       closeDataChannels,
@@ -3660,6 +3749,7 @@ export function useSfuChatRoom(
       publishTrack,
       rebuildParticipants,
       roomName,
+      roomAppDiagnostic,
       sampleSfuEgress,
     ]
   )
@@ -3668,11 +3758,13 @@ export function useSfuChatRoom(
     if (closingRef.current || mediaReconnectPromiseRef.current) return
     const attempt = mediaReconnectAttemptsRef.current++
     if (attempt >= 5) {
+      roomAppDiagnostic.record({ event: "media_reconnect_failed" })
       setError("SFU media connection lost. Reload to start a new session.")
       setConnectionStatus("failed")
       return
     }
     const promise = (async () => {
+      roomAppDiagnostic.record({ event: "media_reconnect_start" })
       setConnectionStatus("reconnecting")
       try {
         await connectMediaSession(true)
@@ -3680,6 +3772,7 @@ export function useSfuChatRoom(
         setError("")
       } catch (err) {
         if (attempt >= 4) {
+          roomAppDiagnostic.record({ event: "media_reconnect_failed" })
           setError(
             err instanceof Error
               ? err.message
@@ -3699,7 +3792,7 @@ export function useSfuChatRoom(
     } finally {
       mediaReconnectPromiseRef.current = null
     }
-  }, [connectMediaSession])
+  }, [connectMediaSession, roomAppDiagnostic])
 
   useEffect(() => {
     if (!enabled || !roomName || !nickName) return
@@ -4017,28 +4110,63 @@ export function useSfuChatRoom(
         !roomAppsEnabledRef.current ||
         !roomAppChannelsReadyRef.current ||
         !isRoomAppInstanceForRoom(roomName, appInstanceId)
-      )
+      ) {
+        if (lane === "reliable")
+          roomAppDiagnostic.record({
+            event: "reliable_send_failed",
+            appInstanceId,
+            reason: "not_ready",
+          })
         return false
+      }
       const encoded = encodeRoomAppEnvelope({
         appInstanceId,
         lane,
         payload,
       })
-      if (!encoded) return false
+      if (!encoded) {
+        if (lane === "reliable")
+          roomAppDiagnostic.record({
+            event: "reliable_send_failed",
+            appInstanceId,
+            reason: "invalid_envelope",
+          })
+        return false
+      }
       const bytes = new TextEncoder().encode(encoded).byteLength
       if (!roomAppOutboundRateRef.current.allow(lane, bytes)) {
         roomAppStatsRef.current.droppedMessages += 1
+        if (lane === "reliable")
+          roomAppDiagnostic.record({
+            event: "reliable_send_failed",
+            appInstanceId,
+            reason: "rate_limited",
+          })
         return false
       }
       const channel = localRoomAppChannelsRef.current.get(lane)
-      if (!channel || channel.readyState !== "open") return false
+      if (!channel || channel.readyState !== "open") {
+        if (lane === "reliable")
+          roomAppDiagnostic.record({
+            event: "reliable_send_failed",
+            appInstanceId,
+            reason: "channel_unavailable",
+          })
+        return false
+      }
       channel.send(encoded)
+      if (lane === "reliable")
+        roomAppDiagnostic.record({
+          event: "reliable_sent",
+          appInstanceId,
+          protocolType: whiteboardProtocolType(payload),
+        })
       roomAppStatsRef.current.bytesSent += bytes
       if (lane === "reliable") roomAppStatsRef.current.reliableMessages += 1
       else roomAppStatsRef.current.realtimeMessages += 1
       return true
     },
-    [roomName]
+    [roomName, roomAppDiagnostic]
   )
 
   const sendRoomAppUnicast = useCallback(
