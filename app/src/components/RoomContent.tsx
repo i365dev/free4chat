@@ -956,6 +956,15 @@ export default function RoomContent({
           )
       )
     : []
+  const roomAgentActivityByParticipant = useMemo(
+    () =>
+      new Map(
+        (agentActivities ?? [])
+          .filter((activity) => activity.scopeId === "room")
+          .map((activity) => [activity.agentParticipantId, activity.state])
+      ),
+    [agentActivities]
+  )
   const activeTaskUnavailable = Boolean(
     activeTask && taskIsUnavailable(activeTask, participants)
   )
@@ -3047,11 +3056,7 @@ export default function RoomContent({
                             kind={p.kind}
                             activity={
                               p.kind === "agent"
-                                ? agentActivities?.find(
-                                    (activity) =>
-                                      activity.agentParticipantId ===
-                                        p.peerId && activity.scopeId === "room"
-                                  )?.state
+                                ? roomAgentActivityByParticipant.get(p.peerId)
                                 : undefined
                             }
                             room={p.room}
@@ -3100,11 +3105,7 @@ export default function RoomContent({
                           kind={p.kind}
                           activity={
                             p.kind === "agent"
-                              ? agentActivities?.find(
-                                  (activity) =>
-                                    activity.agentParticipantId === p.peerId &&
-                                    activity.scopeId === "room"
-                                )?.state
+                              ? roomAgentActivityByParticipant.get(p.peerId)
                               : undefined
                           }
                           room={p.room}
