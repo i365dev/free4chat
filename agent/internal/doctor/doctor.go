@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/harness"
+	"github.com/i365dev/free4chat/agent/internal/runtimepath"
 )
 
 // Version identifies the Go Agent Runtime build line (post-freeze rewrite).
@@ -64,6 +65,7 @@ func canRun(command string, environment map[string]string) bool {
 // Collect builds the doctor report against the current process environment.
 func Collect() Report {
 	base := environ()
+	runtimeDir := runtimepath.Directory()
 	report := Report{
 		Package:   PackageName,
 		Version:   Version,
@@ -73,20 +75,39 @@ func Collect() Report {
 	}
 	for _, launcher := range harness.ListLaunchers() {
 		env := harness.BuildDoctorEnvironment(launcher, base)
-		executableAvailable := canRun(launcher.Command, env)
-		ready := executableAvailable
+		executable := launcher.Command
+		executableAvailable := false
+		ready := false
 		note := ""
-		switch {
-		case !executableAvailable:
-			note = fmt.Sprintf("Executable %s is not available", launcher.Command)
-		case launcher.Command == "npx":
-			note = "The pinned bridge package is installed on first join"
+		if launcher.BridgePackage != "" {
+			executable = "node"
+			nodeAvailable := canRun("node", env)
+			npmAvailable := canRun("npm", env)
+			executableAvailable = nodeAvailable
+			prepared := harness.BridgePrepared(runtimeDir, launcher)
+			ready = nodeAvailable && prepared
+			switch {
+			case !nodeAvailable:
+				note = "Node.js is not available"
+			case prepared:
+				note = fmt.Sprintf("Pinned bridge %s@%s is prepared", launcher.BridgePackage, launcher.BridgeVersion)
+			case !npmAvailable:
+				note = "npm is not available; the pinned bridge cannot be prepared on first join"
+			default:
+				note = fmt.Sprintf("Pinned bridge %s@%s is not prepared; it will install on first join", launcher.BridgePackage, launcher.BridgeVersion)
+			}
+		} else {
+			executableAvailable = canRun(launcher.Command, env)
+			ready = executableAvailable
+			if !executableAvailable {
+				note = fmt.Sprintf("Executable %s is not available", launcher.Command)
+			}
 		}
 		report.Launchers = append(report.Launchers, LauncherReport{
 			ID:                  launcher.ID,
 			Maturity:            string(launcher.Maturity),
 			Security:            string(launcher.Security),
-			Executable:          launcher.Command,
+			Executable:          executable,
 			ExecutableAvailable: executableAvailable,
 			Ready:               ready,
 			Note:                note,
@@ -106,6 +127,8 @@ func Format(report Report) string {
 		state := "unavailable"
 		if launcher.Ready {
 			state = "ready"
+		} else if launcher.ExecutableAvailable {
+			state = "available"
 		}
 		lines = append(lines, fmt.Sprintf("  %s: %s | %s | %s",
 			launcher.ID, state, launcher.Maturity, launcher.Security))

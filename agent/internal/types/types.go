@@ -75,13 +75,19 @@ const (
 
 // AgentLauncher describes one local ACP Harness process recipe.
 type AgentLauncher struct {
-	ID          string           `json:"id"`
-	DisplayName string           `json:"displayName"`
-	Command     string           `json:"command"`
-	Args        []string         `json:"args"`
-	Maturity    LauncherMaturity `json:"maturity"`
-	Security    LauncherSecurity `json:"security"`
-	Notes       string           `json:"notes,omitempty"`
+	ID          string   `json:"id"`
+	DisplayName string   `json:"displayName"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args"`
+	// Bridge metadata is populated only by the trusted built-in provider
+	// registry. It describes a pinned npm bridge that the Runtime prepares in
+	// its own cache instead of relying on npx's temporary cache lifecycle.
+	BridgePackage string           `json:"-"`
+	BridgeVersion string           `json:"-"`
+	BridgeBin     string           `json:"-"`
+	Maturity      LauncherMaturity `json:"maturity"`
+	Security      LauncherSecurity `json:"security"`
+	Notes         string           `json:"notes,omitempty"`
 	// Environment holds explicit launch-time overrides for this trusted
 	// launcher (e.g. Codex read-only mode).
 	Environment map[string]string `json:"-"`

@@ -22,6 +22,9 @@ func TestBuiltInProvidersMatchPreviousLauncherPolicy(t *testing.T) {
 		id           string
 		command      string
 		args         []string
+		bridgePkg    string
+		bridgeVer    string
+		bridgeBin    string
 		env          map[string]string
 		maturity     types.LauncherMaturity
 		security     types.LauncherSecurity
@@ -43,20 +46,20 @@ func TestBuiltInProvidersMatchPreviousLauncherPolicy(t *testing.T) {
 			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeConcurrencyObserved, Concurrency: types.TaskExecutionSerial},
 		},
 		{
-			id: "codex", command: "npx", args: []string{"-y", "@agentclientprotocol/codex-acp@1.12.0"},
+			id: "codex", command: "node", bridgePkg: "@agentclientprotocol/codex-acp", bridgeVer: "1.12.0", bridgeBin: "codex-acp",
 			env:      map[string]string{"INITIAL_AGENT_MODE": "read-only"},
 			maturity: types.MaturityBridge, security: types.SecurityTrustedRoom,
 			continuation: true,
 			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeConcurrencyObserved, Concurrency: types.TaskExecutionSerial},
 		},
 		{
-			id: "claude", command: "npx", args: []string{"-y", "@agentclientprotocol/claude-agent-acp@0.70.0"},
+			id: "claude", command: "node", bridgePkg: "@agentclientprotocol/claude-agent-acp", bridgeVer: "0.70.0", bridgeBin: "claude-agent-acp",
 			maturity: types.MaturityBridge, security: types.SecurityTrustedRoom,
 			continuation: false,
 			execution:    types.TaskExecutionPolicy{Probe: types.TaskExecutionProbeUnverified, Concurrency: types.TaskExecutionSerial},
 		},
 		{
-			id: "pi", command: "npx", args: []string{"-y", "pi-acp@0.0.33"},
+			id: "pi", command: "node", bridgePkg: "pi-acp", bridgeVer: "0.0.33", bridgeBin: "pi-acp",
 			maturity: types.MaturityBridge, security: types.SecurityTrustedRoom,
 			continuation: true,
 			globalCwd:    types.GlobalSessionListCwdEmpty,
@@ -78,6 +81,9 @@ func TestBuiltInProvidersMatchPreviousLauncherPolicy(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got.Args, want.args) {
 			t.Fatalf("%s args: got %v want %v", want.id, got.Args, want.args)
+		}
+		if got.BridgePackage != want.bridgePkg || got.BridgeVersion != want.bridgeVer || got.BridgeBin != want.bridgeBin {
+			t.Fatalf("%s bridge metadata: got %s@%s bin=%s, want %s@%s bin=%s", want.id, got.BridgePackage, got.BridgeVersion, got.BridgeBin, want.bridgePkg, want.bridgeVer, want.bridgeBin)
 		}
 		if !reflect.DeepEqual(got.Environment, want.env) {
 			t.Fatalf("%s environment: got %v want %v", want.id, got.Environment, want.env)

@@ -1152,6 +1152,28 @@ func formatCliError(err error) string {
 	}
 	lower := strings.ToLower(message)
 	switch {
+	case strings.Contains(lower, "bridge_prepare_timeout"):
+		return "Pinned Harness bridge preparation timed out. Check network access and retry."
+	case strings.Contains(lower, "bridge_install_failed"):
+		return "Pinned Harness bridge installation failed. Check network access and retry."
+	case strings.Contains(lower, "bridge_package_invalid"):
+		return "Pinned Harness bridge package failed validation. Retry to prepare a clean copy."
+	case strings.Contains(lower, "bridge_npm_unavailable"):
+		return "npm is required to prepare this Harness bridge. Install Node.js and npm, then retry."
+	case strings.Contains(lower, "bridge_node_unavailable"):
+		return "Node.js is required to start this Harness bridge. Install Node.js, then retry."
+	case strings.Contains(lower, "bridge_cache_unavailable"):
+		return "The local Harness bridge cache is unavailable. Check its permissions and retry."
+	case strings.Contains(lower, "acp_initialize_failed"):
+		return "The Harness bridge started but ACP initialization failed. Check local Harness setup and retry."
+	case strings.Contains(lower, "acp_initialize_timeout"):
+		return "The Harness bridge started but ACP initialization timed out. Retry the join."
+	case strings.Contains(lower, "acp_session_new_failed"):
+		return "The Harness bridge initialized but could not create an ACP session. Retry the join."
+	case strings.Contains(lower, "acp_session_new_timeout"):
+		return "The Harness bridge initialized but ACP session creation timed out. Retry the join."
+	}
+	switch {
 	case strings.Contains(lower, "authentication required") ||
 		strings.Contains(lower, "not logged in"):
 		return "Harness authentication is required. Authenticate the selected Harness locally, then retry."

@@ -17,7 +17,7 @@ func TestCodexIdleRematerializationProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := NewACPAdapter(provider.Launcher(), t.TempDir(), AdapterOptions{ControlTimeoutMs: 60000})
+	adapter := NewACPAdapter(provider.Launcher(), t.TempDir(), AdapterOptions{ControlTimeoutMs: 60000, RuntimeDirectory: t.TempDir()})
 	t.Cleanup(func() { _ = adapter.Close() })
 	if err := adapter.EnsureSession(); err != nil {
 		t.Fatalf("initial room session: %s", probeErrorClass(err))
