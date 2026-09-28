@@ -387,6 +387,8 @@ export default function RoomAppHost({
   // valid or allowlisted replaces the iframe with the unavailable state, so
   // that transition must retire the bridge the iframe owned.
   const appUsable = validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+  const clipboardWriteAllowed =
+    appUsable && app.source !== "generated" && app.clipboardWrite === true
 
   useEffect(() => {
     if (!appUsable) setFailed(true)
@@ -604,7 +606,7 @@ export default function RoomAppHost({
           srcDoc={app.srcDoc}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"
-          allow=""
+          allow={clipboardWriteAllowed ? "clipboard-write" : ""}
           onLoad={sendBootstrap}
           onError={() => setFailed(true)}
           className="min-h-0 w-full min-w-0 flex-1 border-0"

@@ -9,6 +9,7 @@ import {
   ROOM_APP_TRUSTED_ORIGIN,
   ROOM_APP_MAX_PAYLOAD_BYTES,
   buildRoomInviteUrl,
+  currentRoomAppCatalog,
   createRoomAppCatalogLoader,
   decodeRoomAppClientMessage,
   decodeRoomAppEnvelope,
@@ -76,6 +77,33 @@ describe("Room App host contract", () => {
         origin: ROOM_APP_TRUSTED_ORIGIN,
       },
     ])
+    const optedIn = parseRoomAppCatalog({
+      version: 1,
+      apps: [{ ...valid.apps[0], clipboardWrite: true }],
+    })
+    expect(optedIn).toEqual([
+      {
+        id: "my-app",
+        label: "My App",
+        url: `${ROOM_APP_TRUSTED_ORIGIN}/my-app`,
+        origin: ROOM_APP_TRUSTED_ORIGIN,
+        clipboardWrite: true,
+      },
+    ])
+    expect(
+      parseRoomAppCatalog({
+        version: 1,
+        apps: [{ ...valid.apps[0], status: "disabled", clipboardWrite: true }],
+      })
+    ).toEqual([])
+    for (const clipboardWrite of ["yes", 1, false, null]) {
+      expect(
+        parseRoomAppCatalog({
+          version: 1,
+          apps: [{ ...valid.apps[0], clipboardWrite }],
+        })
+      ).toBeNull()
+    }
     expect(parseRoomAppCatalog({ ...valid, version: 2 })).toBeNull()
     expect(
       parseRoomAppCatalog({
@@ -106,6 +134,12 @@ describe("Room App host contract", () => {
       parseRoomAppCatalog({
         version: 1,
         apps: [{ ...valid.apps[0], properties: { arbitrary: "data" } }],
+      })
+    ).toBeNull()
+    expect(
+      parseRoomAppCatalog({
+        version: 1,
+        apps: [{ ...valid.apps[0], permissions: ["clipboard-read"] }],
       })
     ).toBeNull()
     expect(
@@ -152,6 +186,37 @@ describe("Room App host contract", () => {
     } finally {
       setProductionRoomAppCatalog(previous)
     }
+  })
+
+  it("preserves and refreshes only the validated clipboard opt-in", () => {
+    const withClipboardWrite = parseRoomAppCatalog({
+      version: 1,
+      apps: [
+        {
+          id: "whiteboard",
+          label: "Whiteboard",
+          path: "/whiteboard",
+          status: "active",
+          clipboardWrite: true,
+        },
+      ],
+    })!
+    setProductionRoomAppCatalog(withClipboardWrite)
+    expect(currentRoomAppCatalog()[0]?.clipboardWrite).toBe(true)
+
+    const refreshedWithoutCapability = parseRoomAppCatalog({
+      version: 1,
+      apps: [
+        {
+          id: "whiteboard",
+          label: "Whiteboard",
+          path: "/whiteboard",
+          status: "active",
+        },
+      ],
+    })!
+    setProductionRoomAppCatalog(refreshedWithoutCapability)
+    expect(currentRoomAppCatalog()[0]).not.toHaveProperty("clipboardWrite")
   })
 
   it("fails closed when the Lab endpoint is unavailable or malformed before any valid catalog", async () => {
@@ -440,6 +505,27 @@ describe("Room App host contract", () => {
         url: "https://evil.example/app",
         origin: "https://room-apps.free4.chat",
       })
+    ).toBe(false)
+  })
+
+  it("does not allow a generated App to invent clipboard metadata", () => {
+    const generated = {
+      id: "generated:task-1",
+      label: "Task App",
+      url: "https://room-apps.free4.chat/generated",
+      origin: ROOM_APP_TRUSTED_ORIGIN,
+      source: "generated",
+      srcDoc: "<main>Generated</main>",
+    } as const
+    expect(validateRoomAppDefinition(generated)).toBe(true)
+    expect(
+      validateRoomAppDefinition({ ...generated, clipboardWrite: true } as never)
+    ).toBe(false)
+    expect(
+      validateRoomAppDefinition({
+        ...TEST_ROOM_APP_CATALOG[0],
+        source: "user",
+      } as never)
     ).toBe(false)
   })
 
@@ -735,6 +821,46 @@ describe("Room App host contract", () => {
         false
       )
     ).toEqual([])
+  })
+
+  it("keeps clipboard metadata out of resident Agent discovery", () => {
+    const catalog = parseRoomAppCatalog({
+      version: 1,
+      apps: [
+        {
+          id: "test-app",
+          label: "Test App",
+          path: "/test-app",
+          status: "active",
+          clipboardWrite: true,
+        },
+      ],
+    })!
+    setProductionRoomAppCatalog(catalog)
+    const projected = projectCallableRoomApps(
+      "room-a",
+      [
+        [
+          {
+            appInstanceId: roomAppInstanceId("room-a", "test-app"),
+            appId: "test-app",
+            title: "Test App",
+            source: "curated",
+          },
+        ],
+      ],
+      true
+    )
+    expect(projected).toEqual([
+      {
+        appInstanceId: roomAppInstanceId("room-a", "test-app"),
+        appId: "test-app",
+        title: "Test App",
+        source: "curated",
+        callable: true,
+      },
+    ])
+    expect(projected[0]).not.toHaveProperty("clipboardWrite")
   })
 
   it("keeps multiple current Apps distinguishable by stable id and title", () => {

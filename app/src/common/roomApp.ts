@@ -23,14 +23,24 @@ const BROWSER_ROOM_APP_CATALOG_CACHE_TTL_MS =
 
 export type RoomAppLane = "reliable" | "realtime"
 
-export interface RoomAppDefinition {
+interface RoomAppDefinitionBase {
   id: string
   label: string
   url: string
   origin: string
-  source?: "official" | "generated"
-  srcDoc?: string
 }
+
+export type RoomAppDefinition =
+  | (RoomAppDefinitionBase & {
+      source?: "official"
+      srcDoc?: never
+      clipboardWrite?: true
+    })
+  | (RoomAppDefinitionBase & {
+      source: "generated"
+      srcDoc: string
+      clipboardWrite?: never
+    })
 
 export interface RoomAppHostMetadata {
   appInstanceId: string
@@ -85,7 +95,15 @@ export function setProductionRoomAppCatalog(
       } catch {
         // An invalid URL becomes an invalid path and fails catalog parsing.
       }
-      return { id: app.id, label: app.label, path, status: "active" }
+      return {
+        id: app.id,
+        label: app.label,
+        path,
+        status: "active",
+        ...(Object.hasOwn(app, "clipboardWrite")
+          ? { clipboardWrite: app.clipboardWrite }
+          : {}),
+      }
     }),
   })
   if (safeCatalog) currentProductionRoomAppCatalog = safeCatalog
@@ -130,7 +148,15 @@ export function parseRoomAppCatalog(
   for (const rawApp of value.apps) {
     if (
       !isRecord(rawApp) ||
-      !hasExactKeys(rawApp, ["id", "label", "path", "status"]) ||
+      !hasExactKeys(rawApp, [
+        "id",
+        "label",
+        "path",
+        "status",
+        ...(Object.hasOwn(rawApp, "clipboardWrite") ? ["clipboardWrite"] : []),
+      ]) ||
+      (Object.hasOwn(rawApp, "clipboardWrite") &&
+        rawApp.clipboardWrite !== true) ||
       !isValidRoomAppId(rawApp.id) ||
       seen.has(rawApp.id) ||
       typeof rawApp.label !== "string" ||
@@ -149,6 +175,7 @@ export function parseRoomAppCatalog(
         label: rawApp.label,
         url: `${ROOM_APP_TRUSTED_ORIGIN}${rawApp.path}`,
         origin: ROOM_APP_TRUSTED_ORIGIN,
+        ...(rawApp.clipboardWrite === true ? { clipboardWrite: true } : {}),
       })
     }
   }
@@ -775,6 +802,17 @@ export function isRoomAppInstanceForRoom(
 
 export function validateRoomAppDefinition(app: RoomAppDefinition): boolean {
   try {
+    if (
+      app.source !== undefined &&
+      app.source !== "official" &&
+      app.source !== "generated"
+    )
+      return false
+    if (
+      Object.hasOwn(app, "clipboardWrite") &&
+      (app.source === "generated" || app.clipboardWrite !== true)
+    )
+      return false
     if (app.source === "generated")
       return (
         app.id.length > 0 &&
@@ -806,6 +844,7 @@ export function isRoomAppAllowlisted(app: RoomAppDefinition): boolean {
       candidate.id === app.id &&
       candidate.url === app.url &&
       candidate.origin === app.origin &&
+      candidate.clipboardWrite === app.clipboardWrite &&
       candidate.origin === ROOM_APP_TRUSTED_ORIGIN &&
       validateRoomAppDefinition(candidate)
   )
