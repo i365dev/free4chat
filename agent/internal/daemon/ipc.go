@@ -7,22 +7,15 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/i365dev/free4chat/agent/internal/runtimepath"
 )
 
 // RuntimeDirectory returns the shared local runtime root (overridable via
 // FREE4CHAT_AGENT_DIR for tests and sandboxed operators).
 func RuntimeDirectory() string {
-	if dir := strings.TrimSpace(os.Getenv("FREE4CHAT_AGENT_DIR")); dir != "" {
-		return dir
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".free4chat-agent"
-	}
-	return filepath.Join(home, ".free4chat-agent")
+	return runtimepath.Directory()
 }
 
 // SocketPath is the local IPC endpoint under the runtime directory.

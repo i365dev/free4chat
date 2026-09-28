@@ -35,15 +35,17 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	launcher := provider.Launcher()
-	// Most hosts can use the built-in npx launcher directly. These opt-in
-	// overrides let the probe use the exact cached bridge entry and an
-	// installed Codex CLI when local npm bin-link configuration is broken.
+	// These opt-in overrides let the probe use an externally supplied bridge
+	// entry and an installed Codex CLI for targeted local investigations.
 	if entry := os.Getenv("FREE4CHAT_CODEX_ACP_NODE_ENTRY"); entry != "" {
 		launcher.Command = os.Getenv("FREE4CHAT_CODEX_ACP_NODE")
 		if launcher.Command == "" {
 			launcher.Command = "node"
 		}
 		launcher.Args = []string{entry}
+		launcher.BridgePackage = ""
+		launcher.BridgeVersion = ""
+		launcher.BridgeBin = ""
 	}
 	if codexPath := os.Getenv("FREE4CHAT_CODEX_PATH"); codexPath != "" {
 		launcher.Environment["CODEX_PATH"] = codexPath
@@ -56,7 +58,7 @@ func TestCodexIsolatedProcessLanesProbe(t *testing.T) {
 		request ACPPermissionRequest
 	}
 	permissionRequests := make(chan permissionEvent, 32)
-	options := AdapterOptions{TurnTimeoutMs: 180_000, CancelGraceMs: 2_000, ControlTimeoutMs: 60_000}
+	options := AdapterOptions{TurnTimeoutMs: 180_000, CancelGraceMs: 2_000, ControlTimeoutMs: 60_000, RuntimeDirectory: t.TempDir()}
 	newAdapter := func(lane string) *ACPAdapter {
 		localOptions := options
 		// The real probe deliberately approves only the provider's own offered
@@ -362,11 +364,14 @@ func TestCodexBoundedResourceProbe(t *testing.T) {
 			launcher.Command = "node"
 		}
 		launcher.Args = []string{entry}
+		launcher.BridgePackage = ""
+		launcher.BridgeVersion = ""
+		launcher.BridgeBin = ""
 	}
 	if codexPath := os.Getenv("FREE4CHAT_CODEX_PATH"); codexPath != "" {
 		launcher.Environment["CODEX_PATH"] = codexPath
 	}
-	options := AdapterOptions{TurnTimeoutMs: 180_000, CancelGraceMs: 2_000, ControlTimeoutMs: 60_000}
+	options := AdapterOptions{TurnTimeoutMs: 180_000, CancelGraceMs: 2_000, ControlTimeoutMs: 60_000, RuntimeDirectory: t.TempDir()}
 	adapters := make([]*ACPAdapter, 0, 4)
 	t.Cleanup(func() {
 		for _, adapter := range adapters {

@@ -37,6 +37,9 @@ type Provider struct {
 	// mode); it is never ambient process state.
 	Command                string
 	Args                   []string
+	BridgePackage          string
+	BridgeVersion          string
+	BridgeBin              string
 	Environment            map[string]string
 	SessionConfigFallbacks []types.LauncherSessionConfigFallback
 
@@ -60,6 +63,9 @@ func (p Provider) Launcher() types.AgentLauncher {
 		DisplayName:             p.DisplayName,
 		Command:                 p.Command,
 		Args:                    append([]string(nil), p.Args...),
+		BridgePackage:           p.BridgePackage,
+		BridgeVersion:           p.BridgeVersion,
+		BridgeBin:               p.BridgeBin,
 		Maturity:                p.Maturity,
 		Security:                p.Security,
 		Notes:                   p.Notes,

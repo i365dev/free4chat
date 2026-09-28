@@ -74,13 +74,15 @@ var builtInProviders = []Provider{
 		},
 	},
 	{
-		ID:          "codex",
-		DisplayName: "Codex",
-		Command:     "npx",
-		Args:        []string{"-y", "@agentclientprotocol/codex-acp@1.12.0"},
-		Maturity:    types.MaturityBridge,
-		Security:    types.SecurityTrustedRoom,
-		Environment: map[string]string{"INITIAL_AGENT_MODE": "read-only"},
+		ID:            "codex",
+		DisplayName:   "Codex",
+		Command:       "node",
+		BridgePackage: "@agentclientprotocol/codex-acp",
+		BridgeVersion: "1.12.0",
+		BridgeBin:     "codex-acp",
+		Maturity:      types.MaturityBridge,
+		Security:      types.SecurityTrustedRoom,
+		Environment:   map[string]string{"INITIAL_AGENT_MODE": "read-only"},
 		SessionConfigFallbacks: []types.LauncherSessionConfigFallback{{
 			ConfigID:         "model",
 			CurrentValue:     "gpt-6-luna",
@@ -136,13 +138,15 @@ var builtInProviders = []Provider{
 		},
 	},
 	{
-		ID:          "claude",
-		DisplayName: "Claude",
-		Command:     "npx",
-		Args:        []string{"-y", "@agentclientprotocol/claude-agent-acp@0.70.0"},
-		Maturity:    types.MaturityBridge,
-		Security:    types.SecurityTrustedRoom,
-		Notes:       "ACP bridge maintained by the Agent Client Protocol project.",
+		ID:            "claude",
+		DisplayName:   "Claude",
+		Command:       "node",
+		BridgePackage: "@agentclientprotocol/claude-agent-acp",
+		BridgeVersion: "0.70.0",
+		BridgeBin:     "claude-agent-acp",
+		Maturity:      types.MaturityBridge,
+		Security:      types.SecurityTrustedRoom,
+		Notes:         "ACP bridge maintained by the Agent Client Protocol project.",
 		Capabilities: Capabilities{
 			// Source-supported (session/list delegates to the Claude Agent SDK
 			// session store) but NOT runtime-verified. Not eligible.
@@ -161,13 +165,15 @@ var builtInProviders = []Provider{
 		},
 	},
 	{
-		ID:          "pi",
-		DisplayName: "Pi",
-		Command:     "npx",
-		Args:        []string{"-y", "pi-acp@0.0.33"},
-		Maturity:    types.MaturityBridge,
-		Security:    types.SecurityTrustedRoom,
-		Notes:       "ACP bridge listed by the official ACP registry.",
+		ID:            "pi",
+		DisplayName:   "Pi",
+		Command:       "node",
+		BridgePackage: "pi-acp",
+		BridgeVersion: "0.0.33",
+		BridgeBin:     "pi-acp",
+		Maturity:      types.MaturityBridge,
+		Security:      types.SecurityTrustedRoom,
+		Notes:         "ACP bridge listed by the official ACP registry.",
 		// VERIFIED against the pinned bridge on a real 122-session store:
 		// omitting `cwd` returned 0 sessions (pi-acp@0.0.33 substitutes its
 		// own last session cwd), while an explicitly empty `cwd` returned the

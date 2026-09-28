@@ -70,6 +70,17 @@ type ProcessError struct{ Err error }
 func (e *ProcessError) Error() string { return e.Err.Error() }
 func (e *ProcessError) Unwrap() error { return e.Err }
 
+// ACPStartupError is a bounded classification for a child that started but
+// failed during the initial ACP handshake. It intentionally hides provider
+// response text and stderr.
+type ACPStartupError struct {
+	Class string
+	cause error
+}
+
+func (e *ACPStartupError) Error() string { return e.Class }
+func (e *ACPStartupError) Unwrap() error { return e.cause }
+
 // AdapterOptions tunes turn timeout / cancel grace (tests).
 type AdapterOptions struct {
 	// TurnTimeoutMs is the SAFETY CEILING for one Harness turn, not the
@@ -106,6 +117,9 @@ type AdapterOptions struct {
 	// that owns the resident daemon. It is passed to the Harness as
 	// launcher-owned FREE4CHAT_AGENT_BIN policy, never through Room state.
 	RuntimeExecutable string
+	// RuntimeDirectory is the shared private data root for prepared pinned
+	// provider bridges.
+	RuntimeDirectory string
 	// ProviderSpec is a bounded registry launch description used only by local
 	// diagnostics (for example `npx @...@1.2.3`).
 	ProviderSpec string
@@ -403,6 +417,7 @@ type ACPAdapter struct {
 	workingDir string
 	options    AdapterOptions
 	name       string
+	ensureMu   sync.Mutex
 
 	mu                 sync.Mutex
 	writeMu            sync.Mutex // serializes every stdin frame
@@ -907,6 +922,8 @@ func (a *ACPAdapter) markProcessDead(gen int64, err error) {
 // session/new. Subsequent calls reuse the retained session; after unexpected
 // process death the next call spawns a fresh process.
 func (a *ACPAdapter) EnsureSession() error {
+	a.ensureMu.Lock()
+	defer a.ensureMu.Unlock()
 	a.emitDiagnostic("PROVIDER_MATERIALIZE_START", nil)
 	a.mu.Lock()
 	if a.sessionID != "" && a.stdin != nil && a.proc != nil {
@@ -917,16 +934,40 @@ func (a *ACPAdapter) EnsureSession() error {
 		a.mu.Unlock()
 		return errors.New("ACP session is unavailable after process failure")
 	}
+	a.mu.Unlock()
 
-	command := exec.Command(a.launcher.Command, a.launcher.Args...)
-	command.Dir = a.workingDir
-	configureHarnessProcessGroup(command)
+	commandName := a.launcher.Command
+	commandArgs := append([]string(nil), a.launcher.Args...)
 	environment := BuildHarnessEnvironment(a.launcher, nil, a.options.AgentEnv)
 	if a.options.RuntimeExecutable != "" {
 		// Apply after both ambient and operator/launcher layers so a stale
 		// PATH binary or custom launcher policy cannot replace the owner.
 		environment[RuntimeExecutableEnv] = a.options.RuntimeExecutable
 	}
+	var err error
+	commandName, commandArgs, err = prepareBridge(a.options.RuntimeDirectory, a.launcher, environment)
+	if err != nil {
+		class := "bridge_prepare_failed"
+		var preparation *BridgePreparationError
+		if errors.As(err, &preparation) {
+			class = preparation.Class
+		}
+		a.emitDiagnostic("PROVIDER_MATERIALIZE_FAIL", map[string]string{"class": class})
+		return err
+	}
+	a.mu.Lock()
+	if a.sessionID != "" && a.stdin != nil && a.proc != nil {
+		a.mu.Unlock()
+		return nil
+	}
+	if a.proc != nil || a.stdin != nil {
+		a.mu.Unlock()
+		return errors.New("ACP session is unavailable after process failure")
+	}
+
+	command := exec.Command(commandName, commandArgs...)
+	command.Dir = a.workingDir
+	configureHarnessProcessGroup(command)
 	command.Env = environmentSlice(environment)
 	stdinPipe, err := command.StdinPipe()
 	if err != nil {
@@ -981,7 +1022,12 @@ func (a *ACPAdapter) EnsureSession() error {
 	a.mu.Unlock()
 	initCaps, sessionID, err := a.handshakeWithRetained(retained)
 	if err != nil {
-		a.emitDiagnostic("PROVIDER_MATERIALIZE_FAIL", map[string]string{"class": "session_new_failed"})
+		class := "acp_initialize_failed"
+		var startup *ACPStartupError
+		if errors.As(err, &startup) {
+			class = startup.Class
+		}
+		a.emitDiagnostic("PROVIDER_MATERIALIZE_FAIL", map[string]string{"class": class})
 		_ = a.Close()
 		return err
 	}
@@ -1285,21 +1331,26 @@ func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSessio
 	})
 	raw, err := a.request("initialize", initializeParams)
 	if err != nil {
-		return nil, "", err
+		class := "acp_initialize_failed"
+		var timeout *ControlRequestTimeoutError
+		if errors.As(err, &timeout) {
+			class = "acp_initialize_timeout"
+		}
+		return nil, "", &ACPStartupError{Class: class, cause: err}
 	}
 	var initResponse struct {
 		ProtocolVersion   int             `json:"protocolVersion"`
 		AgentCapabilities json.RawMessage `json:"agentCapabilities"`
 	}
 	if err := json.Unmarshal(raw.Result, &initResponse); err != nil {
-		return nil, "", errors.New("ACP agent returned an invalid initialize response")
+		return nil, "", &ACPStartupError{Class: "acp_initialize_failed"}
 	}
 	if initResponse.ProtocolVersion != protocolVersion {
-		return nil, "", fmt.Errorf("Unsupported ACP protocol version: %d", initResponse.ProtocolVersion)
+		return nil, "", &ACPStartupError{Class: "acp_initialize_failed"}
 	}
 	caps, err := parseAgentCapabilities(initResponse.AgentCapabilities)
 	if err != nil {
-		return nil, "", err
+		return nil, "", &ACPStartupError{Class: "acp_initialize_failed"}
 	}
 
 	newParams, _ := json.Marshal(map[string]any{"cwd": a.workingDir, "mcpServers": []any{}})
@@ -1321,7 +1372,12 @@ func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSessio
 	raw, err = a.request(method, params)
 	if err != nil {
 		a.emitDiagnostic(event+"_FAIL", map[string]string{"scope": "room", "class": failureClass})
-		return nil, "", err
+		class := "acp_session_new_failed"
+		var timeout *ControlRequestTimeoutError
+		if errors.As(err, &timeout) {
+			class = "acp_session_new_timeout"
+		}
+		return nil, "", &ACPStartupError{Class: class, cause: err}
 	}
 	var sessionResponse struct {
 		SessionID string `json:"sessionId"`
@@ -1330,7 +1386,7 @@ func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSessio
 		sessionResponse.SessionID = retained["room"].sessionID
 	} else if err := json.Unmarshal(raw.Result, &sessionResponse); err != nil || sessionResponse.SessionID == "" {
 		a.emitDiagnostic(event+"_FAIL", map[string]string{"scope": "room", "class": "session_new_failed"})
-		return nil, "", errors.New("ACP agent did not return a sessionId")
+		return nil, "", &ACPStartupError{Class: "acp_session_new_failed"}
 	}
 	a.emitDiagnostic(event+"_OK", map[string]string{"scope": "room"})
 	caps.SessionControls = parseSessionControls(raw.Result)

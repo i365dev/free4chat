@@ -705,6 +705,26 @@ func TestDoctorHumanAndJsonOutputs(t *testing.T) {
 	}
 }
 
+func TestFormatCliErrorClassifiesBridgeStartupWithoutProviderOutput(t *testing.T) {
+	cases := []struct {
+		class string
+		want  string
+	}{
+		{"bridge_prepare_timeout", "preparation timed out"},
+		{"bridge_install_failed", "installation failed"},
+		{"acp_initialize_failed", "ACP initialization failed"},
+		{"acp_initialize_timeout", "ACP initialization timed out"},
+		{"acp_session_new_failed", "could not create an ACP session"},
+		{"acp_session_new_timeout", "session creation timed out"},
+	}
+	for _, testCase := range cases {
+		got := formatCliError(fmt.Errorf("%s npm-token=must-not-leak", testCase.class))
+		if !strings.Contains(got, testCase.want) || strings.Contains(got, "must-not-leak") {
+			t.Errorf("%s mapped to unsafe or unhelpful output %q", testCase.class, got)
+		}
+	}
+}
+
 func TestVersionReportsStableLocalMachineReadableValue(t *testing.T) {
 	jsonOutput, code := runCli(t, "version", "--json")
 	if code != 0 {
