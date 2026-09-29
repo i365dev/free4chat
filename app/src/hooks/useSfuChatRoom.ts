@@ -31,6 +31,10 @@ import {
   whiteboardProtocolType,
 } from "@common/roomAppTransportDiagnostics"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
+import type {
+  RuntimeCapabilityOperation,
+  RuntimeCapabilityResult,
+} from "@common/runtimeCapability"
 import {
   createRuntimeProviderClaim as createRuntimeProviderCredential,
   createRuntimeProviderSecret,
@@ -585,6 +589,8 @@ interface SfuServerMessage {
     | "expired"
     | "error"
     | "runtime-provider-claim-created"
+    | "runtime-capability-result"
+    | "runtime-capability-control-result"
     | "agentActivity"
     | "room-app-unicast"
     | "room-app-unicast-result"
@@ -610,6 +616,7 @@ interface SfuServerMessage {
   /** Present only for feedback caused by one canonical Task interaction. */
   taskRequestId?: string
   requestId?: string
+  result?: Record<string, unknown>
   expiresAt?: number
   activity?: AgentActivityProjection | null
   /** #421 Fix C: one authoritative Task execution projection state change. */
@@ -691,6 +698,8 @@ export function useSfuChatRoom(
     Record<string, GeneratedRoomAppPublication>
   >({})
   const [error, setError] = useState("")
+  const [runtimeCapabilityControlError, setRuntimeCapabilityControlError] =
+    useState("")
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
   const [roomAppsEnabled, setRoomAppsEnabled] = useState(false)
@@ -798,6 +807,15 @@ export function useSfuChatRoom(
         providerClaimSecret: string
         resolve: (value: { providerClaimSecret: string }) => void
         reject: (error: Error) => void
+        timeout: ReturnType<typeof setTimeout>
+      }
+    >()
+  )
+  const pendingRuntimeCapabilityRequestsRef = useRef(
+    new Map<
+      string,
+      {
+        settle: (result: RuntimeCapabilityResult) => void
         timeout: ReturnType<typeof setTimeout>
       }
     >()
@@ -983,6 +1001,7 @@ export function useSfuChatRoom(
         kind: local?.kind ?? "human",
         room: roomName,
         peerId: LOCAL_PEER_ID,
+        connected: true,
         muteState: localVoiceLive
           ? local?.media?.muted ?? !localAudioTrack!.enabled
           : true,
@@ -1005,6 +1024,7 @@ export function useSfuChatRoom(
         kind: participant.kind,
         room: roomName,
         peerId: participant.id,
+        connected: participant.connected,
         muteState: participant.media?.muted,
         capabilities:
           participant.kind === "agent"
@@ -1052,6 +1072,71 @@ export function useSfuChatRoom(
     }
     return false
   }, [])
+
+  const setRuntimeCapabilityControl = useCallback(
+    (runtimeHostId: string, enabled: boolean) => {
+      setRuntimeCapabilityControlError("")
+      const sent = sendSocketMessage({
+        type: "runtime-capability-control",
+        runtimeHostId,
+        enabled,
+      })
+      if (!sent) setRuntimeCapabilityControlError("unavailable")
+      return sent
+    },
+    [sendSocketMessage]
+  )
+
+  const requestRuntimeCapability = useCallback(
+    (request: {
+      runtimeHostId: string
+      capabilityId: string
+      operation: RuntimeCapabilityOperation
+      action?: string
+      args?: Record<string, unknown>
+    }): Promise<RuntimeCapabilityResult> => {
+      if (pendingRuntimeCapabilityRequestsRef.current.size >= 4)
+        return Promise.resolve({
+          type: "runtime-capability-result",
+          requestId: "",
+          ok: false,
+          error: "unavailable",
+        })
+      const requestId = crypto.randomUUID()
+      return new Promise((settle) => {
+        const timeout = setTimeout(() => {
+          pendingRuntimeCapabilityRequestsRef.current.delete(requestId)
+          settle({
+            type: "runtime-capability-result",
+            requestId,
+            ok: false,
+            error: "timeout",
+          })
+        }, 12_000)
+        pendingRuntimeCapabilityRequestsRef.current.set(requestId, {
+          settle,
+          timeout,
+        })
+        if (
+          !sendSocketMessage({
+            type: "runtime-capability-request",
+            requestId,
+            ...request,
+          })
+        ) {
+          clearTimeout(timeout)
+          pendingRuntimeCapabilityRequestsRef.current.delete(requestId)
+          settle({
+            type: "runtime-capability-result",
+            requestId,
+            ok: false,
+            error: "unavailable",
+          })
+        }
+      })
+    },
+    [sendSocketMessage]
+  )
 
   const isCurrentAgentAudioPublication = useCallback(
     (participantId: string, sessionId: string, trackName: string): boolean => {
@@ -3208,6 +3293,42 @@ export function useSfuChatRoom(
       const message = JSON.parse(event.data) as SfuServerMessage
       if (message.type === "state" && message.state) {
         applyRoomState(message.state)
+      } else if (message.type === "runtime-capability-control-result") {
+        setRuntimeCapabilityControlError(
+          message.ok === true ? "" : message.error ?? "unavailable"
+        )
+      } else if (
+        message.type === "runtime-capability-result" &&
+        typeof message.requestId === "string"
+      ) {
+        const pending = pendingRuntimeCapabilityRequestsRef.current.get(
+          message.requestId
+        )
+        if (!pending) return
+        pendingRuntimeCapabilityRequestsRef.current.delete(message.requestId)
+        clearTimeout(pending.timeout)
+        pending.settle({
+          type: "runtime-capability-result",
+          requestId: message.requestId,
+          ok: message.ok === true,
+          ...(message.ok === true && message.result
+            ? { result: message.result }
+            : {}),
+          ...(message.ok === true
+            ? {}
+            : {
+                error:
+                  message.error === "timeout" ||
+                  message.error === "unavailable" ||
+                  message.error === "invalid_request" ||
+                  message.error === "controller_error" ||
+                  message.error === "unauthorized" ||
+                  message.error === "duplicate_request" ||
+                  message.error === "busy"
+                    ? message.error
+                    : "controller_error",
+              }),
+        })
       } else if (message.type === "room-app-unicast") {
         const envelope = decodeRoomAppUnicastEnvelope(message, roomName)
         if (!envelope) return
@@ -3581,6 +3702,16 @@ export function useSfuChatRoom(
         })
       }
       pendingTaskSessionRequestsRef.current.clear()
+      for (const pending of pendingRuntimeCapabilityRequestsRef.current.values()) {
+        clearTimeout(pending.timeout)
+        pending.settle({
+          type: "runtime-capability-result",
+          requestId: "",
+          ok: false,
+          error: "unavailable",
+        })
+      }
+      pendingRuntimeCapabilityRequestsRef.current.clear()
       runtimeProviderClaimAttemptRef.current = null
       if (closingRef.current) return
       if (socket !== websocketRef.current) return
@@ -5085,6 +5216,9 @@ export function useSfuChatRoom(
     liveTranscriptSegments,
     runtimeHosts,
     runtimeHostProviders,
+    setRuntimeCapabilityControl,
+    runtimeCapabilityControlError,
+    requestRuntimeCapability,
     liveTranscriptMediaAvailable,
     startLiveTranscript,
     stopLiveTranscript,

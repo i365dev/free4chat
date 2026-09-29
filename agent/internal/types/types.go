@@ -12,7 +12,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"math"
+	"regexp"
+	"strings"
 )
 
 const runtimeProviderClaimDomain = "free4chat-runtime-provider-v1"
@@ -314,8 +318,87 @@ type HarnessDiagnostics interface {
 // hostnames, or any other machine-identifying metadata, and it is discovery
 // metadata only — never authorization.
 type RuntimeHostProjection struct {
-	RuntimeHostID string              `json:"runtimeHostId"`
-	Speech        HostSpeechReadiness `json:"speech"`
+	RuntimeHostID string                        `json:"runtimeHostId"`
+	Speech        HostSpeechReadiness           `json:"speech"`
+	Capabilities  []RuntimeCapabilityProjection `json:"capabilities,omitempty"`
+}
+
+// RuntimeCapabilityProjection is bounded semantic metadata only. Local
+// endpoints, credentials, adapter configuration and device protocols are not
+// representable in this contract.
+type RuntimeCapabilityProjection struct {
+	CapabilityID string                    `json:"capabilityId"`
+	Title        string                    `json:"title"`
+	Version      string                    `json:"version"`
+	Observe      bool                      `json:"observe"`
+	Actions      []RuntimeCapabilityAction `json:"actions"`
+}
+
+type RuntimeCapabilityAction struct {
+	Name  string `json:"name"`
+	Title string `json:"title"`
+	Input struct {
+		Type       string            `json:"type"`
+		Properties map[string]string `json:"properties"`
+		Required   []string          `json:"required,omitempty"`
+	} `json:"input"`
+}
+
+var runtimeCapabilityIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]{0,63}$`)
+var runtimeCapabilityActionPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+var runtimeCapabilityURLPattern = regexp.MustCompile(`(?i)https?://`)
+var runtimeCapabilitySensitiveFieldPattern = regexp.MustCompile(`(?i)(endpoint|url|credential|password|secret|token|adapter|protocol|hostname|authorization|cookie|method|path|accesskey)`)
+
+func (p RuntimeCapabilityProjection) Valid() bool {
+	if !runtimeCapabilityIDPattern.MatchString(p.CapabilityID) ||
+		!validCapabilityText(p.Title, 64) || !validCapabilityText(p.Version, 32) ||
+		len(p.Actions) > 4 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(p.Actions))
+	for _, action := range p.Actions {
+		if !runtimeCapabilityActionPattern.MatchString(action.Name) ||
+			runtimeCapabilitySensitiveFieldPattern.MatchString(action.Name) ||
+			!validCapabilityText(action.Title, 64) || action.Input.Type != "object" ||
+			len(action.Input.Properties) > 16 {
+			return false
+		}
+		if _, exists := seen[action.Name]; exists {
+			return false
+		}
+		seen[action.Name] = struct{}{}
+		for name, typ := range action.Input.Properties {
+			if !regexp.MustCompile(`^[a-z][a-zA-Z0-9_]{0,31}$`).MatchString(name) ||
+				runtimeCapabilitySensitiveFieldPattern.MatchString(name) ||
+				(typ != "string" && typ != "number" && typ != "boolean") {
+				return false
+			}
+		}
+		required := make(map[string]struct{}, len(action.Input.Required))
+		for _, name := range action.Input.Required {
+			if _, ok := action.Input.Properties[name]; !ok {
+				return false
+			}
+			if _, duplicate := required[name]; duplicate {
+				return false
+			}
+			required[name] = struct{}{}
+		}
+	}
+	wire, err := json.Marshal(p)
+	return err == nil && len(wire) <= 1024
+}
+
+func validCapabilityText(value string, max int) bool {
+	if value == "" || len([]rune(value)) > max || strings.TrimSpace(value) != value || runtimeCapabilityURLPattern.MatchString(value) {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // HostSpeechReadiness is the coarse STT/TTS readiness of one Runtime Host.
@@ -328,7 +411,15 @@ type HostSpeechReadiness struct {
 // shared opaque charset rule and the projection is otherwise fixed by its
 // type shape. Callers must omit (never repair) an invalid projection.
 func (p RuntimeHostProjection) Valid() bool {
-	return ValidRuntimeHostID(p.RuntimeHostID)
+	if !ValidRuntimeHostID(p.RuntimeHostID) || len(p.Capabilities) > 1 {
+		return false
+	}
+	for _, capability := range p.Capabilities {
+		if !capability.Valid() {
+			return false
+		}
+	}
+	return true
 }
 
 // RuntimeFeatureProjection is the additive, coarse, PARTICIPANT-scoped
@@ -1262,6 +1353,111 @@ type WaitResult struct {
 	// never be answered into it. Like the other private frames it carries no
 	// cursor and never reaches the public wait_for_events projection.
 	TaskExecutionResync bool `json:"-"`
+	// CapabilityRequest is a private Room-to-Runtime control frame. It is never
+	// a Room event, task, Harness prompt, or public MCP result.
+	CapabilityRequest *ResidentCapabilityRequest `json:"-"`
+}
+
+type ResidentCapabilityOperation string
+
+const (
+	ResidentCapabilityObserve ResidentCapabilityOperation = "observe"
+	ResidentCapabilityInvoke  ResidentCapabilityOperation = "invoke"
+)
+
+// ResidentCapabilityRequest is delivered only on the authenticated private
+// resident transport and remains outside Room chat and Harness cognition.
+type ResidentCapabilityRequest struct {
+	RequestID     string                      `json:"requestId"`
+	RuntimeHostID string                      `json:"runtimeHostId"`
+	CapabilityID  string                      `json:"capabilityId"`
+	Operation     ResidentCapabilityOperation `json:"operation"`
+	Action        string                      `json:"action,omitempty"`
+	Args          map[string]any              `json:"args,omitempty"`
+}
+
+func (r ResidentCapabilityRequest) Valid() bool {
+	if !validCapabilityText(r.RequestID, 64) ||
+		!ValidRuntimeHostID(r.RuntimeHostID) ||
+		!runtimeCapabilityIDPattern.MatchString(r.CapabilityID) {
+		return false
+	}
+	switch r.Operation {
+	case ResidentCapabilityObserve:
+		return r.Action == "" && r.Args == nil
+	case ResidentCapabilityInvoke:
+		if !runtimeCapabilityActionPattern.MatchString(r.Action) || runtimeCapabilitySensitiveFieldPattern.MatchString(r.Action) || r.Args == nil || !safeCapabilityResultValue(r.Args, 0) {
+			return false
+		}
+		wire, err := json.Marshal(r.Args)
+		return err == nil && len(wire) <= 8192
+	default:
+		return false
+	}
+}
+
+// ResidentCapabilityResult is correlated on the same current resident socket.
+// Errors are closed and never include local endpoint or controller details.
+type ResidentCapabilityResult struct {
+	Request ResidentCapabilityRequest `json:"-"`
+	OK      bool                      `json:"ok"`
+	Result  map[string]any            `json:"result,omitempty"`
+	Error   string                    `json:"error,omitempty"`
+}
+
+func (r ResidentCapabilityResult) Valid() bool {
+	if !r.Request.Valid() {
+		return false
+	}
+	if r.OK {
+		if r.Result == nil || r.Error != "" {
+			return false
+		}
+		if !safeCapabilityResultValue(r.Result, 0) {
+			return false
+		}
+		wire, err := json.Marshal(r.Result)
+		return err == nil && len(wire) <= 16*1024
+	}
+	return r.Result == nil && (r.Error == "unavailable" || r.Error == "invalid_request" || r.Error == "controller_error" || r.Error == "timeout")
+}
+
+func safeCapabilityResultValue(value any, depth int) bool {
+	if depth > 4 {
+		return false
+	}
+	switch item := value.(type) {
+	case nil, bool:
+		return true
+	case string:
+		return len(item) <= 4096 && !runtimeCapabilityURLPattern.MatchString(item)
+	case float64:
+		return !math.IsNaN(item) && !math.IsInf(item, 0)
+	case int, int32, int64, uint, uint32, uint64, json.Number:
+		return true
+	case []any:
+		if len(item) > 32 {
+			return false
+		}
+		for _, child := range item {
+			if !safeCapabilityResultValue(child, depth+1) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		if len(item) > 32 {
+			return false
+		}
+		for key, child := range item {
+			if len(key) > 64 || runtimeCapabilitySensitiveFieldPattern.MatchString(key) || !safeCapabilityResultValue(child, depth+1) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // ResidentTaskControlKind is the closed set of private resident control
@@ -1643,6 +1839,21 @@ type ResidentEventStream interface {
 	Heartbeat(context.Context, int64) error
 	SendSessionResult(context.Context, ResidentSessionResult) error
 	Close() error
+}
+
+// ResidentCapabilityEventStream is the additive RPC extension for the same
+// resident WebSocket. The built-in client implements it; older injected test
+// and compatibility streams remain valid and fail this optional seam closed.
+type ResidentCapabilityEventStream interface {
+	SendCapabilityResult(context.Context, ResidentCapabilityResult) error
+}
+
+// ResidentCapabilityController is the narrow Runtime-local integration seam.
+// Implementations own descriptor and observe/invoke semantics; Core knows no
+// adapter, localhost endpoint, or device protocol.
+type ResidentCapabilityController interface {
+	DescribeCapabilities() []RuntimeCapabilityProjection
+	HandleCapabilityRequest(context.Context, ResidentCapabilityRequest) (map[string]any, error)
 }
 
 // ResidentEventClient is an optional extension for injected test/compatibility

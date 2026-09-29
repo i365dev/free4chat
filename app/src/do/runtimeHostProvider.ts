@@ -104,7 +104,10 @@ function validProviderAssociation(
         candidate.pendingReattach.humanParticipantId.length > 0 &&
         typeof candidate.pendingReattach.expiresAt === "number" &&
         Number.isSafeInteger(candidate.pendingReattach.expiresAt) &&
-        candidate.pendingReattach.expiresAt > 0))
+        candidate.pendingReattach.expiresAt > 0)) &&
+    (candidate.capabilityControlHumanParticipantId === undefined ||
+      candidate.capabilityControlHumanParticipantId ===
+        candidate.humanParticipantId)
   )
 }
 
@@ -207,6 +210,13 @@ export function normalizeRuntimeHostProviders({
       normalizedProviders[hostId] = {
         ...association,
         verifiedParticipantIds,
+        ...(association.capabilityControlHumanParticipantId ===
+        association.humanParticipantId
+          ? {
+              capabilityControlHumanParticipantId:
+                association.humanParticipantId,
+            }
+          : {}),
         ...(hasValidPendingReattach ? { pendingReattach } : {}),
       }
     }
@@ -772,8 +782,47 @@ export function projectRuntimeHostProviders(
     projection[hostId] = {
       humanParticipantId: association.humanParticipantId,
       claimedAt: association.claimedAt,
+      ...(association.capabilityControlHumanParticipantId ===
+      association.humanParticipantId
+        ? { capabilityControlEnabled: true }
+        : {}),
     }
   return projection
+}
+
+/** The additive Human control grant is separate from speech provider rights. */
+export function canHumanControlRuntimeHost({
+  participants,
+  runtimeHosts,
+  providers,
+  humanParticipantId,
+  runtimeHostId,
+}: {
+  participants: Iterable<RuntimeHostProviderParticipant>
+  runtimeHosts: RuntimeHostMap | undefined
+  providers: RuntimeHostProviderMap | undefined
+  humanParticipantId: string
+  runtimeHostId: string
+}): boolean {
+  if (!isCurrentHuman(participants, humanParticipantId, true)) return false
+  const host = runtimeHosts?.[runtimeHostId]
+  const association = providers?.[runtimeHostId]
+  if (
+    !host?.capabilities?.length ||
+    association?.humanParticipantId !== humanParticipantId ||
+    association.capabilityControlHumanParticipantId !== humanParticipantId
+  )
+    return false
+  return liveVerifiedParticipantIds(
+    association,
+    runtimeHostId,
+    participants
+  ).some((participantId) =>
+    Array.from(participants).some(
+      (participant) =>
+        participant.id === participantId && participant.connected === true
+    )
+  )
 }
 
 // The small #177-facing predicate: a current Human can use a Runtime Host's

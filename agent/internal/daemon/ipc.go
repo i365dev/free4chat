@@ -87,6 +87,12 @@ type IpcRequest struct {
 	SessionID     string  `json:"sessionId,omitempty"`
 	SessionCursor string  `json:"sessionCursor,omitempty"`
 	SessionCwd    *string `json:"sessionCwd,omitempty"`
+	// Local capability calls are semantic IPC only. The fixture endpoint is
+	// accepted solely by capability-configure and never returned by the daemon.
+	FixtureEndpoint  string          `json:"fixtureEndpoint,omitempty"`
+	CapabilityID     string          `json:"capabilityId,omitempty"`
+	CapabilityAction string          `json:"action,omitempty"`
+	CapabilityArgs   json.RawMessage `json:"args,omitempty"`
 	// SessionCwd is presence-aware on purpose: `handoff --list` with no --cwd
 	// means GLOBAL discovery (the adapter omits cwd from session/list), while
 	// `--cwd X` means exactly X. An omitted field and an explicitly empty one

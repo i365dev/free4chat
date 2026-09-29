@@ -181,6 +181,10 @@ type Options struct {
 	// Room-selected Live Transcript Runtime Host. Nil disables the optional
 	// producer path fail-closed while preserving text and legacy media.
 	TranscriptProducers media.LiveTranscriptCoordinator
+	// CapabilityHandler is the narrow local-controller seam for deterministic
+	// Human control. It is independent of Harness execution and never enters a
+	// Harness prompt. Nil fails closed.
+	CapabilityHandler types.ResidentCapabilityController
 	// TaskSessionContinuation is the launcher-registry PRODUCT policy for
 	// continuing an existing native Harness session from the Room Start Task
 	// surface (#409). It is copied from the resolved launcher, never inferred
@@ -450,10 +454,10 @@ func (r *ResidentRuntime) hostProjectionFor(roomID string) *types.RuntimeHostPro
 // projectRuntimeHost pushes the current Runtime Host projection to the Room
 // (#176 Phase A) so readiness hot reload reaches the Room without any
 // resident rejoining. Best-effort: text behavior is unaffected on failure.
-func (r *ResidentRuntime) projectRuntimeHost(handle string) {
+func (r *ResidentRuntime) projectRuntimeHost(handle string) error {
 	host := r.CurrentHostProjection()
 	if host == nil {
-		return
+		return nil
 	}
 	// #178 review fix 5: additive and bounded. A rejected or failed
 	// projection never blocks text behavior; diagnostics carry no seed,
@@ -483,6 +487,21 @@ func (r *ResidentRuntime) projectRuntimeHost(handle string) {
 			"reason": string(free4chat.CodeOf(err)),
 		})
 	}
+	return err
+}
+
+// RefreshRuntimeHostProjection re-publishes the current Runtime Host state
+// without reconnecting. Daemon-owned semantic capability configuration uses
+// this after a live controller update so Room discovery stays current.
+func (r *ResidentRuntime) RefreshRuntimeHostProjection() error {
+	r.mu.Lock()
+	handle := r.participantHandle
+	stopped := r.stopped
+	r.mu.Unlock()
+	if !stopped && handle != "" {
+		return r.projectRuntimeHost(handle)
+	}
+	return nil
 }
 
 // speechSnapshot returns a copy that remains stable throughout a media
@@ -586,7 +605,36 @@ func (r *ResidentRuntime) CurrentHostProjection() *types.RuntimeHostProjection {
 			STT: speechConfig.STTEnabled,
 			TTS: speechConfig.TTSEnabled,
 		},
+		Capabilities: capabilityDescriptors(r.options.CapabilityHandler),
 	}
+}
+
+func capabilityDescriptors(
+	controller types.ResidentCapabilityController,
+) []types.RuntimeCapabilityProjection {
+	if controller == nil {
+		return nil
+	}
+	capabilities := controller.DescribeCapabilities()
+	if len(capabilities) > 4 {
+		return nil
+	}
+	projected := make([]types.RuntimeCapabilityProjection, len(capabilities))
+	for index, capability := range capabilities {
+		if capability.Actions == nil {
+			capability.Actions = []types.RuntimeCapabilityAction{}
+		}
+		for actionIndex := range capability.Actions {
+			if capability.Actions[actionIndex].Input.Properties == nil {
+				capability.Actions[actionIndex].Input.Properties = map[string]string{}
+			}
+		}
+		if !capability.Valid() {
+			return nil
+		}
+		projected[index] = capability
+	}
+	return projected
 }
 
 // CurrentCapabilities returns the currently advertised tokens.
@@ -1212,6 +1260,15 @@ func (r *ResidentRuntime) applyResidentFrame(
 		r.dispatchSessionControl(stream, result.SessionControl)
 		return residentFrameApplied, false
 	}
+	if result.CapabilityRequest != nil {
+		if !r.isCurrentResidentStream(stream) {
+			return residentFrameDropped, false
+		}
+		// Human capability calls are deterministic control requests. Dispatch
+		// them separately from Task scheduling and Harness turn admission.
+		r.dispatchCapabilityRequest(stream, result.CapabilityRequest)
+		return residentFrameApplied, false
+	}
 	if result.TaskControl != nil {
 		if !r.isCurrentResidentStream(stream) {
 			return residentFrameDropped, false
@@ -1257,6 +1314,53 @@ func (r *ResidentRuntime) applyResidentFrame(
 	// it as a Harness wakeup/retry boundary for pre-existing work.
 	wake := len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped()
 	return residentFrameApplied, wake
+}
+
+func (r *ResidentRuntime) dispatchCapabilityRequest(
+	stream types.ResidentEventStream,
+	request *types.ResidentCapabilityRequest,
+) {
+	if request == nil || !request.Valid() {
+		return
+	}
+	writer, ok := stream.(types.ResidentCapabilityEventStream)
+	if !ok {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		response := types.ResidentCapabilityResult{Request: *request}
+		handler := r.options.CapabilityHandler
+		if handler == nil {
+			response.Error = "unavailable"
+		} else {
+			result, err := handler.HandleCapabilityRequest(ctx, *request)
+			if err != nil {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					response.Error = "timeout"
+				} else {
+					response.Error = "controller_error"
+				}
+			} else {
+				response.OK = true
+				response.Result = result
+			}
+		}
+		if !response.Valid() {
+			response.OK = false
+			response.Result = nil
+			response.Error = "controller_error"
+		}
+		if !r.isCurrentResidentStream(stream) {
+			return
+		}
+		if err := writer.SendCapabilityResult(ctx, response); err != nil {
+			r.log("runtime_capability_result_failed", map[string]string{
+				"operation": string(request.Operation),
+			})
+		}
+	}()
 }
 
 func (r *ResidentRuntime) setResidentStream(

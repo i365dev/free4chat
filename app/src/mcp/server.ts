@@ -45,14 +45,92 @@ const WAIT_RATE_WINDOW_S = 60
 const MCP_INGRESS_RATE_LIMITED = "mcp_ingress_rate_limited"
 // Advertised to a caller whose wait was refused by the pre-DO cadence.
 const WAIT_RATE_RETRY_MS = 10 * 1000
-// #176 Phase A: mirrored from do/collab.ts — the Runtime Host projection is
-// an opaque bounded id plus coarse speech booleans, nothing else.
+// #176: Runtime Host projections carry an opaque id, coarse speech readiness,
+// and bounded, secret-free capability discovery metadata. Keep this mirrored
+// with common/runtimeCapability.ts and agent/internal/types/types.go.
+const runtimeCapabilitySensitiveFieldPattern =
+  /(?:endpoint|url|credential|password|secret|token|adapter|protocol|hostname|authorization|cookie|method|path|accesskey)/i
+const runtimeCapabilityText = (max: number) =>
+  z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((value) => value.trim() === value)
+    .refine((value) => !/https?:\/\//i.test(value))
+    .refine((value) => !/[\u0000-\u001f\u007f]/.test(value))
+const runtimeCapabilityActionSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+    title: runtimeCapabilityText(64),
+    input: z
+      .object({
+        type: z.literal("object"),
+        properties: z
+          .record(z.string(), z.enum(["string", "number", "boolean"]))
+          .superRefine((properties, context) => {
+            if (Object.keys(properties).length > 16)
+              context.addIssue({
+                code: "custom",
+                message: "too many capability input properties",
+              })
+            for (const key of Object.keys(properties)) {
+              if (
+                !/^[a-z][a-zA-Z0-9_]{0,31}$/.test(key) ||
+                runtimeCapabilitySensitiveFieldPattern.test(key)
+              )
+                context.addIssue({
+                  code: "custom",
+                  message: "invalid capability input property",
+                })
+            }
+          }),
+        required: z.array(z.string().min(1).max(32)).max(16).optional(),
+      })
+      .superRefine((input, context) => {
+        const seen = new Set<string>()
+        for (const name of input.required ?? []) {
+          if (!Object.hasOwn(input.properties, name) || seen.has(name))
+            context.addIssue({
+              code: "custom",
+              message: "invalid required capability input property",
+            })
+          seen.add(name)
+        }
+      }),
+  })
+  .superRefine((action, context) => {
+    if (runtimeCapabilitySensitiveFieldPattern.test(action.name))
+      context.addIssue({
+        code: "custom",
+        message: "sensitive capability action name",
+      })
+  })
+const runtimeCapabilityProjectionSchema = z
+  .object({
+    capabilityId: z.string().regex(/^[a-z0-9][a-z0-9._:-]{0,63}$/),
+    title: runtimeCapabilityText(64),
+    version: runtimeCapabilityText(32),
+    observe: z.boolean(),
+    actions: z.array(runtimeCapabilityActionSchema).max(4),
+  })
+  .superRefine((capability, context) => {
+    const names = new Set<string>()
+    for (const action of capability.actions) {
+      if (names.has(action.name))
+        context.addIssue({
+          code: "custom",
+          message: "duplicate capability action",
+        })
+      names.add(action.name)
+    }
+  })
 const runtimeHostSchema = z.object({
   runtimeHostId: z
     .string()
     .trim()
     .regex(/^[A-Za-z0-9._:-]{8,64}$/),
   speech: z.object({ stt: z.boolean(), tts: z.boolean() }),
+  capabilities: z.array(runtimeCapabilityProjectionSchema).max(4).optional(),
 })
 // #409: additive Runtime feature projection. A closed, Runtime-owned fact —
 // NOT an arbitrary capability string — so it can be strictly validated here

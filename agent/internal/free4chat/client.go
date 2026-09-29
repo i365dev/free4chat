@@ -1014,10 +1014,17 @@ func (c *Client) WaitForEvents(participantHandle string, cursor int64, timeoutSe
 	// key — never re-wrap the value.
 	if hosts, ok := result["runtimeHosts"].(map[string]any); ok {
 		wait.RuntimeHosts = map[string]types.RuntimeHostProjection{}
+		capabilityHostCount := 0
 		for hostID, raw := range hosts {
 			host := ParseRuntimeHostStrict(raw)
 			if host == nil || host.RuntimeHostID != hostID {
 				continue
+			}
+			if len(host.Capabilities) > 0 {
+				if capabilityHostCount >= 8 {
+					continue
+				}
+				capabilityHostCount++
 			}
 			wait.RuntimeHosts[hostID] = *host
 		}

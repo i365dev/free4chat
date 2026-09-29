@@ -55,7 +55,10 @@ const (
 	// It carries no payload, no request id, and no tokens: it can never
 	// correlate with, overwrite, or be answered into the Task Session
 	// Continuation request/response family.
-	residentTaskExecutionResyncType = "task-execution-resync"
+	residentTaskExecutionResyncType  = "task-execution-resync"
+	residentCapabilityRequestType    = "runtime-capability-request"
+	residentCapabilityResultType     = "runtime-capability-result"
+	maxResidentCapabilityResultBytes = 16 * 1024
 )
 
 var (
@@ -111,6 +114,10 @@ type residentEventEnvelope struct {
 	HumanParticipantID string            `json:"humanParticipantId,omitempty"`
 	ModeID             string            `json:"modeId,omitempty"`
 	ConfigOptions      map[string]string `json:"configOptions,omitempty"`
+	RuntimeHostID      string            `json:"runtimeHostId,omitempty"`
+	CapabilityID       string            `json:"capabilityId,omitempty"`
+	Action             string            `json:"action,omitempty"`
+	Args               map[string]any    `json:"args,omitempty"`
 }
 
 // OpenResidentEventStream opens the Runtime-owned hibernatable Room event
@@ -221,6 +228,20 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 		}
 		return types.WaitResult{SessionControl: control}, nil
 	}
+	if envelope.Type == residentCapabilityRequestType {
+		request := types.ResidentCapabilityRequest{
+			RequestID:     envelope.RequestID,
+			RuntimeHostID: envelope.RuntimeHostID,
+			CapabilityID:  envelope.CapabilityID,
+			Operation:     types.ResidentCapabilityOperation(envelope.Operation),
+			Action:        envelope.Action,
+			Args:          envelope.Args,
+		}
+		if !request.Valid() {
+			return types.WaitResult{}, &Error{Message: "resident event stream returned an invalid capability request", Code: CodeToolError}
+		}
+		return types.WaitResult{CapabilityRequest: &request}, nil
+	}
 	if envelope.Type == residentTaskControlType {
 		// PRIVATE RESIDENT TRANSPORT ONLY: a transient control frame, not a
 		// Room event. It carries no cursor and must never be projected as
@@ -258,6 +279,7 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 	}
 	if envelope.RuntimeHosts != nil {
 		wait.RuntimeHosts = make(map[string]types.RuntimeHostProjection)
+		capabilityHostCount := 0
 		for hostID, item := range envelope.RuntimeHosts {
 			var value any
 			if err := json.Unmarshal(item, &value); err != nil {
@@ -265,6 +287,12 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 			}
 			host := ParseRuntimeHostStrict(value)
 			if host != nil && host.RuntimeHostID == hostID {
+				if len(host.Capabilities) > 0 {
+					if capabilityHostCount >= 8 {
+						continue
+					}
+					capabilityHostCount++
+				}
 				wait.RuntimeHosts[hostID] = *host
 			}
 		}
@@ -516,6 +544,47 @@ func (s *residentEventStream) SendSessionResult(ctx context.Context, result type
 	}
 	if err := s.write(ctx, payload); err != nil {
 		return &Error{Message: "resident session result failed", Code: CodeTransient}
+	}
+	return nil
+}
+
+// SendCapabilityResult answers one private capability request on the same
+// resident WebSocket. Only bounded semantic result data and closed errors can
+// cross this seam.
+func (s *residentEventStream) SendCapabilityResult(ctx context.Context, result types.ResidentCapabilityResult) error {
+	if !result.Valid() {
+		result = types.ResidentCapabilityResult{Request: result.Request, OK: false, Error: "controller_error"}
+	}
+	frame := map[string]any{
+		"type":          residentCapabilityResultType,
+		"requestId":     result.Request.RequestID,
+		"runtimeHostId": result.Request.RuntimeHostID,
+		"capabilityId":  result.Request.CapabilityID,
+		"operation":     string(result.Request.Operation),
+		"ok":            result.OK,
+	}
+	if result.OK {
+		frame["result"] = result.Result
+	} else {
+		frame["error"] = result.Error
+	}
+	payload, err := json.Marshal(frame)
+	if err != nil || len(payload) > maxResidentCapabilityResultBytes {
+		payload, err = json.Marshal(map[string]any{
+			"type":          residentCapabilityResultType,
+			"requestId":     result.Request.RequestID,
+			"runtimeHostId": result.Request.RuntimeHostID,
+			"capabilityId":  result.Request.CapabilityID,
+			"operation":     string(result.Request.Operation),
+			"ok":            false,
+			"error":         "controller_error",
+		})
+	}
+	if err != nil {
+		return &Error{Message: "encode resident capability result", Code: CodeToolError}
+	}
+	if err := s.write(ctx, payload); err != nil {
+		return &Error{Message: "resident capability result failed", Code: CodeTransient}
 	}
 	return nil
 }
