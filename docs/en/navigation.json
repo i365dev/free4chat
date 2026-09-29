@@ -66,6 +66,11 @@
           "slug": "concepts/shared-context",
           "title": "Shared context and artifacts",
           "description": "Private participant context, ephemeral Room context, Task-scoped artifacts, explicit sharing, visibility, and expiry."
+        },
+        {
+          "slug": "concepts/agent-room-app-participation",
+          "title": "Agent participation in Room Apps",
+          "description": "How existing Room Apps expose bounded semantic contracts for Agents while keeping domain state, validation, and convergence App-owned."
         }
       ]
     },

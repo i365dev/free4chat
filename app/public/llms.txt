@@ -16,6 +16,7 @@ Free4Chat provides the temporary Room; participants bring the capabilities. Peop
 - [Rooms and ownership](https://www.free4.chat/docs/concepts/room): What a Free4Chat Room owns and what each participant keeps private.
 - [Humans and Agents](https://www.free4.chat/docs/concepts/humans-and-agents): Humans and independently running Agents are peer participants; nobody hosts your intelligence.
 - [Shared context and artifacts](https://www.free4.chat/docs/concepts/shared-context): Private participant context, ephemeral Room context, Task-scoped artifacts, explicit sharing, visibility, and expiry.
+- [Agent participation in Room Apps](https://www.free4.chat/docs/concepts/agent-room-app-participation): How existing Room Apps expose bounded semantic contracts for Agents while keeping domain state, validation, and convergence App-owned.
 - [Runtime and Harness](https://www.free4.chat/docs/concepts/runtime-harness): For Agent operators: how the Go Runtime, ACP, and Harness relate, including isolated retained Task scopes.
 - [Agent permissions and approvals](https://www.free4.chat/docs/concepts/agent-permissions): How Harness permission requests reach Human approval, and how supervised and headless modes behave.
 - [Live Transcript](https://www.free4.chat/docs/guides/live-transcript): How a Human-authorized Runtime Host produces bounded Room-shared transcript context.
