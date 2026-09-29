@@ -78,6 +78,19 @@ func TestFixtureControllerDescribeObserveInvokeAndBounds(t *testing.T) {
 	}
 }
 
+func TestUnconfiguredControllerFailsPredictably(t *testing.T) {
+	var c *Controller
+	if _, err := c.Describe(CapabilityID); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unconfigured describe error = %v", err)
+	}
+	if _, err := c.Observe(context.Background(), CapabilityID); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unconfigured observe error = %v", err)
+	}
+	if _, err := c.Invoke(context.Background(), CapabilityID, "set_led", json.RawMessage(`{"color":"#123456"}`)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unconfigured invoke error = %v", err)
+	}
+}
+
 func TestFixtureControllerFailuresAreBoundedAndSanitized(t *testing.T) {
 	secretURL := "http://localhost:43211"
 	for name, handler := range map[string]http.HandlerFunc{

@@ -67,8 +67,11 @@ func NewController(adapter Adapter) *Controller {
 }
 
 func (c *Controller) Describe(id string) (Descriptor, error) {
-	if id != CapabilityID || c == nil || c.adapter == nil {
+	if id != CapabilityID {
 		return Descriptor{}, ErrUnknownCapability
+	}
+	if c == nil || c.adapter == nil {
+		return Descriptor{}, ErrUnavailable
 	}
 	d := c.adapter.Describe()
 	b, err := json.Marshal(d)
