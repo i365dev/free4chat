@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/i365dev/free4chat/agent/internal/capability"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/runtime"
@@ -64,6 +65,53 @@ func TestRemoveStaleWorkspacesWipesEverythingInside(t *testing.T) {
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatal("stale workspace survived cleanup")
+	}
+}
+
+func TestCapabilityDirectControllerAndDaemonIPCShareController(t *testing.T) {
+	var observations, invocations int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/state":
+			observations++
+			_, _ = w.Write([]byte(`{"ready":true}`))
+		case "/actions/set-led":
+			invocations++
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	d, _ := startDaemon(t)
+	if _, err := d.Dispatch(&IpcRequest{Op: "capability-configure", FixtureEndpoint: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := capability.LoadFixtureAdapter(RuntimeDirectory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct := capability.NewController(adapter)
+	if _, err := direct.Observe(context.Background(), capability.CapabilityID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := direct.Invoke(context.Background(), capability.CapabilityID, "set_led", json.RawMessage(`{"color":"#123456"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := SendIPC(&IpcRequest{Op: "capability-observe", CapabilityID: capability.CapabilityID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SendIPC(&IpcRequest{
+		Op: "capability-invoke", CapabilityID: capability.CapabilityID,
+		CapabilityAction: "set_led", CapabilityArgs: json.RawMessage(`{"color":"#654321"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if observations != 2 || invocations != 2 {
+		t.Fatalf("direct and IPC calls diverged: observations=%d invocations=%d", observations, invocations)
 	}
 }
 

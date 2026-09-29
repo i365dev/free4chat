@@ -50,6 +50,10 @@ func usageText() string {
   free4chat-agent create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
+  free4chat-agent capability configure --fixture-endpoint <loopback-http-origin>
+  free4chat-agent capability describe --id <capability-id>
+  free4chat-agent capability observe --id <capability-id>
+  free4chat-agent capability invoke --id <capability-id> --action <name> [--args <json>]
   free4chat-agent peers --room <room-id>
   free4chat-agent collab request --target <participant-id> --summary <text> [--request-id <id>] [--detail key=value]... [--attach <attachment-id>]... [--instance <id>]
   free4chat-agent collab respond --request-id <id> --decision <accepted|declined> [--summary <text>] [--instance <id>]
@@ -312,6 +316,51 @@ func run(args []string) error {
 			request.Capabilities = capabilities
 		}
 		return runViaDaemon(request)
+
+	case "capability":
+		if len(rest) == 0 {
+			return errUsage()
+		}
+		sub, args := rest[0], rest[1:]
+		switch sub {
+		case "configure":
+			endpoint := option(args, "--fixture-endpoint")
+			if endpoint == "" || len(args) != 2 {
+				return errUsage()
+			}
+			return runViaDaemon(&daemon.IpcRequest{Op: "capability-configure", FixtureEndpoint: endpoint})
+		case "describe":
+			id := option(args, "--id")
+			if id == "" || len(args) != 2 {
+				return errUsage()
+			}
+			return runViaDaemon(&daemon.IpcRequest{Op: "capability-describe", CapabilityID: id})
+		case "observe":
+			id := option(args, "--id")
+			if id == "" || len(args) != 2 {
+				return errUsage()
+			}
+			return runViaDaemon(&daemon.IpcRequest{Op: "capability-observe", CapabilityID: id})
+		case "invoke":
+			id := option(args, "--id")
+			action := option(args, "--action")
+			argsJSON := option(args, "--args")
+			if id == "" || action == "" || (len(args) != 4 && len(args) != 6) {
+				return errUsage()
+			}
+			if argsJSON == "" {
+				argsJSON = "{}"
+			}
+			if len(argsJSON) > 1024 || !json.Valid([]byte(argsJSON)) {
+				return errors.New("capability arguments must be JSON up to 1024 bytes")
+			}
+			return runViaDaemon(&daemon.IpcRequest{
+				Op: "capability-invoke", CapabilityID: id, CapabilityAction: action,
+				CapabilityArgs: json.RawMessage(argsJSON),
+			})
+		default:
+			return errUsage()
+		}
 
 	case "peers":
 		room := option(rest, "--room")

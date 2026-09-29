@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/capability"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
 	"github.com/i365dev/free4chat/agent/internal/harness"
@@ -23,6 +25,14 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/types"
 	"github.com/i365dev/free4chat/agent/internal/voice"
 )
+
+func loadLocalCapabilityController(runtimeDir string) *capability.Controller {
+	adapter, err := capability.LoadFixtureAdapter(runtimeDir)
+	if err != nil {
+		return nil
+	}
+	return capability.NewController(adapter)
+}
 
 // residentInstance is one live room runtime owned by the daemon.
 type residentInstance struct {
@@ -46,6 +56,7 @@ type Daemon struct {
 	hostLog             *BoundedLog
 	providerHandles     *runtime.ProviderHandleStore
 	transcriptProducers *TranscriptProducerCoordinator
+	localCapability     *capability.Controller
 	// runtimeExecutable is the exact binary that owns this daemon. The
 	// Harness receives it through launcher-owned environment policy so local
 	// participant commands cannot fall back to a different PATH binary.
@@ -63,6 +74,7 @@ func New() *Daemon {
 		hostLog:             NewBoundedLog(RuntimeDirectory()),
 		providerHandles:     runtime.NewProviderHandleStore(),
 		transcriptProducers: NewTranscriptProducerCoordinator(),
+		localCapability:     loadLocalCapabilityController(RuntimeDirectory()),
 		runtimeExecutable:   runtimeExecutable,
 	}
 }
@@ -195,6 +207,33 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		return d.statusViews(), nil
 	case "diagnostics":
 		return d.diagnosticsViews(request.InstanceID, request.LogTail), nil
+	case "capability-configure":
+		if err := capability.SaveFixtureEndpoint(RuntimeDirectory(), request.FixtureEndpoint); err != nil {
+			return nil, err
+		}
+		adapter, err := capability.LoadFixtureAdapter(RuntimeDirectory())
+		if err != nil {
+			return nil, capability.ErrUnavailable
+		}
+		d.mu.Lock()
+		d.localCapability = capability.NewController(adapter)
+		d.mu.Unlock()
+		return map[string]any{"configured": true}, nil
+	case "capability-describe":
+		d.mu.Lock()
+		controller := d.localCapability
+		d.mu.Unlock()
+		return controller.Describe(request.CapabilityID)
+	case "capability-observe":
+		d.mu.Lock()
+		controller := d.localCapability
+		d.mu.Unlock()
+		return controller.Observe(context.Background(), request.CapabilityID)
+	case "capability-invoke":
+		d.mu.Lock()
+		controller := d.localCapability
+		d.mu.Unlock()
+		return controller.Invoke(context.Background(), request.CapabilityID, request.CapabilityAction, request.CapabilityArgs)
 	case "daemon-info":
 		return DaemonInfo{DaemonVersion: doctor.Version}, nil
 	case "reload-speech":

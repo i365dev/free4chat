@@ -281,6 +281,39 @@ func nextFakeRequest(t *testing.T, fixture *fakeDaemon) daemon.IpcRequest {
 	}
 }
 
+func TestCapabilityInvokeUsesDaemonIPCAndKeepsEndpointLocal(t *testing.T) {
+	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+		if request.Op == "status" {
+			return daemon.IpcResponse{OK: true, Result: []any{}}
+		}
+		return daemon.IpcResponse{OK: true, Result: map[string]any{"ok": true}}
+	})
+	endpoint := "http://127.0.0.1:43127"
+	output, code := runCliWithFakeDaemon(t, fixture, "capability", "configure", "--fixture-endpoint", endpoint)
+	if code != 0 || strings.Contains(output, endpoint) {
+		t.Fatalf("configure output/code = %q/%d, endpoint should remain local", output, code)
+	}
+	if nextFakeRequest(t, fixture).Op != "status" {
+		t.Fatal("configure preflight did not use daemon")
+	}
+	configured := nextFakeRequest(t, fixture)
+	if configured.Op != "capability-configure" || configured.FixtureEndpoint != endpoint {
+		t.Fatalf("configure request mismatch: %+v", configured)
+	}
+
+	output, code = runCliWithFakeDaemon(t, fixture, "capability", "invoke", "--id", "local_fixture", "--action", "set_led", "--args", `{"color":"#ff0000"}`)
+	if code != 0 {
+		t.Fatalf("invoke exited %d: %s", code, output)
+	}
+	if nextFakeRequest(t, fixture).Op != "status" {
+		t.Fatal("invoke preflight did not use daemon")
+	}
+	invoked := nextFakeRequest(t, fixture)
+	if invoked.Op != "capability-invoke" || invoked.CapabilityID != "local_fixture" || invoked.CapabilityAction != "set_led" || string(invoked.CapabilityArgs) != `{"color":"#ff0000"}` {
+		t.Fatalf("invoke request mismatch: %+v", invoked)
+	}
+}
+
 func TestContextReadPreservesExplicitZeroCursorPresenceOverIPC(t *testing.T) {
 	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
 		if request.Op == "status" {
