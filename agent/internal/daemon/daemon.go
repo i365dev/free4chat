@@ -57,6 +57,7 @@ type Daemon struct {
 	providerHandles     *runtime.ProviderHandleStore
 	transcriptProducers *TranscriptProducerCoordinator
 	localCapability     *capability.Controller
+	capabilityHandler   types.ResidentCapabilityController
 	// runtimeExecutable is the exact binary that owns this daemon. The
 	// Harness receives it through launcher-owned environment policy so local
 	// participant commands cannot fall back to a different PATH binary.
@@ -67,7 +68,7 @@ type Daemon struct {
 // New creates an idle daemon.
 func New() *Daemon {
 	runtimeExecutable, _ := os.Executable()
-	return &Daemon{
+	d := &Daemon{
 		instances:           make(map[string]*residentInstance),
 		closed:              make(chan struct{}),
 		voiceGate:           voice.NewGate(),
@@ -77,6 +78,8 @@ func New() *Daemon {
 		localCapability:     loadLocalCapabilityController(RuntimeDirectory()),
 		runtimeExecutable:   runtimeExecutable,
 	}
+	d.capabilityHandler = &daemonCapabilityController{daemon: d}
+	return d
 }
 
 // Run prepares the runtime directory, cleans stale workspaces left by a dead
@@ -217,8 +220,29 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		}
 		d.mu.Lock()
 		d.localCapability = capability.NewController(adapter)
+		instances := make([]*residentInstance, 0, len(d.instances))
+		for _, instance := range d.instances {
+			instances = append(instances, instance)
+		}
 		d.mu.Unlock()
-		return map[string]any{"configured": true}, nil
+		refreshed := 0
+		refreshFailures := 0
+		for _, instance := range instances {
+			if err := instance.runtime.RefreshRuntimeHostProjection(); err != nil {
+				refreshFailures++
+				continue
+			}
+			refreshed++
+		}
+		if refreshFailures > 0 {
+			return nil, fmt.Errorf("local capability configured, but Runtime Host projection refresh failed for %d resident(s)", refreshFailures)
+		}
+		return map[string]any{"configured": true, "refreshedResidents": refreshed}, nil
+	case "capability-list":
+		if d.capabilityHandler == nil {
+			return []types.RuntimeCapabilityProjection{}, nil
+		}
+		return d.capabilityHandler.DescribeCapabilities(), nil
 	case "capability-describe":
 		d.mu.Lock()
 		controller := d.localCapability
@@ -674,6 +698,7 @@ func (d *Daemon) prepareRuntime(
 		ProviderClaim:           request.ProviderClaim,
 		ProviderHandles:         d.providerHandles,
 		TranscriptProducers:     d.transcriptProducers,
+		CapabilityHandler:       d.capabilityHandler,
 		// Natural room expiry must release the resident registry entry and
 		// its private workspace, matching the Node reference's onRoomExpired
 		// wiring — otherwise status keeps showing a ghost instance and the

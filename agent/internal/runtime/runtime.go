@@ -454,10 +454,10 @@ func (r *ResidentRuntime) hostProjectionFor(roomID string) *types.RuntimeHostPro
 // projectRuntimeHost pushes the current Runtime Host projection to the Room
 // (#176 Phase A) so readiness hot reload reaches the Room without any
 // resident rejoining. Best-effort: text behavior is unaffected on failure.
-func (r *ResidentRuntime) projectRuntimeHost(handle string) {
+func (r *ResidentRuntime) projectRuntimeHost(handle string) error {
 	host := r.CurrentHostProjection()
 	if host == nil {
-		return
+		return nil
 	}
 	// #178 review fix 5: additive and bounded. A rejected or failed
 	// projection never blocks text behavior; diagnostics carry no seed,
@@ -487,6 +487,21 @@ func (r *ResidentRuntime) projectRuntimeHost(handle string) {
 			"reason": string(free4chat.CodeOf(err)),
 		})
 	}
+	return err
+}
+
+// RefreshRuntimeHostProjection re-publishes the current Runtime Host state
+// without reconnecting. Daemon-owned semantic capability configuration uses
+// this after a live controller update so Room discovery stays current.
+func (r *ResidentRuntime) RefreshRuntimeHostProjection() error {
+	r.mu.Lock()
+	handle := r.participantHandle
+	stopped := r.stopped
+	r.mu.Unlock()
+	if !stopped && handle != "" {
+		return r.projectRuntimeHost(handle)
+	}
+	return nil
 }
 
 // speechSnapshot returns a copy that remains stable throughout a media

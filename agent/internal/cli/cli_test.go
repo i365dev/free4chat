@@ -314,6 +314,47 @@ func TestCapabilityInvokeUsesDaemonIPCAndKeepsEndpointLocal(t *testing.T) {
 	}
 }
 
+func TestCapabilityListDiscoversCurrentBoundedDescriptorThroughDaemon(t *testing.T) {
+	const privateEndpoint = "http://127.0.0.1:43127"
+	descriptors := []map[string]any{{
+		"capabilityId": "operator_defined_id",
+		"title":        "Operator capability",
+		"version":      "1",
+		"observe":      true,
+		"actions": []map[string]any{{
+			"name":  "apply",
+			"title": "Apply value",
+			"input": map[string]any{
+				"type":       "object",
+				"properties": map[string]string{"value": "string"},
+				"required":   []string{"value"},
+			},
+		}},
+	}}
+	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+		if request.Op == "status" {
+			return daemon.IpcResponse{OK: true, Result: []any{}}
+		}
+		if request.Op != "capability-list" {
+			return daemon.IpcResponse{OK: false, Error: "unexpected operation"}
+		}
+		return daemon.IpcResponse{OK: true, Result: descriptors}
+	})
+	output, code := runCliWithFakeDaemon(t, fixture, "capability", "list", "--json")
+	if code != 0 || !strings.Contains(output, "operator_defined_id") || !strings.Contains(output, `"value"`) || !strings.Contains(output, `"string"`) {
+		t.Fatalf("generic capability discovery failed (code=%d): %s", code, output)
+	}
+	if strings.Contains(output, privateEndpoint) || strings.Contains(output, "fixtureEndpoint") {
+		t.Fatalf("capability list leaked local configuration: %s", output)
+	}
+	if nextFakeRequest(t, fixture).Op != "status" {
+		t.Fatal("capability list preflight did not use daemon")
+	}
+	if request := nextFakeRequest(t, fixture); request.Op != "capability-list" {
+		t.Fatalf("capability list IPC operation = %q", request.Op)
+	}
+}
+
 func TestContextReadPreservesExplicitZeroCursorPresenceOverIPC(t *testing.T) {
 	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
 		if request.Op == "status" {

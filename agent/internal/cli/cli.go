@@ -51,6 +51,7 @@ func usageText() string {
   free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
   free4chat-agent capability configure --fixture-endpoint <loopback-http-origin>
+  free4chat-agent capability list --json
   free4chat-agent capability describe --id <capability-id>
   free4chat-agent capability observe --id <capability-id>
   free4chat-agent capability invoke --id <capability-id> --action <name> [--args <json>]
@@ -323,6 +324,11 @@ func run(args []string) error {
 		}
 		sub, args := rest[0], rest[1:]
 		switch sub {
+		case "list":
+			if len(args) != 1 || args[0] != "--json" {
+				return errUsage()
+			}
+			return runViaDaemon(&daemon.IpcRequest{Op: "capability-list"})
 		case "configure":
 			endpoint := option(args, "--fixture-endpoint")
 			if endpoint == "" || len(args) != 2 {

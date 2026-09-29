@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -991,6 +993,191 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 	}
 	if err := <-stopDone; err != nil {
 		t.Fatalf("stop IPC failed: %v", err)
+	}
+}
+
+func TestDaemonCapabilityConfigureRefreshesExistingResidentAndRoutesThroughCurrentController(t *testing.T) {
+	_, _ = startDaemon(t)
+	var oldControllerCalls atomic.Int32
+	var currentControllerCalls atomic.Int32
+	newFixture := func(source string, calls *atomic.Int32) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet || r.URL.Path != "/state" {
+				http.NotFound(w, r)
+				return
+			}
+			calls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"source":%q}`, source)
+		}))
+	}
+	oldFixture := newFixture("old-controller", &oldControllerCalls)
+	defer oldFixture.Close()
+	currentFixture := newFixture("current-controller", &currentControllerCalls)
+	defer currentFixture.Close()
+
+	connections := make(chan *websocket.Conn, 1)
+	projections := make(chan map[string]any, 4)
+	capabilityResults := make(chan map[string]any, 2)
+	var mu sync.Mutex
+	initialProjection := map[string]any(nil)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/room/agent-events" {
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			initial, _ := json.Marshal(map[string]any{
+				"type": "events", "events": []any{}, "cursor": float64(0),
+				"expiresAt": float64(time.Now().Add(time.Hour).UnixMilli()),
+			})
+			if conn.Write(context.Background(), websocket.MessageText, initial) != nil {
+				_ = conn.Close(websocket.StatusInternalError, "initial frame failed")
+				return
+			}
+			connections <- conn
+			for {
+				_, payload, readErr := conn.Read(context.Background())
+				if readErr != nil {
+					return
+				}
+				var message map[string]any
+				if json.Unmarshal(payload, &message) == nil && message["type"] == "runtime-capability-result" {
+					capabilityResults <- message
+				}
+			}
+		}
+		var body struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		switch body.Method {
+		case "tools/list":
+			writeModernMCPTools(w)
+		case "tools/call":
+			var call struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			}
+			if json.Unmarshal(body.Params, &call) != nil {
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			switch call.Name {
+			case "join_room":
+				mu.Lock()
+				initialProjection, _ = call.Arguments["runtimeHost"].(map[string]any)
+				mu.Unlock()
+				writeJSONRPC(w, callToolResult(map[string]any{
+					"participantHandle": residentTestHandle("capability-e2e", "agent-capability", "private-token"),
+					"participant":       map[string]any{"id": "agent-capability"},
+					"cursor":            float64(0),
+					"expiresAt":         float64(time.Now().Add(time.Hour).UnixMilli()),
+				}))
+			case "update_runtime_host":
+				projection, _ := call.Arguments["runtimeHost"].(map[string]any)
+				projections <- projection
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			default:
+				writeJSONRPC(w, callToolResult(map[string]any{}))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("FREE4CHAT_MCP_URL", server.URL)
+
+	joined, err := SendIPC(&IpcRequest{
+		Op: "join", Room: "capability-e2e", Name: "Capability Agent", AgentCommand: fakeAgentBinary,
+	})
+	if err != nil {
+		t.Fatalf("resident join failed: %v", err)
+	}
+	var view struct {
+		InstanceID string `json:"instanceId"`
+	}
+	if err := json.Unmarshal(joined, &view); err != nil || view.InstanceID == "" {
+		t.Fatalf("resident join response was invalid: %s (%v)", joined, err)
+	}
+	var residentSocket *websocket.Conn
+	select {
+	case residentSocket = <-connections:
+	case <-time.After(5 * time.Second):
+		t.Fatal("already-running resident did not open its event socket")
+	}
+	mu.Lock()
+	initialCaps, _ := initialProjection["capabilities"].([]any)
+	mu.Unlock()
+	if len(initialCaps) != 0 {
+		t.Fatalf("unconfigured resident unexpectedly advertised capabilities: %#v", initialProjection)
+	}
+
+	// Configure after the Runtime and its private Resident WebSocket are live.
+	if _, err := SendIPC(&IpcRequest{Op: "capability-configure", FixtureEndpoint: oldFixture.URL}); err != nil {
+		t.Fatalf("first daemon configure failed: %v", err)
+	}
+	var refreshed map[string]any
+	select {
+	case refreshed = <-projections:
+	case <-time.After(5 * time.Second):
+		t.Fatal("live configure did not refresh the existing Runtime Host projection")
+	}
+	caps, _ := refreshed["capabilities"].([]any)
+	if len(caps) != 1 {
+		t.Fatalf("refreshed Host projection lacks the capability descriptor: %#v", refreshed)
+	}
+	descriptor, _ := caps[0].(map[string]any)
+	capabilityID, _ := descriptor["capabilityId"].(string)
+	runtimeHostID, _ := refreshed["runtimeHostId"].(string)
+	if capabilityID == "" || runtimeHostID == "" {
+		t.Fatalf("refreshed descriptor was incomplete: %#v", refreshed)
+	}
+
+	// Replace the daemon-owned controller while this resident remains online.
+	// Its stable Runtime callback must resolve the replacement, not the old pointer.
+	if _, err := SendIPC(&IpcRequest{Op: "capability-configure", FixtureEndpoint: currentFixture.URL}); err != nil {
+		t.Fatalf("replacement daemon configure failed: %v", err)
+	}
+	select {
+	case <-projections:
+	case <-time.After(5 * time.Second):
+		t.Fatal("replacement configure did not refresh the existing Runtime Host projection")
+	}
+
+	request, _ := json.Marshal(map[string]any{
+		"type": "runtime-capability-request", "requestId": "daemon-e2e-request",
+		"runtimeHostId": runtimeHostID, "capabilityId": capabilityID, "operation": "observe",
+	})
+	if err := residentSocket.Write(context.Background(), websocket.MessageText, request); err != nil {
+		t.Fatalf("send private resident capability request: %v", err)
+	}
+	select {
+	case response := <-capabilityResults:
+		if response["requestId"] != "daemon-e2e-request" || response["ok"] != true {
+			t.Fatalf("resident request failed: %#v", response)
+		}
+		result, _ := response["result"].(map[string]any)
+		if result["source"] != "current-controller" {
+			t.Fatalf("resident did not reach the current daemon-owned controller: %#v", response)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resident did not answer the capability request")
+	}
+	if oldControllerCalls.Load() != 0 || currentControllerCalls.Load() != 1 {
+		t.Fatalf("resident used a stale controller: old=%d current=%d", oldControllerCalls.Load(), currentControllerCalls.Load())
+	}
+	listed, err := SendIPC(&IpcRequest{Op: "capability-list"})
+	if err != nil || !strings.Contains(string(listed), capabilityID) || strings.Contains(string(listed), currentFixture.URL) {
+		t.Fatalf("daemon discovery did not return the sanitized current descriptor: %s (%v)", listed, err)
+	}
+	if _, err := SendIPC(&IpcRequest{Op: "leave", InstanceID: view.InstanceID}); err != nil {
+		t.Fatalf("resident cleanup failed: %v", err)
 	}
 }
 

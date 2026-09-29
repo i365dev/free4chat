@@ -109,7 +109,13 @@ func (a *FixtureAdapter) Describe() Descriptor {
 		Title:   "Local fixture",
 		Version: "1",
 		Observe: "state",
-		Actions: []ActionSchema{{Name: "set_led", Args: `{"color":"#RRGGBB"}`}},
+		Actions: []ActionSchema{{
+			Name:       "set_led",
+			Title:      "Set color",
+			Args:       `{"color":"#RRGGBB"}`,
+			Properties: map[string]string{"color": "string"},
+			Required:   []string{"color"},
+		}},
 	}
 }
 

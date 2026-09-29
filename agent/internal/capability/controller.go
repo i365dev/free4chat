@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -29,6 +30,8 @@ var (
 	ErrMalformedResponse = errors.New("local capability response malformed")
 )
 
+var unsafeDescriptorPattern = regexp.MustCompile(`(?i)(https?://|"?(endpoint|credential|password|secret|token|authorization|cookie|adapter|protocol|hostname)"?\s*[:=])`)
+
 // Descriptor contains semantic metadata only. Adapter configuration is never
 // represented here.
 type Descriptor struct {
@@ -40,8 +43,11 @@ type Descriptor struct {
 }
 
 type ActionSchema struct {
-	Name string `json:"name"`
-	Args string `json:"args"`
+	Name       string            `json:"name"`
+	Title      string            `json:"title"`
+	Args       string            `json:"args"`
+	Properties map[string]string `json:"properties"`
+	Required   []string          `json:"required,omitempty"`
 }
 
 type Observation struct {
@@ -67,26 +73,40 @@ func NewController(adapter Adapter) *Controller {
 }
 
 func (c *Controller) Describe(id string) (Descriptor, error) {
-	if id != CapabilityID {
-		return Descriptor{}, ErrUnknownCapability
-	}
 	if c == nil || c.adapter == nil {
 		return Descriptor{}, ErrUnavailable
 	}
 	d := c.adapter.Describe()
 	b, err := json.Marshal(d)
-	if err != nil || len(b) > MaxDescriptor || len(d.ID) > MaxIDBytes {
+	if id != d.ID {
+		return Descriptor{}, ErrUnknownCapability
+	}
+	if err != nil || len(b) > MaxDescriptor || len(d.ID) > MaxIDBytes || unsafeDescriptorPattern.Match(b) {
 		return Descriptor{}, ErrMalformedResponse
 	}
 	return d, nil
 }
 
-func (c *Controller) Observe(ctx context.Context, id string) (Observation, error) {
-	if id != CapabilityID {
-		return Observation{}, ErrUnknownCapability
+// DescribeAll returns the bounded semantic descriptors currently owned by
+// this controller. An unconfigured controller has no discoverable entries.
+func (c *Controller) DescribeAll() []Descriptor {
+	if c == nil || c.adapter == nil {
+		return []Descriptor{}
 	}
+	descriptor := c.adapter.Describe()
+	validated, err := c.Describe(descriptor.ID)
+	if err != nil {
+		return []Descriptor{}
+	}
+	return []Descriptor{validated}
+}
+
+func (c *Controller) Observe(ctx context.Context, id string) (Observation, error) {
 	if c == nil || c.adapter == nil {
 		return Observation{}, ErrUnavailable
+	}
+	if id != c.adapter.Describe().ID {
+		return Observation{}, ErrUnknownCapability
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -104,14 +124,14 @@ func (c *Controller) Observe(ctx context.Context, id string) (Observation, error
 }
 
 func (c *Controller) Invoke(ctx context.Context, id, action string, args json.RawMessage) (json.RawMessage, error) {
-	if id != CapabilityID {
+	if c == nil || c.adapter == nil {
+		return nil, ErrUnavailable
+	}
+	if id != c.adapter.Describe().ID {
 		return nil, ErrUnknownCapability
 	}
 	if len(action) == 0 || len(action) > MaxActionBytes || strings.TrimSpace(action) != action {
 		return nil, ErrUnsupportedAction
-	}
-	if c == nil || c.adapter == nil {
-		return nil, ErrUnavailable
 	}
 	if len(args) > MaxArgsBytes {
 		return nil, ErrTooLarge
