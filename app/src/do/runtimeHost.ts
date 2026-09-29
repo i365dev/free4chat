@@ -1,3 +1,7 @@
+import {
+  RUNTIME_CAPABILITY_MAX_ROOM_HOSTS,
+  validateRuntimeCapabilityProjection,
+} from "../common/runtimeCapability"
 import type {
   ParticipantKind,
   RoomParticipant,
@@ -78,11 +82,34 @@ export function validateRuntimeHost(
       error: "invalid_runtime_host",
       reason: "invalid_speech",
     }
+  let capabilities: RuntimeHostProjection["capabilities"]
+  if (candidate.capabilities !== undefined) {
+    if (
+      !Array.isArray(candidate.capabilities) ||
+      candidate.capabilities.length > 1
+    )
+      return {
+        ok: false,
+        error: "invalid_runtime_host",
+        reason: "invalid_capabilities",
+      }
+    const parsed = candidate.capabilities.map(
+      validateRuntimeCapabilityProjection
+    )
+    if (parsed.some((capability) => capability === null))
+      return {
+        ok: false,
+        error: "invalid_runtime_host",
+        reason: "invalid_capabilities",
+      }
+    capabilities = parsed as NonNullable<RuntimeHostProjection["capabilities"]>
+  }
   return {
     ok: true,
     runtimeHost: {
       runtimeHostId,
       speech: { stt: slots, tts: voice },
+      ...(capabilities ? { capabilities } : {}),
     },
   }
 }
@@ -139,6 +166,7 @@ export function normalizeRuntimeHosts(
 /** Storage hygiene for a canonical map: invalid entries are never repaired. */
 export function sanitizeStoredRuntimeHosts(input: unknown): RuntimeHostMap {
   const hosts: RuntimeHostMap = {}
+  let capabilityHosts = 0
   if (typeof input !== "object" || input === null || Array.isArray(input))
     return hosts
   for (const [hostId, raw] of Object.entries(
@@ -148,11 +176,23 @@ export function sanitizeStoredRuntimeHosts(input: unknown): RuntimeHostMap {
     const validated = validateRuntimeHost({
       runtimeHostId: hostId,
       ...(typeof raw === "object" && raw !== null
-        ? { speech: (raw as Record<string, unknown>).speech }
+        ? {
+            speech: (raw as Record<string, unknown>).speech,
+            capabilities: (raw as Record<string, unknown>).capabilities,
+          }
         : {}),
     })
-    if (validated.ok && validated.runtimeHost)
-      hosts[hostId] = validated.runtimeHost
+    if (validated.ok && validated.runtimeHost) {
+      if (
+        validated.runtimeHost.capabilities?.length &&
+        capabilityHosts >= RUNTIME_CAPABILITY_MAX_ROOM_HOSTS
+      ) {
+        hosts[hostId] = { ...validated.runtimeHost, capabilities: [] }
+      } else {
+        hosts[hostId] = validated.runtimeHost
+        if (validated.runtimeHost.capabilities?.length) capabilityHosts += 1
+      }
+    }
   }
   return hosts
 }
@@ -169,9 +209,18 @@ export function registerRuntimeHost(
   runtimeHosts: RuntimeHostMap | undefined,
   runtimeHost: RuntimeHostProjection
 ): RuntimeHostMap {
+  const existingCapabilityHosts = Object.entries(runtimeHosts ?? {}).filter(
+    ([hostId, host]) =>
+      hostId !== runtimeHost.runtimeHostId && Boolean(host.capabilities?.length)
+  ).length
+  const boundedHost =
+    runtimeHost.capabilities?.length &&
+    existingCapabilityHosts >= RUNTIME_CAPABILITY_MAX_ROOM_HOSTS
+      ? { ...runtimeHost, capabilities: [] }
+      : runtimeHost
   return {
     ...(runtimeHosts ?? {}),
-    [runtimeHost.runtimeHostId]: runtimeHost,
+    [runtimeHost.runtimeHostId]: boundedHost,
   }
 }
 

@@ -14,6 +14,7 @@ export interface UserInfo {
   screenShareStream?: MediaStream | null
   screenShareEnabled?: boolean
   peerId: string
+  connected?: boolean
   muteState?: boolean | false
   capabilities?: string[]
   surface?: RoomSurfaceV1

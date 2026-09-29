@@ -19,6 +19,7 @@ import RoomAppLauncher from "./RoomAppLauncher"
 import RoomAudioSinks from "./RoomAudioSinks"
 import RoomCosmosBackdrop from "./RoomCosmosBackdrop"
 import RoomJoiningWarpScreen from "./RoomJoiningWarpScreen"
+import RuntimeCapabilityControl from "./RuntimeCapabilityControl"
 import TaskLiveView from "./TaskLiveView"
 import TaskSessionPicker from "./TaskSessionPicker"
 import TextChatCard from "./TextChatCard"
@@ -500,6 +501,9 @@ export default function RoomContent({
     liveTranscriptSegments,
     runtimeHosts,
     runtimeHostProviders,
+    setRuntimeCapabilityControl,
+    runtimeCapabilityControlError,
+    requestRuntimeCapability,
     liveTranscriptMediaAvailable,
     startLiveTranscript,
     stopLiveTranscript,
@@ -2520,6 +2524,20 @@ export default function RoomContent({
               runtimeConnectionStatus={runtimeConnectionStatus}
               runtimeConnectError={runtimeConnectError}
               onSuggestInvite={() => setAgentInviteOpen(true)}
+            />
+            <RuntimeCapabilityControl
+              runtimeHosts={runtimeHosts}
+              runtimeHostProviders={runtimeHostProviders}
+              localParticipantId={effectiveLocalParticipantId}
+              controlError={runtimeCapabilityControlError}
+              participants={participants.map((participant) => ({
+                peerId: participant.peerId,
+                kind: participant.kind,
+                runtimeHostId: participant.runtimeHostId,
+                connected: participant.connected,
+              }))}
+              onSetEnabled={setRuntimeCapabilityControl}
+              onRequest={requestRuntimeCapability}
             />
             {/* #402: voice is opt-in and Room-owned — the canonical mic
                 control lives in persistent Room chrome, never on a Stage

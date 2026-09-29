@@ -228,6 +228,44 @@ func TestParseRuntimeHostStrictFailsClosed(t *testing.T) {
 	}
 }
 
+func TestParseRuntimeHostCapabilityProjectionIsBoundedAndSecretFree(t *testing.T) {
+	valid := map[string]any{
+		"runtimeHostId": "11111111-2222-3333-4444-555555555555",
+		"speech":        map[string]any{"stt": false, "tts": false},
+		"capabilities": []any{map[string]any{
+			"capabilityId": "fixture",
+			"title":        "Fixture",
+			"version":      "1",
+			"observe":      true,
+			"actions": []any{map[string]any{
+				"name":  "set-state",
+				"title": "Set state",
+				"input": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"value": "string"},
+					"required":   []any{"value"},
+				},
+			}},
+		}},
+	}
+	host := ParseRuntimeHostStrict(valid)
+	if host == nil || len(host.Capabilities) != 1 || host.Capabilities[0].CapabilityID != "fixture" {
+		t.Fatalf("valid capability projection rejected: %+v", host)
+	}
+	encoded, err := json.Marshal(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "endpoint") || strings.Contains(string(encoded), "credential") {
+		t.Fatalf("projection contains local authority: %s", encoded)
+	}
+	bad := deepCopyMap(valid)
+	bad["capabilities"].([]any)[0].(map[string]any)["endpoint"] = "http://127.0.0.1"
+	if got := ParseRuntimeHostStrict(bad); got != nil {
+		t.Fatalf("unknown endpoint field must fail closed: %+v", got)
+	}
+}
+
 func validRoomEventPayload() map[string]any {
 	return map[string]any{
 		"sequence":  7,

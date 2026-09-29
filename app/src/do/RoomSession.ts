@@ -94,9 +94,11 @@ import {
   registerRuntimeHost,
   updateRuntimeHost,
   validateRuntimeHost,
+  isValidRuntimeHostId,
 } from "./runtimeHost"
 import {
   createRuntimeHostProviderClaim,
+  canHumanControlRuntimeHost,
   canHumanUseRuntimeHost,
   completeDeferredRuntimeHostProviderReattach,
   deferRuntimeHostProviderReattach,
@@ -180,6 +182,15 @@ import {
   setProductionRoomAppCatalog,
   validateRoomAppPayload,
 } from "../common/roomApp"
+import {
+  isBoundedRuntimeCapabilityArgs,
+  isBoundedRuntimeCapabilityResult,
+  isRuntimeCapabilityActionName,
+  isRuntimeCapabilityId,
+  RUNTIME_CAPABILITY_MAX_IN_FLIGHT,
+  RUNTIME_CAPABILITY_MAX_RESULT_BYTES,
+  RUNTIME_CAPABILITY_TIMEOUT_MS,
+} from "../common/runtimeCapability"
 import {
   createRuntimeProviderHandle,
   hashRuntimeProviderHandle,
@@ -295,6 +306,40 @@ function urlSafeGeneratedAppId(value: unknown): string | null {
     : null
 }
 const MAX_PENDING_PERMISSION_REQUESTS = 32
+const RUNTIME_CAPABILITY_REQUEST_ID_MAX_LENGTH = 64
+const RUNTIME_CAPABILITY_RECENT_REQUESTS = 64
+const RUNTIME_CAPABILITY_RECENT_TTL_MS = 60 * 1000
+
+function liveVerifiedRuntimeHostResidents(
+  room: RoomRecord,
+  runtimeHostId: string,
+  verifiedParticipantIds: readonly string[]
+): RoomParticipant[] {
+  return [...new Set(verifiedParticipantIds)]
+    .map((participantId) => room.participants[participantId])
+    .filter(
+      (participant): participant is RoomParticipant =>
+        participant?.kind === "agent" &&
+        participant.connected === true &&
+        participant.runtimeHostId === runtimeHostId &&
+        typeof participant.connectionNonce === "string"
+    )
+    .sort((left, right) => left.id.localeCompare(right.id))
+}
+
+function liveVerifiedRuntimeHostResident(
+  room: RoomRecord,
+  runtimeHostId: string,
+  verifiedParticipantIds: readonly string[]
+): boolean {
+  return (
+    liveVerifiedRuntimeHostResidents(
+      room,
+      runtimeHostId,
+      verifiedParticipantIds
+    ).length > 0
+  )
+}
 // The resident event stream is intentionally one bounded frame. The 2 MiB
 // cap covers the retained 100-message/8-attachment event window (including
 // worst-case UTF-8 text), plus JSON, roster, and Runtime Host overhead; the
@@ -474,11 +519,29 @@ interface AgentEventSocketAttachment {
   connectionNonce: string
   cursor: number
   pendingSessionControl?: PendingSessionControl
+  pendingCapabilityRequest?: PendingCapabilityRequest
   /**
    * #480: this socket's exact active Task turns, so control authority survives
    * a Durable Object eviction. Current turns only, bounded, exact-turn bound.
    */
   activeTaskTurns?: AgentEventActiveTaskTurn[]
+}
+
+interface PendingCapabilityRequest {
+  requestId: string
+  runtimeHostId: string
+  capabilityId: string
+  operation: "observe" | "invoke"
+  requesterParticipantId: string
+  requesterConnectionNonce: string
+  expiresAt: number
+}
+
+interface PendingRuntimeCapabilityRpc extends PendingCapabilityRequest {
+  residentParticipantId: string
+  residentConnectionNonce: string
+  requesterSocket: WebSocket
+  timer: ReturnType<typeof setTimeout>
 }
 
 interface AgentEventActiveTaskTurn {
@@ -1039,6 +1102,24 @@ type ClientMessage =
       reattachProofHash?: string
     }
   | {
+      // An explicit Human opt-in, separate from the existing speech provider
+      // grant. The sender and owner are verified against the Room association.
+      type: "runtime-capability-control"
+      runtimeHostId: string
+      enabled: boolean
+    }
+  | {
+      // Deterministic local control. Identity comes from the authenticated
+      // socket; this message never enters Room chat or Task ingestion.
+      type: "runtime-capability-request"
+      requestId: string
+      runtimeHostId: string
+      capabilityId: string
+      operation: "observe" | "invoke"
+      action?: string
+      args?: Record<string, unknown>
+    }
+  | {
       // Ephemeral private Room App control-plane message. The Room derives
       // sender identity from the authenticated WebSocket attachment and
       // delivers only to the current target Human socket.
@@ -1086,6 +1167,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       timer: ReturnType<typeof setTimeout>
     }
   >()
+  // Human capability RPC is transient and content-free in DO memory. Only
+  // correlation and authority bindings live here; args/results are never
+  // persisted or serialized into socket attachments.
+  private readonly pendingRuntimeCapabilityRequests = new Map<
+    string,
+    PendingRuntimeCapabilityRpc
+  >()
+  private readonly recentRuntimeCapabilityRequestIds = new Map<string, number>()
   // A ready handshake may yield while refreshing the Lab catalog. Keep only
   // those in-flight host-state operations so a later Human chat is not
   // accepted before its discovery snapshot can include the ready App. This is
@@ -2219,6 +2308,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   private async expireRoom(room: RoomRecord): Promise<void> {
     this.failAllRoomAppAgentRequests("room_expired")
+    this.failAllRuntimeCapabilityRequests("unavailable")
     // Snapshot and detach the expiring generation's in-memory recipients
     // before the first external await. Storage deletion does not isolate the
     // live DO instance: a recycled room name can create a new generation
@@ -3804,6 +3894,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           delete (attachment as { pendingSessionControl?: unknown })
             .pendingSessionControl
       }
+      if (attachment.pendingCapabilityRequest !== undefined) {
+        const pending = attachment.pendingCapabilityRequest
+        if (
+          !pending ||
+          typeof pending !== "object" ||
+          !this.validRuntimeCapabilityRequestId(pending.requestId) ||
+          !isValidRuntimeHostId(pending.runtimeHostId) ||
+          !isRuntimeCapabilityId(pending.capabilityId) ||
+          (pending.operation !== "observe" && pending.operation !== "invoke") ||
+          typeof pending.requesterParticipantId !== "string" ||
+          typeof pending.requesterConnectionNonce !== "string" ||
+          !Number.isSafeInteger(pending.expiresAt)
+        )
+          delete (attachment as { pendingCapabilityRequest?: unknown })
+            .pendingCapabilityRequest
+      }
       // Reject malformed or oversized socket authority.
       if (attachment.activeTaskTurns !== undefined) {
         const turns = attachment.activeTaskTurns
@@ -3943,11 +4049,12 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       socket.close(1003, "Invalid message")
       return
     }
-    // #409: the resident socket carries exactly two inbound application
-    // frames: the ordinary lease heartbeat, and a private session-control
-    // result. Anything else still closes the stream — a malformed or late
-    // RESULT, by contrast, is ignored by its own handler instead of being
-    // treated as a transport fault.
+    // Private correlated results are ignored when late or mismatched. Other
+    // unsupported resident frames remain a protocol error.
+    if (message.type === "runtime-capability-result") {
+      await this.handleRuntimeCapabilityResidentResult(socket, attachment, raw)
+      return
+    }
     if (message.type === "task-session-result") {
       await this.handleAgentSessionResult(socket, attachment, raw)
       return
@@ -3995,6 +4102,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     _socket: WebSocket,
     attachment: AgentEventSocketAttachment
   ): Promise<void> {
+    this.failRuntimeCapabilityRequestsForResident(
+      attachment.participantId,
+      attachment.connectionNonce,
+      "unavailable"
+    )
     const room = await this.activeRoom()
     if (!room) return
     const participant = room.participants[attachment.participantId]
@@ -4046,6 +4158,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     for (const previous of this.ctx.getWebSockets(
       this.agentEventSocketTag(participant.id)
     )) {
+      const previousAttachment = this.deserializeAgentEventAttachment(previous)
+      if (previousAttachment)
+        this.failRuntimeCapabilityRequestsForResident(
+          participant.id,
+          previousAttachment.connectionNonce,
+          "unavailable"
+        )
       try {
         previous.close(4000, "Replaced")
       } catch {
@@ -5627,6 +5746,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       room.runtimeHosts = runtimeHostTransition.runtimeHosts
       participant.runtimeHostId = host.runtimeHostId
+      if (!host.capabilities?.length) {
+        const association = room.runtimeHostProviders?.[host.runtimeHostId]
+        if (association?.capabilityControlHumanParticipantId) {
+          delete association.capabilityControlHumanParticipantId
+          for (const [requestId, pending] of this
+            .pendingRuntimeCapabilityRequests)
+            if (pending.runtimeHostId === host.runtimeHostId)
+              this.finishRuntimeCapabilityRequest(requestId, {
+                ok: false,
+                error: "unavailable",
+              })
+        }
+      }
       if (providerHandleHash)
         room.runtimeHostProviders = markRuntimeHostProviderMember({
           providers: room.runtimeHostProviders ?? {},
@@ -7505,6 +7637,488 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       this.finishRoomAppAgentRequest(requestId, { ok: false, error })
   }
 
+  private validRuntimeCapabilityRequestId(value: unknown): value is string {
+    return (
+      typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= RUNTIME_CAPABILITY_REQUEST_ID_MAX_LENGTH &&
+      value.trim() === value &&
+      /^[A-Za-z0-9._:-]+$/.test(value)
+    )
+  }
+
+  private sendRuntimeCapabilityResult(
+    socket: WebSocket,
+    requestId: string,
+    ok: boolean,
+    result?: Record<string, unknown>,
+    error?: string
+  ): void {
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "runtime-capability-result",
+          requestId,
+          ok,
+          ...(result ? { result } : {}),
+          ...(error ? { error } : {}),
+        })
+      )
+    } catch {
+      // A closed requester has no delivery target; the request is still done.
+    }
+  }
+
+  private sendRuntimeCapabilityControlResult(
+    socket: WebSocket,
+    ok: boolean,
+    error?: string
+  ): void {
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "runtime-capability-control-result",
+          ok,
+          ...(error ? { error } : {}),
+        })
+      )
+    } catch {
+      // The Human may have left while the authorization was being applied.
+    }
+  }
+
+  private clearRuntimeCapabilitySocketPending(
+    pending: PendingRuntimeCapabilityRpc
+  ): void {
+    for (const residentSocket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(pending.residentParticipantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(residentSocket)
+      if (
+        attachment?.connectionNonce !== pending.residentConnectionNonce ||
+        attachment.pendingCapabilityRequest?.requestId !== pending.requestId
+      )
+        continue
+      delete attachment.pendingCapabilityRequest
+      try {
+        residentSocket.serializeAttachment(attachment)
+      } catch {
+        // This exact socket is no longer able to own a useful correlation.
+      }
+    }
+  }
+
+  private finishRuntimeCapabilityRequest(
+    requestId: string,
+    outcome:
+      | { ok: true; result: Record<string, unknown> }
+      | { ok: false; error: string }
+  ): void {
+    const pending = this.pendingRuntimeCapabilityRequests.get(requestId)
+    if (!pending) return
+    this.pendingRuntimeCapabilityRequests.delete(requestId)
+    clearTimeout(pending.timer)
+    this.clearRuntimeCapabilitySocketPending(pending)
+    if ("result" in outcome)
+      this.sendRuntimeCapabilityResult(
+        pending.requesterSocket,
+        requestId,
+        true,
+        outcome.result
+      )
+    else
+      this.sendRuntimeCapabilityResult(
+        pending.requesterSocket,
+        requestId,
+        false,
+        undefined,
+        outcome.error
+      )
+  }
+
+  private failRuntimeCapabilityRequestsForResident(
+    participantId: string,
+    connectionNonce: string,
+    error: string
+  ): void {
+    for (const [requestId, pending] of this.pendingRuntimeCapabilityRequests)
+      if (
+        pending.residentParticipantId === participantId &&
+        pending.residentConnectionNonce === connectionNonce
+      )
+        this.finishRuntimeCapabilityRequest(requestId, { ok: false, error })
+  }
+
+  private failRuntimeCapabilityRequestsForRequester(
+    participantId: string,
+    connectionNonce: string,
+    error: string
+  ): void {
+    for (const [requestId, pending] of this.pendingRuntimeCapabilityRequests)
+      if (
+        pending.requesterParticipantId === participantId &&
+        pending.requesterConnectionNonce === connectionNonce
+      )
+        this.finishRuntimeCapabilityRequest(requestId, { ok: false, error })
+  }
+
+  private failAllRuntimeCapabilityRequests(error: string): void {
+    for (const requestId of this.pendingRuntimeCapabilityRequests.keys())
+      this.finishRuntimeCapabilityRequest(requestId, { ok: false, error })
+  }
+
+  private async handleRuntimeCapabilityControl(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    room: RoomRecord,
+    participant: RoomParticipant,
+    message: Extract<ClientMessage, { type: "runtime-capability-control" }>
+  ): Promise<void> {
+    const association = room.runtimeHostProviders?.[message.runtimeHostId]
+    const host = room.runtimeHosts?.[message.runtimeHostId]
+    if (
+      participant.kind !== "human" ||
+      participant.connectionNonce !== attachment.connectionNonce ||
+      typeof message.enabled !== "boolean" ||
+      !isValidRuntimeHostId(message.runtimeHostId) ||
+      !association ||
+      association.humanParticipantId !== participant.id
+    ) {
+      this.sendRuntimeCapabilityControlResult(socket, false, "unauthorized")
+      return
+    }
+    if (message.enabled) {
+      if (!host?.capabilities?.length) {
+        this.sendRuntimeCapabilityControlResult(socket, false, "unavailable")
+        return
+      }
+      const residentIsLive = liveVerifiedRuntimeHostResident(
+        room,
+        message.runtimeHostId,
+        association.verifiedParticipantIds
+      )
+      if (!residentIsLive) {
+        this.sendRuntimeCapabilityControlResult(socket, false, "unavailable")
+        return
+      }
+      association.capabilityControlHumanParticipantId = participant.id
+    } else {
+      delete association.capabilityControlHumanParticipantId
+      for (const [requestId, pending] of this.pendingRuntimeCapabilityRequests)
+        if (
+          pending.runtimeHostId === message.runtimeHostId &&
+          pending.requesterParticipantId === participant.id
+        )
+          this.finishRuntimeCapabilityRequest(requestId, {
+            ok: false,
+            error: "unauthorized",
+          })
+    }
+    await this.saveRoom(room)
+    await this.broadcastState(room)
+    this.sendRuntimeCapabilityControlResult(socket, true)
+  }
+
+  private async handleRuntimeCapabilityRequest(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    room: RoomRecord,
+    participant: RoomParticipant,
+    message: Extract<ClientMessage, { type: "runtime-capability-request" }>
+  ): Promise<void> {
+    const requestId = message.requestId
+    if (!this.validRuntimeCapabilityRequestId(requestId)) return
+    const now = Date.now()
+    for (const [id, expiresAt] of this.recentRuntimeCapabilityRequestIds)
+      if (expiresAt <= now) this.recentRuntimeCapabilityRequestIds.delete(id)
+    const reject = (error: string) =>
+      this.sendRuntimeCapabilityResult(
+        socket,
+        requestId,
+        false,
+        undefined,
+        error
+      )
+    if (
+      participant.kind !== "human" ||
+      participant.connectionNonce !== attachment.connectionNonce ||
+      !isValidRuntimeHostId(message.runtimeHostId) ||
+      !isRuntimeCapabilityId(message.capabilityId) ||
+      (message.operation !== "observe" && message.operation !== "invoke")
+    ) {
+      reject("invalid_request")
+      return
+    }
+    if (
+      this.recentRuntimeCapabilityRequestIds.has(requestId) ||
+      this.pendingRuntimeCapabilityRequests.has(requestId)
+    ) {
+      reject("duplicate_request")
+      return
+    }
+    const projection = room.runtimeHosts?.[message.runtimeHostId]
+    const capability = projection?.capabilities?.find(
+      (candidate) => candidate.capabilityId === message.capabilityId
+    )
+    const authorized = canHumanControlRuntimeHost({
+      participants: Object.values(room.participants),
+      runtimeHosts: room.runtimeHosts,
+      providers: room.runtimeHostProviders,
+      humanParticipantId: participant.id,
+      runtimeHostId: message.runtimeHostId,
+    })
+    if (!authorized || !capability) {
+      reject("unauthorized")
+      return
+    }
+    if (message.operation === "observe") {
+      if (
+        !capability.observe ||
+        message.action !== undefined ||
+        message.args !== undefined
+      ) {
+        reject("invalid_request")
+        return
+      }
+    } else {
+      const action = capability.actions.find(
+        (item) => item.name === message.action
+      )
+      if (
+        !action ||
+        !isRuntimeCapabilityActionName(message.action) ||
+        !isBoundedRuntimeCapabilityArgs(message.args) ||
+        Object.keys(message.args).some(
+          (key) => !Object.hasOwn(action.input.properties, key)
+        ) ||
+        action.input.required?.some(
+          (key) => !Object.hasOwn(message.args!, key)
+        ) ||
+        Object.entries(message.args).some(([key, value]) => {
+          const expected = action.input.properties[key]
+          return (
+            (expected === "string" && typeof value !== "string") ||
+            (expected === "number" &&
+              (typeof value !== "number" || !Number.isFinite(value))) ||
+            (expected === "boolean" && typeof value !== "boolean")
+          )
+        })
+      ) {
+        reject("invalid_request")
+        return
+      }
+    }
+    if (
+      this.pendingRuntimeCapabilityRequests.size >=
+      RUNTIME_CAPABILITY_MAX_IN_FLIGHT
+    ) {
+      reject("busy")
+      return
+    }
+
+    const association = room.runtimeHostProviders?.[message.runtimeHostId]
+    const residents = liveVerifiedRuntimeHostResidents(
+      room,
+      message.runtimeHostId,
+      association?.verifiedParticipantIds ?? []
+    )
+    let target: {
+      socket: WebSocket
+      attachment: AgentEventSocketAttachment
+    } | null = null
+    for (const resident of residents) {
+      for (const residentSocket of this.ctx.getWebSockets(
+        this.agentEventSocketTag(resident.id)
+      )) {
+        const residentAttachment =
+          this.deserializeAgentEventAttachment(residentSocket)
+        if (
+          !residentAttachment ||
+          residentAttachment.connectionNonce !== resident.connectionNonce ||
+          (residentAttachment.pendingCapabilityRequest &&
+            residentAttachment.pendingCapabilityRequest.expiresAt > now)
+        )
+          continue
+        target = { socket: residentSocket, attachment: residentAttachment }
+        break
+      }
+      if (target) break
+    }
+    if (!target) {
+      reject("unavailable")
+      return
+    }
+
+    const pending: PendingCapabilityRequest = {
+      requestId,
+      runtimeHostId: message.runtimeHostId,
+      capabilityId: message.capabilityId,
+      operation: message.operation,
+      requesterParticipantId: participant.id,
+      requesterConnectionNonce: attachment.connectionNonce,
+      expiresAt: now + RUNTIME_CAPABILITY_TIMEOUT_MS,
+    }
+    target.attachment.pendingCapabilityRequest = pending
+    try {
+      target.socket.serializeAttachment(target.attachment)
+    } catch {
+      reject("unavailable")
+      return
+    }
+    this.recentRuntimeCapabilityRequestIds.set(
+      requestId,
+      now + RUNTIME_CAPABILITY_RECENT_TTL_MS
+    )
+    while (
+      this.recentRuntimeCapabilityRequestIds.size >
+      RUNTIME_CAPABILITY_RECENT_REQUESTS
+    ) {
+      const oldest = this.recentRuntimeCapabilityRequestIds.keys().next().value
+      if (oldest === undefined) break
+      this.recentRuntimeCapabilityRequestIds.delete(oldest)
+    }
+    const timer = setTimeout(
+      () =>
+        this.finishRuntimeCapabilityRequest(requestId, {
+          ok: false,
+          error: "timeout",
+        }),
+      RUNTIME_CAPABILITY_TIMEOUT_MS
+    )
+    const residentNonce = target.attachment.connectionNonce
+    this.pendingRuntimeCapabilityRequests.set(requestId, {
+      ...pending,
+      residentParticipantId: target.attachment.participantId,
+      residentConnectionNonce: residentNonce,
+      requesterSocket: socket,
+      timer,
+    })
+    const frame = {
+      type: "runtime-capability-request",
+      requestId,
+      runtimeHostId: message.runtimeHostId,
+      capabilityId: message.capabilityId,
+      operation: message.operation,
+      ...(message.action ? { action: message.action } : {}),
+      ...(message.args ? { args: message.args } : {}),
+    }
+    if (JSON.stringify(frame).length > RUNTIME_CAPABILITY_MAX_RESULT_BYTES) {
+      this.finishRuntimeCapabilityRequest(requestId, {
+        ok: false,
+        error: "invalid_request",
+      })
+      return
+    }
+    try {
+      target.socket.send(JSON.stringify(frame))
+    } catch {
+      this.finishRuntimeCapabilityRequest(requestId, {
+        ok: false,
+        error: "unavailable",
+      })
+    }
+  }
+
+  private async handleRuntimeCapabilityResidentResult(
+    socket: WebSocket,
+    attachment: AgentEventSocketAttachment,
+    raw: string
+  ): Promise<void> {
+    let message: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+      message = parsed as Record<string, unknown>
+    } catch {
+      return
+    }
+    if (
+      message.type !== "runtime-capability-result" ||
+      !this.validRuntimeCapabilityRequestId(message.requestId) ||
+      !isValidRuntimeHostId(message.runtimeHostId) ||
+      !isRuntimeCapabilityId(message.capabilityId) ||
+      (message.operation !== "observe" && message.operation !== "invoke")
+    )
+      return
+    const pending = this.pendingRuntimeCapabilityRequests.get(message.requestId)
+    const socketPending = attachment.pendingCapabilityRequest
+    if (
+      !pending ||
+      !socketPending ||
+      pending.residentParticipantId !== attachment.participantId ||
+      pending.residentConnectionNonce !== attachment.connectionNonce ||
+      socketPending.requestId !== pending.requestId ||
+      socketPending.runtimeHostId !== pending.runtimeHostId ||
+      message.runtimeHostId !== pending.runtimeHostId ||
+      message.capabilityId !== pending.capabilityId ||
+      message.operation !== pending.operation
+    )
+      return
+    const room = await this.activeRoom()
+    const resident = room?.participants[attachment.participantId]
+    const requester = room?.participants[pending.requesterParticipantId]
+    if (
+      !room ||
+      !resident ||
+      resident.kind !== "agent" ||
+      resident.connectionNonce !== attachment.connectionNonce ||
+      resident.runtimeHostId !== pending.runtimeHostId ||
+      !room.runtimeHosts?.[pending.runtimeHostId]?.capabilities?.some(
+        (capability) => capability.capabilityId === pending.capabilityId
+      ) ||
+      !requester ||
+      requester.kind !== "human" ||
+      requester.connectionNonce !== pending.requesterConnectionNonce ||
+      !canHumanControlRuntimeHost({
+        participants: Object.values(room.participants),
+        runtimeHosts: room.runtimeHosts,
+        providers: room.runtimeHostProviders,
+        humanParticipantId: requester.id,
+        runtimeHostId: pending.runtimeHostId,
+      })
+    ) {
+      this.finishRuntimeCapabilityRequest(pending.requestId, {
+        ok: false,
+        error: "unauthorized",
+      })
+      return
+    }
+    if (pending.expiresAt <= Date.now()) {
+      this.finishRuntimeCapabilityRequest(pending.requestId, {
+        ok: false,
+        error: "timeout",
+      })
+      return
+    }
+    if (
+      message.ok === true &&
+      isBoundedRuntimeCapabilityResult(message.result)
+    ) {
+      const encoded = JSON.stringify(message.result)
+      if (
+        new TextEncoder().encode(encoded).byteLength <=
+        RUNTIME_CAPABILITY_MAX_RESULT_BYTES
+      ) {
+        this.finishRuntimeCapabilityRequest(pending.requestId, {
+          ok: true,
+          result: message.result,
+        })
+        return
+      }
+    }
+    const error =
+      message.error === "timeout" ||
+      message.error === "unavailable" ||
+      message.error === "invalid_request" ||
+      message.error === "controller_error"
+        ? message.error
+        : "controller_error"
+    this.finishRuntimeCapabilityRequest(pending.requestId, {
+      ok: false,
+      error,
+    })
+  }
+
   private async handleRoomAppUnicast(
     socket: WebSocket,
     attachment: ConnectionAttachment,
@@ -8194,6 +8808,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       await this.handleRoomAppAgentResponse(socket, attachment, message)
       return
     }
+    if (message.type === "runtime-capability-control") {
+      await this.handleRuntimeCapabilityControl(
+        socket,
+        attachment,
+        room,
+        participant,
+        message
+      )
+      return
+    }
+    if (message.type === "runtime-capability-request") {
+      await this.handleRuntimeCapabilityRequest(
+        socket,
+        attachment,
+        room,
+        participant,
+        message
+      )
+      return
+    }
     if (message.type === "room-app-unicast") {
       await this.handleRoomAppUnicast(socket, attachment, room, message)
       return
@@ -8363,6 +8997,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room.liveTranscript.startedByHumanParticipantId === participant.id
       )
         this.stageLiveTranscriptMediaRevocation(room)
+      this.failRuntimeCapabilityRequestsForRequester(
+        participant.id,
+        attachment.connectionNonce,
+        "unavailable"
+      )
       this.removeRuntimeHostProviderAuthorizationForHuman(room, participant.id)
       delete room.participants[participant.id]
       this.garbageCollectRuntimeHostAuthorization(room)
@@ -9123,6 +9762,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const agent = room && this.findParticipant(room, participantId, token)
     if (!room) {
       this.failAllRoomAppAgentRequests("room_expired")
+      this.failAllRuntimeCapabilityRequests("unavailable")
       return this.json({ ok: false, error: "room_expired" }, 410)
     }
     if (
@@ -9743,6 +10383,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       participant.id,
       attachment.connectionNonce,
       "host_disconnected"
+    )
+    this.failRuntimeCapabilityRequestsForRequester(
+      participant.id,
+      attachment.connectionNonce,
+      "unavailable"
     )
     participant.connected = false
     participant.lastSeenAt = Date.now()

@@ -1,6 +1,7 @@
 package free4chat
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -156,6 +157,11 @@ func ParseRuntimeHostStrict(raw any) *types.RuntimeHostProjection {
 	if !types.ValidRuntimeHostID(id) {
 		return nil
 	}
+	for key := range record {
+		if key != "runtimeHostId" && key != "speech" && key != "capabilities" {
+			return nil
+		}
+	}
 	speechBlock, ok := record["speech"].(map[string]any)
 	if !ok {
 		return nil
@@ -165,10 +171,38 @@ func ParseRuntimeHostStrict(raw any) *types.RuntimeHostProjection {
 	if !hasSTT || !hasTTS {
 		return nil
 	}
-	return &types.RuntimeHostProjection{
+	for key := range speechBlock {
+		if key != "stt" && key != "tts" {
+			return nil
+		}
+	}
+	projection := &types.RuntimeHostProjection{
 		RuntimeHostID: id,
 		Speech:        types.HostSpeechReadiness{STT: stt, TTS: tts},
 	}
+	if rawCapabilities, exists := record["capabilities"]; exists {
+		items, ok := rawCapabilities.([]any)
+		if !ok || len(items) > 4 {
+			return nil
+		}
+		for _, item := range items {
+			encoded, err := json.Marshal(item)
+			if err != nil {
+				return nil
+			}
+			var capability types.RuntimeCapabilityProjection
+			decoder := json.NewDecoder(bytes.NewReader(encoded))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&capability) != nil || !capability.Valid() {
+				return nil
+			}
+			projection.Capabilities = append(projection.Capabilities, capability)
+		}
+	}
+	if !projection.Valid() {
+		return nil
+	}
+	return projection
 }
 
 // NormalizeRoster projects a raw participant array, dropping unusable

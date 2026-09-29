@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   MAX_PENDING_RUNTIME_PROVIDER_CLAIMS_PER_HUMAN,
+  canHumanControlRuntimeHost,
   canHumanUseRuntimeHost,
   createRuntimeHostProviderClaim,
   garbageCollectRuntimeHostProviders,
@@ -38,6 +39,71 @@ const verifiedAgents = [
 ]
 
 describe("Runtime Host provider authorization", () => {
+  it("requires the paired Human's separate explicit capability-control grant", () => {
+    const participants = [
+      ...humans,
+      {
+        id: "pi",
+        kind: "agent" as const,
+        connected: true,
+        runtimeHostId: hostA.runtimeHostId,
+      },
+    ]
+    const host = {
+      ...hostA,
+      capabilities: [
+        {
+          capabilityId: "fixture",
+          title: "Fixture",
+          version: "1",
+          observe: true,
+          actions: [],
+        },
+      ],
+    }
+    const association = {
+      humanParticipantId: "dawei",
+      claimedAt: now,
+      providerHandleHash: handleA,
+      verifiedParticipantIds: ["pi"],
+      capabilityControlHumanParticipantId: "dawei",
+    }
+    const args = {
+      participants,
+      runtimeHosts: { [hostA.runtimeHostId]: host },
+      providers: { [hostA.runtimeHostId]: association },
+      runtimeHostId: hostA.runtimeHostId,
+    }
+    expect(
+      canHumanControlRuntimeHost({ ...args, humanParticipantId: "dawei" })
+    ).toBe(true)
+    expect(
+      canHumanControlRuntimeHost({ ...args, humanParticipantId: "alice" })
+    ).toBe(false)
+    expect(
+      canHumanControlRuntimeHost({
+        ...args,
+        humanParticipantId: "dawei",
+        providers: {
+          [hostA.runtimeHostId]: {
+            ...association,
+            capabilityControlHumanParticipantId: undefined,
+          },
+        },
+      })
+    ).toBe(false)
+    expect(
+      canHumanControlRuntimeHost({
+        ...args,
+        humanParticipantId: "dawei",
+        participants: participants.map((participant) =>
+          participant.id === "pi"
+            ? { ...participant, connected: false }
+            : participant
+        ),
+      })
+    ).toBe(false)
+  })
   it("redeems one Human-created claim exactly once into one host association", () => {
     const created = createRuntimeHostProviderClaim({
       pendingClaims: {},

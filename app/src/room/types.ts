@@ -7,6 +7,7 @@ export type {
   TaskLiveViewSnapshot,
 } from "../common/taskLiveView"
 import type { GeneratedRoomAppPublication } from "../common/generatedRoomApp"
+import type { RuntimeCapabilityProjection } from "../common/runtimeCapability"
 import type { TaskLiveViewSnapshot } from "../common/taskLiveView"
 
 export type AgentActivityState = "working" | "waiting_approval" | "queued"
@@ -105,6 +106,7 @@ export interface RoomMediaState {
 export interface RuntimeHostProjection {
   runtimeHostId: string
   speech: { stt: boolean; tts: boolean }
+  capabilities?: RuntimeCapabilityProjection[]
 }
 
 // #176 Phase B: private durable verification material for the explicit
@@ -119,6 +121,9 @@ export interface RuntimeHostProviderAssociation {
   // Agent on this Host has actually proved possession of the private handle.
   // Never project these ids to RoomState or room_info.
   verifiedParticipantIds: string[]
+  // Separate explicit opt-in for deterministic Human control. The existing
+  // provider association remains scoped to its original speech behavior.
+  capabilityControlHumanParticipantId?: string
   // Browser-owned refresh proof. Only the one-way hash is persisted; it is
   // usable for a short grace window after the associated Human disconnects.
   reattachProofHash?: string
@@ -139,6 +144,7 @@ export interface RuntimeHostProviderAssociation {
 export interface RuntimeHostProviderPublicAssociation {
   humanParticipantId: string
   claimedAt: number
+  capabilityControlEnabled?: boolean
 }
 
 // One-time claim bookkeeping only. `claimHash` is the map key and remains
