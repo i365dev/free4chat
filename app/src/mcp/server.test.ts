@@ -295,6 +295,8 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
     } = {}
   ) {
     const roomCalls: Array<{ room: string; action: unknown }> = []
+    const roomBodies: Array<{ room: string; body: Record<string, unknown> }> =
+      []
     const kvGet = vi.fn(async () => null)
     const kvPut = vi.fn(async () => undefined)
     const fullEnv = {
@@ -305,9 +307,10 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
           fetch: async (input: string | Request, init?: RequestInit) => {
             const url = typeof input === "string" ? input : input.url
             const body = init?.body
-              ? (JSON.parse(String(init.body)) as { action?: unknown })
+              ? (JSON.parse(String(init.body)) as Record<string, unknown>)
               : {}
             roomCalls.push({ room: id, action: body.action })
+            roomBodies.push({ room: id, body })
             if (body.action === "room-info")
               return Response.json({ exists: true, participants: [] })
             const override = options.controlResponse?.(body.action)
@@ -362,8 +365,55 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
       )?.text
       return JSON.parse(text ?? "{}") as Record<string, unknown>
     }
-    return { callTool, roomCalls, kvGet, kvPut }
+    return { callTool, roomCalls, roomBodies, kvGet, kvPut }
   }
+
+  it("forwards bounded Runtime Host capability projections through MCP", async () => {
+    const { callTool, roomBodies } = harness({})
+    const runtimeHost = {
+      runtimeHostId: "host-capability-123456",
+      speech: { stt: false, tts: false },
+      capabilities: [
+        {
+          capabilityId: "local_fixture",
+          title: "Local fixture",
+          version: "1",
+          observe: true,
+          actions: [
+            {
+              name: "set_led",
+              title: "Set color",
+              input: {
+                type: "object",
+                properties: { color: "string" },
+                required: ["color"],
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    await callTool("join_room", {
+      roomId: "room-capability-123456",
+      name: "Capability Agent",
+      runtimeHost,
+    })
+
+    await callTool("update_runtime_host", {
+      participantHandle: encodeForgedHandle("room-capability-123456"),
+      runtimeHost,
+    })
+
+    expect(
+      roomBodies.find(({ body }) => body.action === "agent-register")?.body
+        .participant
+    ).toMatchObject({ runtimeHost })
+    expect(
+      roomBodies.find(({ body }) => body.action === "agent-update-runtime-host")
+        ?.body.runtimeHost
+    ).toEqual(runtimeHost)
+  })
 
   it("rejects an abusive room_info probe before the Durable Object is contacted", async () => {
     const { keys, limiter } = fakeLimiter(false)
