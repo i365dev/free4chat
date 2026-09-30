@@ -30,10 +30,10 @@ export const nameToColor = (name: string) => {
   return [r % 256, g % 256, b % 256]
 }
 
-export const weightedRand = (spec) => {
+export const weightedRand = (spec: Record<string, number>) => {
   var i,
     j,
-    table = []
+    table: string[] = []
   for (i in spec) {
     // The constant 10 below should be computed based on the
     // weights in the spec for a correct and optimal table size.
