@@ -4334,7 +4334,9 @@ export function useSfuChatRoom(
       }) => void
     ) => {
       generatedAppStateListenersRef.current.add(listener)
-      return () => generatedAppStateListenersRef.current.delete(listener)
+      return () => {
+        generatedAppStateListenersRef.current.delete(listener)
+      }
     },
     []
   )
