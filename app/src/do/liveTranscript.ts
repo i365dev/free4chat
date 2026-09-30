@@ -3,7 +3,6 @@ import type {
   LiveTranscriptSegment,
   LiveTranscriptState,
   RoomParticipant,
-  RuntimeHostProviderAssociation,
 } from "../room/types"
 
 export const NO_LIVE_TRANSCRIPT: LiveTranscriptState = { active: false }
@@ -108,6 +107,55 @@ export function liveTranscriptStorageByteLength({
   ).byteLength
 }
 
+/** A Room Host is eligible only while a connected Agent participant on that
+ * exact Host advertises STT readiness. The authenticated Human's Start click
+ * is the authorization; no separate Host/Human pairing is needed. */
+export function isLiveTranscriptHostReady({
+  participants,
+  runtimeHosts,
+  runtimeHostId,
+}: {
+  participants: Iterable<TranscriptParticipant>
+  runtimeHosts: RuntimeHostMap | undefined
+  runtimeHostId: string
+}): boolean {
+  if (!isValidRuntimeHostId(runtimeHostId)) return false
+  if (runtimeHosts?.[runtimeHostId]?.speech.stt !== true) return false
+  return Array.from(participants).some(
+    (participant) =>
+      participant.kind === "agent" &&
+      participant.connected &&
+      participant.runtimeHostId === runtimeHostId
+  )
+}
+
+export function canHumanStartLiveTranscript({
+  participants,
+  runtimeHosts,
+  humanParticipantId,
+  runtimeHostId,
+}: {
+  participants: Iterable<TranscriptParticipant>
+  runtimeHosts: RuntimeHostMap | undefined
+  humanParticipantId: string
+  runtimeHostId: string
+}): boolean {
+  const participantList = Array.from(participants)
+  return (
+    participantList.some(
+      (participant) =>
+        participant.id === humanParticipantId &&
+        participant.kind === "human" &&
+        participant.connected
+    ) &&
+    isLiveTranscriptHostReady({
+      participants: participantList,
+      runtimeHosts,
+      runtimeHostId,
+    })
+  )
+}
+
 export function boundLiveTranscriptSegments(
   segments: LiveTranscriptSegment[],
   liveTranscript: LiveTranscriptState = NO_LIVE_TRANSCRIPT,
@@ -202,50 +250,25 @@ export function normalizeStoredLiveTranscript({
   }
 }
 
-function verifiedMembersForHost({
-  providers,
-  participants,
-  runtimeHostId,
-}: {
-  providers: Record<string, RuntimeHostProviderAssociation> | undefined
-  participants: Iterable<TranscriptParticipant>
-  runtimeHostId: string
-}): string[] {
-  const association = providers?.[runtimeHostId]
-  if (!association) return []
-  const byId = new Map(
-    Array.from(participants).map((participant) => [participant.id, participant])
-  )
-  return association.verifiedParticipantIds.filter((participantId) => {
-    const participant = byId.get(participantId)
-    return (
-      participant?.kind === "agent" &&
-      participant.runtimeHostId === runtimeHostId
-    )
-  })
-}
-
 // Unlike Start, a running transcript deliberately tolerates the selected
 // Human's transient WebSocket disconnect. True leave/expiry removes either
-// that Human or the private provider association, and this then fails closed.
+// that Human, and this then fails closed. Producer failure is tied to loss of
+// the exact connected Host member or its advertised STT readiness.
 export function isLiveTranscriptProducerValid({
   liveTranscript,
   participants,
   runtimeHosts,
-  providers,
   mediaAvailable,
 }: {
   liveTranscript: LiveTranscriptState
   participants: Iterable<TranscriptParticipant>
   runtimeHosts: RuntimeHostMap | undefined
-  providers: Record<string, RuntimeHostProviderAssociation> | undefined
   mediaAvailable?: boolean
 }): boolean {
   if (!liveTranscript.active) return true
   if (mediaAvailable === false) return false
   const participantList = Array.from(participants)
   const hostId = liveTranscript.producerRuntimeHostId
-  const association = providers?.[hostId]
   const startedBy = participantList.find(
     (participant) =>
       participant.id === liveTranscript.startedByHumanParticipantId
@@ -253,12 +276,11 @@ export function isLiveTranscriptProducerValid({
   return (
     runtimeHosts?.[hostId]?.speech.stt === true &&
     startedBy?.kind === "human" &&
-    association?.humanParticipantId === startedBy.id &&
-    verifiedMembersForHost({
-      providers,
+    isLiveTranscriptHostReady({
       participants: participantList,
+      runtimeHosts,
       runtimeHostId: hostId,
-    }).length > 0
+    })
   )
 }
 
@@ -266,7 +288,6 @@ export function normalizeLiveTranscriptProducer(args: {
   liveTranscript: LiveTranscriptState
   participants: Iterable<TranscriptParticipant>
   runtimeHosts: RuntimeHostMap | undefined
-  providers: Record<string, RuntimeHostProviderAssociation> | undefined
   mediaAvailable?: boolean
 }): { liveTranscript: LiveTranscriptState; changed: boolean } {
   if (isLiveTranscriptProducerValid(args))
@@ -318,32 +339,32 @@ export function canAgentAppendLiveTranscript({
   caller,
   participants,
   runtimeHosts,
-  providers,
   mediaAvailable,
 }: {
   liveTranscript: LiveTranscriptState
   caller: Pick<TranscriptParticipant, "id" | "kind" | "runtimeHostId">
   participants: Iterable<TranscriptParticipant>
   runtimeHosts: RuntimeHostMap | undefined
-  providers: Record<string, RuntimeHostProviderAssociation> | undefined
   mediaAvailable?: boolean
 }): boolean {
   if (!liveTranscript.active || caller.kind !== "agent") return false
   const hostId = liveTranscript.producerRuntimeHostId
+  const participantList = Array.from(participants)
   return (
     caller.runtimeHostId === hostId &&
+    participantList.some(
+      (participant) =>
+        participant.id === caller.id &&
+        participant.kind === "agent" &&
+        participant.connected &&
+        participant.runtimeHostId === hostId
+    ) &&
     isLiveTranscriptProducerValid({
       liveTranscript,
-      participants,
+      participants: participantList,
       runtimeHosts,
-      providers,
       mediaAvailable,
-    }) &&
-    verifiedMembersForHost({
-      providers,
-      participants,
-      runtimeHostId: hostId,
-    }).includes(caller.id)
+    })
   )
 }
 

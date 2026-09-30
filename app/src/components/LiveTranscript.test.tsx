@@ -10,8 +10,15 @@ import {
 } from "./LiveTranscript"
 
 const participants = [
-  { peerId: "human-a", name: "Alice" },
-  { peerId: "human-b", name: "Bob" },
+  { peerId: "human-a", name: "Alice", kind: "human" as const, connected: true },
+  { peerId: "human-b", name: "Bob", kind: "human" as const, connected: true },
+  {
+    peerId: "agent-a",
+    name: "Codex",
+    kind: "agent" as const,
+    connected: true,
+    runtimeHostId: "host-a",
+  },
 ]
 
 const readyHost = {
@@ -23,15 +30,12 @@ function openControl() {
 }
 
 describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)", () => {
-  it("starts directly through the one server-associated STT-ready Runtime Host", () => {
+  it("starts directly through a connected STT-ready Runtime Host", () => {
     const onStart = vi.fn()
     render(
       <LiveTranscriptControl
         liveTranscript={{ active: false }}
         runtimeHosts={readyHost}
-        runtimeHostProviders={{
-          "host-a": { humanParticipantId: "human-a", claimedAt: 1 },
-        }}
         localParticipantId="human-a"
         participants={participants}
         mediaAvailable
@@ -49,24 +53,18 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     expect(screen.queryByText("host-a")).not.toBeInTheDocument()
   })
 
-  it("does not mistake a copied public Runtime Host id for authorization", () => {
+  it("does not require a provider association to offer an STT-ready Host", () => {
     expect(
       authorizedLiveTranscriptHosts({
         runtimeHosts: readyHost,
-        runtimeHostProviders: {
-          "host-a": { humanParticipantId: "human-a", claimedAt: 1 },
-        },
-        localParticipantId: "human-b",
+        participants,
       })
-    ).toEqual([])
+    ).toHaveLength(1)
 
     render(
       <LiveTranscriptControl
         liveTranscript={{ active: false }}
         runtimeHosts={readyHost}
-        runtimeHostProviders={{
-          "host-a": { humanParticipantId: "human-a", claimedAt: 1 },
-        }}
         localParticipantId="human-b"
         participants={participants}
         mediaAvailable
@@ -75,28 +73,21 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
       />
     )
     openControl()
-    // No authorized Host: the feature popover explains transcription is
-    // unavailable; no Start is offered and no id leaks.
-    expect(screen.queryByRole("button", { name: "Start" })).toBeNull()
-    expect(
-      screen.getByText("Transcription is unavailable in this room right now.")
-    ).toBeInTheDocument()
+    // Any current Human can start this bounded Room action; the selected
+    // Runtime Host id is never shown in the product UI.
+    expect(screen.getByRole("button", { name: "Start" })).toBeInTheDocument()
     expect(screen.queryByText("host-a")).not.toBeInTheDocument()
   })
 
-  it("keeps a single compact header control with setup inside the popover when no Host is authorized", () => {
-    const onConnect = vi.fn()
-    const onSuggestInvite = vi.fn()
+  it("asks the Human to join a Runtime only when none is connected", () => {
     render(
       <LiveTranscriptControl
         liveTranscript={{ active: false }}
         localParticipantId="human-a"
-        participants={participants}
+        participants={participants.slice(0, 2)}
         mediaAvailable
         onStart={vi.fn()}
         onStop={vi.fn()}
-        onConnect={onConnect}
-        onSuggestInvite={onSuggestInvite}
       />
     )
 
@@ -114,99 +105,10 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     expect(
       screen.getByText("Turn room audio into shared text.")
     ).toBeInTheDocument()
+    expect(screen.getByText(/No Runtime Host is connected/)).toBeInTheDocument()
     expect(
-      screen.getByText(
-        "Live Transcript needs transcription support from your local Free4Chat setup."
-      )
-    ).toBeInTheDocument()
-    // #236 follow-up: the setup copy points new Humans at the Agent-first
-    // path and never introduces unexplained Runtime jargon.
-    expect(
-      screen.getByText(/If you haven't connected an Agent yet/)
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole("button", { name: "Start with Invite Agent" })
-    ).toBeTruthy()
-    expect(
-      screen.getByRole("button", { name: "Copy connection command" })
-    ).toBeTruthy()
-    expect(
-      screen.getByText(/Do not paste it into an Agent chat/)
-    ).toBeInTheDocument()
-    fireEvent.click(
-      screen.getByRole("button", { name: "Copy connection command" })
-    )
-    expect(onConnect).toHaveBeenCalledTimes(1)
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start with Invite Agent" })
-    )
-    expect(onSuggestInvite).toHaveBeenCalledTimes(1)
-    expect(
-      screen.queryByText(/provider claim|runtimeHostId/i)
-    ).not.toBeInTheDocument()
-  })
-
-  it("keeps the primary setup action stable and shows transient copy feedback instead", () => {
-    const onConnect = vi.fn()
-    const { rerender } = render(
-      <LiveTranscriptControl
-        liveTranscript={{ active: false }}
-        localParticipantId="human-a"
-        participants={participants}
-        mediaAvailable
-        onStart={vi.fn()}
-        onStop={vi.fn()}
-        onConnect={onConnect}
-        runtimeConnectionStatus="idle"
-      />
-    )
-    openControl()
-    fireEvent.click(
-      screen.getByRole("button", { name: "Copy connection command" })
-    )
-
-    rerender(
-      <LiveTranscriptControl
-        liveTranscript={{ active: false }}
-        localParticipantId="human-a"
-        participants={participants}
-        mediaAvailable
-        onStart={vi.fn()}
-        onStop={vi.fn()}
-        onConnect={onConnect}
-        runtimeConnectionStatus="copied"
-      />
-    )
-    // The header control and the primary action never mutate into
-    // "Connection command copied"; success is a separate status line.
-    expect(screen.getByRole("button", { name: "Live Transcript" })).toBeTruthy()
-    expect(
-      screen.getByRole("button", { name: "Copy connection command" })
-    ).toBeTruthy()
-    expect(
-      screen.queryByText("Connection command copied")
-    ).not.toBeInTheDocument()
-    expect(screen.getByText(/Connection command copied/i)).toBeInTheDocument()
-  })
-
-  it("disables the setup action truthfully while the claim is preparing", () => {
-    const onConnect = vi.fn()
-    render(
-      <LiveTranscriptControl
-        liveTranscript={{ active: false }}
-        localParticipantId="human-a"
-        participants={participants}
-        mediaAvailable
-        onStart={vi.fn()}
-        onStop={vi.fn()}
-        onConnect={onConnect}
-        runtimeConnectionStatus="preparing"
-      />
-    )
-    openControl()
-    fireEvent.click(screen.getByRole("button", { name: "Preparing…" }))
-    expect(onConnect).not.toHaveBeenCalled()
-    expect(screen.getByRole("button", { name: "Preparing…" })).toBeDisabled()
+      screen.queryByRole("button", { name: /command|terminal/i })
+    ).toBeNull()
   })
 
   it("offers a small Runtime choice inside the feature UI when multiple eligible Hosts exist", () => {
@@ -221,12 +123,17 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
             speech: { stt: true, tts: false },
           },
         }}
-        runtimeHostProviders={{
-          "host-a": { humanParticipantId: "human-a", claimedAt: 1 },
-          "host-b": { humanParticipantId: "human-a", claimedAt: 2 },
-        }}
         localParticipantId="human-a"
-        participants={participants}
+        participants={[
+          ...participants,
+          {
+            peerId: "agent-b",
+            name: "Claude",
+            kind: "agent",
+            connected: true,
+            runtimeHostId: "host-b",
+          },
+        ]}
         mediaAvailable
         onStart={onStart}
         onStop={vi.fn()}
@@ -237,9 +144,8 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     expect(
       screen.getByText("Choose a transcription Runtime")
     ).toBeInTheDocument()
-    fireEvent.click(
-      screen.getByRole("button", { name: "Your STT-ready Runtime 2" })
-    )
+    fireEvent.click(screen.getByLabelText("Claude Runtime"))
+    fireEvent.click(screen.getByRole("button", { name: "Start" }))
     expect(onStart).toHaveBeenCalledWith("host-b")
     expect(screen.queryByText("host-b")).not.toBeInTheDocument()
   })
@@ -328,30 +234,30 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     expect(screen.getByText("Provided by Bob")).toBeInTheDocument()
   })
 
-  it("surfaces setup errors inside the popover without leaking claims or ids", () => {
+  it("asks for local STT configuration only when a connected Host is not ready", () => {
     render(
       <LiveTranscriptControl
         liveTranscript={{ active: false }}
+        runtimeHosts={{
+          "host-a": {
+            runtimeHostId: "host-a",
+            speech: { stt: false, tts: false },
+          },
+        }}
         localParticipantId="human-a"
         participants={participants}
         mediaAvailable
         onStart={vi.fn()}
         onStop={vi.fn()}
-        onConnect={vi.fn()}
-        runtimeConnectError="Could not prepare the setup command. Try again."
       />
     )
-    // The error is NOT part of the Room header.
-    expect(
-      screen.queryByText("Could not prepare the setup command. Try again.")
-    ).not.toBeInTheDocument()
     openControl()
     expect(
-      screen.getByText("Could not prepare the setup command. Try again.")
+      screen.getByText(/Configure STT credentials on a Runtime/)
     ).toBeInTheDocument()
     expect(
-      screen.queryByText(/provider claim|runtimeHostId/i)
-    ).not.toBeInTheDocument()
+      screen.queryByRole("button", { name: /command|terminal/i })
+    ).toBeNull()
   })
 
   it("closes the popover on outside click and Escape", () => {
@@ -363,22 +269,21 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         mediaAvailable={false}
         onStart={vi.fn()}
         onStop={vi.fn()}
-        onConnect={vi.fn()}
       />
     )
     openControl()
     expect(
-      screen.getByText(/Live Transcript needs transcription support/)
+      screen.getByText("Turn room audio into shared text.")
     ).toBeInTheDocument()
     fireEvent.keyDown(document, { key: "Escape" })
     expect(
-      screen.queryByText(/Live Transcript needs transcription support/)
+      screen.queryByText("Turn room audio into shared text.")
     ).not.toBeInTheDocument()
 
     openControl()
     fireEvent.mouseDown(document.body)
     expect(
-      screen.queryByText(/Live Transcript needs transcription support/)
+      screen.queryByText("Turn room audio into shared text.")
     ).not.toBeInTheDocument()
   })
 

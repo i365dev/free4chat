@@ -178,8 +178,9 @@ async function harness(options?: {
 }
 
 describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
-  it("starts only for the associated STT-ready Host and keeps a single producer", async () => {
+  it("starts for a connected STT-ready Host without pairing and keeps one producer", async () => {
     const room = await harness()
+    delete room.stored().runtimeHostProviders[HOST_A]
     await room.sendHuman("human", {
       type: "live-transcript-start",
       runtimeHostId: HOST_A,
@@ -206,18 +207,18 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
     expect(room.stored().nextLiveTranscriptEpoch).toBe(2)
 
     await room.sendHuman("human", { type: "live-transcript-stop" })
-    await room.sendHuman("other", {
+    await room.sendHuman("human", {
       type: "live-transcript-start",
       runtimeHostId: HOST_B,
     })
     expect(room.stored().liveTranscript).toMatchObject({
       producerRuntimeHostId: HOST_B,
-      startedByHumanParticipantId: "other",
+      startedByHumanParticipantId: "human",
       epoch: 2,
     })
   })
 
-  it("rejects unavailable media, an unbound/copied Host, wrong association, and STT false", async () => {
+  it("rejects unavailable media, a Host without a connected Agent, and STT false", async () => {
     const mediaOff = await harness({ mediaEnabled: false })
     await mediaOff.sendHuman("human", {
       type: "live-transcript-start",
@@ -232,10 +233,12 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
       type: "live-transcript-start",
       runtimeHostId: HOST_B,
     })
-    expect(room.stored().liveTranscript).toEqual({ active: false })
-    expect(room.socket.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: "error", error: "live_transcript_unavailable" })
-    )
+    expect(room.stored().liveTranscript).toMatchObject({
+      active: true,
+      producerRuntimeHostId: HOST_B,
+      startedByHumanParticipantId: "human",
+    })
+    await room.sendHuman("human", { type: "live-transcript-stop" })
 
     room.stored().runtimeHosts["host-unbound"] = {
       runtimeHostId: "host-unbound",
@@ -286,6 +289,7 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
       type: "live-transcript-start",
       runtimeHostId: HOST_A,
     })
+    delete room.stored().participants["copied-host"]
     const departed = await room.control({
       action: "agent-leave",
       participantId: "producer",
@@ -314,12 +318,6 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
         name: "AGENT_MEDIA_ENABLED true-to-false",
         mediaEnabled: false,
         apply: () => undefined,
-      },
-      {
-        name: "provider association loss",
-        apply: (room) => {
-          delete room.stored().runtimeHostProviders[HOST_A]
-        },
       },
       {
         name: "Host STT readiness loss",
@@ -389,7 +387,7 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
     }
   })
 
-  it("authorizes only the verified producer, appends safe shared context, and deduplicates", async () => {
+  it("authorizes only the selected Host, appends safe shared context, and deduplicates", async () => {
     const room = await harness()
     await room.sendHuman("human", {
       type: "live-transcript-start",
@@ -414,16 +412,8 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
       remoteTrackCount: 1,
     })
     expect(copiedMediaAuthorize).toMatchObject({
-      status: 403,
-      json: { error: "live_transcript_not_authorized" },
-    })
-    const copied = await room.append({
-      participantId: "copied-host",
-      token: "copied-host-token",
-    })
-    expect(copied).toMatchObject({
-      status: 403,
-      json: { error: "live_transcript_not_authorized" },
+      status: 200,
+      json: { ok: true, kind: "agent" },
     })
     const differentHost = await room.append({
       participantId: "secondary",
@@ -443,6 +433,14 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
           speaker: "Human One",
         }),
       },
+    })
+    const sameHostMember = await room.append({
+      participantId: "copied-host",
+      token: "copied-host-token",
+    })
+    expect(sameHostMember).toMatchObject({
+      status: 200,
+      json: { duplicate: true },
     })
     const duplicate = await room.append()
     expect(duplicate).toMatchObject({ status: 200, json: { duplicate: true } })

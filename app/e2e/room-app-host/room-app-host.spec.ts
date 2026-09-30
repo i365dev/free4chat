@@ -635,13 +635,13 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
   await test.step("phone feature popovers stay above the People sheet", async () => {
     if (isTwoPaneRoom(page)) return
 
-    for (const [trigger, dialogName, action] of [
-      ["Invite Agent", "Invite an Agent", "Copy invite prompt"],
-      ["Live Transcript", "Live Transcript", "Copy connection command"],
+    for (const [trigger, dialogName] of [
+      ["Invite Agent", "Invite an Agent"],
+      ["Live Transcript", "Live Transcript"],
     ]) {
       await page.getByRole("button", { name: trigger }).click()
       const dialog = page.getByRole("dialog", { name: dialogName })
-      await expect(dialog.getByRole("button", { name: action })).toBeVisible()
+      await expect(dialog).toBeVisible()
       const geometry = await dialog.evaluate((element) => {
         const box = element.getBoundingClientRect()
         const front = document.elementFromPoint(box.left + 20, box.top + 20)

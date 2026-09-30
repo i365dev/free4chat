@@ -6,55 +6,62 @@ import type {
   LiveTranscriptSegment,
   LiveTranscriptState,
   RuntimeHostProjection,
-  RuntimeHostProviderPublicAssociation,
 } from "../room/types"
 
 interface LiveTranscriptParticipant {
   peerId: string
   name: string
+  kind?: "human" | "agent"
+  runtimeHostId?: string
+  connected?: boolean
 }
 
 interface LiveTranscriptControlProps {
   liveTranscript: LiveTranscriptState
   runtimeHosts?: Record<string, RuntimeHostProjection>
-  runtimeHostProviders?: Record<string, RuntimeHostProviderPublicAssociation>
   localParticipantId?: string
   participants: LiveTranscriptParticipant[]
   mediaAvailable: boolean
   onStart: (runtimeHostId: string) => void
   onStop: () => void
-  onConnect?: () => void
-  runtimeConnectionStatus?: "idle" | "preparing" | "copied"
-  /** #236: feature-specific setup error shown INSIDE the Live Transcript
-   * popover; it never expands the Room header. */
-  runtimeConnectError?: string
-  /** #236 follow-up: opens the Invite Agent popover (shared RoomContent
-   * state) so the setup copy can point new Humans at the Agent-first path. */
-  onSuggestInvite?: () => void
 }
 
 interface LiveTranscriptSegmentsProps {
   segments: LiveTranscriptSegment[]
 }
 
-// Runtime Host ids are discovery identifiers, not authorization. The browser
-// may offer Start only when the server's safe RoomState projection explicitly
-// associates an STT-ready Host with this authenticated Human participant.
+// Runtime Host ids are routing identifiers. Start is offered for an STT-ready
+// Host represented by a currently connected Room Agent; the authenticated
+// Human's explicit click is the authorization.
 export function authorizedLiveTranscriptHosts({
   runtimeHosts,
-  runtimeHostProviders,
-  localParticipantId,
-}: Pick<
-  LiveTranscriptControlProps,
-  "runtimeHosts" | "runtimeHostProviders" | "localParticipantId"
->): Array<[string, RuntimeHostProjection]> {
-  if (!localParticipantId) return []
+  participants,
+}: Pick<LiveTranscriptControlProps, "runtimeHosts" | "participants">): Array<
+  [string, RuntimeHostProjection]
+> {
   return Object.entries(runtimeHosts ?? {}).filter(
     ([runtimeHostId, host]) =>
       host.speech.stt === true &&
-      runtimeHostProviders?.[runtimeHostId]?.humanParticipantId ===
-        localParticipantId
+      participants.some(
+        (participant) =>
+          participant.kind === "agent" &&
+          participant.connected === true &&
+          participant.runtimeHostId === runtimeHostId
+      )
   )
+}
+
+function runtimeHostName(
+  runtimeHostId: string,
+  participants: LiveTranscriptParticipant[]
+): string {
+  const member = participants.find(
+    (participant) =>
+      participant.kind === "agent" &&
+      participant.connected === true &&
+      participant.runtimeHostId === runtimeHostId
+  )
+  return member ? `${member.name} Runtime` : "Runtime"
 }
 
 function providerName({
@@ -83,26 +90,36 @@ function providerName({
 export function LiveTranscriptControl({
   liveTranscript = { active: false },
   runtimeHosts,
-  runtimeHostProviders,
   localParticipantId,
   participants = [],
   mediaAvailable = false,
   onStart,
   onStop,
-  onConnect,
-  runtimeConnectionStatus = "idle",
-  runtimeConnectError = "",
-  onSuggestInvite,
 }: LiveTranscriptControlProps) {
   const [open, setOpen] = useState(false)
+  const [selectedRuntimeHostId, setSelectedRuntimeHostId] = useState("")
   const containerRef = useRef<HTMLDivElement>(null)
   const authorizedHosts = mediaAvailable
     ? authorizedLiveTranscriptHosts({
         runtimeHosts,
-        runtimeHostProviders,
-        localParticipantId,
+        participants,
       })
     : []
+  const connectedRuntimeHostIds = new Set(
+    participants
+      .filter(
+        (participant) =>
+          participant.kind === "agent" &&
+          participant.connected === true &&
+          participant.runtimeHostId
+      )
+      .map((participant) => participant.runtimeHostId!)
+  )
+  const selectedHostId = authorizedHosts.some(
+    ([runtimeHostId]) => runtimeHostId === selectedRuntimeHostId
+  )
+    ? selectedRuntimeHostId
+    : authorizedHosts[0]?.[0] ?? ""
 
   // Popover lifetime: click-outside and Escape close it, matching the
   // existing room UI conventions; the underlying control semantics never
@@ -125,9 +142,12 @@ export function LiveTranscriptControl({
     }
   }, [open])
 
+  useEffect(() => {
+    if (selectedRuntimeHostId !== selectedHostId)
+      setSelectedRuntimeHostId(selectedHostId)
+  }, [selectedHostId, selectedRuntimeHostId])
+
   const unavailable = authorizedHosts.length === 0
-  const connecting = runtimeConnectionStatus === "preparing"
-  const copied = runtimeConnectionStatus === "copied"
   const active = liveTranscript.active
 
   return (
@@ -178,61 +198,22 @@ export function LiveTranscriptControl({
                 Stop
               </button>
             </>
-          ) : unavailable && onConnect ? (
+          ) : unavailable ? (
             <>
               <p className="font-medium text-gray-100">Live Transcript</p>
               <p className="mt-1 text-gray-400">
                 Turn room audio into shared text.
               </p>
-              <p className="mt-1 text-gray-400">
-                Live Transcript needs transcription support from your local
-                Free4Chat setup.
-              </p>
-              {onSuggestInvite && (
+              {connectedRuntimeHostIds.size === 0 ? (
                 <p className="mt-1 text-gray-400">
-                  If you haven&apos;t connected an Agent yet, start with Invite
-                  Agent.
+                  No Runtime Host is connected to this Room. Join an Agent
+                  Runtime to enable transcription.
                 </p>
-              )}
-              {onSuggestInvite && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    // Cross-open satisfies the "one feature at a time" rule:
-                    // close THIS popover first, then ask the parent to open
-                    // the Invite Agent popover.
-                    setOpen(false)
-                    onSuggestInvite()
-                  }}
-                  className="mt-1.5 rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-blue-200 hover:bg-blue-800/50"
-                >
-                  Start with Invite Agent
-                </button>
-              )}
-              <p className="mt-1.5 text-gray-400">
-                Already have Free4Chat running locally?
-              </p>
-              <button
-                type="button"
-                onClick={onConnect}
-                disabled={connecting}
-                className="mt-1.5 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-gray-200 hover:bg-gray-700 disabled:cursor-wait disabled:opacity-50"
-                title="Copy the connection command for the computer where Free4Chat is running"
-              >
-                {connecting ? "Preparing…" : "Copy connection command"}
-              </button>
-              <p className="mt-1.5 text-gray-400">
-                Run this command in the terminal where Free4Chat is running. Do
-                not paste it into an Agent chat.
-              </p>
-              {copied && (
-                <p role="status" className="mt-2 text-emerald-300">
-                  ✓ Connection command copied. Run it in your terminal.
-                </p>
-              )}
-              {runtimeConnectError && (
-                <p role="status" className="mt-2 text-rose-300">
-                  {runtimeConnectError}
+              ) : (
+                <p className="mt-1 text-gray-400">
+                  No connected Runtime Host in this Room has transcription
+                  ready. Configure STT credentials on a Runtime, then reconnect
+                  or refresh readiness.
                 </p>
               )}
             </>
@@ -260,17 +241,32 @@ export function LiveTranscriptControl({
                     Choose a transcription Runtime
                   </p>
                   <div className="mt-1.5 flex flex-col gap-1">
-                    {authorizedHosts.map(([runtimeHostId], index) => (
-                      <button
+                    {authorizedHosts.map(([runtimeHostId]) => (
+                      <label
                         key={runtimeHostId}
-                        type="button"
-                        onClick={() => onStart(runtimeHostId)}
-                        className="w-full rounded-md bg-gray-700/60 px-2 py-1.5 text-left text-gray-200 hover:bg-gray-700"
+                        className="flex cursor-pointer items-center gap-2 rounded-md bg-gray-700/60 px-2 py-1.5 text-left text-gray-200 hover:bg-gray-700"
                       >
-                        Your STT-ready Runtime {index + 1}
-                      </button>
+                        <input
+                          type="radio"
+                          name="live-transcript-runtime"
+                          checked={selectedHostId === runtimeHostId}
+                          onChange={() =>
+                            setSelectedRuntimeHostId(runtimeHostId)
+                          }
+                        />
+                        <span>
+                          {runtimeHostName(runtimeHostId, participants)}
+                        </span>
+                      </label>
                     ))}
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => onStart(selectedHostId)}
+                    className="mt-2 rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-emerald-200 hover:bg-emerald-800/50"
+                  >
+                    Start
+                  </button>
                 </>
               )}
             </>
