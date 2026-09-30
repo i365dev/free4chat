@@ -11,37 +11,11 @@ import subprocess
 import sys
 import tempfile
 import threading
+from fixture import Fixture
 
 HERE = pathlib.Path(__file__).resolve().parent
 MAX_FRAME = 65536
 VERSION = 1
-
-
-class Fixture(http.server.BaseHTTPRequestHandler):
-    state = {"ready": True, "on": False, "brightness": 42}
-
-    def log_message(self, *_args):
-        pass
-
-    def reply(self, value, status=200):
-        data = json.dumps(value, separators=(",", ":")).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_GET(self):
-        if self.path == "/state":
-            return self.reply(self.state)
-        return self.reply({"error": "not found"}, 404)
-
-    def do_POST(self):
-        if self.path != "/actions/set-led":
-            return self.reply({"error": "not found"}, 404)
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-        Fixture.state = {**Fixture.state, "on": True, "color": body["color"]}
-        return self.reply({"ok": True, "color": body["color"]})
 
 
 def start_adapter(config_path):

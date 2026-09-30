@@ -5,17 +5,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +29,7 @@ import (
 
 var fakeAgentBinary string
 var free4chatAgentBinary string
+var capabilityAdapterBinary string
 
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "free4chat-daemon-")
@@ -46,6 +46,11 @@ func TestMain(m *testing.M) {
 	runtimeBuild := exec.Command("go", "build", "-o", free4chatAgentBinary, "../../cmd/free4chat-agent")
 	if out, err := runtimeBuild.CombinedOutput(); err != nil {
 		panic("free4chat-agent build failed: " + string(out))
+	}
+	capabilityAdapterBinary = filepath.Join(dir, "capability-adapter")
+	adapterBuild := exec.Command("go", "build", "-o", capabilityAdapterBinary, "../capability/testdata/adapter")
+	if out, err := adapterBuild.CombinedOutput(); err != nil {
+		panic("capability Adapter test helper build failed: " + string(out))
 	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)
@@ -71,49 +76,109 @@ func TestRemoveStaleWorkspacesWipesEverythingInside(t *testing.T) {
 }
 
 func TestCapabilityDirectControllerAndDaemonIPCShareController(t *testing.T) {
-	var observations, invocations int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d, _ := startDaemon(t)
+	registration := daemonCapabilityAdapterRegistration("direct-test")
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-register", AdapterCommand: registration.Command, AdapterArgs: registration.Args}); err != nil {
+		t.Fatalf("register Adapter: %v", err)
+	}
+	d.mu.Lock()
+	direct := d.localCapability
+	d.mu.Unlock()
+	if _, err := direct.Observe(context.Background(), "test_light"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := direct.Invoke(context.Background(), "test_light", "turn_on", json.RawMessage(`{"on":true}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := SendIPC(&IpcRequest{Op: "capability-observe", CapabilityID: "test_light"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SendIPC(&IpcRequest{
+		Op: "capability-invoke", CapabilityID: "test_light",
+		CapabilityAction: "turn_on", CapabilityArgs: json.RawMessage(`{"on":false}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-remove"}); err != nil {
+		t.Fatalf("remove Adapter: %v", err)
+	}
+	if descriptors := d.capabilityHandler.DescribeCapabilities(); len(descriptors) != 0 {
+		t.Fatalf("removed Adapter remained projected: %#v", descriptors)
+	}
+}
+
+func daemonCapabilityAdapterRegistration(source string) capability.Registration {
+	return capability.Registration{Command: capabilityAdapterBinary, Args: []string{source}}
+}
+
+func pythonReferenceRegistration(t *testing.T, fixtureURL string) capability.Registration {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required for external Adapter dogfood")
+	}
+	_, source, _, _ := goruntime.Caller(0)
+	adapterPath := filepath.Join(filepath.Dir(source), "..", "..", "experimental", "local-capability-adapter", "adapter.py")
+	configPath := filepath.Join(t.TempDir(), "adapter-config.json")
+	config, _ := json.Marshal(map[string]string{"fixtureBaseUrl": fixtureURL})
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return capability.Registration{Command: python, Args: []string{adapterPath, "--config", configPath}}
+}
+
+func TestDaemonExternalPythonAdapterHumanSemanticPath(t *testing.T) {
+	d, _ := startDaemon(t)
+	var mu sync.Mutex
+	var requests []string
+	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/state":
-			observations++
-			_, _ = w.Write([]byte(`{"ready":true}`))
-		case "/actions/set-led":
-			invocations++
+		switch r.Method + " " + r.URL.Path {
+		case "GET /state":
+			_, _ = w.Write([]byte(`{"ready":true,"brightness":42}`))
+		case "POST /actions/set-led":
+			var body map[string]string
+			if json.NewDecoder(r.Body).Decode(&body) != nil || body["color"] != "#123456" {
+				http.Error(w, "invalid action", http.StatusBadRequest)
+				return
+			}
 			_, _ = w.Write([]byte(`{"ok":true}`))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
-
-	d, _ := startDaemon(t)
-	if _, err := d.Dispatch(&IpcRequest{Op: "capability-configure", FixtureEndpoint: server.URL}); err != nil {
-		t.Fatal(err)
+	defer fixture.Close()
+	registration := pythonReferenceRegistration(t, fixture.URL)
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-register", AdapterCommand: registration.Command, AdapterArgs: registration.Args}); err != nil {
+		t.Fatalf("register Python Adapter: %v", err)
 	}
-	adapter, err := capability.LoadFixtureAdapter(RuntimeDirectory())
-	if err != nil {
-		t.Fatal(err)
+	listed, err := SendIPC(&IpcRequest{Op: "capability-list"})
+	if err != nil || !strings.Contains(string(listed), "living_room_light") || strings.Contains(string(listed), fixture.URL) {
+		t.Fatalf("Python Adapter projection = %s (%v)", listed, err)
 	}
-	direct := capability.NewController(adapter)
-	if _, err := direct.Observe(context.Background(), capability.CapabilityID); err != nil {
-		t.Fatal(err)
+	observed, err := SendIPC(&IpcRequest{Op: "capability-observe", CapabilityID: "living_room_light"})
+	if err != nil || !strings.Contains(string(observed), `"brightness":42`) {
+		t.Fatalf("Human observe through Adapter = %s (%v)", observed, err)
 	}
-	if _, err := direct.Invoke(context.Background(), capability.CapabilityID, "set_led", json.RawMessage(`{"color":"#123456"}`)); err != nil {
-		t.Fatal(err)
+	invoked, err := SendIPC(&IpcRequest{Op: "capability-invoke", CapabilityID: "living_room_light", CapabilityAction: "set_led", CapabilityArgs: json.RawMessage(`{"color":"#123456"}`)})
+	if err != nil || !strings.Contains(string(invoked), `"ok":true`) {
+		t.Fatalf("Human invoke through Adapter = %s (%v)", invoked, err)
 	}
-
-	if _, err := SendIPC(&IpcRequest{Op: "capability-observe", CapabilityID: capability.CapabilityID}); err != nil {
-		t.Fatal(err)
+	mu.Lock()
+	gotRequests := append([]string(nil), requests...)
+	mu.Unlock()
+	if strings.Join(gotRequests, ",") != "GET /state,POST /actions/set-led" {
+		t.Fatalf("fixture calls did not originate from external Adapter path: %v", gotRequests)
 	}
-	if _, err := SendIPC(&IpcRequest{
-		Op: "capability-invoke", CapabilityID: capability.CapabilityID,
-		CapabilityAction: "set_led", CapabilityArgs: json.RawMessage(`{"color":"#654321"}`),
-	}); err != nil {
-		t.Fatal(err)
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-remove"}); err != nil {
+		t.Fatalf("remove Python Adapter: %v", err)
 	}
-	if observations != 2 || invocations != 2 {
-		t.Fatalf("direct and IPC calls diverged: observations=%d invocations=%d", observations, invocations)
+	if descriptors := d.capabilityHandler.DescribeCapabilities(); len(descriptors) != 0 {
+		t.Fatalf("removed Adapter remains available: %#v", descriptors)
 	}
 }
 
@@ -996,25 +1061,24 @@ func TestFullVerticalSliceLocalE2E(t *testing.T) {
 	}
 }
 
-func TestDaemonCapabilityConfigureRefreshesExistingResidentAndRoutesThroughCurrentController(t *testing.T) {
-	_, _ = startDaemon(t)
-	var oldControllerCalls atomic.Int32
-	var currentControllerCalls atomic.Int32
-	newFixture := func(source string, calls *atomic.Int32) *httptest.Server {
+func TestDaemonAdapterReplacementRefreshesExistingResidentAndRemovalClearsProjection(t *testing.T) {
+	d, _ := startDaemon(t)
+	newFixture := func(source string) *httptest.Server {
 		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet || r.URL.Path != "/state" {
-				http.NotFound(w, r)
-				return
-			}
-			calls.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"source":%q}`, source)
+			switch r.Method + " " + r.URL.Path {
+			case "GET /state":
+				body, _ := json.Marshal(map[string]string{"source": source})
+				_, _ = w.Write(body)
+			case "POST /actions/set-led":
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			default:
+				http.NotFound(w, r)
+			}
 		}))
 	}
-	oldFixture := newFixture("old-controller", &oldControllerCalls)
+	oldFixture := newFixture("old-controller")
 	defer oldFixture.Close()
-	currentFixture := newFixture("current-controller", &currentControllerCalls)
-	defer currentFixture.Close()
 
 	connections := make(chan *websocket.Conn, 1)
 	projections := make(chan map[string]any, 4)
@@ -1119,14 +1183,21 @@ func TestDaemonCapabilityConfigureRefreshesExistingResidentAndRoutesThroughCurre
 	}
 
 	// Configure after the Runtime and its private Resident WebSocket are live.
-	if _, err := SendIPC(&IpcRequest{Op: "capability-configure", FixtureEndpoint: oldFixture.URL}); err != nil {
-		t.Fatalf("first daemon configure failed: %v", err)
+	oldRegistration := pythonReferenceRegistration(t, oldFixture.URL)
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-register", AdapterCommand: oldRegistration.Command, AdapterArgs: oldRegistration.Args}); err != nil {
+		t.Fatalf("register first Adapter: %v", err)
+	}
+	d.mu.Lock()
+	oldProcess := d.capabilityProcess
+	d.mu.Unlock()
+	if refreshed, err := SendIPC(&IpcRequest{Op: "capability-list"}); err != nil || !strings.Contains(string(refreshed), "living_room_light") {
+		t.Fatalf("registered Adapter descriptor missing: %s (%v)", refreshed, err)
 	}
 	var refreshed map[string]any
 	select {
 	case refreshed = <-projections:
 	case <-time.After(5 * time.Second):
-		t.Fatal("live configure did not refresh the existing Runtime Host projection")
+		t.Fatal("Adapter registration did not refresh the existing Runtime Host projection")
 	}
 	caps, _ := refreshed["capabilities"].([]any)
 	if len(caps) != 1 {
@@ -1139,15 +1210,29 @@ func TestDaemonCapabilityConfigureRefreshesExistingResidentAndRoutesThroughCurre
 		t.Fatalf("refreshed descriptor was incomplete: %#v", refreshed)
 	}
 
-	// Replace the daemon-owned controller while this resident remains online.
-	// Its stable Runtime callback must resolve the replacement, not the old pointer.
-	if _, err := SendIPC(&IpcRequest{Op: "capability-configure", FixtureEndpoint: currentFixture.URL}); err != nil {
-		t.Fatalf("replacement daemon configure failed: %v", err)
+	// Replace the daemon-owned process while this resident remains online. Its
+	// stable Runtime callback must resolve the current process, not the old one.
+	currentFixture := newFixture("current-controller")
+	defer currentFixture.Close()
+	currentRegistration := pythonReferenceRegistration(t, currentFixture.URL)
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-register", AdapterCommand: currentRegistration.Command, AdapterArgs: currentRegistration.Args}); err != nil {
+		t.Fatalf("replacement Adapter registration failed: %v", err)
 	}
 	select {
 	case <-projections:
 	case <-time.After(5 * time.Second):
-		t.Fatal("replacement configure did not refresh the existing Runtime Host projection")
+		t.Fatal("replacement registration did not refresh the existing Runtime Host projection")
+	}
+	select {
+	case <-oldProcess.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("replaced Adapter process was not reaped")
+	}
+	if observed, err := SendIPC(&IpcRequest{Op: "capability-observe", CapabilityID: capabilityID}); err != nil || !strings.Contains(string(observed), "current-controller") {
+		t.Fatalf("Human semantic observe did not reach replacement Python Adapter: %s (%v)", observed, err)
+	}
+	if invoked, err := SendIPC(&IpcRequest{Op: "capability-invoke", CapabilityID: capabilityID, CapabilityAction: "set_led", CapabilityArgs: json.RawMessage(`{"color":"#abcdef"}`)}); err != nil || !strings.Contains(string(invoked), `"ok":true`) {
+		t.Fatalf("Human semantic invoke did not reach replacement Python Adapter: %s (%v)", invoked, err)
 	}
 
 	request, _ := json.Marshal(map[string]any{
@@ -1169,15 +1254,61 @@ func TestDaemonCapabilityConfigureRefreshesExistingResidentAndRoutesThroughCurre
 	case <-time.After(5 * time.Second):
 		t.Fatal("resident did not answer the capability request")
 	}
-	if oldControllerCalls.Load() != 0 || currentControllerCalls.Load() != 1 {
-		t.Fatalf("resident used a stale controller: old=%d current=%d", oldControllerCalls.Load(), currentControllerCalls.Load())
-	}
 	listed, err := SendIPC(&IpcRequest{Op: "capability-list"})
-	if err != nil || !strings.Contains(string(listed), capabilityID) || strings.Contains(string(listed), currentFixture.URL) {
+	if err != nil || !strings.Contains(string(listed), capabilityID) || strings.Contains(string(listed), "controller") {
 		t.Fatalf("daemon discovery did not return the sanitized current descriptor: %s (%v)", listed, err)
+	}
+	crashRegistration := daemonCapabilityAdapterRegistration("crash-on-observe")
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-register", AdapterCommand: crashRegistration.Command, AdapterArgs: crashRegistration.Args}); err != nil {
+		t.Fatalf("register crash-probe Adapter failed: %v", err)
+	}
+	d.mu.Lock()
+	crashProcess := d.capabilityProcess
+	d.mu.Unlock()
+	select {
+	case <-projections:
+	case <-time.After(5 * time.Second):
+		t.Fatal("crash-probe Adapter registration did not refresh the existing Runtime Host projection")
+	}
+	if _, err := SendIPC(&IpcRequest{Op: "capability-observe", CapabilityID: "test_light"}); err == nil {
+		t.Fatal("crashed Adapter unexpectedly returned an observation")
+	}
+	select {
+	case removedProjection := <-projections:
+		removedCaps, _ := removedProjection["capabilities"].([]any)
+		if len(removedCaps) != 0 {
+			t.Fatalf("crashed Adapter remained projected: %#v", removedProjection)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Adapter crash did not clear the existing Runtime Host projection")
+	}
+	select {
+	case <-crashProcess.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("crashed Adapter process was not reaped")
+	}
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-remove"}); err != nil {
+		t.Fatalf("remove Adapter registration failed: %v", err)
 	}
 	if _, err := SendIPC(&IpcRequest{Op: "leave", InstanceID: view.InstanceID}); err != nil {
 		t.Fatalf("resident cleanup failed: %v", err)
+	}
+}
+
+func TestDaemonStopReapsRegisteredAdapter(t *testing.T) {
+	d, _ := startDaemon(t)
+	registration := daemonCapabilityAdapterRegistration("shutdown-test")
+	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-register", AdapterCommand: registration.Command, AdapterArgs: registration.Args}); err != nil {
+		t.Fatalf("register Adapter: %v", err)
+	}
+	process := d.capabilityProcess
+	if _, err := SendIPC(&IpcRequest{Op: "stop"}); err != nil {
+		t.Fatalf("stop daemon: %v", err)
+	}
+	select {
+	case <-process.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("daemon shutdown did not reap the registered Adapter")
 	}
 }
 

@@ -5,32 +5,32 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"regexp"
 	"strings"
 	"time"
+
+	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
 const (
-	CapabilityID   = "local_fixture"
-	MaxIDBytes     = 48
+	MaxIDBytes     = 64
 	MaxActionBytes = 32
 	MaxArgsBytes   = 1024
 	MaxResultBytes = 4096
-	MaxDescriptor  = 2048
+	MaxDescriptor  = 1024
 	RequestTimeout = 1500 * time.Millisecond
 )
 
 var (
-	ErrUnknownCapability = errors.New("unknown capability")
-	ErrUnsupportedAction = errors.New("unsupported action")
-	ErrInvalidArgs       = errors.New("invalid capability arguments")
-	ErrUnavailable       = errors.New("local capability unavailable")
-	ErrTimeout           = errors.New("local capability timed out")
-	ErrTooLarge          = errors.New("local capability payload exceeds limit")
-	ErrMalformedResponse = errors.New("local capability response malformed")
+	ErrUnknownCapability   = errors.New("unknown capability")
+	ErrUnsupportedAction   = errors.New("unsupported action")
+	ErrInvalidArgs         = errors.New("invalid capability arguments")
+	ErrUnavailable         = errors.New("local capability unavailable")
+	ErrTimeout             = errors.New("local capability timed out")
+	ErrTooLarge            = errors.New("local capability payload exceeds limit")
+	ErrMalformedResponse   = errors.New("local capability response malformed")
+	ErrCapabilityCount     = errors.New("adapter must expose exactly one capability")
+	ErrInvalidRegistration = errors.New("invalid local Adapter registration")
 )
-
-var unsafeDescriptorPattern = regexp.MustCompile(`(?i)(https?://|"?(endpoint|credential|password|secret|token|authorization|cookie|adapter|protocol|hostname)"?\s*[:=])`)
 
 // Descriptor contains semantic metadata only. Adapter configuration is never
 // represented here.
@@ -77,11 +77,10 @@ func (c *Controller) Describe(id string) (Descriptor, error) {
 		return Descriptor{}, ErrUnavailable
 	}
 	d := c.adapter.Describe()
-	b, err := json.Marshal(d)
 	if id != d.ID {
 		return Descriptor{}, ErrUnknownCapability
 	}
-	if err != nil || len(b) > MaxDescriptor || len(d.ID) > MaxIDBytes || unsafeDescriptorPattern.Match(b) {
+	if !descriptorProjection(d).Valid() {
 		return Descriptor{}, ErrMalformedResponse
 	}
 	return d, nil
@@ -105,7 +104,11 @@ func (c *Controller) Observe(ctx context.Context, id string) (Observation, error
 	if c == nil || c.adapter == nil {
 		return Observation{}, ErrUnavailable
 	}
-	if id != c.adapter.Describe().ID {
+	descriptor := c.adapter.Describe()
+	if descriptor.ID == "" {
+		return Observation{}, ErrUnavailable
+	}
+	if id != descriptor.ID {
 		return Observation{}, ErrUnknownCapability
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -127,16 +130,33 @@ func (c *Controller) Invoke(ctx context.Context, id, action string, args json.Ra
 	if c == nil || c.adapter == nil {
 		return nil, ErrUnavailable
 	}
-	if id != c.adapter.Describe().ID {
+	descriptor := c.adapter.Describe()
+	if descriptor.ID == "" {
+		return nil, ErrUnavailable
+	}
+	if id != descriptor.ID {
 		return nil, ErrUnknownCapability
 	}
 	if len(action) == 0 || len(action) > MaxActionBytes || strings.TrimSpace(action) != action {
+		return nil, ErrUnsupportedAction
+	}
+	var schema *ActionSchema
+	for index := range descriptor.Actions {
+		if descriptor.Actions[index].Name == action {
+			schema = &descriptor.Actions[index]
+			break
+		}
+	}
+	if schema == nil {
 		return nil, ErrUnsupportedAction
 	}
 	if len(args) > MaxArgsBytes {
 		return nil, ErrTooLarge
 	}
 	if len(args) == 0 || !json.Valid(args) {
+		return nil, ErrInvalidArgs
+	}
+	if !validActionArgs(*schema, args) {
 		return nil, ErrInvalidArgs
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -152,6 +172,65 @@ func (c *Controller) Invoke(ctx context.Context, id, action string, args json.Ra
 		return nil, ErrMalformedResponse
 	}
 	return append(json.RawMessage(nil), result...), nil
+}
+
+func descriptorProjection(descriptor Descriptor) types.RuntimeCapabilityProjection {
+	projection := types.RuntimeCapabilityProjection{
+		CapabilityID: descriptor.ID,
+		Title:        descriptor.Title,
+		Version:      descriptor.Version,
+		Observe:      descriptor.Observe != "",
+		Actions:      make([]types.RuntimeCapabilityAction, 0, len(descriptor.Actions)),
+	}
+	for _, action := range descriptor.Actions {
+		projected := types.RuntimeCapabilityAction{Name: action.Name, Title: action.Title}
+		projected.Input.Type = "object"
+		projected.Input.Properties = action.Properties
+		projected.Input.Required = action.Required
+		projection.Actions = append(projection.Actions, projected)
+	}
+	return projection
+}
+
+func validActionArgs(schema ActionSchema, args json.RawMessage) bool {
+	var values map[string]json.RawMessage
+	if json.Unmarshal(args, &values) != nil || values == nil {
+		return false
+	}
+	for _, required := range schema.Required {
+		if _, ok := values[required]; !ok {
+			return false
+		}
+	}
+	for name, raw := range values {
+		kind, ok := schema.Properties[name]
+		if !ok {
+			return false
+		}
+		var value any
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.UseNumber()
+		if decoder.Decode(&value) != nil {
+			return false
+		}
+		switch kind {
+		case "string":
+			if _, ok := value.(string); !ok {
+				return false
+			}
+		case "number":
+			if _, ok := value.(json.Number); !ok {
+				return false
+			}
+		case "boolean":
+			if _, ok := value.(bool); !ok {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func safeError(ctx context.Context, err error) error {

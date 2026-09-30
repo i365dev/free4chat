@@ -87,9 +87,11 @@ type IpcRequest struct {
 	SessionID     string  `json:"sessionId,omitempty"`
 	SessionCursor string  `json:"sessionCursor,omitempty"`
 	SessionCwd    *string `json:"sessionCwd,omitempty"`
-	// Local capability calls are semantic IPC only. The fixture endpoint is
-	// accepted solely by capability-configure and never returned by the daemon.
-	FixtureEndpoint  string          `json:"fixtureEndpoint,omitempty"`
+	// Adapter registration is explicit local execution approval. The daemon
+	// stores only a command and bounded argv; no Adapter config/secrets cross
+	// this IPC field set.
+	AdapterCommand   string          `json:"adapterCommand,omitempty"`
+	AdapterArgs      []string        `json:"adapterArgs,omitempty"`
 	CapabilityID     string          `json:"capabilityId,omitempty"`
 	CapabilityAction string          `json:"action,omitempty"`
 	CapabilityArgs   json.RawMessage `json:"args,omitempty"`
