@@ -14,6 +14,10 @@ import {
   type RoomAppTransportEnvelope,
   type RoomAppAgentRequestEnvelope,
 } from "../common/roomApp"
+import type {
+  RuntimeCapabilityOperation,
+  RuntimeCapabilityResult,
+} from "../common/runtimeCapability"
 
 interface RoomAppHostProps {
   app: RoomAppDefinition
@@ -52,6 +56,16 @@ interface RoomAppHostProps {
     error?: string
   }) => boolean
   sharedState?: { revision: number; state: Record<string, unknown> }
+  generatedAppBundleRevision?: number
+  requestGeneratedCapability?: (request: {
+    appInstanceId: string
+    bundleRevision: number
+    requestId: string
+    capabilityId: string
+    operation: RuntimeCapabilityOperation
+    action?: string
+    args?: Record<string, unknown>
+  }) => Promise<RuntimeCapabilityResult>
   sendGeneratedState?: (
     appInstanceId: string,
     expectedRevision: number,
@@ -101,6 +115,8 @@ export default function RoomAppHost({
   setAgentHostReady = NO_ROOM_APP_AGENT_HOST_STATE,
   respondAgentRequest = NO_ROOM_APP_AGENT_RESPONSE,
   sharedState,
+  generatedAppBundleRevision,
+  requestGeneratedCapability,
   sendGeneratedState,
   subscribeGeneratedState,
   onClose,
@@ -125,6 +141,8 @@ export default function RoomAppHost({
   sendRef.current = send
   const sendUnicastRef = useRef(sendUnicast)
   sendUnicastRef.current = sendUnicast
+  const generatedBundleRevision =
+    app.source === "generated" ? generatedAppBundleRevision : undefined
   const pendingUnicastRequestsRef = useRef(new Map<string, number>())
   const pendingAgentRequestsRef = useRef(new Map<string, number>())
   const [ready, setReady] = useState(false)
@@ -278,6 +296,52 @@ export default function RoomAppHost({
           post({ type: "error", appInstanceId, error: "rate_limited" })
         return
       }
+      if (message.type === "capabilityRequest") {
+        if (
+          app.source !== "generated" ||
+          message.bundleRevision !== generatedBundleRevision ||
+          !requestGeneratedCapability
+        ) {
+          post({
+            type: "capability_result",
+            appInstanceId,
+            requestId: message.requestId,
+            result: {
+              type: "runtime-capability-result",
+              requestId: message.requestId,
+              ok: false,
+              error: "unavailable",
+            },
+          })
+          return
+        }
+        void requestGeneratedCapability(message).then(
+          (result) => {
+            if (readyRef.current)
+              post({
+                type: "capability_result",
+                appInstanceId,
+                requestId: message.requestId,
+                result,
+              })
+          },
+          () => {
+            if (readyRef.current)
+              post({
+                type: "capability_result",
+                appInstanceId,
+                requestId: message.requestId,
+                result: {
+                  type: "runtime-capability-result",
+                  requestId: message.requestId,
+                  ok: false,
+                  error: "unavailable",
+                },
+              })
+          }
+        )
+        return
+      }
       if (message.type === "milestone") {
         if (!readyRef.current || engagedNotifiedRef.current) return
         engagedNotifiedRef.current = true
@@ -342,6 +406,9 @@ export default function RoomAppHost({
         type: "room-app-bootstrap",
         protocolVersion: 1,
         appInstanceId,
+        ...(app.source === "generated"
+          ? { bundleRevision: generatedBundleRevision }
+          : {}),
         handshakeToken: tokenRef.current,
       },
       app.origin === window.location.origin ? app.origin : "*",
@@ -352,10 +419,12 @@ export default function RoomAppHost({
     app.origin,
     app.source,
     appInstanceId,
+    generatedBundleRevision,
     onEngaged,
     onReady,
     participants,
     post,
+    requestGeneratedCapability,
     respondAgentRequest,
     self,
     setAgentHostReady,

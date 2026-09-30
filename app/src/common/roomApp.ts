@@ -1,3 +1,9 @@
+import {
+  isRuntimeCapabilityActionName,
+  isRuntimeCapabilityId,
+  type RuntimeCapabilityOperation,
+  type RuntimeCapabilityResult,
+} from "./runtimeCapability"
 import type { ParticipantKind } from "../room/types"
 
 export const ROOM_APP_PROTOCOL_VERSION = 1 as const
@@ -377,6 +383,12 @@ export type RoomAppHostMessage =
   | ({ type: "unicast_result" } & RoomAppUnicastResult)
   | ({ type: "agent_request" } & RoomAppAgentRequestEnvelope)
   | {
+      type: "capability_result"
+      appInstanceId: string
+      requestId: string
+      result: RuntimeCapabilityResult
+    }
+  | {
       type: "error"
       appInstanceId: string
       error: "unsupported_message" | "rate_limited"
@@ -429,6 +441,16 @@ export type RoomAppClientMessage =
       ok: boolean
       result?: Record<string, unknown>
       error?: string
+    }
+  | {
+      type: "capabilityRequest"
+      appInstanceId: string
+      bundleRevision: number
+      requestId: string
+      capabilityId: string
+      operation: RuntimeCapabilityOperation
+      action?: string
+      args?: Record<string, unknown>
     }
 
 export interface RoomAppAgentRequestEnvelope {
@@ -522,6 +544,44 @@ export function decodeRoomAppClientMessage(
   appInstanceId: string
 ): RoomAppClientMessage | null {
   if (!isRecord(value) || value.appInstanceId !== appInstanceId) return null
+  if (value.type === "capabilityRequest") {
+    if (
+      !isValidRoomAppRequestId(value.requestId) ||
+      !Number.isSafeInteger(value.bundleRevision) ||
+      (value.bundleRevision as number) < 1 ||
+      !isRuntimeCapabilityId(value.capabilityId) ||
+      (value.operation !== "observe" && value.operation !== "invoke") ||
+      (value.operation === "observe" &&
+        (value.action !== undefined || value.args !== undefined)) ||
+      (value.operation === "invoke" &&
+        (!isRuntimeCapabilityActionName(value.action) || !isRecord(value.args)))
+    )
+      return null
+    const response = {
+      type: "generated-app-capability-request",
+      requestId: value.requestId,
+      appInstanceId,
+      bundleRevision: value.bundleRevision,
+      capabilityId: value.capabilityId,
+      operation: value.operation,
+      ...(value.action === undefined ? {} : { action: value.action }),
+      ...(value.args === undefined ? {} : { args: value.args }),
+    }
+    const bytes = serializedRoomAppBytes(response)
+    if (bytes === null || bytes > ROOM_APP_MAX_PAYLOAD_BYTES) return null
+    return {
+      type: "capabilityRequest",
+      appInstanceId,
+      bundleRevision: value.bundleRevision as number,
+      requestId: value.requestId,
+      capabilityId: value.capabilityId,
+      operation: value.operation,
+      ...(value.action === undefined ? {} : { action: value.action as string }),
+      ...(value.args === undefined
+        ? {}
+        : { args: value.args as Record<string, unknown> }),
+    }
+  }
   if (value.type === "agentResponse") {
     if (
       !isValidRoomAppRequestId(value.requestId) ||

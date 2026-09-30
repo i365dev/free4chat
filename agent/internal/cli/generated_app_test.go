@@ -77,6 +77,11 @@ func TestGeneratedAppDescribeIsDeterministicAndSelfConsistent(t *testing.T) {
 	if descriptor.Contract != "free4chat.generated-task-app" || descriptor.ContractVersion != 1 {
 		t.Fatalf("unexpected contract: %#v", descriptor)
 	}
+	bridge := strings.Join(descriptor.Bridge, "\n")
+	if !strings.Contains(bridge, "free4chat.capabilities.observe(capabilityId)") ||
+		!strings.Contains(bridge, "free4chat.capabilities.invoke(capabilityId, action, args)") {
+		t.Fatalf("descriptor is missing the bounded Runtime capability bridge: %#v", descriptor.Bridge)
+	}
 	if descriptor.Limits.MaxBundleBytes != maxGeneratedAppBytes ||
 		descriptor.Limits.MaxStateBytes != generatedAppStateBytes ||
 		descriptor.Bundle.Version != 1 || len(descriptor.Bundle.NetworkOrigins) != 0 {

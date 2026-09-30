@@ -659,6 +659,58 @@ describe("Room App host contract", () => {
     ).toBeNull()
   })
 
+  it("decodes Generated App capability requests without forwarding caller-selected Hosts", () => {
+    const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
+    expect(
+      decodeRoomAppClientMessage(
+        {
+          type: "capabilityRequest",
+          appInstanceId,
+          bundleRevision: 2,
+          requestId: "cap-1-abc12345",
+          capabilityId: "printer_status",
+          operation: "observe",
+          runtimeHostId: "attacker-selected-host",
+        },
+        appInstanceId
+      )
+    ).toEqual({
+      type: "capabilityRequest",
+      appInstanceId,
+      bundleRevision: 2,
+      requestId: "cap-1-abc12345",
+      capabilityId: "printer_status",
+      operation: "observe",
+    })
+    expect(
+      decodeRoomAppClientMessage(
+        {
+          type: "capabilityRequest",
+          appInstanceId,
+          bundleRevision: 0,
+          requestId: "bad-revision",
+          capabilityId: "printer_status",
+          operation: "observe",
+        },
+        appInstanceId
+      )
+    ).toBeNull()
+    expect(
+      decodeRoomAppClientMessage(
+        {
+          type: "capabilityRequest",
+          appInstanceId,
+          bundleRevision: 2,
+          requestId: "bad-observe-args",
+          capabilityId: "printer_status",
+          operation: "observe",
+          args: {},
+        },
+        appInstanceId
+      )
+    ).toBeNull()
+  })
+
   it("decodes only the bounded engaged milestone without App properties", () => {
     const appInstanceId = "test-app:abc123"
     expect(

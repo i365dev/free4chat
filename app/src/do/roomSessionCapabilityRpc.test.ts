@@ -128,6 +128,171 @@ function createHarness() {
 }
 
 describe("RoomSession deterministic Runtime capability RPC", () => {
+  it("routes a Generated Task App click through its canonical Task Agent without provider claims", async () => {
+    const { session, room, residentSocket, requester } = createHarness()
+    const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
+    const taskRequestId = "task-origin"
+    room.runtimeHostProviders = undefined
+    room.messages = [
+      {
+        id: "task-message",
+        peerId: "owner",
+        name: "Human",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        collab: {
+          kind: "request",
+          requestId: taskRequestId,
+          fromParticipantId: "owner",
+          targetParticipantId: "resident",
+          summary: "Read printer status",
+        },
+        createdAt: Date.now(),
+        sequence: 1,
+      },
+    ]
+    room.generatedApps = {
+      [appInstanceId]: {
+        appInstanceId,
+        taskRequestId,
+        title: "Printer",
+        bundleBytes: 100,
+        bundleRevision: 2,
+        stateRevision: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    }
+    const attachment = {
+      participantId: "owner",
+      token: "owner-token",
+      connectionNonce: "owner-nonce",
+    }
+
+    await session.handleClientMessage(requester, attachment, {
+      type: "generated-app-capability-request",
+      requestId: "generated-capability-1",
+      appInstanceId,
+      bundleRevision: 2,
+      capabilityId: "fixture",
+      operation: "observe",
+      runtimeHostId: "attacker-selected-host",
+    })
+
+    expect(JSON.parse(residentSocket.send.mock.calls[0]![0])).toMatchObject({
+      type: "runtime-capability-request",
+      requestId: "generated-capability-1",
+      runtimeHostId: hostId,
+      capabilityId: "fixture",
+      operation: "observe",
+    })
+    expect(room.messages).toHaveLength(1)
+
+    await session.handleRuntimeCapabilityResidentResult(
+      residentSocket,
+      session.deserializeAgentEventAttachment(residentSocket),
+      JSON.stringify({
+        type: "runtime-capability-result",
+        requestId: "generated-capability-1",
+        runtimeHostId: hostId,
+        capabilityId: "fixture",
+        operation: "observe",
+        ok: true,
+        result: { status: "ready", accepting: true },
+      })
+    )
+    expect(JSON.parse((requester.send as any).mock.calls[0]![0])).toMatchObject(
+      {
+        type: "runtime-capability-result",
+        requestId: "generated-capability-1",
+        ok: true,
+        result: { status: "ready", accepting: true },
+      }
+    )
+  })
+
+  it("fails closed for a stale Generated App revision and for a changed Task Agent Host", async () => {
+    const { session, room, residentSocket, requester } = createHarness()
+    const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
+    const taskRequestId = "task-origin"
+    room.runtimeHostProviders = undefined
+    room.messages = [
+      {
+        id: "task-message",
+        peerId: "owner",
+        name: "Human",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        collab: {
+          kind: "request",
+          requestId: taskRequestId,
+          fromParticipantId: "owner",
+          targetParticipantId: "resident",
+        },
+        createdAt: Date.now(),
+        sequence: 1,
+      },
+    ]
+    room.generatedApps = {
+      [appInstanceId]: {
+        appInstanceId,
+        taskRequestId,
+        title: "Printer",
+        bundleBytes: 100,
+        bundleRevision: 2,
+        stateRevision: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    }
+    const attachment = {
+      participantId: "owner",
+      token: "owner-token",
+      connectionNonce: "owner-nonce",
+    }
+    const request = {
+      type: "generated-app-capability-request",
+      requestId: "stale-generated-capability",
+      appInstanceId,
+      bundleRevision: 1,
+      capabilityId: "fixture",
+      operation: "observe",
+    }
+    await session.handleClientMessage(requester, attachment, request)
+    expect(residentSocket.send).not.toHaveBeenCalled()
+
+    await session.handleClientMessage(requester, attachment, {
+      ...request,
+      requestId: "changed-task-host",
+      bundleRevision: 2,
+    })
+    expect(residentSocket.send).toHaveBeenCalledTimes(1)
+    room.participants.resident.runtimeHostId = "another-host"
+    await session.handleRuntimeCapabilityResidentResult(
+      residentSocket,
+      session.deserializeAgentEventAttachment(residentSocket),
+      JSON.stringify({
+        type: "runtime-capability-result",
+        requestId: "changed-task-host",
+        runtimeHostId: hostId,
+        capabilityId: "fixture",
+        operation: "observe",
+        ok: true,
+        result: { status: "ready" },
+      })
+    )
+    expect(
+      JSON.parse((requester.send as any).mock.calls.at(-1)![0])
+    ).toMatchObject({
+      type: "runtime-capability-result",
+      requestId: "changed-task-host",
+      ok: false,
+      error: "unauthorized",
+    })
+  })
+
   it("routes authorized observe/invoke to the exact Host without Room work and replies only to requester", async () => {
     const { session, room, residentSocket, requester } = createHarness()
     await session.handleRuntimeCapabilityControl(

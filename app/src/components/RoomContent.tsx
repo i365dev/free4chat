@@ -504,6 +504,7 @@ export default function RoomContent({
     setRuntimeCapabilityControl,
     runtimeCapabilityControlError,
     requestRuntimeCapability,
+    requestGeneratedAppCapability,
     liveTranscriptMediaAvailable,
     startLiveTranscript,
     stopLiveTranscript,
@@ -2917,6 +2918,10 @@ export default function RoomContent({
                       <RoomAppHost
                         app={app}
                         appInstanceId={publication.appInstanceId}
+                        generatedAppBundleRevision={publication.bundleRevision}
+                        requestGeneratedCapability={
+                          requestGeneratedAppCapability
+                        }
                         self={roomAppSelf}
                         participants={roomAppParticipants}
                         subscribe={subscribeRoomAppMessages}
