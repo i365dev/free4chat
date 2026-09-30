@@ -109,52 +109,6 @@ export interface RuntimeHostProjection {
   capabilities?: RuntimeCapabilityProjection[]
 }
 
-// #176 Phase B: private durable verification material for the explicit
-// Human-to-Runtime-Host association. This is RoomRecord-only storage; never
-// send it in RoomState, room_info, Harness context, logs, or diagnostics.
-export interface RuntimeHostProviderAssociation {
-  humanParticipantId: string
-  claimedAt: number
-  providerHandleHash: string
-  // Server-private proof membership. A Runtime Host id is public discovery
-  // metadata, so an association remains live only while at least one current
-  // Agent on this Host has actually proved possession of the private handle.
-  // Never project these ids to RoomState or room_info.
-  verifiedParticipantIds: string[]
-  // Separate explicit opt-in for deterministic Human control. The existing
-  // provider association remains scoped to its original speech behavior.
-  capabilityControlHumanParticipantId?: string
-  // Browser-owned refresh proof. Only the one-way hash is persisted; it is
-  // usable for a short grace window after the associated Human disconnects.
-  reattachProofHash?: string
-  reattachExpiresAt?: number
-  // A fresh browser registration can arrive before the old WebSocket close
-  // reaches the Durable Object. An exact proof may reserve this one bounded
-  // handoff while the current Human is still connected; ownership moves only
-  // after that old connection actually closes. This remains server-private
-  // and is never a second provider identity or a RoomState projection.
-  pendingReattach?: {
-    humanParticipantId: string
-    expiresAt: number
-  }
-}
-
-// Browser-safe projection for future Human-facing feature admission. Both ids
-// are already Room-scoped/public; neither a claim nor provider capability is.
-export interface RuntimeHostProviderPublicAssociation {
-  humanParticipantId: string
-  claimedAt: number
-  capabilityControlEnabled?: boolean
-}
-
-// One-time claim bookkeeping only. `claimHash` is the map key and remains
-// server-private because it is redemption-capable until consumed or expired.
-export interface PendingRuntimeHostProviderClaim {
-  humanParticipantId: string
-  expiresAt: number
-  reattachProofHash?: string
-}
-
 /**
  * #409 Task Session Continuation: the additive, coarse, PARTICIPANT-scoped
  * projection a resident Runtime publishes about its own product features.
@@ -451,7 +405,6 @@ export type LiveTranscriptState =
   | {
       active: true
       producerRuntimeHostId: string
-      startedByHumanParticipantId: string
       epoch: number
       startedAt: number
     }
@@ -527,9 +480,6 @@ export interface RoomState {
   // #176 Phase A: one readiness projection per Runtime Host id (see
   // RoomRecord.runtimeHosts).
   runtimeHosts?: Record<string, RuntimeHostProjection>
-  // #176 Phase B: explicit Room-scoped Human ↔ Runtime Host associations.
-  // The corresponding claim/provider-handle material is server-private.
-  runtimeHostProviders?: Record<string, RuntimeHostProviderPublicAssociation>
   messages: RoomMessage[]
   // #316: one current, server-validated declarative Live View per Task.
   // Local button/input state never returns to RoomState.
@@ -609,11 +559,6 @@ export interface RoomRecord {
   runtimeHosts?: Record<string, RuntimeHostProjection>
   // #228: the currently OPEN 2+-participant collaboration interval, if any.
   collaborationActivity?: CollaborationActivity
-  // Server-private Phase B authorization state. `runtimeHostProviders`
-  // retains only a one-way provider handle hash; claims are hash-keyed and
-  // short-lived. Neither is copied into RoomState.
-  runtimeHostProviders?: Record<string, RuntimeHostProviderAssociation>
-  runtimeHostProviderClaims?: Record<string, PendingRuntimeHostProviderClaim>
   messages: RoomMessage[]
   // #406: end timestamp of the most recently reserved legacy HTTP
   // wait_for_events window (see RoomSession.legacyLongPollDecision). Only

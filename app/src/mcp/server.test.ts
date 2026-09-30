@@ -36,8 +36,6 @@ describe("public MCP tool surface", () => {
       result?: { tools?: Array<{ name?: string }> }
     }
     const names = payload.result?.tools?.map((tool) => tool.name) ?? []
-    expect(names).not.toContain("connect_runtime_provider")
-    expect(names).not.toContain("runtimeProviderHandle")
     expect(names).toContain("read_room_context")
     expect(names).toContain("publish_live_view")
     expect(names).toContain("publish_generated_app")

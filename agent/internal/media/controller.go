@@ -37,9 +37,6 @@ type ControllerOptions struct {
 	// LiveTranscriptCoordinator elects exactly one local producer for an
 	// active (room, host, epoch) grant.
 	LiveTranscriptCoordinator LiveTranscriptCoordinator
-	// CanProduceLiveTranscript proves this daemon still holds the private
-	// provider association for RuntimeHostID. Nil/false fails closed.
-	CanProduceLiveTranscript func() bool
 	// OnAudioFrame receives attributed SFU audio frames (wire to the
 	// transcriber).
 	OnAudioFrame func(source speech.AudioSource, frame speech.AudioFrame)
@@ -516,14 +513,12 @@ func int64Equal(a, b *int64) bool {
 	return *a == *b
 }
 
-// acquireLiveTranscriptLease first verifies the public Host/epoch projection,
-// then the local private provider association, and finally the daemon-local
-// single-producer lease. Every failure is fail closed.
+// acquireLiveTranscriptLease verifies the public Host/epoch projection and
+// then takes the daemon-local single-producer lease.
 func (c *Controller) acquireLiveTranscriptLease(state types.LiveTranscriptInfo) bool {
 	if !state.Active || state.Epoch <= 0 || state.ProducerRuntimeHostID == "" ||
 		state.ProducerRuntimeHostID != c.options.RuntimeHostID ||
-		c.options.RuntimeInstanceID == "" || c.options.LiveTranscriptCoordinator == nil ||
-		c.options.CanProduceLiveTranscript == nil || !c.options.CanProduceLiveTranscript() {
+		c.options.RuntimeInstanceID == "" || c.options.LiveTranscriptCoordinator == nil {
 		return false
 	}
 	if !c.options.LiveTranscriptCoordinator.Acquire(

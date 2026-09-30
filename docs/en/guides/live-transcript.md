@@ -31,8 +31,8 @@ and provisioning contract is [/speech.md](/speech.md).
 A configured provider alone grants nothing. Any Human in the Room can open
 **Live Transcript**, select a connected STT-ready Runtime Host when there is
 more than one, and click **Start**. That click authorizes the bounded Room
-action; any Human may stop it. No provider claim or Terminal handoff is needed
-when the Runtime is already connected and STT-ready.
+action; any Human may stop it. The Human starts transcription directly from
+the connected STT-ready Runtime Host in the Room.
 
 If no connected Runtime Host is transcription-ready, the panel explains
 whether a Runtime needs to join the Room or needs local STT credentials and

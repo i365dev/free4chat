@@ -51,10 +51,6 @@ function isLiveTranscriptState(value: unknown): value is LiveTranscriptState {
   return (
     candidate.active === true &&
     isValidRuntimeHostId(candidate.producerRuntimeHostId) &&
-    isBoundedString(
-      candidate.startedByHumanParticipantId,
-      MAX_PARTICIPANT_ID_LENGTH
-    ) &&
     isSafePositiveInteger(candidate.epoch) &&
     isSafePositiveInteger(candidate.startedAt)
   )
@@ -196,10 +192,18 @@ export function normalizeStoredLiveTranscript({
   nextTranscriptSequence: number
   changed: boolean
 } {
-  const state = isLiveTranscriptState(liveTranscript)
-    ? liveTranscript
-    : NO_LIVE_TRANSCRIPT
-  let changed = state !== liveTranscript
+  const validState = isLiveTranscriptState(liveTranscript)
+  const state: LiveTranscriptState =
+    validState && liveTranscript.active
+      ? {
+          active: true,
+          producerRuntimeHostId: liveTranscript.producerRuntimeHostId,
+          epoch: liveTranscript.epoch,
+          startedAt: liveTranscript.startedAt,
+        }
+      : NO_LIVE_TRANSCRIPT
+  let changed =
+    !validState || JSON.stringify(state) !== JSON.stringify(liveTranscript)
 
   const rawSegments = Array.isArray(liveTranscriptSegments)
     ? liveTranscriptSegments
@@ -269,13 +273,8 @@ export function isLiveTranscriptProducerValid({
   if (mediaAvailable === false) return false
   const participantList = Array.from(participants)
   const hostId = liveTranscript.producerRuntimeHostId
-  const startedBy = participantList.find(
-    (participant) =>
-      participant.id === liveTranscript.startedByHumanParticipantId
-  )
   return (
     runtimeHosts?.[hostId]?.speech.stt === true &&
-    startedBy?.kind === "human" &&
     isLiveTranscriptHostReady({
       participants: participantList,
       runtimeHosts,
@@ -298,13 +297,11 @@ export function normalizeLiveTranscriptProducer(args: {
 export function startLiveTranscript({
   liveTranscript,
   nextLiveTranscriptEpoch,
-  humanParticipantId,
   runtimeHostId,
   now,
 }: {
   liveTranscript: LiveTranscriptState
   nextLiveTranscriptEpoch: number
-  humanParticipantId: string
   runtimeHostId: string
   now: number
 }): {
@@ -319,7 +316,6 @@ export function startLiveTranscript({
     liveTranscript: {
       active: true,
       producerRuntimeHostId: runtimeHostId,
-      startedByHumanParticipantId: humanParticipantId,
       epoch,
       startedAt: now,
     },

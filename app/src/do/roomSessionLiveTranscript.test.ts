@@ -2,13 +2,10 @@ import { describe, expect, it, vi } from "vitest"
 
 import { MAX_LIVE_TRANSCRIPT_SEGMENT_TEXT_CHARS } from "./liveTranscript"
 import { RoomSession } from "./RoomSession"
-import { hashRuntimeProviderHandle } from "../common/runtimeProviderCredential"
 
 const FUTURE = Date.now() + 60_000
 const HOST_A = "host-live-stt-a"
 const HOST_B = "host-live-stt-b"
-const PROVIDER_HANDLE_A = "A".repeat(43)
-const PROVIDER_HANDLE_B = "B".repeat(43)
 
 function participant(
   id: string,
@@ -45,16 +42,6 @@ async function roomFixture({
   mediaEnabled?: boolean
 } = {}) {
   const roomId = "room-live-transcript"
-  const providerHandleHashA = await hashRuntimeProviderHandle(
-    roomId,
-    HOST_A,
-    PROVIDER_HANDLE_A
-  )
-  const providerHandleHashB = await hashRuntimeProviderHandle(
-    roomId,
-    HOST_B,
-    PROVIDER_HANDLE_B
-  )
   return {
     roomId,
     mediaEnabled,
@@ -78,21 +65,6 @@ async function roomFixture({
           speech: { stt: true, tts: false },
         },
       },
-      runtimeHostProviders: {
-        [HOST_A]: {
-          humanParticipantId: "human",
-          claimedAt: 1,
-          providerHandleHash: providerHandleHashA,
-          verifiedParticipantIds: ["producer"],
-        },
-        [HOST_B]: {
-          humanParticipantId: "other",
-          claimedAt: 1,
-          providerHandleHash: providerHandleHashB,
-          verifiedParticipantIds: ["secondary"],
-        },
-      },
-      runtimeHostProviderClaims: {},
       messages: [],
       ...(includeTranscript
         ? {
@@ -178,9 +150,8 @@ async function harness(options?: {
 }
 
 describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
-  it("starts for a connected STT-ready Host without pairing and keeps one producer", async () => {
+  it("starts for a connected STT-ready Host on Human action and keeps one producer", async () => {
     const room = await harness()
-    delete room.stored().runtimeHostProviders[HOST_A]
     await room.sendHuman("human", {
       type: "live-transcript-start",
       runtimeHostId: HOST_A,
@@ -188,7 +159,6 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
     expect(room.stored().liveTranscript).toMatchObject({
       active: true,
       producerRuntimeHostId: HOST_A,
-      startedByHumanParticipantId: "human",
       epoch: 1,
     })
     expect(room.stored().nextLiveTranscriptEpoch).toBe(2)
@@ -213,7 +183,6 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
     })
     expect(room.stored().liveTranscript).toMatchObject({
       producerRuntimeHostId: HOST_B,
-      startedByHumanParticipantId: "human",
       epoch: 2,
     })
   })
@@ -236,7 +205,6 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
     expect(room.stored().liveTranscript).toMatchObject({
       active: true,
       producerRuntimeHostId: HOST_B,
-      startedByHumanParticipantId: "human",
     })
     await room.sendHuman("human", { type: "live-transcript-stop" })
 
@@ -279,7 +247,6 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
         runtimeHostId: HOST_A,
         speech: { stt: false, tts: false },
       },
-      runtimeProviderHandle: PROVIDER_HANDLE_A,
     })
     expect(noStt.status).toBe(200)
     expect(room.stored().liveTranscript).toEqual({ active: false })
@@ -304,8 +271,10 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
       runtimeHostId: HOST_A,
     })
     await humanDeparture.sendHuman("human", { type: "leave" })
-    expect(humanDeparture.stored().runtimeHostProviders[HOST_A]).toBeUndefined()
-    expect(humanDeparture.stored().liveTranscript).toEqual({ active: false })
+    expect(humanDeparture.stored().liveTranscript).toMatchObject({
+      active: true,
+      producerRuntimeHostId: HOST_A,
+    })
   })
 
   it("stages active producer RTP cleanup before load normalization turns it Off", async () => {
@@ -460,12 +429,8 @@ describe("RoomSession Live Transcript control-plane (#177 PR1)", () => {
 
     const info = await room.control({ action: "room-info" })
     expect((info.json as any).liveTranscriptSegments).toHaveLength(1)
-    expect(JSON.stringify(info.json)).not.toContain(PROVIDER_HANDLE_A)
-    expect(JSON.stringify(info.json)).not.toContain("providerHandleHash")
     const state = (room.session as any).stateFor(room.stored())
     expect(state.liveTranscriptSegments).toHaveLength(1)
-    expect(JSON.stringify(state)).not.toContain(PROVIDER_HANDLE_A)
-    expect(JSON.stringify(state)).not.toContain("providerHandleHash")
   })
 
   it("rejects a stale callback after Stop and restart without allocating a transcript sequence", async () => {

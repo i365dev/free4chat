@@ -595,9 +595,6 @@ func TestRoomHumanOutputExcludesDaemonPrivateFields(t *testing.T) {
   "participantId":"participant-visible-but-unneeded",
   "participantHandle":"participant-handle-private",
   "participantToken":"participant-token-private",
-  "runtimeProviderHandle":"provider-handle-private",
-  "providerClaim":"provider-claim-private",
-  "runtimeProviderProof":"provider-proof-private",
   "sfuSessionId":"sfu-session-private",
   "internalSecret":"internal-secret-private",
   "invite":{"kind":"free4chat.room-invite","version":1,"roomId":"safe-room","roomUrl":"https://www.free4.chat/room?id=safe-room"}
@@ -607,9 +604,6 @@ func TestRoomHumanOutputExcludesDaemonPrivateFields(t *testing.T) {
   "participantId":"participant-visible-but-unneeded",
   "participantHandle":"participant-handle-private",
   "participantToken":"participant-token-private",
-  "runtimeProviderHandle":"provider-handle-private",
-  "providerClaim":"provider-claim-private",
-  "runtimeProviderProof":"provider-proof-private",
   "sfuSessionId":"sfu-session-private",
   "internalSecret":"internal-secret-private"
 }`)
@@ -627,8 +621,8 @@ func TestRoomHumanOutputExcludesDaemonPrivateFields(t *testing.T) {
 	}
 	for _, output := range []string{createOutput, joinOutput} {
 		for _, private := range []string{
-			"participant-handle-private", "participant-token-private", "provider-handle-private",
-			"provider-claim-private", "provider-proof-private", "sfu-session-private", "internal-secret-private",
+			"participant-handle-private", "participant-token-private",
+			"sfu-session-private", "internal-secret-private",
 			"participant-visible-but-unneeded", "{\"roomId\"",
 		} {
 			if strings.Contains(output, private) {

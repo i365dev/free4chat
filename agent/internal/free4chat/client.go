@@ -363,20 +363,17 @@ func parseLiveTranscriptState(raw any) types.LiveTranscriptInfo {
 		return types.LiveTranscriptInfo{}
 	}
 	hostID, hostOK := record["producerRuntimeHostId"].(string)
-	humanID, humanOK := record["startedByHumanParticipantId"].(string)
 	epoch, epochOK := positiveWholeNumber(record["epoch"])
 	startedAt, startedAtOK := positiveWholeNumber(record["startedAt"])
 	if !hostOK || !types.ValidRuntimeHostID(hostID) ||
-		!humanOK || !validBoundedText(humanID, 256) ||
 		!epochOK || !startedAtOK {
 		return types.LiveTranscriptInfo{}
 	}
 	return types.LiveTranscriptInfo{
-		Active:                      true,
-		ProducerRuntimeHostID:       hostID,
-		StartedByHumanParticipantID: humanID,
-		Epoch:                       epoch,
-		StartedAt:                   startedAt,
+		Active:                true,
+		ProducerRuntimeHostID: hostID,
+		Epoch:                 epoch,
+		StartedAt:             startedAt,
 	}
 }
 
@@ -789,16 +786,6 @@ func parseJoinLike(result map[string]any) (types.JoinResult, error) {
 		}
 		joined.AgentLeaseMs = int64(lease)
 	}
-	if providerHandle, present := result["runtimeProviderHandle"]; present {
-		value, ok := providerHandle.(string)
-		if !ok || !types.ValidRuntimeProviderCredential(value) {
-			return types.JoinResult{}, &Error{
-				Message: "Free4Chat returned an invalid provider result",
-				Code:    CodeToolError,
-			}
-		}
-		joined.RuntimeProviderHandle = value
-	}
 	return joined, nil
 }
 
@@ -808,26 +795,10 @@ func parseJoinLike(result map[string]any) (types.JoinResult, error) {
 // from the payload entirely for legacy callers, so an older Room sees exactly
 // the request it saw before.
 func (c *Client) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {
-	return c.joinRoom(roomID, name, capabilities, host, features, "", "")
+	return c.joinRoom(roomID, name, capabilities, host, features)
 }
 
-// JoinRoomWithRuntimeProvider sends the one-time claim hash or an existing
-// daemon-memory provider handle only to the private MCP tool call. Neither
-// value is logged, returned to a Harness, or put in diagnostics.
-func (c *Client) JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
-	if providerClaimHash != "" && !types.ValidRuntimeProviderCredential(providerClaimHash) {
-		return types.JoinResult{}, &Error{Message: "runtime provider claim is malformed", Code: CodeToolError}
-	}
-	if runtimeProviderHandle != "" && !types.ValidRuntimeProviderCredential(runtimeProviderHandle) {
-		return types.JoinResult{}, &Error{Message: "runtime provider handle is malformed", Code: CodeToolError}
-	}
-	if providerClaimHash != "" && runtimeProviderHandle != "" {
-		return types.JoinResult{}, &Error{Message: "runtime provider credentials conflict", Code: CodeToolError}
-	}
-	return c.joinRoom(roomID, name, capabilities, host, features, providerClaimHash, runtimeProviderHandle)
-}
-
-func (c *Client) joinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection, providerClaimHash, runtimeProviderHandle string) (types.JoinResult, error) {
+func (c *Client) joinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {
 	args := map[string]any{"roomId": roomID, "name": name}
 	if len(capabilities) > 0 {
 		args["capabilities"] = capabilities
@@ -841,12 +812,6 @@ func (c *Client) joinRoom(roomID, name string, capabilities []string, host *type
 	// so an unmodified/older Room never sees an unknown field.
 	if features != nil && !features.Empty() {
 		args["runtimeFeatures"] = *features
-	}
-	if providerClaimHash != "" {
-		args["providerClaimHash"] = providerClaimHash
-	}
-	if runtimeProviderHandle != "" {
-		args["runtimeProviderHandle"] = runtimeProviderHandle
 	}
 	result, err := c.callTool("join_room", args)
 	if err != nil {
@@ -897,78 +862,9 @@ func (c *Client) CreateRoom(name string, capabilities []string, features *types.
 // UpdateRuntimeHost re-projects the #176 Phase A Runtime Host capability
 // projection for this participant (speech hot reload path).
 func (c *Client) UpdateRuntimeHost(participantHandle string, host types.RuntimeHostProjection) error {
-	return c.updateRuntimeHost(participantHandle, host, "")
-}
-
-// UpdateRuntimeHostWithRuntimeProvider proves an already-bound Host update
-// with its private daemon-memory handle.
-func (c *Client) UpdateRuntimeHostWithRuntimeProvider(participantHandle string, host types.RuntimeHostProjection, runtimeProviderHandle string) error {
-	if !types.ValidRuntimeProviderCredential(runtimeProviderHandle) {
-		return &Error{Message: "runtime provider handle is malformed", Code: CodeToolError}
-	}
-	return c.updateRuntimeHost(participantHandle, host, runtimeProviderHandle)
-}
-
-// ConnectRuntimeProvider redeems a Human-created claim for an already
-// resident Agent. It never creates a second participant or returns the claim.
-func (c *Client) ConnectRuntimeProvider(participantHandle string, host types.RuntimeHostProjection, providerClaimHash string) (string, error) {
-	if !types.ValidRuntimeProviderCredential(providerClaimHash) {
-		return "", &Error{Message: "runtime provider claim is malformed", Code: CodeToolError}
-	}
-	handle, err := parseRoomControlHandle(participantHandle)
-	if err != nil {
-		return "", err
-	}
-	endpoint, err := c.roomControlEndpoint("/api/room/runtime-provider/connect")
-	if err != nil {
-		return "", err
-	}
-	payload, err := json.Marshal(map[string]any{
-		"runtimeHost":       host,
-		"providerClaimHash": providerClaimHash,
-	})
-	if err != nil {
-		return "", &Error{Message: "encode runtime provider connection", Code: CodeTransient}
-	}
-	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(payload))
-	if err != nil {
-		return "", &Error{Message: "create runtime provider request", Code: CodeTransient}
-	}
-	request.Header.Set("Content-Type", headerContentType)
-	request.Header.Set("Accept", headerContentType)
-	request.Header.Set("User-Agent", defaultUserAgent)
-	request.Header.Set("Origin", endpoint.Scheme+"://"+endpoint.Host)
-	request.Header.Set("X-Room-Id", handle.Room)
-	request.Header.Set("X-Room-Participant-Id", handle.ParticipantID)
-	request.Header.Set("X-Room-Participant-Token", handle.ParticipantToken)
-	response, err := c.HTTP.Do(request)
-	if err != nil {
-		return "", &Error{Message: "runtime provider request failed", Code: CodeTransient}
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
-		return "", &Error{Message: "runtime provider temporarily unavailable", Code: CodeTransient}
-	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return "", &Error{Message: "runtime provider connection rejected", Code: CodeToolError}
-	}
-	var result struct {
-		RuntimeProviderHandle string `json:"runtimeProviderHandle"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil ||
-		!types.ValidRuntimeProviderCredential(result.RuntimeProviderHandle) {
-		return "", &Error{Message: "Free4Chat returned an invalid provider result", Code: CodeToolError}
-	}
-	return result.RuntimeProviderHandle, nil
-}
-
-func (c *Client) updateRuntimeHost(participantHandle string, host types.RuntimeHostProjection, runtimeProviderHandle string) error {
 	args := map[string]any{
 		"participantHandle": participantHandle,
 		"runtimeHost":       host,
-	}
-	if runtimeProviderHandle != "" {
-		args["runtimeProviderHandle"] = runtimeProviderHandle
 	}
 	_, err := c.callTool("update_runtime_host", args)
 	return err

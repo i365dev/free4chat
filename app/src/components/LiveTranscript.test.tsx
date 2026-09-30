@@ -1,8 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import { LOCAL_PEER_ID } from "@common/consts"
-
 import {
   authorizedLiveTranscriptHosts,
   LiveTranscriptControl,
@@ -53,7 +51,7 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     expect(screen.queryByText("host-a")).not.toBeInTheDocument()
   })
 
-  it("does not require a provider association to offer an STT-ready Host", () => {
+  it("offers an STT-ready Host for a Human's explicit Start action", () => {
     expect(
       authorizedLiveTranscriptHosts({
         runtimeHosts: readyHost,
@@ -157,7 +155,6 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         liveTranscript={{
           active: true,
           producerRuntimeHostId: "host-a",
-          startedByHumanParticipantId: "human-a",
           epoch: 7,
           startedAt: 1,
         }}
@@ -174,7 +171,7 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     // provider ownership — any current Human sees it.
     openControl()
     expect(screen.getByText("Live Transcript is on")).toBeInTheDocument()
-    expect(screen.getByText("Provided by Alice")).toBeInTheDocument()
+    expect(screen.getByText("Using Codex Runtime")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     expect(onStop).toHaveBeenCalledTimes(1)
   })
@@ -185,7 +182,6 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         liveTranscript={{
           active: true,
           producerRuntimeHostId: "host-a",
-          startedByHumanParticipantId: "human-a",
           epoch: 7,
           startedAt: 1,
         }}
@@ -219,7 +215,6 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         liveTranscript={{
           active: true,
           producerRuntimeHostId: "host-b",
-          startedByHumanParticipantId: "human-b",
           epoch: 8,
           startedAt: 2,
         }}
@@ -231,7 +226,7 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
       />
     )
     openControl()
-    expect(screen.getByText("Provided by Bob")).toBeInTheDocument()
+    expect(screen.getByText("Using Runtime")).toBeInTheDocument()
   })
 
   it("asks for local STT configuration only when a connected Host is not ready", () => {
@@ -293,19 +288,18 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         liveTranscript={{
           active: true,
           producerRuntimeHostId: "host-a",
-          startedByHumanParticipantId: "human-a",
           epoch: 7,
           startedAt: 1,
         }}
         localParticipantId="human-a"
-        participants={[{ peerId: LOCAL_PEER_ID, name: "Alice" }]}
+        participants={participants}
         mediaAvailable={false}
         onStart={vi.fn()}
         onStop={vi.fn()}
       />
     )
     openControl()
-    expect(screen.getByText("Provided by Alice")).toBeInTheDocument()
+    expect(screen.getByText("Using Codex Runtime")).toBeInTheDocument()
   })
 
   it("renders only committed segments in Room sequence order", () => {

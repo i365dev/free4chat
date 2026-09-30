@@ -303,7 +303,7 @@ func TestControllerLiveTranscriptElectsOneVerifiedSameHostProducer(t *testing.T)
 	// both compatibility availability fields. Keep the fixture on that
 	// contract so Live Transcript is tested with media enabled as well.
 	client := &fakeRoomClient{mnAvail: true, vrAvail: true, live: types.LiveTranscriptInfo{
-		Active: true, ProducerRuntimeHostID: "host-a", StartedByHumanParticipantID: "human", Epoch: 7, StartedAt: 9,
+		Active: true, ProducerRuntimeHostID: "host-a", Epoch: 7, StartedAt: 9,
 	}}
 	coordinator := &testLiveTranscriptCoordinator{}
 	harness := &controllerHarness{}
@@ -319,7 +319,6 @@ func TestControllerLiveTranscriptElectsOneVerifiedSameHostProducer(t *testing.T)
 			RuntimeHostID:             "host-a",
 			RuntimeInstanceID:         instanceID,
 			LiveTranscriptCoordinator: coordinator,
-			CanProduceLiveTranscript:  func() bool { return true },
 			PollIntervalMs:            10_000,
 			CreateBridge:              harness.createBridge,
 			Log:                       func(string, map[string]string) {},
@@ -600,7 +599,7 @@ func TestControllerVoiceEpochRotationRebuildsSession(t *testing.T) {
 func TestControllerLiveTranscriptEpochRotationResubscribesWithoutRestartingVoiceBridge(t *testing.T) {
 	client := &fakeRoomClient{
 		live: types.LiveTranscriptInfo{
-			Active: true, ProducerRuntimeHostID: "host-a", StartedByHumanParticipantID: "human", Epoch: 7, StartedAt: 7,
+			Active: true, ProducerRuntimeHostID: "host-a", Epoch: 7, StartedAt: 7,
 		},
 	}
 	client.setRoom("off", "on", "agent", 0, "on", "on", "agent", 111, nil)
@@ -616,7 +615,6 @@ func TestControllerLiveTranscriptEpochRotationResubscribesWithoutRestartingVoice
 		RuntimeHostID:             "host-a",
 		RuntimeInstanceID:         "instance-a",
 		LiveTranscriptCoordinator: coordinator,
-		CanProduceLiveTranscript:  func() bool { return true },
 		PollIntervalMs:            10_000,
 		Voice:                     voiceConfigAlwaysReady(),
 		CreateBridge: func() (*Bridge, error) {
@@ -674,7 +672,7 @@ func TestControllerLiveTranscriptEpochRotationResubscribesWithoutRestartingVoice
 
 	client.mu.Lock()
 	client.live = types.LiveTranscriptInfo{
-		Active: true, ProducerRuntimeHostID: "host-a", StartedByHumanParticipantID: "human", Epoch: 8, StartedAt: 8,
+		Active: true, ProducerRuntimeHostID: "host-a", Epoch: 8, StartedAt: 8,
 	}
 	client.mu.Unlock()
 	controller.poll()

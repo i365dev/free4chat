@@ -103,10 +103,7 @@ func (r *ResidentRuntime) restartMediaController(participantHandle string) {
 		RuntimeHostID:             runtimeHostID,
 		RuntimeInstanceID:         r.options.InstanceID,
 		LiveTranscriptCoordinator: r.options.TranscriptProducers,
-		CanProduceLiveTranscript: func() bool {
-			return runtimeHostID != "" && r.providerHandles.Get(roomID, runtimeHostID) != ""
-		},
-		Log: r.log,
+		Log:                       r.log,
 		OnAudioFrame: func(source speech.AudioSource, frame speech.AudioFrame) {
 			r.withCurrentMediaGeneration(mediaGeneration, func() {
 				if r.transcriber != nil {

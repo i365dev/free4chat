@@ -6,12 +6,10 @@ package free4chat
 type ErrorCode string
 
 const (
-	CodeInvalidParticipantHandle     ErrorCode = "invalid_participant_handle"
-	CodeRoomExpired                  ErrorCode = "room_expired"
-	CodeTransient                    ErrorCode = "transient"
-	CodeToolError                    ErrorCode = "tool_error"
-	CodeRuntimeProviderProofRequired ErrorCode = "runtime_provider_proof_required"
-	CodeRuntimeProviderHandleInvalid ErrorCode = "runtime_provider_handle_invalid"
+	CodeInvalidParticipantHandle ErrorCode = "invalid_participant_handle"
+	CodeRoomExpired              ErrorCode = "room_expired"
+	CodeTransient                ErrorCode = "transient"
+	CodeToolError                ErrorCode = "tool_error"
 )
 
 // Error is a classified Free4Chat MCP failure.
@@ -39,10 +37,6 @@ func toolErrorCode(errorString string) ErrorCode {
 		return CodeInvalidParticipantHandle
 	case "room_expired":
 		return CodeRoomExpired
-	case "runtime_provider_proof_required":
-		return CodeRuntimeProviderProofRequired
-	case "runtime_provider_handle_invalid":
-		return CodeRuntimeProviderHandleInvalid
 	default:
 		return CodeToolError
 	}

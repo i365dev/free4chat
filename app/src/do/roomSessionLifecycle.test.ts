@@ -525,18 +525,9 @@ describe("RoomSession expiry cleanup", () => {
         speech: { stt: true, tts: true },
       },
     }
-    room.runtimeHostProviders = {
-      [runtimeHostId]: {
-        humanParticipantId: "human",
-        claimedAt: 1,
-        providerHandleHash: "A".repeat(43),
-        verifiedParticipantIds: ["agent"],
-      },
-    }
     room.liveTranscript = {
       active: true,
       producerRuntimeHostId: runtimeHostId,
-      startedByHumanParticipantId: "human",
       epoch: 7,
       startedAt: 8,
     }

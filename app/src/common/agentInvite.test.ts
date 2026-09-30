@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import {
-  buildAgentInvitePrompt,
-  RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED,
-} from "./agentInvite"
+import { buildAgentInvitePrompt } from "./agentInvite"
 
 /**
  * The Invite prompt carries only stable invitations and boundaries. The
@@ -81,20 +78,5 @@ describe("buildAgentInvitePrompt stable invariants", () => {
     for (const marker of mutableProcedureMarkers) {
       expect(text).not.toContain(marker)
     }
-  })
-
-  it("enables provider-claim bootstrap after its Runtime release activates", () => {
-    expect(RUNTIME_PROVIDER_CLAIM_INVITES_ENABLED).toBe(true)
-    const ordinary = buildAgentInvitePrompt("room-176")
-    expect(ordinary).not.toContain("--provider-claim")
-
-    const claim = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
-    const activated = buildAgentInvitePrompt("room-176", {
-      providerClaimSecret: claim,
-    })
-    expect(activated).toContain("--provider-claim")
-    expect(activated).toContain(JSON.stringify(claim))
-    expect(activated).toContain("never log, display")
-    expect(activated).toContain("not an Agent Voice grant")
   })
 })

@@ -36,11 +36,6 @@ import type {
   RuntimeCapabilityResult,
 } from "@common/runtimeCapability"
 import {
-  createRuntimeProviderClaim as createRuntimeProviderCredential,
-  createRuntimeProviderSecret,
-  deriveRuntimeProviderReattachHash,
-} from "@common/runtimeProviderCredential"
-import {
   createSfuEgressSampler,
   SFU_EGRESS_SAMPLE_INTERVAL_MS,
   type SfuEgressSampleReason,
@@ -77,7 +72,6 @@ import type {
   RoomAttachmentProjection,
   RoomAttachmentRead,
   RuntimeHostProjection,
-  RuntimeHostProviderPublicAssociation,
 } from "../room/types"
 import type {
   SfuAgentVoiceState,
@@ -167,26 +161,6 @@ const REMOTE_TRACK_READY_TIMEOUT_MS = 5000
 const REMOTE_FILE_CHANNEL_OPEN_TIMEOUT_MS = 5000
 const ROOM_APP_CHANNEL_OPEN_TIMEOUT_MS = 5000
 const ROOM_APP_RETRY_DELAYS_MS = [100, 500, 2000] as const
-
-const runtimeReattachStorageKey = (room: string) =>
-  `free4chat:runtime-reattach:${room}`
-
-function readOrCreateRuntimeReattachSecret(room: string): {
-  secret: string
-  existed: boolean
-} {
-  if (typeof window === "undefined") return { secret: "", existed: false }
-  try {
-    const key = runtimeReattachStorageKey(room)
-    const existing = window.sessionStorage.getItem(key)
-    if (existing) return { secret: existing, existed: true }
-    const secret = createRuntimeProviderSecret()
-    window.sessionStorage.setItem(key, secret)
-    return { secret, existed: false }
-  } catch {
-    return { secret: "", existed: false }
-  }
-}
 
 function agentTextMime(file: File): string | undefined {
   if (AGENT_TEXT_TYPES.has(file.type)) return file.type
@@ -588,9 +562,7 @@ interface SfuServerMessage {
     | "attachment"
     | "expired"
     | "error"
-    | "runtime-provider-claim-created"
     | "runtime-capability-result"
-    | "runtime-capability-control-result"
     | "agentActivity"
     | "room-app-unicast"
     | "room-app-unicast-result"
@@ -698,8 +670,6 @@ export function useSfuChatRoom(
     Record<string, GeneratedRoomAppPublication>
   >({})
   const [error, setError] = useState("")
-  const [runtimeCapabilityControlError, setRuntimeCapabilityControlError] =
-    useState("")
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("verifying")
   const [roomAppsEnabled, setRoomAppsEnabled] = useState(false)
@@ -712,9 +682,6 @@ export function useSfuChatRoom(
   >([])
   const [runtimeHosts, setRuntimeHosts] = useState<
     Record<string, RuntimeHostProjection> | undefined
-  >()
-  const [runtimeHostProviders, setRuntimeHostProviders] = useState<
-    Record<string, RuntimeHostProviderPublicAssociation> | undefined
   >()
   // The server's existing media-admission projection remains the final
   // environment-level availability signal. Start false so the Room UI never
@@ -745,9 +712,6 @@ export function useSfuChatRoom(
   const taskControlNoticeTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null)
-  const [runtimeConnectionStatus, setRuntimeConnectionStatus] = useState<
-    "idle" | "preparing" | "copied"
-  >("idle")
 
   const sessionRef = useRef<SfuSession | null>(null)
   const roomStateRef = useRef<SfuRoomState | null>(null)
@@ -800,17 +764,6 @@ export function useSfuChatRoom(
     >()
   )
 
-  const pendingRuntimeProviderClaimsRef = useRef(
-    new Map<
-      string,
-      {
-        providerClaimSecret: string
-        resolve: (value: { providerClaimSecret: string }) => void
-        reject: (error: Error) => void
-        timeout: ReturnType<typeof setTimeout>
-      }
-    >()
-  )
   const pendingRuntimeCapabilityRequestsRef = useRef(
     new Map<
       string,
@@ -820,11 +773,6 @@ export function useSfuChatRoom(
       }
     >()
   )
-  const runtimeProviderClaimAttemptRef = useRef<{
-    room: string
-    promise: Promise<{ providerClaimSecret: string }>
-    expiresAt: number
-  } | null>(null)
   const remoteTrackBindingsRef = useRef(new Map<string, RemoteTrackBinding>())
   const negotiationQueueRef = useRef(Promise.resolve())
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1072,71 +1020,6 @@ export function useSfuChatRoom(
     }
     return false
   }, [])
-
-  const setRuntimeCapabilityControl = useCallback(
-    (runtimeHostId: string, enabled: boolean) => {
-      setRuntimeCapabilityControlError("")
-      const sent = sendSocketMessage({
-        type: "runtime-capability-control",
-        runtimeHostId,
-        enabled,
-      })
-      if (!sent) setRuntimeCapabilityControlError("unavailable")
-      return sent
-    },
-    [sendSocketMessage]
-  )
-
-  const requestRuntimeCapability = useCallback(
-    (request: {
-      runtimeHostId: string
-      capabilityId: string
-      operation: RuntimeCapabilityOperation
-      action?: string
-      args?: Record<string, unknown>
-    }): Promise<RuntimeCapabilityResult> => {
-      if (pendingRuntimeCapabilityRequestsRef.current.size >= 4)
-        return Promise.resolve({
-          type: "runtime-capability-result",
-          requestId: "",
-          ok: false,
-          error: "unavailable",
-        })
-      const requestId = crypto.randomUUID()
-      return new Promise((settle) => {
-        const timeout = setTimeout(() => {
-          pendingRuntimeCapabilityRequestsRef.current.delete(requestId)
-          settle({
-            type: "runtime-capability-result",
-            requestId,
-            ok: false,
-            error: "timeout",
-          })
-        }, 12_000)
-        pendingRuntimeCapabilityRequestsRef.current.set(requestId, {
-          settle,
-          timeout,
-        })
-        if (
-          !sendSocketMessage({
-            type: "runtime-capability-request",
-            requestId,
-            ...request,
-          })
-        ) {
-          clearTimeout(timeout)
-          pendingRuntimeCapabilityRequestsRef.current.delete(requestId)
-          settle({
-            type: "runtime-capability-result",
-            requestId,
-            ok: false,
-            error: "unavailable",
-          })
-        }
-      })
-    },
-    [sendSocketMessage]
-  )
 
   const requestGeneratedAppCapability = useCallback(
     (request: {
@@ -3079,18 +2962,6 @@ export function useSfuChatRoom(
       setLiveTranscript(state.liveTranscript ?? { active: false })
       setLiveTranscriptSegments(state.liveTranscriptSegments ?? [])
       setRuntimeHosts(state.runtimeHosts)
-      setRuntimeHostProviders(state.runtimeHostProviders)
-      const localParticipantForProvider = sessionRef.current?.participantId
-      if (
-        localParticipantForProvider &&
-        Object.values(state.runtimeHostProviders ?? {}).some(
-          (association) =>
-            association.humanParticipantId === localParticipantForProvider
-        )
-      ) {
-        runtimeProviderClaimAttemptRef.current = null
-        setRuntimeConnectionStatus("idle")
-      }
       setLiveTranscriptMediaAvailable(state.meetingNotesMediaAvailable)
       setAgentVoiceState(state.agentVoice)
       setAgentVoiceMediaAvailable(state.agentVoiceMediaAvailable)
@@ -3344,10 +3215,6 @@ export function useSfuChatRoom(
       const message = JSON.parse(event.data) as SfuServerMessage
       if (message.type === "state" && message.state) {
         applyRoomState(message.state)
-      } else if (message.type === "runtime-capability-control-result") {
-        setRuntimeCapabilityControlError(
-          message.ok === true ? "" : message.error ?? "unavailable"
-        )
       } else if (
         message.type === "runtime-capability-result" &&
         typeof message.requestId === "string"
@@ -3648,15 +3515,6 @@ export function useSfuChatRoom(
         )
         setConnectionStatus("failed")
       } else if (message.type === "error") {
-        // A provider-claim request has no optimistic success path. Reject
-        // any pending private claim immediately instead of letting its raw
-        // browser-local secret sit around until the timeout.
-        for (const pending of pendingRuntimeProviderClaimsRef.current.values()) {
-          clearTimeout(pending.timeout)
-          pending.reject(new Error(userFacingRoomError(message.error)))
-        }
-        pendingRuntimeProviderClaimsRef.current.clear()
-        runtimeProviderClaimAttemptRef.current = null
         if (typeof message.taskRequestId === "string") {
           setTaskLocalError({
             taskRequestId: message.taskRequestId,
@@ -3722,29 +3580,10 @@ export function useSfuChatRoom(
                   : "session_continuation_unavailable",
               }
         )
-      } else if (
-        message.type === "runtime-provider-claim-created" &&
-        message.requestId
-      ) {
-        const pending = pendingRuntimeProviderClaimsRef.current.get(
-          message.requestId
-        )
-        if (!pending) return
-        pendingRuntimeProviderClaimsRef.current.delete(message.requestId)
-        clearTimeout(pending.timeout)
-        if (runtimeProviderClaimAttemptRef.current)
-          runtimeProviderClaimAttemptRef.current.expiresAt =
-            message.expiresAt ?? Date.now() + 5 * 60 * 1000
-        pending.resolve({ providerClaimSecret: pending.providerClaimSecret })
       }
     }
     socket.onerror = () => socket.close()
     socket.onclose = () => {
-      for (const pending of pendingRuntimeProviderClaimsRef.current.values()) {
-        clearTimeout(pending.timeout)
-        pending.reject(new Error("Room control connection closed"))
-      }
-      pendingRuntimeProviderClaimsRef.current.clear()
       for (const pending of pendingTaskSessionRequestsRef.current.values()) {
         clearTimeout(pending.timeout)
         pending.settle({
@@ -3763,7 +3602,6 @@ export function useSfuChatRoom(
         })
       }
       pendingRuntimeCapabilityRequestsRef.current.clear()
-      runtimeProviderClaimAttemptRef.current = null
       if (closingRef.current) return
       if (socket !== websocketRef.current) return
       setConnectionStatus("reconnecting")
@@ -3883,11 +3721,6 @@ export function useSfuChatRoom(
         name: nickName,
         kind: "human",
         turnstileToken,
-      }
-      const reattach = readOrCreateRuntimeReattachSecret(roomName)
-      if (reattach.existed && reattach.secret) {
-        body.runtimeProviderReattachProofHash =
-          await deriveRuntimeProviderReattachHash(roomName, reattach.secret)
       }
       if (reconnecting && previousSession) {
         body.reconnect = {
@@ -4923,87 +4756,6 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
-  // Create one browser-local connection attempt at a time. The raw claim is
-  // never rendered; the dedicated Runtime handoff copies it only inside a
-  // local CLI command after the Room ACKs the hash.
-  const createRuntimeProviderClaim = useCallback(async (): Promise<{
-    providerClaimSecret: string
-  }> => {
-    const existing = runtimeProviderClaimAttemptRef.current
-    if (
-      existing &&
-      existing.room === roomName &&
-      existing.expiresAt > Date.now()
-    )
-      return existing.promise
-
-    const promise = (async () => {
-      const credential = await createRuntimeProviderCredential(roomName)
-      const reattach = readOrCreateRuntimeReattachSecret(roomName)
-      const reattachProofHash = reattach.secret
-        ? await deriveRuntimeProviderReattachHash(roomName, reattach.secret)
-        : undefined
-      const requestId = crypto.randomUUID()
-      return new Promise<{ providerClaimSecret: string }>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          const pending = pendingRuntimeProviderClaimsRef.current.get(requestId)
-          if (!pending) return
-          pendingRuntimeProviderClaimsRef.current.delete(requestId)
-          runtimeProviderClaimAttemptRef.current = null
-          reject(new Error("Room provider claim was not acknowledged"))
-        }, 5_000)
-        pendingRuntimeProviderClaimsRef.current.set(requestId, {
-          providerClaimSecret: credential.providerClaimSecret,
-          resolve,
-          reject,
-          timeout,
-        })
-        if (
-          !sendSocketMessage({
-            type: "runtime-provider-claim-create",
-            requestId,
-            providerClaimHash: credential.providerClaimHash,
-            ...(reattachProofHash ? { reattachProofHash } : {}),
-          })
-        ) {
-          pendingRuntimeProviderClaimsRef.current.delete(requestId)
-          clearTimeout(timeout)
-          runtimeProviderClaimAttemptRef.current = null
-          reject(new Error("Room control connection is unavailable"))
-        }
-      })
-    })()
-    runtimeProviderClaimAttemptRef.current = {
-      room: roomName,
-      promise,
-      expiresAt: Date.now() + 5 * 60 * 1000,
-    }
-    void promise.catch(() => {
-      if (runtimeProviderClaimAttemptRef.current?.promise === promise)
-        runtimeProviderClaimAttemptRef.current = null
-    })
-    return promise
-  }, [roomName, sendSocketMessage])
-
-  const connectLocalRuntime = useCallback(async () => {
-    setRuntimeConnectionStatus("preparing")
-    try {
-      const { providerClaimSecret } = await createRuntimeProviderClaim()
-      const shellQuote = (value: string) =>
-        `'${value.replaceAll("'", `'\\''`)}'`
-      const command = `free4chat-agent connect --room ${shellQuote(
-        roomName
-      )} --provider-claim ${shellQuote(providerClaimSecret)}`
-      if (!navigator.clipboard?.writeText)
-        throw new Error("clipboard_unavailable")
-      await navigator.clipboard.writeText(command)
-      setRuntimeConnectionStatus("copied")
-    } catch {
-      setRuntimeConnectionStatus("idle")
-      throw new Error("Unable to connect the local Runtime")
-    }
-  }, [createRuntimeProviderClaim, roomName])
-
   /** #363 review (point 1): a bounded Agent-readable copy applies to a
    * supported image/text-like file while at least one Agent is connected. */
   const agentReadableCopyApplies = useCallback((file: File): boolean => {
@@ -5266,10 +5018,6 @@ export function useSfuChatRoom(
     liveTranscript,
     liveTranscriptSegments,
     runtimeHosts,
-    runtimeHostProviders,
-    setRuntimeCapabilityControl,
-    runtimeCapabilityControlError,
-    requestRuntimeCapability,
     requestGeneratedAppCapability,
     liveTranscriptMediaAvailable,
     startLiveTranscript,
@@ -5283,8 +5031,5 @@ export function useSfuChatRoom(
     taskControlNoticeTaskRequestId,
     taskLocalError,
     setAgentVoice,
-    createRuntimeProviderClaim,
-    connectLocalRuntime,
-    runtimeConnectionStatus,
   }
 }

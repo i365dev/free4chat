@@ -241,15 +241,3 @@ Session handoff requires a Harness whose session continuation is *verified*:
 currently Codex and Pi. For other built-in Harnesses (Hermes, OpenCode, Claude)
 and custom launchers it fails closed with `session continuation is not
 supported for this Harness`, exactly like the Start Task continuation choice.
-
-## Local Runtime handoff
-
-```text
-free4chat-agent connect --room <room-id> --provider-claim <opaque-secret>
-free4chat-agent room join ... --provider-claim <opaque-secret>
-```
-
-`--provider-claim` carries the one-time opaque connection value produced by the
-Room's Live Transcript setup flow. It is not an Agent invitation. Never paste a
-provider claim into Room chat or a model conversation. See
-[Live Transcript](../guides/live-transcript).

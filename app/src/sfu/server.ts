@@ -5,7 +5,6 @@ import {
 } from "../common/admissionLimit"
 import { isAllowedOrigin } from "../common/origin"
 import { realtimeBaseUrl } from "../common/realtimeUrl"
-import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
 import {
   resolveSfuAppSecret,
   type SfuAppSecretStore,
@@ -558,15 +557,6 @@ export async function handleSfuRequest(
         : ""
     const reconnectSessionId =
       typeof reconnect?.sessionId === "string" ? reconnect.sessionId : ""
-    const runtimeProviderReattachProofHash =
-      typeof body.runtimeProviderReattachProofHash === "string"
-        ? body.runtimeProviderReattachProofHash
-        : undefined
-    if (
-      runtimeProviderReattachProofHash !== undefined &&
-      !isRuntimeProviderClaimHash(runtimeProviderReattachProofHash)
-    )
-      return badRequest("invalid_runtime_provider_reattach")
     const isReconnect = Boolean(
       reconnectParticipantId && reconnectToken && reconnectSessionId
     )
@@ -625,9 +615,6 @@ export async function handleSfuRequest(
             },
             joinedAt: Date.now(),
             token: participantToken,
-            ...(runtimeProviderReattachProofHash
-              ? { runtimeProviderReattachProofHash }
-              : {}),
           },
         })
     if (!roomResponse.ok) return roomResponse

@@ -43,11 +43,10 @@ func usageText() string {
 	return `Usage:
   free4chat-agent room create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent room create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
-  free4chat-agent room join <room-id> --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
-  free4chat-agent room join <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
-  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
-  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--provider-claim <opaque-secret>] [--agent-env <NAME>]...
-  free4chat-agent connect --room <room-id> --provider-claim <opaque-secret>
+  free4chat-agent room join <room-id> --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+  free4chat-agent room join <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
+  free4chat-agent join --room <room-id> --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
+  free4chat-agent join --room <room-id> --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
@@ -286,18 +285,6 @@ func run(args []string) error {
 			return err
 		}
 		return runViaDaemon(request)
-
-	case "connect":
-		room := option(rest, "--room")
-		providerClaim := option(rest, "--provider-claim")
-		if room == "" || providerClaim == "" || !types.ValidRuntimeProviderCredential(providerClaim) {
-			return errUsage()
-		}
-		return runViaDaemon(&daemon.IpcRequest{
-			Op:            "connect",
-			Room:          room,
-			ProviderClaim: providerClaim,
-		})
 
 	case "create":
 		request, err := createRequest(rest)
@@ -783,10 +770,6 @@ func joinRequest(rest []string) (*daemon.IpcRequest, error) {
 	name := option(rest, "--name")
 	agent := option(rest, "--agent")
 	agentCommand := option(rest, "--agent-command")
-	providerClaim := option(rest, "--provider-claim")
-	if providerClaim != "" && !types.ValidRuntimeProviderCredential(providerClaim) {
-		return nil, errors.New("invalid runtime provider claim")
-	}
 	if room == "" || name == "" || (agent == "" && agentCommand == "") ||
 		(agent != "" && agentCommand != "") {
 		return nil, errUsage()
@@ -796,15 +779,14 @@ func joinRequest(rest []string) (*daemon.IpcRequest, error) {
 		return nil, err
 	}
 	return &daemon.IpcRequest{
-		Op:            "join",
-		Room:          room,
-		Name:          name,
-		Agent:         agent,
-		AgentCommand:  agentCommand,
-		AgentArgs:     repeatedOption(rest, "--agent-arg"),
-		Capabilities:  repeatedOption(rest, "--capability"),
-		ProviderClaim: providerClaim,
-		AgentEnv:      agentEnv,
+		Op:           "join",
+		Room:         room,
+		Name:         name,
+		Agent:        agent,
+		AgentCommand: agentCommand,
+		AgentArgs:    repeatedOption(rest, "--agent-arg"),
+		Capabilities: repeatedOption(rest, "--capability"),
+		AgentEnv:     agentEnv,
 	}, nil
 }
 
