@@ -18,6 +18,7 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/daemon"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
+	"github.com/i365dev/free4chat/agent/internal/generatedapp"
 	"github.com/i365dev/free4chat/agent/internal/harness"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
@@ -25,7 +26,7 @@ import (
 const maxAttachmentBytes = attachments.MaxAttachmentBytes
 const maxSurfaceBytes = attachments.MaxSurfaceBytes
 const maxTaskLiveViewBytes = 32 * 1024
-const maxGeneratedAppBytes = 48 * 1024
+const maxGeneratedAppBytes = generatedapp.MaxBundleBytes
 const maxRoomAppRequestBytes = 16 * 1024
 
 const mcpEndpointDefault = "https://www.free4.chat/mcp"

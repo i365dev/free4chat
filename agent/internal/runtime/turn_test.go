@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/i365dev/free4chat/agent/internal/types"
@@ -23,6 +25,29 @@ func TestBuildHarnessTurnCarriesExactTaskRequestID(t *testing.T) {
 	nilContext := BuildHarnessTurn(nil, nil)
 	if nilContext.TaskRequestID != "" {
 		t.Fatalf("nil context must not carry a Task request id, got %q", nilContext.TaskRequestID)
+	}
+}
+
+func TestBuildHarnessTurnProjectsSemanticCapabilitiesOnlyIntoTask(t *testing.T) {
+	capabilities := []types.RuntimeCapabilityProjection{{
+		CapabilityID: "printer_status", Title: "Printer status", Version: "1",
+		Observe: true, Actions: []types.RuntimeCapabilityAction{},
+	}}
+	task := BuildHarnessTurn(nil, &TurnContextOptions{
+		TaskRequestID: "req-T", TaskCapabilities: capabilities,
+	})
+	if len(task.TaskCapabilities) != 1 || task.TaskCapabilities[0].CapabilityID != "printer_status" {
+		t.Fatalf("Task did not receive its semantic capability descriptor: %+v", task.TaskCapabilities)
+	}
+	encoded, _ := json.Marshal(task)
+	for _, forbidden := range []string{"runtimeHostId", "endpoint", "queue", "127.0.0.1", "credential"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("Task context leaked integration detail %q: %s", forbidden, encoded)
+		}
+	}
+	room := BuildHarnessTurn(nil, &TurnContextOptions{TaskCapabilities: capabilities})
+	if len(room.TaskCapabilities) != 0 {
+		t.Fatalf("ordinary Room turn received Task capability context: %+v", room.TaskCapabilities)
 	}
 }
 

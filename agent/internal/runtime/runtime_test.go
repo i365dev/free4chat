@@ -52,6 +52,36 @@ func TestRoomAppRequestMediatesOpaqueAppAndPayload(t *testing.T) {
 	}
 }
 
+func TestGeneratedTaskOutputValidatesAndPublishesForExactTask(t *testing.T) {
+	client := &fakeClient{}
+	rt := NewResidentRuntime(Options{RoomID: "room", Client: client})
+	rt.mu.Lock()
+	rt.participantHandle = "private-handle"
+	rt.mu.Unlock()
+	bundle := map[string]any{
+		"version":  float64(1),
+		"manifest": map[string]any{"title": "Printer", "networkOrigins": []any{}},
+		"html":     "<main>Status</main>", "css": "main { color: green; }", "js": "document.body.dataset.ready='true';",
+		"initialState": map[string]any{"status": "unknown"},
+	}
+	if err := rt.publishGeneratedTaskOutput("task:task-215", &types.GeneratedTaskAppOutput{Bundle: bundle}); err != nil {
+		t.Fatal(err)
+	}
+	if client.generatedAppHandle != "private-handle" || client.generatedAppTaskID != "task-215" || client.generatedAppBundle == nil {
+		t.Fatalf("Task output did not use the private Runtime transport and exact Task: handle=%q task=%q bundle=%#v", client.generatedAppHandle, client.generatedAppTaskID, client.generatedAppBundle)
+	}
+	bad := map[string]any{
+		"version": float64(1), "manifest": map[string]any{"title": "Printer", "networkOrigins": []any{"http://localhost"}},
+		"html": "<main>Status</main>", "css": "main {}", "js": "void 0;", "initialState": map[string]any{},
+	}
+	if err := rt.publishGeneratedTaskOutput("task:task-215", &types.GeneratedTaskAppOutput{Bundle: bad}); err == nil {
+		t.Fatal("Runtime accepted an invalid Generated Task App bundle")
+	}
+	if err := rt.publishGeneratedTaskOutput("room", &types.GeneratedTaskAppOutput{Bundle: bundle}); err == nil {
+		t.Fatal("Runtime accepted Task output without Task scope")
+	}
+}
+
 func TestReloadSpeechBeforeStopRebuildsThenStopTearsDown(t *testing.T) {
 	rt := mediaRuntimeForReloadTest(t)
 	rt.ReloadSpeech(speech.Config{APIKey: "runtime-private-key", STTEnabled: true, TTSEnabled: true})
@@ -162,6 +192,10 @@ type fakeClient struct {
 	appPayload            map[string]any
 	appResult             map[string]any
 	appErr                error
+	generatedAppTaskID    string
+	generatedAppHandle    string
+	generatedAppBundle    map[string]any
+	generatedAppErr       error
 	collabResults         []types.CollabResultArgs
 	collabResultHook      func(types.CollabResultArgs)
 	leaveHook             func()
@@ -397,6 +431,15 @@ func (c *fakeClient) RoomAppRequest(handle string, appInstanceID string, payload
 	c.appInstanceID = appInstanceID
 	c.appPayload = payload
 	return c.appResult, c.appErr
+}
+
+func (c *fakeClient) PublishGeneratedApp(handle, taskRequestID string, bundle map[string]any) (map[string]any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.generatedAppHandle = handle
+	c.generatedAppTaskID = taskRequestID
+	c.generatedAppBundle = bundle
+	return map[string]any{"published": true}, c.generatedAppErr
 }
 
 func (c *fakeClient) JoinRoom(roomID, name string, capabilities []string, host *types.RuntimeHostProjection, features *types.RuntimeFeatureProjection) (types.JoinResult, error) {

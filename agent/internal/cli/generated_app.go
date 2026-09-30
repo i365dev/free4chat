@@ -1,90 +1,18 @@
 package cli
 
-import (
-	"encoding/json"
-	"fmt"
-	"regexp"
-	"strings"
-)
+import "github.com/i365dev/free4chat/agent/internal/generatedapp"
 
 const (
-	generatedAppHTMLBytes  = 20 * 1024
-	generatedAppCSSBytes   = 12 * 1024
-	generatedAppJSBytes    = 32 * 1024
-	generatedAppStateBytes = 16 * 1024
+	generatedAppHTMLBytes  = generatedapp.MaxHTMLBytes
+	generatedAppCSSBytes   = generatedapp.MaxCSSBytes
+	generatedAppJSBytes    = generatedapp.MaxJSBytes
+	generatedAppStateBytes = generatedapp.MaxStateBytes
 )
-
-var generatedAppTitlePattern = regexp.MustCompile(`^[^<>\x00-\x1f\x7f]+$`)
 
 // validateGeneratedAppBundle is the Runtime-side UX preflight. The Room
 // repeats every check and remains the canonical security/capacity boundary.
 func validateGeneratedAppBundle(data []byte, bundle map[string]any) error {
-	if len(data) == 0 || len(data) > maxGeneratedAppBytes {
-		return fmt.Errorf("generated App bundle exceeds %d UTF-8 bytes", maxGeneratedAppBytes)
-	}
-	if !exactGeneratedKeys(bundle, "version", "manifest", "html", "css", "js", "initialState") || bundle["version"] != float64(1) {
-		return fmt.Errorf("generated App bundle must use version 1 and the fixed fields")
-	}
-	manifest, ok := bundle["manifest"].(map[string]any)
-	if !ok || !exactGeneratedKeys(manifest, "title", "networkOrigins") {
-		return fmt.Errorf("generated App manifest must contain title and networkOrigins")
-	}
-	title, ok := manifest["title"].(string)
-	if !ok || title == "" || len(title) > 80 || !generatedAppTitlePattern.MatchString(title) {
-		return fmt.Errorf("generated App title is invalid")
-	}
-	origins, ok := manifest["networkOrigins"].([]any)
-	if !ok || len(origins) != 0 {
-		return fmt.Errorf("generated App networkOrigins must be an empty array in V0")
-	}
-	for _, field := range []struct {
-		name string
-		max  int
-	}{
-		{name: "html", max: generatedAppHTMLBytes},
-		{name: "css", max: generatedAppCSSBytes},
-		{name: "js", max: generatedAppJSBytes},
-	} {
-		source, ok := bundle[field.name].(string)
-		if !ok || len(source) == 0 || len(source) > field.max || !safeGeneratedAppSource(source) {
-			return fmt.Errorf("generated App %s is invalid", field.name)
-		}
-	}
-	initialState, ok := bundle["initialState"].(map[string]any)
-	if !ok || len(initialState) == 0 && initialState == nil {
-		return fmt.Errorf("generated App initialState must be an object")
-	}
-	stateBytes, err := json.Marshal(initialState)
-	if err != nil || len(stateBytes) > generatedAppStateBytes {
-		return fmt.Errorf("generated App initialState exceeds 16 KiB")
-	}
-	return nil
-}
-
-func safeGeneratedAppSource(source string) bool {
-	lower := strings.ToLower(source)
-	return !strings.ContainsRune(source, '\x00') &&
-		!strings.Contains(lower, "</script") &&
-		!strings.Contains(lower, "<iframe") &&
-		!strings.Contains(lower, "<object") &&
-		!strings.Contains(lower, "<embed") &&
-		!strings.Contains(lower, "javascript:")
-}
-
-func exactGeneratedKeys(value map[string]any, keys ...string) bool {
-	if len(value) != len(keys) {
-		return false
-	}
-	allowed := make(map[string]bool, len(keys))
-	for _, key := range keys {
-		allowed[key] = true
-	}
-	for key := range value {
-		if !allowed[key] {
-			return false
-		}
-	}
-	return true
+	return generatedapp.Validate(data, bundle)
 }
 
 type generatedAppDescriptor struct {
