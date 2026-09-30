@@ -28,7 +28,13 @@ Replace `/absolute/path/to` with the checkout paths. Registration explicitly app
 
 The validator starts an ephemeral deterministic localhost fixture, writes an Adapter-owned `adapter-config.json` in a temporary directory, launches `adapter.py`, and checks `list`, `describe`, `observe`, a valid `set_led` invocation, unsupported-action errors, and failure handling for malformed, oversized, duplicate, and missing responses. No Free4Chat source package or Runtime configuration is used. The only fixture endpoint is in the Adapter config file, never in a protocol descriptor or request.
 
-To validate an Adapter you wrote, prepare its local config separately and pass its launch command and one known-valid action:
+To validate a read-only Adapter, pass its launch command without an action:
+
+```sh
+python3 validate.py --command '["python3","./my_read_only_adapter.py"]'
+```
+
+The validator checks `list`, `describe`, `observe`, descriptor/result bounds, and that an undeclared invocation returns `unsupported_action`. For an Adapter that declares actions, prepare its local config separately and pass one known-valid action:
 
 ```sh
 python3 validate.py \\

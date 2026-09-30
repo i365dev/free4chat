@@ -79,13 +79,13 @@ def fault_probe(source, expected):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--command", help="JSON array of executable and arguments; launched without a shell")
-    parser.add_argument("--action", help="known-valid action for the Adapter")
-    parser.add_argument("--args-json", help="known-valid JSON object for --action")
+    parser.add_argument("--action", help="known-valid action for an Adapter that declares actions")
+    parser.add_argument("--args-json", help="known-valid JSON object for --action; defaults to {}")
     options = parser.parse_args()
 
     if options.command:
-        if not options.action or options.args_json is None:
-            parser.error("--command requires --action and --args-json for a valid invocation")
+        if bool(options.action) != (options.args_json is not None):
+            parser.error("--action and --args-json must be provided together")
         try:
             command = json.loads(options.command)
         except json.JSONDecodeError as error:
@@ -93,7 +93,7 @@ def main():
         if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
             parser.error("--command must be a non-empty JSON array of strings")
         try:
-            invoke_args = json.loads(options.args_json)
+            invoke_args = json.loads(options.args_json) if options.args_json is not None else {}
         except json.JSONDecodeError as error:
             parser.error("--args-json is not valid JSON: " + str(error))
         process = subprocess.Popen(
@@ -106,7 +106,7 @@ def main():
             for item in listed:
                 if not isinstance(item, dict) or len(json.dumps(item, separators=(",", ":")).encode()) > 1024:
                     raise AssertionError("descriptor must be an object no larger than 1,024 bytes")
-                if not isinstance(item.get("capabilityId"), str) or not isinstance(item.get("title"), str) or not isinstance(item.get("version"), str) or not isinstance(item.get("observe"), bool) or not isinstance(item.get("actions"), list) or len(item["actions"]) > 4:
+                if set(item) != {"capabilityId", "title", "version", "observe", "actions"} or not isinstance(item.get("capabilityId"), str) or not isinstance(item.get("title"), str) or not isinstance(item.get("version"), str) or not isinstance(item.get("observe"), bool) or not isinstance(item.get("actions"), list) or len(item["actions"]) > 4:
                     raise AssertionError("descriptor does not match the bounded semantic shape")
             descriptor = listed[0]
             capability_id = descriptor.get("capabilityId") if isinstance(descriptor, dict) else None
@@ -115,15 +115,25 @@ def main():
             detailed = exchange(process, {"protocolVersion": VERSION, "id": "2", "method": "describe", "capabilityId": capability_id})["result"]
             if detailed != descriptor:
                 raise AssertionError("describe did not match the listed descriptor")
-            if descriptor.get("observe"):
-                exchange(process, {"protocolVersion": VERSION, "id": "3", "method": "observe", "capabilityId": capability_id})
-            good = exchange(process, {"protocolVersion": VERSION, "id": "4", "method": "invoke", "capabilityId": capability_id, "action": options.action, "args": invoke_args})
-            if "result" not in good:
-                raise AssertionError("known-valid invoke returned an error: " + repr(good.get("error")))
+            if descriptor["observe"]:
+                observed = exchange(process, {"protocolVersion": VERSION, "id": "3", "method": "observe", "capabilityId": capability_id})
+                if "result" not in observed or len(json.dumps(observed["result"], separators=(",", ":")).encode()) > 4096:
+                    raise AssertionError("observe must return a result no larger than 4,096 bytes")
+            if descriptor["actions"]:
+                if not options.action:
+                    raise AssertionError("Adapter declares actions; provide --action and --args-json for a valid invocation")
+                if not any(isinstance(action, dict) and action.get("name") == options.action for action in descriptor["actions"]):
+                    raise AssertionError("--action must name an action declared by the descriptor")
+                good = exchange(process, {"protocolVersion": VERSION, "id": "4", "method": "invoke", "capabilityId": capability_id, "action": options.action, "args": invoke_args})
+                if "result" not in good or len(json.dumps(good["result"], separators=(",", ":")).encode()) > 4096:
+                    raise AssertionError("known-valid invoke must return a result no larger than 4,096 bytes: " + repr(good.get("error")))
+            elif options.action:
+                raise AssertionError("--action was supplied but the descriptor has no actions")
             bad = exchange(process, {"protocolVersion": VERSION, "id": "5", "method": "invoke", "capabilityId": capability_id, "action": "f4c_unsupported_probe", "args": {}})
             if bad.get("error", {}).get("code") != "unsupported_action":
                 raise AssertionError("unsupported action must return unsupported_action")
-            print("PASS list/describe/observe/invoke/unsupported_action")
+            coverage = "invoke/" if descriptor["actions"] else "read-only/"
+            print("PASS list/describe/observe/" + coverage + "unsupported_action")
         finally:
             process.stdin.close()
             process.wait(timeout=2)
