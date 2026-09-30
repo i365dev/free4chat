@@ -948,11 +948,15 @@ type HarnessSessionContext struct {
 // HarnessTurnInput is the bounded, untrusted-safe context handed to the
 // Harness for one addressed turn. It never contains the participant handle.
 type HarnessTurnInput struct {
-	Room              RoomTurnContext           `json:"room"`
-	Events            []HarnessEvent            `json:"events"`
-	MeetingTranscript *HarnessMeetingTranscript `json:"meetingTranscript,omitempty"`
-	LiveTranscript    *HarnessLiveTranscript    `json:"liveTranscript,omitempty"`
-	Session           *HarnessSessionContext    `json:"session,omitempty"`
+	Room   RoomTurnContext `json:"room"`
+	Events []HarnessEvent  `json:"events"`
+	// TaskCapabilities are the bounded semantic descriptors for the resident
+	// Runtime behind this Task. They are current-state context, not authority,
+	// and are omitted from ordinary Room turns.
+	TaskCapabilities  []RuntimeCapabilityProjection `json:"taskCapabilities,omitempty"`
+	MeetingTranscript *HarnessMeetingTranscript     `json:"meetingTranscript,omitempty"`
+	LiveTranscript    *HarnessLiveTranscript        `json:"liveTranscript,omitempty"`
+	Session           *HarnessSessionContext        `json:"session,omitempty"`
 	// TaskRequestID is the exact canonical Task this turn belongs to, when
 	// the turn's logical scope is a Task scope. It exists so the rendered
 	// prompt can state the correlation id directly: artifacts produced for a
@@ -986,6 +990,14 @@ type HarnessTurnResult struct {
 	Text                 string
 	TargetParticipantIDs []string
 	LifecycleIntent      LifecycleIntent
+	GeneratedApp         *GeneratedTaskAppOutput
+}
+
+// GeneratedTaskAppOutput is one explicit bounded Task result. It is never
+// accepted from a Room-scoped turn and always publishes against the exact
+// TaskRequestID carried by that turn.
+type GeneratedTaskAppOutput struct {
+	Bundle map[string]any
 }
 
 // AdapterFailureHandler is invoked when the Harness process dies unexpectedly.

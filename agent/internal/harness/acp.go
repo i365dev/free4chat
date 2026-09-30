@@ -2376,16 +2376,11 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 		return types.HarnessTurnResult{}, fmt.Errorf("ACP session/prompt failed: %s", response.Error.Message)
 	}
 	a.emitDiagnostic("TURN_SETTLED", map[string]string{"scope": turn.scope})
-	// Strict outbound controls are extracted here, at the Harness boundary,
-	// from the aggregated reply text — never from prose heuristics. A result
-	// may carry either existing outbound targets or the closed local leave
-	// intent, never both; plain replies parse back unchanged.
-	body, targets, lifecycle := ParseOutboundResult(text)
-	return types.HarnessTurnResult{
-		Text:                 body,
-		TargetParticipantIDs: targets,
-		LifecycleIntent:      lifecycle,
-	}, nil
+	// Strict Runtime-owned result semantics are extracted at the Harness
+	// boundary from the aggregated ACP message text. Task App publication is
+	// accepted only for the exact Task-scoped turn; existing targets/lifecycle
+	// semantics remain unchanged.
+	return ParseHarnessTurnResult(text, input.TaskRequestID), nil
 }
 
 // Turn expiry reasons. They are bounded diagnostic tokens only.

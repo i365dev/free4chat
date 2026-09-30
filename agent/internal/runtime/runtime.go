@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
+	"github.com/i365dev/free4chat/agent/internal/generatedapp"
 	"github.com/i365dev/free4chat/agent/internal/harness"
 	"github.com/i365dev/free4chat/agent/internal/media"
 	"github.com/i365dev/free4chat/agent/internal/speech"
@@ -1922,9 +1923,10 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	}
 
 	input := BuildHarnessTurn(events, &TurnContextOptions{
-		Self:         r.selfContext(),
-		Participants: r.rosterSnapshot(),
-		RoomApps:     r.roomAppsSnapshot(),
+		Self:             r.selfContext(),
+		Participants:     r.rosterSnapshot(),
+		RoomApps:         r.roomAppsSnapshot(),
+		TaskCapabilities: r.taskCapabilitiesFor(scope),
 		// #421 dogfood finding E: the exact Task id must be directly
 		// actionable in the prompt, so an artifact produced for this Task is
 		// correlated by construction instead of defaulting to a Room
@@ -2071,6 +2073,13 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 		r.lastErrorSource = ""
 	}
 	r.mu.Unlock()
+	if result.GeneratedApp != nil {
+		if err := r.publishGeneratedTaskOutput(scope, result.GeneratedApp); err != nil {
+			r.recordDeliveredTurnFailure(scope, "send", turnFailureSend, started, err)
+			r.settleHumanTask(events, "failed", "Agent Task App could not be published.")
+			return
+		}
+	}
 	// A lifecycle result is never ordinary reply text. Its body may contain
 	// an untruthful success claim, so consume the closed local intent before
 	// any SendText attempt. Confirmed leave hands cleanup to the daemon after
@@ -2124,6 +2133,43 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	if voiceOutput := r.voiceOutput(); voiceOutput != nil {
 		voiceOutput.Speak(text)
 	}
+}
+
+// publishGeneratedTaskOutput validates one explicit bounded Task output and
+// publishes it for the exact originating Task through the existing Room
+// contract. It does not inspect Task workspace files or expose a generic
+// publication API to the Harness.
+func (r *ResidentRuntime) publishGeneratedTaskOutput(scope string, output *types.GeneratedTaskAppOutput) error {
+	taskRequestID := taskRequestIDForScope(scope)
+	if taskRequestID == "" || output == nil || output.Bundle == nil {
+		return errors.New("Generated Task App output has no originating Task")
+	}
+	encoded, err := json.Marshal(output.Bundle)
+	if err != nil {
+		return errors.New("Generated Task App output is invalid")
+	}
+	if err := generatedapp.Validate(encoded, output.Bundle); err != nil {
+		return err
+	}
+	if _, err := r.PublishGeneratedApp(taskRequestID, output.Bundle); err != nil {
+		return err
+	}
+	return nil
+}
+
+// taskCapabilitiesFor projects only the local Runtime's bounded semantic
+// descriptors into the exact Task turn that can use them. Runtime Host
+// identity and all Adapter-local integration details stay out of Harness
+// context.
+func (r *ResidentRuntime) taskCapabilitiesFor(scope string) []types.RuntimeCapabilityProjection {
+	if taskRequestIDForScope(scope) == "" {
+		return nil
+	}
+	host := r.CurrentHostProjection()
+	if host == nil || !host.Valid() || len(host.Capabilities) == 0 {
+		return nil
+	}
+	return append([]types.RuntimeCapabilityProjection(nil), host.Capabilities...)
 }
 
 // shouldRetryHumanTaskAcceptance is deliberately narrower than a generic
