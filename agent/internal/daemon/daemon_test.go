@@ -106,6 +106,18 @@ func TestCapabilityDirectControllerAndDaemonIPCShareController(t *testing.T) {
 	if descriptors := d.capabilityHandler.DescribeCapabilities(); len(descriptors) != 0 {
 		t.Fatalf("removed Adapter remained projected: %#v", descriptors)
 	}
+	assertEmptyCapabilityListIPC(t)
+}
+
+func assertEmptyCapabilityListIPC(t *testing.T) {
+	t.Helper()
+	listed, err := SendIPC(&IpcRequest{Op: "capability-list"})
+	if err != nil {
+		t.Fatalf("list capabilities after Adapter removal: %v", err)
+	}
+	if string(listed) != "[]" {
+		t.Fatalf("empty capability list IPC result = %s, want []", listed)
+	}
 }
 
 func daemonCapabilityAdapterRegistration(source string) capability.Registration {
@@ -1287,6 +1299,7 @@ func TestDaemonAdapterReplacementRefreshesExistingResidentAndRemovalClearsProjec
 	case <-time.After(2 * time.Second):
 		t.Fatal("crashed Adapter process was not reaped")
 	}
+	assertEmptyCapabilityListIPC(t)
 	if _, err := SendIPC(&IpcRequest{Op: "capability-adapter-remove"}); err != nil {
 		t.Fatalf("remove Adapter registration failed: %v", err)
 	}
