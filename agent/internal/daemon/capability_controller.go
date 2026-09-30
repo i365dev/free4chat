@@ -29,7 +29,7 @@ func (c *daemonCapabilityController) current() *capability.Controller {
 func (c *daemonCapabilityController) DescribeCapabilities() []types.RuntimeCapabilityProjection {
 	controller := c.current()
 	if controller == nil {
-		return nil
+		return []types.RuntimeCapabilityProjection{}
 	}
 	descriptors := controller.DescribeAll()
 	projected := make([]types.RuntimeCapabilityProjection, 0, len(descriptors))
