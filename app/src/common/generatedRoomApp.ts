@@ -158,8 +158,12 @@ export function generatedRoomAppSrcDoc(bundle: GeneratedRoomAppBundle): string {
     (() => {
       let port = null;
       let appInstanceId = "";
+      let bundleRevision = 0;
+      let nextCapabilityRequest = 0;
       let revision = 0;
       let sharedState = {};
+      let activeControlClick = false;
+      const pendingCapabilities = new Map();
       const sharedListeners = new Set();
       const participantListeners = new Set();
       const api = {
@@ -178,14 +182,35 @@ export function generatedRoomAppSrcDoc(bundle: GeneratedRoomAppBundle): string {
             port.postMessage({ type: "sendGeneratedState", appInstanceId, expectedRevision: revision, state: next });
             return true;
           }
+        },
+        capabilities: {
+          observe(capabilityId) { return requestCapability(capabilityId, "observe"); },
+          invoke(capabilityId, action, args = {}) { return requestCapability(capabilityId, "invoke", action, args); }
         }
       };
+      function requestCapability(capabilityId, operation, action, args) {
+        if (!port) return Promise.resolve({ ok: false, error: "unavailable" });
+        if (!activeControlClick) return Promise.resolve({ ok: false, error: "unauthorized" });
+        activeControlClick = false;
+        const requestId = "cap-" + (++nextCapabilityRequest).toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+        return new Promise((resolve) => {
+          pendingCapabilities.set(requestId, resolve);
+          port.postMessage({ type: "capabilityRequest", appInstanceId, bundleRevision, requestId, capabilityId, operation, ...(action === undefined ? {} : { action }), ...(args === undefined ? {} : { args }) });
+        });
+      }
+      window.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!event.isTrusted || !(target instanceof Element) || !target.closest("button, input, select, textarea, a[href], [role='button']")) return;
+        activeControlClick = true;
+        queueMicrotask(() => { activeControlClick = false; });
+      }, true);
       window.free4chat = api;
       window.addEventListener("message", (event) => {
         const message = event.data;
         const transferred = event.ports && event.ports[0];
         if (!message || message.type !== "room-app-bootstrap" || !transferred) return;
         appInstanceId = message.appInstanceId;
+        bundleRevision = message.bundleRevision;
         port = transferred;
         port.onmessage = (incoming) => {
           const value = incoming.data;
@@ -196,6 +221,13 @@ export function generatedRoomAppSrcDoc(bundle: GeneratedRoomAppBundle): string {
             if (value.shared) { sharedState = value.shared.state || {}; revision = value.shared.revision || 0; }
             for (const listener of participantListeners) listener(api.participants);
             for (const listener of sharedListeners) listener(sharedState, revision, value.shared && value.shared.sourceParticipantId);
+            return;
+          }
+          if (value.type === "capability_result") {
+            const resolve = pendingCapabilities.get(value.requestId);
+            if (!resolve) return;
+            pendingCapabilities.delete(value.requestId);
+            resolve(value.result);
             return;
           }
           if (value.type === "shared_state") {

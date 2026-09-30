@@ -31,9 +31,12 @@ Generated Apps use the same host and MessagePort boundary, plus a strict
 inline-only CSP (`connect-src 'none'`, `img-src data:`). V0 accepts only
 `html`, `css`, and `js` source with an empty `networkOrigins` list. The bundle
 is at most 48 KiB, initial/shared state at most 16 KiB, and one Room may hold at
-most four generated Apps. Network-backed capabilities are intentionally not
-part of V0; a generic network runtime would need a separate authorization and
-proxy design first.
+most four generated Apps. Direct App network access is not part of V0; a
+generic network runtime would need a separate authorization and proxy design.
+Generated Task Apps can invoke bounded semantic capabilities through the
+host-owned MessagePort bridge. RoomSession resolves the current publication
+through its canonical Task Agent and current Runtime Host; App code cannot
+choose a Runtime Host or make network requests.
 
 The Lab catalog's optional `clipboardWrite: true` field is the only current
 clipboard opt-in. Missing metadata grants nothing; unsupported capability
@@ -52,6 +55,20 @@ revision. `shared.set(next)` is an optimistic revisioned update through the
 authenticated Room WebSocket; the Room rejects stale revisions and broadcasts
 the committed state. The state is ephemeral Room storage and is deleted with
 the Room.
+
+Generated App code may call `free4chat.capabilities.observe(capabilityId)` or
+`free4chat.capabilities.invoke(capabilityId, action, args)` synchronously from
+a trusted click handler on a concrete control (`button`, form control, link, or
+`role="button"`). The bridge consumes one operation from that click; calls
+outside a trusted control click are refused. The host carries that bounded
+operation over the authenticated Room socket; RoomSession resolves the current
+publication's Task to its originating Agent and current Runtime Host, then uses
+the existing Runtime capability RPC. The Human action authorizes that single deterministic
+operation. Calls fail closed if the Task Agent, Host, capability, or published
+bundle revision is no longer current. Results use the existing semantic result
+bounds, which exclude endpoint, credential, URI, hostname, and protocol
+details. The iframe receives no Host ID, participant capability, or Runtime
+connection details.
 
 ## Messages and trust boundary
 

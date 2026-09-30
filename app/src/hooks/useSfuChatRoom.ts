@@ -1138,6 +1138,57 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  const requestGeneratedAppCapability = useCallback(
+    (request: {
+      appInstanceId: string
+      bundleRevision: number
+      requestId: string
+      capabilityId: string
+      operation: RuntimeCapabilityOperation
+      action?: string
+      args?: Record<string, unknown>
+    }): Promise<RuntimeCapabilityResult> => {
+      if (pendingRuntimeCapabilityRequestsRef.current.size >= 4)
+        return Promise.resolve({
+          type: "runtime-capability-result",
+          requestId: request.requestId,
+          ok: false,
+          error: "busy",
+        })
+      return new Promise((settle) => {
+        const timeout = setTimeout(() => {
+          pendingRuntimeCapabilityRequestsRef.current.delete(request.requestId)
+          settle({
+            type: "runtime-capability-result",
+            requestId: request.requestId,
+            ok: false,
+            error: "timeout",
+          })
+        }, 12_000)
+        pendingRuntimeCapabilityRequestsRef.current.set(request.requestId, {
+          settle,
+          timeout,
+        })
+        if (
+          !sendSocketMessage({
+            type: "generated-app-capability-request",
+            ...request,
+          })
+        ) {
+          clearTimeout(timeout)
+          pendingRuntimeCapabilityRequestsRef.current.delete(request.requestId)
+          settle({
+            type: "runtime-capability-result",
+            requestId: request.requestId,
+            ok: false,
+            error: "unavailable",
+          })
+        }
+      })
+    },
+    [sendSocketMessage]
+  )
+
   const isCurrentAgentAudioPublication = useCallback(
     (participantId: string, sessionId: string, trackName: string): boolean => {
       const participant = participantMapRef.current.get(participantId)
@@ -5219,6 +5270,7 @@ export function useSfuChatRoom(
     setRuntimeCapabilityControl,
     runtimeCapabilityControlError,
     requestRuntimeCapability,
+    requestGeneratedAppCapability,
     liveTranscriptMediaAvailable,
     startLiveTranscript,
     stopLiveTranscript,

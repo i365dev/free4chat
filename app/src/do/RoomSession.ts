@@ -534,6 +534,12 @@ interface PendingCapabilityRequest {
   operation: "observe" | "invoke"
   requesterParticipantId: string
   requesterConnectionNonce: string
+  generatedApp?: {
+    appInstanceId: string
+    bundleRevision: number
+    taskRequestId: string
+    agentParticipantId: string
+  }
   expiresAt: number
 }
 
@@ -1114,6 +1120,19 @@ type ClientMessage =
       type: "runtime-capability-request"
       requestId: string
       runtimeHostId: string
+      capabilityId: string
+      operation: "observe" | "invoke"
+      action?: string
+      args?: Record<string, unknown>
+    }
+  | {
+      // Ephemeral private Room App control-plane message. The Room derives
+      // sender identity from the authenticated WebSocket attachment and
+      // delivers only to the current target Human socket.
+      type: "generated-app-capability-request"
+      requestId: string
+      appInstanceId: string
+      bundleRevision: number
       capabilityId: string
       operation: "observe" | "invoke"
       action?: string
@@ -7643,6 +7662,114 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     )
   }
 
+  private resolveGeneratedAppCapabilityTarget(
+    room: RoomRecord,
+    appInstanceId: string,
+    bundleRevision: number,
+    capabilityId: string
+  ): {
+    appInstanceId: string
+    bundleRevision: number
+    taskRequestId: string
+    agentParticipantId: string
+    runtimeHostId: string
+  } | null {
+    const publication = room.generatedApps?.[appInstanceId]
+    if (!publication || publication.bundleRevision !== bundleRevision)
+      return null
+    const task = buildTaskProjectionIndex(
+      room.messages,
+      room.participants
+    ).tasks.get(publication.taskRequestId)
+    if (!task) return null
+    const agentParticipantId = initialTaskAgentParticipantId(
+      task.request,
+      room.participants
+    )
+    if (!agentParticipantId) return null
+    const agent = room.participants[agentParticipantId]
+    const runtimeHostId = agent?.runtimeHostId
+    if (
+      !agent ||
+      agent.kind !== "agent" ||
+      !agent.connected ||
+      !isValidRuntimeHostId(runtimeHostId) ||
+      !room.runtimeHosts?.[runtimeHostId]?.capabilities?.some(
+        (capability) => capability.capabilityId === capabilityId
+      )
+    )
+      return null
+    return {
+      appInstanceId,
+      bundleRevision,
+      taskRequestId: publication.taskRequestId,
+      agentParticipantId,
+      runtimeHostId,
+    }
+  }
+
+  private async handleGeneratedAppCapabilityRequest(
+    socket: WebSocket,
+    attachment: ConnectionAttachment,
+    room: RoomRecord,
+    participant: RoomParticipant,
+    message: Extract<
+      ClientMessage,
+      { type: "generated-app-capability-request" }
+    >
+  ): Promise<void> {
+    const reject = (error: string) =>
+      this.sendRuntimeCapabilityResult(
+        socket,
+        typeof message.requestId === "string" ? message.requestId : "",
+        false,
+        undefined,
+        error
+      )
+    if (
+      participant.kind !== "human" ||
+      participant.connectionNonce !== attachment.connectionNonce ||
+      !this.validRuntimeCapabilityRequestId(message.requestId) ||
+      !isValidRoomAppInstanceId(message.appInstanceId) ||
+      !Number.isSafeInteger(message.bundleRevision) ||
+      message.bundleRevision < 1
+    ) {
+      reject("invalid_request")
+      return
+    }
+    const target = this.resolveGeneratedAppCapabilityTarget(
+      room,
+      message.appInstanceId,
+      message.bundleRevision,
+      message.capabilityId
+    )
+    if (!target) {
+      reject("unavailable")
+      return
+    }
+    await this.handleRuntimeCapabilityRequest(
+      socket,
+      attachment,
+      room,
+      participant,
+      {
+        type: "runtime-capability-request",
+        requestId: message.requestId,
+        runtimeHostId: target.runtimeHostId,
+        capabilityId: message.capabilityId,
+        operation: message.operation,
+        ...(message.action === undefined ? {} : { action: message.action }),
+        ...(message.args === undefined ? {} : { args: message.args }),
+      },
+      {
+        appInstanceId: target.appInstanceId,
+        bundleRevision: target.bundleRevision,
+        taskRequestId: target.taskRequestId,
+        agentParticipantId: target.agentParticipantId,
+      }
+    )
+  }
+
   private sendRuntimeCapabilityResult(
     socket: WebSocket,
     requestId: string,
@@ -7820,7 +7947,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     attachment: ConnectionAttachment,
     room: RoomRecord,
     participant: RoomParticipant,
-    message: Extract<ClientMessage, { type: "runtime-capability-request" }>
+    message: Extract<ClientMessage, { type: "runtime-capability-request" }>,
+    generatedApp?: PendingCapabilityRequest["generatedApp"]
   ): Promise<void> {
     const requestId = message.requestId
     if (!this.validRuntimeCapabilityRequestId(requestId)) return
@@ -7856,13 +7984,29 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const capability = projection?.capabilities?.find(
       (candidate) => candidate.capabilityId === message.capabilityId
     )
-    const authorized = canHumanControlRuntimeHost({
-      participants: Object.values(room.participants),
-      runtimeHosts: room.runtimeHosts,
-      providers: room.runtimeHostProviders,
-      humanParticipantId: participant.id,
-      runtimeHostId: message.runtimeHostId,
-    })
+    const generatedTarget = generatedApp
+      ? this.resolveGeneratedAppCapabilityTarget(
+          room,
+          generatedApp.appInstanceId,
+          generatedApp.bundleRevision,
+          message.capabilityId
+        )
+      : null
+    const authorized = generatedApp
+      ? Boolean(
+          generatedTarget &&
+            generatedTarget.agentParticipantId ===
+              generatedApp.agentParticipantId &&
+            generatedTarget.taskRequestId === generatedApp.taskRequestId &&
+            generatedTarget.runtimeHostId === message.runtimeHostId
+        )
+      : canHumanControlRuntimeHost({
+          participants: Object.values(room.participants),
+          runtimeHosts: room.runtimeHosts,
+          providers: room.runtimeHostProviders,
+          humanParticipantId: participant.id,
+          runtimeHostId: message.runtimeHostId,
+        })
     if (!authorized || !capability) {
       reject("unauthorized")
       return
@@ -7913,11 +8057,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
 
     const association = room.runtimeHostProviders?.[message.runtimeHostId]
-    const residents = liveVerifiedRuntimeHostResidents(
-      room,
-      message.runtimeHostId,
-      association?.verifiedParticipantIds ?? []
-    )
+    const residents = generatedApp
+      ? [room.participants[generatedApp.agentParticipantId]].filter(
+          (resident): resident is RoomParticipant =>
+            resident?.kind === "agent" &&
+            resident.connected &&
+            resident.runtimeHostId === message.runtimeHostId
+        )
+      : liveVerifiedRuntimeHostResidents(
+          room,
+          message.runtimeHostId,
+          association?.verifiedParticipantIds ?? []
+        )
     let target: {
       socket: WebSocket
       attachment: AgentEventSocketAttachment
@@ -7930,6 +8081,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.deserializeAgentEventAttachment(residentSocket)
         if (
           !residentAttachment ||
+          residentAttachment.participantId !== resident.id ||
           residentAttachment.connectionNonce !== resident.connectionNonce ||
           (residentAttachment.pendingCapabilityRequest &&
             residentAttachment.pendingCapabilityRequest.expiresAt > now)
@@ -7952,6 +8104,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       operation: message.operation,
       requesterParticipantId: participant.id,
       requesterConnectionNonce: attachment.connectionNonce,
+      ...(generatedApp ? { generatedApp } : {}),
       expiresAt: now + RUNTIME_CAPABILITY_TIMEOUT_MS,
     }
     target.attachment.pendingCapabilityRequest = pending
@@ -8053,6 +8206,35 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     const room = await this.activeRoom()
     const resident = room?.participants[attachment.participantId]
     const requester = room?.participants[pending.requesterParticipantId]
+    const generatedTarget =
+      room && pending.generatedApp
+        ? this.resolveGeneratedAppCapabilityTarget(
+            room,
+            pending.generatedApp.appInstanceId,
+            pending.generatedApp.bundleRevision,
+            pending.capabilityId
+          )
+        : null
+    const requesterAuthorized = pending.generatedApp
+      ? Boolean(
+          generatedTarget &&
+            generatedTarget.agentParticipantId ===
+              pending.generatedApp.agentParticipantId &&
+            generatedTarget.taskRequestId ===
+              pending.generatedApp.taskRequestId &&
+            generatedTarget.runtimeHostId === pending.runtimeHostId
+        )
+      : Boolean(
+          room &&
+            requester &&
+            canHumanControlRuntimeHost({
+              participants: Object.values(room.participants),
+              runtimeHosts: room.runtimeHosts,
+              providers: room.runtimeHostProviders,
+              humanParticipantId: pending.requesterParticipantId,
+              runtimeHostId: pending.runtimeHostId,
+            })
+        )
     if (
       !room ||
       !resident ||
@@ -8065,13 +8247,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       !requester ||
       requester.kind !== "human" ||
       requester.connectionNonce !== pending.requesterConnectionNonce ||
-      !canHumanControlRuntimeHost({
-        participants: Object.values(room.participants),
-        runtimeHosts: room.runtimeHosts,
-        providers: room.runtimeHostProviders,
-        humanParticipantId: requester.id,
-        runtimeHostId: pending.runtimeHostId,
-      })
+      !requesterAuthorized
     ) {
       this.finishRuntimeCapabilityRequest(pending.requestId, {
         ok: false,
@@ -8816,6 +8992,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (message.type === "runtime-capability-request") {
       await this.handleRuntimeCapabilityRequest(
+        socket,
+        attachment,
+        room,
+        participant,
+        message
+      )
+      return
+    }
+    if (message.type === "generated-app-capability-request") {
+      await this.handleGeneratedAppCapabilityRequest(
         socket,
         attachment,
         room,
